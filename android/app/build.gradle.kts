@@ -34,6 +34,7 @@ val rimeSharedData = rimeRepoRoot.dir("core/data/shared")
 val rimeUserData = rimeRepoRoot.dir("core/data/user")
 val rimeLayouts = rimeRepoRoot.dir("core/layouts")
 val rimeThemes = rimeRepoRoot.dir("core/themes")
+val rimeSchemaLanguages = rimeRepoRoot.file("core/schema-languages.json")
 val rimeGeneratedAssets = layout.buildDirectory.dir("generated/rimeAssets")
 
 val syncRimeData = tasks.register<Sync>("syncRimeData") {
@@ -45,6 +46,9 @@ val syncRimeData = tasks.register<Sync>("syncRimeData") {
     // 「隨附目錄」同名，四端的搜尋路徑因此長得一樣。
     from(rimeLayouts) { into("rime/layouts") }
     from(rimeThemes) { into("rime/themes") }
+    // 方案 → BCP 47 語言標記的對照表（scripts/schema_store/languages.py 產生）。
+    // 選單分組讀的是這一份加上索引裡的 language 欄位；兩者都沒有時才退回啟發式。
+    from(rimeSchemaLanguages) { into("rime") }
     doFirst {
         if (!rimeSharedData.asFile.isDirectory) {
             logger.warn(

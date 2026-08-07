@@ -1,0 +1,171 @@
+{
+ "format_version": 1,
+ "generated_at": "2026-08-07T18:43:19Z",
+ "languages": [
+  {
+   "tag": "zh-Hant-TW",
+   "name": "中文（臺灣正體）",
+   "order": 1
+  },
+  {
+   "tag": "zh-Hant-HK",
+   "name": "中文（香港繁體）",
+   "order": 2
+  },
+  {
+   "tag": "zh-Hant",
+   "name": "中文（繁體）",
+   "order": 3
+  },
+  {
+   "tag": "zh-Hans",
+   "name": "中文（简体）",
+   "order": 4
+  },
+  {
+   "tag": "yue-Hant-HK",
+   "name": "粵語（香港）",
+   "order": 10
+  },
+  {
+   "tag": "yue-Hant-CN",
+   "name": "粵語（廣西）",
+   "order": 11
+  },
+  {
+   "tag": "yue-Hant",
+   "name": "粵語",
+   "order": 12
+  },
+  {
+   "tag": "nan-Hant",
+   "name": "閩南語",
+   "order": 20
+  },
+  {
+   "tag": "wuu-Hant",
+   "name": "吳語",
+   "order": 21
+  },
+  {
+   "tag": "hsn-Hant",
+   "name": "湘語",
+   "order": 22
+  },
+  {
+   "tag": "hsn-Cyrl",
+   "name": "湘語（西里爾轉寫）",
+   "order": 23
+  },
+  {
+   "tag": "ltc-Hant",
+   "name": "中古漢語",
+   "order": 30
+  },
+  {
+   "tag": "ja",
+   "name": "日本語",
+   "order": 40
+  },
+  {
+   "tag": "ko",
+   "name": "한국어",
+   "order": 41
+  },
+  {
+   "tag": "en",
+   "name": "English",
+   "order": 50
+  },
+  {
+   "tag": "und",
+   "name": "其他（未標記語言）",
+   "order": 99
+  }
+ ],
+ "schemas": {
+  "KappaJP": "ja",
+  "KappaJP_express": "ja",
+  "KappaJP_fluency": "ja",
+  "array30": "zh-Hant",
+  "array30_wsymbols": "zh-Hant",
+  "bopomofo": "zh-Hant",
+  "bopomofo_express": "zh-Hant",
+  "bopomofo_tw": "zh-Hant-TW",
+  "c2h6_pinyin": "zh-Hans",
+  "cangjie5": "zh-Hant",
+  "cangjie5_express": "zh-Hant",
+  "combo_pinyin": "zh-Hant",
+  "combo_pinyin_split": "zh-Hant",
+  "combo_pinyin_tonal_chords": "zh-Hant",
+  "combo_pinyin_with_tones": "zh-Hant",
+  "detenele": "zh-Hant",
+  "dieziu": "nan-Hant",
+  "dioion": "nan-Hant",
+  "double_pinyin_jiajia": "zh-Hans",
+  "double_pinyin_pyjj": "zh-Hant",
+  "double_pinyin_sogou": "zh-Hans",
+  "double_pinyin_st": "zh-Hant",
+  "double_pinyin_ziguang": "zh-Hans",
+  "gekion": "nan-Hant",
+  "hkcantonese": "yue-Hant-HK",
+  "jyut6ping3": "yue-Hant-HK",
+  "jyut6ping3_ipa": "yue-Hant-HK",
+  "jyutping": "yue-Hant",
+  "keydo": "zh-Hans",
+  "luna_pinyin": "zh-Hant",
+  "luna_pinyin_fluency": "zh-Hant",
+  "luna_pinyin_simp": "zh-Hans",
+  "luna_pinyin_tw": "zh-Hant-TW",
+  "luna_quanpin": "zh-Hant",
+  "melt_eng": "en",
+  "moran": "zh-Hant",
+  "moran_aux": "zh-Hant",
+  "moran_english": "en",
+  "moran_fixed": "zh-Hant",
+  "moran_japanese": "ja",
+  "moran_sentence": "zh-Hant",
+  "naamning_baakwaa": "yue-Hant-CN",
+  "naamning_baakwaa_ipa": "yue-Hant-CN",
+  "naamning_bingwaa": "yue-Hant-CN",
+  "naamning_bingwaa_ipa": "yue-Hant-CN",
+  "numbers": "zh-Hans",
+  "pinyin_simp": "zh-Hans",
+  "quick5": "zh-Hant",
+  "radical": "zh-Hans",
+  "radical_pinyin": "zh-Hans",
+  "riaupeng": "nan-Hant",
+  "rime_ice": "zh-Hans",
+  "sampheng": "ltc-Hant",
+  "saodongwa": "hsn-Hant",
+  "sautungva_beta": "hsn-Hant",
+  "sautungva_cyrillic": "hsn-Cyrl",
+  "sautungva_phinin": "hsn-Hant",
+  "sautungva_vuphin": "hsn-Hant",
+  "scj6": "zh-Hant",
+  "soutzoe": "wuu-Hant",
+  "stenotype": "zh-Hant",
+  "stroke": "zh-Hant",
+  "suantau": "nan-Hant",
+  "t9": "zh-Hans",
+  "t9_pinyin": "zh-Hant",
+  "tenghai": "nan-Hant",
+  "terra_pinyin": "zh-Hant",
+  "terra_pinyin_12345": "zh-Hant",
+  "tiger": "zh-Hant",
+  "wubi86": "zh-Hans",
+  "wubi86_jidian": "zh-Hans",
+  "wubi86_jidian_pinyin": "zh-Hans",
+  "wubi86_jidian_trad": "zh-Hant",
+  "wubi86_jidian_trad_pinyin": "zh-Hant",
+  "wubi_pinyin": "zh-Hans",
+  "wubi_trad": "zh-Hant",
+  "wugniu": "wuu-Hant",
+  "wugniu_lopha": "wuu-Hant",
+  "yale": "yue-Hant",
+  "zhengma": "zh-Hans",
+  "zrlf": "zh-Hant",
+  "zrm_pinyin": "zh-Hant",
+  "zyenpheng": "ltc-Hant"
+ }
+}

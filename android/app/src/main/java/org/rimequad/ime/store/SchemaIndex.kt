@@ -20,8 +20,23 @@ data class StoreCategory(
     val hidden: Boolean,
 )
 
-/** 套件提供的一個可切換方案。 */
-data class StoreSchemaRef(val id: String, val name: String)
+/**
+ * 套件提供的一個可切換方案。
+ *
+ * [language] 是 BCP 47 標記（`zh-Hant-TW`、`yue-Hant-HK`、`ja`…），
+ * 由打包端的 `scripts/schema_store/languages.py` 判定，鍵盤類型選單用它分組。
+ * `null` 或 `"und"` = 索引沒說（舊索引，或判不出來）—— 這種時候 app 會回落到
+ * 隨 APK 出貨的對照表，再回落到字面啟發式，**不會**因此把方案藏起來。
+ *
+ * 為什麼掛在「套件的方案」而不是全域的 id 表：**方案 id 不是全域唯一的**。
+ * `double_pinyin` 同時存在於 `double-pinyin`（借朙月拼音的繁體詞庫）與
+ * `ice`（簡體詞庫），字集相反 —— 只有知道是哪個套件裝的才分得出來。
+ */
+data class StoreSchemaRef(
+    val id: String,
+    val name: String,
+    val language: String? = null,
+)
 
 /** `verified.probe`：打包端實際驗證過的輸入樣本。 */
 data class StoreProbe(val schema: String, val keys: String, val expect: String)
@@ -59,14 +74,43 @@ data class StorePackage(
     val schemaIds: List<String> get() = schemas.map { it.id }
 }
 
+/** 索引頂層的語言分組表：BCP 47 標記 → 顯示名與排序。 */
+data class StoreLanguage(val tag: String, val name: String, val order: Int)
+
 data class SchemaIndex(
     val formatVersion: Int,
     val generatedAt: String?,
     val baseUrl: String?,
     val categories: List<StoreCategory>,
     val packages: List<StorePackage>,
+    /** 語言分組表。舊索引沒有這個欄位 → 空清單，分組回落到 app 內的對照表。 */
+    val languages: List<StoreLanguage> = emptyList(),
+    /**
+     * 隨 APK 出貨的內建方案的語言標記。
+     *
+     * 它們不是從市集裝的，所以不在 [packages] 裡，但選單一樣要分組。
+     * 放在索引裡是為了讓「新增一個內建方案」不必等 app 改版；
+     * app 內另有一份同源的對照表（`core/schema-languages.json`）作為離線回落。
+     */
+    val builtinSchemas: List<StoreSchemaRef> = emptyList(),
 ) {
     private val byId = packages.associateBy { it.id }
+
+    /** 方案 id → BCP 47 標記。內建方案也算在內。`und` 視同沒有。 */
+    fun languageTags(): Map<String, String> {
+        val out = LinkedHashMap<String, String>()
+        packages.forEach { p ->
+            p.schemas.forEach { s ->
+                val t = s.language
+                if (!t.isNullOrEmpty() && t != "und") out[s.id] = t
+            }
+        }
+        builtinSchemas.forEach { s ->
+            val t = s.language
+            if (!t.isNullOrEmpty() && t != "und") out[s.id] = t
+        }
+        return out
+    }
 
     fun packageById(id: String): StorePackage? = byId[id]
 
@@ -133,6 +177,17 @@ object IndexParser {
         }
         val categoryIds = categories.map { it.id }.toSet()
 
+        // 語言分組表與內建方案的語言標記。兩者都是**選用**欄位：
+        // 舊索引沒有它們時只是分組退回 app 內的對照表，不該讓整份索引出局。
+        val languages = root.arr("languages").mapNotNull { node ->
+            val tag = node.str("tag") ?: return@mapNotNull null
+            StoreLanguage(tag, node.str("name") ?: tag, node.long("order")?.toInt() ?: 100)
+        }
+        val builtinSchemas = root.arr("builtin_schemas").mapNotNull { node ->
+            val sid = node.str("id") ?: return@mapNotNull null
+            StoreSchemaRef(sid, node.str("name") ?: sid, node.str("language"))
+        }
+
         val seen = HashSet<String>()
         val packages = ArrayList<StorePackage>()
         root.arr("packages").forEachIndexed { i, node ->
@@ -164,7 +219,7 @@ object IndexParser {
 
             val schemas = node.arr("schemas").mapNotNull { s ->
                 val sid = s.str("id") ?: return@mapNotNull null
-                StoreSchemaRef(sid, s.str("name") ?: sid)
+                StoreSchemaRef(sid, s.str("name") ?: sid, s.str("language"))
             }
 
             val verified = node["verified"]
@@ -216,6 +271,8 @@ object IndexParser {
                 baseUrl = root.str("base_url"),
                 categories = categories,
                 packages = packages,
+                languages = languages,
+                builtinSchemas = builtinSchemas,
             ),
             warnings,
         )

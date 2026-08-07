@@ -6,6 +6,9 @@
 """
 import datetime, json, os, sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import languages   # noqa: E402  —— 語言標記，見 languages.py 檔頭
+
 WORK = sys.argv[1]
 DIST = sys.argv[2]
 BASE_URL = sys.argv[3]
@@ -158,6 +161,16 @@ while changed:
                             "reason": f"相依的套件未通過驗證，無法成套提供：{miss}"})
             changed = True
 
+# ── 語言標記（BCP 47）─────────────────────────────────────────────────────
+# 判定規則與依據見 languages.py。這裡只把結果掛上去。
+# 為什麼 key 是 (套件, 方案) 而不是方案：**方案 id 不是全域唯一的** ——
+# double_pinyin 同時存在於 double-pinyin（繁體詞庫）與 ice（簡體詞庫）。
+_schemas_ok = {p["id"]: set((verified.get(p["id"]) or {}).get("schemas_ok") or [])
+               for p in pkgs}
+_lr, _rows, _builtin = languages.build(WORK, only_pkgs=kept_ids, schemas_of=_schemas_ok)
+lang_of = {(r["package"], r["schema"]): r["language"] for r in _rows}
+lang_src = {(r["package"], r["schema"]): r["source"] for r in _rows}
+
 for p in sorted(pkgs, key=lambda x: x["id"]):
     if p["id"] not in kept_ids:
         continue
@@ -176,8 +189,11 @@ for p in sorted(pkgs, key=lambda x: x["id"]):
         "file": p["zip"],
         "size": p["size"],
         "sha256": p["sha256"],
-        "schemas": [{"id": s["id"], "name": s["name"]}
-                    for s in p["schemas"] if s["id"] in ok],
+        "schemas": [
+            {"id": s["id"], "name": s["name"],
+             "language": lang_of.get((p["id"], s["id"]), "und")}
+            for s in p["schemas"] if s["id"] in ok
+        ],
         "requires": p["requires"],
         "recommended_layout": p["recommended_layout"],
         "verified": {"deployed": True},
@@ -196,6 +212,13 @@ idx = {
                     .replace(microsecond=0).isoformat().replace("+00:00", "Z"),
     "base_url": BASE_URL,
     "categories": CATEGORIES,
+    # 語言分組表。顯示名放在索引裡而不是 app 裡，理由與 categories 相同：
+    # 新增一種語言不該要求使用者先更新 app。
+    "languages": languages.LANGUAGES,
+    # 隨 APK 出貨的內建方案不在 packages 裡（它們不是從市集裝的），
+    # 但選單一樣要分組，所以在這裡補一份對照。
+    "builtin_schemas": [{"id": b["id"], "name": b["name"], "language": b["language"]}
+                        for b in _builtin],
     "packages": entries,
 }
 out = os.path.join(DIST, "index.json")
@@ -220,6 +243,13 @@ for e in entries:
 for c in CATEGORIES:
     print(f"  {c['id']:10s} {len(by_cat.get(c['id'], []))}: "
           f"{' '.join(by_cat.get(c['id'], []))}")
+_tagged = [e for e in entries for s2 in e["schemas"]]
+_all = [(e["id"], s2) for e in entries for s2 in e["schemas"]]
+_und = [(pid, s2["id"]) for pid, s2 in _all if s2["language"] == "und"]
+print("\n語言標記：%d 個方案，und %d 個（%.1f%%）"
+      % (len(_all), len(_und), 100.0 * len(_und) / max(len(_all), 1)))
+for pid, sid in _und:
+    print("  und  %-24s %-16s %s" % (sid, pid, lang_src.get((pid, sid), "")))
 print("\n排除清單：")
 for d in dropped:
     print(f"  {d['id']:22s} [{d['stage']}] {d['reason'][:150]}")

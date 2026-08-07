@@ -36,6 +36,14 @@ class ConfigRepository(context: Context) : LayoutRepository {
 
     private val assets: AssetManager = context.applicationContext.assets
 
+    init {
+        // 方案 → 語言的對照表和佈局、主題一樣是隨 APK 出貨的宣告式資料，
+        // 由同一條 Gradle syncRimeData 任務放進 assets。在這裡載入是因為
+        // 這裡是唯一同時握有 AssetManager 又負責「讀隨附設定」的地方 ——
+        // 鍵盤類型選單的分組要用它（見 [SchemaLanguages]）。
+        SchemaLanguages.loadShipped(assets)
+    }
+
     val layouts: DocumentSource by lazy { sourcesFor(LAYOUT_DIR) }
     val themes: DocumentSource by lazy { sourcesFor(THEME_DIR) }
 

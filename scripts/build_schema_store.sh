@@ -136,6 +136,11 @@ fi
 if run_phase index; then
   step "6. 產生 index.json（未通過驗證者一律排除）"
   python3 "$LIB/mkindex.py" "$WORK" "$DIST" "$BASE_URL"
+
+  # 隨 APK 出貨的語言對照表。索引是下載來的、可能比 app 舊，而內建的四個方案
+  # 根本不在索引的 packages 裡 —— 鍵盤類型選單在還沒下載過索引時也要分得了組。
+  step "6b. 產生 core/schema-languages.json（隨 APK 出貨的語言對照）"
+  python3 "$LIB/languages.py" "$WORK" --asset "$ROOT/core/schema-languages.json"
 fi
 
 # ────────────────────────────────────────────────────────────── upload ────

@@ -61,6 +61,24 @@ class InstalledRegistry private constructor(
     fun noteForSchema(schemaId: String): String? =
         entries.values.firstOrNull { p -> p.schemas.any { it.id == schemaId } }?.layoutNote
 
+    /**
+     * 已安裝方案的 BCP 47 語言標記（見 [StoreSchemaRef.language]）。
+     *
+     * 這是三層來源裡最準的一層：帳本知道每個方案是**哪一個套件**裝的，
+     * 而方案 id 不是全域唯一的 —— `double_pinyin` 在 `double-pinyin` 是繁體、
+     * 在 `ice` 是簡體，只看 id 分不出來。`und` 與空字串視同沒有標記。
+     */
+    fun languageTags(): Map<String, String> {
+        val out = LinkedHashMap<String, String>()
+        entries.values.forEach { p ->
+            p.schemas.forEach { s ->
+                val t = s.language
+                if (!t.isNullOrEmpty() && t != "und") out[s.id] = t
+            }
+        }
+        return out
+    }
+
     /** 本地已安裝套件之中，有誰宣告 requires [id]。 */
     fun dependents(id: String): List<InstalledPackage> =
         entries.values.filter { it.id != id && it.requires.contains(id) }
@@ -95,7 +113,10 @@ class InstalledRegistry private constructor(
             sb.append("      \"files\": ")
                 .append(p.files.joinToString(", ", "[", "]") { q(it) }).append(",\n")
             sb.append("      \"schemas\": [")
-            sb.append(p.schemas.joinToString(", ") { "{\"id\": ${q(it.id)}, \"name\": ${q(it.name)}}" })
+            sb.append(p.schemas.joinToString(", ") {
+                "{\"id\": ${q(it.id)}, \"name\": ${q(it.name)}, " +
+                    "\"language\": ${qn(it.language)}}"
+            })
             sb.append("]\n")
             sb.append("    }").append(if (i == entries.size - 1) "\n" else ",\n")
         }
@@ -130,7 +151,7 @@ class InstalledRegistry private constructor(
                         installedAt = n.long("installed_at") ?: 0L,
                         schemas = n.arr("schemas").mapNotNull { s ->
                             val sid = s.str("id") ?: return@mapNotNull null
-                            StoreSchemaRef(sid, s.str("name") ?: sid)
+                            StoreSchemaRef(sid, s.str("name") ?: sid, s.str("language"))
                         },
                         files = n.strings("files"),
                         requires = n.strings("requires"),
