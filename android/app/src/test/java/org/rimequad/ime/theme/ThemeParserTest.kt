@@ -443,6 +443,16 @@ class ThemeParserTest {
     }
 
     @Test
+    fun bothNotFoundSentinelsAreNormalisedAtTheBoundary() {
+        // rs_keysym_by_name() 查不到時回傳 0；靜態表用 0xFFFFFF。
+        // 兩者都必須被擋下來，絕不能當成有效 keysym 送進 rs_process_key()。
+        assertEquals(Keysym.VOID_SYMBOL, Keysym.resolveWith("NoSuchKey") { 0 })
+        assertEquals(Keysym.VOID_SYMBOL, Keysym.resolveWith("NoSuchKey") { Keysym.VOID_SYMBOL })
+        // 有效值原樣通過。
+        assertEquals(0x6C1, Keysym.resolveWith("NoSuchKey") { 0x6C1 })
+    }
+
+    @Test
     fun alphaModulationMultipliesRatherThanOverwrites() {
         assertEquals(
             0x80FF0000.toInt(),

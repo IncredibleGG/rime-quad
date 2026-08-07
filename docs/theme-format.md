@@ -1088,7 +1088,15 @@ send:
    （`core/include/rime_shell.h`；它包裝 librime 的 `RimeGetKeycodeByName()`）。
    客戶端 **可** 內建常用名稱的靜態表作為快路徑，但 **必須** 與門面層的結果一致；
    靜態表查不到時 **必須** 回落到 `rs_keysym_by_name()`，**不得** 直接把該鍵當成 noop。
-4. `rs_keysym_by_name()` 回傳 `XK_VoidSymbol`（`0xFFFFFF`）→ 該鍵變成 `noop` + WARNING。
+4. `rs_keysym_by_name()` 查不到時回傳 **`0`** → 該鍵變成 `noop` + WARNING。
+
+> **⚠ 兩個「查不到」的哨兵值,必須在邊界正規化。**
+> librime 的 `RimeGetKeycodeByName()` 查不到時回傳 `XK_VoidSymbol`（`0xFFFFFF`），
+> 那是個**看起來很像有效 keysym** 的值；門面層刻意把它正規化成 `0`。
+> 於是解析器內部的靜態表（可能用 `0xFFFFFF` 當哨兵）與門面層（用 `0`）
+> 各有一套約定。實作 **必須** 在呼叫門面層的那一行就把兩者統一，
+> 並且 **不得** 把 `0` 或 `0xFFFFFF` 當成有效 keysym 送進 `rs_process_key()`。
+> 送進去不會崩，只會安靜地什麼都不發生 —— 這種 bug 極難從症狀回推原因。
 
 > **v1 初稿的缺陷：** 初稿直接要求回落到 librime 的 `RimeGetKeycodeByName()`，
 > 但門面層當時沒有暴露等價函式，所以這條**在四端都無法實作** ——

@@ -120,13 +120,19 @@ object Keysym {
      * 此時行為退化為 [resolve] —— 這是**可觀察的偏離規範**，
      * 只在門面層尚未暴露該函式的過渡期可接受。
      *
+     * ⚠ **兩個哨兵值在這裡統一。** 本表用 [VOID_SYMBOL]（`0xFFFFFF`）表示查不到，
+     * 而 `rs_keysym_by_name()` 用 `0`（它刻意把 librime 的 `XK_VoidSymbol`
+     * 正規化掉，因為 `0xFFFFFF` 看起來很像有效 keysym）。兩者都必須被擋下來,
+     * 絕不能送進 `rs_process_key()` —— 送進去不會崩,只會安靜地什麼都不發生。
+     *
      * 用法：`Keysym.resolveWith(spec.name) { RimeCore.keysymByName(it) }`
      */
     fun resolveWith(spec: String, native: ((String) -> Int)?): Int {
         val fast = resolve(spec)
         if (fast != VOID_SYMBOL) return fast
         if (native == null) return VOID_SYMBOL
-        return native(spec.trim())
+        val v = native(spec.trim())
+        return if (v == 0 || v == VOID_SYMBOL) VOID_SYMBOL else v
     }
 
     fun unicodeToKeysym(codepoint: Int): Int =
