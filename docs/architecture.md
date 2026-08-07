@@ -103,6 +103,38 @@ modifier 遮罩的實際值（**這些必須查表，憑印象一定寫錯**）�
 
 ---
 
+### 實測踩到的兩個坑
+
+**1. Compose 放進 InputMethodService 會直接閃退**
+
+```
+java.lang.IllegalStateException: ViewTreeLifecycleOwner not found from
+  android.widget.LinearLayout{... android:id/parentPanel}
+  at WindowRecomposer_androidKt.createLifecycleAwareWindowRecomposer
+```
+
+只把 `ViewTreeLifecycleOwner` / `ViewTreeViewModelStoreOwner` /
+`ViewTreeSavedStateRegistryOwner` 掛在自己的 `ComposeView` 上**不夠**。
+`setInputView()` 會把 view 塞進 IME 視窗的 `parentPanel`，而 Compose 建立
+window recomposer 是從**視窗的 decor view 往下找**，不是從 ComposeView 往上找。
+必須在 decor view 與 ComposeView 兩邊都掛。
+
+任何要在 IME 裡用 Compose 的人都會踩到，與本專案無關。
+
+**2. 鍵盤「畫出來了」不等於「可以打字了」**
+
+`dumpsys input_method` 的 `mIsInputViewShown=true` 只代表輸入視圖已顯示。
+若 IME 採非同步初始化（解壓資料、等待部署），此時鍵盤已經在畫面上、
+但 session 還不存在，注入的按鍵會**原封不動落到宿主**——實測冷啟動時
+輸入框拿到的是 `nihao1` 而不是「你好」。
+
+自動化驗證必須等一個**應用層的就緒訊號**，不能只看 `mIsInputViewShown`。
+`scripts/verify_rime_compose.sh` 的 `--ready-log <regex>` 就是為此而加。
+
+**實測數據**（API 35 x86_64 模擬器，冷啟動）：
+- 解壓 13MB / 54 個隨附資料檔：**84ms**
+- `rs_init` → 首次部署完成：**7.2 秒**（編譯三本詞庫加 5.7MB 語言模型）
+
 ## 3. iOS
 
 ### 宿主機制
