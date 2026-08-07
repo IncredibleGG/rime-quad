@@ -2,7 +2,12 @@
 #  numeric-symbol — 數字層與符號層
 #
 #  一份佈局檔可以容納多個層；層之間用 action "layer:<id>" 切換，
-#  回到英數佈局則用 "switch_layout:@primary"（跨檔切換）。
+#  離開本檔則用 "switch_layout:@previous"（跨檔切換）。
+#
+#  ⚠ 這裡**必須**是 @previous 而不是 @primary。本檔是從別的佈局「進來」的
+#     附屬佈局：九宮格的「符」鍵、注音的「?123」鍵都會落到這裡。用 @primary
+#     的話這顆 ABC 鍵一律把人送到 qwerty，而 qwerty 上沒有任何一顆鍵能回
+#     九宮格／注音 —— 使用者就出不去了。回到「我來的地方」才是這顆鍵的語義。
 #
 #  本檔同時示範 send 的兩種形態的分工：
 #    · send.keysym — ASCII 可由 X11 keysym 表達者一律走此路，
@@ -113,7 +118,7 @@ layers:
             label: "ABC"
             style: modifier
             width: 1.5
-            tap: "switch_layout:@primary"
+            tap: "switch_layout:@previous"
           - id: "lang"
             label_from: input_mode
             style: modifier
@@ -198,7 +203,7 @@ layers:
             label: "ABC"
             style: modifier
             width: 1.5
-            tap: "switch_layout:@primary"
+            tap: "switch_layout:@previous"
           - id: "lang"
             label_from: input_mode
             style: modifier

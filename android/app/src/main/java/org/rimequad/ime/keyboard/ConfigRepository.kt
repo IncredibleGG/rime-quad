@@ -32,7 +32,7 @@ import java.io.IOException
  * §2.4 的「主題套件」目錄形態（`sakura-dark/sakura-dark.yaml`）也支援，
  * 單檔形態優先。
  */
-class ConfigRepository(context: Context) {
+class ConfigRepository(context: Context) : LayoutRepository {
 
     private val assets: AssetManager = context.applicationContext.assets
 
@@ -48,7 +48,7 @@ class ConfigRepository(context: Context) {
     )
 
     /** 目前可見的所有佈局 id（三層搜尋路徑聯集，先出現者勝出）。 */
-    fun layoutIds(): List<String> = idsIn(LAYOUT_DIR)
+    override fun layoutIds(): List<String> = idsIn(LAYOUT_DIR)
 
     fun themeIds(): List<String> = idsIn(THEME_DIR)
 
@@ -66,17 +66,17 @@ class ConfigRepository(context: Context) {
         return out.toList()
     }
 
-    fun loadLayout(id: String): LoadResult<KeyboardLayout> =
+    override fun loadLayout(id: String): LoadResult<KeyboardLayout> =
         LayoutLoader.load(id, layouts, Platform.ANDROID, locale = LOCALE)
 
-    fun loadTheme(id: String): LoadResult<Theme> =
+    override fun loadTheme(id: String): LoadResult<Theme> =
         ThemeLoader.load(id, themes, Platform.ANDROID, locale = LOCALE)
 
     /**
      * 最後一道防線。§6.1 規定「不得顯示空白鍵盤」：即使隨附主題整份壞掉，
      * 附錄 A 的最小主題也保證載得起來，其餘一切走規範預設值。
      */
-    fun builtinFallbackTheme(): Theme =
+    override fun builtinFallbackTheme(): Theme =
         ThemeLoader.load("builtin-fallback", MapDocumentSource(mapOf(BUILTIN_ID to BUILTIN_THEME)))
             .value
             ?: error("附錄 A 的最小主題都載不起來，解析器壞了")

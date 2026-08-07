@@ -151,6 +151,13 @@ android {
     compileSdk = 35
     ndkVersion = "27.2.12479018"
 
+    testOptions {
+        // LayoutHost 是純狀態機,唯一的 android 相依是 android.util.Log。
+        // 預設的 "not mocked" 例外會讓它只能靠儀器測試守住,而「切出去回不來」
+        // 這類缺陷正是最該由 JVM 測試擋下的。
+        unitTests.isReturnDefaultValues = true
+    }
+
     defaultConfig {
         applicationId = rimeApplicationId
         minSdk = 26

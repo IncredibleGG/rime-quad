@@ -207,10 +207,12 @@ class LayoutParserTest {
         assertEquals(0x2C, comma.code)
         // '€' librime 沒有對應 keysym，直接上屏。
         assertEquals("€", (key(layout, "symbol", "euro").send as SendSpec.Text).text)
-        // 跨檔切換回主要英數佈局
+        // 跨檔切換回**來的地方**。這裡曾經是 @primary,而那是一個缺陷:
+        // 符號佈局是從九宮格／注音「進來」的附屬佈局,一律送回 qwerty 等於
+        // 把那些使用者鎖在 qwerty 上(qwerty 沒有任何一顆鍵能回九宮格)。
         val abc = key(layout, "numeric", "to_alpha")
         assertEquals(ActionVerb.SWITCH_LAYOUT, abc.tap!!.verb)
-        assertEquals("@primary", abc.tap!!.arg)
+        assertEquals("@previous", abc.tap!!.arg)
     }
 
     // ── 繼承與 key_patches ────────────────────────────────────────────────

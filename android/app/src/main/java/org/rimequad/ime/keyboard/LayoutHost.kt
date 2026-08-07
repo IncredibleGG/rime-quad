@@ -3,7 +3,23 @@ package org.rimequad.ime.keyboard
 import android.util.Log
 import org.rimequad.ime.theme.Appearance
 import org.rimequad.ime.theme.KeyboardLayout
+import org.rimequad.ime.theme.LoadResult
 import org.rimequad.ime.theme.Theme
+
+/**
+ * [LayoutHost] 對「佈局／主題從哪來」的唯一需求。
+ *
+ * 抽出這層介面**不是**為了多態 —— 正式路徑上永遠只有 [ConfigRepository] 一個
+ * 實作。是為了讓狀態機能在 JVM 單元測試裡跑：ConfigRepository 建構時就要
+ * `Context.getAssets()`，綁著它等於把 layer/layout 的切換規則鎖在儀器測試裡，
+ * 而「切出去回不來」這種缺陷正是純邏輯測試最該擋下的一類。
+ */
+interface LayoutRepository {
+    fun layoutIds(): List<String>
+    fun loadLayout(id: String): LoadResult<KeyboardLayout>
+    fun loadTheme(id: String): LoadResult<Theme>
+    fun builtinFallbackTheme(): Theme
+}
 
 /**
  * 「現在該畫哪一份佈局、哪一層、哪一個主題」的狀態機。
@@ -13,7 +29,7 @@ import org.rimequad.ime.theme.Theme
  * （規範 §9.1.1、§9.5 的 layer/switch_layout、§8.2 的深淺切換），
  * 之後 iOS 端可以照抄這個狀態機的行為。
  */
-class LayoutHost(private val repo: ConfigRepository) {
+class LayoutHost(private val repo: LayoutRepository) {
 
     private companion object {
         const val TAG = "LayoutHost"
@@ -69,12 +85,14 @@ class LayoutHost(private val repo: ConfigRepository) {
     }
 
     fun switchLayout(id: String): Boolean {
-        val resolved = when (id) {
-            "@primary" -> primaryLayoutId()
-            "@previous" -> previousLayoutId ?: primaryLayoutId()
-            else -> id
+        val resolved = resolveLayoutRef(id)
+        if (resolved == layout?.id) {
+            // 已經在目標佈局上。仍要把層歸位到 default_layer：使用者按的是
+            // 「回到英數／回到原鍵盤」，停在符號層上不算回到。
+            layout?.let { layerId = it.defaultLayer }
+            layerOnceReturn = null
+            return true
         }
-        if (resolved == layout?.id) return true
         val next = load(resolved) ?: return false
         previousLayoutId = layout?.id
         layout = next
@@ -82,6 +100,20 @@ class LayoutHost(private val repo: ConfigRepository) {
         layerOnceReturn = null
         Log.i(TAG, "佈局 → ${next.id}（層 $layerId）")
         return true
+    }
+
+    /**
+     * §9.5 的 `@primary` / `@previous`。
+     *
+     * `@previous` 的用途永遠是**離開目前這份佈局**（符號層的 ABC 鍵、
+     * 九宮格的返回鍵）。因此「指不回去」的兩種情況 —— 沒有上一份、或上一份
+     * 記成了自己 —— 都必須退到 primary，**不得**解析成當前佈局：那會讓
+     * 這顆鍵變成 no-op，使用者按了沒反應，就是「進得去出不來」。
+     */
+    private fun resolveLayoutRef(id: String): String = when (id) {
+        "@primary" -> primaryLayoutId()
+        "@previous" -> previousLayoutId?.takeIf { it != layout?.id } ?: primaryLayoutId()
+        else -> id
     }
 
     /**
@@ -100,7 +132,9 @@ class LayoutHost(private val repo: ConfigRepository) {
             .mapNotNull { load(it) }
             .firstOrNull { !it.forSchema.contains("*") && it.forSchema.contains(schemaId) }
         if (exact != null) {
-            if (exact.id != layout?.id) switchLayout(exact.id)
+            // 已經在對的佈局上時仍要把層歸位。使用者明確重選一次方案，語義是
+            // 「把鍵盤給我調回這個方案該有的樣子」，停在英數層上不算調回。
+            if (exact.id != layout?.id) switchLayout(exact.id) else resetToDefaultLayer()
             return
         }
         // 索引宣告的 recommended_layout。只有在該佈局真的載得起來時才採用，
@@ -147,6 +181,13 @@ class LayoutHost(private val repo: ConfigRepository) {
     fun setLayer(id: String) {
         if (layout?.layer(id) == null) return
         layerId = id
+        layerOnceReturn = null
+    }
+
+    /** 回到當前佈局的 `default_layer`。方案重選、佈局「已經在目標上」時的歸位。 */
+    fun resetToDefaultLayer() {
+        val l = layout ?: return
+        layerId = l.defaultLayer
         layerOnceReturn = null
     }
 

@@ -817,6 +817,12 @@ class RimeInputMethodService : InputMethodService() {
             return
         }
         Log.i(TAG, "方案 → $schemaId")
+        // 使用者從選單裡明確點了一個方案,語義是「把鍵盤換成這個方案該有的
+        // 樣子」——**即使他點的就是目前這個方案**。清掉 lastSchemaId 逼下一次
+        // 快照重跑 §9.1.1,否則 refreshFromRime 的「方案沒變就不動」會讓選單
+        // 失去救援能力:人卡在別的佈局上(例如九宮格按了 ABC 跳去 qwerty),
+        // 重選一次九宮格拼音卻什麼都不會發生。
+        lastSchemaId = ""
         refreshFromRime(consumeCommit = false)
     }
 
