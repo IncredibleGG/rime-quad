@@ -70,6 +70,15 @@ take rime-terra-pinyin terra_pinyin.schema.yaml terra_pinyin.dict.yaml
 # 注音方案有一組以筆畫反查的 reverse_lookup translator。
 take rime-stroke stroke.schema.yaml stroke.dict.yaml
 
+echo "=== 5.5 九宮格拼音（本專案自撰，非上游）==="
+# 九宮格是一套 RIME 方案，不是前端硬湊 —— Engine::ProcessKey 一次只吃一個
+# keycode，「一鍵三字母」的模糊性只能由 speller 的 algebra 與 prism 承擔。
+# 它共用 luna_pinyin 的詞典，只會多編一份 t9_pinyin.prism.bin。
+T9="$ROOT/core/data/schemas/t9_pinyin.schema.yaml"
+[ -f "$T9" ] || die "缺少 $T9"
+cp "$T9" "$OUT_SHARED/"
+note "t9_pinyin.schema.yaml（詞典共用 luna_pinyin，不需額外詞庫）"
+
 echo "=== 6. OpenCC 詞典 ==="
 cp "$OPENCC_INSTALL"/*.ocd2 "$OUT_SHARED/opencc/"
 cp "$OPENCC_INSTALL"/*.json "$OUT_SHARED/opencc/"
@@ -85,22 +94,24 @@ cat > "$OUT_USER/default.custom.yaml" <<'YAML'
 # 上游 rime-prelude 的 default.yaml 列出的方案多於本專案實際打包的，
 # 未打包的方案會在部署時報錯。這裡以 patch 覆寫 schema_list，
 # 只保留確實有詞庫的方案 —— 這樣上游 default.yaml 可以原封不動地更新。
+# t9_pinyin 是本專案自撰的九宮格方案，不在上游 default.yaml 裡，一併在此列入。
 patch:
   schema_list:
     - schema: luna_pinyin_tw    # 拼音（臺灣字形）
     - schema: bopomofo_tw       # 注音（臺灣字形）
     - schema: luna_pinyin       # 拼音（原版）
+    - schema: t9_pinyin         # 九宮格拼音（本專案自撰，共用 luna_pinyin 詞典）
 YAML
-note "default.custom.yaml（schema_list 限縮為實際打包的三個方案）"
+note "default.custom.yaml（schema_list 限縮為實際打包的四個方案）"
 
 # --------------------------------------------------------------- 完整性檢查 ---
 echo
 echo "=== 完整性檢查 ==="
 # 每個 schema_list 裡的方案都必須有對應的 .schema.yaml
-for s in luna_pinyin_tw bopomofo_tw luna_pinyin; do
+for s in luna_pinyin_tw bopomofo_tw luna_pinyin t9_pinyin; do
   [ -f "$OUT_SHARED/$s.schema.yaml" ] || die "schema_list 列了 $s 但沒有 $s.schema.yaml"
 done
-note "schema_list 的三個方案都有對應檔案"
+note "schema_list 的四個方案都有對應檔案"
 
 # 每個 schema 引用的 dictionary 都必須有對應的 .dict.yaml
 missing=0

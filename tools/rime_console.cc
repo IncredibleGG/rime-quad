@@ -12,6 +12,12 @@
 //   rime_console <shared_data_dir> <user_data_dir> <按鍵字母> [選字序號] [方案id]
 //   例：rime_console .../shared .../user nihao 1
 //       rime_console .../shared .../user su3cl3 1 bopomofo_tw
+//
+//   <按鍵字母> 傳一個單獨的 "-" 進入 deploy-only 模式：只做部署並列出可用
+//   方案，不建立組字流程、不送按鍵。方案市集的打包驗證
+//   （scripts/build_schema_store.sh）用它確認每個套件真的被 librime 部署過。
+//   該模式會額外印出機器可讀的 "[schema] <id>\t<name>" 與
+//   "[deploy-only] OK schemas=<n>"，其餘既有行為完全不變。
 
 #include "rime_shell.h"
 
@@ -71,7 +77,7 @@ int main(int argc, char** argv) {
   if (argc < 4) {
     std::fprintf(
         stderr,
-        "用法: %s <shared_data_dir> <user_data_dir> <按鍵字母> [選字序號] [方案id]\n",
+        "用法: %s <shared_data_dir> <user_data_dir> <按鍵字母|-> [選字序號] [方案id]\n",
         argv[0]);
     return 2;
   }
@@ -80,6 +86,9 @@ int main(int argc, char** argv) {
   const char* keys = argv[3];
   const int select_index = (argc > 4) ? std::atoi(argv[4]) : 1;
   const char* want_schema = (argc > 5) ? argv[5] : nullptr;
+  // "-" = 只部署、只列方案，不送按鍵。既有呼叫方一律傳真正的按鍵字串，
+  // 因此這個分支對它們永遠不成立，行為不變。
+  const bool deploy_only = (std::strcmp(keys, "-") == 0);
 
   std::printf("=== rime_shell 端到端測試 ===\n");
   std::printf("ABI version : %d\n", rs_abi_version());
@@ -139,12 +148,25 @@ int main(int argc, char** argv) {
   std::printf("\nsession 已建立\n");
 
   // 列出可用方案，順便驗證 rs_schema_list 的字串生命週期沒問題
-  const char* ids[16];
-  const char* names[16];
-  int32_t n = rs_schema_list(ids, names, 16);
+  // 容量從 16 放大到 64：市集裡有單一套件提供十餘個方案的情況
+  // （例如上古音方案集）。既有兩個測試案例只有 3 個方案，不受影響。
+  const char* ids[64];
+  const char* names[64];
+  int32_t n = rs_schema_list(ids, names, 64);
   std::printf("可用方案 %d 個:\n", n);
-  for (int32_t i = 0; i < n && i < 16; ++i)
+  for (int32_t i = 0; i < n && i < 64; ++i) {
     std::printf("    %s  (%s)\n", ids[i], names[i]);
+    std::printf("[schema] %s\t%s\n", ids[i], names[i]);  // 機器可讀
+  }
+
+  if (deploy_only) {
+    // 部署成功 + 方案列得出來，就是品質閘門要的證據。
+    std::printf("[deploy-only] OK schemas=%d\n", n);
+    rs_session_destroy(sess);
+    rs_finalize();
+    std::printf("\n=== 結束 ===\n");
+    return 0;
+  }
 
   if (want_schema) {
     std::printf("\n切換方案 -> %s\n", want_schema);

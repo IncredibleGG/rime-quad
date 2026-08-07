@@ -1,0 +1,133 @@
+# Rime schema
+# encoding: utf-8
+#
+# 九宮格拼音 —— 本專案自行撰寫，非改自任何既有方案。
+#
+# 為什麼九宮格要是一套 RIME 方案，而不是前端硬湊：
+#   Engine::ProcessKey 一次只吃一個 keycode，「ABC」這顆鍵送出去的必須是**單一**
+#   keysym。也就是說「一鍵三字母」的模糊性只能由 speller 的 algebra 與 prism 承擔，
+#   前端無從介入。前端能做的只有把九顆鍵畫出來、送對 keysym。
+#
+# 為什麼用字母 A/D/G/J/M/P/T/W 而不是社群慣用的數字 2–9：
+#   alphabet 只要含 0-9，數字鍵就會被 speller 吃掉，於是「打數字」這件事得再用
+#   key_binder 繞回來（rime-ice、萬象等方案都是這樣繞的）。改用每組的**首字母**
+#   當代表，數字鍵完全不進 speller，這個麻煩就不存在。
+#
+# 詞典共用 luna_pinyin.dict.yaml，不需要新詞庫；只會多編出一份 t9_pinyin.prism.bin。
+
+schema:
+  schema_id: t9_pinyin
+  name: 九宮格拼音
+  version: '1.0'
+  author:
+    - rime-quad 專案
+  description: |
+    手機九宮格鍵盤的拼音方案。
+
+    每顆鍵代表三到四個字母，以該組首字母為代表：
+      ABC→A  DEF→D  GHI→G  JKL→J  MNO→M  PQRS→P  TUV→T  WXYZ→W
+
+    例：「你好」= ni hao → M G ＋ G A M，共五鍵。
+
+    模糊性全部由 prism 展開，候選字由八股文語言模型排序。
+    另支援超級簡拼：每個音節只打第一鍵也能成句。
+
+switches:
+  - name: ascii_mode
+    reset: 0
+    states: [ 中文, 西文 ]
+    abbrev: [ 中, Ａ ]
+  - name: full_shape
+    states: [ 半角, 全角 ]
+  - options:
+      - zh_hant
+      - zh_hans
+      - zh_hant_hk
+      - zh_hant_tw
+    states:
+      - 傳統漢字
+      - 简化字
+      - 香港字形
+      - 臺灣字形
+    abbrev: [ 漢, 简, 港, 臺 ]
+  - name: ascii_punct
+    states: [ 。，, ．， ]
+
+engine:
+  processors:
+    - ascii_composer
+    - recognizer
+    - key_binder
+    - speller
+    - punctuator
+    - selector
+    - navigator
+    - express_editor
+  segmentors:
+    - ascii_segmentor
+    - matcher
+    - abc_segmentor
+    - punct_segmentor
+    - fallback_segmentor
+  translators:
+    - punct_translator
+    - script_translator
+  filters:
+    - simplifier@zh_hans
+    - simplifier@zh_hant_hk
+    - simplifier@zh_hant_tw
+    - uniquifier
+
+speller:
+  # 八顆字母鍵。刻意不含 0-9，數字鍵才不會被 speller 吃掉。
+  alphabet: 'ADGJMPTW'
+  delimiter: " '"
+  algebra:
+    # 1. 把詞典裡的拼音音節整個折成九宮格鍵位。
+    #    ü 在 luna_pinyin.dict.yaml 裡寫作 v，歸在 TUV → T。
+    - xlit|abcdefghijklmnopqrstuvwxyz|AAADDDGGGJJJMMMPPPPTTTWWWW|
+    # 2. 超級簡拼：每個音節只打第一鍵。
+    #    折疊後的音節都是 A/D/G/J/M/P/T/W，所以這條規則等同「取首鍵」。
+    - abbrev/^([ADGJMPTW]).+$/$1/
+
+translator:
+  dictionary: luna_pinyin
+  # 必須指定獨立的 prism：詞典雖然和朙月拼音同一本，拼寫規則完全不同，
+  # 兩者共用 prism 會互相覆蓋。
+  prism: t9_pinyin
+  spelling_hints: 5
+  # 折疊之後重碼極多，靠語言模型組句比逐字選有用得多。
+  enable_sentence: true
+  enable_user_dict: true
+
+punctuator:
+  import_preset: symbols
+
+key_binder:
+  import_preset: default
+
+recognizer:
+  import_preset: default
+  patterns:
+    punct: '^/([0-9]0?|[A-Za-z]+)$'
+
+zh_hans:
+  option_name: zh_hans
+  opencc_config: t2s.json
+  tips: none
+
+zh_hant_hk:
+  option_name: zh_hant_hk
+  opencc_config: t2hk.json
+  tips: none
+
+zh_hant_tw:
+  option_name: zh_hant_tw
+  opencc_config: t2tw.json
+  tips: none
+
+__patch:
+  # 使用八股文語言模型（rime-essay）
+  - grammar:/hant?
+  # 用家自選配置
+  - t9_pinyin.custom:/patch?

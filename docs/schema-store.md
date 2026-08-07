@@ -45,7 +45,11 @@
       "id": "luna-pinyin",                    // 穩定識別碼，kebab-case，不可變更
       "name": "朙月拼音",
       "category": "mandarin",
-      "description": "最常用的全拼方案，詞庫為繁體，可經 opencc 轉簡體。",
+      "description": "最通用的全拼，不知道選什麼就選這個。詞庫是繁體，可切簡體輸出。",
+
+      "recommended": true,                    // 選填。UI 把它排前面並加推薦標記
+      "recommended_layout": "qwerty",         // 軟鍵盤佈局，見下
+      "layout_note": "輸入碼為英文字母，QWERTY 佈局可用",   // 選填
 
       "upstream": "https://github.com/rime/rime-luna-pinyin",
       "upstream_commit": "a1b2c3d",           // 打包時的上游 commit
@@ -84,6 +88,58 @@
 - `categories[].hidden` 為 true 者不在市集列表顯示（例如 `prelude`、`essay` 這類
   只作為相依的基礎元件），但仍可被 `requires` 指名。
 
+- **`recommended_layout` 必填，行動端據此決定要顯示哪個軟鍵盤佈局。**
+  目前可用的值：
+
+  | 值 | 用於 | 判斷依據 |
+  |---|---|---|
+  | `qwerty` | 倉頡、五筆、粵拼、各式拼音等 | 方案的 `speller/alphabet` 是純 ASCII 字母 |
+  | `bopomofo-dachen` | 注音 | `speller/alphabet` 是大千鍵位 `1qaz2wsx…` |
+
+  這條不是裝飾。**注音用 QWERTY 佈局是打不出東西的** —— 使用者導入之後看到一個
+  按不出注音符號的鍵盤，比當初沒收錄這個方案更糟。
+
+- **`layout_note` 選填**，用來說明鍵面不理想的情況（例如某方案的 `speller/alphabet`
+  含 QWERTY 上沒有的字元，兩種佈局都不完全適用）。有這個欄位代表「需要新佈局」，
+  是待辦事項而不是缺陷；行動端可以照樣顯示，但應把說明傳達給使用者。
+
+- **`recommended` 選填**，每個分類標一到兩個。上游光拼音類就十幾個變體，一般
+  使用者分不出差別，分不出就等於選不下去。UI 應把推薦款排前面並加標記。
+
+- **`precompiled` 選填**，代表該套件的 zip 內附有 librime 已編譯好的 `build/` 產物，
+  行動端解壓後 **不需要在裝置上重編詞庫**。實測（模擬器，luna_pinyin + stroke）：
+
+  | 情況 | 部署耗時 |
+  |---|---|
+  | 只有原始檔，從頭編譯 | 5.08 s |
+  | 附帶 `build/` 產物 | **1.08 s** |
+  | 只附 `build/`、連 `.dict.yaml` 都不放 | 1.03 s |
+
+  格式如下，三個值都是**防呆用的**：
+
+  ```jsonc
+  "precompiled": {
+    "librime": "1.17.0",                // 產生產物時的 librime 版本
+    "table_format": "Rime::Table/4.0",  // 見 librime src/rime/dict/table.cc
+    "prism_format": "Rime::Prism/4.0"
+  }
+  ```
+
+  **行動端必須比對自己連結的 librime 版本與格式字串，不符就當作沒有預編譯產物、
+  照常在裝置上部署。** 理由是實測出來的失效模式：
+
+  - 產物版本不符**但原始檔還在** → librime 自己回退重編，部署照樣成功（實測 3.04 s）。
+  - 產物版本不符**且沒有原始檔** → 部署直接失敗，訊息是
+    `neither X.dict.yaml nor X.table.bin exists.`，使用者沒有自救途徑。
+
+  所以：**附預編譯產物的套件，原始的 `.dict.yaml` 必須一起附**（多佔的空間就是
+  保險費），除非行動端能保證版本一致。
+
+- **`description` 是寫給使用者「選」的，不是技術規格。** 寫「這適合誰」，
+  不要抄上游 README。
+  ❌「基於 Rime 的全拼輸入方案，支援模糊音與自定義短語」
+  ✅「最通用的全拼，不會拼音以外的輸入法就選這個。詞庫是繁體，可切簡體。」
+
 ---
 
 ## 2. 套件 zip 的內容規則
@@ -101,6 +157,20 @@ UPSTREAM.txt             ← 必須隨附：上游 URL、commit、打包時間
 
 - **不得包含目錄穿越路徑**（`..`、絕對路徑、符號連結）。打包端要保證，行動端仍要再驗一次。
 - opencc 詞典（`.ocd2`）由 APK 內建提供，套件**不應**重複打包。
+
+**「扁平」有兩個例外，只允許這兩個子目錄**（其餘一律視為違規）：
+
+| 子目錄 | 用途 | 何時出現 |
+|---|---|---|
+| `opencc/` | 上游自帶的 opencc 設定與詞表（`.json`／`.txt`，**不含 `.ocd2`**） | 方案用到 APK 沒內建的簡繁／emoji 轉換 |
+| `build/` | librime 預編譯產物（`*.table.bin`、`*.prism.bin`、`*.reverse.bin`） | 套件宣告了 `precompiled` |
+
+會有這兩個例外，是因為 librime 就是按這個目錄結構找檔案的：`opencc_config: t2hkf.json`
+只會到 `<data_dir>/opencc/` 底下找，攤平之後找不到；`build/` 同理。
+
+**這兩個例外不放寬任何安全規則** —— entry 名稱正規化後仍必須落在目標目錄內，
+仍然拒絕 `..`、絕對路徑與符號連結，白名單仍然只收
+`.yaml`／`.txt`／`.json`／`.bin`／`LICENSE` 這幾類。
 
 ---
 

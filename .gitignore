@@ -38,3 +38,10 @@ local.properties
 
 # publish_apk.sh 的暫存產物
 /release/
+
+# --- 方案市集伺服器側(scripts/build_schema_store.sh)---
+# 產物(zip 與 index.json)與中間產物(clone 下來的上游庫、staging、驗證結果)
+build/schema-store/
+# Python 位元碼（scripts/schema_store 的輔助模組）
+__pycache__/
+*.pyc

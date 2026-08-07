@@ -52,5 +52,84 @@ RIME 生態中的既有前端（Weasel、Squirrel、Trime、Hamster 等）多為
 OpenCC 的 `.ocd2` 詞典由本專案以 host 版 OpenCC 從其原始碼樹產生，
 授權同 OpenCC 本體（Apache-2.0）。
 
+### 九宮格拼音（`t9_pinyin.schema.yaml`）—— 本專案自撰，非第三方
+
+`core/data/schemas/t9_pinyin.schema.yaml` 由本專案撰寫，授權同本專案（GPL-3.0-or-later）。
+它共用 rime-luna-pinyin 的詞典，本身不含任何第三方資料。
+
+字母分組（ABC／DEF／GHI／JKL／MNO／PQRS／TUV／WXYZ）出自 **ITU-T E.161** 電話鍵盤
+標準，是通用事實而非任何人的著作。
+
+**沒有引用 [YuyanIme](https://github.com/gurecn/YuyanIme)（BSD-3）的任何程式碼、
+映射表或 algebra 規則。** 該專案只被當成「九宮格應為一套 RIME 方案而非前端硬湊」
+這個結論的旁證。若日後真的取用其內容，必須回到本檔案登記並保留其著作權聲明。
+
 **注意**：`core/data/shared` 與 `core/data/user` 是 `collect_data.sh` 的產物，
 不納入版本控制。修改資料組成請改腳本，不要手改產出目錄。
+
+---
+
+<!-- BEGIN schema-store (由 scripts/build_schema_store.sh 產生，勿手改) -->
+
+## 方案市集散布的第三方方案
+
+以下方案**不隨 APK 散布**，是使用者從方案市集（`scripts/build_schema_store.sh`
+產生的索引）自行選擇下載的。每一個套件的 zip 內都附有該上游庫原本的授權檔，
+`UPSTREAM.txt` 記錄來源 URL 與 commit，任何人都能自行重建、核對。
+
+**授權是逐一讀該庫的授權檔判定的，不是照抄 GitHub 的標記。**
+結果並非全部都是 LGPL-3：
+
+- `Apache-2.0`：1 個套件
+- `CC-BY-4.0 AND ODbL-1.0`：1 個套件
+- `GPL-3.0-only`：12 個套件
+- `GPL-3.0-or-later`：1 個套件
+- `LGPL-3.0-only`：13 個套件
+- `MIT`：1 個套件
+
+沒有授權檔的上游庫一律**不收錄** —— 無法確認散布條件，也無法滿足
+`docs/schema-store.md` §2「zip 必須附 LICENSE」。
+
+| 套件 | 名稱 | 分類 | 授權 | 打包時的 commit |
+|---|---|---|---|---|
+| [essay](https://github.com/rime/rime-essay) | 語料庫（繁） | 基礎元件 | `LGPL-3.0-only` | `e9b1a37` |
+| [essay-simp](https://github.com/rime/rime-essay-simp) | 語料庫（簡） | 基礎元件 | `LGPL-3.0-only` | `dc06d4c` |
+| [prelude](https://github.com/rime/rime-prelude) | 基礎配置 | 基礎元件 | `LGPL-3.0-only` | `082425e` |
+| [array](https://github.com/rime/rime-array) | 行列 30 | 華語 | `GPL-3.0-only` | `557dbe3` |
+| [bopomofo](https://github.com/rime/rime-bopomofo) | 注音 | 華語 | `LGPL-3.0-only` | `6085c9a` |
+| [c2h6-pinyin](https://github.com/lotem/rime-c2h6-pinyin) | 乙烷拼音 | 華語 | `LGPL-3.0-only` | `25497f1` |
+| [cangjie](https://github.com/rime/rime-cangjie) | 倉頡五代 | 華語 | `LGPL-3.0-only` | `52d90a1` |
+| [combo-pinyin](https://github.com/rime/rime-combo-pinyin) | 宮保拼音 | 華語 | `GPL-3.0-only` | `862894a` |
+| [double-pinyin](https://github.com/rime/rime-double-pinyin) | 雙拼 | 華語 | `GPL-3.0-only` | `01a1328` |
+| [luna-pinyin](https://github.com/rime/rime-luna-pinyin) | 朙月拼音 | 華語 | `LGPL-3.0-only` | `56b934b` |
+| [pinyin-simp](https://github.com/rime/rime-pinyin-simp) | 袖珍簡拼 | 華語 | `Apache-2.0` | `0c6861e` |
+| [quick](https://github.com/rime/rime-quick) | 速成 | 華語 | `LGPL-3.0-only` | `5dcdb9e` |
+| [radical-pinyin](https://github.com/mirtlecn/rime-radical-pinyin) | 部件拆字 | 華語 | `GPL-3.0-only` | `87e73d7` |
+| [scj](https://github.com/rime/rime-scj) | 快速倉頡 | 華語 | `GPL-3.0-or-later` | `cab5a08` |
+| [stenotype](https://github.com/rime/rime-stenotype) | 打字速記法 | 華語 | `GPL-3.0-only` | `bef9308` |
+| [stroke](https://github.com/rime/rime-stroke) | 五筆畫 | 華語 | `LGPL-3.0-only` | `3a4b0f4` |
+| [terra-pinyin](https://github.com/rime/rime-terra-pinyin) | 地球拼音 | 華語 | `LGPL-3.0-only` | `8a2c895` |
+| [wubi](https://github.com/rime/rime-wubi) | 五筆·86 | 華語 | `LGPL-3.0-only` | `152a0d3` |
+| [zhengma](https://github.com/lotem/rime-zhengma) | 鄭碼 | 華語 | `GPL-3.0-only` | `bc5873c` |
+| [zrm](https://github.com/bigshans/rime-zrm) | 自然碼＋輔助碼 | 華語 | `GPL-3.0-only` | `4ef9a1d` |
+| [ipa](https://github.com/rime/rime-ipa) | 國際音標 | 其他語系 | `LGPL-3.0-only` | `22b7171` |
+| [cantonese](https://github.com/rime/rime-cantonese) | 粵語拼音（粵拼） | 方言 | `CC-BY-4.0 AND ODbL-1.0` | `c99b16e` |
+| [dieghv](https://github.com/kahaani/dieghv) | 潮州話拼音 | 方言 | `GPL-3.0-only` | `1709bb7` |
+| [jyutping](https://github.com/rime/rime-jyutping) | 粵拼（傳統版） | 方言 | `LGPL-3.0-only` | `ee5e72b` |
+| [middle-chinese](https://github.com/rime/rime-middle-chinese) | 中古漢語拼音 | 方言 | `GPL-3.0-only` | `582e144` |
+| [naamning-jyutping](https://github.com/leimaau/naamning_jyutping) | 南寧白話 / 平話 | 方言 | `MIT` | `531c0c0` |
+| [sautungva](https://github.com/AlfredLouis00/rime-Sautungva) | 湘語·邵東話 | 方言 | `GPL-3.0-only` | `61081b1` |
+| [soutzoe](https://github.com/rime/rime-soutzoe) | 蘇州吳語 | 方言 | `GPL-3.0-only` | `beeaeca` |
+| [wugniu](https://github.com/rime/rime-wugniu) | 上海吳語 | 方言 | `GPL-3.0-only` | `2818f48` |
+
+### 與本專案授權的相容性
+
+本專案本體是 GPL-3.0-or-later。上表的方案資料是**執行期由使用者下載的資料**，
+不與本專案的程式碼連結，也不編進發行二進位檔，因此不構成衍生作品。
+即便如此，上表所有授權（LGPL-3.0、GPL-3.0、Apache-2.0、MIT、CC-BY-4.0、
+ODbL-1.0、CC0-1.0）都與 GPL-3 相容或更寬鬆，散布上沒有衝突。
+
+**CC-BY-4.0 與 ODbL-1.0（rime-cantonese）需要標示出處** —— 這一條由套件內附的
+`LICENSE` 與 `UPSTREAM.txt` 滿足，行動端在方案詳情頁也應顯示 `license` 欄位。
+
+<!-- END schema-store -->
