@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">RIME 輸入法</string>
+    <string name="ime_label">RIME 四端輸入法</string>
+    <string name="subtype_label_zh">RIME 中文</string>
+</resources>

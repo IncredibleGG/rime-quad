@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  輸入法宣告。
+  android:settingsActivity 指向的字串由 app/build.gradle.kts 的 resValue 產生，
+  值為 "<rime.namespace>.MainActivity"，改套件名時不必動這個檔。
+-->
+<input-method xmlns:android="http://schemas.android.com/apk/res/android"
+    android:settingsActivity="@string/ime_settings_activity"
+    android:isDefault="false"
+    android:supportsSwitchingToNextInputMethod="true">
+
+    <subtype
+        android:label="@string/subtype_label_zh"
+        android:imeSubtypeLocale="zh_CN"
+        android:imeSubtypeMode="keyboard"
+        android:isAsciiCapable="true" />
+
+</input-method>

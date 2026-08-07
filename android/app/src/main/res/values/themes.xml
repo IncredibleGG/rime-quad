@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 刻意只用平台主題，不引入 com.google.android.material，
+         UI 全部交給 Compose 畫。 -->
+    <style name="Theme.RimeQuad" parent="android:Theme.Material.Light.NoActionBar" />
+    <color name="ic_launcher_background">#0E3A5F</color>
+</resources>

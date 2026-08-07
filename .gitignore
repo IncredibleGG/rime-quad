@@ -23,3 +23,15 @@ third_party/*.log
 /core/data/shared/
 /core/data/user/
 /third_party/rime-data/
+
+# --- Android 專案(android/)---
+# Gradle 執行期狀態與建置產物
+.gradle/
+android/build/
+android/app/build/
+# externalNativeBuild 的 cmake/ninja 工作目錄
+android/app/.cxx/
+# Kotlin 編譯器的 session 目錄
+android/.kotlin/
+# 本機 SDK 路徑(sdk.dir),因機器而異,不入版控
+local.properties

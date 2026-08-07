@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 佔位圖示：一個鍵盤輪廓。之後由設計替換。 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M30,40h48a4,4 0 0 1 4,4v20a4,4 0 0 1 -4,4h-48a4,4 0 0 1 -4,-4v-20a4,4 0 0 1 4,-4zM30,44v20h48v-20z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M34,48h6v5h-6zM43,48h6v5h-6zM52,48h6v5h-6zM61,48h6v5h-6zM70,48h4v5h-4zM38,56h32v5h-32z" />
+</vector>
