@@ -205,6 +205,10 @@ jboolean nativeClearComposition(JNIEnv*, jclass, jlong s) {
   return rs_clear_composition(static_cast<rs_session>(s)) ? JNI_TRUE : JNI_FALSE;
 }
 
+jboolean nativeCommitComposition(JNIEnv*, jclass, jlong s) {
+  return rs_commit_composition(static_cast<rs_session>(s)) ? JNI_TRUE : JNI_FALSE;
+}
+
 jobjectArray nativeSnapshot(JNIEnv* env, jclass, jlong session) {
   rs_session s = static_cast<rs_session>(session);
   const rs_snapshot* snap = rs_snapshot_acquire(s);
@@ -357,6 +361,8 @@ const JNINativeMethod kMethods[] = {
     {"nativeChangePage", "(JZ)Z", reinterpret_cast<void*>(nativeChangePage)},
     {"nativeClearComposition", "(J)Z",
      reinterpret_cast<void*>(nativeClearComposition)},
+    {"nativeCommitComposition", "(J)Z",
+     reinterpret_cast<void*>(nativeCommitComposition)},
     {"nativeSnapshot", "(J)[Ljava/lang/Object;",
      reinterpret_cast<void*>(nativeSnapshot)},
     {"nativeSchemaList", "()[Ljava/lang/String;",

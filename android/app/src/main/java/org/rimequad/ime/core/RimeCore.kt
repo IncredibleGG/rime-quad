@@ -155,6 +155,16 @@ object RimeCore {
     fun clearComposition(session: Long): Boolean =
         libraryLoaded && session != INVALID_SESSION && nativeClearComposition(session)
 
+    /**
+     * 把目前組字內容直接上屏。
+     *
+     * 「選字」不等於「上屏」：拼音類方案選字當下就 commit，注音類方案選字後
+     * 仍停留在組字狀態，必須明確呼叫本函式。回傳 true 代表下一次 [snapshot]
+     * 的 commitText 會有內容。
+     */
+    fun commitComposition(session: Long): Boolean =
+        libraryLoaded && session != INVALID_SESSION && nativeCommitComposition(session)
+
     /* ───────────────── 快照 ───────────────── */
 
     /**
@@ -215,6 +225,7 @@ object RimeCore {
     private external fun nativeDeleteCandidate(session: Long, index: Int): Boolean
     private external fun nativeChangePage(session: Long, backward: Boolean): Boolean
     private external fun nativeClearComposition(session: Long): Boolean
+    private external fun nativeCommitComposition(session: Long): Boolean
     private external fun nativeSnapshot(session: Long): Array<Any?>?
     private external fun nativeSchemaList(): Array<String>?
     private external fun nativeSelectSchema(session: Long, schemaId: String): Boolean

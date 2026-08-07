@@ -130,7 +130,7 @@ class RimeInputMethodService : InputMethodService() {
 
             is KeyboardEvent.Candidate -> {
                 RimeCore.selectCandidate(session, event.indexOnPage)
-                refreshFromRime()
+                refreshFromRime(allowAutoCommit = true)
                 return
             }
 
@@ -200,7 +200,10 @@ class RimeInputMethodService : InputMethodService() {
      * [RimeCore.snapshot] 在 JNI 內就完成了 acquire → 複製 → release，
      * 這裡拿到的已經是純 Kotlin 值物件，可以安全存進 Compose state。
      */
-    private fun refreshFromRime(consumeCommit: Boolean = true) {
+    private fun refreshFromRime(
+        consumeCommit: Boolean = true,
+        allowAutoCommit: Boolean = false,
+    ) {
         val ic = currentInputConnection
         val snapshot = RimeCore.snapshot(session)
 
@@ -217,6 +220,22 @@ class RimeInputMethodService : InputMethodService() {
         if (consumeCommit) {
             snapshot.commitText?.takeIf { it.isNotEmpty() }?.let { text ->
                 ic?.commitText(text, 1)
+            }
+        }
+
+        // 「選字」不等於「上屏」：拼音類方案選字當下就 commit，注音類方案選完
+        // 仍停留在組字狀態（is_composing 為 true、preedit 已是選中文字），
+        // 要前端明確呼叫 rs_commit_composition 才會上屏。
+        //
+        // 只在「已無候選可選」時才自動確認，否則會誤砍掉多音節輸入中
+        // 「選了第一段、還要繼續選下一段」的正常流程。
+        if (allowAutoCommit &&
+            snapshot.status.isComposing &&
+            snapshot.menu.candidates.isEmpty()
+        ) {
+            if (RimeCore.commitComposition(session)) {
+                refreshFromRime(consumeCommit = true, allowAutoCommit = false)
+                return
             }
         }
 

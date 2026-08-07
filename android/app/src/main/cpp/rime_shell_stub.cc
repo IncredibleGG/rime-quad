@@ -255,6 +255,18 @@ bool rs_change_page(rs_session s, bool backward) {
   return true;
 }
 
+bool rs_commit_composition(rs_session s) {
+  StubSession* ss = resolve(s);
+  if (!ss) return false;
+  if (ss->input.empty()) return false;
+  ss->pending_commit = ss->input;
+  ss->input.clear();
+  ss->page_no = 0;
+  ss->highlighted = 0;
+  rebuild_candidates(ss);
+  return true;
+}
+
 bool rs_clear_composition(rs_session s) {
   StubSession* ss = resolve(s);
   if (!ss) return false;
