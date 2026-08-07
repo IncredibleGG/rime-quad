@@ -38,6 +38,12 @@ rs_deploy_callback g_deploy_cb = nullptr;
 void* g_deploy_userdata = nullptr;
 bool g_deploy_in_flight = false;
 
+// rs_setup 內的字串一律複製一份自己持有，這樣呼叫端（JNI local ref、Swift
+// 暫時字串）不必煩惱要保留到什麼時候。librime 是否複製 RimeTraits 的字串
+// 沒有明文保證，不要賭。
+std::string g_shared_dir, g_user_dir, g_log_dir, g_app_name;
+bool g_has_log_dir = false;
+
 // rs_last_error 的約定是「永不回傳 NULL」，且不同執行緒互不干擾。
 thread_local std::string t_last_error;
 
@@ -272,11 +278,18 @@ bool rs_init(const rs_setup* setup) {
     return false;
   }
 
+  g_shared_dir = setup->shared_data_dir;
+  g_user_dir = setup->user_data_dir;
+  g_has_log_dir = setup->log_dir != nullptr;
+  g_log_dir = g_has_log_dir ? setup->log_dir : "";
+  g_app_name = setup->app_name ? setup->app_name : "rime.shell";
+
   RIME_STRUCT(RimeTraits, traits);
-  traits.shared_data_dir = setup->shared_data_dir;
-  traits.user_data_dir = setup->user_data_dir;
-  traits.log_dir = setup->log_dir;  // NULL = 暫存目錄，"" = 只寫 stderr
-  traits.app_name = setup->app_name ? setup->app_name : "rime.shell";
+  traits.shared_data_dir = g_shared_dir.c_str();
+  traits.user_data_dir = g_user_dir.c_str();
+  // NULL = 暫存目錄，"" = 只寫 stderr。兩者語意不同，不可混為一談。
+  traits.log_dir = g_has_log_dir ? g_log_dir.c_str() : nullptr;
+  traits.app_name = g_app_name.c_str();
   traits.distribution_name = "Rime";
   traits.distribution_code_name = "rime-shell";
   traits.distribution_version = "0.1.0";

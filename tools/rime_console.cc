@@ -152,26 +152,59 @@ int main(int argc, char** argv) {
 
   dump("組字後", sess);
 
-  // 選字：用 rs_select_candidate（UI 點擊路徑），索引由 0 起算
-  std::printf("\n--- 選第 %d 個候選 ---\n", select_index);
-  if (!rs_select_candidate(sess, select_index - 1))
-    std::printf("  rs_select_candidate 回傳 false: %s\n", rs_last_error());
-
-  dump("選字後", sess);
-
-  // 方案差異：拼音在選字當下就上屏；注音選字後仍停留在組字狀態，
-  // 需要明確的確認動作。前端必須處理這個差異，不能假設選字＝上屏。
-  {
+  // ── 政策迴圈 ──────────────────────────────────────────────
+  //
+  // 這裡在驗證一條給四端前端共用的政策：
+  //
+  //     menu.count > 0            → 還有段落待選，選第一個候選
+  //     count == 0 && is_composing → 沒有東西可選了但仍在組字，明確 commit
+  //     count == 0 && !is_composing → 結束
+  //
+  // 關鍵問題是「選字後 is_composing 仍為 true」到底代表整句轉換完成待確認，
+  // 還是只選了第一段、後面還有。若是後者卻貿然 commit，會把後半段吃掉。
+  // 上面那條政策用 menu.count 來區分 —— 本迴圈就是要用多音節輸入把它壓測出來。
+  //
+  // 每一輪只 acquire 一次：acquire 會消費掉 commit，所以「動作 → 下一輪 acquire
+  // 讀結果」必須嚴格一對一，這也正是標頭要求的「每個輸入事件只可 acquire 一次」。
+  std::printf("\n--- 政策迴圈 ---\n");
+  std::string committed;
+  for (int step = 1; step <= 12; ++step) {
     const rs_snapshot* s = rs_snapshot_acquire(sess);
-    const bool still_composing = s && s->status.is_composing;
+    if (!s) { std::printf("  取不到快照: %s\n", rs_last_error()); break; }
+
+    const bool composing = s->status.is_composing;
+    const int count = s->menu.count;
+    std::printf("  [%d] composing=%d  候選=%d  preedit=\"%s\"", step,
+                (int)composing, count, s->composition.preedit);
+    if (count > 0) {
+      std::printf("  第一候選=\"%s\"", s->menu.items[0].text);
+    }
+    if (s->commit_text) {
+      std::printf("  >>> COMMIT:\"%s\"", s->commit_text);
+      committed += s->commit_text;
+    }
+    std::printf("\n");
     rs_snapshot_release(sess);
-    if (still_composing) {
-      std::printf("\n--- 選字後仍在組字，明確送出 commit ---\n");
-      if (!rs_commit_composition(sess))
-        std::printf("  rs_commit_composition 回傳 false: %s\n", rs_last_error());
-      dump("commit 後", sess);
+
+    if (count > 0) {
+      std::printf("      -> 還有候選，選第 %d 個\n", select_index);
+      if (!rs_select_candidate(sess, select_index - 1)) {
+        std::printf("      rs_select_candidate 失敗: %s\n", rs_last_error());
+        break;
+      }
+    } else if (composing) {
+      std::printf("      -> 無候選但仍在組字，明確 commit\n");
+      if (!rs_commit_composition(sess)) {
+        std::printf("      rs_commit_composition 失敗: %s\n", rs_last_error());
+        break;
+      }
+    } else {
+      std::printf("      -> 結束\n");
+      break;
     }
   }
+
+  std::printf("\n>>> COMMIT: \"%s\"\n", committed.c_str());
 
   rs_session_destroy(sess);
   rs_finalize();

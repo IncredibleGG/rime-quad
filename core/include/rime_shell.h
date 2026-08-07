@@ -14,10 +14,34 @@
  *   除 rs_deploy() 外，同一 session 的所有呼叫必須在同一執行緒上序列化。
  *   在行動端，這代表 IME 的主執行緒；不要從 UI 動畫執行緒呼叫。
  *
+ *   rs_deploy_callback **不會**在呼叫端的執行緒上被呼叫。它來自 librime 的
+ *   維護執行緒，而且可能在 rs_deploy() 早已返回之後才觸發。因此：
+ *     - Android：JNI 端必須 AttachCurrentThread，再切回主執行緒更新 UI。
+ *     - Apple / Windows：不可在回呼裡直接碰 UI，必須 dispatch 回主執行緒。
+ *   回呼期間本層不持有任何鎖，可以安全地在回呼裡再呼叫本層的其他函式。
+ *
  * ── 記憶體約定 ─────────────────────────────────────────────────
  *   rs_snapshot_acquire() 回傳的指標（含其中所有字串）由本層擁有，
  *   在同一 session 的下一次 acquire 或 release 之前有效。
  *   前端必須在該窗口內複製出自己需要的資料，不得長期持有。
+ *
+ *   連續呼叫 acquire 而不 release 是**合法**的：後一次的內容覆寫前一次，
+ *   前一次取得的指標即失效。
+ *
+ *   ⚠ commit 在 **acquire 當下**就被消費掉，不是在 release。
+ *   librime 的 get_commit 具有「取出即清除」語意，本層照實反映。
+ *   因此「先 acquire 看一眼狀態、做點事、再 acquire 讀結果」這種寫法會
+ *   **遺失第一次的 commit_text**。正確的紀律是：
+ *
+ *       每個輸入事件（按鍵／點選候選／確認）之後，只 acquire 一次，
+ *       在那一次就把 commit_text 處理掉。
+ *
+ * ── 版本協商 ───────────────────────────────────────────────────
+ *   rs_abi_version() 回傳的是**實作端（.so/.dylib/.dll）編譯時**的版本；
+ *   RIME_SHELL_ABI_VERSION 是**呼叫端編譯時**看到的版本。
+ *   兩者比對即可分辨是實作端過舊還是呼叫端過舊：
+ *
+ *       if (rs_abi_version() != RIME_SHELL_ABI_VERSION) 拒絕載入;
  */
 
 #ifndef RIME_SHELL_H_
@@ -55,7 +79,9 @@ typedef struct {
   const char* user_data_dir;
   /* 唯讀的隨附資料目錄：內建 schema 與詞庫。 */
   const char* shared_data_dir;
-  const char* log_dir;      /* 可為 NULL，代表不落地日誌 */
+  /* NULL = 交給 librime 決定（暫存目錄）；"" = 只寫 stderr，不落地。
+   * 兩者語意不同，不要混用。 */
+  const char* log_dir;
   const char* app_name;     /* 例："rime.android"，會寫進 librime 的 distribution 資訊 */
 
   rs_deploy_callback on_deploy; /* 可為 NULL */
@@ -64,7 +90,10 @@ typedef struct {
 
 int32_t rs_abi_version(void);
 
-/* 全域初始化，行程內只可呼叫一次。失敗時以 rs_last_error() 取得原因。 */
+/* 全域初始化，行程內只可呼叫一次。失敗時以 rs_last_error() 取得原因。
+ *
+ * rs_setup 內的所有字串都會被**複製**一份，本函式返回後呼叫端即可釋放。
+ * （JNI 的 GetStringUTFChars、Swift 的暫時字串都不必特地保留。） */
 bool rs_init(const rs_setup* setup);
 void rs_finalize(void);
 
@@ -124,7 +153,20 @@ bool rs_clear_composition(rs_session s);
  *     此時 status.is_composing 依然為 true，preedit 已是選中的文字，
  *     必須由前端明確呼叫本函式（或送出 Enter）才會真正上屏。
  *
- * 正確的前端邏輯是：選字後檢查 is_composing，仍為 true 時才呼叫本函式。
+ * ⚠ 光看 is_composing 是不夠的。它無法區分兩種狀態：
+ *     (a) 整句轉換完成，只差確認  → 該 commit
+ *     (b) 只選了第一段，後面還有  → **不該** commit，否則會吃掉後半段
+ *
+ * 判別條件是 menu.count。以下政策已在模擬器上用多音節輸入實測驗證：
+ *
+ *     menu.count > 0                  → 還有段落待選，繼續選字，不要 commit
+ *     count == 0 && is_composing      → 轉換完成待確認，呼叫本函式
+ *     count == 0 && !is_composing     → 已經結束，什麼都不用做
+ *
+ * 實測依據（見 tools/rime_console.cc）：部分選字之後，librime 一定會為
+ * 剩餘段落給出新的候選，所以 menu.count 必然大於 0。例如注音輸入
+ * ㄋㄧˇㄏㄠˇ 選了只覆蓋第一音節的「你」之後，preedit 變成「你ㄏㄠˇ」
+ * 且 count=4；要等到 count 歸零，整串才算轉換完畢。
  *
  * 回傳 true 代表有待讀取的 commit 文字，下一次 rs_snapshot_acquire()
  * 會在 commit_text 拿到它。
@@ -180,8 +222,15 @@ void rs_snapshot_release(rs_session s);
 
 /* ───────────────────────── Schema 與選項 ───────────────────── */
 
-/* 列舉已啟用的 schema。回傳個數；out 可為 NULL 以先查詢個數。
- * 字串生命週期同快照，前端須立即複製。 */
+/* 列舉已啟用的 schema。回傳總數（可能大於 capacity）；
+ * out_ids / out_names 可為 NULL，用來先查詢總數再配置空間。
+ *
+ * 字串的生命週期**與快照無關**，兩者各自使用獨立的緩衝：
+ * 這些指標在下一次 rs_schema_list() 之前有效，不受 rs_snapshot_acquire()
+ * 或 rs_snapshot_release() 影響，交錯呼叫也不會互相踩。
+ * 即便如此，仍建議取得後立刻複製。
+ *
+ * 本函式不吃 rs_session —— schema 清單是全域的，不屬於任何 session。 */
 int32_t rs_schema_list(const char** out_ids, const char** out_names, int32_t capacity);
 
 bool rs_select_schema(rs_session s, const char* schema_id);
