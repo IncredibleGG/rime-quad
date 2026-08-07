@@ -68,11 +68,25 @@ class UserPrefsTest {
             simplification = true,
             asciiPunct = false,
             spaceBehavior = SpaceBehavior.ALWAYS_SPACE,
+            autoCheckUpdate = false,
         )
         assertFalse(full.isPristine)
         assertEquals(full, UserPrefs.fromMap(full.toMap()))
         // 每一個欄位都必須真的有進映射，否則就是 toMap 漏了一個。
-        assertEquals(16, full.toMap().size)
+        assertEquals(17, full.toMap().size)
+    }
+
+    @Test
+    fun autoUpdateCheckIsUnsetByDefaultAndFalseIsARealValue() {
+        // 「未設定」在行為上等於開（消費端寫 `autoCheckUpdate ?: true`），
+        // 但不可以把 true 抄進偏好 —— 那會讓日後改預設值時，從沒動過這一項
+        // 的使用者被釘在舊預設上。
+        assertNull(UserPrefs().autoCheckUpdate)
+        assertTrue(UserPrefs().toMap()[UserPrefs.K_AUTO_CHECK_UPDATE] == null)
+
+        val off = UserPrefs(autoCheckUpdate = false)
+        assertEquals(setOf(UserPrefs.K_AUTO_CHECK_UPDATE), off.toMap().keys)
+        assertEquals(false, UserPrefs.fromMap(off.toMap()).autoCheckUpdate)
     }
 
     @Test

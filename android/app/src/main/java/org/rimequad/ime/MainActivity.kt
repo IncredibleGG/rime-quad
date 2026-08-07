@@ -7,13 +7,18 @@ import android.provider.Settings
 import android.view.inputmethod.InputMethodManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -30,7 +35,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -39,12 +46,14 @@ import androidx.compose.ui.unit.sp
 import org.rimequad.ime.core.RimeCore
 import org.rimequad.ime.core.RimeDeployStatus
 import org.rimequad.ime.core.RimeRuntime
+import org.rimequad.ime.prefs.PrefsStore
 import org.rimequad.ime.prefs.SettingsActivity
 import org.rimequad.ime.prefs.SettingsScreen
 import org.rimequad.ime.store.StoreController
 import org.rimequad.ime.store.StoreOverlays
 import org.rimequad.ime.store.StoreScreen
 import org.rimequad.ime.ui.RimeTheme
+import org.rimequad.ime.update.UpdateController
 
 /**
  * 設定／診斷畫面，同時也是 method.xml 指定的 settingsActivity。
@@ -57,6 +66,10 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         RimeRuntime.start(applicationContext)
         val store = StoreController(applicationContext)
+        // 啟動時的靜默更新檢查。沒網路、被節流、使用者關掉了 —— 三種情形
+        // 都只是安靜地什麼都不做，絕不打斷他。結果只會變成設定分頁上的紅點。
+        val updates = UpdateController.get(applicationContext)
+        updates.autoCheckOnStart(PrefsStore.get(applicationContext).current.autoCheckUpdate)
         setContent {
             RimeTheme {
                 // SettingsActivity 的「方案管理」按鈕會帶著這個 extra 進來,
@@ -88,7 +101,23 @@ class MainActivity : ComponentActivity() {
                             Tab(
                                 selected = tab == 2,
                                 onClick = { tab = 2 },
-                                text = { Text("設定") },
+                                text = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text("設定")
+                                        // 有新版本時分頁標題旁邊點一顆紅點。
+                                        // 這是整個 app 唯一會主動冒出來的更新提示 ——
+                                        // 不彈窗、不發通知，輸入法被打斷特別惹人厭。
+                                        if (updates.hasUpdate) {
+                                            Spacer(Modifier.size(6.dp))
+                                            Spacer(
+                                                Modifier
+                                                    .size(8.dp)
+                                                    .clip(CircleShape)
+                                                    .background(MaterialTheme.colorScheme.error)
+                                            )
+                                        }
+                                    }
+                                },
                             )
                         }
                         Box(modifier = Modifier.padding(top = 12.dp)) {
@@ -116,6 +145,16 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /**
+     * 使用者是離開 app 去系統設定開「安裝未知的應用程式」的，回來時
+     * Compose 不會自己知道那個開關變了。在這裡推一下，畫面才不會一直
+     * 停在「尚未授權」。
+     */
+    override fun onResume() {
+        super.onResume()
+        UpdateController.get(applicationContext).refreshInstallPermission()
     }
 }
 

@@ -15,6 +15,7 @@ import androidx.compose.ui.unit.dp
 import org.rimequad.ime.MainActivity
 import org.rimequad.ime.core.RimeRuntime
 import org.rimequad.ime.ui.RimeTheme
+import org.rimequad.ime.update.UpdateController
 
 /**
  * 設定畫面的獨立入口。
@@ -30,6 +31,9 @@ class SettingsActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // 設定畫面要顯示診斷資訊與可用主題，這兩者都依賴資料目錄已備妥。
         RimeRuntime.start(applicationContext)
+        // 從軟鍵盤的齒輪進來也算一次「啟動」。靜默、被節流時什麼都不做。
+        UpdateController.get(applicationContext)
+            .autoCheckOnStart(PrefsStore.get(applicationContext).current.autoCheckUpdate)
         setContent {
             RimeTheme {
                 Scaffold { inset ->
@@ -59,6 +63,12 @@ class SettingsActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /** 見 MainActivity.onResume 的說明。 */
+    override fun onResume() {
+        super.onResume()
+        UpdateController.get(applicationContext).refreshInstallPermission()
     }
 
     companion object {

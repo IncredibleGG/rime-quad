@@ -91,6 +91,18 @@ data class UserPrefs(
 
     /** 空白鍵行為。⚠ 規範缺口：主題與佈局格式都沒有描述這件事。 */
     val spaceBehavior: SpaceBehavior? = null,
+
+    /* ─────────────── 更新 ─────────────── */
+
+    /**
+     * 啟動時自動檢查更新。`null` = 未設定，行為上等同**開**。
+     *
+     * 為什麼「未設定」不寫成 `true`：這一檔的第一原則就是「不把預設值抄一份
+     * 進偏好」。日後若判定預設該改成關（例如改用系統的排程檢查），
+     * 存了 `true` 的使用者會被永遠釘在舊預設上，而且他從沒動過這一項。
+     * 消費端一律寫 `autoCheckUpdate ?: true`。
+     */
+    val autoCheckUpdate: Boolean? = null,
 ) {
 
     /** true = 使用者一項都沒設定過，全部走主題檔的值。 */
@@ -120,6 +132,7 @@ data class UserPrefs(
         simplification?.let { m[K_SIMPLIFICATION] = it }
         asciiPunct?.let { m[K_ASCII_PUNCT] = it }
         spaceBehavior?.let { m[K_SPACE] = it.name }
+        autoCheckUpdate?.let { m[K_AUTO_CHECK_UPDATE] = it }
         return m
     }
 
@@ -140,6 +153,7 @@ data class UserPrefs(
         const val K_SIMPLIFICATION = "opt_simplification"
         const val K_ASCII_PUNCT = "opt_ascii_punct"
         const val K_SPACE = "space_behavior"
+        const val K_AUTO_CHECK_UPDATE = "auto_check_update"
 
         /**
          * 反序列化。**缺席的 key 一律留 null**，不得填入任何預設值 ——
@@ -165,6 +179,7 @@ data class UserPrefs(
             simplification = m.bool(K_SIMPLIFICATION),
             asciiPunct = m.bool(K_ASCII_PUNCT),
             spaceBehavior = m.enum(K_SPACE, SpaceBehavior.entries),
+            autoCheckUpdate = m.bool(K_AUTO_CHECK_UPDATE),
         )
 
         private fun Map<String, Any?>.float(k: String): Float? = (this[k] as? Number)?.toFloat()

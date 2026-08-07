@@ -45,3 +45,16 @@ build/schema-store/
 # Python 位元碼（scripts/schema_store 的輔助模組）
 __pycache__/
 *.pyc
+
+# --- 簽章金鑰（絕對不可進版控）---
+# 正式 keystore 與密碼放在 repo 之外的 /home/lc/rime-signing/（見該目錄的
+# README.md）。這幾條是第二道防線：萬一有人把它們複製進來，git 也不收。
+# 弄丟金鑰 = 所有使用者無法升級，只能解除安裝重裝並失去詞典與設定。
+*.jks
+*.keystore
+signing.properties
+signing-lineage.bin
+ks-pass.txt
+key-pass.txt
+CREDENTIALS.txt
+/rime-signing/

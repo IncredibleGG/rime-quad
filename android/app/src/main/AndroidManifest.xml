@@ -5,6 +5,15 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!--
+        應用內更新。本專案是側載發布(不經 Google Play),升級只能自己來。
+
+        光有這個權限不夠:API 26 起「安裝未知的應用程式」是逐 app 的授權,
+        使用者必須自己去系統設定打開,只能引導不能用對話框要
+        (見 UpdateInstaller.openUnknownSourcesSettings)。
+    -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
@@ -33,6 +42,18 @@
             android:name=".prefs.SettingsActivity"
             android:exported="false"
             android:label="@string/app_name" />
+
+        <!--
+            PackageInstaller 的狀態回報。
+
+            必須是 manifest 宣告的靜態 receiver:安裝自己這個 app 的過程中,
+            系統會把我們的行程收掉,動態註冊的 receiver 會一起消失,
+            結果是永遠收不到成功或失敗的通知。
+            exported=false:只有系統會用我們自己給出去的 PendingIntent 送進來。
+        -->
+        <receiver
+            android:name=".update.UpdateInstallReceiver"
+            android:exported="false" />
 
         <!-- 輸入法服務宣告 -->
         <service

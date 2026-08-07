@@ -43,6 +43,8 @@ import org.rimequad.ime.keyboard.ConfigRepository
 import org.rimequad.ime.theme.HapticStrength
 import org.rimequad.ime.theme.HintPosition
 import org.rimequad.ime.theme.Theme
+import org.rimequad.ime.update.UpdateController
+import org.rimequad.ime.update.UpdateSection
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -81,11 +83,25 @@ fun SettingsScreen(
         scope.launch { store.update(block) }
     }
 
+    val updates = remember { UpdateController.get(context) }
+
     LazyColumn(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(10.dp),
         contentPadding = PaddingValues(bottom = 32.dp),
     ) {
+
+        /* ─────────────────────────── 更新 ─────────────────────────── */
+
+        // 排在最前面：有新版本時那顆小紅點必須第一眼看得到，往下捲三頁才
+        // 發現的提示等於沒有提示。沒有新版本時它也只是一張矮卡片。
+        item {
+            UpdateSection(
+                controller = updates,
+                autoCheck = prefs.autoCheckUpdate,
+                onAutoCheckChange = { v -> edit { p -> p.copy(autoCheckUpdate = v) } },
+            )
+        }
 
         /* ─────────────────────────── 鍵盤 ─────────────────────────── */
 
