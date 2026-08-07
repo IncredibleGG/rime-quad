@@ -38,7 +38,12 @@ data class KeyboardUiState(
     val layerId: String = "",
     /** 已啟用的方案清單（rs_schema_list）。 */
     val schemas: List<RimeSchema> = emptyList(),
-    /** 方案選單是否展開。 */
+    /**
+     * 攤平後的鍵盤類型清單（方案 × 佈局），依語言分組。見 [KeyboardTypes]。
+     * 在 IME service 側算好，因為只有那裡拿得到 [LayoutHost] 與方案清單。
+     */
+    val keyboardTypes: List<KeyboardTypeGroup> = emptyList(),
+    /** 鍵盤類型選單是否展開。 */
     val schemaPickerOpen: Boolean = false,
     /** 主題／佈局載入時累積的警示，顯示在候選列供除錯。 */
     val configProblem: String? = null,
@@ -60,5 +65,11 @@ sealed interface KeyboardEvent {
 
     data object OpenSchemaPicker : KeyboardEvent
     data object CloseSchemaPicker : KeyboardEvent
-    data class SelectSchema(val id: String) : KeyboardEvent
+
+    /**
+     * 使用者在鍵盤類型選單裡選了一項：方案與佈局要**同時**換過去。
+     *
+     * `layoutId` 為 null = 這個方案沒有可用佈局，只換方案，佈局交給 §9.1.1。
+     */
+    data class SelectKeyboardType(val schemaId: String, val layoutId: String?) : KeyboardEvent
 }

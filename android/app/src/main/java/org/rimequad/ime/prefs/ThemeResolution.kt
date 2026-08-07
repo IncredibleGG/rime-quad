@@ -14,6 +14,45 @@ import org.rimequad.ime.theme.Theme
  * 沒地方寫。
  */
 
+/**
+ * 使用者從主題清單點選一份主題。**這是「點了沒反應」那個缺陷的修補處。**
+ *
+ * ── 缺陷 ────────────────────────────────────────────────────────────────
+ * [applyThemePrefs] 刻意偏離規範 §8.2 第 1 條（見該函式），使用者釘了主題
+ * 但「深淺色」仍停在「跟隨系統」時，會跳到主題的 `counterpart`。在只有
+ * `default` / `sakura` 兩對主題時這偏離很合理；但清單裡列的是**個別的檔案**
+ * （`intl-ios-dark`、`intl-ios-light`…），於是白天點 `intl-ios-dark` 的結果是
+ * 畫面**完全沒變** —— 系統是淺色，counterpart 立刻把它換回 `intl-ios-light`。
+ * 使用者要再去把「深淺色」改成「固定深色」才生效，而畫面上沒有任何線索
+ * 告訴他這件事。國際佈局那條線一口氣加了三對淺深主題之後，清單裡有一半
+ * 的項目點下去像壞掉。
+ *
+ * ── 修法 ────────────────────────────────────────────────────────────────
+ * 點 `-dark` 就是在說「我要深色」。所以選主題時，把 [UserPrefs.appearanceMode]
+ * 同步設成該主題自己宣告的 `appearance`。這不影響跟隨系統的使用者 ——
+ * 他們根本不會去點某一份特定的深色主題。
+ *
+ * 取消指定（`themeId = null`）時把 `appearanceMode` 一起清掉：那個值本來就是
+ * 選主題時**順帶**設的，不是使用者自己去撥的；留著它會變成一個沒人記得自己
+ * 設過、卻擋著系統深淺切換的幽靈設定。使用者若真的要固定深色，「深淺色」
+ * 那一列隨時撥得動，而且撥完不會被這裡蓋掉。
+ *
+ * `appearanceOf` 是查詢函式而非 repo，好讓這段邏輯能純測。查不到（主題載
+ * 不起來）時**只改 themeId**，不動深淺 —— 猜一個方向比不猜更糟。
+ */
+fun UserPrefs.withThemeSelection(
+    themeId: String?,
+    appearanceOf: (String) -> Appearance?,
+): UserPrefs {
+    if (themeId == null) return copy(themeId = null, appearanceMode = null)
+    val appearance = appearanceOf(themeId) ?: return copy(themeId = themeId)
+    return copy(
+        themeId = themeId,
+        appearanceMode =
+            if (appearance == Appearance.DARK) AppearanceMode.DARK else AppearanceMode.LIGHT,
+    )
+}
+
 /** [UserPrefs.appearanceMode] + 系統外觀 → 這一刻想要深色嗎。 */
 fun wantsDark(prefs: UserPrefs, systemDark: Boolean): Boolean =
     when (prefs.appearanceMode ?: AppearanceMode.FOLLOW_SYSTEM) {

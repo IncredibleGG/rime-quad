@@ -86,7 +86,12 @@ class ConfigRepository(context: Context) : LayoutRepository {
         private const val LAYOUT_DIR = "layouts"
         private const val THEME_DIR = "themes"
         private const val SUFFIX = ".yaml"
-        private const val LOCALE = "zh-Hant-TW"
+
+        /**
+         * §4.9 的在地化查詢語系。公開是因為 UI 側（鍵盤類型選單）也要用同一個
+         * 值解析佈局名 —— 兩處各寫一份字面常數，遲早會變成兩種語言。
+         */
+        const val LOCALE = "zh-Hant-TW"
 
         private const val BUILTIN_ID = "builtin-fallback"
         private val BUILTIN_THEME = """

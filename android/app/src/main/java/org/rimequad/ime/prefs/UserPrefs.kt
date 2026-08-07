@@ -75,6 +75,20 @@ data class UserPrefs(
     /** 深淺色策略。`null` = 跟隨系統（§8.2 執行期規則第 2 條）。 */
     val appearanceMode: AppearanceMode? = null,
 
+    /**
+     * 使用者在鍵盤類型選單裡**明確挑過**的佈局，`schema id → layout id`。
+     *
+     * 規範 §9.1.1 的 SHOULD：「使用者若曾為當前 schema 明確指定過佈局，
+     * 實作**應**記住該選擇並跳過第 1 步」。少了持久化，這條 SHOULD 只在
+     * 本次輸入法行程內成立 —— 使用者換個 app、或系統回收了 IME 之後，
+     * 他挑的九宮格就悄悄變回全鍵盤。
+     *
+     * 存成單一字串而不是拆成多個 key：DataStore 的 key 是靜態宣告的，
+     * 「每個方案一個 key」需要動態 key，而且刪方案時會留下孤兒。
+     * 編解碼見 [encodeLayoutPins] / [decodeLayoutPins]。
+     */
+    val layoutPins: String? = null,
+
     /** 候選列字級倍率，套在 `candidates.bar` 的 label/text/comment size 與 bar 高度上。 */
     val candidateSizeScale: Float? = null,
 
@@ -127,6 +141,7 @@ data class UserPrefs(
         hints?.let { m[K_HINTS] = it.name }
         themeId?.let { m[K_THEME_ID] = it }
         appearanceMode?.let { m[K_APPEARANCE] = it.name }
+        layoutPins?.let { m[K_LAYOUT_PINS] = it }
         candidateSizeScale?.let { m[K_CANDIDATE_SIZE] = it }
         candidateCount?.let { m[K_CANDIDATE_COUNT] = it }
         simplification?.let { m[K_SIMPLIFICATION] = it }
@@ -148,6 +163,7 @@ data class UserPrefs(
         const val K_HINTS = "key_hints"
         const val K_THEME_ID = "theme_id"
         const val K_APPEARANCE = "appearance_mode"
+        const val K_LAYOUT_PINS = "layout_pins"
         const val K_CANDIDATE_SIZE = "candidate_size_scale"
         const val K_CANDIDATE_COUNT = "candidate_count"
         const val K_SIMPLIFICATION = "opt_simplification"
@@ -174,6 +190,7 @@ data class UserPrefs(
             hints = m.enum(K_HINTS, HintVisibility.entries),
             themeId = m[K_THEME_ID] as? String,
             appearanceMode = m.enum(K_APPEARANCE, AppearanceMode.entries),
+            layoutPins = (m[K_LAYOUT_PINS] as? String)?.takeIf { it.isNotEmpty() },
             candidateSizeScale = m.float(K_CANDIDATE_SIZE),
             candidateCount = m.int(K_CANDIDATE_COUNT),
             simplification = m.bool(K_SIMPLIFICATION),
@@ -181,6 +198,43 @@ data class UserPrefs(
             spaceBehavior = m.enum(K_SPACE, SpaceBehavior.entries),
             autoCheckUpdate = m.bool(K_AUTO_CHECK_UPDATE),
         )
+
+        /* ────────────── [layoutPins] 的編解碼 ────────────── */
+
+        private const val PIN_SEP = ';'
+        private const val PIN_EQ = '='
+
+        /**
+         * `schema=layout;schema=layout` —— 刻意用最笨的格式。
+         *
+         * schema id 與 layout id 都是檔名等級的識別字（`luna_pinyin`、
+         * `cn-t9-pinyin`），不含 `;` 或 `=`。真的含了就**丟掉那一筆**：
+         * 寧可少記一個偏好，也不要寫出一個解回來會錯位的字串。
+         *
+         * 空映射回 `null` 而不是空字串 —— 「使用者一項都沒指定過」在本檔的
+         * 語義裡就是「這個 key 不存在」。
+         */
+        fun encodeLayoutPins(pins: Map<String, String>): String? {
+            val safe = pins.entries.filter { (k, v) ->
+                k.isNotEmpty() && v.isNotEmpty() &&
+                    !k.contains(PIN_SEP) && !k.contains(PIN_EQ) &&
+                    !v.contains(PIN_SEP) && !v.contains(PIN_EQ)
+            }
+            if (safe.isEmpty()) return null
+            return safe.joinToString(PIN_SEP.toString()) { "${it.key}$PIN_EQ${it.value}" }
+        }
+
+        /** 解不開的片段一律略過，不讓一筆壞資料把整份指定弄丟。 */
+        fun decodeLayoutPins(encoded: String?): Map<String, String> {
+            if (encoded.isNullOrEmpty()) return emptyMap()
+            val out = LinkedHashMap<String, String>()
+            for (part in encoded.split(PIN_SEP)) {
+                val i = part.indexOf(PIN_EQ)
+                if (i <= 0 || i == part.length - 1) continue
+                out[part.substring(0, i)] = part.substring(i + 1)
+            }
+            return out
+        }
 
         private fun Map<String, Any?>.float(k: String): Float? = (this[k] as? Number)?.toFloat()
         private fun Map<String, Any?>.int(k: String): Int? = (this[k] as? Number)?.toInt()

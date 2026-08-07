@@ -206,11 +206,19 @@ fun SettingsScreen(
             Section("外觀") {
                 ChoiceRow(
                     title = "主題",
-                    subtitle = "目前生效：${base.id}（${base.name.get("zh-Hant")}）",
+                    subtitle = "目前生效：${base.id}（${base.name.get("zh-Hant")}）。" +
+                        "點選深色／淺色主題會一併把下面的「深淺色」設成對應的一邊。",
                     options = themeIds.map { it to it },
                     selected = prefs.themeId,
                     unsetLabel = "預設",
-                    onChange = { edit { p -> p.copy(themeId = it) } },
+                    // 點 `-dark` 就是在說「我要深色」。見 [withThemeSelection]：
+                    // 少了這一步，白天點深色主題會被 counterpart 立刻換回淺色，
+                    // 使用者看到的是「我點了它沒反應」。
+                    onChange = { id ->
+                        edit { p ->
+                            p.withThemeSelection(id) { repo.loadTheme(it).value?.appearance }
+                        }
+                    },
                 )
                 ChoiceRow(
                     title = "深淺色",

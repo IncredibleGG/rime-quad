@@ -74,6 +74,21 @@ class LayoutHost(private val repo: LayoutRepository) {
     /** `layer_once:<id>` 送出一個鍵之後要回到的層；null 代表沒有待回彈的層。 */
     private var layerOnceReturn: String? = null
 
+    /**
+     * §9.1.1 的 SHOULD：使用者**明確指定**過的佈局（schema id → layout id）。
+     *
+     * > 使用者若曾為當前 schema 明確指定過佈局，實作 **應** 記住該選擇並跳過
+     * > 第 1 步。自動切換是便利機制，不該覆蓋使用者的明示意圖。
+     *
+     * 具體的事故長這樣：使用者在鍵盤類型選單裡替朙月拼音挑了九宮格，然後切去
+     * 注音打了幾個字，再切回朙月拼音 —— 若沒有這張表，`for_schema` 的精確命中
+     * 會把他丟回全鍵盤，而他剛剛才親手選過九宮格。自動規則在這種時候應該閉嘴。
+     *
+     * 只記「明確選擇」，不記自動切換的結果：後者會讓這張表變成一份無人請求的
+     * 快取，使用者永遠停在他第一次碰巧看到的那份佈局上。
+     */
+    private val pinnedLayouts = LinkedHashMap<String, String>()
+
     /** 使用者明確選定的主題 id；null = 跟隨系統（§8.2 執行期規則第 2 條）。 */
     private var pinnedThemeId: String? = null
 
@@ -124,9 +139,25 @@ class LayoutHost(private val repo: LayoutRepository) {
      * 而 `qwerty` 是 `"*"`（不算命中），於是使用者會停在注音鍵盤上打拼音。
      * 這裡多一條補救：**當前佈局若不適用於新方案，退回 primary**。
      * 這是規範的缺口，已記在回報中。
+     *
+     * 最前面還有一步：使用者明確指定過的佈局勝過整套自動規則（§9.1.1 的
+     * SHOULD，見 [pinnedLayouts]）。
      */
     fun applySchema(schemaId: String) {
         if (schemaId.isEmpty()) return
+        // 第 0 步：使用者的明示意圖。放在精確命中之前，正是規範要的
+        //「記住該選擇並跳過第 1 步」。
+        pinnedLayouts[schemaId]?.let { pinned ->
+            if (load(pinned) != null) {
+                if (pinned != layout?.id) switchLayout(pinned) else resetToDefaultLayer()
+                Log.i(TAG, "方案 $schemaId 沿用使用者指定的佈局 $pinned")
+                return
+            }
+            // 佈局被刪掉或改壞了。留著這筆會讓使用者每次切回這個方案都撞一次
+            // 載入失敗，不如丟掉、退回自動規則。
+            Log.w(TAG, "使用者為 $schemaId 指定的佈局 $pinned 載不起來，改走自動規則")
+            pinnedLayouts.remove(schemaId)
+        }
         val exact = repo.layoutIds()
             .asSequence()
             .mapNotNull { load(it) }
@@ -152,6 +183,49 @@ class LayoutHost(private val repo: LayoutRepository) {
         if (current != null && current.matchesSchema(schemaId)) return
         switchLayout("@primary")
     }
+
+    /* ────────────────── 使用者明確指定的佈局（§9.1.1 SHOULD）────────────── */
+
+    /**
+     * 記下「使用者為這個方案挑了這份佈局」。
+     *
+     * `layoutId` 傳 `null` = 忘掉這筆，回到自動規則。這條路必須留著：
+     * 一個記得住但忘不掉的偏好就是另一種「進得去出不來」。
+     */
+    fun pinLayout(schemaId: String, layoutId: String?) {
+        if (schemaId.isEmpty()) return
+        if (layoutId == null) pinnedLayouts.remove(schemaId) else pinnedLayouts[schemaId] = layoutId
+    }
+
+    fun pinnedLayoutFor(schemaId: String): String? = pinnedLayouts[schemaId]
+
+    /** 供偏好層持久化用的快照。 */
+    fun pinnedLayouts(): Map<String, String> = LinkedHashMap(pinnedLayouts)
+
+    /** 由偏好層在啟動時（與偏好變更時）灌回來。 */
+    fun setPinnedLayouts(pins: Map<String, String>) {
+        pinnedLayouts.clear()
+        pinnedLayouts.putAll(pins)
+    }
+
+    /**
+     * 目前搜尋路徑上所有佈局的摘要，供鍵盤類型選單使用（見 [KeyboardTypes]）。
+     *
+     * 載不起來的佈局直接不列：選單裡放一個點下去會壞掉的項目比沒有更糟。
+     */
+    fun layoutBriefs(locale: String): List<LayoutBrief> =
+        repo.layoutIds().mapNotNull { id ->
+            load(id)?.let {
+                LayoutBrief(
+                    id = it.id,
+                    name = it.name.get(locale),
+                    kind = it.kind,
+                    forSchema = it.forSchema,
+                    primary = it.primary,
+                    ancestry = it.ancestry,
+                )
+            }
+        }
 
     private fun primaryLayoutId(): String {
         repo.layoutIds().forEach { id -> if (load(id)?.primary == true) return id }

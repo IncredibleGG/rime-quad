@@ -25,6 +25,7 @@ import org.rimequad.ime.core.RimeCore
 import org.rimequad.ime.core.RimeRuntime
 import org.rimequad.ime.keyboard.ConfigRepository
 import org.rimequad.ime.keyboard.KeyboardEvent
+import org.rimequad.ime.keyboard.KeyboardTypes
 import org.rimequad.ime.keyboard.KeyboardUiState
 import org.rimequad.ime.keyboard.LayoutHost
 import org.rimequad.ime.keyboard.RimeKeyboard
@@ -189,6 +190,9 @@ class RimeInputMethodService : InputMethodService() {
         layoutHost.recommendedLayoutResolver = { id -> storeRegistry?.layoutForSchema(id) }
         storeSettings = StoreSettings(applicationContext)
         reloadStoreRegistry()
+        // §9.1.1 的 SHOULD：使用者明確挑過的佈局要在**第一次 applySchema 之前**
+        // 就位，否則開機那一次自動切換會覆蓋掉他的選擇，而那正是這條規則要擋的。
+        layoutHost.setPinnedLayouts(UserPrefs.decodeLayoutPins(prefs.layoutPins))
         layoutHost.ensureLoaded()
         layoutHost.applyThemePrefs(prefs, systemInDarkMode())
         syncConfigToUi()
@@ -422,6 +426,11 @@ class RimeInputMethodService : InputMethodService() {
         if (before.themeId != next.themeId || before.appearanceMode != next.appearanceMode) {
             layoutHost.applyThemePrefs(next, systemInDarkMode())
         }
+        // 「回復全部預設」會把使用者指定過的佈局一起刪掉，狀態機必須跟著忘記，
+        // 否則刪了設定鍵盤還記得 —— 那正是使用者按下那顆按鈕想解決的問題。
+        if (before.layoutPins != next.layoutPins) {
+            layoutHost.setPinnedLayouts(UserPrefs.decodeLayoutPins(next.layoutPins))
+        }
         applyRimeOptions()
         syncConfigToUi()
     }
@@ -588,19 +597,62 @@ class RimeInputMethodService : InputMethodService() {
                 refreshFromRime()
             }
 
-            is KeyboardEvent.OpenSchemaPicker ->
-                uiState = uiState.copy(
-                    schemaPickerOpen = true,
-                    schemas = RimeCore.schemaList(),
-                )
+            is KeyboardEvent.OpenSchemaPicker -> openKeyboardTypePicker()
 
             is KeyboardEvent.CloseSchemaPicker ->
                 uiState = uiState.copy(schemaPickerOpen = false)
 
-            is KeyboardEvent.SelectSchema -> {
-                selectSchema(event.id)
+            is KeyboardEvent.SelectKeyboardType -> {
+                selectKeyboardType(event.schemaId, event.layoutId)
                 uiState = uiState.copy(schemaPickerOpen = false)
             }
+        }
+    }
+
+    /* ─────────────────── 鍵盤類型選單 ─────────────────── */
+
+    /**
+     * 打開選單。清單在**打開的當下**才算，不是持續維護的狀態：
+     * 方案可能剛從市集裝進來、佈局可能剛被使用者放進 user_data_dir，
+     * 兩者都不會通知我們。開一次算一次是最省事也最不會過期的作法。
+     */
+    private fun openKeyboardTypePicker() {
+        val schemas = RimeCore.schemaList()
+        uiState = uiState.copy(
+            schemaPickerOpen = true,
+            schemas = schemas,
+            keyboardTypes = KeyboardTypes.build(
+                schemas,
+                layoutHost.layoutBriefs(ConfigRepository.LOCALE),
+            ),
+        )
+    }
+
+    /**
+     * 使用者在選單裡挑了一種鍵盤：方案與佈局**同時**換過去。
+     *
+     * 順序要緊：先把「使用者明確挑了這份佈局」記進 [LayoutHost]，再切方案。
+     * `selectSchema` 會讓下一次快照重跑 §9.1.1，而 §9.1.1 的第 0 步就是讀這筆
+     * 記錄 —— 於是佈局是被自動規則**依使用者的意圖**選中的，不是事後再硬掰
+     * 回來的。最後那次 `switchLayout` 只是保險：方案切換失敗（例如方案剛被
+     * 刪掉）時，使用者至少還是換到了他點的那份鍵盤。
+     */
+    private fun selectKeyboardType(schemaId: String, layoutId: String?) {
+        layoutHost.pinLayout(schemaId, layoutId)
+        persistLayoutPins()
+        selectSchema(schemaId)
+        if (layoutId != null && layoutHost.layout?.id != layoutId) {
+            layoutHost.switchLayout(layoutId)
+        }
+        syncConfigToUi()
+    }
+
+    /** 把 [LayoutHost] 的指定表寫回偏好。非同步，寫失敗只影響下次開機時的記憶。 */
+    private fun persistLayoutPins() {
+        val encoded = UserPrefs.encodeLayoutPins(layoutHost.pinnedLayouts())
+        prefsScope.launch {
+            runCatching { prefsStore.update { it.copy(layoutPins = encoded) } }
+                .onFailure { Log.w(TAG, "寫入佈局指定失敗", it) }
         }
     }
 
@@ -733,8 +785,9 @@ class RimeInputMethodService : InputMethodService() {
 
             ActionVerb.SCHEMA_NEXT -> cycleSchema(1)
             ActionVerb.SCHEMA_PREV -> cycleSchema(-1)
-            ActionVerb.SCHEMA_PICKER ->
-                uiState = uiState.copy(schemaPickerOpen = true, schemas = RimeCore.schemaList())
+            // §8.6.6.1 的必備項。工具列的地球鍵、佈局裡任何 `tap: schema:picker`
+            // 的鍵都落在這裡 —— 全部走同一個入口，選單內容只有一份。
+            ActionVerb.SCHEMA_PICKER -> openKeyboardTypePicker()
 
             ActionVerb.SCHEMA_SELECT -> action.arg?.let { selectSchema(it) }
 

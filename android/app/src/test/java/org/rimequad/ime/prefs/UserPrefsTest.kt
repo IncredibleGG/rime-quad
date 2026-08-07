@@ -63,6 +63,7 @@ class UserPrefsTest {
             hints = HintVisibility.SHOWN,
             themeId = "sakura-dark",
             appearanceMode = AppearanceMode.DARK,
+            layoutPins = "luna_pinyin=cn-t9-pinyin-numrow",
             candidateSizeScale = 1.25f,
             candidateCount = 7,
             simplification = true,
@@ -73,7 +74,45 @@ class UserPrefsTest {
         assertFalse(full.isPristine)
         assertEquals(full, UserPrefs.fromMap(full.toMap()))
         // 每一個欄位都必須真的有進映射，否則就是 toMap 漏了一個。
-        assertEquals(17, full.toMap().size)
+        assertEquals(18, full.toMap().size)
+    }
+
+    /* ── 佈局指定（§9.1.1 的 SHOULD 之持久化）────────────────────────── */
+
+    @Test
+    fun layoutPinsRoundTripThroughTheEncodedString() {
+        val pins = linkedMapOf(
+            "luna_pinyin" to "cn-t9-pinyin-numrow",
+            "bopomofo_tw" to "bopomofo-dachen",
+        )
+        val encoded = UserPrefs.encodeLayoutPins(pins)!!
+        assertEquals(pins, UserPrefs.decodeLayoutPins(encoded))
+        // 順序要保住：選單的高亮與「上次挑的」都靠它。
+        assertEquals(listOf("luna_pinyin", "bopomofo_tw"), UserPrefs.decodeLayoutPins(encoded).keys.toList())
+    }
+
+    @Test
+    fun anEmptyPinMapIsAbsenceNotAnEmptyString() {
+        // 空字串會在儲存層留下一個 key，違反本檔的第一不變式。
+        assertNull(UserPrefs.encodeLayoutPins(emptyMap()))
+        assertTrue(UserPrefs(layoutPins = null).toMap().isEmpty())
+        assertEquals(emptyMap<String, String>(), UserPrefs.decodeLayoutPins(null))
+        assertEquals(emptyMap<String, String>(), UserPrefs.decodeLayoutPins(""))
+    }
+
+    @Test
+    fun oneCorruptPinDoesNotTakeTheOthersDown() {
+        val decoded = UserPrefs.decodeLayoutPins("luna_pinyin=qwerty;garbage;=orphan;trailing=")
+        assertEquals(mapOf("luna_pinyin" to "qwerty"), decoded)
+    }
+
+    @Test
+    fun idsCarryingTheSeparatorsAreDroppedRatherThanCorruptingTheRest() {
+        // 解回來會錯位的字串比少記一筆偏好糟糕得多。
+        val encoded = UserPrefs.encodeLayoutPins(
+            linkedMapOf("a=b" to "qwerty", "ok" to "t9;pinyin", "good" to "qwerty")
+        )
+        assertEquals("good=qwerty", encoded)
     }
 
     @Test

@@ -8,6 +8,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -42,8 +44,12 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.TextUnit
@@ -111,10 +117,15 @@ fun RimeKeyboard(
             .padding(bottom = bottomInsetDp(theme.keyboard.honorBottomInset)),
     ) {
         CandidateBar(state = state, theme = theme, scaler = scaler, onEvent = onEvent)
-        if (state.schemaPickerOpen) {
-            SchemaPicker(state = state, theme = theme, scaler = scaler, onEvent = onEvent)
-        } else {
+        // 鍵盤類型選單是**浮層**，不是取代品：底下那一列鍵仍然露出來、仍然按得動。
+        // 抄的是三星的處理（docs/reference/samsung/photo_5）。理由不是好看 ——
+        // 一個把整個鍵盤蓋掉的面板，只要它自己的關閉鍵出了任何差錯，
+        // 使用者就沒有第二條路可走。出口永遠看得見，這條規矩對選單同樣適用。
+        Box {
             KeyGrid(state = state, theme = theme, scaler = scaler, onEvent = onEvent)
+            if (state.schemaPickerOpen) {
+                SchemaPicker(state = state, theme = theme, scaler = scaler, onEvent = onEvent)
+            }
         }
     }
 }
@@ -325,10 +336,21 @@ private fun CandidateBar(
 }
 
 /**
- * 無候選時的工具列（§8.6.6 的 `empty_shows_toolbar`）。
+ * 無候選時的工具列（§8.6.6 的 `empty_shows_toolbar`、§8.6.6.1 的 `toolbar`）。
  *
- * 規範自己承認「開啟後顯示什麼、長什麼樣完全未規範」（§11），
- * 這裡放的是本輪最需要的東西：目前方案的名字，點下去就是方案切換入口。
+ * ── 為什麼這一段不能寫死 ────────────────────────────────────────────────
+ * 行動端沒有選單列，所以這條列就是**主要導覽**：切鍵盤、切中英、開設定、
+ * 收鍵盤全在這裡。改動前它是寫死的「方案名 + 佈局名」，解析器完整解析出來的
+ * `toolbar.items`（連 §8.6.6.1 的必備項補回都做了）一項也沒被畫出來 ——
+ * 主題想加一顆表情鍵、想把中英切換移到工具列，都無處可施。
+ *
+ * ── 就是「沒有 send 的鍵」 ──────────────────────────────────────────────
+ * 規範刻意讓工具列項目重用 [LabelSource] 與 [KeyAction]，所以鍵面文字解析
+ * （§9.6 的 `label_from` → `icon` → `label`）、圖示退化、active 的觸發條件
+ * 都與按鍵共用同一段程式碼（[faceOf]、[isActiveFace]），不另立一套詞彙。
+ *
+ * `show: false` 時整條列留白 —— 但使用者仍然摸得到 `schema:picker`：
+ * 佈局的空白鍵長按、以及設定畫面都是既有的第二條路。
  */
 @Composable
 private fun Toolbar(
@@ -338,36 +360,66 @@ private fun Toolbar(
     onEvent: (KeyboardEvent) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val style = theme.candidates.bar.style
-    Row(
-        modifier = modifier.padding(horizontal = 6.dp),
+    val bar = theme.candidates.bar
+    val toolbar = bar.toolbar
+    if (!toolbar.show || toolbar.items.isEmpty()) {
+        Spacer(modifier)
+        return
+    }
+    val style = bar.style
+    LazyRow(
+        modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 3.dp),
     ) {
-        Text(
-            text = "⌨ " + state.status.schemaName.ifEmpty { "選擇方案" },
-            fontSize = scaler.sp(style.text.size * 0.8f),
-            color = Color(style.text.color),
-            maxLines = 1,
-            modifier = Modifier
-                .clip(RoundedCornerShape(style.item.cornerRadius.dp))
-                .clickable { onEvent(KeyboardEvent.OpenSchemaPicker) }
-                .padding(horizontal = 10.dp, vertical = 4.dp),
-        )
-        val layoutName = state.layout?.name?.get("zh-Hant").orEmpty()
-        if (layoutName.isNotEmpty()) {
-            Text(
-                text = layoutName,
-                fontSize = scaler.sp(style.label.size),
-                color = Color(style.label.color),
-                maxLines = 1,
-            )
+        itemsIndexed(toolbar.items) { _, item ->
+            val face = faceOf(item.labelFrom, item.icon, item.label, state.status)
+            val active = isActiveFace(false, item.labelFrom, state.status)
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(style.item.cornerRadius.dp))
+                    .background(
+                        Color(
+                            if (active) style.item.highlightBackground else style.item.background
+                        )
+                    )
+                    .clickable { onEvent(KeyboardEvent.Act(item.tap)) }
+                    .padding(horizontal = 10.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = face,
+                    fontSize = scaler.sp(style.text.size),
+                    color = Color(
+                        if (active) style.text.highlightColor else style.text.color
+                    ),
+                    maxLines = 1,
+                )
+            }
         }
     }
 }
 
-/* ────────────────────────────── 方案選單 ────────────────────────────── */
+/* ──────────────────────────── 鍵盤類型選單 ──────────────────────────── */
 
+/**
+ * 「鍵盤類型」選單 —— `schema:picker` 打開的東西。
+ *
+ * ── 為什麼不是「方案選單」 ──────────────────────────────────────────────
+ * 改動前這裡列的是方案，佈局則由 `for_schema` 自動綁定，使用者**碰不到**。
+ * 於是 repo 裡九份佈局有八份是使用者永遠看不見的死程式碼：想用九宮格打
+ * 朙月拼音、想要一條常駐數字列，都沒有任何入口。
+ *
+ * 現在列的是（方案 × 佈局）攤平後的清單，照三星鍵盤類型選單的模型：
+ * 「拼音全键盘 / 拼音九键」在我們的模型裡是同一個方案配不同佈局，
+ * 「双拼 / 笔画 / 五笔」是不同方案，而使用者一項都不必分辨 —— 他只回答
+ * 「我要用哪種鍵盤」。清單怎麼算出來的見 [KeyboardTypes]。
+ *
+ * 選了一項會**同時**換方案與佈局，並把「使用者明確挑過」記進
+ * [LayoutHost.pinLayout]，之後的自動切換不再覆蓋它（§9.1.1 的 SHOULD）。
+ */
 @Composable
 private fun SchemaPicker(
     state: KeyboardUiState,
@@ -375,12 +427,24 @@ private fun SchemaPicker(
     scaler: Scaler,
     onEvent: (KeyboardEvent) -> Unit,
 ) {
-    // 方案選單取代鍵盤時，高度必須跟被取代的那塊一致，否則面板會跳動。
-    // 佈局尚未載入時退回一個 10 欄 4 列的名目幾何。
+    // 浮層高度 = 鍵盤高度 − 最後一列 —— 底列（空白、Enter、退格、中英）
+    // 必須整列露出來。佈局尚未載入時沒有底列可露，就用名目幾何鋪滿。
     val layout = state.layout
     val layer = state.layer
     val height = if (layout != null && layer != null) {
-        keyboardGeometry(theme, layout, layer).keyboardHeight
+        val g = keyboardGeometry(theme, layout, layer)
+        val rowSpacing = layout.metrics.rowSpacing ?: theme.keyboard.rowSpacing
+        val pad = theme.keyboard.padding
+        val weights = layer.rows.fold(0f) { acc, r -> acc + r.weight }
+        val usable = g.keyboardHeight - pad.top - pad.bottom -
+            rowSpacing * (layer.rows.size - 1)
+        val lastRow = if (weights > 0f) {
+            usable * (layer.rows.lastOrNull()?.weight ?: 0f) / weights
+        } else {
+            0f
+        }
+        (g.keyboardHeight - lastRow - rowSpacing - pad.bottom)
+            .coerceAtLeast(g.keyboardHeight * 0.5f)
     } else {
         nominalKeyboardHeight(theme)
     }
@@ -390,6 +454,9 @@ private fun SchemaPicker(
             .fillMaxWidth()
             .height(height.dp)
             .background(Color(theme.keyboard.background))
+            // 浮層必須自己吃掉點擊。少了這一行，點在選單空白處會穿透到底下
+            // 的鍵上 —— 使用者以為自己在關選單，實際上打出了一個字。
+            .pointerInput(Unit) { detectTapGestures { } }
             .padding(horizontal = 8.dp, vertical = 6.dp),
     ) {
         Row(
@@ -397,11 +464,12 @@ private fun SchemaPicker(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = "輸入方案",
+                text = "⌨  鍵盤類型",
                 fontSize = scaler.sp(style.labelSize * 0.75f),
                 color = Color(style.foreground),
                 modifier = Modifier.weight(1f),
             )
+            // 進得去也要出得來：選單一定有一顆看得見的關閉鍵。
             Text(
                 text = "✕",
                 fontSize = scaler.sp(style.labelSize * 0.75f),
@@ -411,7 +479,7 @@ private fun SchemaPicker(
                     .padding(horizontal = 12.dp, vertical = 4.dp),
             )
         }
-        if (state.schemas.isEmpty()) {
+        if (state.keyboardTypes.isEmpty()) {
             Text(
                 text = "尚無可用方案（rs_schema_list 回傳空）",
                 fontSize = scaler.sp(style.labelSize * 0.7f),
@@ -419,35 +487,109 @@ private fun SchemaPicker(
             )
             return@Column
         }
+        // 兩欄，與三星一致。單欄在這個高度只放得下一項半 —— 十幾種鍵盤
+        // 塞進一條一項高的縫裡，等於逼使用者盲捲。
         LazyColumn(verticalArrangement = Arrangement.spacedBy(theme.keyboard.rowSpacing.dp)) {
-            itemsIndexed(state.schemas) { _, schema ->
-                val current = schema.id == state.status.schemaId
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(style.cornerRadius.dp))
-                        .background(
-                            Color(if (current) style.activeBackground else style.background)
-                        )
-                        .clickable { onEvent(KeyboardEvent.SelectSchema(schema.id)) }
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
+            for (group in state.keyboardTypes) {
+                item(key = "group:" + group.title) {
                     Text(
-                        text = schema.name.ifEmpty { schema.id },
-                        fontSize = scaler.sp(style.labelSize * 0.75f),
-                        color = Color(if (current) style.activeForeground else style.foreground),
-                        maxLines = 1,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Text(
-                        text = schema.id,
-                        fontSize = scaler.sp(style.hintSize),
+                        text = group.title,
+                        fontSize = scaler.sp(style.hintSize * 1.15f),
                         color = Color(style.hintColor),
                         maxLines = 1,
+                        modifier = Modifier.padding(start = 4.dp, top = 4.dp, bottom = 2.dp),
                     )
                 }
+                // 先按方案切開再兩兩配對：不切的話一列的左右兩張卡會分屬
+                // 兩個方案，而分組標題只到語言層級，使用者得逐張讀第二行
+                // 才知道自己在看什麼。
+                val rows = group.types
+                    .groupBy { it.schemaId }
+                    .values
+                    .flatMap { it.chunked(2) }
+                items(rows, key = { it.first().key }) { pair ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(
+                            theme.keyboard.keySpacing.dp
+                        ),
+                    ) {
+                        for (type in pair) {
+                            KeyboardTypeCard(
+                                type = type,
+                                current = type.schemaId == state.status.schemaId &&
+                                    type.layoutId == state.layout?.id,
+                                style = style,
+                                scaler = scaler,
+                                onEvent = onEvent,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        // 奇數項時右半格留白，不要讓最後一項橫跨整列 ——
+                        // 那看起來像一個不同的東西。
+                        if (pair.size == 1) Spacer(Modifier.weight(1f))
+                    }
+                }
             }
+        }
+    }
+}
+
+@Composable
+private fun KeyboardTypeCard(
+    type: KeyboardType,
+    current: Boolean,
+    style: KeyStyle,
+    scaler: Scaler,
+    onEvent: (KeyboardEvent) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(style.cornerRadius.dp))
+            .background(Color(if (current) style.activeBackground else style.background))
+            .clickable {
+                onEvent(KeyboardEvent.SelectKeyboardType(type.schemaId, type.layoutId))
+            }
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            // 主標題是佈局名 = 使用者眼裡的鍵盤長相；副標題是方案名。
+            // 兩者合起來就是那個組合標題：「九宮格拼音 ／ 朙月拼音」。
+            // 分兩行而不是串成一行，是因為分組之後同一組裡方案名大量重複，
+            // 串成一行會讓每一項的前半截長得一模一樣，反而看不出差別。
+            Text(
+                text = type.title,
+                fontSize = scaler.sp(style.labelSize * 0.62f),
+                color = Color(if (current) style.activeForeground else style.foreground),
+                maxLines = 1,
+                // 這裡與 §9.6 的鍵面不同，可以省略號化：選單有第二行的方案名
+                // 撐著語意，而鍵面上「注音·臺」對使用者是沒有意義的。
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = type.subtitle,
+                fontSize = scaler.sp(style.hintSize),
+                // 選中的那張卡是 active 配色（多半是強調色底），主題的 hintColor
+                // 是配著一般底色調出來的，壓在強調色上會糊掉。選中時改用
+                // activeForeground 淡化 —— 對比度由主題自己的那組色保證。
+                color = if (current) {
+                    Color(style.activeForeground).copy(alpha = 0.75f)
+                } else {
+                    Color(style.hintColor)
+                },
+                maxLines = 1,
+            )
+        }
+        if (current) {
+            Text(
+                text = "✓",
+                fontSize = scaler.sp(style.labelSize * 0.62f),
+                color = Color(style.activeForeground),
+                maxLines = 1,
+                modifier = Modifier.padding(start = 4.dp),
+            )
         }
     }
 }
@@ -663,8 +805,7 @@ private fun KeyView(
 
     // §8.8.1 的 active 指鎖定狀態：佈局的 `active: true`，或執行期狀態
     // （中英切換鍵在英數模式時）。後者規範沒明說，見回報中的規範缺口。
-    val active = key.active ||
-        (key.labelFrom == LabelSource.INPUT_MODE && status.isAsciiMode)
+    val active = isActiveFace(key.active, key.labelFrom, status)
 
     val background = when {
         pressed -> style.pressedBackground
@@ -734,7 +875,7 @@ private fun KeyView(
         )
     }
 
-    Box(
+    BoxWithConstraints(
         modifier = box.pointerInput(key, status, fireOnDown) {
             detectTapGestures(
                 onPress = {
@@ -759,15 +900,16 @@ private fun KeyView(
         },
         contentAlignment = Alignment.Center,
     ) {
-        val face = keyFace(key, status)
-        val fontSize = when {
-            face.length > 2 -> style.labelSize * 0.55f
-            key.icon != null && key.labelFrom == LabelSource.NONE -> style.iconSize
-            else -> style.labelSize
+        val face = faceOf(key.labelFrom, key.icon, key.label, status)
+        // 圖示與文字用的是兩個不同的基準字級（§8.8.1 的 icon_size / label_size）。
+        val base = if (key.icon != null && key.labelFrom == LabelSource.NONE) {
+            style.iconSize
+        } else {
+            style.labelSize
         }
         Text(
             text = face,
-            fontSize = scaler.sp(fontSize),
+            fontSize = fittedLabelSize(face, base, constraints.maxWidth, scaler),
             color = Color(foreground),
             maxLines = 1,
             textAlign = TextAlign.Center,
@@ -800,9 +942,18 @@ private fun KeyView(
  * 優先序：`label_from`（執行期狀態）→ `icon` → `label`。
  * 規範沒有明文規定 `icon` 與 `label_from` 同時存在時誰勝出（空白鍵正是這種鍵），
  * 這裡讓執行期狀態勝出，見回報中的規範缺口。
+ *
+ * 參數刻意攤成三個而不是收 [LayoutKey]：§8.6.6.1 的工具列項目就是「沒有
+ * `send` 的鍵」，它的鍵面解析必須與按鍵**一模一樣**，共用同一支函式才保證
+ * 得了。兩邊各寫一次就會各自漂移。
  */
-private fun keyFace(key: LayoutKey, status: RimeStatus): String {
-    val fromStatus = when (key.labelFrom) {
+internal fun faceOf(
+    labelFrom: LabelSource,
+    icon: String?,
+    label: String,
+    status: RimeStatus,
+): String {
+    val fromStatus = when (labelFrom) {
         LabelSource.NONE -> null
         LabelSource.INPUT_MODE -> if (status.isAsciiMode) "英" else "中"
         LabelSource.SHAPE -> if (status.isFullShape) "全" else "半"
@@ -811,29 +962,104 @@ private fun keyFace(key: LayoutKey, status: RimeStatus): String {
         LabelSource.SCHEMA_ID -> status.schemaId.ifEmpty { null }
     }
     if (fromStatus != null) return fromStatus
-    key.icon?.let { name -> ICONS[name]?.let { return it } }
-    return key.label
+    icon?.let { name -> ICONS[name]?.let { return it } }
+    return label
+}
+
+/** §8.8.1 的 active：佈局宣告的鎖定，或執行期狀態（英數模式的中／英鍵）。 */
+internal fun isActiveFace(declared: Boolean, labelFrom: LabelSource, status: RimeStatus): Boolean =
+    declared || (labelFrom == LabelSource.INPUT_MODE && status.isAsciiMode)
+
+/**
+ * §9.6「鍵面文字放不下時」的下限：`label_size × 0.5`。
+ */
+internal const val MIN_LABEL_SHRINK = 0.5f
+
+/**
+ * §9.6：解析出來的鍵面文字放不下時，**等比縮小字級**求完整顯示。
+ *
+ * ── 改動前是怎麼壞的 ────────────────────────────────────────────────────
+ * 舊碼寫的是 `face.length > 2 → labelSize × 0.55`：依**字數**縮放，
+ * 而不是依鍵寬。三個後果都看得見：
+ *
+ *   · 同一列裡「分詞」（2 字）用滿級數、「abc」（3 字）只剩 55%，視覺跳動；
+ *   · 中／英切換鍵的鍵面只有一個字，卻因為 `schema_name` 這類長字串共用
+ *     同一條規則而顯得毫無道理；
+ *   · 真正放不下的長字串（「注音·臺灣正體」7 字）跟「abc」縮得一樣多，
+ *     該縮的沒縮夠，不該縮的縮過頭。
+ *
+ * ── 現在的作法 ──────────────────────────────────────────────────────────
+ * 用 [rememberTextMeasurer] 在基準字級下量一次實際文字寬度，與這顆鍵**實際
+ * 分配到的寬度**（[BoxWithConstraints] 的 `constraints.maxWidth`）相比，
+ * 放不下才按比例縮，並夾在規範的 `× 0.5` 下限。放得下的一律用滿級數 ——
+ * 所以「分詞」「abc」「中」現在全部同級數，因為它們**全都放得下**。
+ *
+ * 量測結果以 `remember` 快取，key 是（文字、字級、可用寬度）：
+ * 同一顆鍵在狀態不變時不會重複量。
+ */
+@Composable
+private fun fittedLabelSize(
+    text: String,
+    baseSize: Float,
+    availableWidthPx: Int,
+    scaler: Scaler,
+): TextUnit {
+    val base = scaler.sp(baseSize)
+    if (text.isBlank() || availableWidthPx <= 0) return base
+    val measurer = rememberTextMeasurer()
+    // 左右各留一點餘裕，否則字會貼著鍵的圓角邊緣。
+    val usable = availableWidthPx - with(LocalDensity.current) { LABEL_INSET_DP.dp.toPx() } * 2f
+    if (usable <= 0f) return base
+    val measured = remember(text, base, measurer) {
+        measurer.measure(
+            text = AnnotatedString(text),
+            style = TextStyle(fontSize = base),
+            maxLines = 1,
+            softWrap = false,
+        ).size.width.toFloat()
+    }
+    val ratio = shrinkRatio(measured, usable)
+    return if (ratio >= 1f) base else scaler.sp(baseSize * ratio)
+}
+
+private const val LABEL_INSET_DP = 2f
+
+/**
+ * 量到的寬度 → 該用幾成字級。純算術，與 Compose 無關，方便直接測。
+ *
+ * 放得下回 1（**不放大**：規範只說縮小），放不下按比例縮並夾在
+ * [MIN_LABEL_SHRINK]；到了下限仍放不下就讓它截斷（§9.6 允許最後才截斷）。
+ */
+internal fun shrinkRatio(measuredPx: Float, availablePx: Float): Float {
+    if (measuredPx <= 0f || availablePx <= 0f) return 1f
+    if (measuredPx <= availablePx) return 1f
+    return (availablePx / measuredPx).coerceAtLeast(MIN_LABEL_SHRINK)
 }
 
 /**
- * §9.6 的語義圖示。規範要求「渲染器自繪向量」，本輪先以字形代替 ——
- * 這是可見的偏離，已記在回報中。
+ * §9.6 的語義圖示。規範要求「渲染器自繪向量」（SHOULD），本輪仍以規範的
+ * **替代字形表**代替 —— 那張表是規範性的，四端必須用同一份，不得自行挑選。
+ *
+ * ⚠ 仍未實作的是退化路徑的第 3、4 步（字形缺字時退回 `label`、`label` 也空
+ * 就畫空白）：Compose 沒有現成的「這個字形在當前字體裡有沒有」查詢。
+ * 已記在回報中。
  */
 private val ICONS: Map<String, String> = mapOf(
     "backspace" to "⌫",
     "enter" to "↵",
     "shift" to "⇧",
     "shift_lock" to "⇪",
+    // 規範刻意讓空白鍵退化為空白：`␣` 在多數字體裡是方框，比空白更糟。
     "space" to " ",
     "globe" to "🌐",
     "keyboard_hide" to "⌄",
     "settings" to "⚙",
     "emoji" to "☺",
-    "search" to "🔍",
-    "go" to "→",
-    "done" to "✓",
-    "next" to "⇥",
-    "clipboard" to "📋",
+    "search" to "⌕",
+    "go" to "↵",
+    "done" to "↵",
+    "next" to "↵",
+    "clipboard" to "❐",
     "undo" to "↶",
     "mic" to "🎤",
     "arrow_left" to "←",
