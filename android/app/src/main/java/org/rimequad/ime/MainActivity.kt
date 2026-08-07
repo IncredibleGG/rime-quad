@@ -46,7 +46,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        RimeRuntime.ensureInitialized(applicationContext)
+        RimeRuntime.start(applicationContext)
         setContent {
             RimeTheme {
                 Scaffold { padding ->
@@ -66,11 +66,17 @@ class MainActivity : ComponentActivity() {
 private fun SetupScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     var deployStatus by remember { mutableStateOf(RimeCore.lastDeployStatus) }
+    var phase by remember { mutableStateOf(RimeRuntime.phase) }
 
     DisposableEffect(Unit) {
-        val listener: (RimeDeployStatus) -> Unit = { deployStatus = it }
-        RimeCore.addDeployListener(listener)
-        onDispose { RimeCore.removeDeployListener(listener) }
+        val deployListener: (RimeDeployStatus) -> Unit = { deployStatus = it }
+        val phaseListener: (RimeRuntime.Phase) -> Unit = { phase = it }
+        RimeCore.addDeployListener(deployListener)
+        RimeRuntime.addListener(phaseListener)
+        onDispose {
+            RimeCore.removeDeployListener(deployListener)
+            RimeRuntime.removeListener(phaseListener)
+        }
     }
 
     Column(
@@ -100,7 +106,16 @@ private fun SetupScreen(modifier: Modifier = Modifier) {
                 appendLine("上層要求 ABI: ${RimeCore.EXPECTED_ABI_VERSION}")
                 appendLine("ABI 相容: ${if (RimeCore.abiCompatible()) "是" else "否"}")
                 appendLine("實作: ${if (RimeCore.isStub()) "stub 假實作" else "真 librime"}")
-                appendLine("rs_init: ${if (RimeRuntime.isInitialized) "成功" else "失敗 — ${RimeRuntime.initError}"}")
+                appendLine("初始化階段: $phase")
+                RimeRuntime.initError?.let { appendLine("錯誤: $it") }
+                appendLine(
+                    "解壓耗時: " +
+                        if (RimeRuntime.extractMillis >= 0) "${RimeRuntime.extractMillis} ms" else "本次未解壓"
+                )
+                appendLine(
+                    "首次部署耗時: " +
+                        if (RimeRuntime.deployMillis >= 0) "${RimeRuntime.deployMillis} ms" else "進行中／未完成"
+                )
                 append("部署狀態: $deployStatus")
             },
         )
@@ -110,7 +125,7 @@ private fun SetupScreen(modifier: Modifier = Modifier) {
             body = RimeRuntime.describeDataDirs(),
         )
 
-        val schemas = remember { RimeCore.schemaList() }
+        val schemas = remember(phase) { RimeCore.schemaList() }
         InfoCard(
             title = "Schema（${schemas.size}）",
             body = if (schemas.isEmpty()) {
@@ -144,7 +159,7 @@ private fun SetupScreen(modifier: Modifier = Modifier) {
 
         OutlinedButton(
             onClick = { RimeCore.deploy() },
-            enabled = RimeRuntime.isInitialized,
+            enabled = RimeRuntime.isReady,
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text("重新部署（rs_deploy）")

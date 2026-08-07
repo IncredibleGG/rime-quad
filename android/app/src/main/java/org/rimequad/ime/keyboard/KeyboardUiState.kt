@@ -15,6 +15,8 @@ data class KeyboardUiState(
     val isStub: Boolean = true,
     /** so 載入或 rs_init 失敗時的訊息，非 null 就顯示在候選列。 */
     val fatalMessage: String? = null,
+    /** 解壓資料／首次部署等「還不能用，但不是壞掉」的狀態訊息。 */
+    val busyMessage: String? = null,
     val shift: Boolean = false,
     val layer: KeyLayer = KeyLayer.LETTERS,
 )

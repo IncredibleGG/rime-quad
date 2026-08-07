@@ -75,6 +75,7 @@ private fun CandidateBar(state: KeyboardUiState, onEvent: (KeyboardEvent) -> Uni
         ) {
             val header = when {
                 state.fatalMessage != null -> state.fatalMessage
+                state.busyMessage != null -> state.busyMessage
                 state.preedit.isNotEmpty() -> state.preedit
                 state.isStub -> "⟦STUB⟧ 未接 librime，候選字為假資料"
                 else -> state.schemaName
@@ -83,7 +84,7 @@ private fun CandidateBar(state: KeyboardUiState, onEvent: (KeyboardEvent) -> Uni
                 text = header,
                 fontSize = 13.sp,
                 maxLines = 1,
-                color = if (state.fatalMessage != null || state.isStub) {
+                color = if (state.fatalMessage != null || state.busyMessage != null || state.isStub) {
                     MaterialTheme.colorScheme.primary
                 } else {
                     MaterialTheme.colorScheme.onSurfaceVariant

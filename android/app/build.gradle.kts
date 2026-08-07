@@ -11,6 +11,37 @@ val rimeApplicationId: String = providers.gradleProperty("rime.applicationId").g
 val rimeNamespace: String = providers.gradleProperty("rime.namespace").get()
 val rimeJniClass: String = providers.gradleProperty("rime.jniClass").get()
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 隨附執行期資料（schema、詞庫、opencc、essay 語言模型）。
+//
+// 這些檔案由 scripts/collect_data.sh 產生，體積 13MB，且**刻意不進版控**
+// （見專案根目錄 .gitignore 的 /core/data/）。所以這裡不把它們複製一份到
+// src/main/assets 提交上去，而是在建置時同步進 build/ 底下的 generated
+// assets 目錄 —— 產生物留在產生物該在的地方。
+//
+// 沒跑過 collect_data.sh 的機器一樣建置得起來，只是 APK 內沒有 schema，
+// 執行期 librime 部署會失敗；下面的 doFirst 會先警告。
+// ─────────────────────────────────────────────────────────────────────────────
+val rimeRepoRoot = layout.projectDirectory.dir("../..")
+val rimeSharedData = rimeRepoRoot.dir("core/data/shared")
+val rimeUserData = rimeRepoRoot.dir("core/data/user")
+val rimeGeneratedAssets = layout.buildDirectory.dir("generated/rimeAssets")
+
+val syncRimeData = tasks.register<Sync>("syncRimeData") {
+    description = "把 core/data 的隨附資料同步進 generated assets"
+    into(rimeGeneratedAssets)
+    from(rimeSharedData) { into("rime/shared") }
+    from(rimeUserData) { into("rime/user") }
+    doFirst {
+        if (!rimeSharedData.asFile.isDirectory) {
+            logger.warn(
+                "[rime] 找不到 ${rimeSharedData.asFile}，APK 將不含任何 schema。" +
+                    " 先跑 scripts/collect_data.sh。"
+            )
+        }
+    }
+}
+
 android {
     namespace = rimeNamespace
     compileSdk = 35
@@ -78,7 +109,14 @@ android {
         resources.excludes += setOf("/META-INF/{AL2.0,LGPL2.1}")
         jniLibs.useLegacyPackaging = false
     }
+
+    sourceSets.getByName("main").assets.srcDir(rimeGeneratedAssets)
 }
+
+// assets 合併之前必須先同步完資料。
+tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }
+    .configureEach { dependsOn(syncRimeData) }
+tasks.named("preBuild") { dependsOn(syncRimeData) }
 
 kotlin {
     compilerOptions {
@@ -100,4 +138,6 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.ui.tooling.preview)
     debugImplementation(libs.androidx.compose.ui.tooling)
+
+    testImplementation(libs.junit)
 }

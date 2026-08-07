@@ -37,6 +37,8 @@ TARGET="testapp"
 OUT_DIR="$ROOT/build/verify-compose"
 AUTO_START=1
 KEY_DELAY="0.15"
+# 見下方 --ready-log。空字串 = 維持原本行為，不做就緒等待。
+READY_LOG=""
 # 首次啟動時 librime 要編譯 schema(部署),在模擬器上可能要一分鐘以上。
 # verify_ime.sh 的 20 秒等待對第一次跑我們自己的 IME 是不夠的。
 DEPLOY_TIMEOUT=120
@@ -56,6 +58,11 @@ usage() {
   --expect-contains      改用「包含」比對而非完全相等
   --target <testapp|settings>   輸入目標畫面,預設 testapp
   --deploy-timeout <秒>  等待首次部署與鍵盤出現的上限,預設 $DEPLOY_TIMEOUT
+  --ready-log <regex>    鍵盤出現後,再等 logcat 出現此樣式才開始打字。
+                         非同步初始化的 IME 必須用這個,否則會在部署還沒完成
+                         時就注入按鍵。指定時會先 force-stop 待測 IME 並清空
+                         logcat,確保每次都觀察得到完整的啟動序列。
+                         本專案用法:--ready-log 'phase . READY'
   --key-delay <秒>       每個按鍵之間的間隔,預設 $KEY_DELAY
   --no-start             不自動啟動模擬器
   --out <dir>            artifact 輸出目錄,預設 $OUT_DIR
@@ -72,6 +79,7 @@ while [ $# -gt 0 ]; do
     --expect-contains) EXPECT_MODE="contains"; shift ;;
     --target)          TARGET="$2"; shift 2 ;;
     --deploy-timeout)  DEPLOY_TIMEOUT="$2"; shift 2 ;;
+    --ready-log)       READY_LOG="$2"; shift 2 ;;
     --key-delay)       KEY_DELAY="$2"; shift 2 ;;
     --no-start)        AUTO_START=0; shift ;;
     --out)             OUT_DIR="$2"; shift 2 ;;
@@ -186,6 +194,12 @@ fi
 
 # --- 3. 啟用 IME -------------------------------------------------------------
 step "3. 啟用輸入法"
+if [ -n "$READY_LOG" ]; then
+  # 讓 IME 從頭啟動一次,否則若它早就跑完初始化,logcat 裡不會再出現就緒訊息。
+  adbs shell am force-stop "$IME_PKG" >/dev/null 2>&1 || true
+  adbs logcat -c >/dev/null 2>&1 || true
+  pass "已 force-stop $IME_PKG 並清空 logcat(--ready-log 模式)"
+fi
 adbs shell ime enable "$IME_ID" >/dev/null 2>&1 || true
 adbs shell ime set "$IME_ID" >/dev/null 2>&1 || true
 adbs shell ime list -s > "$OUT_DIR/ime_list.txt" 2>/dev/null || true
@@ -227,6 +241,23 @@ pass "鍵盤已顯示"
 CUR_ID="$(grep -o 'mCurId=[^ ]*' "$OUT_DIR/input_method.txt" | head -1 | cut -d= -f2)"
 [ "$CUR_ID" = "$IME_ID" ] || fail "目前綁定的是 $CUR_ID,不是待測的 $IME_ID"
 pass "綁定的 IME 正確"
+
+# --- 5b. 等待輸入法引擎就緒 -------------------------------------------------
+# 鍵盤「畫出來了」不等於「可以打字了」。非同步初始化的 IME(本專案就是)
+# 會先把鍵盤畫出來、上面寫著「正在編譯詞庫」,此時 session 還不存在,
+# 送進去的按鍵會原封不動落到宿主應用。少了這一步,冷啟動必定假失敗。
+if [ -n "$READY_LOG" ]; then
+  step "5b. 等待輸入法引擎就緒(樣式:$READY_LOG)"
+  READY=0
+  for i in $(seq 1 "$DEPLOY_TIMEOUT"); do
+    adbs logcat -d > "$OUT_DIR/logcat_ready.txt" 2>/dev/null || true
+    if grep -Eq "$READY_LOG" "$OUT_DIR/logcat_ready.txt"; then READY=1; break; fi
+    [ $((i % 15)) -eq 0 ] && echo "  ...已等待 ${i}s(首次部署較慢屬正常)"
+    sleep 1
+  done
+  [ "$READY" -eq 1 ] || fail "在 ${DEPLOY_TIMEOUT}s 內沒等到就緒訊息。看 $OUT_DIR/logcat_ready.txt"
+  pass "引擎已就緒"
+fi
 
 # --- 6. 清空 ----------------------------------------------------------------
 step "6. 清空輸入框"

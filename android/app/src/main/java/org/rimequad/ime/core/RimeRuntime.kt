@@ -1,34 +1,87 @@
 package org.rimequad.ime.core
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import java.io.File
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * 資料目錄與全域初始化。
  *
  * 目錄配置（對應 `rs_setup`）：
- *   filesDir/rime/shared  ← shared_data_dir，從 assets/rime 解出來，唯讀語意
- *   filesDir/rime/user    ← user_data_dir，可寫，放使用者詞典與個人配置
+ *   filesDir/rime/shared  ← shared_data_dir，由 assets/rime/shared 解出，唯讀語意
+ *   filesDir/rime/user    ← user_data_dir，可寫；assets/rime/user 只在檔案
+ *                            不存在時「種下」初始內容，絕不覆蓋使用者的修改
  *   filesDir/rime/log     ← log_dir
- *
- * 目前 assets/rime 只有佔位檔。真正的隨附 schema 會由主題／佈局那條線
- * （core/themes、core/layouts）產出後再塞進 assets。
  *
  * iOS 上這幾個路徑必須落在 App Group 容器內，見 rime_shell.h 的註解；
  * Android 沒這個限制，但目錄命名刻意保持一致，方便四端對照。
+ *
+ * ── 為什麼要非同步 ──────────────────────────────────────────────────────
+ * 隨附資料有 13MB / 54 個檔案，解壓在模擬器上要好幾秒；接著 librime 首次
+ * 部署要編三本詞庫加 5.7MB 語言模型，實測要一到兩分鐘。這些如果壓在
+ * InputMethodService.onCreate() 上，鍵盤根本來不及出現。
+ *
+ * 所以拆成兩段：
+ *   1. 解壓 assets   → 背景執行緒（純檔案 IO，不碰 rime）
+ *   2. rs_init       → 主執行緒（librime 的 start_maintenance 本身是非同步的，
+ *                      rs_init 會立刻返回，部署結果之後才由回呼送達）
+ *
+ * 這樣所有 rime_shell 呼叫仍然全部落在同一條（主）執行緒上，
+ * 完全符合 rime_shell.h 的執行緒約定。
  */
 object RimeRuntime {
 
     private const val TAG = "RimeRuntime"
     private const val APP_NAME = "rime.android"
 
-    /** assets 內容有變時遞增，強制重新解壓。 */
-    private const val ASSET_REVISION = 1
-    private const val ASSET_ROOT = "rime"
+    /**
+     * assets 內容有變時遞增，強制重新解壓 shared。
+     * 1 → 只有佔位檔
+     * 2 → 併入 core/data/shared（54 檔）與 core/data/user 初始內容
+     */
+    private const val ASSET_REVISION = 2
+
+    private const val ASSET_SHARED = "rime/shared"
+    private const val ASSET_USER = "rime/user"
+
+    enum class Phase {
+        /** 還沒開始。 */
+        IDLE,
+
+        /** 正在解壓 assets。 */
+        EXTRACTING,
+
+        /** rs_init 已成功，librime 正在背景部署（編譯 schema）。 */
+        DEPLOYING,
+
+        /** 可以建立 session、可以輸入。 */
+        READY,
+
+        /** 出事了，看 [initError]。 */
+        FAILED,
+    }
 
     @Volatile
-    private var initialized = false
+    var phase: Phase = Phase.IDLE
+        private set
+
+    @Volatile
+    var initError: String? = null
+        private set
+
+    /** 解壓耗時（毫秒），-1 代表這次啟動沒有解壓（已是最新版本）。 */
+    @Volatile
+    var extractMillis: Long = -1
+        private set
+
+    /** 從 rs_init 到收到第一個部署完成通知的耗時（毫秒），-1 代表尚未完成。 */
+    @Volatile
+    var deployMillis: Long = -1
+        private set
 
     lateinit var sharedDataDir: File
         private set
@@ -37,40 +90,83 @@ object RimeRuntime {
     lateinit var logDir: File
         private set
 
-    @Volatile
-    var initError: String? = null
-        private set
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val listeners = CopyOnWriteArrayList<(Phase) -> Unit>()
+    private var started = false
+    private var deployStartedAt = 0L
 
+    val isReady: Boolean get() = phase == Phase.READY
+
+    fun addListener(listener: (Phase) -> Unit) {
+        listeners.add(listener)
+        listener(phase)
+    }
+
+    fun removeListener(listener: (Phase) -> Unit) {
+        listeners.remove(listener)
+    }
+
+    private fun setPhase(next: Phase) {
+        phase = next
+        Log.i(TAG, "phase → $next" + (initError?.let { " ($it)" } ?: ""))
+        mainHandler.post { listeners.forEach { runCatching { it(next) } } }
+    }
+
+    /**
+     * 啟動初始化。可重複呼叫，只有第一次會真的動作。
+     * 必須在主執行緒呼叫。
+     */
     @Synchronized
-    fun ensureInitialized(context: Context): Boolean {
-        if (initialized) return true
+    fun start(context: Context) {
+        if (started) return
+        started = true
 
-        val root = File(context.filesDir, "rime")
+        val appContext = context.applicationContext
+        val root = File(appContext.filesDir, "rime")
         sharedDataDir = File(root, "shared")
         userDataDir = File(root, "user")
         logDir = File(root, "log")
 
-        listOf(sharedDataDir, userDataDir, logDir, File(userDataDir, "build")).forEach {
-            if (!it.exists() && !it.mkdirs()) {
-                Log.w(TAG, "建立目錄失敗: $it")
-            }
-        }
-
-        runCatching { extractAssets(context) }
-            .onFailure { Log.e(TAG, "解壓 assets 失敗", it) }
-
         if (!RimeCore.libraryLoaded) {
             initError = "librime_jni.so 載入失敗: ${RimeCore.libraryLoadError}"
-            Log.e(TAG, initError!!)
-            return false
+            setPhase(Phase.FAILED)
+            return
         }
         if (!RimeCore.abiCompatible()) {
             initError = "ABI 版本不符：so 回報 ${RimeCore.abiVersion()}，" +
                 "上層要求 ${RimeCore.EXPECTED_ABI_VERSION}"
-            Log.e(TAG, initError!!)
-            return false
+            setPhase(Phase.FAILED)
+            return
         }
 
+        // 部署完成通知：librime 的維護執行緒打上來，切回主執行緒再處理。
+        RimeCore.addDeployListener { status ->
+            mainHandler.post { onDeployStatus(status) }
+        }
+
+        setPhase(Phase.EXTRACTING)
+        Thread({
+            val started = SystemClock.elapsedRealtime()
+            val result = runCatching { prepareDataDirs(appContext) }
+            val elapsed = SystemClock.elapsedRealtime() - started
+
+            mainHandler.post {
+                result.onFailure {
+                    Log.e(TAG, "準備資料目錄失敗", it)
+                    initError = "解壓隨附資料失敗: ${it.message}"
+                    setPhase(Phase.FAILED)
+                    return@post
+                }
+                extractMillis = if (result.getOrDefault(false)) elapsed else -1
+                Log.i(TAG, "資料目錄就緒，耗時 ${elapsed}ms（有無實際解壓: ${result.getOrNull()}）")
+                initializeRimeOnMainThread()
+            }
+        }, "rime-asset-extract").start()
+    }
+
+    /** 一律在主執行緒執行，維持 rime_shell 的執行緒約定。 */
+    private fun initializeRimeOnMainThread() {
+        deployStartedAt = SystemClock.elapsedRealtime()
         val ok = RimeCore.init(
             userDataDir = userDataDir.absolutePath,
             sharedDataDir = sharedDataDir.absolutePath,
@@ -79,16 +175,36 @@ object RimeRuntime {
         )
         if (!ok) {
             initError = "rs_init 失敗: ${RimeCore.lastError()}"
-            Log.e(TAG, initError!!)
-            return false
+            setPhase(Phase.FAILED)
+            return
         }
-
         initError = null
-        initialized = true
-        return true
+        // rs_init 內部已經呼叫 start_maintenance(True)，首次啟動一定會進部署。
+        // 真正可用要等 RS_DEPLOY_SUCCESS。
+        setPhase(if (RimeCore.lastDeployStatus == RimeDeployStatus.SUCCESS) Phase.READY else Phase.DEPLOYING)
     }
 
-    val isInitialized: Boolean get() = initialized
+    private fun onDeployStatus(status: RimeDeployStatus) {
+        when (status) {
+            RimeDeployStatus.RUNNING -> {
+                if (phase == Phase.READY || phase == Phase.DEPLOYING) setPhase(Phase.DEPLOYING)
+            }
+
+            RimeDeployStatus.SUCCESS -> {
+                if (deployMillis < 0 && deployStartedAt > 0L) {
+                    deployMillis = SystemClock.elapsedRealtime() - deployStartedAt
+                }
+                if (phase == Phase.DEPLOYING || phase == Phase.READY) setPhase(Phase.READY)
+            }
+
+            RimeDeployStatus.FAILURE -> {
+                initError = "部署失敗: ${RimeCore.lastError()}"
+                setPhase(Phase.FAILED)
+            }
+
+            RimeDeployStatus.IDLE -> Unit
+        }
+    }
 
     /** 供設定畫面顯示。 */
     fun describeDataDirs(): String = buildString {
@@ -97,29 +213,54 @@ object RimeRuntime {
         append("log:    ${if (::logDir.isInitialized) logDir.absolutePath else "-"}")
     }
 
-    /** 把 assets/rime 底下所有檔案遞迴解到 sharedDataDir，用一個 .revision 戳記避免每次都做。 */
-    private fun extractAssets(context: Context) {
-        val stamp = File(sharedDataDir, ".revision")
-        if (stamp.exists() && stamp.readText().trim() == ASSET_REVISION.toString()) return
+    /**
+     * 建目錄、解壓 shared、種下 user 初始檔。
+     * 回傳 true 代表這次真的做了解壓。在背景執行緒上跑。
+     */
+    private fun prepareDataDirs(context: Context): Boolean {
+        listOf(sharedDataDir, userDataDir, logDir).forEach {
+            if (!it.exists() && !it.mkdirs()) {
+                throw IllegalStateException("建立目錄失敗: $it")
+            }
+        }
 
-        copyAssetDir(context, ASSET_ROOT, sharedDataDir)
-        stamp.writeText(ASSET_REVISION.toString())
-        Log.i(TAG, "assets 已解到 ${sharedDataDir.absolutePath}")
+        val stamp = File(sharedDataDir, ".revision")
+        val upToDate = stamp.exists() && stamp.readText().trim() == ASSET_REVISION.toString()
+
+        if (!upToDate) {
+            copyAssetTree(context, ASSET_SHARED, sharedDataDir, overwrite = true)
+            stamp.writeText(ASSET_REVISION.toString())
+            Log.i(TAG, "shared 已解到 ${sharedDataDir.absolutePath}")
+        }
+
+        // user 目錄：只補不覆蓋。使用者改過 default.custom.yaml 之後，
+        // 升級 app 不可以把他的設定洗掉。
+        copyAssetTree(context, ASSET_USER, userDataDir, overwrite = false)
+
+        return !upToDate
     }
 
-    private fun copyAssetDir(context: Context, assetPath: String, target: File) {
+    private fun copyAssetTree(
+        context: Context,
+        assetPath: String,
+        target: File,
+        overwrite: Boolean,
+    ) {
         val children = context.assets.list(assetPath).orEmpty()
         if (children.isEmpty()) {
             // 沒有子項目 → 視為檔案
+            if (!overwrite && target.exists()) return
             target.parentFile?.mkdirs()
             context.assets.open(assetPath).use { input ->
                 target.outputStream().use { output -> input.copyTo(output) }
             }
             return
         }
-        if (!target.exists()) target.mkdirs()
+        if (!target.exists() && !target.mkdirs()) {
+            throw IllegalStateException("建立目錄失敗: $target")
+        }
         for (child in children) {
-            copyAssetDir(context, "$assetPath/$child", File(target, child))
+            copyAssetTree(context, "$assetPath/$child", File(target, child), overwrite)
         }
     }
 }

@@ -22,9 +22,20 @@ import androidx.savedstate.setViewTreeSavedStateRegistryOwner
  *
  * Compose 需要 view tree 上掛著 LifecycleOwner / ViewModelStoreOwner /
  * SavedStateRegistryOwner，而 Service 天生沒有這些（Activity 才有）。
- * 少掛任何一個，ComposeView 在 attach 時就會直接丟例外。
  *
- * 注意：[LifecycleRegistry] 進入 DESTROYED 後不可復用，所以每次
+ * ⚠ 只掛在自己的 ComposeView 上是**不夠的**，這點踩過坑：
+ *
+ *   InputMethodService.setInputView() 會把我們的 view 塞進 IME 自己的
+ *   視窗階層（android:id/parentPanel 那個 LinearLayout）底下。Compose 建立
+ *   window recomposer 時，是從**視窗的 decor view** 往下找 ViewTreeLifecycleOwner，
+ *   不是從 ComposeView 自己往上找。少掛 decor view 就會在 attach 當下丟：
+ *
+ *     java.lang.IllegalStateException: ViewTreeLifecycleOwner not found from
+ *     android.widget.LinearLayout{... android:id/parentPanel}
+ *
+ *   所以 decor view 與 ComposeView 兩邊都要掛。
+ *
+ * 另注意：[LifecycleRegistry] 進入 DESTROYED 後不可復用，所以每次
  * `onCreateInputView()` 都要 new 一個 host，舊的呼叫 [onDestroy]。
  */
 class ComposeKeyboardHost(private val context: Context) :
@@ -39,19 +50,31 @@ class ComposeKeyboardHost(private val context: Context) :
     override val savedStateRegistry: SavedStateRegistry
         get() = savedStateController.savedStateRegistry
 
-    fun createView(content: @Composable () -> Unit): View {
+    /**
+     * @param decorView IME 視窗的 decor view（`InputMethodService.getWindow()?.window?.decorView`）。
+     *                  必須傳，理由見類別註解。
+     */
+    fun createView(decorView: View?, content: @Composable () -> Unit): View {
         savedStateController.performRestore(null)
-        lifecycleRegistry.currentState = Lifecycle.State.CREATED
+        // Compose 的 recomposer 要等 lifecycle 至少到 CREATED 才會跑；
+        // 這裡直接給到 RESUMED，onStartInputView 之後維持不變。
+        lifecycleRegistry.currentState = Lifecycle.State.RESUMED
+
+        decorView?.let { attachOwners(it) }
 
         return ComposeView(context).apply {
-            setViewTreeLifecycleOwner(this@ComposeKeyboardHost)
-            setViewTreeViewModelStoreOwner(this@ComposeKeyboardHost)
-            setViewTreeSavedStateRegistryOwner(this@ComposeKeyboardHost)
+            attachOwners(this)
             setViewCompositionStrategy(
                 ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed
             )
             setContent(content)
         }
+    }
+
+    private fun attachOwners(view: View) {
+        view.setViewTreeLifecycleOwner(this)
+        view.setViewTreeViewModelStoreOwner(this)
+        view.setViewTreeSavedStateRegistryOwner(this)
     }
 
     fun onStartInput() {
@@ -61,9 +84,8 @@ class ComposeKeyboardHost(private val context: Context) :
     }
 
     fun onFinishInput() {
-        if (lifecycleRegistry.currentState.isAtLeast(Lifecycle.State.CREATED)) {
-            lifecycleRegistry.currentState = Lifecycle.State.CREATED
-        }
+        // 刻意不降到 CREATED：IME 視窗只是隱藏，Compose 的 composition
+        // 還要留著，下次 showWindow 才不用整棵重建。
     }
 
     fun onDestroy() {

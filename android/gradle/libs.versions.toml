@@ -6,8 +6,13 @@ activityCompose = "1.10.1"
 lifecycle = "2.9.1"
 savedstate = "1.3.0"
 composeBom = "2025.05.01"
+junit = "4.13.2"
 
 [libraries]
+# 單元測試。production 端刻意零依賴 —— theme 的 YAML 子集解析器是自製的，
+# 因為 YAML 1.1 會把 `keysym: y` / `id: n` 誤判成布林，第三方函式庫解決不了。
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
 androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycle" }

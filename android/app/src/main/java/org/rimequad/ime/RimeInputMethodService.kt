@@ -8,6 +8,7 @@ import android.view.inputmethod.EditorInfo
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import org.rimequad.ime.core.AndroidKeyMap
 import org.rimequad.ime.core.RimeCore
 import org.rimequad.ime.core.RimeKeysym
 import org.rimequad.ime.core.RimeModifier
@@ -23,8 +24,8 @@ import org.rimequad.ime.ui.RimeTheme
  * IME 本體。
  *
  * 執行緒：rime_shell.h 要求同一 session 的呼叫序列化在同一條執行緒上。
- * 這裡所有 RimeCore 呼叫都發生在 IME 主執行緒（Compose 事件回呼也在主執行緒），
- * 符合約定。唯一的例外是 rs_deploy 的回呼，那是原生端主動打上來的。
+ * 本類別所有 RimeCore 呼叫都發生在 IME 主執行緒 —— Compose 事件回呼、
+ * onKeyDown、以及 RimeRuntime 切回主執行緒後的 phase 回呼，全都是主執行緒。
  */
 class RimeInputMethodService : InputMethodService() {
 
@@ -37,28 +38,27 @@ class RimeInputMethodService : InputMethodService() {
 
     private var uiState by mutableStateOf(KeyboardUiState())
 
+    /** onKeyDown 消費掉的 keycode，onKeyUp 要對應吃掉，否則宿主會收到落單的 up。 */
+    private val consumedKeys = HashSet<Int>()
+
+    private val phaseListener: (RimeRuntime.Phase) -> Unit = { phase -> onPhase(phase) }
+
     override fun onCreate() {
         super.onCreate()
-        val ok = RimeRuntime.ensureInitialized(applicationContext)
-        if (ok) {
-            session = RimeCore.sessionCreate()
-        }
-        uiState = uiState.copy(
-            isStub = RimeCore.isStub(),
-            fatalMessage = when {
-                !ok -> RimeRuntime.initError ?: "rime 初始化失敗"
-                session == RimeCore.INVALID_SESSION -> "無法建立 rime session: ${RimeCore.lastError()}"
-                else -> null
-            },
-        )
-        Log.i(TAG, "onCreate: init=$ok session=$session stub=${RimeCore.isStub()}")
+        uiState = uiState.copy(isStub = RimeCore.isStub())
+        RimeRuntime.addListener(phaseListener)
+        // 解壓在背景執行緒，rs_init 之後才切回主執行緒，這裡不會阻塞。
+        RimeRuntime.start(applicationContext)
+        Log.i(TAG, "onCreate: stub=${RimeCore.isStub()} phase=${RimeRuntime.phase}")
     }
 
     override fun onCreateInputView(): View {
         host?.onDestroy()
         val newHost = ComposeKeyboardHost(this)
         host = newHost
-        return newHost.createView {
+        // decorView 必須傳進去，否則 Compose 找不到 ViewTreeLifecycleOwner
+        // 而在 attach 當下崩潰。詳見 ComposeKeyboardHost 的註解。
+        return newHost.createView(window?.window?.decorView) {
             RimeTheme {
                 RimeKeyboard(state = uiState, onEvent = ::handleEvent)
             }
@@ -82,6 +82,7 @@ class RimeInputMethodService : InputMethodService() {
     }
 
     override fun onDestroy() {
+        RimeRuntime.removeListener(phaseListener)
         host?.onDestroy()
         host = null
         if (session != RimeCore.INVALID_SESSION) {
@@ -91,16 +92,96 @@ class RimeInputMethodService : InputMethodService() {
         super.onDestroy()
     }
 
+    /* ─────────────────── 初始化狀態 ─────────────────── */
+
+    private fun onPhase(phase: RimeRuntime.Phase) {
+        when (phase) {
+            RimeRuntime.Phase.IDLE,
+            RimeRuntime.Phase.EXTRACTING,
+            -> uiState = uiState.copy(busyMessage = "正在準備輸入法資料…", fatalMessage = null)
+
+            RimeRuntime.Phase.DEPLOYING ->
+                uiState = uiState.copy(
+                    busyMessage = "首次啟動：正在編譯詞庫，需要一到兩分鐘…",
+                    fatalMessage = null,
+                )
+
+            RimeRuntime.Phase.READY -> {
+                uiState = uiState.copy(busyMessage = null, fatalMessage = null)
+                // 部署會讓舊 session 失效，這裡一律重建。
+                rebuildSession()
+                refreshFromRime(consumeCommit = false)
+            }
+
+            RimeRuntime.Phase.FAILED ->
+                uiState = uiState.copy(
+                    busyMessage = null,
+                    fatalMessage = RimeRuntime.initError ?: "rime 初始化失敗",
+                )
+        }
+        Log.i(TAG, "phase=$phase session=$session")
+    }
+
+    private fun rebuildSession() {
+        if (session != RimeCore.INVALID_SESSION) {
+            RimeCore.sessionDestroy(session)
+            session = RimeCore.INVALID_SESSION
+        }
+        session = RimeCore.sessionCreate()
+        if (session == RimeCore.INVALID_SESSION) {
+            Log.e(TAG, "建立 session 失敗: ${RimeCore.lastError()}")
+        }
+    }
+
     /** 部署後舊 session 會失效（見 rime_shell.h），這裡負責重建。 */
     private fun ensureSession() {
-        if (!RimeRuntime.isInitialized) return
+        if (!RimeRuntime.isReady) return
         if (!RimeCore.sessionAlive(session)) {
-            session = RimeCore.sessionCreate()
+            rebuildSession()
             Log.i(TAG, "session 已失效，重建為 $session")
         }
     }
 
-    /* ─────────────────── 事件處理 ─────────────────── */
+    /* ─────────────────── 實體鍵盤 ───────────────────
+     *
+     * `adb shell input keyevent` 與真正的實體鍵盤走的都是這條路徑
+     * （宿主 → InputMethodService.onKeyDown → rs_process_key），
+     * 和軟鍵盤點擊完全不同。scripts/verify_rime_compose.sh 就是靠這條
+     * 路徑證明 librime 真的在工作。
+     */
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        if (processHardwareKey(event, release = false)) {
+            consumedKeys.add(keyCode)
+            return true
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
+        if (consumedKeys.remove(keyCode)) {
+            // key-up 也送給 librime（有些方案靠 RS_MOD_RELEASE 做上屏），
+            // 但無論它吃不吃，這個 up 都不該再交給宿主。
+            processHardwareKey(event, release = true)
+            return true
+        }
+        return super.onKeyUp(keyCode, event)
+    }
+
+    private fun processHardwareKey(event: KeyEvent, release: Boolean): Boolean {
+        ensureSession()
+        if (session == RimeCore.INVALID_SESSION) return false
+
+        val keysym = AndroidKeyMap.keysymOf(event)
+        if (keysym == 0) return false
+
+        val mods = AndroidKeyMap.modifiersOf(event, release)
+        val consumed = RimeCore.processKey(session, keysym, mods)
+        if (consumed) refreshFromRime()
+        return consumed
+    }
+
+    /* ─────────────────── 軟鍵盤事件 ─────────────────── */
 
     private fun handleEvent(event: KeyboardEvent) {
         when (event) {
@@ -197,8 +278,9 @@ class RimeInputMethodService : InputMethodService() {
     /**
      * 從 rime 取快照並同步到 UI 與 InputConnection。
      *
-     * [RimeCore.snapshot] 在 JNI 內就完成了 acquire → 複製 → release，
-     * 這裡拿到的已經是純 Kotlin 值物件，可以安全存進 Compose state。
+     * rime_shell.h 明訂「每個輸入事件只 acquire 一次」，且 commit 在 acquire
+     * 當下就被消費。所以整條路徑上只有這個函式會取快照，自動確認也遞迴回
+     * 這裡而不是另外開一次 acquire —— 否則待讀取的 commit_text 會被吃掉。
      */
     private fun refreshFromRime(
         consumeCommit: Boolean = true,
@@ -223,12 +305,10 @@ class RimeInputMethodService : InputMethodService() {
             }
         }
 
-        // 「選字」不等於「上屏」：拼音類方案選字當下就 commit，注音類方案選完
-        // 仍停留在組字狀態（is_composing 為 true、preedit 已是選中文字），
-        // 要前端明確呼叫 rs_commit_composition 才會上屏。
-        //
-        // 只在「已無候選可選」時才自動確認，否則會誤砍掉多音節輸入中
-        // 「選了第一段、還要繼續選下一段」的正常流程。
+        // 「選字」不等於「上屏」。判別條件是 menu.count，見 rime_shell.h：
+        //   count > 0               → 還有段落待選，繼續選，不要 commit
+        //   count == 0 && composing → 轉換完成待確認，呼叫 rs_commit_composition
+        //   count == 0 && !composing→ 已經結束
         if (allowAutoCommit &&
             snapshot.status.isComposing &&
             snapshot.menu.candidates.isEmpty()
