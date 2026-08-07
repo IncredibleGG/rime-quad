@@ -133,7 +133,21 @@ if [ "$SKIP_EMU" -eq 0 ]; then
   step "6b. 升級路徑（覆蓋安裝，不解除安裝）"
   # 最近兩個真 bug 都出在這條路徑上：新增的內建方案進不到舊使用者、
   # 以及降版被拒。全新安裝永遠測不到它們，而真實使用者絕大多數是升級。
-  PREV="$(ls -t "$ROOT"/release/*.apk 2>/dev/null | grep -v "$(basename "$APK")" | head -1)"
+  # 挑「前一版」要挑得對，否則會拿測試產物來比。條件有三：
+  #   1. 不是 -dirty（那是開發途中的建置，不是發布過的版本）
+  #   2. versionCode 嚴格小於新版（測試建置常把版號調高，拿它比會誤判成降版）
+  #   3. 取符合條件者中最新的一個
+  vc_of() { "$SDK/build-tools/35.0.0/aapt2" dump badging "$1" 2>/dev/null \
+              | grep -oE "versionCode='[0-9]+'" | head -1 | tr -dc '0-9'; }
+  NEW_VC="$(vc_of "$APK")"
+  PREV=""
+  for cand in $(ls -t "$ROOT"/release/*.apk 2>/dev/null); do
+    case "$cand" in *-dirty.apk) continue ;; esac
+    [ "$(basename "$cand")" = "$(basename "$APK")" ] && continue
+    CVC="$(vc_of "$cand")"
+    [ -n "$CVC" ] && [ -n "$NEW_VC" ] && [ "$CVC" -lt "$NEW_VC" ] || continue
+    PREV="$cand"; break
+  done
   if [ -z "$PREV" ]; then
     echo "  [INFO] release/ 下沒有前一版可用來測升級，略過"
   else
