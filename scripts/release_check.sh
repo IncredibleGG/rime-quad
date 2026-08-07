@@ -152,7 +152,11 @@ if [ "$SKIP_EMU" -eq 0 ]; then
     echo "  [INFO] release/ 下沒有前一版可用來測升級，略過"
   else
     echo "  前一版：$(basename "$PREV")"
-    if "$ADB" -s "$SER" install -r "$PREV" >/dev/null 2>&1; then
+    # 先移除，才能裝回舊簽章的版本 —— 第 6 步已經裝上新版了，
+    # 直接 install -r 舊版會因為簽章不同（或降版）而失敗，
+    # 於是升級測試被「略過」而不是被執行。那正好放過了要驗的東西。
+    "$ADB" -s "$SER" uninstall org.rimequad.ime >/dev/null 2>&1 || true
+    if "$ADB" -s "$SER" install "$PREV" >/dev/null 2>&1; then
       # 讓它跑一次，把舊版的 user 資料種下去
       "$ADB" -s "$SER" shell monkey -p org.rimequad.ime -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || true
       sleep 25
