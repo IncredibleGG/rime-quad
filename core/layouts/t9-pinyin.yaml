@@ -38,16 +38,16 @@
 #
 #  ── 這份佈局需要什麼才會動 ─────────────────────────────────────────────
 #
-#  需要一個 `t9_pinyin.schema.yaml`（約 2–4 KB，共用現有拼音詞典，不需新詞庫）：
+#  對應方案 `t9_pinyin`（core/data/schemas/t9_pinyin.schema.yaml，共用
+#  luna_pinyin 詞典、只多編一份 prism）。其 speller 契約為：
 #    speller/alphabet: 'ADGJMPTW'（上表的八個代表字母）
 #    speller/algebra:  把詞典音節逐字母 xlit 成代表字母，
 #                      外加 `abbrev/^([a-z]).+$/$1/` 超級簡拼（九宮格天然模糊，
 #                      靠簡拼補召回）
 #    translator/prism: 另取名，避免與全拼方案的 prism 撞檔
-#  方案 id 定案後請同步修改下方的 `for_schema`。
-#
-#  ⚠ 本檔尚未經過實機驗證 —— 方案不存在就沒有東西可以驗。方案落地後
-#     第一件事就是照上面的「M G G A M」打出「你好」。
+#  核心層已實測：MGGAM → 「你好」為第一候選（preedit "MG GAM"）。
+#  數字鍵不會被 speller 吃掉（送 2 回報未消費，透傳給宿主）——
+#  這正是選字母而非數字 2-9 的理由。
 #
 #  規範：docs/theme-format.md §9
 # ─────────────────────────────────────────────────────────────────────────────
@@ -66,8 +66,7 @@ description:
 
 kind: grid
 targets: [android, ios]
-# ⚠ 佔位值：T9 方案尚未建立，方案 id 定案後必須同步修改。
-for_schema: ["luna_pinyin_t9", "t9"]
+for_schema: ["t9_pinyin"]
 direction: ltr
 default_layer: t9
 primary: false

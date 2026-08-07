@@ -548,6 +548,23 @@ class ThemeParserTest {
     }
 
     @Test
+    fun fourColumnGridDegradesGracefullyViaTheClamp() {
+        // 九宮格只有 4 欄，鍵寬是 QWERTY 的 2.7 倍；aspect 想要的鍵高高達 143dp，
+        // 全靠 key_height.max 擋下來。這是本模型欄數差距最大的一格。
+        val t = loadShipped("default-light").value!!
+        val grid = resolveQwerty(t, 456.2f, 988f, units = 4f, rows = 4)
+        val qwerty = resolveQwerty(t, 456.2f, 988f, units = 10f, rows = 4)
+
+        assertTrue("鍵寬應遠大於 QWERTY", grid.keyWidth > qwerty.keyWidth * 2)
+        // 夾制生效：鍵高不得跟著鍵寬暴衝
+        assertF(t.keyboard.geometry.keyHeightMax, grid.keyHeight)
+        // 觸控目標仍在可用範圍（Android 建議最小 48dp）
+        assertTrue("鍵高 ${grid.keyHeight} 應 >= 48dp", grid.keyHeight >= 48f)
+        // 列數相同時鍵盤總高不變 —— 切換佈局時高度不會跳動
+        assertF(qwerty.keyboardHeight, grid.keyboardHeight)
+    }
+
+    @Test
     fun keyboardHeightIsComputedAndPaddingAddsToIt() {
         val t = loadShipped("default-light").value!!
         val r = resolveQwerty(t, 456.2f, 988f)
