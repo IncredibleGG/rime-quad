@@ -1,0 +1,260 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  intl-samsung-light — 「Galaxy 系內建鍵盤」風格的度量與配色（淺色）
+#
+#  ── 模仿的是什麼 ────────────────────────────────────────────────────────
+#  只模仿**度量與明度層級**。配色是自己調的中性灰階，沒有品牌色、
+#  沒有品牌圖示、沒有品牌字樣。
+#
+#  ── 度量的來源與誤差 ────────────────────────────────────────────────────
+#  使用者本人 Galaxy S24 Ultra 的實機截圖（docs/reference/samsung/，未隨 repo
+#  散佈）。截圖 1182×2560，是 1440×3120 的等比縮圖（兩軸縮放比 0.8208/0.8205）。
+#  比例尺取 456.2 dp / 1182 px = **0.3860 dp/px**（S24U 在 WQHD+ 下的邏輯寬度）。
+#  **若使用者實際是 FHD+，以下 dp 值全部要乘 0.842**（截圖長寬比相同，無法分辨）。
+#  相對比例不受此影響。
+#
+#    | 量到的（字母層）      | 值            | 本檔設成      |
+#    |----------------------|---------------|---------------|
+#    | 側邊留白 左/右        | 9.65 / 10.0   | 9.8 / 9.8     |
+#    | 字母鍵寬 × 高         | 37.4 × 43.2   | 見下方 aspect |
+#    | 數字列高              | 35.9          | 佈局 weight 0.83 |
+#    | 鍵距                  | 6.6–7.0       | 6.8           |
+#    | 列距                  | 12.4          | 12.4          |
+#    | 圓角                  | ≈7.7          | 8             |
+#    | 陰影                  | 無            | elevation 0   |
+#    | 工具列／建議列高      | 53.3          | 53            |
+#
+#    | 量到的（符號層 7 欄） | 值            |
+#    |----------------------|---------------|
+#    | 符號鍵寬 × 高         | 52.1 × 58.0   |
+#    | 最右一欄寬            | 65.2（= 1.25 倍）|
+#
+#  ── key_aspect / key_height 為什麼是 1.20 與 42–58 ──────────────────────
+#  這一系有兩個互相打架的特性，一個模型要同時服侍它們，只能取平衡：
+#
+#  (A) **同一份鍵盤的字母層是 5 列、符號層是 4 列，兩者總高度幾乎一樣**
+#      （使用者 S24U 實測 258.3 vs 255.1 dp）—— 列數變少時鍵高變高。
+#      在本格式裡這靠 key_height.max 表達：
+#        字母層 units 10   → 鍵寬 37.5 → ×1.20 = 45.0
+#        符號層 units 7.25 → 鍵寬 54.6 → ×1.20 = 65.5 → 夾到 max 58（實測 58.0）
+#
+#  (B) **字母鍵的高度在不同螢幕上幾乎不變**（和 Gboard 一樣是固定鍵高）：
+#      456 dp 寬的 S24U 實測 43.2；411 dp 寬的機器（另一組公開截圖量得）44.2。
+#      要在兩種螢幕上都得到 43–44，需要 key_height 的上界壓在 44.5 左右。
+#
+#  (A) 要 max = 58，(B) 要 max ≈ 44.5。**一個 max 不可能同時是兩個值** ——
+#  這是本格式的真實限制（見回報：缺 layer 級的高度覆寫）。
+#  折衷取 aspect 1.20、min 42、max 58，結果是：
+#
+#    | 螢幕 / 層          | 本主題算出 | 實機量到 | 差    |
+#    |-------------------|-----------|---------|-------|
+#    | 456 dp 字母層      | 45.0      | 43.2    | +1.8  |
+#    | 411 dp 字母層      | 40.7→42.0 | 44.2    | −2.2  |
+#    | 456 dp 符號層      | 65.5→58.0 | 58.0    |  0.0  |
+#
+#  （411 dp 那一列的實機值來自公開截圖的二手量測，密度是推算的，
+#    誤差比 S24U 那一列大得多，只當作方向性參考。）
+#
+#  副作用：字母層總高 ≈ 283.6 dp，符號層 ≈ 286 dp，差 2.4 dp ——
+#  這一項反而比預期更貼近實機的 3 dp。
+#
+#  ── 與另外兩套 intl 主題的差別 ─────────────────────────────────────────
+#    · **修飾鍵比字母鍵暗（退到背景）**，送出鍵**不用強調色** ——
+#      intl-gboard 與 intl-ios 都相反（修飾鍵較暗但送出鍵是強調色）。
+#      這是這一系最容易一眼認出的特徵：整塊鍵盤沒有任何一顆彩色的鍵。
+#    · press_preview **開啟**（Gboard 關閉）。
+#    · hint（角落數字）**關閉** —— 因為數字已經常駐在最上面那一列，
+#      再放角落提示會重複。這是「有數字列」這個決定的直接後果。
+#    · 候選／工具列的底色與鍵盤底色**不同**（實測是兩個不同的灰），
+#      Gboard 那一系是連續的同一塊底色。
+#    · 側邊留白 9.8（Gboard 4.75）、鍵距 6.8（Gboard 5.7）——
+#      這一系整體更鬆，鍵更小。
+#
+#  規範：docs/theme-format.md §8
+# ─────────────────────────────────────────────────────────────────────────────
+
+format: rime-theme/1
+id: intl-samsung-light
+revision: 1
+
+inherits: default-light
+
+name:
+  en: "Number-row style (light)"
+  zh-Hant: "常駐數字列・淺色"
+  zh-Hans: "常驻数字列・浅色"
+
+description:
+  en: "Metrics measured from a Galaxy handset's built-in keyboard. Neutral greyscale, no brand colours, no accent-coloured keys."
+  zh-Hant: "度量取自 Galaxy 手機內建鍵盤的實機截圖；中性灰階配色，整塊鍵盤沒有彩色鍵。"
+
+author: "rime-quad"
+license: "CC0-1.0"
+
+appearance: light
+counterpart: intl-samsung-dark
+
+# 明度層級（與實測的深色版相同關係，只是整體翻過來）：
+#   背景 最暗 ←→ 修飾鍵 中間 ←→ 字母鍵 最亮
+# 淺色版對應成：背景 最灰 → 修飾鍵 中灰 → 字母鍵 純白。
+palette:
+  bg:               "#E6E7EA"
+  surface:          "#DCDDE1"   # 工具列／候選列：與鍵盤底色刻意不同
+  surface_alt:      "#FFFFFF"
+  key:              "#FFFFFF"
+  key_pressed:      "#D6D8DD"
+  key_mod:          "#CFD1D6"   # 修飾鍵：比字母鍵暗（退到背景）
+  key_mod_pressed:  "#BABDC4"
+  accent:           "#3C6E9F"   # 只用在 active 狀態與候選高亮，鍵面不用
+  accent_pressed:   "#325C85"
+  on_accent:        "#FFFFFF"
+  fg:               "#15181C"
+  fg_dim:           "#3A4048"
+  muted:            "#6E747D"
+  divider:          "#C9CBD1"
+  shadow:           "#0F172A1F"
+  danger:           "#C43A2E"
+
+metrics:
+  corner_radius: 8
+  border_width: 0
+  padding: 6
+  spacing: 4
+  elevation: 0
+
+candidates:
+  bar:
+    height: 53
+    background: "$surface"
+    border_top_width: 0
+
+keyboard:
+  background: "$bg"
+
+  # 1.15 = 實測 43.2 / 37.5。max 58 = 實測符號層的鍵高，刻意讓 7 欄時夾在那裡。
+  key_aspect: 1.20
+  key_height:
+    min: 42
+    max: 58
+  max_screen_ratio:
+    portrait: 0.48      # 5 列比 4 列高，安全網要放寬一點才不會被反推壓扁
+    landscape: 0.62
+
+  padding:
+    left: 9.8
+    right: 9.8
+    top: 6.6
+    bottom: 10
+
+  row_spacing: 12.4
+  key_spacing: 6.8
+  honor_bottom_inset: true
+
+  key_styles:
+    default:
+      background: "$key"
+      pressed_background: "$key_pressed"
+      foreground: "$fg"
+      pressed_foreground: "$fg"
+      corner_radius: 8
+      border_width: 0
+      elevation: 0
+      font: key
+      label_size: 24
+      hint_size: 10
+      hint_color: "$muted"
+      hint_position: none      # 數字列已常駐，不再放角落提示
+      icon_size: 23
+      active_background: "$accent"
+      active_foreground: "$on_accent"
+
+    # 這一系的修飾鍵是「往背景退」而不是「往前跳」。
+    modifier:
+      background: "$key_mod"
+      pressed_background: "$key_mod_pressed"
+      foreground: "$fg_dim"
+      pressed_foreground: "$fg"
+      corner_radius: 8
+      border_width: 0
+      elevation: 0
+      font: key
+      label_size: 21
+      hint_position: none
+      icon_size: 23
+      # shift 鎖定／一次性狀態靠**圖示變色**表示，不換底色（實測即是如此）。
+      active_background: "$key_mod"
+      active_foreground: "$accent"
+
+    # 這一系的送出鍵**不是**強調色，與 modifier 同色。
+    # 這裡刻意不寫成 `inherits`-style 的別名，因為 §8.8.1 的 action 是規範名，
+    # 少了它解析器會補一份預設（強調色），那就破壞了本主題的核心特徵。
+    action:
+      background: "$key_mod"
+      pressed_background: "$key_mod_pressed"
+      foreground: "$fg_dim"
+      pressed_foreground: "$fg"
+      corner_radius: 8
+      border_width: 0
+      elevation: 0
+      font: key
+      label_size: 21
+      hint_position: none
+      icon_size: 23
+      active_background: "$key_mod_pressed"
+      active_foreground: "$fg"
+
+    space:
+      background: "$key"
+      pressed_background: "$key_pressed"
+      foreground: "$muted"
+      pressed_foreground: "$fg"
+      corner_radius: 8
+      border_width: 0
+      elevation: 0
+      font: key
+      label_size: 14
+      hint_position: none
+      icon_size: 20
+      active_background: "$key_pressed"
+      active_foreground: "$fg"
+
+    accent:
+      background: "$key"
+      pressed_background: "$key_pressed"
+      foreground: "$accent"
+      pressed_foreground: "$accent"
+      corner_radius: 8
+      border_width: 0
+      elevation: 0
+      font: key
+      label_size: 22
+      hint_position: none
+      icon_size: 22
+      active_background: "$key_pressed"
+      active_foreground: "$accent"
+
+  popup:
+    show: true
+    background: "$surface_alt"
+    foreground: "$fg"
+    highlight_background: "$accent"
+    highlight_foreground: "$on_accent"
+    corner_radius: 10
+    item_size: 23
+    item_padding: 11
+    elevation: 6
+    max_columns: 6
+
+  # 這一系短按就有放大氣泡（與 Gboard 相反）。
+  press_preview:
+    show: true
+    background: "$surface_alt"
+    foreground: "$fg"
+    size: 30
+    corner_radius: 8
+    elevation: 6
+
+feedback:
+  haptic: true
+  haptic_strength: medium
+  sound: false
+  sound_volume: 0.3

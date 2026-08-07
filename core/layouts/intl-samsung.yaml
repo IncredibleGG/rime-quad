@@ -1,0 +1,468 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  intl-samsung — 「Galaxy 系手機內建鍵盤」風格（常駐數字列）
+#
+#  ── 這份佈局模仿的是什麼 ────────────────────────────────────────────────
+#  三星 Galaxy 手機內建輸入法的**佈局慣例**：字母層上方常駐一整列數字（而且
+#  那一列比其他列矮）、底列多一顆語言切換鍵、符號層改成 7 欄寬鍵並用 △/▽ 翻頁。
+#  **不含**任何品牌配色、圖示或字樣；配色走主題檔 intl-samsung-light / -dark。
+#
+#  ── 量測來源與換算（一手資料，含誤差說明）──────────────────────────────
+#  使用者本人的 Galaxy S24 Ultra 實機截圖 7 張（docs/reference/samsung/，
+#  已列入 .gitignore，不隨 repo 散佈）。截圖檔為 1182×2560，是 1440×3120 的
+#  等比縮圖（1182/1440 = 0.8208、2560/3120 = 0.8205，兩軸一致）。
+#
+#  **比例尺**：不把截圖像素當 dp。S24U 在 WQHD+ 下的邏輯寬度是 456.2 dp
+#  （1440 px @ 505 dpi，與本 repo 在 §8.8.0.1 記載的基準同一台）。
+#  於是 1 截圖 px = 456.2 / 1182 = **0.3860 dp**。
+#  **誤差**：若使用者實際把螢幕設在 FHD+（1080×2340 @450dpi，384 dp 寬），
+#  所有 dp 數值要再乘 0.842。無法從截圖本身分辨這兩種設定（長寬比相同），
+#  因此以下所有 dp 值帶有 **最多 −16 % 的系統性偏差**。相對比例（鍵寬:鍵高、
+#  數字列相對其他列的高度）不受影響，那才是本檔真正抄下來的東西。
+#
+#  字母層（photo_2，英文 QWERTY，深色）：
+#    側邊留白      左 9.65   右 10.0
+#    字母鍵        37.4–37.8 寬 × 43.2 高   （aspect 1.15）
+#    數字列高      35.9  → 相對其他列 weight = 35.9 / 43.2 = **0.83**
+#    鍵距 / 列距   6.6–7.0 / 12.4
+#    圓角          ≈ 7.7（四分之一圓弧擬合）
+#    shift / 退格  52.9 / 52.5，且與字母之間的間隙是 13.5（其餘是 6.8）
+#    底列          !#1 54.0 ┊ 中/En 37.4 ┊ , 37.4 ┊ space 176.0 ┊ . 37.4 ┊ ⏎ 59.4
+#    陰影          無
+#    麥克風        不是獨立鍵，是**空白鍵右上角的小圖示**
+#
+#  符號層（photo_4，7 欄 × 4 列）：
+#    側邊留白      11.2（比字母層寬）
+#    一般符號鍵    52.1 寬 × 58.0 高      ← 鍵**變高了**
+#    最右一欄      65.2 寬（⌫ / △ / ▽）  → 1.25 個一般鍵寬
+#    鍵距 / 列距   9.3–9.7 / 7.7          ← 也跟著變
+#    底列          中文 51.7 ┊ 中/英 52.1 ┊ space 174.8 ┊ 123 51.7 ┊ ⏎ 65.2
+#
+#  ── 本檔在格式內怎麼表達這些 ───────────────────────────────────────────
+#  · 數字列的「比較矮」→ `row.weight: 0.83`（這正是 weight 存在的理由）。
+#  · shift/退格旁邊的額外間隙 → **表達不出來**（沒有 per-key margin）。
+#    改以 width 1.5（實測 1.38 + 額外間隙 0.12）吸收，兩顆鍵各寬約 4 dp。
+#  · 符號層的 7 欄不等寬 → `units: 7.25`，六顆 1.0 + 最右一顆 1.25。
+#  · 符號層鍵距變大、列距變小 → **表達不出來**（key_spacing/row_spacing 是
+#    主題級或佈局級，不是 layer 級）。本檔沿用字母層的值。
+#  · 符號層鍵高 58 而字母層 43.2 → 用主題的 `key_height.max` 表達：
+#    `key_aspect: 1.20` 搭 `key_height: {min: 42, max: 58}`，
+#    字母層 37.5 × 1.20 = 45.0（實測 43.2，差 +1.8），
+#    符號層 54.6 × 1.20 = 65.5 → 夾到 58（實測 58.0，差 0）。
+#    aspect 沒有取到剛好命中字母層的 1.15，是因為另一組公開截圖顯示
+#    這一系在 411 dp 寬的機器上字母鍵仍是 44 dp 高（= 固定鍵高，同 Gboard），
+#    要同時服侍「跨螢幕固定鍵高」與「符號層鍵變高」需要兩個不同的 max。
+#    詳細取捨與誤差表寫在 core/themes/intl-samsung-light.yaml 的檔頭。
+#
+#  ── 已知不重現的部分（誠實列出）────────────────────────────────────────
+#  · 空白鍵右上角的麥克風小圖示：一顆鍵只有一個 label / 一個 icon，
+#    沒有「角落次要圖示 + 獨立觸發區」的表達方式。語音輸入本身也沒有
+#    對應的 action verb（§9.5 沒有 `voice_input`）。
+#  · 符號層底列的 `123` 鍵（指向一個左符號右數字的混合面板）：本檔不重現。
+#    字母層已常駐數字列，該面板是冗餘的；那一格改放句號。
+#  · 三星把「鍵盤類型」選單畫成蓋在鍵盤上、但**底列仍露出來**的浮層，
+#    所以使用者永遠看得到出口。那是 App UI 不是佈局，回報給主控。
+#
+#  ── 每一層都進得去也出得來 ─────────────────────────────────────────────
+#    lower ⇄(shift) upper
+#    lower →(!#1) sym1 ⇄(△/▽) sym2 ；sym1/sym2 →(ABC) lower
+#  本檔不使用 `switch_layout:`，不依賴任何其他佈局檔。
+#
+#  規範：docs/theme-format.md §9
+# ─────────────────────────────────────────────────────────────────────────────
+
+format: rime-layout/1
+id: intl-samsung
+revision: 1
+
+name:
+  en: "QWERTY + number row"
+  zh-Hant: "QWERTY・常駐數字列"
+  zh-Hans: "QWERTY・常驻数字列"
+
+description:
+  en: "26-key QWERTY with a permanent (shorter) number row, a language key in the bottom row, and 7-column paged symbol planes."
+  zh-Hant: "字母層上方常駐一整列數字（該列較矮），底列有語言鍵，符號層是 7 欄寬鍵並以 △/▽ 翻頁。"
+  zh-Hans: "字母层上方常驻一整列数字（该列较矮），底列有语言键，符号层是 7 栏宽键并以 △/▽ 翻页。"
+
+author: "rime-quad"
+license: "CC0-1.0"
+
+kind: alphabetic
+targets: [android, ios]
+for_schema: ["*"]
+direction: ltr
+default_layer: lower
+primary: false
+
+metrics:
+  row_spacing: null
+  key_spacing: null
+  height_scale: 1.0
+
+layers:
+
+  # ── 小寫層（5 列：數字列 + 三列字母 + 底列）───────────────────────────────
+  #  數字列常駐是這一系的招牌，代價是鍵盤變高一列、每一鍵變矮。
+  #  因為數字已經在鍵面上，字母鍵**不放角落數字提示**（放了會重複）。
+  - id: "lower"
+    label: "abc"
+    units: 10
+    rows:
+
+      # weight 0.83 = 實測 35.9 / 43.2。這一列刻意比其他列矮。
+      - weight: 0.83
+        keys:
+          - { id: "d1", label: "1", send: { keysym: "1" } }
+          - { id: "d2", label: "2", send: { keysym: "2" } }
+          - { id: "d3", label: "3", send: { keysym: "3" } }
+          - { id: "d4", label: "4", send: { keysym: "4" } }
+          - { id: "d5", label: "5", send: { keysym: "5" } }
+          - { id: "d6", label: "6", send: { keysym: "6" } }
+          - { id: "d7", label: "7", send: { keysym: "7" } }
+          - { id: "d8", label: "8", send: { keysym: "8" } }
+          - { id: "d9", label: "9", send: { keysym: "9" } }
+          - { id: "d0", label: "0", send: { keysym: "0" } }
+
+      - weight: 1.0
+        keys:
+          - { id: "q", label: "q", send: { keysym: "q" } }
+          - { id: "w", label: "w", send: { keysym: "w" } }
+          - { id: "e", label: "e", send: { keysym: "e" },
+              popup: { layout: row, keys: [ { label: "è", send: { text: "è" } }, { label: "é", send: { text: "é" } }, { label: "ê", send: { text: "ê" } }, { label: "ë", send: { text: "ë" } } ] } }
+          - { id: "r", label: "r", send: { keysym: "r" } }
+          - { id: "t", label: "t", send: { keysym: "t" } }
+          - { id: "y", label: "y", send: { keysym: "y" } }
+          - { id: "u", label: "u", send: { keysym: "u" },
+              popup: { layout: row, keys: [ { label: "ù", send: { text: "ù" } }, { label: "ú", send: { text: "ú" } }, { label: "û", send: { text: "û" } }, { label: "ü", send: { text: "ü" } } ] } }
+          - { id: "i", label: "i", send: { keysym: "i" },
+              popup: { layout: row, keys: [ { label: "ì", send: { text: "ì" } }, { label: "í", send: { text: "í" } }, { label: "î", send: { text: "î" } }, { label: "ï", send: { text: "ï" } } ] } }
+          - { id: "o", label: "o", send: { keysym: "o" },
+              popup: { layout: row, keys: [ { label: "ò", send: { text: "ò" } }, { label: "ó", send: { text: "ó" } }, { label: "ô", send: { text: "ô" } }, { label: "ö", send: { text: "ö" } } ] } }
+          - { id: "p", label: "p", send: { keysym: "p" } }
+
+      - weight: 1.0
+        keys:
+          - { spacer: true, width: 0.5 }
+          - { id: "a", label: "a", send: { keysym: "a" },
+              popup: { layout: row, keys: [ { label: "à", send: { text: "à" } }, { label: "á", send: { text: "á" } }, { label: "â", send: { text: "â" } }, { label: "ä", send: { text: "ä" } } ] } }
+          - { id: "s", label: "s", send: { keysym: "s" } }
+          - { id: "d", label: "d", send: { keysym: "d" } }
+          - { id: "f", label: "f", send: { keysym: "f" } }
+          - { id: "g", label: "g", send: { keysym: "g" } }
+          - { id: "h", label: "h", send: { keysym: "h" } }
+          - { id: "j", label: "j", send: { keysym: "j" } }
+          - { id: "k", label: "k", send: { keysym: "k" } }
+          - { id: "l", label: "l", send: { keysym: "l" } }
+          - { spacer: true, width: 0.5 }
+
+      - weight: 1.0
+        keys:
+          - id: "shift"
+            icon: shift
+            style: modifier
+            width: 1.5
+            tap: "layer_once:upper"
+            double_tap: "layer_lock:upper"
+          - { id: "z", label: "z", send: { keysym: "z" } }
+          - { id: "x", label: "x", send: { keysym: "x" } }
+          - { id: "c", label: "c", send: { keysym: "c" },
+              popup: { layout: row, keys: [ { label: "ç", send: { text: "ç" } }, { label: "ć", send: { text: "ć" } } ] } }
+          - { id: "v", label: "v", send: { keysym: "v" } }
+          - { id: "b", label: "b", send: { keysym: "b" } }
+          - { id: "n", label: "n", send: { keysym: "n" },
+              popup: { layout: row, keys: [ { label: "ñ", send: { text: "ñ" } } ] } }
+          - { id: "m", label: "m", send: { keysym: "m" } }
+          - id: "backspace"
+            icon: backspace
+            style: modifier
+            width: 1.5
+            send: { keysym: "BackSpace" }
+            repeat: true
+            swipe:
+              left: { tap: "clear" }
+
+      # 實測底列佔比 1.342 / 0.930 / 0.930 / 4.371 / 0.930 / 1.476（總和 9.98）。
+      # 本檔取 1.34 / 0.93 / 0.93 / 4.37 / 0.93 / 1.50，總和剛好 10。
+      # 與 Gboard 底列的差別：這裡的第二顆是**語言鍵**而非表情鍵，
+      # 逗號因此有自己獨立的一格（Gboard 是把逗號與表情擠在一起）。
+      - weight: 1.0
+        keys:
+          - id: "to_sym"
+            label: "!#1"
+            style: modifier
+            width: 1.34
+            tap: "layer:sym1"
+          - id: "lang"
+            label_from: input_mode
+            icon: globe
+            style: modifier
+            width: 0.93
+            tap: "toggle:ascii_mode"
+            long_press: "schema:picker"
+          - id: "comma"
+            label: "，"
+            width: 0.93
+            send: { keysym: "comma" }
+            popup:
+              layout: row
+              keys:
+                - { label: "、", send: { text: "、" } }
+                - { label: "？", send: { keysym: "question" } }
+                - { label: "！", send: { keysym: "exclam" } }
+                - { label: "…", send: { text: "…" } }
+          - id: "space"
+            icon: space
+            style: space
+            width: 4.37
+            label_from: schema_name
+            send: { keysym: "space" }
+            swipe:
+              left:  { tap: "cursor:left" }
+              right: { tap: "cursor:right" }
+            long_press: "schema:next"
+          - id: "period"
+            label: "。"
+            width: 0.93
+            send: { keysym: "period" }
+            popup:
+              layout: row
+              keys:
+                - { label: "：", send: { keysym: "colon" } }
+                - { label: "；", send: { keysym: "semicolon" } }
+                - { label: "-", send: { keysym: "minus" } }
+                - { label: "/", send: { keysym: "slash" } }
+          - id: "enter"
+            icon: enter
+            style: modifier          # ← 與 Gboard/iOS 不同：這一系的送出鍵不用強調色
+            width: 1.50
+            send: { keysym: "Return" }
+
+  # ── 大寫層 ───────────────────────────────────────────────────────────────
+  - id: "upper"
+    label: "ABC"
+    units: 10
+    rows:
+
+      - weight: 0.83
+        keys:
+          - { id: "d1", label: "1", send: { keysym: "1" } }
+          - { id: "d2", label: "2", send: { keysym: "2" } }
+          - { id: "d3", label: "3", send: { keysym: "3" } }
+          - { id: "d4", label: "4", send: { keysym: "4" } }
+          - { id: "d5", label: "5", send: { keysym: "5" } }
+          - { id: "d6", label: "6", send: { keysym: "6" } }
+          - { id: "d7", label: "7", send: { keysym: "7" } }
+          - { id: "d8", label: "8", send: { keysym: "8" } }
+          - { id: "d9", label: "9", send: { keysym: "9" } }
+          - { id: "d0", label: "0", send: { keysym: "0" } }
+
+      - weight: 1.0
+        keys:
+          - { id: "q", label: "Q", send: { keysym: "Q", modifiers: [Shift] } }
+          - { id: "w", label: "W", send: { keysym: "W", modifiers: [Shift] } }
+          - { id: "e", label: "E", send: { keysym: "E", modifiers: [Shift] } }
+          - { id: "r", label: "R", send: { keysym: "R", modifiers: [Shift] } }
+          - { id: "t", label: "T", send: { keysym: "T", modifiers: [Shift] } }
+          - { id: "y", label: "Y", send: { keysym: "Y", modifiers: [Shift] } }
+          - { id: "u", label: "U", send: { keysym: "U", modifiers: [Shift] } }
+          - { id: "i", label: "I", send: { keysym: "I", modifiers: [Shift] } }
+          - { id: "o", label: "O", send: { keysym: "O", modifiers: [Shift] } }
+          - { id: "p", label: "P", send: { keysym: "P", modifiers: [Shift] } }
+
+      - weight: 1.0
+        keys:
+          - { spacer: true, width: 0.5 }
+          - { id: "a", label: "A", send: { keysym: "A", modifiers: [Shift] } }
+          - { id: "s", label: "S", send: { keysym: "S", modifiers: [Shift] } }
+          - { id: "d", label: "D", send: { keysym: "D", modifiers: [Shift] } }
+          - { id: "f", label: "F", send: { keysym: "F", modifiers: [Shift] } }
+          - { id: "g", label: "G", send: { keysym: "G", modifiers: [Shift] } }
+          - { id: "h", label: "H", send: { keysym: "H", modifiers: [Shift] } }
+          - { id: "j", label: "J", send: { keysym: "J", modifiers: [Shift] } }
+          - { id: "k", label: "K", send: { keysym: "K", modifiers: [Shift] } }
+          - { id: "l", label: "L", send: { keysym: "L", modifiers: [Shift] } }
+          - { spacer: true, width: 0.5 }
+
+      - weight: 1.0
+        keys:
+          - id: "shift_up"
+            icon: shift
+            style: modifier
+            width: 1.5
+            active: true
+            tap: "layer:lower"
+            double_tap: "layer_lock:upper"
+          - { id: "z", label: "Z", send: { keysym: "Z", modifiers: [Shift] } }
+          - { id: "x", label: "X", send: { keysym: "X", modifiers: [Shift] } }
+          - { id: "c", label: "C", send: { keysym: "C", modifiers: [Shift] } }
+          - { id: "v", label: "V", send: { keysym: "V", modifiers: [Shift] } }
+          - { id: "b", label: "B", send: { keysym: "B", modifiers: [Shift] } }
+          - { id: "n", label: "N", send: { keysym: "N", modifiers: [Shift] } }
+          - { id: "m", label: "M", send: { keysym: "M", modifiers: [Shift] } }
+          - id: "backspace"
+            icon: backspace
+            style: modifier
+            width: 1.5
+            send: { keysym: "BackSpace" }
+            repeat: true
+            swipe:
+              left: { tap: "clear" }
+
+      - weight: 1.0
+        keys:
+          - { id: "to_sym", label: "!#1", style: modifier, width: 1.34, tap: "layer:sym1" }
+          - { id: "lang", label_from: input_mode, icon: globe, style: modifier, width: 0.93, tap: "toggle:ascii_mode", long_press: "schema:picker" }
+          - { id: "comma", label: "，", width: 0.93, send: { keysym: "comma" } }
+          - id: "space"
+            icon: space
+            style: space
+            width: 4.37
+            label_from: schema_name
+            send: { keysym: "space" }
+            swipe:
+              left:  { tap: "cursor:left" }
+              right: { tap: "cursor:right" }
+          - { id: "period", label: "。", width: 0.93, send: { keysym: "period" } }
+          - { id: "enter", icon: enter, style: modifier, width: 1.50, send: { keysym: "Return" } }
+
+  # ── 符號層第一頁 ─────────────────────────────────────────────────────────
+  #  7 欄、最右一欄放 ⌫ / △ / ▽ 且比其他欄寬 1.25 倍（實測 65.2 : 52.1）。
+  #  units 因此是 7.25 而不是 7。
+  #  △/▽ 是「翻頁」而不是「切到另一種符號」—— 兩頁互為上一頁／下一頁，
+  #  所以任一頁都回得去，也都能用 ABC 直接離開。
+  - id: "sym1"
+    label: "!#1"
+    units: 7.25
+    rows:
+
+      - weight: 1.0
+        keys:
+          - { id: "exclam",     label: "！", send: { keysym: "exclam" } }
+          - { id: "question",   label: "？", send: { keysym: "question" } }
+          - { id: "period_s",   label: "。", send: { keysym: "period" } }
+          - { id: "comma_s",    label: "，", send: { keysym: "comma" } }
+          - { id: "parenleft",  label: "（", send: { keysym: "parenleft" } }
+          - { id: "parenright", label: "）", send: { keysym: "parenright" } }
+          - id: "backspace"
+            icon: backspace
+            style: modifier
+            width: 1.25
+            send: { keysym: "BackSpace" }
+            repeat: true
+            swipe:
+              left: { tap: "clear" }
+
+      - weight: 1.0
+        keys:
+          - { id: "at",        label: "@", send: { keysym: "at" } }
+          - { id: "colon",     label: "：", send: { keysym: "colon" } }
+          - { id: "semicolon", label: "；", send: { keysym: "semicolon" } }
+          - { id: "slash",     label: "/", send: { keysym: "slash" } }
+          - { id: "minus",     label: "-", send: { keysym: "minus" },
+              popup: { layout: row, keys: [ { label: "–", send: { text: "–" } }, { label: "—", send: { text: "—" } }, { label: "_", send: { keysym: "underscore" } } ] } }
+          - { id: "quotedbl",  label: "「", send: { text: "「" } }
+          - id: "page_prev"
+            label: "△"
+            style: modifier
+            width: 1.25
+            tap: "layer:sym2"
+          # ↑ 只有兩頁，所以上一頁與下一頁指向同一個地方。
+          #   使用者按哪一顆都不會卡住。
+
+      - weight: 1.0
+        keys:
+          - { id: "asterisk",   label: "*", send: { keysym: "asterisk" } }
+          - { id: "underscore", label: "_", send: { keysym: "underscore" } }
+          - { id: "percent",    label: "%", send: { keysym: "percent" } }
+          - { id: "asciitilde", label: "~", send: { keysym: "asciitilde" } }
+          - { id: "asciicircum", label: "^", send: { keysym: "asciicircum" } }
+          - { id: "numbersign", label: "#", send: { keysym: "numbersign" } }
+          - id: "page_next"
+            label: "▽"
+            style: modifier
+            width: 1.25
+            tap: "layer:sym2"
+
+      # 實測底列佔比（換算到 units 7.25）：0.948 / 0.955 / 3.205 / 0.948 / 1.195
+      - weight: 1.0
+        keys:
+          - { id: "to_abc", label: "ABC", style: modifier, width: 0.95, tap: "layer:lower" }
+          - { id: "lang", label_from: input_mode, icon: globe, style: modifier, width: 0.95, tap: "toggle:ascii_mode", long_press: "schema:picker" }
+          - id: "space"
+            icon: space
+            style: space
+            width: 3.20
+            send: { keysym: "space" }
+            swipe:
+              left:  { tap: "cursor:left" }
+              right: { tap: "cursor:right" }
+          - { id: "period2", label: "。", width: 0.95, send: { keysym: "period" } }
+          - { id: "enter", icon: enter, style: modifier, width: 1.20, send: { keysym: "Return" } }
+
+  # ── 符號層第二頁 ─────────────────────────────────────────────────────────
+  - id: "sym2"
+    label: "!#1 (2)"
+    units: 7.25
+    rows:
+
+      - weight: 1.0
+        keys:
+          - { id: "bracketleft",  label: "[", send: { keysym: "bracketleft" } }
+          - { id: "bracketright", label: "]", send: { keysym: "bracketright" } }
+          - { id: "braceleft",    label: "{", send: { keysym: "braceleft" } }
+          - { id: "braceright",   label: "}", send: { keysym: "braceright" } }
+          - { id: "less",         label: "<", send: { keysym: "less" },
+              popup: { layout: row, keys: [ { label: "《", send: { text: "《" } }, { label: "〈", send: { text: "〈" } } ] } }
+          - { id: "greater",      label: ">", send: { keysym: "greater" },
+              popup: { layout: row, keys: [ { label: "》", send: { text: "》" } }, { label: "〉", send: { text: "〉" } } ] } }
+          - id: "backspace"
+            icon: backspace
+            style: modifier
+            width: 1.25
+            send: { keysym: "BackSpace" }
+            repeat: true
+            swipe:
+              left: { tap: "clear" }
+
+      - weight: 1.0
+        keys:
+          - { id: "dollar",   label: "$", send: { keysym: "dollar" } }
+          - { id: "euro",     label: "€", send: { text: "€" } }
+          - { id: "sterling", label: "£", send: { text: "£" } }
+          - { id: "yen",      label: "¥", send: { text: "¥" } }
+          - { id: "degree",   label: "°", send: { text: "°" } }
+          - { id: "section",  label: "§", send: { text: "§" } }
+          - id: "page_prev2"
+            label: "△"
+            style: modifier
+            width: 1.25
+            tap: "layer:sym1"
+
+      - weight: 1.0
+        keys:
+          - { id: "plus",       label: "+", send: { keysym: "plus" } }
+          - { id: "equal",      label: "=", send: { keysym: "equal" } }
+          - { id: "backslash",  label: "\\", send: { keysym: "backslash" } }
+          - { id: "bar",        label: "|", send: { keysym: "bar" } }
+          - { id: "bullet",     label: "•", send: { text: "•" } }
+          - { id: "ellipsis",   label: "…", send: { text: "…" } }
+          - id: "page_next2"
+            label: "▽"
+            style: modifier
+            width: 1.25
+            tap: "layer:sym1"
+
+      - weight: 1.0
+        keys:
+          - { id: "to_abc", label: "ABC", style: modifier, width: 0.95, tap: "layer:lower" }
+          - { id: "lang", label_from: input_mode, icon: globe, style: modifier, width: 0.95, tap: "toggle:ascii_mode", long_press: "schema:picker" }
+          - id: "space"
+            icon: space
+            style: space
+            width: 3.20
+            send: { keysym: "space" }
+            swipe:
+              left:  { tap: "cursor:left" }
+              right: { tap: "cursor:right" }
+          - { id: "period2", label: "。", width: 0.95, send: { keysym: "period" } }
+          - { id: "enter", icon: enter, style: modifier, width: 1.20, send: { keysym: "Return" } }

@@ -1,0 +1,57 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  intl-samsung-dark — 「Galaxy 系內建鍵盤」風格（深色）
+#
+#  這一份的 palette 是**直接量出來的明度關係**，不是推想的。
+#  使用者 S24U 實機截圖（深色主題）逐像素取樣：
+#
+#    鍵盤底色    #010101   （幾乎純黑，AMOLED）
+#    修飾鍵      #171719   （shift / 退格 / !#1 / 語言鍵 / 送出鍵）
+#    字母鍵      #3A3A3C   （數字列、字母、逗號、句號、空白）
+#
+#  也就是 **背景 < 修飾鍵 < 字母鍵**：修飾鍵夾在背景與字母鍵之間，往後退。
+#  本檔照這個關係取值（灰階本身不構成任何產品的品牌識別）。
+#
+#  度量（鍵寬高、間距、圓角、按鍵預覽、送出鍵不用強調色）全部繼承自
+#  intl-samsung-light，該檔檔頭有完整的量測來源、換算方式與誤差說明。
+#  與 intl-gboard 一樣，這一系淺深兩色都是全平面（elevation 0、無描邊），
+#  所以深淺之間確實只有顏色不同。
+# ─────────────────────────────────────────────────────────────────────────────
+
+format: rime-theme/1
+id: intl-samsung-dark
+revision: 1
+
+inherits: intl-samsung-light
+
+name:
+  en: "Number-row style (dark)"
+  zh-Hant: "常駐數字列・深色"
+  zh-Hans: "常驻数字列・深色"
+
+description:
+  en: "Dark counterpart of intl-samsung-light. Palette sampled from a real device screenshot."
+  zh-Hant: "intl-samsung-light 的深色版，配色取自實機截圖的明度關係。"
+
+author: "rime-quad"
+license: "CC0-1.0"
+
+appearance: dark
+counterpart: intl-samsung-light
+
+palette:
+  bg:               "#050506"   # 實測 #010101，略提一點避免與純黑 OLED 邊界重合
+  surface:          "#171719"   # 工具列／候選列：實測與修飾鍵同色
+  surface_alt:      "#2A2A2D"
+  key:              "#3A3A3C"   # 實測值
+  key_pressed:      "#4C4C4F"
+  key_mod:          "#171719"   # 實測值：比字母鍵暗
+  key_mod_pressed:  "#242427"
+  accent:           "#5B93E0"   # 只用在 shift 圖示與候選高亮
+  accent_pressed:   "#4A7BC0"
+  on_accent:        "#08101C"
+  fg:               "#F2F2F4"
+  fg_dim:           "#C2C2C6"
+  muted:            "#8A8A90"
+  divider:          "#2C2C2F"
+  shadow:           "#000000B0"
+  danger:           "#E8695C"

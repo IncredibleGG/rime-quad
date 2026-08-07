@@ -1,0 +1,60 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  intl-gboard-dark — 「Android 主流輸入法」風格（深色）
+#
+#  ── 為什麼這一份只有 palette ────────────────────────────────────────────
+#  §8.2 說「深淺不是只有顏色不同」，並以 default-light / default-dark 的
+#  elevation 與 border_top_width 差異為例。**那個論證在這一套主題上不成立**，
+#  而且不成立的理由本身就是實測結果：
+#  這一系的鍵盤在淺色與深色下**都沒有陰影、都沒有描邊**（elevation 0、
+#  border_width 0），分層完全靠明度差。既然淺色版已經不靠陰影分層，
+#  深色版就沒有東西要改。所以本檔繼承 intl-gboard-light，只換 palette。
+#
+#  這不是偷懶，是**回報一則規範觀察**：§8.2 的理由對「有陰影的擬物主題」
+#  成立，對「全平面主題」不成立。格式沒有錯，但那段說明講得太絕對。
+#
+#  度量（鍵寬高、間距、圓角、按鍵預覽關閉）全部繼承自 intl-gboard-light，
+#  該檔的檔頭有完整的實測數字與來源。
+# ─────────────────────────────────────────────────────────────────────────────
+
+format: rime-theme/1
+id: intl-gboard-dark
+revision: 1
+
+inherits: intl-gboard-light
+
+name:
+  en: "Android style (dark)"
+  zh-Hant: "Android 慣例・深色"
+  zh-Hans: "Android 惯例・深色"
+
+description:
+  en: "Dark counterpart of intl-gboard-light. Identical geometry; palette only."
+  zh-Hant: "intl-gboard-light 的深色版。度量完全相同，只換配色。"
+
+author: "rime-quad"
+license: "CC0-1.0"
+
+appearance: dark
+counterpart: intl-gboard-light
+
+# palette 是 mapping，逐 key 合併（§7.2）。層級關係與淺色版一致：
+#   背景 < 修飾鍵 < 字母鍵（明度），送出鍵用強調色。
+palette:
+  bg:               "#16181D"
+  surface:          "#16181D"
+  surface_alt:      "#282C34"
+  key:              "#2E323A"
+  key_pressed:      "#3E434D"
+  key_mod:          "#22252B"
+  key_mod_pressed:  "#2E323A"
+  key_pill:         "#1C1F24"
+  key_pill_pressed: "#282C34"
+  accent:           "#5A87C6"
+  accent_pressed:   "#4A73AD"
+  on_accent:        "#0C1017"
+  fg:               "#E7EAF0"
+  fg_dim:           "#A9B1BF"
+  muted:            "#79818F"
+  divider:          "#2F333A"
+  shadow:           "#000000A0"
+  danger:           "#E8695C"

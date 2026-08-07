@@ -1,0 +1,246 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  intl-gboard-light — 「Android 主流輸入法」風格的度量與配色（淺色）
+#
+#  ── 模仿的是什麼 ────────────────────────────────────────────────────────
+#  只模仿**度量與層級關係**（鍵多大、間距多少、哪一類鍵比較亮／比較暗、
+#  有沒有陰影、有沒有按鍵預覽）。配色是自己調的中性色，**不是**任何產品的
+#  品牌色；沒有品牌圖示、沒有品牌字樣。
+#
+#  ── 度量的來源（一手實測）──────────────────────────────────────────────
+#  emulator-5558 上實際安裝的 Gboard，螢幕設為 S24U 幾何
+#  （`wm size 1440x3120` / `wm density 505`，456.2 dp 寬），截圖逐像素量測：
+#
+#    | 量到的                | 值        | 本檔設成          |
+#    |----------------------|-----------|-------------------|
+#    | 側邊留白 左/右        | 4.75/4.75 | 4.75 / 4.75       |
+#    | 字母鍵寬 × 高         | 39.6×47.2 | 見下方 aspect     |
+#    | 鍵距                  | 5.7       | 5.7               |
+#    | 列距                  | 11.7      | 11.7              |
+#    | 圓角                  | ≈7.0      | 7                 |
+#    | 陰影                  | 無        | elevation 0       |
+#    | 候選/工具列高         | ≈46       | 46                |
+#    | 底部留白（扣掉導航列）| ≈10       | 10                |
+#
+#  ── key_aspect 為什麼是 1.28 而不是量到的 1.19 ─────────────────────────
+#  §8.8.0.1 已經寫明：Gboard 用的是**固定鍵高**（兩種螢幕都是 47 dp），
+#  aspect 只是被動結果 —— 456 dp 寬的機器上 1.19、411 dp 寬的機器上 1.33。
+#  本格式以 aspect 為主控參數，正確的對齊方式是**收緊 key_height 上下界**
+#  而不是去動 aspect。於是：
+#
+#      aspect 1.28 × 39.6 = 50.7 → 夾到 max 48   （S24U，Gboard 實測 47.2）
+#      aspect 1.28 × 35.4 = 45.3 → 夾到 min 46   （Pixel 6，Gboard 實測 47.0）
+#
+#  兩種螢幕都落在 46–48，把 Gboard 的 47 夾在中間。
+#  代價（誠實說明）：這組緊上下界會削弱「11 欄的注音與 10 欄的 QWERTY
+#  一樣胖瘦」這條性質 —— 11 欄時鍵寬 35.4，算出 45.3 一樣被夾到 46，
+#  結果是 11 欄的鍵比理論值胖一點。本主題是為 10 欄的 intl-gboard 佈局調的。
+#
+#  ── 與另外兩套 intl 主題的差別 ─────────────────────────────────────────
+#    · press_preview **關閉** —— 實測 Gboard 短按不出氣泡，只有長按才有彈出盤。
+#      （在模擬器上以 `input motionevent DOWN` 停住再截圖驗證過：
+#        短按無氣泡；按住 1 秒才浮出含長按字元的圓形彈出盤。）
+#    · 修飾鍵**比字母鍵暗**、送出鍵用強調色 —— 與 intl-samsung 的
+#      「修飾鍵退到背景、送出鍵不用強調色」正好相反。
+#    · 多一個非規範的 key_style `pill`：?123 / ABC 那顆鍵在這一系是
+#      完整的藥丸形（圓角等於半個鍵高），其餘鍵是 7 dp 圓角。
+#      §8.8.1 允許自訂 style 名稱；佈局引用不存在的名稱會退回 default，
+#      所以 intl-gboard 佈局配別的主題也不會壞。
+#    · hint（角落數字）**開啟** —— intl-ios 與 intl-samsung 都關閉。
+#
+#  規範：docs/theme-format.md §8
+# ─────────────────────────────────────────────────────────────────────────────
+
+format: rime-theme/1
+id: intl-gboard-light
+revision: 1
+
+inherits: default-light
+
+name:
+  en: "Android style (light)"
+  zh-Hant: "Android 慣例・淺色"
+  zh-Hans: "Android 惯例・浅色"
+
+description:
+  en: "Metrics measured from a mainstream Android soft keyboard. Neutral palette, no brand colours."
+  zh-Hant: "度量取自 Android 主流輸入法的實測值；配色為中性色，不含任何品牌識別。"
+
+author: "rime-quad"
+license: "CC0-1.0"
+
+appearance: light
+counterpart: intl-gboard-dark
+
+palette:
+  bg:               "#ECEEF2"
+  surface:          "#ECEEF2"   # 工具列與鍵盤同底色（實測 Gboard 是連續的一塊）
+  surface_alt:      "#FFFFFF"
+  key:              "#FFFFFF"
+  key_pressed:      "#DFE3EA"
+  key_mod:          "#DCE0E8"   # shift / 退格 / 逗號 / 句號：比字母鍵暗一階
+  key_mod_pressed:  "#C6CBD6"
+  key_pill:         "#C9CED9"   # ?123 / ABC：再暗一階
+  key_pill_pressed: "#B4BAC7"
+  accent:           "#3F6FA8"   # 中性鋼藍，非任何產品的品牌色
+  accent_pressed:   "#33598A"
+  on_accent:        "#FFFFFF"
+  fg:               "#14181F"
+  fg_dim:           "#39414E"
+  muted:            "#6B7382"
+  divider:          "#D5D9E1"
+  shadow:           "#0F172A26"
+  danger:           "#C43A2E"
+
+metrics:
+  corner_radius: 7
+  border_width: 0
+  padding: 6
+  spacing: 4
+  elevation: 0        # 實測無陰影
+
+candidates:
+  bar:
+    height: 46
+    background: "$surface"
+    border_top_width: 0
+
+keyboard:
+  background: "$bg"
+
+  key_aspect: 1.28
+  key_height:
+    min: 46
+    max: 48
+  max_screen_ratio:
+    portrait: 0.45
+    landscape: 0.62
+
+  padding:
+    left: 4.75
+    right: 4.75
+    top: 6
+    bottom: 10       # + honor_bottom_inset 的系統底部 inset（實測機上 24）≈ 34
+
+  row_spacing: 11.7
+  key_spacing: 5.7
+  honor_bottom_inset: true
+
+  key_styles:
+    default:
+      background: "$key"
+      pressed_background: "$key_pressed"
+      foreground: "$fg"
+      pressed_foreground: "$fg"
+      corner_radius: 7
+      border_width: 0
+      elevation: 0
+      font: key
+      label_size: 27          # 實測鍵面字級 ≈27 dp
+      hint_size: 11           # 實測角落小字 ≈11.3 dp
+      hint_color: "$muted"
+      hint_position: top_right
+      icon_size: 24
+      active_background: "$accent"
+      active_foreground: "$on_accent"
+
+    modifier:
+      background: "$key_mod"
+      pressed_background: "$key_mod_pressed"
+      foreground: "$fg_dim"
+      pressed_foreground: "$fg"
+      corner_radius: 7
+      border_width: 0
+      elevation: 0
+      font: key
+      label_size: 23
+      hint_size: 10
+      hint_position: none
+      icon_size: 23
+      active_background: "$accent@28%"
+      active_foreground: "$fg"
+
+    # 非規範的自訂 style：?123 / ABC 的藥丸形。
+    # corner_radius 24 > 半個鍵高（48/2），渲染器會夾成完整半圓端。
+    pill:
+      background: "$key_pill"
+      pressed_background: "$key_pill_pressed"
+      foreground: "$fg_dim"
+      pressed_foreground: "$fg"
+      corner_radius: 24
+      border_width: 0
+      elevation: 0
+      font: key
+      label_size: 21
+      hint_position: none
+      icon_size: 22
+      active_background: "$accent@28%"
+      active_foreground: "$fg"
+
+    action:
+      background: "$accent"
+      pressed_background: "$accent_pressed"
+      foreground: "$on_accent"
+      pressed_foreground: "$on_accent"
+      corner_radius: 7
+      border_width: 0
+      elevation: 0
+      font: key
+      label_size: 20
+      hint_position: none
+      icon_size: 24
+      active_background: "$accent_pressed"
+      active_foreground: "$on_accent"
+
+    space:
+      background: "$key"
+      pressed_background: "$key_pressed"
+      foreground: "$muted"
+      pressed_foreground: "$fg"
+      corner_radius: 7
+      border_width: 0
+      elevation: 0
+      font: key
+      label_size: 14
+      hint_position: none
+      icon_size: 20
+      active_background: "$key_pressed"
+      active_foreground: "$fg"
+
+    accent:
+      background: "$accent@14%"
+      pressed_background: "$accent@28%"
+      foreground: "$accent"
+      pressed_foreground: "$on_accent"
+      corner_radius: 7
+      border_width: 0
+      elevation: 0
+      font: key
+      label_size: 24
+      hint_size: 11
+      hint_color: "$accent@70%"
+      hint_position: top_right
+      icon_size: 22
+      active_background: "$accent"
+      active_foreground: "$on_accent"
+
+  popup:
+    show: true
+    background: "$surface_alt"
+    foreground: "$fg"
+    highlight_background: "$accent"
+    highlight_foreground: "$on_accent"
+    corner_radius: 10
+    item_size: 24
+    item_padding: 12
+    elevation: 8
+    max_columns: 6
+
+  # 實測：短按不出氣泡，只有長按才浮出彈出盤。這是本系與 iOS 系最明顯的差別。
+  press_preview:
+    show: false
+
+feedback:
+  haptic: true
+  haptic_strength: light
+  sound: false
+  sound_volume: 0.3

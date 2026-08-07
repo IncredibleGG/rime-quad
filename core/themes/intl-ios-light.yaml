@@ -1,0 +1,266 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  intl-ios-light — 「iPhone 內建鍵盤」風格的度量與配色（淺色）
+#
+#  ── 模仿的是什麼 ────────────────────────────────────────────────────────
+#  只模仿度量與層級關係。配色是自己調的中性色，不是任何產品的品牌色。
+#
+#  ── 可信度警告 ──────────────────────────────────────────────────────────
+#  ⚠ **三份 intl 主題裡只有這一份沒有一手量測。** Gboard 是我在
+#  emulator-5558 上逐像素量的、三星是使用者本人的實機截圖，
+#  這一份只能靠公開資料。**Apple 本身沒有公布任何一個幾何數字** ——
+#  HIG、使用手冊、UIKit 文件裡都沒有鍵寬、鍵距、圓角、字級。
+#  以下數值有三個來源等級：
+#    (A) 對 Apple 自家發布的 HIG 素材圖與使用手冊截圖做次像素量測
+#    (B) KeyboardKit（成熟的開源複刻，常數是逆向出來的）的常數
+#    (C) 第三方開發者在真機／模擬器上量到的鍵盤 frame 高度
+#  做 iOS 端時仍請用真機重量一次。
+#
+#    | 項目          | 值（iPhone 直向，390 pt 寬） | 來源      |
+#    |---------------|------------------------------|-----------|
+#    | 字母層總高    | 216（= 4 × 54 列距）         | B + C 一致 |
+#    | 列距（含間隙）| 54.0                         | A + B     |
+#    | 字母鍵高      | 41–42                        | A（真機截圖）|
+#    | 字母鍵寬      | 33.0 = 螢幕寬/10 − 6         | A + B     |
+#    | 鍵距          | 6                            | A + B 一致 |
+#    | 列間隙        | 12–12.5                      | A         |
+#    | 側邊留白      | 3                            | A + B     |
+#    | 圓角          | 5                            | A（量到 5.8）+ B（常數 5）|
+#    | 陰影          | 鍵**正下方 1 pt 的實色硬邊**，不是柔和投影 | A |
+#    | 鍵面字級      | 小寫 26 / 大寫與數字 23 / 圖示 20 / 空白與 123 16 | B（A 交叉驗證小寫 ≈25–27）|
+#
+#  ⚠ 有一組矛盾沒有解決：HIG 的**示意圖**推出「列間隙 11 / 鍵高 43」，
+#  但兩張**真機截圖**一致給出「12.5–13 / 41–42」，KeyboardKit 則是 10 / 44。
+#  本檔採真機截圖那一組。
+#
+#  ⚠ 陰影是這一系最具辨識度的細節，而它**不是一般的投影**：
+#  真機截圖逐列取樣是「鍵白 (255,255,255) → 一列 (141,143,147) → 底色」——
+#  鍵正下方一條 1 pt 的實色硬邊，上方與左右都沒有。本格式只有 `elevation`
+#  這一個數字，畫出來會是柔和投影，方向與硬度都表達不出來（已回報）。
+#
+#  ⚠ iOS 26（Liquid Glass）把圓角改成 9 且**完全取消陰影**。
+#  本檔對齊的是 iOS 13–18 那一代的樣子。
+#
+#  ── key_aspect / key_height ────────────────────────────────────────────
+#  和 Gboard 一樣是**固定鍵高**（42 pt），aspect 只是被動結果：
+#    375 pt 機器 42/31.5 = 1.33 ／ 390 pt 機器 42/33.0 = 1.27
+#    430 pt 機器 42/37.0 = 1.14
+#  依 §8.8.0.1 的指示，用 aspect 1.28 + 緊上下界對齊：
+#    S24U 456 dp：鍵寬 39.6 → 50.7 → 夾到 max 42.5
+#    Pixel 411 dp：鍵寬 35.7 → 45.7 → 夾到 max 42.5
+#  兩種螢幕都得到 42.5，落在真機截圖量到的 41–42 之上一點點；
+#  42.5 + 列距 12 = 54.5，也貼著 iPhone 的 54.0 列距。
+#
+#  ── 三套 intl 主題的度量對照（同一台 456.2 dp 寬的機器）────────────────
+#    ┌──────────────┬──────────┬──────────┬──────────────┐
+#    │              │ gboard   │ ios      │ samsung      │
+#    ├──────────────┼──────────┼──────────┼──────────────┤
+#    │ 側邊留白      │ 4.75     │ 3        │ 9.8          │
+#    │ 鍵距 / 列距   │ 5.7/11.7 │ 6/12     │ 6.8/12.4     │
+#    │ 圓角          │ 7        │ 5        │ 8            │
+#    │ 陰影 elevation│ 0        │ 1        │ 0            │
+#    │ 鍵高（夾制後）│ 48       │ 42.5     │ 45（符號 58）│
+#    │ 按鍵預覽      │ 關       │ **開**   │ 開           │
+#    │ 角落數字      │ **開**   │ 關       │ 關           │
+#    │ 修飾鍵明度    │ 比字母暗 │ 比字母暗 │ 比字母暗     │
+#    │ 送出鍵        │ 強調色   │ 強調色   │ **不用強調色**│
+#    │ 大寫鍵 active │ 強調色底 │ **整顆反白** │ 圖示變色 │
+#    └──────────────┴──────────┴──────────┴──────────────┘
+#
+#  ── 本主題已知表達不出來的部分 ─────────────────────────────────────────
+#  · 按鍵預覽氣泡在真機上**只有字母鍵有**，空白／shift／退格／return／123
+#    都沒有。本格式的 `keyboard.press_preview` 是全域開關，
+#    沒有 per-key-style 的細分（已回報）。
+#  · 一次性大寫與鎖定大寫在真機上是「反白」與「反白 + 底線」兩種樣子，
+#    本格式只有一個 active 狀態（已回報）。
+#
+#  規範：docs/theme-format.md §8
+# ─────────────────────────────────────────────────────────────────────────────
+
+format: rime-theme/1
+id: intl-ios-light
+revision: 1
+
+inherits: default-light
+
+name:
+  en: "iPhone style (light)"
+  zh-Hant: "iPhone 慣例・淺色"
+  zh-Hans: "iPhone 惯例・浅色"
+
+description:
+  en: "Metrics from published iPhone keyboard conventions (not first-hand measured). Neutral palette, no brand colours."
+  zh-Hant: "度量取自 iPhone 鍵盤的公開慣例（非一手實測，誤差見檔頭）；中性配色。"
+
+author: "rime-quad"
+license: "CC0-1.0"
+
+appearance: light
+counterpart: intl-ios-dark
+
+palette:
+  bg:               "#D2D5DB"   # 這一系的鍵盤底色比另外兩家深，鍵才浮得出來
+  surface:          "#D2D5DB"
+  surface_alt:      "#FFFFFF"
+  key:              "#FFFFFF"
+  key_pressed:      "#BEC2CB"   # 這一系按下字母鍵時鍵面**變暗**（另外兩家也是）
+  key_mod:          "#AFB4BE"   # 修飾鍵：明顯比字母鍵暗
+  key_mod_pressed:  "#FFFFFF"   # 但按下時反而變白（這一系的特徵）
+  accent:           "#2E6BC6"
+  accent_pressed:   "#255AA8"
+  on_accent:        "#FFFFFF"
+  fg:               "#0B0D11"
+  fg_dim:           "#20242B"
+  muted:            "#5D6570"
+  divider:          "#B9BEC7"
+  shadow:           "#3C414B"   # 鍵下緣的薄陰影，不是柔和的投影
+  danger:           "#C43A2E"
+
+metrics:
+  corner_radius: 5
+  border_width: 0
+  padding: 6
+  spacing: 4
+  elevation: 1        # ← 三套裡唯一有陰影的
+
+candidates:
+  bar:
+    height: 44
+    background: "$surface"
+    border_top_width: 0
+
+keyboard:
+  background: "$bg"
+
+  key_aspect: 1.28
+  key_height:
+    min: 41
+    max: 42.5
+  max_screen_ratio:
+    portrait: 0.45
+    landscape: 0.62
+
+  padding:
+    left: 3
+    right: 3
+    top: 8
+    bottom: 4
+
+  row_spacing: 12
+  key_spacing: 6
+  honor_bottom_inset: true
+
+  key_styles:
+    default:
+      background: "$key"
+      pressed_background: "$key_pressed"
+      foreground: "$fg"
+      pressed_foreground: "$fg"
+      corner_radius: 5
+      border_width: 0
+      elevation: 1
+      font: key
+      label_size: 26          # 小寫字母 26 pt（大寫層會顯得略大，真機是 23）
+      hint_size: 10
+      hint_position: none      # 這一系鍵面沒有角落小字
+      icon_size: 20
+      active_background: "$accent"
+      active_foreground: "$on_accent"
+
+    # 大寫鍵的反白就靠這裡：active 時底色換成字母鍵的白、圖示轉深色。
+    modifier:
+      background: "$key_mod"
+      pressed_background: "$key_mod_pressed"
+      foreground: "$fg"
+      pressed_foreground: "$fg"
+      corner_radius: 5
+      border_width: 0
+      elevation: 1
+      font: key
+      label_size: 16          # 123 / ABC / #+= 在真機是 16 / 15 / 14
+      hint_position: none
+      icon_size: 20
+      active_background: "$key"
+      active_foreground: "$fg"
+
+    action:
+      background: "$accent"
+      pressed_background: "$accent_pressed"
+      foreground: "$on_accent"
+      pressed_foreground: "$on_accent"
+      corner_radius: 5
+      border_width: 0
+      elevation: 1
+      font: key
+      label_size: 16
+      hint_position: none
+      icon_size: 20
+      active_background: "$accent_pressed"
+      active_foreground: "$on_accent"
+
+    space:
+      background: "$key"
+      pressed_background: "$key_pressed"
+      foreground: "$muted"
+      pressed_foreground: "$fg"
+      corner_radius: 5
+      border_width: 0
+      elevation: 1
+      font: key
+      label_size: 14
+      hint_position: none
+      icon_size: 20
+      active_background: "$key_pressed"
+      active_foreground: "$fg"
+
+    accent:
+      background: "$accent@14%"
+      pressed_background: "$accent@28%"
+      foreground: "$accent"
+      pressed_foreground: "$on_accent"
+      corner_radius: 5
+      border_width: 0
+      elevation: 1
+      font: key
+      label_size: 23
+      hint_position: none
+      icon_size: 22
+      active_background: "$accent"
+      active_foreground: "$on_accent"
+
+  popup:
+    show: true
+    background: "$surface_alt"
+    foreground: "$fg"
+    highlight_background: "$accent"
+    highlight_foreground: "$on_accent"
+    corner_radius: 8
+    item_size: 24
+    item_padding: 12
+    elevation: 8
+    max_columns: 6
+
+  # 三套裡按鍵預覽最重要的一份：這一系的放大氣泡是它最容易被認出來的特徵。
+  # ⚠ 真機只有字母鍵有氣泡，本格式無法只對某些 key_style 開（已回報）。
+  press_preview:
+    show: true
+    background: "$key"
+    foreground: "$fg"
+    size: 34
+    corner_radius: 8
+    elevation: 8
+
+motion:
+  enabled: true
+  respect_reduce_motion: true
+  curve: decelerate
+  key_press_ms: 30
+  key_release_ms: 80
+  candidate_change_ms: 120
+  popup_ms: 80
+  window_show_ms: 110
+
+feedback:
+  haptic: false          # 這一系預設不震動（另外兩家預設震）
+  haptic_strength: light
+  sound: false
+  sound_volume: 0.3

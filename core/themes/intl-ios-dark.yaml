@@ -1,0 +1,72 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  intl-ios-dark — 「iPhone 內建鍵盤」風格（深色）
+#
+#  這一份**不是**只換 palette，與 intl-gboard-dark / intl-samsung-dark 不同。
+#  理由正是 §8.2 說的那件事：這一系的鍵有陰影，而陰影在深色下沒有意義
+#  —— 深色底上畫一層更黑的陰影看不見，只會讓鍵緣糊掉。
+#  所以本檔把 `elevation` 一路歸零，改用「鍵比背景亮」來分層。
+#  這是三套 intl 主題裡唯一一份深淺色**結構性**不同的，
+#  也剛好證明 §8.2 的論證在什麼條件下成立（有陰影的主題）、
+#  什麼條件下不成立（全平面的主題，見 intl-gboard-dark 的檔頭）。
+#
+#  其餘度量（鍵高夾制 41–43、圓角 5、鍵距 6、列距 12、按鍵預覽開啟）
+#  全部繼承自 intl-ios-light，該檔檔頭有可信度警告與完整數值。
+# ─────────────────────────────────────────────────────────────────────────────
+
+format: rime-theme/1
+id: intl-ios-dark
+revision: 1
+
+inherits: intl-ios-light
+
+name:
+  en: "iPhone style (dark)"
+  zh-Hant: "iPhone 慣例・深色"
+  zh-Hans: "iPhone 惯例・深色"
+
+description:
+  en: "Dark counterpart of intl-ios-light. Shadows removed (they read as mud on dark); depth carried by luminance instead."
+  zh-Hant: "intl-ios-light 的深色版。陰影全部關掉（深色下看不見），改用明度分層。"
+
+author: "rime-quad"
+license: "CC0-1.0"
+
+appearance: dark
+counterpart: intl-ios-light
+
+palette:
+  bg:               "#0E0F12"
+  surface:          "#0E0F12"
+  surface_alt:      "#31343B"
+  key:              "#6C717B"   # 這一系深色下的字母鍵比背景**亮很多**
+  key_pressed:      "#40444C"
+  key_mod:          "#40444C"   # 修飾鍵比字母鍵暗
+  key_mod_pressed:  "#6C717B"   # 按下時變亮（與淺色版的「按下變白」同一條規則）
+  accent:           "#4E86E0"
+  accent_pressed:   "#3E6DBC"
+  on_accent:        "#FFFFFF"
+  fg:               "#FFFFFF"
+  fg_dim:           "#DCDEE3"
+  muted:            "#9AA1AC"
+  divider:          "#2A2D33"
+  shadow:           "#00000000"
+  danger:           "#E8695C"
+
+# 深色下沒有陰影 —— 這是本檔與另外兩份深色主題**結構性**不同的地方。
+metrics:
+  elevation: 0
+
+keyboard:
+  key_styles:
+    default:
+      elevation: 0
+    modifier:
+      elevation: 0
+    action:
+      elevation: 0
+    space:
+      elevation: 0
+    accent:
+      elevation: 0
+  press_preview:
+    background: "$surface_alt"
