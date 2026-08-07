@@ -18,3 +18,8 @@ third_party/boost_*.tar.gz.part
 third_party/librime/
 # 建置日誌
 third_party/*.log
+
+# collect_data.sh 的產物（由 third_party/rime-data 與 host opencc 產生）
+/core/data/shared/
+/core/data/user/
+/third_party/rime-data/

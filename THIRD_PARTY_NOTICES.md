@@ -32,3 +32,25 @@ LGPL-2.1 的相關義務（例如允許使用者替換該函式庫的重新連�
 RIME 生態中的既有前端（Weasel、Squirrel、Trime、Hamster 等）多為 GPL 授權。
 若日後要移植或參考其**程式碼**（而非僅參考其建置腳本的做法或公開文件），
 必須先確認授權相容性並在此檔案中登記。目前**沒有**任何來自這些專案的程式碼。
+
+---
+
+## RIME 方案資料（執行期資源）
+
+以下資料由 `scripts/collect_data.sh` 組裝進 `core/data/shared`，隨 APK 散佈。
+**全部為 LGPL-3.0**，與本專案的 GPL-3 相容。
+
+| 來源 | 提供 | 授權 |
+|---|---|---|
+| [rime-prelude](https://github.com/rime/rime-prelude) | `default.yaml`、標點、符號、按鍵綁定 | LGPL-3.0 |
+| [rime-essay](https://github.com/rime/rime-essay) | `essay.txt` 語言模型 | LGPL-3.0 |
+| [rime-luna-pinyin](https://github.com/rime/rime-luna-pinyin) | 拼音方案與詞庫 | LGPL-3.0 |
+| [rime-bopomofo](https://github.com/rime/rime-bopomofo) | 注音方案 | LGPL-3.0 |
+| [rime-terra-pinyin](https://github.com/rime/rime-terra-pinyin) | 注音方案所依賴的詞庫 | LGPL-3.0 |
+| [rime-stroke](https://github.com/rime/rime-stroke) | 筆畫反查詞庫 | LGPL-3.0 |
+
+OpenCC 的 `.ocd2` 詞典由本專案以 host 版 OpenCC 從其原始碼樹產生，
+授權同 OpenCC 本體（Apache-2.0）。
+
+**注意**：`core/data/shared` 與 `core/data/user` 是 `collect_data.sh` 的產物，
+不納入版本控制。修改資料組成請改腳本，不要手改產出目錄。
