@@ -20,7 +20,22 @@ object RepoFixtures {
 
     val themeIds = listOf("default-light", "default-dark", "sakura-light", "sakura-dark")
 
-    val layoutIds = listOf("qwerty", "numeric-symbol", "bopomofo-dachen", "t9-pinyin")
+    /**
+     * `core/layouts` 底下**每一份**佈局，不是手寫的白名單。
+     *
+     * 原本這裡寫死四個 id，於是 [org.rimequad.ime.keyboard.LayoutEscapeTest]
+     * 只走得到四份 —— 十二份佈局裡有八份（含華語線新加的 `cn-t9-pinyin`、
+     * `cn-symbols`）從來沒有被「進得去出得來」檢查過。新增一份佈局卻忘記
+     * 更新這份清單，正是最容易讓死路溜進去的方式，所以改成掃目錄。
+     *
+     * 排序固定，讓 §9.1.1「取搜尋路徑裡最先找到的那一份」在測試裡是決定性的。
+     */
+    val layoutIds: List<String> by lazy {
+        File(coreDir, "layouts").listFiles().orEmpty()
+            .filter { it.isFile && it.name.endsWith(".yaml") }
+            .map { it.name.removeSuffix(".yaml") }
+            .sorted()
+    }
 
     private fun findCore(): File {
         var dir: File? = File("").absoluteFile

@@ -47,15 +47,18 @@ const val HEIGHT_SCALE_MIN = 0.6f
 const val HEIGHT_SCALE_MAX = 1.5f
 
 /**
- * §8.8.0 的高度模型是**鍵寬 → 鍵高 → 鍵盤高**：鍵盤總高是算出來的結果，
- * 不是設定值。所以「鍵盤高度」這個偏好實際上要動的是**鍵高**。
+ * §8.8.0 的高度模型是**參考格 → 高度預算 → 列高**：鍵盤總高是算出來的結果，
+ * 不是設定值。所以「鍵盤高度」這個偏好實際上要動的是**預算**。
  *
- * 三個欄位一起乘上倍率，因為規範的鍵高公式是
- * key_h = clamp(key_w * key_aspect, key_height.min, key_height.max) * height_scale：
+ * `key_aspect` 與 `key_height` 的上下界三個欄位一起乘上倍率，因為預算的公式是
+ * `clamp(ref_key_w * key_aspect, key_height.min, key_height.max) * ref_rows`：
  *
  * 只乘 `key_aspect` 是錯的 —— 預設值 1.34 搭配 42–50dp 的夾制，在多數手機上
  * 本來就撞在上界，倍率會被夾制整個吃掉，使用者把滑桿拉到底只看到一點點變化。
- * 三個一起乘，`key_h` 才會嚴格等於倍率乘上原值。
+ * 三個一起乘，預算才會嚴格等於倍率乘上原值。
+ *
+ * `row_height` 的上下界也要跟著乘。它們是**預算除完之後**的可用性護欄；
+ * 不跟著縮，使用者把鍵盤調矮到某個點就會被下界擋住、總高固定的性質也一起破功。
  *
  * 安全網 `max_screen_ratio` 只在**放大**時跟著放寬（`max(s, 1)`）：
  * 使用者要更高的鍵盤時不該被安全網默默擋回去；但要更矮時把安全網一起收緊
@@ -75,6 +78,8 @@ private fun applyKeyboardHeight(theme: Theme, scaleOrNull: Float?): Theme {
                 aspect = (g.aspect * s).coerceIn(0.6f, 2.5f),
                 keyHeightMin = (g.keyHeightMin * s).coerceIn(20f, 200f),
                 keyHeightMax = (g.keyHeightMax * s).coerceIn(20f, 200f),
+                rowHeightMin = (g.rowHeightMin * s).coerceIn(16f, 200f),
+                rowHeightMax = (g.rowHeightMax * s).coerceIn(16f, 200f),
                 maxScreenRatioPortrait =
                     (g.maxScreenRatioPortrait * loosen).coerceIn(0.2f, 0.8f),
                 maxScreenRatioLandscape =

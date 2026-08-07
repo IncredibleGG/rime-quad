@@ -824,6 +824,11 @@ class RimeInputMethodService : InputMethodService() {
 
             ActionVerb.CLEAR -> {
                 RimeCore.clearComposition(session)
+                // `finishComposingText()` 只是**結束**組字區 —— 裡面的字會原樣
+                // 留在輸入框裡。而 `clear`（九宮格的「重輸」）的語義是「這串打
+                // 錯了，丟掉重來」，使用者按下去卻看到 MG 留在框裡，等於這顆鍵
+                // 沒作用。要真的丟掉，得先把組字區的內容換成空字串。
+                ic?.setComposingText("", 1)
                 ic?.finishComposingText()
                 refreshFromRime()
             }

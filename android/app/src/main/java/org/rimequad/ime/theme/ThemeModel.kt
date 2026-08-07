@@ -228,28 +228,108 @@ data class Preedit(
 )
 
 /**
- * §8.8.0 的高度模型。
+ * §8.8.0 的高度模型：**參考格 → 高度預算 → 列高**。
  *
- * **因果方向是 鍵寬 → 鍵高 → 鍵盤高**，而不是初稿的 螢幕高 → 鍵盤高 → 鍵高。
- * 初稿的方向讓鍵高綁在螢幕高度、鍵寬綁在螢幕寬度，長寬比因此完全失控：
- * 在 20:9 的長螢幕上鍵會被拉成 1:1.94，使用者看到的就是「被拉伸」。
+ * 這是本模型的第三版，前兩版都被實機量測否決：
+ *
+ * * **v1 初稿**「螢幕高 × ratio → 鍵盤高 → 鍵高」：鍵高綁螢幕高、鍵寬綁螢幕寬，
+ *   長寬比失控（20:9 螢幕上鍵被拉成 1:1.94）。
+ * * **v2**「鍵寬 × key_aspect → 鍵高 → 鍵盤高＝鍵高 × 列數」：長寬比穩了，
+ *   但**鍵盤總高隨列數線性成長**——使用者一打開數字列，鍵盤就長高 20%，
+ *   而三星實機量到的是四列九宮格與五列全鍵盤**總高只差 1%**
+ *   （鍵高 54.4 vs 43.2 dp，也就是總高固定、除以列數）。
+ *
+ * v3 把因果拆成兩段：
+ *
+ * 1. **預算**只看裝置寬度與一組固定的「參考格」（`reference_grid`，預設 10 欄
+ *    4 列）。`key_aspect` 仍是主控參數，但它描述的是**參考格上那顆鍵**的胖瘦，
+ *    與當前佈局的欄數、列數都無關。於是同一台機器上每一份佈局的總高都相同。
+ * 2. **當前 layer 把預算分掉**：`列高 = 可用高 / Σweight`。列數多 → 每列矮，
+ *    總高不變。這正是三星／Gboard 的行為。
+ *
+ * **取捨（必須明講）**：總高固定與「鍵長寬比隨欄數自適應」在數學上不可兼得
+ * ——固定總高⇒固定列高，欄數一變長寬比就跟著變。本模型選擇總高固定，
+ * 因為量測顯示那才是使用者感知的量（鍵盤忽然長高比鍵稍胖稍瘦明顯得多）。
+ * 欄數變化仍由**寬度方向**吸收（欄多則鍵窄），這與所有出貨鍵盤一致。
+ * 而 v2 擔心的「11 欄注音比 10 欄 QWERTY 瘦長」在本模型下不會發生：注音多
+ * 一列，列高同時變矮，實測 w/h 反而比 QWERTY 更胖（0.91 vs 0.78）。
  */
 data class KeyGeometry(
     val aspect: Float,
     val keyHeightMin: Float,
     val keyHeightMax: Float,
+    /** §8.8.0 的參考格欄數。預算的分母，**不是**當前 layer 的欄數。 */
+    val referenceUnits: Float,
+    /** §8.8.0 的參考格列數。預算裡放得下幾列。 */
+    val referenceRows: Float,
+    /** 預算除完之後，實際列高的可用性下界（§8.8.0 第 4 步）。 */
+    val rowHeightMin: Float,
+    /** 同上的上界，防止極少列的層把鍵撐成長條。 */
+    val rowHeightMax: Float,
     val maxScreenRatioPortrait: Float,
     val maxScreenRatioLandscape: Float
 ) {
-    /** 一次算完的結果，供渲染器直接使用。 */
-    data class Resolved(val keyWidth: Float, val keyHeight: Float, val keyboardHeight: Float)
+    /**
+     * 一次算完的結果，供渲染器直接使用。
+     *
+     * [keyWidth] 是**平均鍵寬**（該列可用寬 / 鍵數），不是「一單位寬」——
+     * 競品對照用的長寬比就是用它算的，見 §8.8.0.1。
+     * [budgetHeight] 是未經可用性護欄夾制前的預算；[keyboardHeight] 與它不同
+     * 就代表護欄生效了（總高不再固定）。
+     */
+    data class Resolved(
+        val keyWidth: Float,
+        val keyHeight: Float,
+        val keyboardHeight: Float,
+        val budgetHeight: Float
+    ) {
+        /** 護欄有沒有把總高推離預算。 */
+        val budgetHonored: Boolean get() = kotlin.math.abs(keyboardHeight - budgetHeight) < 0.01f
+    }
+
+    /**
+     * 與當前佈局無關的鍵盤總高預算（§8.8.0 第 1–3 步）。
+     *
+     * 佈局尚未載入時也算得出來，所以渲染器不必再用「10 欄 4 列」去估。
+     */
+    fun budget(
+        widthDp: Float,
+        availHeightDp: Float,
+        landscape: Boolean,
+        padding: EdgeInsets,
+        keySpacing: Float,
+        rowSpacing: Float,
+        heightScale: Float = 1.0f
+    ): Float {
+        val refUnits = if (referenceUnits <= 0f) 10f else referenceUnits
+        val refRows = if (referenceRows <= 0f) 4f else referenceRows
+
+        // 1. 參考鍵寬：只看裝置寬度與參考欄數。
+        val innerW = widthDp - padding.left - padding.right - keySpacing * (refUnits - 1f)
+        val refKeyW = (if (innerW > 0f) innerW else 0f) / refUnits
+
+        // 2. 參考鍵高：key_aspect 仍是主控，key_height 的上下界把它拉回參考鍵盤那條線。
+        val refKeyH = clampFloat(refKeyW * aspect, keyHeightMin, keyHeightMax)
+
+        // 3. 預算＝參考格排滿的高度。height_scale（§9.2）在這裡整體縮放。
+        val refGaps = (refRows - 1f).coerceAtLeast(0f)
+        val raw = (refKeyH * refRows + rowSpacing * refGaps + padding.top + padding.bottom) *
+            heightScale
+
+        // 4. 安全網：鍵盤永遠不得超過螢幕的這個比例（摺疊機、平板橫放、超小螢幕）。
+        val ratio = if (landscape) maxScreenRatioLandscape else maxScreenRatioPortrait
+        val cap = availHeightDp * ratio
+        return if (availHeightDp > 0f && raw > cap) cap else raw
+    }
 
     /**
      * @param widthDp     鍵盤可用寬度（通常是螢幕寬）
      * @param availHeightDp 當前方向下宿主視窗可用高度，只用於安全網
-     * @param units       當前 layer 的欄數（§9.3）
+     * @param units       當前 layer 的欄數（§9.3）。**只影響鍵寬，不影響高度。**
      * @param rowsWeight  當前 layer 的 Σ row.weight（不是列數 —— 列可以有不同權重）
      * @param rowCount    當前 layer 的列數，只用來算列間距總和
+     * @param keyCount    當前 layer 最寬那一列排出的元素數，用來算平均鍵寬（§9.3）。
+     *                    0 = 不知道，退回用 units 當鍵數。
      * @param heightScale 佈局的 `metrics.height_scale`（§9.2）
      */
     fun resolve(
@@ -262,31 +342,58 @@ data class KeyGeometry(
         padding: EdgeInsets,
         keySpacing: Float,
         rowSpacing: Float,
-        heightScale: Float = 1.0f
+        heightScale: Float = 1.0f,
+        keyCount: Int = 0,
+        refKeySpacing: Float = keySpacing,
+        refRowSpacing: Float = rowSpacing
     ): Resolved {
         val safeUnits = if (units <= 0f) 1f else units
         val safeRowsW = if (rowsWeight <= 0f) 1f else rowsWeight
         val gaps = if (rowCount > 1) rowCount - 1 else 0
 
-        // 1. 鍵寬：與螢幕高度無關
-        val innerW = widthDp - padding.left - padding.right - keySpacing * (safeUnits - 1f)
-        val keyW = (if (innerW > 0f) innerW else 0f) / safeUnits
+        // 參考格一律用**主題的**間距，不是佈局覆寫過的（§9.2）。
+        // 否則佈局只要調一下 key_spacing，鍵盤總高就跟著變 ——
+        // 「同一份主題下任兩份佈局總高相同」這條保證會在最不起眼的地方破功
+        // （實測：bopomofo-dachen 的 key_spacing: 4 讓它比別人高 3%）。
+        // 佈局的覆寫仍然完整作用在**預算怎麼分**與列內佈版上。
+        val budget = budget(
+            widthDp, availHeightDp, landscape, padding, refKeySpacing, refRowSpacing, heightScale
+        )
 
-        // 2. 鍵高：由鍵寬推導，夾制後才套 height_scale
-        var keyH = clampFloat(keyW * aspect, keyHeightMin, keyHeightMax) * heightScale
-
-        // 3. 鍵盤高是算出來的
+        // 4. 當前 layer 把預算分掉。**除以 Σweight，不是列數** —— 數字列的
+        //    weight 0.83 必須真的讓那一列矮下來，否則整份佈局會被撐高。
         val chrome = rowSpacing * gaps + padding.top + padding.bottom
+        val usable = (budget - chrome).coerceAtLeast(1f)
+        var keyH = clampFloat(usable / safeRowsW, rowHeightMin, rowHeightMax)
+
+        // 5. 護欄沒作用時 h 就等於 budget（總高固定）。作用了才會偏離，
+        //    那是刻意的：與其給一顆 20dp 高按不到的鍵，不如讓鍵盤高一點。
         var h = keyH * safeRowsW + chrome
 
-        // 4. 安全網：不得超過螢幕的這個比例
+        // 5b. 但安全網永遠是最外層的保證。列高下界把 h 推過螢幕比例上限時
+        //     （極矮的視窗 + 列數多的佈局），下界讓位 —— 規範說的是
+        //     「鍵盤**永遠**不得超過螢幕的這個比例」，那句話不能有例外，
+        //     否則摺疊機外螢幕上鍵盤會蓋掉整個畫面。
         val ratio = if (landscape) maxScreenRatioLandscape else maxScreenRatioPortrait
         val cap = availHeightDp * ratio
         if (availHeightDp > 0f && h > cap) {
             keyH = ((cap - chrome) / safeRowsW).coerceAtLeast(1f)
             h = keyH * safeRowsW + chrome
         }
-        return Resolved(keyWidth = keyW, keyHeight = keyH, keyboardHeight = h)
+
+        // 6. 平均鍵寬：§9.3 的列內佈版把 spacing 記在**元素數**上（keys.count − 1），
+        //    不是 units − 1。這裡與 §9.3 對齊，兩條公式不再各算各的。
+        val n = if (keyCount > 0) keyCount.toFloat() else safeUnits
+        val rowInnerW = (widthDp - padding.left - padding.right - keySpacing * (n - 1f))
+            .coerceAtLeast(0f)
+        val keyW = rowInnerW / n
+
+        return Resolved(
+            keyWidth = keyW,
+            keyHeight = keyH,
+            keyboardHeight = h,
+            budgetHeight = budget
+        )
     }
 }
 

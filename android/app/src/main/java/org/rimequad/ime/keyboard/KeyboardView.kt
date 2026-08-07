@@ -166,10 +166,12 @@ private class Scaler(private val effective: Float, private val system: Float) {
 }
 
 /**
- * §8.8.0 的高度模型：鍵寬 → 鍵高 → 鍵盤高。
+ * §8.8.0 的高度模型：參考格 → 高度預算 → 列高。
  *
- * 注意 `units` 與 `rowsWeight` 取自**當前 layer**，所以 11 欄的注音與 10 欄的
- * QWERTY 會得到相同的鍵長寬比（鍵較窄時鍵也較矮），而不是前者更瘦長。
+ * 鍵盤總高只由**裝置寬度**與主題的參考格決定，與當前 layer 的欄數、列數都無關；
+ * 當前 layer 只負責把預算依 `Σ row.weight` 分掉。所以打開數字列（多一列）
+ * 鍵盤不會長高，只是每一列變矮 —— 這是三星實機量到的行為（四列九宮格與
+ * 五列全鍵盤總高只差 1%）。
  */
 @Composable
 private fun keyboardGeometry(
@@ -189,24 +191,31 @@ private fun keyboardGeometry(
         keySpacing = layout.metrics.keySpacing ?: theme.keyboard.keySpacing,
         rowSpacing = layout.metrics.rowSpacing ?: theme.keyboard.rowSpacing,
         heightScale = layout.metrics.heightScale,
+        keyCount = layer.rows.maxOfOrNull { it.keys.size } ?: 0,
+        // 預算只看主題，佈局的 §9.2 覆寫不參與 —— 見 KeyGeometry.resolve。
+        refKeySpacing = theme.keyboard.keySpacing,
+        refRowSpacing = theme.keyboard.rowSpacing,
     )
 }
 
-/** 佈局尚未載入時的名目鍵盤高度：以 10 欄 4 列估算。 */
+/**
+ * 佈局尚未載入時的鍵盤高度。
+ *
+ * 新模型下這就是**預算本身** —— 不必再假裝一份「10 欄 4 列」的佈局去估，
+ * 而且估出來的值與待會真的載進來的那份佈局完全相同，鍵盤不會在載入完成的
+ * 那一刻跳一下高度。
+ */
 @Composable
 private fun nominalKeyboardHeight(theme: Theme): Float {
     val config = LocalConfiguration.current
-    return theme.keyboard.geometry.resolve(
+    return theme.keyboard.geometry.budget(
         widthDp = config.screenWidthDp.toFloat(),
         availHeightDp = config.screenHeightDp.toFloat(),
         landscape = config.orientation == Configuration.ORIENTATION_LANDSCAPE,
-        units = 10f,
-        rowsWeight = 4f,
-        rowCount = 4,
         padding = theme.keyboard.padding,
         keySpacing = theme.keyboard.keySpacing,
         rowSpacing = theme.keyboard.rowSpacing,
-    ).keyboardHeight
+    )
 }
 
 /* ────────────────────────────── 候選列 ────────────────────────────── */

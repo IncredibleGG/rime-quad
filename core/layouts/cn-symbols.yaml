@@ -24,7 +24,9 @@
 #     一起。中文使用者要 `，。？！、……` 的頻率遠高於 `,.?!`。
 #  3. **分頁，用 △▽ 翻**，不是一頁塞完。一頁 18 個符號（3 列 × 6 欄），
 #     翻頁比縮小鍵面塞 40 個符號好按。
-#  4. **底列在每一層都完全一致**（返回 / 中英切換 / 空白 / 123 / ⏎）。
+#  4. **底列在每一層都完全一致**（返回 / 中英切換 / 空白 / 123 / ⏎），
+#     而且五顆鍵全部指向**本檔內部**，不跨檔 —— 跨檔的 `@previous` 只記得
+#     一份佈局，兩份符號佈局互指就會來回彈、回不到原本的鍵盤。
 #     這是實機最值得抄的一點：不管翻到哪一頁，離開的那顆鍵永遠在同一個
 #     位置，使用者不會迷路。本檔五個層的第四列**逐鍵相同**。
 #
@@ -35,6 +37,7 @@
 #
 #      中文組：zh1 ⇄ zh2 ⇄ kao ⇄（回到 zh1，環狀）
 #      英文組：en1 ⇄ en2 ⇄（回到 en1，環狀）
+#      數字頁：num（由底列的「123」進出，不跨檔 —— 理由見該層的註解）
 #      第二顆鍵在中文組標「英文」並指向 en1，在英文組標「中文」並指向 zh1
 #
 #  代價是**頁的鄰居必須逐一寫死**（沒有 `layer:@next`），加一頁要改兩個
@@ -67,12 +70,13 @@
 #  | | numeric-symbol（現有） | cn-symbols（本檔） |
 #  |---|---|---|
 #  | 欄數 | 10（字母鍵的節奏） | **7**（方形符號鍵） |
-#  | 層 | 2（numeric / symbol） | **5**（zh1 / zh2 / en1 / en2 / kao） |
+#  | 層 | 2（numeric / symbol） | **6**（zh1 / zh2 / en1 / en2 / kao / num） |
 #  | 中文標點 | 只有長按盤裡零星幾個 | **兩整頁 36 個**，排在最前面 |
 #  | 顏文字 | 無 | **一頁 6 個**（華語輸入法必備分頁） |
 #  | 翻頁 | 無 | **△▽ 環狀翻頁** |
 #  | 底列 | 兩層之間鍵不同 | **五層逐鍵相同** |
 #  | 出口 | 「ABC」→ @primary | 「返回」→ **@previous**（回到來時的佈局） |
+#  | 數字 | 另一份佈局 | **本檔的 num 層**（不跨檔，見上） |
 #
 #  ── 佈版數字 ─────────────────────────────────────────────────────────────
 #
@@ -176,7 +180,7 @@ layers:
             width: 3.0
             send: { keysym: "space" }
             long_press: "switch_layout:@primary"
-          - { id: "bar_num", label: "123", style: modifier, tap: "switch_layout:numeric-symbol" }
+          - { id: "bar_num", label: "123", style: modifier, tap: "layer:num" }
           - { id: "enter", icon: enter, style: action, send: { keysym: "Return" } }
 
   # ── 中文標點・第二頁（括號、書名號、單位）─────────────────────────────────
@@ -235,7 +239,7 @@ layers:
             width: 3.0
             send: { keysym: "space" }
             long_press: "switch_layout:@primary"
-          - { id: "bar_num", label: "123", style: modifier, tap: "switch_layout:numeric-symbol" }
+          - { id: "bar_num", label: "123", style: modifier, tap: "layer:num" }
           - { id: "enter", icon: enter, style: action, send: { keysym: "Return" } }
 
   # ── 顏文字（華語輸入法必備分頁）───────────────────────────────────────────
@@ -287,7 +291,7 @@ layers:
             width: 3.0
             send: { keysym: "space" }
             long_press: "switch_layout:@primary"
-          - { id: "bar_num", label: "123", style: modifier, tap: "switch_layout:numeric-symbol" }
+          - { id: "bar_num", label: "123", style: modifier, tap: "layer:num" }
           - { id: "enter", icon: enter, style: action, send: { keysym: "Return" } }
 
   # ── 英文標點・第一頁（實機 photo_4）───────────────────────────────────────
@@ -346,7 +350,7 @@ layers:
             width: 3.0
             send: { keysym: "space" }
             long_press: "switch_layout:@primary"
-          - { id: "bar_num", label: "123", style: modifier, tap: "switch_layout:numeric-symbol" }
+          - { id: "bar_num", label: "123", style: modifier, tap: "layer:num" }
           - { id: "enter", icon: enter, style: action, send: { keysym: "Return" } }
 
   # ── 英文標點・第二頁（引號、括號、運算、貨幣）─────────────────────────────
@@ -405,5 +409,72 @@ layers:
             width: 3.0
             send: { keysym: "space" }
             long_press: "switch_layout:@primary"
-          - { id: "bar_num", label: "123", style: modifier, tap: "switch_layout:numeric-symbol" }
+          - { id: "bar_num", label: "123", style: modifier, tap: "layer:num" }
+          - { id: "enter", icon: enter, style: action, send: { keysym: "Return" } }
+
+  # ── 數字頁（由底列「123」進入，「中文」或「返回」離開）────────────────────
+  #
+  #  **這一層是為了修一條真實的死路。** 原本「123」是
+  #  `switch_layout:numeric-symbol`，而 numeric-symbol 的出口是
+  #  `switch_layout:@previous`。`@previous` 只記得**一份**佈局，於是
+  #      九宮格 → cn-symbols → numeric-symbol → 返回 → cn-symbols
+  #                                           → 返回 → numeric-symbol → …
+  #  兩份符號佈局互相指著對方來回彈，使用者**再也回不到九宮格**。
+  #  LayoutEscapeTest 把隨附佈局全部納入之後抓到了這條。
+  #
+  #  修法是不要跨檔：數字頁就是本檔的一個 layer，底列一如其他四層，
+  #  「返回」照樣 `@previous` 回到來時的鍵盤。
+  - id: "num"
+    label: "數字"
+    units: 7
+    rows:
+
+      - weight: 1.0
+        keys:
+          - { id: "n_1", label: "1", send: { keysym: "1" } }
+          - { id: "n_2", label: "2", send: { keysym: "2" } }
+          - { id: "n_3", label: "3", send: { keysym: "3" } }
+          - { id: "n_4", label: "4", send: { keysym: "4" } }
+          - { id: "n_5", label: "5", send: { keysym: "5" } }
+          - { id: "n_6", label: "6", send: { keysym: "6" } }
+          - id: "backspace"
+            icon: backspace
+            style: modifier
+            send: { keysym: "BackSpace" }
+            repeat: true
+
+      - weight: 1.0
+        keys:
+          - { id: "n_7", label: "7", send: { keysym: "7" } }
+          - { id: "n_8", label: "8", send: { keysym: "8" } }
+          - { id: "n_9", label: "9", send: { keysym: "9" } }
+          - { id: "n_0", label: "0", send: { keysym: "0" } }
+          - { id: "n_dot", label: ".", send: { keysym: "period" } }
+          - { id: "n_comma", label: ",", send: { keysym: "comma" } }
+          - { id: "n_slash", label: "/", send: { keysym: "slash" } }
+
+      # 運算符與貨幣。走 text 的是 librime 沒有 keysym 名的字元（§9.4 形態 B）。
+      - weight: 1.0
+        keys:
+          - { id: "n_plus",  label: "+", send: { keysym: "plus" } }
+          - { id: "n_minus", label: "-", send: { keysym: "minus" } }
+          - { id: "n_star",  label: "*", send: { keysym: "asterisk" } }
+          - { id: "n_eq",    label: "=", send: { keysym: "equal" } }
+          - { id: "n_pct",   label: "%", send: { keysym: "percent" } }
+          - { id: "n_rmb",   label: "￥", send: { text: "￥" } }
+          - { id: "n_deg",   label: "°", send: { text: "°" } }
+
+      # 底列：與其他四層逐鍵相同。「123」在本層指向自己，因此渲染為 active
+      # （§8.8.1 規則 2），使用者看得出自己在哪一頁。
+      - weight: 1.0
+        keys:
+          - { id: "bar_back", label: "返回", style: modifier, tap: "switch_layout:@previous" }
+          - { id: "bar_set",  label: "中文", style: modifier, tap: "layer:zh1" }
+          - id: "space"
+            icon: space
+            style: space
+            width: 3.0
+            send: { keysym: "space" }
+            long_press: "switch_layout:@primary"
+          - { id: "bar_num", label: "123", style: modifier, tap: "layer:num" }
           - { id: "enter", icon: enter, style: action, send: { keysym: "Return" } }

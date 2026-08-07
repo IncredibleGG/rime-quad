@@ -27,8 +27,13 @@ class KeyboardTypesTest {
         kind: LayoutKind = LayoutKind.ALPHABETIC,
         vararg forSchema: String,
         primary: Boolean = false,
-        ancestry: List<String> = emptyList(),
-    ) = LayoutBrief(id, name, kind, forSchema.toList(), primary, ancestry)
+        autoForSchema: List<String>? = null,
+    ) = LayoutBrief(
+        id, name, kind, forSchema.toList(),
+        // §9.1.1 的預設：auto_for_schema 沒寫時 = for_schema 去掉 "*"。
+        autoForSchema ?: forSchema.filter { it != "*" },
+        primary,
+    )
 
     /* ── 攤平 ─────────────────────────────────────────────────────────── */
 
@@ -57,35 +62,38 @@ class KeyboardTypesTest {
      * 九宮格送的是 `A/D/G/J/M/P/T/W` 八個代表鍵，那套字母表是 `t9_pinyin`
      * 方案的 speller 契約。同一份九宮格配上 `luna_pinyin`，按「abc」送出的
      * 只是字母 a —— 鍵盤畫得出來，一個中文字也打不出來。
-     * 所以 `"*"` 只對 `kind: alphabetic` 有效。
+     *
+     * 欄位拆開之後，這件事由**資料**保證而不是靠 `kind` 猜：九宮格佈局老實
+     * 寫 `for_schema: ["t9_pinyin"]`，於是它不可能落到 luna_pinyin 底下。
      */
     @Test
-    fun aWildcardNonAlphabeticLayoutIsNotOfferedToJustAnySchema() {
-        val groups = KeyboardTypes.build(
-            listOf(schema("luna_pinyin", "朙月拼音")),
-            listOf(
-                brief("qwerty", forSchema = arrayOf("*")),
-                brief("cn-t9-pinyin-numrow", kind = LayoutKind.GRID, forSchema = arrayOf("*")),
-            ),
+    fun aLayoutOnlyShowsUnderTheSchemasItDeclares() {
+        val layouts = listOf(
+            brief("qwerty", forSchema = arrayOf("*"), primary = true),
+            brief("cn-t9-pinyin", kind = LayoutKind.GRID, forSchema = arrayOf("t9_pinyin")),
         )
-        assertEquals(listOf("qwerty"), groups.single().types.map { it.layoutId })
+        val luna = KeyboardTypes.build(listOf(schema("luna_pinyin", "朙月拼音")), layouts)
+        assertEquals(listOf("qwerty"), luna.single().types.map { it.layoutId })
     }
 
     /**
-     * 但那份九宮格不能因此消失。它寫 `"*"` 只是為了不搶自動命中
-     * （`cn-t9-pinyin-numrow.yaml` 的註解就是這麼說的），真正的歸屬寫在
-     * 它 `inherits` 的父代身上。
+     * **同一個方案的第二份佈局不必再說謊。**
+     *
+     * 拆欄位以前，`cn-t9-pinyin-numrow` 為了不搶 `cn-t9-pinyin` 的自動命中，
+     * 只能把 `for_schema` 寫成 `"*"`；那句 `"*"` 照字面會把九宮格提供給每一個
+     * 方案。現在它寫 `for_schema: ["t9_pinyin"]` + `auto_for_schema: []`：
+     * 選單裡有，自動命中沒有，兩件事各自表述。
      */
     @Test
-    fun aWildcardLayoutInheritsItsSchemaDeclarationFromItsParent() {
+    fun aSecondLayoutForTheSameSchemaNeedsNoWildcardLie() {
         val layouts = listOf(
             brief("qwerty", forSchema = arrayOf("*"), primary = true),
             brief("cn-t9-pinyin", kind = LayoutKind.GRID, forSchema = arrayOf("t9_pinyin")),
             brief(
                 "cn-t9-pinyin-numrow",
                 kind = LayoutKind.GRID,
-                forSchema = arrayOf("*"),
-                ancestry = listOf("cn-t9-pinyin", "cn-t9-pinyin-numrow"),
+                forSchema = arrayOf("t9_pinyin"),
+                autoForSchema = emptyList(),
             ),
         )
         val t9 = KeyboardTypes.build(listOf(schema("t9_pinyin", "九宮格拼音")), layouts)
@@ -96,6 +104,22 @@ class KeyboardTypesTest {
         // 而且**只**落在 t9_pinyin 底下。
         val luna = KeyboardTypes.build(listOf(schema("luna_pinyin", "朙月拼音")), layouts)
         assertEquals(listOf("qwerty"), luna.single().types.map { it.layoutId })
+    }
+
+    /** 自動命中的那一份排在同方案其他佈局之前：選單第一項＝使用者現在看到的鍵盤。 */
+    @Test
+    fun theAutomaticPickLeadsTheOtherLayoutsOfTheSameSchema() {
+        val groups = KeyboardTypes.build(
+            listOf(schema("t9_pinyin", "九宮格拼音")),
+            listOf(
+                brief(
+                    "t9-pinyin", kind = LayoutKind.GRID,
+                    forSchema = arrayOf("t9_pinyin"), autoForSchema = emptyList(),
+                ),
+                brief("cn-t9-pinyin", kind = LayoutKind.GRID, forSchema = arrayOf("t9_pinyin")),
+            ),
+        )
+        assertEquals("cn-t9-pinyin", groups.single().types.first().layoutId)
     }
 
     @Test
@@ -270,7 +294,7 @@ class KeyboardTypesTest {
                     ?.let {
                         LayoutBrief(
                             it.id, it.name.get(LOCALE), it.kind, it.forSchema,
-                            it.primary, it.ancestry,
+                            it.autoForSchema, it.primary,
                         )
                     }
             }

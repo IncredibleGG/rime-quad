@@ -3,7 +3,7 @@
 #
 #  與 `cn-compact-dark` 成對，完整說明見該檔檔頭。本檔只重述差異點：
 #
-#  * 幾何改動與深色版**完全相同**（key_height.max 56、key_spacing 8、
+#  * 幾何改動與深色版**完全相同**（key_height {54, 56}、key_spacing 8、
 #    候選列不顯示序號、工具列加「九鍵 / 全鍵」）。
 #  * 顏色一律沿用 `default-light`，本檔不覆寫任何 palette 條目。
 #

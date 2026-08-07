@@ -326,21 +326,36 @@ min_client: "0.4.0"
 被標記為 deprecated 的欄位 **必須** 在下一個 major 之前持續被支援，
 且解析器 **應** 對其產生 INFO 級診斷。
 
-### 5.7 v1 期間的一次性例外（鍵盤高度模型）
+### 5.7 v1 期間的例外（鍵盤高度模型，兩次）
 
-§8.8 的高度模型在 v1 發布後被改寫，`keyboard.height.*` 被 `key_aspect` /
-`key_height` / `max_screen_ratio` 取代。依 §5.2 這應該遞增 major，
-**本次刻意不遞增**，理由如下：
+§8.8 的高度模型在 v1 期間改寫過**兩次**，都沒有遞增 major。逐次記錄：
 
-1. 舊模型是**缺陷**而非設計選擇 —— 它讓鍵高綁螢幕高、鍵寬綁螢幕寬，
+**第一次**（初稿 → v2）：`keyboard.height.*` 被 `key_aspect` / `key_height` /
+`max_screen_ratio` 取代。理由：
+
+1. 初稿模型是**缺陷**而非設計選擇 —— 它讓鍵高綁螢幕高、鍵寬綁螢幕寬，
    長寬比必然失控。保留它沒有任何價值。
 2. 此時尚無任何第三方主題（客戶端版本 0.1.x），影響範圍為零。
 3. 遞增 major 會讓所有 v1 文件被拒絕載入，代價遠大於收益。
 
-補償措施：舊 `height:` 區塊被忽略時 **必須** 產生 INFO 診斷（§8.8.0.2），
-使用者看得到「你的主題用的是舊高度模型」。
+**第二次**（v2 → v3，本次）：改為「固定高度預算 ÷ Σweight」，
+`key_aspect` 與 `key_height` 的語義收窄為「參考格上那顆鍵」，
+新增 `reference_grid` 與 `row_height`。理由：
 
-**這個例外不會再有第二次。** 客戶端進入 1.0 之後，任何語義變更一律遞增 major。
+1. 同樣是**缺陷**：v2 讓鍵盤總高隨列數線性成長，使用者一打開數字列鍵盤就
+   長高 20%，而三星實機是四列與五列**總高只差 1%**（§8.8.0）。
+   照 v2 出貨等於明知故犯。
+2. **欄位沒有被移除，只是語義收窄**，且收窄後既有主題的算出值變化很小
+   （本 repo 六份主題全部落在 ±8% 內，`cn-compact-*` 為 0%）。
+   新欄位皆有預設值，不寫也完全合法。
+3. 影響範圍仍然為零（客戶端未發 1.0，無第三方主題）。
+
+補償措施：舊 `height:` 區塊被忽略時 **必須** 產生 INFO 診斷（§8.8.0.2）；
+`row_height` 護欄生效（總高偏離預算）時 **應** 產生 INFO 診斷（§8.8.0）。
+
+**不會再有第三次。** 客戶端進入 1.0 之後，任何語義變更一律遞增 major。
+高度模型現在有實機量測背書（三星 + Gboard 兩家、兩種螢幕），
+而前兩版都是先寫規範再看實機——這才是要記取的教訓。
 
 ---
 
@@ -814,6 +829,10 @@ items:
 | `key_aspect` | number 0.6–2.5 | `1.28` |
 | `key_height.min` | length 20–200 | `40` |
 | `key_height.max` | length 20–200 | `56` |
+| `reference_grid.units` | number 4–20 | `10` |
+| `reference_grid.rows` | number 1–8 | `4` |
+| `row_height.min` | length 16–200 | `32` |
+| `row_height.max` | length 16–200 | `96` |
 | `max_screen_ratio.portrait` | ratio 0.2–0.8 | `0.45` |
 | `max_screen_ratio.landscape` | ratio 0.2–0.9 | `0.62` |
 | `padding.left` / `.right` / `.top` / `.bottom` | length | `5` / `5` / `4` / `4` |
@@ -821,48 +840,122 @@ items:
 | `key_spacing` | length 0–32 | `6` |
 | `honor_bottom_inset` | bool | `true` |
 
-#### 8.8.0 高度模型：由鍵寬推鍵高，不由螢幕高推鍵盤高
+#### 8.8.0 高度模型：固定高度預算，由列數分掉
 
-**規範 v1 初稿的模型是錯的，本節取代它。** 初稿以
-`鍵盤高 = clamp(螢幕高 × ratio, min, max)` 為主，鍵高再由鍵盤高平分而來。
-這個模型有一個致命缺陷：**鍵高綁在螢幕高度上，鍵寬卻綁在螢幕寬度上**，
-兩者各自獨立變動，鍵的長寬比因此完全失控。在 20:9 的長螢幕上
-（實測 S24U：ratio 0.33 撞上 `max: 300` → 鍵高 68dp，而鍵寬只有 35dp）
-長寬比被拉到 1:1.94，使用者的原話是「感覺被拉伸了,然後沒有自適應」。
-
-正確的因果方向是**鍵寬 → 鍵高 → 鍵盤高**：
+**本節是高度模型的第三版，前兩版都被實機量測否決。** 先講結論，再講為什麼：
 
 ```
-# 1. 鍵寬:由可用寬度、欄數、鍵距決定。與螢幕高度無關。
-key_w = (kb_width − padding.left − padding.right − key_spacing × (units − 1)) / units
+# 1. 參考鍵寬：只看裝置寬度與參考格的欄數。與當前佈局、與螢幕高度都無關。
+ref_key_w = (kb_width − padding.left − padding.right
+             − key_spacing × (reference_grid.units − 1)) / reference_grid.units
 
-# 2. 鍵高:由鍵寬乘上 key_aspect，再夾制到絕對上下界。
-#    height_scale 來自佈局（§9.2），在夾制之後套用。
-key_h = clamp(key_w × key_aspect, key_height.min, key_height.max) × height_scale
+# 2. 參考鍵高：key_aspect 仍是主控參數，再夾制到絕對上下界。
+ref_key_h = clamp(ref_key_w × key_aspect, key_height.min, key_height.max)
 
-# 3. 鍵盤高度是**算出來的結果**，不是設定值。
-h = key_h × rows + row_spacing × (rows − 1) + padding.top + padding.bottom
+# 3. 高度預算：參考格排滿的高度。**這就是鍵盤總高**，
+#    與當前 layer 的欄數、列數都無關。height_scale 來自佈局（§9.2）。
+budget = (ref_key_h × reference_grid.rows
+          + row_spacing × (reference_grid.rows − 1)
+          + padding.top + padding.bottom) × height_scale
 
-# 4. 安全網:鍵盤永遠不得超過螢幕的這個比例（摺疊機、平板橫放、超小螢幕）。
-h_cap = avail × max_screen_ratio.<當前方向>
-if h > h_cap:
-    # 反推鍵高，讓鍵盤剛好塞得下；此時 key_aspect 讓位給安全網。
-    key_h = (h_cap − padding.top − padding.bottom − row_spacing × (rows − 1)) / rows
-    h = h_cap
+# 4. 安全網：鍵盤永遠不得超過螢幕的這個比例（摺疊機、平板橫放、超小螢幕）。
+budget = min(budget, avail × max_screen_ratio.<當前方向>)
+
+# 5. 當前 layer 把預算分掉。**除以 Σ weight，不是列數。**
+usable_h = budget − padding.top − padding.bottom − row_spacing × (rows.count − 1)
+row_h    = clamp(usable_h / Σ weight, row_height.min, row_height.max)
+
+# 6. 實際高度。第 5 步的夾制沒有作用時，h 恰好等於 budget。
+h = row_h × Σ weight + row_spacing × (rows.count − 1) + padding.top + padding.bottom
+
+# 7. 安全網是最外層的保證，沒有例外。第 5 步的下界把 h 推過上限時，下界讓位。
+if h > avail × max_screen_ratio.<當前方向>:
+    row_h = (avail × max_screen_ratio − padding.top − padding.bottom
+             − row_spacing × (rows.count − 1)) / Σ weight
+    h     = avail × max_screen_ratio
 
 total = h + candidates.bar.height + (honor_bottom_inset ? 系統底部 inset : 0)
 ```
 
 `avail` = 當前方向下宿主視窗的可用高度（dp）。
-`units` 與 `rows` 來自**當前 layer**（§9.3），所以：
+`rows` 與 `weight` 來自**當前 layer**（§9.3）；`units` **完全不參與高度計算**。
 
-* 注音大千是 11 欄，鍵寬比 QWERTY 的 10 欄窄，鍵高**跟著等比變窄**，
-  兩份佈局的鍵長得一樣胖瘦。舊模型下 11 欄的鍵會比 10 欄的更瘦長。
-* 鍵盤總高會隨佈局的列數改變（大千 5 列比 QWERTY 4 列高一列）。
-  這是刻意的：列數不同本來就該不同高，硬壓成同高就會壓扁。
+第 1、3 步的 `key_spacing` / `row_spacing` **必須**取自**主題**，即使佈局用
+§9.2 覆寫過它們。第 5、6 步（以及 §9.3 的列內佈版）才用覆寫後的值。
+理由：預算若吃得到佈局的覆寫，佈局只要調一下鍵距、鍵盤總高就跟著變 ——
+「同一份主題下任兩份佈局總高相同」這條保證會在最不起眼的地方破功。
+（實測：`bopomofo-dachen` 的 `key_spacing: 4` 會讓它比其他佈局高 3%。）
+`height_scale` 是唯一被允許改變預算的佈局欄位，因為那是作者的明示意圖。
 
-**`padding` 算在 `h` 之內**（`h` 已含 padding，見第 3 步），
-`candidates.bar.height` 則是**外加**在 `h` 之上。兩者語義不同，最容易搞混。
+**`padding` 算在 `h` 之內**（見第 6 步），`candidates.bar.height` 則是**外加**在
+`h` 之上。兩者語義不同，最容易搞混。
+
+##### 為什麼是這個模型（兩版錯誤的病歷）
+
+* **v1 初稿**：`鍵盤高 = clamp(螢幕高 × ratio, min, max)`，鍵高再平分而來。
+  致命缺陷是**鍵高綁螢幕高、鍵寬綁螢幕寬**，兩者各自獨立變動，長寬比失控。
+  20:9 的長螢幕上實測 S24U 鍵高 68 dp、鍵寬 35 dp，長寬比 1:1.94，
+  使用者的原話是「感覺被拉伸了,然後沒有自適應」。
+* **v2**：`鍵高 = 鍵寬 × key_aspect`，`鍵盤高 = 鍵高 × 列數`。長寬比穩了，
+  但**鍵盤總高隨列數線性成長**：使用者一打開數字列，鍵盤長高 20%，
+  聊天視窗被擠掉一整段。v2 自己把這寫成「刻意的」，那句話是錯的 ——
+
+  > 三星 Galaxy S24U 實機量測（截圖 1182×2560 為 1440×3120 等比縮圖，
+  > 1 px = 0.3860 dp）：
+  >
+  > | 佈局 | 列數 | 鍵盤區總高 | 單鍵高 |
+  > |---|---|---|---|
+  > | 九宮格 | 4 | 510 px | 54.4 dp |
+  > | 全鍵盤＋數字列 | 5 | 505 px | 43.2 dp |
+  >
+  > **總高只差 1%，鍵高差 26%。** 三星是把總高固定住、再除以列數。
+  > Gboard 同樣是「固定鍵高」那一系（411 dp 與 456 dp 兩種寬度的機器上
+  > 字母鍵都是 47 dp）。兩家主流實作都不讓鍵盤隨列數長高。
+
+##### 取捨：總高固定與「長寬比隨欄數自適應」不可兼得
+
+這一點必須寫在規範裡，否則下一個人會再走一次 v2 的路。
+
+固定總高 ⇒ 列高固定 ⇒ 欄數一變（鍵寬變），長寬比就跟著變。反過來，
+要長寬比恆定就得讓鍵高跟著鍵寬走，總高必然隨欄數與列數浮動。
+兩者在數學上互斥，沒有第三條路。實測把選擇定死了：
+
+* 從九宮格（5 欄）切到全鍵盤（10 欄），舊模型下鍵寬變一半、鍵盤高度變一半 ——
+  這比「鍵稍胖稍瘦」明顯一個數量級。
+* 使用者感知的是**鍵盤佔掉多少螢幕**，不是單顆鍵的胖瘦比值。
+
+所以本模型選擇**總高固定**，欄數變化由**寬度方向**吸收（欄多則鍵窄），
+這與所有出貨鍵盤一致。v2 用來反對固定鍵高的兩個理由，在預算模型下都不成立：
+
+1. v2 說「固定鍵高無法處理欄數變化，11 欄的注音會比 10 欄的 QWERTY 瘦長」。
+   **在預算模型下不會發生**：注音大千比 QWERTY 多一列，列高同時變矮。
+   S24U ＋ `default-*` 實測 w/h：QWERTY 39.2/50.0 = 0.78，
+   大千 35.1/38.5 = 0.91 —— 注音反而比 QWERTY **更胖**，不是更瘦長。
+   欄數與列數在真實佈局裡是正相關的（欄多的佈局通常也列多），
+   兩者對長寬比的影響方向相反，大致互相抵消。
+2. v2 說「固定鍵高在平板上會產生極寬極扁的鍵」。**預算不是固定 dp 值**，
+   它由 `ref_key_w × key_aspect` 推導，所以會隨螢幕變寬而變高；
+   `key_height.max` 才是最終的守門員。平板上的行為與 v2 相同。
+
+##### 兩組夾制，各守各的（不要混用）
+
+| 欄位 | 夾制對象 | 什麼時候該動它 |
+|---|---|---|
+| `key_height.min` / `.max` | **參考鍵高**（第 2 步）＝預算的基準 | 要把鍵盤總高對齊某個參考鍵盤時 |
+| `row_height.min` / `.max` | **分完之後的列高**（第 5 步） | 幾乎不動；它是可用性護欄 |
+
+`row_height` 存在的理由：預算是固定的，列數卻不是。六列的佈局在小螢幕上
+會把列高分到 20 dp 以下 —— 那種鍵按不到。護欄一旦生效，`h ≠ budget`，
+鍵盤會長高（或變矮）。**這是刻意的**：與其守住總高卻給出按不到的鍵，
+不如讓鍵盤高一點。實作 **應** 在護欄生效時產生 INFO 診斷。
+
+三者的優先序是固定的，**不得**調換：
+`max_screen_ratio`（第 7 步，硬上限）＞ `row_height`（第 5 步，可用性）
+＞ `budget`（總高固定）。極矮的視窗上鍵按不到，好過鍵盤蓋掉整個畫面 ——
+前者使用者按不準，後者他連自己在打字給誰看都看不到。
+
+反過來，**不得**把 `key_height.min/max` 拿去夾制第 5 步的列高。那會讓
+「五列的佈局」在下界處被撐開，總高固定的性質當場失效 —— 這是最容易做錯的一格。
 
 #### 8.8.0.1 `key_aspect` 該設多少：實測基準
 
@@ -873,36 +966,41 @@ Gboard（Android 參考對象）在兩種螢幕上的實測值：
 | 1080×2400 @420dpi（411.4 dp 寬） | 35.4 dp | 47.0 dp | 1.33 |
 | 1440×3120 @505dpi（456.2 dp 寬） | 39.6 dp | 47.2 dp | 1.19 |
 
-**注意這組數字說的事情，和「aspect 是常數」不一樣。**
-Gboard 的鍵高在兩種螢幕上都是 47 dp（差 0.2 dp），鍵寬卻從 35.4 變成 39.6 ——
-也就是說 Gboard 用的是**固定鍵高**，aspect 只是被動的結果。
+Gboard 的鍵高在兩種螢幕上都是 47 dp（差 0.2 dp），鍵寬卻從 35.4 變成 39.6。
+在**預算模型**下這組數字的意義變得直接了當：`key_aspect` 描述的是
+**參考格上那顆鍵**的胖瘦，而參考格是 10 欄 4 列，正好就是 Gboard 的字母鍵。
+所以這張表可以逐字照抄成參數：預設 `key_aspect: 1.28` 搭配
+`key_height: {min: 40, max: 56}`，在上表兩種螢幕上分別得到 44.4 dp 與 50.3 dp，
+夾住 Gboard 的 47 dp。
 
-本規範仍選擇 aspect 作為主控參數，而不是照抄固定鍵高，理由有二：
-
-1. 固定鍵高無法處理欄數變化。11 欄的注音在固定鍵高下會明顯比 10 欄的 QWERTY 瘦長，
-   而這正是初稿模型被詬病的同一個病灶，只是換了個地方發作。
-2. 固定鍵高在平板上會產生極寬極扁的鍵（800 dp 寬的平板上鍵寬 76 dp、鍵高 47 dp）。
-
-`key_height.min` / `max` 就是用來把 aspect 的結果拉回 Gboard 那條線的：
-預設 `key_aspect: 1.28` 搭配 `key_height: {min: 40, max: 56}`，
-在上表兩種螢幕上分別得到 44.4 dp 與 50.3 dp，夾住 Gboard 的 47 dp。
 **在需要精確對齊某個參考鍵盤時，正確做法是收緊 `key_height` 的上下界，
-而不是去動 `key_aspect`。**
+而不是去動 `key_aspect`。** 例：`cn-compact-*` 用 `{min: 54, max: 56}`
+把預算對齊三星的 260 dp（實機九宮格列高 54.4 dp）。
+
+> 預算模型讓這件事比 v2 簡單得多。v2 下同一組 `key_height` 夾制必須同時
+> 命中 10 欄的全鍵盤與 7 欄的符號面板兩種鍵高，那是碰運氣；
+> 現在只需要對齊**一個**數字——參考鍵高——其餘佈局自動跟上。
+
+`reference_grid` 幾乎不需要改。它的用途是「這個主題心目中的標準鍵盤長什麼樣」，
+10 欄 4 列涵蓋 Gboard / iOS / 三星。只有在做**刻意更矮或更高**的主題
+（例如平板上的分離鍵盤）時才有理由動它。
 
 #### 8.8.0.2 相容性與版本
 
-本節改變了既有欄位的語義，依 §5.2 本應遞增 major。**本次刻意不遞增**，
-並把它記為 v1 期間的一次性例外（見 §5.7）。移除的欄位：
+本節在 v1 期間**第二次**改變既有欄位的語義，依 §5.2 本應遞增 major。
+**本次仍不遞增**，理由與記錄見 §5.7。變更摘要：
 
-| 移除 | 取代 |
+| 變更 | 說明 |
 |---|---|
-| `height.portrait.ratio` / `height.landscape.ratio` | `max_screen_ratio.<方向>`（語義從「目標」變成「上限」） |
-| `height.portrait.max` / `height.landscape.max` | `max_screen_ratio` + `key_height.max` |
-| `height.portrait.min` / `height.landscape.min` | `key_height.min` |
+| 移除 `height.portrait.*` / `height.landscape.*`（v1 初稿） | 已由 `max_screen_ratio` + `key_height` 取代 |
+| `key_aspect` 語義收窄 | 從「每一顆鍵的長寬比」變成「**參考格上那顆鍵**的長寬比」 |
+| `key_height.min/max` 語義收窄 | 只夾制參考鍵高，不再夾制實際列高 |
+| 新增 `reference_grid.units` / `.rows` | 預算的分母，預設 10 / 4 |
+| 新增 `row_height.min` / `.max` | 分完之後列高的可用性護欄 |
 
-解析器遇到舊的 `height:` 區塊 **必須** 忽略它並產生一則 INFO 診斷，
-指出該主題使用的是已被取代的高度模型、且已改用預設的 aspect 模型。
-**不得** 因此拒絕載入 —— 舊主題只是會長得跟作者預期不同，而不是壞掉。
+解析器遇到舊的 `height:` 區塊 **必須** 忽略它並產生一則 INFO 診斷。
+**不得** 因此拒絕載入。既有主題不寫 `reference_grid` / `row_height` 也完全合法
+——預設值就是本節推薦值，行為即為本節所述。
 
 #### 8.8.1 `keyboard.key_styles`
 
@@ -1030,7 +1128,8 @@ Gboard 的鍵高在兩種螢幕上都是 47 dp（差 0.2 dp），鍵寬卻從 35
 | `inherits` | string \| null | `null` | §7.1 |
 | `kind` | enum `alphabetic` \| `numeric` \| `symbol` \| `phonetic` \| `grid` \| `other` | `other` | 純資訊性，供 UI 分類 |
 | `targets` | string-list | `["android","ios"]` | 資訊性 |
-| `for_schema` | string-list | `["*"]` | 見 §9.1.1 |
+| `for_schema` | string-list | `["*"]` | **資格**：哪些方案可以用這份佈局。見 §9.1.1 |
+| `auto_for_schema` | string-list | = `for_schema` 去掉 `"*"` | **自動命中**：切到哪些方案時自動換上它。見 §9.1.1 |
 | `direction` | enum `ltr` \| `rtl` | `ltr` | `rtl` 時列內順序鏡射 |
 | `default_layer` | string | 第一個 layer 的 id | 不存在 → F9 |
 | `primary` | bool | `false` | 見 §9.5 的 `@primary` |
@@ -1038,30 +1137,80 @@ Gboard 的鍵高在兩種螢幕上都是 47 dp（差 0.2 dp），鍵寬卻從 35
 | `layers` | list<layer> | — **必填** | 空 → F8 |
 | `key_patches` | map<key-id, partial-key> | `{}` | §9.7 |
 
-#### 9.1.1 `for_schema`
+#### 9.1.1 `for_schema` 與 `auto_for_schema`
 
-宣告本佈局適用於哪些 librime schema id。`"*"` 表示全部。
+**這是兩個問題，所以是兩個欄位。**
+
+| 欄位 | 回答的問題 | 誰在讀 |
+|---|---|---|
+| `for_schema` | 「這份佈局**可以**給哪些方案用？」 | 鍵盤類型選單（列出使用者選得到什麼） |
+| `auto_for_schema` | 「切到某方案時**預設**該挑哪一份？」 | 下面的切換演算法第 1 步 |
+
+`for_schema` 的 `"*"` 表示全部方案。
+`auto_for_schema` **不接受** `"*"`：自動命中必須是明確點名的，
+否則第一份寫 `"*"` 的佈局會把所有方案都吃掉。寫了 `"*"` → 忽略該筆 + WARNING。
+
+`auto_for_schema` 未宣告時，預設為 `for_schema` 去掉 `"*"`。
+這個預設讓最常見的情形（「只給某方案用、也是它的預設佈局」）一行都不用寫，
+同時保證泛用佈局（`for_schema: ["*"]`）**永遠不會**搶到自動命中。
 
 **切換演算法（規範性）。** 使用者切換 schema（`rs_select_schema`）後：
 
 ```
-1. 找出所有 for_schema 不含 "*" 且含 <新 schema id> 的佈局 → 精確命中。
+1. 找出所有 auto_for_schema 含 <新 schema id> 的佈局 → 自動命中。
    有命中 → 切到其中在搜尋路徑裡最先找到的那一份。結束。
-2. 無精確命中時，檢查**當前佈局**是否仍適用於新 schema
+2. 無命中時，檢查**當前佈局**是否仍適用於新 schema
    （matches := for_schema 含 "*" 或含 <新 schema id>）。
    仍適用 → 什麼都不做。結束。
 3. 否則 → 切回 primary 佈局（`primary: true` 者）。
 ```
 
 **第 2、3 步是 v1 初稿漏掉的，不補會讓使用者卡死。** 具體場景：
-使用者從注音切回拼音，`bopomofo-dachen` 的 `for_schema` 不含 `luna_pinyin`
-所以第 1 步無命中；而 `qwerty` 是 `"*"`、依定義不算精確命中。
-若照初稿「無命中則沿用當前佈局」，使用者就會**停在注音鍵盤上打拼音** ——
-鍵面全是ㄅㄆㄇ，送出的卻是 ASCII，畫面與行為完全對不上，
-而且他找不到任何一顆鍵可以離開。
+使用者從注音切回拼音，`bopomofo-dachen` 不適用於 `luna_pinyin`，
+所以第 1 步無命中；若照初稿「無命中則沿用當前佈局」，使用者就會
+**停在注音鍵盤上打拼音** —— 鍵面全是ㄅㄆㄇ，送出的卻是 ASCII，
+畫面與行為完全對不上，而且他找不到任何一顆鍵可以離開。
 
 > 使用者若曾為當前 schema **明確指定**過佈局，實作 **應** 記住該選擇並跳過
 > 第 1 步。自動切換是便利機制，不該覆蓋使用者的明示意圖。
+
+##### 為什麼非拆不可（合成一個欄位時發生了什麼）
+
+v1 初稿只有 `for_schema`，它同時回答上表兩個問題。後果是：
+**想給同一個方案提供第二份佈局的作者，被迫把 `for_schema` 寫成 `"*"`**
+——因為那是唯一能避開第 1 步自動命中的寫法。本 repo 的
+`cn-t9-pinyin-numrow.yaml` 曾經白紙黑字這麼註解：
+
+> 不繼承 cn-t9-pinyin 的 ["t9_pinyin"]：避免兩份佈局搶同一個方案的自動命中。
+
+**而那句 `"*"` 是個謊。** 照字面它宣告「九宮格佈局可以給 `luna_pinyin` 用」，
+但九宮格送的是 `A/D/G/J/M/P/T/W` 八個代表鍵，那套字母表是 `t9_pinyin`
+方案的 speller 契約（`speller/alphabet: 'ADGJMPTW'`）。配上 `luna_pinyin`
+按「abc」送出的只是字母 a —— **鍵盤渲染正常，一個中文字也打不出來。**
+
+Android 參考實作為了不讓這個謊傷到使用者，長出了兩層變通：
+
+1. `"*"` 的佈局若 `inherits` 自一份有點名方案的佈局，就沿用父代的宣告
+   （靠繼承關係反推作者真意）；
+2. 泛用佈局只收 `kind: alphabetic`，把打不出字的 `"*"` 擋在選單外。
+
+兩層都是在猜。欄位拆開之後**兩層一起刪掉**：作者老實寫
+`for_schema: ["t9_pinyin"]` + `auto_for_schema: []`，資格與命中各自表述，
+選單直接讀 `for_schema` 就對了，不必再從 `kind` 或 `inherits` 推論任何事。
+
+```yaml
+# cn-t9-pinyin：t9_pinyin 的預設九宮格
+for_schema: ["t9_pinyin"]
+auto_for_schema: ["t9_pinyin"]    # 可省略，這正是預設值
+
+# cn-t9-pinyin-numrow：同一個方案的第二份佈局
+for_schema: ["t9_pinyin"]         # 選單裡有
+auto_for_schema: []               # 但不搶自動命中
+
+# qwerty：泛用拉丁字母佈局
+for_schema: ["*"]                 # 誰都能用
+                                  # auto_for_schema 預設為 []，不會搶任何方案
+```
 
 這是「一套配置四端共用」的實際兌現點：使用者裝了注音方案，
 四端裡的兩個行動端會自動換上 `bopomofo-dachen`，不需要各自再設定一次。
@@ -1072,10 +1221,20 @@ Gboard 的鍵高在兩種螢幕上都是 47 dp（差 0.2 dp），鍵寬卻從 35
 |---|---|---|---|
 | `row_spacing` | length \| null | `null` | `null` = 用主題的值 |
 | `key_spacing` | length \| null | `null` | 同上 |
-| `height_scale` | number 0.5–2.0 | `1.0` | 乘在**鍵高**上（§8.8.0 第 2 步），鍵盤總高隨之改變 |
+| `height_scale` | number 0.5–2.0 | `1.0` | 乘在**高度預算**上（§8.8.0 第 3 步），鍵盤總高隨之等比改變 |
 
-注音佈局比 QWERTY 多一列，`key_spacing` 調小、`height_scale` 調大是常見需求，
+注音佈局比 QWERTY 多一列，`key_spacing` 調小是常見需求，
 所以這個覆寫點必須存在於佈局側而非主題側。
+
+> **`height_scale` 不再是「多一列就要補償一次」的工具。** v2 的模型下，
+> 每一份加了列的佈局都得自己算一個係數把鍵盤壓回去
+> （本 repo 的 `cn-qwerty-numrow` 與 `cn-t9-pinyin-numrow` 都寫過
+> `height_scale: 0.80`），而係數與主題的 `key_height` 夾制耦合，換個主題就得重算。
+> §8.8.0 的預算模型已經把總高固定住，那類補償**一律應刪除**。
+> `height_scale` 現在只該用在真正的意圖上：「這份佈局就是要比別的佈局高／矮」。
+>
+> 想讓某一列比其他列矮，用 §9.3 的 `row.weight`（例如數字列 `0.83`），
+> 不要用 `height_scale` —— 後者動的是整個鍵盤。
 
 ### 9.3 `layer` 與 `row`
 
@@ -1098,14 +1257,16 @@ row：
 **佈版演算法（規範性）：**
 
 ```
-# 列高
+# 列高（keyboard_height 由 §8.8.0 第 6 步給出）
 usable_h = keyboard_height − padding.top − padding.bottom
            − row_spacing * (rows.count − 1)
 row_h[i] = usable_h * weight[i] / Σ weight
 
 # 列內
+items    = 該列實際排出的元素數
+           = keys.count + (Σ width < units ? 1 : 0)   ← 尾端補白也是一個元素
 usable_w = keyboard_width − padding.left − padding.right
-           − key_spacing * (keys.count − 1)
+           − key_spacing * (items − 1)
 unit_w   = usable_w / units
 key_w[j] = unit_w * width[j]
 ```
@@ -1114,6 +1275,24 @@ key_w[j] = unit_w * width[j]
 若 `Σ width < units`，剩餘空間留在該列末端；
 若 `Σ width > units`，該列會溢出，實作 **必須** 等比壓縮該列
 （`unit_w' = usable_w / Σ width`）並產生 WARNING。
+
+> **`items` 而不是 `keys.count`。** 間距是排在**元素之間**的，`n` 個元素有
+> `n − 1` 個間距；`Σ width < units` 時尾端那塊補白本身就是一個元素，
+> 因此多帶一個間距。初稿寫 `keys.count − 1`，在有補白的列上會少算一個
+> `key_spacing`，整列因此比實際寬 —— 差值不大（每顆鍵約 `key_spacing / units`），
+> 但足以讓「照規範算座標」的自動化測試戳不中鍵。
+>
+> **兩條公式對 spacing 的算法必須一致。** v2 的 §8.8.0 用
+> `key_spacing × (units − 1)` 推鍵高，本節用元素數推鍵寬，兩者對不上：
+> `units` 一大（例如 `units: 23`），每單位寬就縮小，鍵高崩到下界
+> （實測 `units: 23` 時鍵高 17.8 dp），而列內寬度卻完全正常。
+> §8.8.0 改成預算模型之後，**高度計算完全不看當前 layer 的 `units`**，
+> 這個分歧從根上消失了：本節是 `key_spacing` 唯一參與寬度計算的地方。
+
+> **列高用 `Σ weight`，不是列數。** 一份佈局若把數字列寫成 `weight: 0.83`，
+> 分母必須是 `4 + 0.83 = 4.83` 而不是 5，否則那一列變矮省下來的高度會憑空
+> 消失（或被別的列吃掉），總高就不再等於 §8.8.0 的預算。
+> v1 初稿在這裡寫的是列數，是錯的。
 
 > 需要置中的短列（如 QWERTY 的 `asdfghjkl`）**應** 使用顯式的
 > `{ spacer: true, width: 0.5 }` 佔位鍵，而不是仰賴任何自動置中規則。
@@ -1223,10 +1402,31 @@ send: { text: "、" }
 * 非 ASCII 且無對應 keysym 名的符號：`€` `£` `¥` `•` `§` `°` `…`
 * 全形標點層裡不希望被 `punctuator` 二次轉換的字元
 
-**誤用的後果很具體：** 把 `，` 寫成 `send: { text: "，" }` 看起來能動，
-但使用者切到英文模式時它仍然吐出全形逗號，因為它從沒經過 librime 的
-`punctuator`。正確寫法是 `send: { keysym: "comma" }`，讓 librime 依
-`ascii_punct` 開關自己決定要吐 `,` 還是 `，`。
+**誤用的後果很具體：** 把主佈局底列的 `，` 寫成 `send: { text: "，" }`
+看起來能動，但使用者切到英文模式時它仍然吐出全形逗號，因為它從沒經過
+librime 的 `punctuator`。正確寫法是 `send: { keysym: "comma" }`，
+讓 librime 依 `ascii_punct` 開關自己決定要吐 `,` 還是 `，`。
+
+##### 這條規則的適用範圍：只限**主佈局的標點鍵**
+
+`kind: symbol` / `kind: numeric` 的**符號面板**是例外，**應**使用 `text`。
+
+理由是面板的語義不同。主佈局的逗號鍵意思是「這裡要一個逗號，是哪一種請依
+我現在的模式決定」——那正是 `punctuator` 該管的事。符號面板的鍵意思是
+「我現在就要**這一個**字元」，是使用者剛剛翻頁挑出來的明示意圖，
+不該再被模式開關二次解釋。
+
+照 keysym 寫的後果很具體：中文標點頁的 `，` 與英文標點頁的 `,` 送出的是
+**同一個 keysym `comma`**，實際吐什麼完全由 `ascii_punct` 決定。於是兩頁在
+任一模式下輸出完全相同、**互為冗餘**，使用者翻到中文頁按下 `，` 卻拿到 `,`。
+
+規範性：
+
+* 主佈局（`kind` 非 `symbol` / `numeric`）的標點鍵 **應** 使用 `keysym`。
+* 符號／數字面板的字元鍵 **應** 使用 `text`。
+* 面板裡的 ⌫ / ␣ / ⏎ 仍 **必須** 走 `keysym` —— 那三顆得讓 librime
+  有機會消費（退格要能刪 preedit，見 §9.5）。
+* 兩種情形下，`text` 撞上組字中的處理一律依 §9.4.1。
 
 `text` 為空字串 → 該鍵變成 `noop` + WARNING。
 
@@ -1498,7 +1698,8 @@ key_patches:
 
 新平台的解析器上線前 **必須** 逐項通過：
 
-1. `core/themes/` 四份與 `core/layouts/` 三份全部解析成功，零 ERROR 診斷。
+1. `core/themes/` 與 `core/layouts/` 底下**每一份**檔案都解析成功，零 ERROR 診斷。
+   （檢核清單不寫死份數 —— 寫死的那一刻，新加的檔案就自動免檢。）
 2. `sakura-dark` 解析後：
    `palette.bg == #151016`（自身），`palette.fg == #E6E9EF`（繼承自 `default-dark`），
    `candidates.item.corner_radius == 14`（自身），
@@ -1529,14 +1730,23 @@ key_patches:
 12. 系統字體縮放調到最大時，文字放大倍率恰為 `font_scale_max`（不是它的平方）。
 13. 組字中按下 `send: {text: ...}` 的鍵：組字內容先上屏，標點接在其後，
     兩者皆不遺失（§9.4.1）。
-14. 把 `keyboard.padding.top` 從 4 改成 20：鍵盤總高度**增加 16dp**，按鍵高度不變
-    （新模型下鍵盤高是算出來的，padding 是加項；這與初稿相反）。
-15. 同一份主題在 411 dp 寬與 456 dp 寬的螢幕上，鍵的**長寬比一致**
-    （皆為 `key_aspect`，除非撞到 `key_height` 夾制）。這是初稿模型做不到的一條。
-16. 同一份主題下，10 欄的 `qwerty` 與 11 欄的 `bopomofo-dachen`，
-    鍵的長寬比相同（鍵較窄時鍵也較矮），而不是後者更瘦長。
+14. 把 `keyboard.padding.top` 從 4 改成 20：鍵盤總高度**增加 16dp**，
+    列高**減少**對應的量（padding 在預算之內，見 §8.8.0 第 3、5 步）。
+15. 同一份主題在 411 dp 寬與 456 dp 寬的螢幕上，**參考鍵**的長寬比一致
+    （皆為 `key_aspect`，除非撞到 `key_height` 夾制）。
+16. **同一份主題下，任兩份佈局的鍵盤總高相同**（誤差 < 0.5 dp），
+    無論列數是 4（`qwerty`）、5（`bopomofo-dachen`）還是含 `weight: 0.83`
+    數字列的 5 列（`cn-qwerty-numrow`）。這是 v2 模型做不到的一條，
+    也是本規範最容易被下一版改壞的一條。
+16b. 同一份佈局開關數字列（`cn-t9-pinyin` ⇄ `cn-t9-pinyin-numrow`）：
+    總高不變，列高由 54.0 變成 42.2（S24U ＋ `cn-compact-*`）。
+16c. `units: 23` 的 layer 與 `units: 10` 的 layer 列高**相同** ——
+    `units` 不參與高度計算。v2 下前者會崩到 17.8 dp。
 17. 舊主題（含 `keyboard.height:` 區塊、無 `key_aspect`）仍能載入，
-    產生恰好一則 INFO 診斷，且渲染採用預設 aspect 模型。
+    產生恰好一則 INFO 診斷，且渲染採用預設的預算模型。
+18. 佈局寫 `auto_for_schema: ["*"]` → 該筆被忽略 + 恰好一則 WARNING；
+    `for_schema: ["t9_pinyin"]` + `auto_for_schema: []` 的佈局
+    **出現在選單裡**，但切換方案時**不會**被自動選中。
 
 ---
 
@@ -1559,6 +1769,18 @@ key_patches:
   這是 §8.6.6.1 補完之後浮出來的下一個同類缺口。
 * **候選列與鍵盤之間的過場。** `motion.candidate_change_ms` 只描述候選項自身，
   沒描述「工具列 ⇄ 候選列」的切換，而那是使用者每次組字都會看到的動畫。
+* **`@previous` 只記得一份佈局。** 規範說它是「上一次使用的佈局」，實作只能是
+  一格堆疊。兩份 `kind: symbol` 的佈局互相指著對方時就會來回彈，使用者回不到
+  真正的起點（本 repo 的 `cn-symbols` ⇄ `numeric-symbol` 就撞過，已改成同檔
+  換層繞開）。要根治得規範一個「佈局返回堆疊」的深度與清空時機。
+* **成對符號與游標。** `“”`、`（）` 這類鍵，實機是插入一對並把游標移到中間；
+  本格式一顆鍵只能有一個 action，`send.text` 之後接不了 `cursor:left`。
+* **一個層沒有「我就是當前頁」的天然指示。** §8.8.1 規則 2 只在鍵指向**當前層**
+  時才 active，而分頁鍵（△▽）依定義指向別層，所以翻頁面板無法標出當前頁。
+  `cn-symbols` 的 `num` 層是靠「指向自己」繞過的，那是巧合不是機制。
+* **佈局與主題沒有繫結。** 九宮格的鍵長寬比同時取決於欄數（佈局）與高度預算
+  （主題）：`cn-t9-pinyin` 配 `cn-compact-*` 是 1.53（＝三星），配 `intl-gboard-*`
+  會是 1.80。作者沒有辦法說「這份佈局是為那份主題設計的」。
 
 ### 本節之外：v1 實作回饋已修補的項目
 
@@ -1568,6 +1790,12 @@ key_patches:
 §9.1.1（schema 切換的退回規則）、§9.4（keysym 回落所需的 ABI）、
 §9.4.1（`send.text` 撞上組字）、§9.5（`candidate:next/prev` 所需的 ABI）、
 §9.6（鍵面解析順序、圖示退化表、swipe 為 OPTIONAL）。
+
+第二輪（S24U 實機量測回饋）補的是:§8.8.0（高度模型改為固定預算 ÷ Σweight）、
+§8.8.0.1（`key_aspect` 描述的是參考格上那顆鍵）、§9.1.1（`for_schema` 拆成
+資格與自動命中兩個欄位）、§9.2（`height_scale` 不再拿來補償列數）、
+§9.3（間距記在元素數上、列高用 Σweight）、§9.4（標點用 keysym 的規則
+限定在主佈局，符號面板應該用 `text`）。
 
 ---
 

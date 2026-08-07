@@ -48,7 +48,13 @@ class ThemeParserTest {
         assertEquals(0xFF4C8DFF.toInt(), dark.candidates.shared.item.highlightBackground)
         assertF(44f, dark.candidates.bar.height)
         assertEquals(Backdrop.NONE, dark.candidates.window.backdrop)
-        assertF(1.34f, dark.keyboard.geometry.aspect)
+        // 參考鍵高 = clamp(39.2 x 1.38, 44, 54) = 54dp，落在 Gboard(47.2) 與
+        // 三星(54.4) 之間、靠三星那一側；理由見 default-dark.yaml 的註解。
+        assertF(1.38f, dark.keyboard.geometry.aspect)
+        assertF(44f, dark.keyboard.geometry.keyHeightMin)
+        assertF(54f, dark.keyboard.geometry.keyHeightMax)
+        assertF(10f, dark.keyboard.geometry.referenceUnits)
+        assertF(4f, dark.keyboard.geometry.referenceRows)
 
         val light = loadShipped("default-light").value!!
         assertEquals(Appearance.LIGHT, light.appearance)
@@ -498,17 +504,26 @@ class ThemeParserTest {
 
     // ── §8.8.0 高度模型 ───────────────────────────────────────────────────
 
-    private fun resolveQwerty(theme: Theme, widthDp: Float, heightDp: Float, units: Float = 10f, rows: Int = 4) =
+    private fun resolveQwerty(
+        theme: Theme,
+        widthDp: Float,
+        heightDp: Float,
+        units: Float = 10f,
+        rows: Int = 4,
+        rowsWeight: Float = rows.toFloat(),
+        keyCount: Int = 0,
+    ) =
         theme.keyboard.geometry.resolve(
             widthDp = widthDp,
             availHeightDp = heightDp,
             landscape = false,
             units = units,
-            rowsWeight = rows.toFloat(),
+            rowsWeight = rowsWeight,
             rowCount = rows,
             padding = theme.keyboard.padding,
             keySpacing = theme.keyboard.keySpacing,
             rowSpacing = theme.keyboard.rowSpacing,
+            keyCount = keyCount,
         )
 
     @Test
@@ -533,18 +548,70 @@ class ThemeParserTest {
         }
     }
 
+    /**
+     * **v3 模型的核心保證：同一份主題下，任兩份佈局的鍵盤總高相同。**
+     *
+     * v2 是「鍵高 × 列數」，所以 5 列的注音比 4 列的 QWERTY 高 25%，
+     * 使用者一切佈局鍵盤就跳一次。三星實機是四列與五列總高差 1%。
+     */
     @Test
-    fun elevenColumnLayoutKeepsTheSameAspectAsTenColumn() {
+    fun everyLayoutGetsTheSameKeyboardHeight() {
+        val t = loadShipped("default-light").value!!
+        val qwerty = resolveQwerty(t, 456.2f, 988f, units = 10f, rows = 4)
+        val bopomofo = resolveQwerty(t, 456.2f, 988f, units = 11f, rows = 5)
+        val ninePad = resolveQwerty(t, 456.2f, 988f, units = 10f, rows = 4, keyCount = 5)
+        // 數字列 weight 0.83 的五列全鍵盤
+        val numRow = resolveQwerty(t, 456.2f, 988f, units = 10f, rows = 5, rowsWeight = 4.83f)
+        for (r in listOf(bopomofo, ninePad, numRow)) {
+            assertEquals(qwerty.keyboardHeight.toDouble(), r.keyboardHeight.toDouble(), 0.5)
+        }
+        // 而且都等於預算本身：護欄沒有生效。
+        for (r in listOf(qwerty, bopomofo, ninePad, numRow)) assertTrue(r.budgetHonored)
+    }
+
+    /**
+     * 列數多的佈局是**每列變矮**，不是鍵盤變高。
+     *
+     * 順帶回答 v2 用來反對固定鍵高的理由：v2 說 11 欄的注音在固定鍵高下會比
+     * 10 欄的 QWERTY「瘦長」。在預算模型下不會 —— 注音多一列，列高同時變矮，
+     * w/h 反而比 QWERTY 更胖。欄數與列數在真實佈局裡正相關，兩者互相抵消。
+     */
+    @Test
+    fun moreRowsMeansShorterRowsNotATallerKeyboard() {
         val t = loadShipped("default-light").value!!
         val ten = resolveQwerty(t, 456.2f, 988f, units = 10f, rows = 4)
         val eleven = resolveQwerty(t, 456.2f, 988f, units = 11f, rows = 5)
-        // 11 欄鍵較窄，鍵高也必須跟著變矮 —— 不能只變窄不變矮。
-        assertTrue(eleven.keyWidth < ten.keyWidth)
-        assertTrue(eleven.keyHeight <= ten.keyHeight)
-        val da = kotlin.math.abs(
-            (ten.keyHeight / ten.keyWidth) - (eleven.keyHeight / eleven.keyWidth)
+        assertTrue("11 欄的鍵較窄", eleven.keyWidth < ten.keyWidth)
+        assertTrue("5 列的列高較矮", eleven.keyHeight < ten.keyHeight)
+        val wideTen = ten.keyWidth / ten.keyHeight
+        val wideEleven = eleven.keyWidth / eleven.keyHeight
+        assertTrue(
+            "注音 w/h=$wideEleven 不得比 QWERTY w/h=$wideTen 更瘦長",
+            wideEleven >= wideTen,
         )
-        assertTrue("兩者 aspect 差 $da", da < 0.12f)
+    }
+
+    /** `units` 完全不參與高度計算。v2 下 `units: 23` 的層鍵高會崩到下界。 */
+    @Test
+    fun unitsDoesNotAffectHeightAnyMore() {
+        val t = loadShipped("default-light").value!!
+        val ten = resolveQwerty(t, 456.2f, 988f, units = 10f, rows = 4)
+        val twentyThree = resolveQwerty(t, 456.2f, 988f, units = 23f, rows = 4)
+        assertF(ten.keyHeight, twentyThree.keyHeight)
+        assertF(ten.keyboardHeight, twentyThree.keyboardHeight)
+    }
+
+    /**
+     * `row_height` 是可用性護欄：列數多到列高分不夠時它讓鍵盤長高，
+     * 而不是給出一顆按不到的鍵。護欄一生效，總高就不再等於預算。
+     */
+    @Test
+    fun theRowHeightFloorWinsOverTheFixedBudget() {
+        val t = loadShipped("default-light").value!!
+        val deep = resolveQwerty(t, 360f, 900f, units = 10f, rows = 8)
+        assertEquals(t.keyboard.geometry.rowHeightMin.toDouble(), deep.keyHeight.toDouble(), 0.01)
+        assertTrue("護欄生效時總高必須高於預算", deep.keyboardHeight > deep.budgetHeight)
+        assertTrue(!deep.budgetHonored)
     }
 
     @Test
@@ -573,13 +640,75 @@ class ThemeParserTest {
         assertF(expected, r.keyboardHeight)
     }
 
+    /**
+     * 安全網是最外層的保證，**連 `row_height` 的下界都得讓位**。
+     * 極矮的視窗上鍵按不準，好過鍵盤蓋掉整個畫面。
+     */
     @Test
     fun maxScreenRatioIsTheSafetyNetOnShortScreens() {
         val t = loadShipped("default-light").value!!
-        // 極矮的視窗（摺疊機外螢幕）：安全網必須壓下鍵高。
+        // 極矮的視窗（摺疊機外螢幕）：安全網必須壓下列高。
         val r = resolveQwerty(t, 456.2f, 320f)
         assertTrue(r.keyboardHeight <= 320f * t.keyboard.geometry.maxScreenRatioPortrait + 0.01f)
         assertTrue(r.keyHeight < t.keyboard.geometry.keyHeightMax)
+        assertTrue("下界不得凌駕安全網", r.keyHeight < t.keyboard.geometry.rowHeightMin)
+    }
+
+    /**
+     * `key_height` 夾制的是**參考鍵高**（預算的基準），
+     * `row_height` 夾制的是**分完之後的列高**。兩組不得混用 ——
+     * 拿 `key_height.min` 去夾列高，五列的佈局就會在下界處被撐開，
+     * 總高固定的性質當場失效。這一格是 §8.8.0 最容易做錯的地方。
+     */
+    @Test
+    fun keyHeightBoundsTheReferenceKeyNotTheActualRow() {
+        val t = loadShipped("default-light").value!!
+        val g = t.keyboard.geometry
+        val fiveRows = resolveQwerty(t, 456.2f, 988f, units = 10f, rows = 5)
+        assertTrue(
+            "五列的列高 ${fiveRows.keyHeight} 應低於 key_height.min ${g.keyHeightMin}，" +
+                "因為那組夾制管的不是它",
+            fiveRows.keyHeight < g.keyHeightMin,
+        )
+        assertTrue(fiveRows.budgetHonored)
+    }
+
+    /**
+     * 佈局用 §9.2 覆寫鍵距時，**預算不得跟著變**。
+     *
+     * `bopomofo-dachen` 寫了 `key_spacing: 4`；若參考格也吃這個值，它的鍵盤
+     * 會比別人高 3%，而總高固定正是本模型唯一的賣點。覆寫只影響預算怎麼分。
+     */
+    @Test
+    fun aLayoutOverridingKeySpacingDoesNotChangeTheBudget() {
+        val t = loadShipped("default-light").value!!
+        val g = t.keyboard.geometry
+        fun h(layoutKeySpacing: Float) = g.resolve(
+            widthDp = 456.2f, availHeightDp = 988f, landscape = false,
+            units = 11f, rowsWeight = 5f, rowCount = 5,
+            padding = t.keyboard.padding,
+            keySpacing = layoutKeySpacing,
+            rowSpacing = t.keyboard.rowSpacing,
+            refKeySpacing = t.keyboard.keySpacing,
+            refRowSpacing = t.keyboard.rowSpacing,
+        ).keyboardHeight
+        assertF(h(t.keyboard.keySpacing), h(4f))
+        assertF(h(t.keyboard.keySpacing), h(16f))
+    }
+
+    /** 預算與當前佈局無關，所以 `budget()` 在佈局載入前就算得出最終值。 */
+    @Test
+    fun theBudgetIsKnownBeforeAnyLayoutIsLoaded() {
+        val t = loadShipped("default-light").value!!
+        val budget = t.keyboard.geometry.budget(
+            widthDp = 456.2f,
+            availHeightDp = 988f,
+            landscape = false,
+            padding = t.keyboard.padding,
+            keySpacing = t.keyboard.keySpacing,
+            rowSpacing = t.keyboard.rowSpacing,
+        )
+        assertF(budget, resolveQwerty(t, 456.2f, 988f).keyboardHeight)
     }
 
     @Test

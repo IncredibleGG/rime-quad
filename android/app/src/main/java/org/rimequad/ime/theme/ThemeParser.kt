@@ -162,13 +162,16 @@ object ThemeParser {
     private val SELECTION_KEYS = setOf("color", "text_color")
 
     private val KEYBOARD_KEYS = setOf(
-        "background", "key_aspect", "key_height", "max_screen_ratio", "padding",
+        "background", "key_aspect", "key_height", "reference_grid", "row_height",
+        "max_screen_ratio", "padding",
         "row_spacing", "key_spacing", "honor_bottom_inset", "key_styles",
         "popup", "press_preview",
         // 已被取代，仍列為「已知」以免產生 unknown field 噪音；見 §8.8.0.2
         "height"
     )
     private val KEY_HEIGHT_KEYS = setOf("min", "max")
+    private val ROW_HEIGHT_KEYS = setOf("min", "max")
+    private val REFERENCE_GRID_KEYS = setOf("units", "rows")
     private val MAX_SCREEN_RATIO_KEYS = setOf("portrait", "landscape")
     private val PADDING_KEYS = setOf("left", "top", "right", "bottom")
     private val KEY_STYLE_KEYS = setOf(
@@ -546,12 +549,20 @@ object ThemeParser {
         }
         val keyHeight = c.mapping("key_height")
         keyHeight.warnUnknownKeys(KEY_HEIGHT_KEYS)
+        val rowHeight = c.mapping("row_height")
+        rowHeight.warnUnknownKeys(ROW_HEIGHT_KEYS)
+        val refGrid = c.mapping("reference_grid")
+        refGrid.warnUnknownKeys(REFERENCE_GRID_KEYS)
         val ratios = c.mapping("max_screen_ratio")
         ratios.warnUnknownKeys(MAX_SCREEN_RATIO_KEYS)
         val geometry = KeyGeometry(
             aspect = c.child("key_aspect").number(1.28f, 0.6f, 2.5f),
             keyHeightMin = keyHeight.child("min").length(40f, 20f, 200f),
             keyHeightMax = keyHeight.child("max").length(56f, 20f, 200f),
+            referenceUnits = refGrid.child("units").number(10f, 4f, 20f),
+            referenceRows = refGrid.child("rows").number(4f, 1f, 8f),
+            rowHeightMin = rowHeight.child("min").length(32f, 16f, 200f),
+            rowHeightMax = rowHeight.child("max").length(96f, 16f, 200f),
             maxScreenRatioPortrait = ratios.child("portrait").ratio(0.45f, 0.2f, 0.8f),
             maxScreenRatioLandscape = ratios.child("landscape").ratio(0.62f, 0.2f, 0.9f)
         )

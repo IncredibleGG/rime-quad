@@ -99,6 +99,24 @@ class LayoutHost(private val repo: LayoutRepository) {
         if (layout == null) switchLayout(DEFAULT_LAYOUT)
     }
 
+    /**
+     * 丟掉佈局快取並重載當前佈局。
+     *
+     * 使用者在設定裡改過自訂鍵位（`RemappingLayoutRepository` 的來源變了）之後，
+     * 快取裡那幾份是舊的。這裡不動「現在在哪一份、哪一層」——那是使用者的位置，
+     * 重載不該把他踢回預設層。
+     */
+    fun invalidateLayouts() {
+        layoutCache.clear()
+        val current = layout?.id ?: return
+        val keepLayer = layerId
+        val fresh = load(current) ?: return
+        layout = fresh
+        // 舊層在新佈局裡還在就留著；被使用者改掉了才退回 default_layer。
+        layerId = if (fresh.layer(keepLayer) != null) keepLayer else fresh.defaultLayer
+        layerOnceReturn = null
+    }
+
     fun switchLayout(id: String): Boolean {
         val resolved = resolveLayoutRef(id)
         if (resolved == layout?.id) {
@@ -134,11 +152,11 @@ class LayoutHost(private val repo: LayoutRepository) {
     /**
      * §9.1.1：方案改變時自動換佈局。
      *
-     * 規範只寫了「命中就換、沒命中就沿用當前佈局」。照字面實作會有一個洞：
-     * 從注音切回拼音時，`bopomofo-dachen` 的 `for_schema` 不含 `luna_pinyin`，
-     * 而 `qwerty` 是 `"*"`（不算命中），於是使用者會停在注音鍵盤上打拼音。
-     * 這裡多一條補救：**當前佈局若不適用於新方案，退回 primary**。
-     * 這是規範的缺口，已記在回報中。
+     * v1 初稿只寫了「命中就換、沒命中就沿用當前佈局」。照字面實作會有一個洞：
+     * 從注音切回拼音時，`bopomofo-dachen` 不適用於 `luna_pinyin`，
+     * 而 `qwerty` 的 `auto_for_schema` 是空的（不算命中），
+     * 於是使用者會停在注音鍵盤上打拼音。所以第 3 步是**退回 primary**。
+     * 規範 §9.1.1 已經補上這一步（第 2、3 步）。
      *
      * 最前面還有一步：使用者明確指定過的佈局勝過整套自動規則（§9.1.1 的
      * SHOULD，見 [pinnedLayouts]）。
@@ -158,10 +176,13 @@ class LayoutHost(private val repo: LayoutRepository) {
             Log.w(TAG, "使用者為 $schemaId 指定的佈局 $pinned 載不起來，改走自動規則")
             pinnedLayouts.remove(schemaId)
         }
+        // §9.1.1 第 1 步走的是 `auto_for_schema`，不是 `for_schema`。兩者拆開之後
+        // 「可以用這份佈局」與「預設就用這份」不再互相綁架：`cn-t9-pinyin-numrow`
+        // 可以老實宣告自己只給 t9_pinyin 用，同時把自動命中讓給 `cn-t9-pinyin`。
         val exact = repo.layoutIds()
             .asSequence()
             .mapNotNull { load(it) }
-            .firstOrNull { !it.forSchema.contains("*") && it.forSchema.contains(schemaId) }
+            .firstOrNull { it.autoMatchesSchema(schemaId) }
         if (exact != null) {
             // 已經在對的佈局上時仍要把層歸位。使用者明確重選一次方案，語義是
             // 「把鍵盤給我調回這個方案該有的樣子」，停在英數層上不算調回。
@@ -221,8 +242,8 @@ class LayoutHost(private val repo: LayoutRepository) {
                     name = it.name.get(locale),
                     kind = it.kind,
                     forSchema = it.forSchema,
+                    autoForSchema = it.autoForSchema,
                     primary = it.primary,
-                    ancestry = it.ancestry,
                 )
             }
         }

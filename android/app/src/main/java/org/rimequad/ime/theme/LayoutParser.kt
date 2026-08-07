@@ -99,8 +99,8 @@ object LayoutParser {
 
     private val DOC_KEYS = setOf(
         "format", "id", "revision", "name", "description", "author", "license",
-        "inherits", "min_client", "kind", "targets", "for_schema", "direction",
-        "default_layer", "primary", "metrics", "layers", "key_patches"
+        "inherits", "min_client", "kind", "targets", "for_schema", "auto_for_schema",
+        "direction", "default_layer", "primary", "metrics", "layers", "key_patches"
     )
     private val METRICS_KEYS = setOf("row_spacing", "key_spacing", "height_scale")
     private val LAYER_KEYS = setOf("id", "label", "units", "rows")
@@ -165,6 +165,23 @@ object LayoutParser {
             heightScale = m.child("height_scale").number(1.0f, 0.5f, 2.0f)
         )
 
+        val forSchema = c.child("for_schema").stringList(listOf("*"))
+        // §9.1.1：`auto_for_schema` 沒寫時 = `for_schema` 去掉 `"*"`。
+        // 這個預設讓「只給某方案用、也是它的預設佈局」這個最常見的情形一行都不用寫，
+        // 同時保證 `"*"` 的泛用佈局**永遠不會**搶自動命中（`"*"` 濾掉之後是空的）。
+        val autoNode = c.child("auto_for_schema")
+        val autoForSchema =
+            if (autoNode.exists) autoNode.stringList(emptyList()).filter { it != "*" }
+            else forSchema.filter { it != "*" }
+        if (autoNode.exists && autoNode.stringList(emptyList()).contains("*")) {
+            diag.warn(
+                "auto_for_schema",
+                "'*' is meaningless in auto_for_schema (§9.1.1 step 1 matches named " +
+                    "schemas only); it was dropped",
+                root.line
+            )
+        }
+
         return KeyboardLayout(
             id = id,
             revision = c.child("revision").int(1, 1, Int.MAX_VALUE),
@@ -174,7 +191,8 @@ object LayoutParser {
             license = c.child("license").string(""),
             kind = c.child("kind").enumValue(LayoutKind.OTHER),
             targets = c.child("targets").stringList(listOf("android", "ios")),
-            forSchema = c.child("for_schema").stringList(listOf("*")),
+            forSchema = forSchema,
+            autoForSchema = autoForSchema,
             direction = c.child("direction").enumValue(Direction.LTR),
             defaultLayer = defaultLayer,
             primary = c.child("primary").bool(false),

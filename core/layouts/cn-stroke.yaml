@@ -140,11 +140,20 @@ layers:
                 - { label: "…", send: { text: "…" } }
           # 反查：stroke 方案的 reverse_lookup 前綴是 "`"，接拼音可查筆順。
           - { id: "lookup", label: "反查", width: 2.2, style: modifier, send: { keysym: "grave" } }
+          # 「全鍵」進的是**本檔的** alpha 層，不是別份佈局。
+          #
+          # 原本這裡是 `switch_layout:@primary` —— 按下去掉進 qwerty，而 qwerty
+          # 上沒有任何一顆看得見的鍵回得來（工具列與 schema:picker 是安全網，
+          # 不是回程）。那正是使用者回報過的「進得去、出不來」，
+          # LayoutEscapeTest 把隨附佈局全部納入之後就抓到了。
+          #
+          # 換方案也不對：留在 stroke 方案打拉丁字母，speller 收不下就原樣透傳，
+          # 這正是使用者要「全鍵」時想要的行為（打網址、打英文詞）。
           - id: "to_alpha"
             label: "全鍵"
             width: 2.2
             style: modifier
-            tap: "switch_layout:@primary"
+            tap: "layer:alpha"
           - id: "lang"
             label_from: input_mode
             label: "中"
@@ -177,6 +186,90 @@ layers:
             swipe:
               left:  { tap: "cursor:left" }
               right: { tap: "cursor:right" }
+            long_press: "switch_layout:@primary"
+          - id: "to_num"
+            label: "123"
+            width: 2.2
+            style: modifier
+            tap: "switch_layout:numeric-symbol"
+          - id: "enter"
+            icon: enter
+            style: action
+            width: 1.7
+            send: { keysym: "Return" }
+
+  # ── 英數層（由「全鍵」進入，「筆畫」離開）────────────────────────────────
+  #
+  #  五筆畫使用者一樣要打網址與英文詞。這一層留在 stroke 方案裡：speller 的
+  #  alphabet 是 hspnz，其餘字母收不下就原樣透傳給宿主，正是這裡要的。
+  #  units 與主層相同（10），切換時外框不跳動；底列的回程鍵永遠在同一格。
+  - id: "alpha"
+    label: "英數"
+    units: 10
+    rows:
+
+      - weight: 1.0
+        keys:
+          - { id: "a_q", label: "q", send: { keysym: "q" } }
+          - { id: "a_w", label: "w", send: { keysym: "w" } }
+          - { id: "a_e", label: "e", send: { keysym: "e" } }
+          - { id: "a_r", label: "r", send: { keysym: "r" } }
+          - { id: "a_t", label: "t", send: { keysym: "t" } }
+          - { id: "a_y", label: "y", send: { keysym: "y" } }
+          - { id: "a_u", label: "u", send: { keysym: "u" } }
+          - { id: "a_i", label: "i", send: { keysym: "i" } }
+          - { id: "a_o", label: "o", send: { keysym: "o" } }
+          - { id: "a_p", label: "p", send: { keysym: "p" } }
+
+      - weight: 1.0
+        keys:
+          - { spacer: true, width: 0.5 }
+          - { id: "a_a", label: "a", send: { keysym: "a" } }
+          - { id: "a_s", label: "s", send: { keysym: "s" } }
+          - { id: "a_d", label: "d", send: { keysym: "d" } }
+          - { id: "a_f", label: "f", send: { keysym: "f" } }
+          - { id: "a_g", label: "g", send: { keysym: "g" } }
+          - { id: "a_h", label: "h", send: { keysym: "h" } }
+          - { id: "a_j", label: "j", send: { keysym: "j" } }
+          - { id: "a_k", label: "k", send: { keysym: "k" } }
+          - { id: "a_l", label: "l", send: { keysym: "l" } }
+          - { spacer: true, width: 0.5 }
+
+      - weight: 1.0
+        keys:
+          - { id: "a_z", label: "z", width: 2.0, send: { keysym: "z" } }
+          - { id: "a_x", label: "x", send: { keysym: "x" } }
+          - { id: "a_c", label: "c", send: { keysym: "c" } }
+          - { id: "a_v", label: "v", send: { keysym: "v" } }
+          - { id: "a_b", label: "b", send: { keysym: "b" } }
+          - { id: "a_n", label: "n", send: { keysym: "n" } }
+          - { id: "a_m", label: "m", send: { keysym: "m" } }
+          - id: "backspace"
+            icon: backspace
+            width: 2.0
+            style: modifier
+            send: { keysym: "BackSpace" }
+            repeat: true
+
+      # 底列：與主層一樣，離開的那顆鍵永遠在最左邊那一格之後。
+      - weight: 1.0
+        keys:
+          - id: "to_symbols"
+            label: "!@#"
+            width: 1.7
+            style: modifier
+            tap: "switch_layout:cn-symbols"
+          # 本層的出口。缺了它使用者就回不到筆畫鍵盤。
+          - id: "to_stroke"
+            label: "筆畫"
+            width: 2.2
+            style: modifier
+            tap: "layer:stroke"
+          - id: "space"
+            icon: space
+            style: space
+            width: 2.2
+            send: { keysym: "space" }
             long_press: "switch_layout:@primary"
           - id: "to_num"
             label: "123"

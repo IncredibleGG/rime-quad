@@ -3,6 +3,7 @@ package org.rimequad.ime.keyboard
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
+import org.rimequad.ime.theme.RepoFixtures
 
 /**
  * §9.1.1 的 SHOULD：
@@ -108,7 +109,7 @@ class LayoutPinTest {
     @Test
     fun layoutBriefsCarryWhatTheMenuNeeds() {
         val briefs = booted().layoutBriefs("zh-Hant-TW")
-        assertEquals(RepoLayoutIds, briefs.map { it.id }.toSet())
+        assertEquals(RepoFixtures.layoutIds.toSet(), briefs.map { it.id }.toSet())
         val bopomofo = briefs.first { it.id == "bopomofo-dachen" }
         assertEquals("注音 大千", bopomofo.name)
         assertEquals(true, bopomofo.declares("bopomofo_tw"))
@@ -116,7 +117,4 @@ class LayoutPinTest {
         assertEquals(true, briefs.first { it.id == "numeric-symbol" }.isAccessory)
     }
 
-    private companion object {
-        val RepoLayoutIds = setOf("qwerty", "numeric-symbol", "bopomofo-dachen", "t9-pinyin")
-    }
 }

@@ -70,6 +70,10 @@ SPEC_DEFAULTS = {
     "key_aspect": 1.28,
     "key_height_min": 40.0,
     "key_height_max": 56.0,
+    "row_height_min": 32.0,
+    "row_height_max": 96.0,
+    "reference_units": 10.0,
+    "reference_rows": 4.0,
     "max_screen_ratio_portrait": 0.45,
     "max_screen_ratio_landscape": 0.62,
     "padding": {"left": 5.0, "right": 5.0, "top": 4.0, "bottom": 4.0},
@@ -85,6 +89,10 @@ CLAMPS = {
     "key_aspect": (0.6, 2.5),
     "key_height_min": (20.0, 200.0),
     "key_height_max": (20.0, 200.0),
+    "row_height_min": (16.0, 200.0),
+    "row_height_max": (16.0, 200.0),
+    "reference_units": (4.0, 20.0),
+    "reference_rows": (1.0, 8.0),
     "max_screen_ratio_portrait": (0.2, 0.8),
     "max_screen_ratio_landscape": (0.2, 0.9),
     "row_spacing": (0.0, 32.0),
@@ -174,6 +182,12 @@ class ThemeGeometry(object):
         kh = kb.get("key_height") or {}
         self.key_h_min = _clamped("key_height_min", kh.get("min", d["key_height_min"]))
         self.key_h_max = _clamped("key_height_max", kh.get("max", d["key_height_max"]))
+        rh = kb.get("row_height") or {}
+        self.row_h_min = _clamped("row_height_min", rh.get("min", d["row_height_min"]))
+        self.row_h_max = _clamped("row_height_max", rh.get("max", d["row_height_max"]))
+        rg = kb.get("reference_grid") or {}
+        self.ref_units = _clamped("reference_units", rg.get("units", d["reference_units"]))
+        self.ref_rows = _clamped("reference_rows", rg.get("rows", d["reference_rows"]))
         msr = kb.get("max_screen_ratio") or {}
         self.ratio_portrait = _clamped(
             "max_screen_ratio_portrait", msr.get("portrait", d["max_screen_ratio_portrait"])
@@ -197,38 +211,56 @@ class ThemeGeometry(object):
         self.legacy_height_block = "height" in kb
 
     def resolve(self, width_dp, avail_h_dp, landscape, units, rows_weight, row_count,
-                key_spacing, row_spacing, height_scale=1.0):
-        """§8.8.0 的高度模型：鍵寬 → 鍵高 → 鍵盤高。
+                key_spacing, row_spacing, height_scale=1.0,
+                ref_key_spacing=None, ref_row_spacing=None):
+        """§8.8.0 的高度模型（v3）：參考格 → 高度預算 → 列高。
 
-        與 ThemeModel.kt 的 KeyGeometry.resolve 逐行對應。改這裡就要改那裡。
+        與 ThemeModel.kt 的 KeyGeometry.budget / .resolve 逐行對應。
+        改這裡就要改那裡。**當前 layer 的 units 不參與高度計算。**
         """
         units = float(units) if units > 0 else 1.0
         rows_weight = float(rows_weight) if rows_weight > 0 else 1.0
         gaps = row_count - 1 if row_count > 1 else 0
-
-        # 1. 鍵寬：由可用寬度、欄數、鍵距決定。與螢幕高度無關。
-        inner_w = width_dp - self.pad["left"] - self.pad["right"] - key_spacing * (units - 1.0)
-        key_w = (inner_w if inner_w > 0 else 0.0) / units
-
-        # 2. 鍵高：鍵寬 × aspect，夾制到絕對上下界之後才套 height_scale。
-        key_h = clamp(key_w * self.aspect, self.key_h_min, self.key_h_max) * height_scale
-
-        # 3. 鍵盤高度是算出來的結果，不是設定值。
-        chrome = row_spacing * gaps + self.pad["top"] + self.pad["bottom"]
-        h = key_h * rows_weight + chrome
-
-        # 4. 安全網：不得超過螢幕的這個比例。
         ratio = self.ratio_landscape if landscape else self.ratio_portrait
         cap = avail_h_dp * ratio
+
+        # 1–2. 參考鍵：只看裝置寬度與參考格的欄數。
+        rks = key_spacing if ref_key_spacing is None else ref_key_spacing
+        rrs = row_spacing if ref_row_spacing is None else ref_row_spacing
+        ref_inner = (width_dp - self.pad["left"] - self.pad["right"]
+                     - rks * (self.ref_units - 1.0))
+        ref_key_w = (ref_inner if ref_inner > 0 else 0.0) / self.ref_units
+        ref_key_h = clamp(ref_key_w * self.aspect, self.key_h_min, self.key_h_max)
+
+        # 3–4. 預算（含安全網）。與當前佈局的欄數、列數都無關。
+        budget = (ref_key_h * self.ref_rows
+                  + rrs * max(self.ref_rows - 1.0, 0.0)
+                  + self.pad["top"] + self.pad["bottom"]) * height_scale
+        if avail_h_dp > 0 and budget > cap:
+            budget = cap
+
+        # 5–6. 當前 layer 把預算分掉。除以 Σweight，不是列數。
+        chrome = row_spacing * gaps + self.pad["top"] + self.pad["bottom"]
+        usable = max(budget - chrome, 1.0)
+        key_h = clamp(usable / rows_weight, self.row_h_min, self.row_h_max)
+        h = key_h * rows_weight + chrome
+
+        # 7. 安全網是最外層的保證，連 row_height 的下界都得讓位。
         capped = False
         if avail_h_dp > 0 and h > cap:
             key_h = max((cap - chrome) / rows_weight, 1.0)
             h = key_h * rows_weight + chrome
             capped = True
+
+        # 平均鍵寬：與 §9.3 一致，spacing 記在元素數上。
+        n = max(units, 1.0)
         return {
-            "key_width_dp": key_w,          # 只是「名目鍵寬」，用來推鍵高；不是實際排版寬度
+            "key_width_dp": (width_dp - self.pad["left"] - self.pad["right"]
+                             - key_spacing * (n - 1.0)) / n,
             "key_height_dp": key_h,         # 名目鍵高，weight=1.0 的列才等於實際列高
             "keyboard_height_dp": h,
+            "budget_height_dp": budget,
+            "ref_key_height_dp": ref_key_h,
             "capped": capped,
         }
 
@@ -371,6 +403,9 @@ def solve(theme, layout, layer, screen_w_px, screen_h_px, density,
         key_spacing=key_spacing,
         row_spacing=row_spacing,
         height_scale=layout.height_scale,
+        # 參考格用主題的間距，佈局的 §9.2 覆寫不參與預算（見 ThemeModel.kt）。
+        ref_key_spacing=theme.key_spacing,
+        ref_row_spacing=theme.row_spacing,
     )
 
     kb_h = g["keyboard_height_dp"]

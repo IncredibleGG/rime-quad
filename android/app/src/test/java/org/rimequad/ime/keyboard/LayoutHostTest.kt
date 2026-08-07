@@ -113,34 +113,70 @@ class LayoutHostTest {
 
     /* ── 九宮格 ⇄ 英數（真機回報的那條路）───────────────────────────── */
 
+    /**
+     * **九宮格的預設是 5 欄的 `cn-t9-pinyin`，不是 4 欄的 `t9-pinyin`。**
+     *
+     * 4 欄那份把缺掉的第五欄寬度攤給了四顆鍵，鍵的長寬比被拉到 1.95:1
+     * （三星 1.53、語燕 1.36）。5 欄那份補上左標點欄與右功能欄之後
+     * 長寬比自動落回 1.53。兩者的 speller 契約相同，可以互換。
+     *
+     * 這條同時守住 §9.1.1 的欄位拆分：`t9-pinyin` 的 `for_schema` 仍含
+     * `t9_pinyin`（選單裡選得到），但 `auto_for_schema` 是空的，所以搶不到
+     * 自動命中。少了那個拆分，兩份都宣告 `t9_pinyin`，誰贏取決於檔名排序。
+     */
     @Test
-    fun ninePadEnglishRoundTripStaysInsideTheSameLayout() {
+    fun theNinePadDefaultIsTheFiveColumnLayout() {
         val h = booted()
         h.applySchema("t9_pinyin")
-        assertEquals("t9-pinyin/t9", h.state())
+        assertEquals("cn-t9-pinyin/t9", h.state())
+        assertEquals(
+            "九宮格主層必須是 5 欄（左標點欄 + 3x3 字母 + 右功能欄）",
+            5,
+            h.layout!!.layer("t9")!!.rows.first().keys.size,
+        )
+    }
 
-        // 「ABC」鍵
+    @Test
+    fun ninePadNumberLayerRoundTripStaysInsideTheSameLayout() {
+        val h = booted()
+        h.applySchema("t9_pinyin")
+        assertEquals("cn-t9-pinyin/t9", h.state())
+
+        // 「123」鍵
+        val num = tapOf(h, "to_num")
+        assertEquals("layer", num.substringBefore(':'))
+        h.setLayer(num.substringAfter(':'))
+        assertEquals("cn-t9-pinyin/num", h.state())
+
+        // 數字層的「返回」鍵
+        val back = tapOf(h, "back")
+        h.setLayer(back.substringAfter(':'))
+        assertEquals("cn-t9-pinyin/t9", h.state())
+    }
+
+    /** 舊的 4 欄版仍然選得到、也仍然出得來（使用者可能 pin 過它）。 */
+    @Test
+    fun theRetiredFourColumnNinePadStillRoundTrips() {
+        val h = booted()
+        h.switchLayout("t9-pinyin")
+        assertEquals("t9-pinyin/t9", h.state())
         val abc = tapOf(h, "to_alpha")
-        assertEquals("layer", abc.substringBefore(':'))
         h.setLayer(abc.substringAfter(':'))
         assertEquals("t9-pinyin/en", h.state())
-
-        // 英數層左下角的回程鍵
-        val back = tapOf(h, "to_t9")
-        h.setLayer(back.substringAfter(':'))
+        h.setLayer(tapOf(h, "to_t9").substringAfter(':'))
         assertEquals("t9-pinyin/t9", h.state())
     }
 
-    /** 九宮格 → 符號 → ABC。修正前這條會把人丟在 qwerty 上出不來。 */
+    /** 九宮格 → 符號 → 返回。修正前這條會把人丟在 qwerty 上出不來。 */
     @Test
     fun ninePadSymbolsReturnToTheNinePadNotToQwerty() {
         val h = booted()
         h.applySchema("t9_pinyin")
-        h.switchLayout("numeric-symbol")
-        val abc = tapOf(h, "to_alpha")
-        assertEquals("switch_layout:@previous", abc)
-        h.switchLayout(abc.substringAfter(':'))
-        assertEquals("t9-pinyin/t9", h.state())
+        h.switchLayout("cn-symbols")
+        val back = tapOf(h, "bar_back")
+        assertEquals("switch_layout:@previous", back)
+        h.switchLayout(back.substringAfter(':'))
+        assertEquals("cn-t9-pinyin/t9", h.state())
     }
 
     /** 注音 → ?123 → ABC 同樣不得掉進 qwerty。 */
@@ -182,11 +218,11 @@ class LayoutHostTest {
     fun reapplyingTheSameSchemaResetsTheLayer() {
         val h = booted()
         h.applySchema("t9_pinyin")
-        h.setLayer("en")
-        assertEquals("t9-pinyin/en", h.state())
+        h.setLayer("num")
+        assertEquals("cn-t9-pinyin/num", h.state())
 
         h.applySchema("t9_pinyin")
-        assertEquals("t9-pinyin/t9", h.state())
+        assertEquals("cn-t9-pinyin/t9", h.state())
     }
 
     /* ── 夾具 ─────────────────────────────────────────────────────────── */
