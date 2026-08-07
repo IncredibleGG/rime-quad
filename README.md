@@ -82,13 +82,29 @@ windows/                     Windows TSF 端
 
 ## 路線圖
 
-- [ ] **M0** 共用層定案：`rime_shell.h` ABI、主題與佈局格式規範
-- [ ] **M1** Android 跑通：librime NDK 交叉編譯 → JNI → Compose 鍵盤 → 能上屏
+- [x] **M0** 共用層定案：`rime_shell.h` ABI、主題與佈局格式規範
+- [x] **M1** Android 跑通 —— **模擬器上實測可用**
+      librime 1.17.0 交叉編譯（arm64-v8a + x86_64）→ JNI → Compose 鍵盤 → 拼音打出「你好」
 - [ ] **M2** Android 消費 `core/themes` 與 `core/layouts`，主題可換
 - [ ] **M3** macOS（IMKit + SwiftUI 候選窗），驗證共用層在桌面形態成立
 - [ ] **M4** iOS 鍵盤擴展（與 macOS 共用 Swift 層，重打 UI）
 - [ ] **M5** Windows TSF（瘦 DLL + 服務進程）
 - [ ] **M6** 配置同步
+
+---
+
+## 建置機器
+
+| 平台 | 需要什麼 | 現況 |
+|---|---|---|
+| Android | Linux/macOS + JDK 17 + Android SDK/NDK | ✅ 已具備，M1 即在此完成 |
+| macOS | **一台 Mac** + Xcode | ❌ 尚無可用機器 |
+| iOS | **一台 Mac** + Xcode（模擬器可測，上架需開發者帳號） | ❌ 尚無可用機器 |
+| Windows | **一台 Windows** + MSVC（TSF 實務上無法用 mingw 交叉編譯） | ❌ 尚無可用機器 |
+
+Android 之外的三端**無法在目前的建置環境上編譯或驗證**。程式碼可以先寫，
+但依本專案「不驗證過的東西不算完成」的原則，M3–M5 在取得對應機器前
+不會被標記為完成。
 
 ---
 
