@@ -27,6 +27,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import org.rimequad.ime.net.rememberNetworkEnabled
 
 /**
  * 設定頁的「更新」區塊。
@@ -42,6 +43,7 @@ fun UpdateSection(
     modifier: Modifier = Modifier,
 ) {
     val hasUpdate = controller.hasUpdate
+    val networkOn = rememberNetworkEnabled()
     Card(
         modifier = modifier.fillMaxWidth(),
         colors = if (hasUpdate) {
@@ -74,6 +76,17 @@ fun UpdateSection(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 4.dp),
             )
+
+            /* ── 連網開關關閉時，這一整區都不會動作 ── */
+            if (!networkOn) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "連網開關目前是關閉的，所以不會檢查更新，也不會下載任何東西。" +
+                        "要收到新版本，先到「連網」分頁把開關打開。",
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
 
             /* ── 有新版本 ── */
             val latest = controller.latest
@@ -213,9 +226,12 @@ fun UpdateSection(
                     Text(
                         // 「未設定」與「開」在行為上相同，但顯示要分得出來 ——
                         // 使用者才知道自己有沒有動過這一項。
-                        text = if (autoCheck == null) "預設：開。只在背景抓一份幾百 bytes 的" +
+                        // 這一項是**連網開關底下的**子設定：開關關著時它一律不生效，
+                        // 說明必須寫清楚，否則使用者會以為自己被偷偷檢查了。
+                        text = (if (autoCheck == null) "預設：開。只在背景抓一份幾百 bytes 的" +
                             "版本資訊，不會自動下載 APK，也不會彈窗。"
-                        else "已設定：${if (autoCheck) "開" else "關"}",
+                        else "已設定：${if (autoCheck) "開" else "關"}") +
+                            if (networkOn) "" else "（連網開關關閉中，這一項目前不生效）",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

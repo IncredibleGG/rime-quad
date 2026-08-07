@@ -1,6 +1,8 @@
 package org.rimequad.ime.store
 
 import android.util.Log
+import org.rimequad.ime.net.NetworkGate
+import org.rimequad.ime.net.NetworkPurpose
 import java.io.File
 
 /**
@@ -88,20 +90,24 @@ class SchemaStore(
 
         plan.toDownload.forEachIndexed { i, pkg ->
             progress(Progress.Downloading(pkg.name, i + 1, plan.count, 0, pkg.size))
-            val url = Downloader.resolveUrl(indexUrl, index.baseUrl, pkg.file)
+            val url = NetworkGate.resolveUrl(indexUrl, index.baseUrl, pkg.file)
             val tmp = File(workDir, "${pkg.id}.zip.part")
 
-            val dl = Downloader.download(url, tmp, MAX_PACKAGE_BYTES) { read, _ ->
+            // 走 NetworkGate 而不是自己開連線：全 app 只有那一個出口，
+            // 開關關閉時它會直接拒絕（dl 會是 blocked = true 的 Err）。
+            val dl = NetworkGate.download(
+                url, tmp, MAX_PACKAGE_BYTES, NetworkPurpose.STORE_PACKAGE, pkg.name,
+            ) { read, _ ->
                 progress(Progress.Downloading(pkg.name, i + 1, plan.count, read, pkg.size))
             }
-            if (dl is Downloader.Result.Err) {
+            if (dl is NetworkGate.Result.Err) {
                 tmp.delete()
                 return Outcome.Failed(
                     "下載「${pkg.name}」失敗：${dl.message}",
                     details = listOf("URL: $url") + doneNote(installed),
                 )
             }
-            val got = (dl as Downloader.Result.Ok).value
+            val got = (dl as NetworkGate.Result.Ok).value
 
             // ── sha256：不符即整包丟棄，不可先解壓再說（規範 §1）──────────
             progress(Progress.Verifying(pkg.name))
@@ -375,7 +381,7 @@ class SchemaStore(
             InstalledPackage(
                 id = id,
                 name = displayName,
-                sha256 = runCatching { Downloader.sha256Of(file) }.getOrDefault(""),
+                sha256 = runCatching { FileDigest.sha256(file) }.getOrDefault(""),
                 installedAt = System.currentTimeMillis(),
                 schemas = schemaIds.map { StoreSchemaRef(it, it) },
                 files = files,

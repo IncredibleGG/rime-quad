@@ -1,7 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- 方案市集要拉 index.json 與套件 zip（docs/schema-store.md §1）。 -->
+    <!--
+        ⚠ 讀到這裡的人多半是來查「你說你不連網，為什麼有網路權限」的。答案：
+
+        INTERNET 是「安裝時」權限，執行期無法取消。只要這個 app 帶著方案市集
+        與應用內更新，權限清單上就一定看得到它 —— app 內的連網開關關掉也一樣
+        看得到。我們不會宣稱自己沒有網路權限，那句話一查就穿幫。
+
+        我們的作法是讓你查得到，共三層：
+          1. 全 app 唯一的連網出口是 net/NetworkGate.kt。驗證方式是在
+             android/app/src 底下 grep：URL( / HttpURLConnection /
+             openConnection / Socket / OkHttp，結果必須只出現在那一個檔案。
+             （XML 註解不能寫連續的減號，完整指令見 NetworkGate.kt 的檔頭。）
+          2. 那個出口預設拒絕（NetworkGate.policy 的初值就是「關」），
+             使用者沒有明確打開開關就一個連線都不會開。
+          3. 每一次真的建立的連線都記進「連網」分頁的紀錄裡，可清除，
+             且不含任何輸入內容。
+
+        ACCESS_NETWORK_STATE 只用來讀「現在有沒有網路」（見
+        NetworkGate.systemHasNetwork），不送出任何封包。
+    -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
@@ -15,6 +34,7 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
+        android:name=".RimeApp"
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"

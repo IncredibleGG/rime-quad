@@ -69,12 +69,14 @@ class UserPrefsTest {
             simplification = true,
             asciiPunct = false,
             spaceBehavior = SpaceBehavior.ALWAYS_SPACE,
+            networkEnabled = true,
+            offlineNoticeSeen = true,
             autoCheckUpdate = false,
         )
         assertFalse(full.isPristine)
         assertEquals(full, UserPrefs.fromMap(full.toMap()))
         // 每一個欄位都必須真的有進映射，否則就是 toMap 漏了一個。
-        assertEquals(18, full.toMap().size)
+        assertEquals(20, full.toMap().size)
     }
 
     /* ── 佈局指定（§9.1.1 的 SHOULD 之持久化）────────────────────────── */
@@ -126,6 +128,36 @@ class UserPrefsTest {
         val off = UserPrefs(autoCheckUpdate = false)
         assertEquals(setOf(UserPrefs.K_AUTO_CHECK_UPDATE), off.toMap().keys)
         assertEquals(false, UserPrefs.fromMap(off.toMap()).autoCheckUpdate)
+    }
+
+    /* ── 連網開關 ────────────────────────────────────────────────── */
+
+    @Test
+    fun `連網開關未設定時就是關，而且不得把 false 抄進偏好`() {
+        // 與 autoCheckUpdate 相反：那一項的「未設定」等同開，這一項的
+        // 「未設定」等同**關**。消費端一律寫 `networkEnabled == true`，
+        // 絕不可寫 `networkEnabled ?: true` —— 那會讓從沒表態過的使用者
+        // 被預設成連網，整個「離線為預設」的定位就沒了。
+        assertNull(UserPrefs().networkEnabled)
+        assertTrue(UserPrefs().toMap()[UserPrefs.K_NETWORK_ENABLED] == null)
+        assertFalse(UserPrefs().networkEnabled == true)
+
+        val on = UserPrefs(networkEnabled = true)
+        assertEquals(setOf(UserPrefs.K_NETWORK_ENABLED), on.toMap().keys)
+        assertEquals(true, UserPrefs.fromMap(on.toMap()).networkEnabled)
+
+        // 「他明確關過」與「他從沒開過」在支援上是兩件事，值得分得出來。
+        val off = UserPrefs(networkEnabled = false)
+        assertEquals(false, UserPrefs.fromMap(off.toMap()).networkEnabled)
+    }
+
+    @Test
+    fun `全部回復預設會把連網開關關回去`() {
+        // resetAll 寫的是 UserPrefs()，也就是「一個 key 都沒有」。
+        // 這裡守的是：那個狀態解出來一定是「不連網」。
+        val afterReset = UserPrefs.fromMap(UserPrefs().toMap())
+        assertFalse(afterReset.networkEnabled == true)
+        assertNull(afterReset.offlineNoticeSeen)
     }
 
     @Test

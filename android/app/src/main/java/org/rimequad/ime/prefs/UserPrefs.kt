@@ -106,6 +106,28 @@ data class UserPrefs(
     /** 空白鍵行為。⚠ 規範缺口：主題與佈局格式都沒有描述這件事。 */
     val spaceBehavior: SpaceBehavior? = null,
 
+    /* ─────────────── 連網 ─────────────── */
+
+    /**
+     * 連網總開關。`null` = 未設定，行為上等同**關**。
+     *
+     * 這一項與本檔其他欄位有一個關鍵差別：其他欄位的「未設定」是為了讓
+     * 主題檔日後更新時使用者跟著更新；這一項的「未設定」則是一個安全預設 ——
+     * **從沒表態過的人一律當作不連網**。消費端一律寫 `networkEnabled == true`，
+     * 不可以寫 `networkEnabled ?: true`。
+     *
+     * 實際的閘門在 [org.rimequad.ime.net.NetworkGate]，這裡只是它的儲存。
+     */
+    val networkEnabled: Boolean? = null,
+
+    /**
+     * 首次啟動的離線說明看過了。`null` = 還沒看過。
+     *
+     * 副作用是「全部回復預設」會讓說明再出現一次 —— 那是對的，因為同一次
+     * 回復也把連網開關關回去了，兩件事該一起重來。
+     */
+    val offlineNoticeSeen: Boolean? = null,
+
     /* ─────────────── 更新 ─────────────── */
 
     /**
@@ -147,6 +169,8 @@ data class UserPrefs(
         simplification?.let { m[K_SIMPLIFICATION] = it }
         asciiPunct?.let { m[K_ASCII_PUNCT] = it }
         spaceBehavior?.let { m[K_SPACE] = it.name }
+        networkEnabled?.let { m[K_NETWORK_ENABLED] = it }
+        offlineNoticeSeen?.let { m[K_OFFLINE_NOTICE_SEEN] = it }
         autoCheckUpdate?.let { m[K_AUTO_CHECK_UPDATE] = it }
         return m
     }
@@ -169,6 +193,8 @@ data class UserPrefs(
         const val K_SIMPLIFICATION = "opt_simplification"
         const val K_ASCII_PUNCT = "opt_ascii_punct"
         const val K_SPACE = "space_behavior"
+        const val K_NETWORK_ENABLED = "network_enabled"
+        const val K_OFFLINE_NOTICE_SEEN = "offline_notice_seen"
         const val K_AUTO_CHECK_UPDATE = "auto_check_update"
 
         /**
@@ -196,6 +222,8 @@ data class UserPrefs(
             simplification = m.bool(K_SIMPLIFICATION),
             asciiPunct = m.bool(K_ASCII_PUNCT),
             spaceBehavior = m.enum(K_SPACE, SpaceBehavior.entries),
+            networkEnabled = m.bool(K_NETWORK_ENABLED),
+            offlineNoticeSeen = m.bool(K_OFFLINE_NOTICE_SEEN),
             autoCheckUpdate = m.bool(K_AUTO_CHECK_UPDATE),
         )
 

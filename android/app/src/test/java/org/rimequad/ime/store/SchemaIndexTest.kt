@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.rimequad.ime.net.NetworkGate
 
 class SchemaIndexTest {
 
@@ -198,7 +199,7 @@ class SchemaIndexTest {
     fun `套件 URL 以 base_url 為基底`() {
         assertEquals(
             "https://cdn.example/rime/x.zip",
-            Downloader.resolveUrl(
+            NetworkGate.resolveUrl(
                 "https://cdn.example/rime/index.json", "https://cdn.example/rime/", "x.zip"
             ),
         )
@@ -208,7 +209,7 @@ class SchemaIndexTest {
     fun `沒有 base_url 時以索引檔的位置為基底`() {
         assertEquals(
             "https://cdn.example/rime/x.zip",
-            Downloader.resolveUrl("https://cdn.example/rime/index.json", null, "x.zip"),
+            NetworkGate.resolveUrl("https://cdn.example/rime/index.json", null, "x.zip"),
         )
     }
 
@@ -216,7 +217,7 @@ class SchemaIndexTest {
     fun `file 本身是完整 URL 時直接用`() {
         assertEquals(
             "https://other.example/x.zip",
-            Downloader.resolveUrl("https://cdn.example/index.json", "https://cdn.example/",
+            NetworkGate.resolveUrl("https://cdn.example/index.json", "https://cdn.example/",
                 "https://other.example/x.zip"),
         )
     }

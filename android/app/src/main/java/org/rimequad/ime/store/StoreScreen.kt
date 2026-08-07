@@ -38,6 +38,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import org.rimequad.ime.net.NetworkRequiredCard
+import org.rimequad.ime.net.rememberNetworkEnabled
 
 /**
  * 方案市集畫面。
@@ -50,9 +52,14 @@ import androidx.compose.ui.unit.sp
 @Composable
 fun StoreScreen(controller: StoreController, modifier: Modifier = Modifier) {
 
-    LaunchedEffect(Unit) {
+    // 連網開關。關閉時這一頁**完全不連網**：不取索引、不顯示套件清單，
+    // 只留下「為什麼」與一顆開啟按鈕。匯入本機檔案不受影響 —— 那件事本來
+    // 就不需要網路，把它一起擋掉只會讓離線使用者無事可做。
+    val networkOn = rememberNetworkEnabled()
+
+    LaunchedEffect(networkOn) {
         controller.refreshLocalState()
-        if (controller.index == null && !controller.loading) controller.loadIndex()
+        if (networkOn && controller.index == null && !controller.loading) controller.loadIndex()
     }
 
     val picker = rememberLauncherForActivityResult(
@@ -69,7 +76,10 @@ fun StoreScreen(controller: StoreController, modifier: Modifier = Modifier) {
             verticalArrangement = Arrangement.spacedBy(10.dp),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 32.dp),
         ) {
-            item { SourceCard(controller) }
+            item {
+                if (networkOn) SourceCard(controller)
+                else NetworkRequiredCard("瀏覽方案")
+            }
 
             controller.indexError?.let { err ->
                 item {
@@ -102,7 +112,9 @@ fun StoreScreen(controller: StoreController, modifier: Modifier = Modifier) {
 
             item { LocalImportCard(onPick = { picker.launch(arrayOf("*/*")) }) }
 
-            val idx = controller.index
+            // 開關關掉之後，上一次載到的索引就不該再畫出來 —— 上面還有
+            // 「安裝」按鈕，按下去只會撞上 NetworkGate 的拒絕。
+            val idx = if (networkOn) controller.index else null
             if (idx != null) {
                 for (cat in idx.visibleCategories()) {
                     val pkgs = idx.packagesIn(cat.id)

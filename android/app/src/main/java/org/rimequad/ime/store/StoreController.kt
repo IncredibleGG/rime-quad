@@ -13,6 +13,8 @@ import androidx.compose.runtime.setValue
 import org.rimequad.ime.BuildConfig
 import org.rimequad.ime.core.RimeCore
 import org.rimequad.ime.core.RimeRuntime
+import org.rimequad.ime.net.NetworkGate
+import org.rimequad.ime.net.NetworkPurpose
 import java.io.File
 import java.util.concurrent.Executors
 
@@ -208,22 +210,36 @@ class StoreController(context: Context) {
         main.postDelayed({ if (toastToken == token) toast = null }, TOAST_MS)
     }
 
+    /**
+     * 取索引。**開關關閉時直接什麼都不做。**
+     *
+     * [NetworkGate] 本來就會拒絕，這一層是為了「離線時連一個 loading 轉圈
+     * 與一則錯誤訊息都不該出現」—— 使用者沒有做錯任何事，他只是選擇了離線，
+     * 畫面上該看到的是說明卡而不是紅字。
+     */
     fun loadIndex() {
         if (loading) return
+        if (!NetworkGate.isEnabled) {
+            index = null
+            indexError = null
+            return
+        }
         loading = true
         indexError = null
         val url = indexUrl
         worker.execute {
-            val fetched = Downloader.fetchText(url)
+            val fetched = NetworkGate.fetchText(url, NetworkPurpose.STORE_INDEX)
             main.post {
                 loading = false
                 when (fetched) {
-                    is Downloader.Result.Err -> {
+                    is NetworkGate.Result.Err -> {
                         index = null
-                        indexError = "取得索引失敗：${fetched.message}\n來源：$url"
+                        // 被開關擋下來的不是錯誤，畫面上有專門的說明卡。
+                        indexError = if (fetched.blocked) null
+                        else "取得索引失敗：${fetched.message}\n來源：$url"
                     }
 
-                    is Downloader.Result.Ok -> when (val parsed = IndexParser.parse(fetched.value)) {
+                    is NetworkGate.Result.Ok -> when (val parsed = IndexParser.parse(fetched.value)) {
                         is IndexParseResult.Err -> {
                             index = null
                             indexError = parsed.message

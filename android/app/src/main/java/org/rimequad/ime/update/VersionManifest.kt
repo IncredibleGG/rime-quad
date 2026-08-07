@@ -1,6 +1,6 @@
 package org.rimequad.ime.update
 
-import org.rimequad.ime.store.Downloader
+import org.rimequad.ime.net.NetworkGate
 import org.rimequad.ime.store.Json
 import org.rimequad.ime.store.JsonSyntaxException
 import org.rimequad.ime.store.MiniJson
@@ -107,7 +107,7 @@ object VersionManifestParser {
             ?: return ManifestParseResult.Err("版本資訊沒有 url 也沒有 file，不知道要下載什麼")
         // 相對路徑以 version.json 自己的位置為基底 —— 整個目錄搬到別的主機時
         // 不必改內容，本機測試也靠這一條。
-        val url = Downloader.resolveUrl(manifestUrl, null, rawUrl)
+        val url = NetworkGate.resolveUrl(manifestUrl, null, rawUrl)
         if (!url.startsWith("http://") && !url.startsWith("https://")) {
             return ManifestParseResult.Err("下載網址只接受 http/https：$url")
         }

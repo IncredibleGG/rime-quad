@@ -2,8 +2,6 @@ package org.rimequad.ime.update
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -11,7 +9,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import org.rimequad.ime.BuildConfig
-import org.rimequad.ime.store.Downloader
+import org.rimequad.ime.net.NetworkGate
+import org.rimequad.ime.net.NetworkPurpose
+import org.rimequad.ime.store.FileDigest
 import java.io.File
 import java.util.concurrent.Executors
 
@@ -117,6 +117,12 @@ class UpdateController private constructor(context: Context) {
      * @param autoEnabled 使用者偏好「啟動時自動檢查更新」。null（未設定）視為開。
      */
     fun autoCheckOnStart(autoEnabled: Boolean?) {
+        // 連網開關關閉 → **完全不執行**。
+        //
+        // 這一行是這個專案定位的一部分，不是最佳化。啟動時的靜默檢查是一次
+        // 使用者沒有同意過的連網；在一個主打「離線為預設、連網由使用者掌控」
+        // 的輸入法裡，那件事只有在他自己打開開關之後才說得通。
+        if (!NetworkGate.isEnabled) return
         if (autoEnabled == false) return
         if (busy) return
         if (!hasNetwork()) return
@@ -125,8 +131,20 @@ class UpdateController private constructor(context: Context) {
         check(silent = true)
     }
 
-    /** 使用者手動按「檢查更新」。失敗會說出來。 */
-    fun checkNow() = check(silent = false)
+    /**
+     * 使用者手動按「檢查更新」。失敗會說出來。
+     *
+     * 開關關閉時不去連（連了也會被 [NetworkGate] 拒絕），但**要說**：
+     * 他剛剛主動按了一顆按鈕，什麼都不發生會被當成壞掉。
+     */
+    fun checkNow() {
+        if (!NetworkGate.isEnabled) {
+            status = null
+            error = "連網開關是關閉的，沒有檢查。到「連網」分頁打開開關後再試一次。"
+            return
+        }
+        check(silent = false)
+    }
 
     private fun check(silent: Boolean) {
         if (busy) return
@@ -134,13 +152,15 @@ class UpdateController private constructor(context: Context) {
         error = null
         if (!silent) status = "檢查中…"
         worker.execute {
-            val result = Downloader.fetchText(manifestUrl, MAX_MANIFEST_BYTES)
+            val result = NetworkGate.fetchText(
+                manifestUrl, NetworkPurpose.UPDATE_MANIFEST, maxBytes = MAX_MANIFEST_BYTES,
+            )
             main.post {
                 phase = Phase.IDLE
                 lastCheckAt = System.currentTimeMillis()
                 prefs.edit().putLong(KEY_LAST_CHECK, lastCheckAt).apply()
                 when (result) {
-                    is Downloader.Result.Err -> {
+                    is NetworkGate.Result.Err -> {
                         // 靜默模式什麼都不說 —— 使用者沒問，就不要拿網路錯誤煩他。
                         if (!silent) {
                             status = null
@@ -148,7 +168,7 @@ class UpdateController private constructor(context: Context) {
                         }
                     }
 
-                    is Downloader.Result.Ok -> {
+                    is NetworkGate.Result.Ok -> {
                         when (val parsed = VersionManifestParser.parse(result.value, manifestUrl)) {
                             is ManifestParseResult.Err -> {
                                 if (!silent) {
@@ -229,6 +249,10 @@ class UpdateController private constructor(context: Context) {
         val m = latest ?: return
         if (busy) return
         if (verdict != UpdateVerdict.UPDATE_AVAILABLE) return
+        if (!NetworkGate.isEnabled) {
+            error = "連網開關是關閉的，沒有下載。到「連網」分頁打開開關後再試一次。"
+            return
+        }
         error = null
         phase = Phase.DOWNLOADING
         progress = 0f
@@ -238,7 +262,9 @@ class UpdateController private constructor(context: Context) {
             dest.parentFile?.mkdirs()
             // 上限就是宣告的 size：多一個位元組都代表這不是我們要的那個檔案，
             // 沒有理由把它讀完再說。
-            val r = Downloader.download(m.url, dest, m.size) { read, _ ->
+            val r = NetworkGate.download(
+                m.url, dest, m.size, NetworkPurpose.UPDATE_APK, m.versionName,
+            ) { read, _ ->
                 val f = if (m.size > 0) read.toFloat() / m.size else -1f
                 main.post {
                     progress = f
@@ -247,7 +273,7 @@ class UpdateController private constructor(context: Context) {
             }
             main.post {
                 when (r) {
-                    is Downloader.Result.Err -> {
+                    is NetworkGate.Result.Err -> {
                         dest.delete()
                         phase = Phase.IDLE
                         progress = -1f
@@ -255,7 +281,7 @@ class UpdateController private constructor(context: Context) {
                         error = "下載失敗：${r.message}"
                     }
 
-                    is Downloader.Result.Ok -> {
+                    is NetworkGate.Result.Ok -> {
                         phase = Phase.VERIFYING
                         status = "驗證檔案完整性…"
                         if (UpdateCheck.sha256Matches(m.sha256, r.value.sha256)) {
@@ -349,16 +375,16 @@ class UpdateController private constructor(context: Context) {
         val f = apkFileFor(m)
         if (!f.isFile || f.length() != m.size) return null
         return runCatching {
-            if (UpdateCheck.sha256Matches(m.sha256, Downloader.sha256Of(f))) f else null
+            if (UpdateCheck.sha256Matches(m.sha256, FileDigest.sha256(f))) f else null
         }.getOrNull()
     }
 
-    private fun hasNetwork(): Boolean = runCatching {
-        val cm = app.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val net = cm.activeNetwork ?: return false
-        val caps = cm.getNetworkCapabilities(net) ?: return false
-        caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-    }.getOrDefault(false)
+    /**
+     * 系統目前有沒有網路。只讀系統狀態、不送封包，實作與註解都在
+     * [NetworkGate.systemHasNetwork] —— 跟網路沾邊的東西全部集中在那一個檔案，
+     * 審計時才不會有「還有一個地方也在碰網路」的意外。
+     */
+    private fun hasNetwork(): Boolean = NetworkGate.systemHasNetwork(app)
 
     companion object {
         private const val PREFS = "rimequad-update"

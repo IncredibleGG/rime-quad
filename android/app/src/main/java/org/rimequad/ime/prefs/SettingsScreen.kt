@@ -40,6 +40,7 @@ import kotlinx.coroutines.launch
 import org.rimequad.ime.core.RimeCore
 import org.rimequad.ime.core.RimeRuntime
 import org.rimequad.ime.keyboard.ConfigRepository
+import org.rimequad.ime.net.NetworkSwitchCard
 import org.rimequad.ime.theme.HapticStrength
 import org.rimequad.ime.theme.HintPosition
 import org.rimequad.ime.theme.Theme
@@ -90,6 +91,13 @@ fun SettingsScreen(
         verticalArrangement = Arrangement.spacedBy(10.dp),
         contentPadding = PaddingValues(bottom = 32.dp),
     ) {
+
+        /* ─────────────────────────── 連網 ─────────────────────────── */
+
+        // 排在所有東西之前。這是本 app 最需要被看見的一顆開關：它決定了
+        // 「這個輸入法會不會連網」，埋在第三層等於沒有。完整的說明與
+        // 連網紀錄在「連網」分頁，這裡只放開關本身。
+        item { NetworkSwitchCard() }
 
         /* ─────────────────────────── 更新 ─────────────────────────── */
 
@@ -199,6 +207,13 @@ fun SettingsScreen(
                 )
             }
         }
+
+        /* ────────────────────── 自訂鍵位（引擎層）────────────────────── */
+
+        // 一整塊都在 KeyRemapSection.kt 裡，本檔只多這一個 item。
+        // UI 的全面重新設計在另一條線上進行，這塊之後會被搬走，所以刻意
+        // 不與本檔的 private 版面零件耦合。
+        item { KeyRemapSection() }
 
         /* ─────────────────────────── 外觀 ─────────────────────────── */
 

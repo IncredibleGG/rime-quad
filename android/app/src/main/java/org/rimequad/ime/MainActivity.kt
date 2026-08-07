@@ -46,6 +46,9 @@ import androidx.compose.ui.unit.sp
 import org.rimequad.ime.core.RimeCore
 import org.rimequad.ime.core.RimeDeployStatus
 import org.rimequad.ime.core.RimeRuntime
+import org.rimequad.ime.net.FirstRunNoticeHost
+import org.rimequad.ime.net.NetworkScreen
+import org.rimequad.ime.net.rememberNetworkEnabled
 import org.rimequad.ime.prefs.PrefsStore
 import org.rimequad.ime.prefs.SettingsActivity
 import org.rimequad.ime.prefs.SettingsScreen
@@ -119,6 +122,27 @@ class MainActivity : ComponentActivity() {
                                     }
                                 },
                             )
+                            // 連網分頁。與其他三個分頁不同，這一個在開著的時候
+                            // 才點亮 —— 使用者一眼就知道「現在這個 app 會連網」。
+                            // 那顆點是主色而不是錯誤色：連網不是錯誤，是他自己選的。
+                            Tab(
+                                selected = tab == 3,
+                                onClick = { tab = 3 },
+                                text = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text("連網")
+                                        if (rememberNetworkEnabled()) {
+                                            Spacer(Modifier.size(6.dp))
+                                            Spacer(
+                                                Modifier
+                                                    .size(8.dp)
+                                                    .clip(CircleShape)
+                                                    .background(MaterialTheme.colorScheme.primary)
+                                            )
+                                        }
+                                    }
+                                },
+                            )
                         }
                         Box(modifier = Modifier.padding(top = 12.dp)) {
                             when (tab) {
@@ -132,6 +156,8 @@ class MainActivity : ComponentActivity() {
                                     onOpenSchemaStore = { tab = 1 },
                                 )
 
+                                3 -> NetworkScreen(modifier = Modifier.fillMaxSize())
+
                                 else -> StoreScreen(
                                     controller = store,
                                     modifier = Modifier.fillMaxSize(),
@@ -142,6 +168,9 @@ class MainActivity : ComponentActivity() {
                             StoreOverlays(store)
                         }
                     }
+                    // 首次啟動的離線說明。只講一次，看過就不再出現。
+                    // 放在 Scaffold 內容的最外層 —— 它是對話框，蓋在誰上面都一樣。
+                    FirstRunNoticeHost()
                 }
             }
         }
