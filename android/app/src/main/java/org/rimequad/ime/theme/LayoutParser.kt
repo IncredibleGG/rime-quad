@@ -119,6 +119,12 @@ object LayoutParser {
         "arrow_left", "arrow_right", "arrow_up", "arrow_down"
     )
 
+    /**
+     * §9.6 的語義圖示名是否已知。
+     * 工具列項目（§8.6.6.1）與按鍵共用同一份名稱表，所以這裡對外暴露。
+     */
+    internal fun isKnownIcon(name: String): Boolean = KNOWN_ICONS.contains(name)
+
     /** 回傳 null 代表致命的結構性錯誤，診斷已寫入 ctx。 */
     fun bind(root: YamlNode.Mapping, id: String, ancestry: List<String>, ctx: ParseContext): KeyboardLayout? {
         val c = Cursor.root(root, ctx)

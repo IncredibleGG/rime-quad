@@ -17,6 +17,31 @@ object ThemeDefaults {
     /** §8.8.1 規定必須存在的具名 key style。 */
     val REQUIRED_KEY_STYLES = listOf("default", "modifier", "action", "space", "accent")
 
+    private fun item(icon: String?, from: LabelSource, verb: ActionVerb, raw: String, vararg args: String) =
+        ToolbarItem(icon, "", from, KeyAction(verb, args.toList(), raw))
+
+    /** §8.6.6.1 的規範性預設工具列。`items` 缺席時必須產生這一份。 */
+    val TOOLBAR_ITEMS: List<ToolbarItem> = listOf(
+        item("globe", LabelSource.NONE, ActionVerb.SCHEMA_PICKER, "schema:picker"),
+        item(null, LabelSource.INPUT_MODE, ActionVerb.TOGGLE_OPTION, "toggle:ascii_mode", "ascii_mode"),
+        item(null, LabelSource.VARIANT, ActionVerb.TOGGLE_OPTION, "toggle:simplification", "simplification"),
+        item("emoji", LabelSource.NONE, ActionVerb.EMOJI, "emoji"),
+        item("settings", LabelSource.NONE, ActionVerb.SETTINGS, "settings"),
+        item("keyboard_hide", LabelSource.NONE, ActionVerb.HIDE_KEYBOARD, "hide_keyboard")
+    )
+
+    /**
+     * §8.6.6.1 的必備項：不論主題怎麼寫，使用者都必須能觸達這兩個。
+     * `schema:picker` 是方案切換的唯一入口，`settings` 是修好其他一切問題的入口;
+     * 允許主題刪掉它們,等於允許主題把使用者鎖死在一個他無法離開的方案裡。
+     */
+    val REQUIRED_TOOLBAR_ITEMS: List<ToolbarItem> = listOf(
+        TOOLBAR_ITEMS[0],
+        TOOLBAR_ITEMS[4]
+    )
+
+    val TOOLBAR = Toolbar(show = true, items = TOOLBAR_ITEMS)
+
     val KEY_STYLE = KeyStyle(
         background = 0xFFFFFFFF.toInt(),
         pressedBackground = 0xFFFFFFFF.toInt(),
@@ -107,8 +132,10 @@ object ThemeParser {
     private val CANDIDATES_KEYS = CANDIDATE_STYLE_KEYS + setOf("bar", "window")
     private val BAR_KEYS = CANDIDATE_STYLE_KEYS + setOf(
         "height", "background", "border_top_width", "border_top_color", "max_visible",
-        "scroll", "expand_button", "show_preedit_inline", "empty_shows_toolbar"
+        "scroll", "expand_button", "show_preedit_inline", "empty_shows_toolbar", "toolbar"
     )
+    private val TOOLBAR_KEYS = setOf("show", "items")
+    private val TOOLBAR_ITEM_KEYS = setOf("icon", "label", "label_from", "tap")
     private val WINDOW_KEYS = CANDIDATE_STYLE_KEYS + setOf(
         "background", "corner_radius", "padding", "border_width", "border_color",
         "min_width", "max_width", "placement", "offset_x", "offset_y",
@@ -177,7 +204,7 @@ object ThemeParser {
 
         val barCursor = candidatesCursor.mapping("bar")
         barCursor.warnUnknownKeys(BAR_KEYS)
-        val bar = parseBar(barCursor, shared)
+        val bar = parseBar(barCursor, shared, ctx)
 
         val windowCursor = candidatesCursor.mapping("window")
         windowCursor.warnUnknownKeys(WINDOW_KEYS)
@@ -365,11 +392,12 @@ object ThemeParser {
         return CandidateStyle(orientation, label, text, comment, item, separator, pageIndicator)
     }
 
-    private fun parseBar(c: Cursor, shared: CandidateStyle): CandidateBar {
+    private fun parseBar(c: Cursor, shared: CandidateStyle, ctx: ParseContext): CandidateBar {
         val style = parseCandidateStyle(c, shared)
         val e = c.mapping("expand_button")
         e.warnUnknownKeys(EXPAND_BUTTON_KEYS)
         return CandidateBar(
+            toolbar = parseToolbar(c.mapping("toolbar"), ctx),
             style = style,
             height = c.child("height").length(44f, 24f, 96f),
             background = c.child("background").color(0xFFFFFFFF.toInt()),
@@ -385,6 +413,58 @@ object ThemeParser {
             showPreeditInline = c.child("show_preedit_inline").bool(true),
             emptyShowsToolbar = c.child("empty_shows_toolbar").bool(true)
         )
+    }
+
+    /** §8.6.6.1。`items` 缺席 → 規範性預設清單；被刪掉的必備項會被補回 + INFO。 */
+    private fun parseToolbar(c: Cursor, ctx: ParseContext): Toolbar {
+        c.warnUnknownKeys(TOOLBAR_KEYS)
+        val show = c.child("show").bool(ThemeDefaults.TOOLBAR.show)
+        val itemsCursor = c.child("items")
+        if (!itemsCursor.exists) return Toolbar(show, ThemeDefaults.TOOLBAR_ITEMS)
+
+        val diag = ctx.diagnostics
+        val items = ArrayList<ToolbarItem>()
+        for (entry in itemsCursor.items()) {
+            val m = entry.asMapping()
+            m.warnUnknownKeys(TOOLBAR_ITEM_KEYS)
+            val tapCursor = m.child("tap")
+            val raw = tapCursor.stringOrNull()
+            if (raw == null) {
+                diag.warn(entry.path, "toolbar item needs a 'tap' action; dropped", entry.node?.line)
+                continue
+            }
+            val action = Actions.parse(raw, tapCursor.path, diag, tapCursor.node?.line) ?: continue
+            val icon = m.child("icon").stringOrNull()
+            if (icon != null && !LayoutParser.isKnownIcon(icon)) {
+                diag.warn("${m.path}.icon", "unknown icon '$icon'; falling back to the label", m.node?.line)
+            }
+            items.add(
+                ToolbarItem(
+                    icon = icon,
+                    label = m.child("label").string(""),
+                    labelFrom = m.child("label_from").enumValue(LabelSource.NONE),
+                    tap = action
+                )
+            )
+        }
+        return Toolbar(show, ensureRequiredToolbarItems(items, diag, c.path))
+    }
+
+    private fun ensureRequiredToolbarItems(
+        items: List<ToolbarItem>,
+        diag: Diagnostics,
+        path: String
+    ): List<ToolbarItem> {
+        val out = ArrayList(items)
+        for (required in ThemeDefaults.REQUIRED_TOOLBAR_ITEMS) {
+            if (out.any { it.tap.verb == required.tap.verb }) continue
+            out.add(required)
+            diag.info(
+                if (path.isEmpty()) "candidates.bar.toolbar" else path,
+                "the toolbar must expose '${required.tap.raw}'; the required item was added back"
+            )
+        }
+        return out
     }
 
     private fun parseWindow(c: Cursor, shared: CandidateStyle, m: Metrics): CandidateWindow {

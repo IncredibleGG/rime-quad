@@ -201,6 +201,26 @@ iOS `UIContentSizeCategory` → 標量（規範性，四端不得自行調整）
 夾制 `font_scale_max` 存在的理由很實際：使用者把系統字體開到最大時，
 無上限的縮放會讓鍵盤按鍵文字互相重疊，或讓候選列高度吃掉半個螢幕。
 
+#### 4.4.1 `rendered_px` 是最終值，不得重複套用（實作陷阱）
+
+上式的 `rendered_px` 是**送進點陣化階段的最終像素值**。
+各端的 UI 框架多半已經自行套用過一次系統字體縮放，實作 **必須** 先把框架
+已套用的部分除掉，否則縮放會被平方，同一份主題在四端會有四種字級。
+
+| 平台 | 框架是否已套用 | 實作必須怎麼做 |
+|---|---|---|
+| Android / Compose | **是**，`.sp` 內含 `Configuration.fontScale` | 傳入 `.sp` 的值 **必須** 為 `size * effective_scale / LocalDensity.current.fontScale` |
+| Android / View | 用 `TypedValue.COMPLEX_UNIT_SP` 時**是**；`COMPLEX_UNIT_DIP` 時**否** | 選 `DIP` 並自行乘 `effective_scale`，或用 `SP` 並除掉 `fontScale` |
+| iOS | `preferredFont(forTextStyle:)` **是**；`systemFont(ofSize:)` **否** | **應** 使用 `systemFont(ofSize:)` 並自行乘 `effective_scale` |
+| macOS | 否（系統無等價設定，`effective_scale` 恆為 1.0） | 直接使用 |
+| Windows | 否，`TextScaleFactor` 不會自動套用到 DIP | 直接乘 `effective_scale` |
+
+判定方式很簡單：把系統字體大小調到最大，`font_scale_max` 若是 `1.30`，
+文字**必須**恰好放大 30%。若放大了約 69%（1.30 × 1.30），就是重複套用了。
+
+> Android 參考實作把這個除法收在一個 `Scaler` 類別裡，四端 **應** 比照辦理：
+> 讓「除掉框架縮放」只出現在一處，而不是散落在每個 `fontSize =` 呼叫點。
+
 ### 4.5 `ratio`
 
 `0.0`–`1.0` 的 `number`。超出 → 夾制 + WARNING。
@@ -677,9 +697,54 @@ resolved(run) = script_fallback[script_of(run)]   (若存在)
 | `expand_button.color` | color | = `label.color` | |
 | `expand_button.size` | size | `18` | |
 | `show_preedit_inline` | bool | `true` | 組字串顯示在候選列左端而非獨立區塊 |
-| `empty_shows_toolbar` | bool | `true` | 無候選時候選列改顯示工具列（設定、剪貼簿等） |
+| `empty_shows_toolbar` | bool | `true` | 無候選時候選列改顯示工具列，見 §8.6.6.1 |
+| `toolbar` | toolbar | 見 §8.6.6.1 | 工具列內容 |
 
 `bar` **可** 覆寫 §8.6.1–8.6.5 的任一子區塊（同名子區塊寫在 `bar` 之下即可）。
+
+##### 8.6.6.1 `candidates.bar.toolbar`
+
+行動端沒有選單列，所以「無候選時的候選列」實際上承擔了**主要導覽**功能 ——
+切換方案的唯一入口就在這裡。因此它必須被規範，不能留給各端自由發揮。
+
+| 欄位 | 型別 | 預設 |
+|---|---|---|
+| `show` | bool | `true` |
+| `items` | list<toolbar-item> | 見下方預設清單 |
+
+**toolbar-item** 欄位：
+
+| 欄位 | 型別 | 預設 | 說明 |
+|---|---|---|---|
+| `icon` | string \| null | `null` | §9.6 的語義圖示名 |
+| `label` | string | `""` | 無圖示時的文字 |
+| `label_from` | enum | `none` | 同 §9.6，用執行期狀態當文字 |
+| `tap` | action | — **必填** | §9.5 的 action 字串 |
+
+鍵面文字的解析、`icon` 的退化、`active` 的觸發條件，
+與按鍵完全相同（§9.6、§8.8.1）—— 工具列項目就是「沒有 `send` 的鍵」。
+
+**預設清單（規範性，`items` 缺席時必須產生這一份）：**
+
+```yaml
+items:
+  - { icon: "globe",         tap: "schema:picker" }
+  - { label_from: input_mode, tap: "toggle:ascii_mode" }
+  - { label_from: variant,    tap: "toggle:simplification" }
+  - { icon: "emoji",          tap: "emoji" }
+  - { icon: "settings",       tap: "settings" }
+  - { icon: "keyboard_hide",  tap: "hide_keyboard" }
+```
+
+**必備項（規範性）：** 不論主題怎麼寫，實作 **必須** 保證使用者能觸達
+`schema:picker` 與 `settings`。若解析後的 `items` 不含這兩者，
+實作 **必須** 自行補上，並產生 INFO 級診斷。
+
+> 理由很直接：`schema:picker` 是方案切換的唯一入口，`settings` 是修好一切
+> 其他問題的入口。允許主題把它們刪掉，等於允許主題把使用者鎖死在
+> 一個他無法離開的方案裡。這不是美學自由該涵蓋的範圍。
+
+`tap` 缺席或無法解析的項目 → 丟棄該項 + WARNING（不影響其他項）。
 
 #### 8.6.7 `candidates.window` — 桌面端候選窗（僅 macOS / Windows）
 
@@ -751,6 +816,15 @@ h      = clamp(avail * ratio, min, max)
 total  = h + candidates.bar.height + (honor_bottom_inset ? 手勢列 inset : 0)
 ```
 
+**`padding` 算在 `h` 之內。** `h` 是整塊軟鍵盤區域的高度，
+`keyboard.padding` 是這塊區域的**內縮**，不額外增加高度；
+按鍵列在 `h` 扣掉 `padding.top` / `padding.bottom` 之後的空間裡佈版
+（與 §9.3 佈版演算法的 `usable_h` 一致）。
+
+也就是說，把 `padding.top` 從 4 改成 20 **不會**讓鍵盤變高，只會讓按鍵變扁。
+候選列高度 `candidates.bar.height` 則是**外加**在 `h` 之上的，兩者語義不同，
+這是本節最容易做錯的一格。
+
 **為什麼是比例而不是絕對值：** 從 5 吋機到 13 吋平板，同一個絕對高度不是太胖就是太扁。
 **為什麼還要 min/max：** 純比例在超長螢幕（21:9）上會產生過高的鍵盤，
 在小平板上又會過矮。比例定基調，夾制擋極端。
@@ -785,8 +859,27 @@ total  = h + candidates.bar.height + (honor_bottom_inset ? 手勢列 inset : 0)
 | `hint_position` | enum `top_right` \| `top_center` \| `top_left` \| `bottom_right` \| `none` | `top_right` |
 | `icon_size` | size | `22` |
 
-「active」狀態指鎖定狀態（如 shift lock、當前層對應的層切換鍵）。
-由佈局的 `active: true` 或執行期狀態觸發（§9.6）。
+**「active」的觸發條件（規範性）。** 一個鍵在下列**任一**條件成立時
+以 `active_background` / `active_foreground` 繪製：
+
+1. 佈局把該鍵標了 `active: true`（無條件，見 §9.6）。
+2. 該鍵的 `tap` 是 `layer:` / `layer_lock:`，且目標層就是**當前顯示中**的層。
+3. 該鍵的 `tap` 是 `switch_layout:`，且目標佈局就是當前佈局。
+4. 該鍵的 `label_from` 對應到一個 librime 布林開關，且**該開關為 ON**：
+
+   | `label_from` | 對應開關 | active 條件 |
+   |---|---|---|
+   | `input_mode` | `ascii_mode` | 處於英文模式時 active |
+   | `shape` | `full_shape` | 全形時 active |
+   | `variant` | `simplification` | 簡體時 active |
+   | `schema_name` / `schema_id` / `none` | — | 永不因狀態而 active |
+
+5. shift 類鍵處於 `layer_lock` 鎖定狀態（`layer_once` 的一次性狀態
+   **不算** active，實作 **應** 另以圖示區分，見 §9.6 的 `shift_lock`）。
+
+第 4 條的原則是「**偏離預設狀態才 active**」：中文輸入法的預設是中文、半形、
+當前字集，所以是 `ascii_mode` / `full_shape` / `simplification` 為 ON 時才高亮。
+這條寫死在規範裡，否則四端會對「哪一邊算 active」得出相反結論。
 
 #### 8.8.2 `keyboard.popup` / `keyboard.press_preview`
 
@@ -876,9 +969,27 @@ total  = h + candidates.bar.height + (honor_bottom_inset ? 手勢列 inset : 0)
 #### 9.1.1 `for_schema`
 
 宣告本佈局適用於哪些 librime schema id。`"*"` 表示全部。
-當使用者切換 schema（`rs_select_schema`）時，客戶端 **應** 自動切到
-`for_schema` 命中該 schema 且非 `"*"` 的佈局；若有多個命中，取搜尋路徑中先找到者；
-若無命中，沿用當前佈局。
+
+**切換演算法（規範性）。** 使用者切換 schema（`rs_select_schema`）後：
+
+```
+1. 找出所有 for_schema 不含 "*" 且含 <新 schema id> 的佈局 → 精確命中。
+   有命中 → 切到其中在搜尋路徑裡最先找到的那一份。結束。
+2. 無精確命中時，檢查**當前佈局**是否仍適用於新 schema
+   （matches := for_schema 含 "*" 或含 <新 schema id>）。
+   仍適用 → 什麼都不做。結束。
+3. 否則 → 切回 primary 佈局（`primary: true` 者）。
+```
+
+**第 2、3 步是 v1 初稿漏掉的，不補會讓使用者卡死。** 具體場景：
+使用者從注音切回拼音，`bopomofo-dachen` 的 `for_schema` 不含 `luna_pinyin`
+所以第 1 步無命中；而 `qwerty` 是 `"*"`、依定義不算精確命中。
+若照初稿「無命中則沿用當前佈局」，使用者就會**停在注音鍵盤上打拼音** ——
+鍵面全是ㄅㄆㄇ，送出的卻是 ASCII，畫面與行為完全對不上，
+而且他找不到任何一顆鍵可以離開。
+
+> 使用者若曾為當前 schema **明確指定**過佈局，實作 **應** 記住該選擇並跳過
+> 第 1 步。自動切換是便利機制，不該覆蓋使用者的明示意圖。
 
 這是「一套配置四端共用」的實際兌現點：使用者裝了注音方案，
 四端裡的兩個行動端會自動換上 `bopomofo-dachen`，不需要各自再設定一次。
@@ -973,10 +1084,21 @@ send:
 2. 若匹配 `^0[xX][0-9A-Fa-f]+$` → 直接當數值。
    **十進位不被接受**：`"1"` 是 X11 的**名稱**（其 keysym 為 `0x31`），不是數值 `1`。
    這個歧義曾經是設計上的陷阱，因此規範只承認 `0x` 形式的數值。
-3. 否則視為 X11 keysym 名稱，交由 librime 的 `RimeGetKeycodeByName()` 解析。
-   客戶端 **可** 內建常用名稱的靜態表作為快路徑，但 **必須** 與 librime 的結果一致；
-   靜態表查不到時 **必須** 回落到 `RimeGetKeycodeByName()`。
-4. 解析結果為 `XK_VoidSymbol`（`0xFFFFFF`）→ 該鍵變成 `noop` + WARNING。
+3. 否則視為 X11 keysym 名稱，交由門面層的 **`rs_keysym_by_name()`** 解析
+   （`core/include/rime_shell.h`；它包裝 librime 的 `RimeGetKeycodeByName()`）。
+   客戶端 **可** 內建常用名稱的靜態表作為快路徑，但 **必須** 與門面層的結果一致；
+   靜態表查不到時 **必須** 回落到 `rs_keysym_by_name()`，**不得** 直接把該鍵當成 noop。
+4. `rs_keysym_by_name()` 回傳 `XK_VoidSymbol`（`0xFFFFFF`）→ 該鍵變成 `noop` + WARNING。
+
+> **v1 初稿的缺陷：** 初稿直接要求回落到 librime 的 `RimeGetKeycodeByName()`，
+> 但門面層當時沒有暴露等價函式，所以這條**在四端都無法實作** ——
+> Android 參考實作只能讓查不到的 keysym 變成 noop，等於靜態表就是全部。
+> `rs_keysym_by_name()` / `rs_keysym_name()` 補進 ABI 後本條才成立。
+>
+> 這也決定了解析器的一個設計約束：**綁定階段必須保留 keysym 的原始名稱字串**，
+> 不能只存解析出的整數。名稱是回落所需的唯一輸入，丟掉就回不去了。
+> （Android 參考實作的 `SendSpec.Keysym` 同時保留 `name` 與 `code`，
+> `code == VOID_SYMBOL` 即代表「這顆要問門面層」。）
 
 常用名稱（皆為 X11 標準名，非本規範發明）：
 `space` `exclam` `quotedbl` `numbersign` `dollar` `percent` `ampersand` `apostrophe`
@@ -1028,6 +1150,41 @@ send: { text: "、" }
 
 `text` 為空字串 → 該鍵變成 `noop` + WARNING。
 
+#### 9.4.1 `send.text` 撞上「正在組字」時的行為（規範性）
+
+形態 B 繞過 librime，但**宿主的組字區（composing region）是 librime 開的**。
+組字中直接呼叫宿主的 commit，新文字會**取代**整個組字區：使用者的 preedit
+無聲消失，而 librime 那邊仍以為自己在組字，下一次按鍵就會把已經消失的
+preedit 重新畫回來。這是 UI 與引擎狀態脫節，症狀難以歸因。
+
+因此，處理 `send: { text: T }` **必須** 依下列順序：
+
+```
+1. 取快照。status.is_composing == false
+   → 直接 commit(T)。結束。
+
+2. 正在組字，先把組字結果沖出去：
+   a. 呼叫 rs_commit_composition()
+   b. 回傳 true 時，取下一份快照並把其中的 commit_text 送給宿主
+   c. 結束宿主的組字區（Android: finishComposingText()）
+3. 然後才 commit(T)。
+```
+
+規範性約束：
+
+* **不得** 用 `rs_clear_composition()` 代替第 2a 步 —— 那會**丟掉**使用者已經
+  輸入的內容。使用者按下一個標點，預期是「把剛打的字上屏，然後加標點」，
+  不是「把剛打的字丟掉」。
+* 兩次 commit **必須** 依「組字結果先、`T` 後」的順序送達；宿主 API 允許時
+  **應** 合併為一次編輯，以免中間狀態被輸入框的監聽器看見。
+* 第 2 步同樣適用於 `text` 之外的**任何**繞過引擎的上屏路徑
+  （未來若新增其他形態，這條先於它們成立）。
+
+> 注意這裡**刻意不**依 §`rs_commit_composition` 註解裡的 `menu.count` 政策分支。
+> 那條政策回答的是「使用者按了確認鍵，現在該不該上屏」；
+> 而這裡使用者按的是一顆完全無關的標點鍵，語義是「我這段打完了」，
+> 所以無論 `menu.count` 為何都應該沖出去。兩者是不同的問題，不要混用。
+
 ### 9.5 `action`：非按鍵的功能鍵
 
 action 是字串，語法 `<verb>` 或 `<verb>:<arg>[:<arg>]`。
@@ -1049,7 +1206,7 @@ action 是字串，語法 `<verb>` 或 `<verb>:<arg>[:<arg>]`。
 | `candidate:select:<n>` | 選取本頁第 n 個候選（0 起算），`rs_select_candidate` |
 | `candidate:delete:<n>` | 刪除本頁第 n 個使用者詞，`rs_delete_candidate` |
 | `candidate:next_page` / `prev_page` | `rs_change_page` |
-| `candidate:next` / `prev` | 高亮移動一格 |
+| `candidate:next` / `prev` | 高亮移動一格，見下方 |
 | `cursor:left` / `right` / `home` / `end` | 移動輸入框游標（非組字游標） |
 | `clear` | `rs_clear_composition` |
 | `hide_keyboard` | 收起鍵盤 |
@@ -1059,6 +1216,34 @@ action 是字串，語法 `<verb>` 或 `<verb>:<arg>[:<arg>]`。
 常見的 `<option>`（librime 具名開關）：`ascii_mode`、`full_shape`、
 `simplification`、`ascii_punct`、`extended_charset`。
 本規範**不限定**可用的 option 名稱 —— 它們由 schema 定義，客戶端只是轉發。
+
+**`candidate:next` / `candidate:prev` 的實作（規範性）。**
+librime 沒有「把高亮移動一格」的原生概念，它只有「選定第 n 個」。
+因此這兩個 action **必須** 這樣實作：
+
+```
+snap = rs_snapshot_acquire(s)
+i    = snap.menu.highlighted            # 無候選時為 -1
+if i < 0: 什麼都不做
+next: i + 1 >= snap.menu.count → 若非最後一頁則 rs_change_page(前進) 並高亮該頁第 0 個
+                                  否則不動（不環繞）
+prev: i - 1 < 0                → 若非第一頁則 rs_change_page(後退) 並高亮該頁最後一個
+                                  否則不動（不環繞）
+其餘情況 → rs_highlight_candidate(s, i ± 1)
+```
+
+**不得環繞（wrap-around）。** 在最後一個候選再按 `next` 應該不動，
+而不是跳回第一個 —— 連按時的環繞會讓使用者永遠選不到想要的字。
+
+> **v1 初稿的缺陷：** 初稿只寫「高亮移動一格」，而門面層當時只有
+> `rs_select_candidate`（選定並上屏）與 `rs_change_page`，
+> 沒有「只移動高亮、不選定」的函式。Android 參考實作因此只能記一筆
+> log 然後忽略。`rs_highlight_candidate(session, index_on_page)`
+> 補進 ABI 後本條才成立。
+>
+> 注意 `rs_highlight_candidate` 與 `rs_select_candidate` 語義不同：
+> 前者只移動高亮，後者會**選定**該候選（依方案可能直接上屏）。
+> 把 `candidate:next` 實作成 `rs_select_candidate(i+1)` 是錯的。
 
 未知 verb → 該鍵變成 `noop` + WARNING。
 已知 verb 但參數缺失或不合法（如 `layer:` 指向不存在的層）→ `noop` + WARNING。
@@ -1092,7 +1277,54 @@ action 是字串，語法 `<verb>` 或 `<verb>:<arg>[:<arg>]`。
 `backspace` `enter` `shift` `shift_lock` `space` `globe` `keyboard_hide`
 `settings` `emoji` `search` `go` `done` `next` `clipboard` `undo` `mic`
 `arrow_left` `arrow_right` `arrow_up` `arrow_down`。
-`shift` 圖示在鎖定狀態下 **應** 由渲染器自動改繪為 `shift_lock` 樣式。
+`shift` 圖示在鎖定狀態下 **應** 由渲染器自動改繪為 `shift_lock` 樣式
+（`layer_once` 的一次性狀態 **應** 與鎖定狀態在視覺上可區分）。
+
+**圖示的退化路徑（規範性）。** 初稿要求「渲染器自繪向量」卻沒給退化路徑，
+於是尚未備妥向量資源的實作只能各自挑字元，四端會挑出四種樣子。規則：
+
+1. 有向量資源 → 畫向量。這是 **應**（SHOULD）而非必須。
+2. 沒有 → 用下表的**規範性替代字形**。四端 **必須** 用同一份，不得自行挑選。
+3. 該字形在當前字體中缺字 → 退回該鍵的 `label`。
+4. `label` 也是空的 → 畫空白（**不得** 畫成 tofu 或問號）。
+
+| icon | 替代字形 | icon | 替代字形 |
+|---|---|---|---|
+| `backspace` | `⌫` | `settings` | `⚙` |
+| `enter` | `↵` | `emoji` | `☺` |
+| `shift` | `⇧` | `search` | `⌕` |
+| `shift_lock` | `⇪` | `clipboard` | `❐` |
+| `space` | **空白**（見下） | `undo` | `↶` |
+| `globe` | `🌐` | `mic` | `🎤` |
+| `keyboard_hide` | `⌄` | `arrow_left` / `right` / `up` / `down` | `←` `→` `↑` `↓` |
+| `go` / `done` / `next` | `↵` | | |
+
+**`space` 刻意退化為空白。** 空白鍵靠尺寸與位置就足以辨識，
+硬塞一個 `␣` 之類的字元在多數字體裡會變成方框，比空白更糟。
+需要在空白鍵上顯示東西時，正確做法是用 `label` 或 `label_from`
+（本 repo 的兩份佈局都用 `label_from: schema_name` 顯示當前方案名）。
+
+**鍵面文字的解析順序（規範性）：**
+
+```
+1. label_from != none 且該狀態值非空  → 用狀態值
+2. icon != null                       → 用圖示（依上面的退化路徑）
+3. 否則                                → 用 label
+```
+
+**`label_from` 勝過 `icon`。** 初稿沒規定兩者同時出現時誰勝出，而空白鍵正是
+這種鍵（同時有 `icon: space` 與 `label_from: schema_name`）。讓狀態勝出的理由：
+`label_from` 承載的是**使用者當下必須看到的執行期資訊**（現在是中文還是英文、
+用的是哪個方案），而 `icon` 是靜態裝飾。反過來的話，中／英切換鍵會變成一個
+永遠不變的圖示，使用者無從得知自己在哪個模式。
+
+第 1 步的「狀態值非空」是必要的保險：schema 尚未載入完成時 `schema_name`
+是空字串，此時 **必須** 往下退到 `icon` / `label`，不得畫出一顆空白鍵。
+
+**鍵面文字放不下時（SHOULD）。** 解析出的文字可能遠長於鍵寬
+（`schema_name` 可以是「注音·臺灣正體」）。渲染器 **應** 等比縮小字級以求完整顯示，
+下限為 `label_size × 0.5`；到下限仍放不下才截斷。
+**不應** 直接截斷或省略號化 —— 方案名被截成「注音·臺」對使用者沒有意義。
 
 `label_from` 讓鍵面顯示執行期狀態（取自 `rs_status`）：
 
@@ -1120,6 +1352,26 @@ action 是字串，語法 `<verb>` 或 `<verb>:<arg>[:<arg>]`。
 其餘欄位出現 → 忽略 + WARNING。sub-key **不得** 再有 `popup` 或 `swipe`（巢狀）。
 
 **swipe：** 值同樣是 sub-key。滑動距離門檻由實作決定（**應** 為 24 dp）。
+
+**`swipe` 是 OPTIONAL 能力（規範性）。** 一個不實作 swipe 的渲染器仍然合規：
+它 **必須** 能解析 `swipe` 而不報錯，**可** 完全忽略其行為，
+且 **不得** 因為忽略而產生 WARNING（那會讓每一份佈局都刷出一堆噪音）。
+
+理由是實作成本與收益不成比例：軟鍵盤的點擊、長按、自動重複、彈出盤選取
+已經需要一個自寫的統一手勢辨識器，再加上四向拖曳偵測會與既有的
+tap / long-press 偵測互搶事件。這是純粹的體驗加分項，不該擋住其他三端上線。
+
+**因此，佈局作者 MUST NOT 把任何功能設計成只有 swipe 能觸達。**
+每一個 swipe 都必須是某個「另有他途」的捷徑。本 repo 三份佈局皆已遵守：
+
+| swipe | 等效路徑 |
+|---|---|
+| 字母鍵上滑出數字 | 長按彈出盤、或 `numeric-symbol` 佈局 |
+| 空白鍵左右滑動移動游標 | 直接點輸入框（宿主提供） |
+| 退格鍵左滑清除 | 按住退格自動重複，直到清空 |
+| 注音空白鍵上下滑翻頁 | 候選列的翻頁指示器 |
+
+實作階段建議：**M1–M5 皆可不做，M6 之後再補**。
 
 **觸發解析（規範性，避免四端手感不同）：**
 
@@ -1190,6 +1442,14 @@ key_patches:
 7. `bopomofo` 層每一列的 `Σ width` 皆為 `11.0`。
 8. `inherits` 指向自己 → 致命錯誤 F6，不得無限遞迴或堆疊溢位。
 9. 診斷清單長度與內容在四端一致（同一份壞檔案，四端報一樣多則）。
+10. `candidates.bar.toolbar.items` 缺席時，解析結果為 §8.6.6.1 的六項預設清單；
+    主題若把 `items` 覆寫成不含 `schema:picker` 的清單，實作補回該項並發 INFO。
+11. 空白鍵（同時有 `icon: space` 與 `label_from: schema_name`）在 schema 已載入時
+    顯示方案名；schema_name 為空字串時退回圖示而非畫成空白鍵。
+12. 系統字體縮放調到最大時，文字放大倍率恰為 `font_scale_max`（不是它的平方）。
+13. 組字中按下 `send: {text: ...}` 的鍵：組字內容先上屏，標點接在其後，
+    兩者皆不遺失（§9.4.1）。
+14. 把 `keyboard.padding.top` 從 4 改成 20：鍵盤總高度**不變**，按鍵變扁。
 
 ---
 
@@ -1201,12 +1461,26 @@ key_patches:
   目前只有 `orientation` 與 `max_width`，不足以描述。v2 議題。
 * **主題預覽圖。** 主題商店需要縮圖，格式尚未定義 `preview` 欄位。
 * **深色主題的自動生成。** 目前必須手寫 counterpart，沒有「由淺色推導深色」的機制。
-* **狀態列／工具列的外觀。** `bar.empty_shows_toolbar` 開啟後顯示什麼、長什麼樣，
-  完全未規範。
+* **工具列的外觀細節。** §8.6.6.1 已規定工具列的**內容**與必備項，
+  但排列方式（靠左／平均分佈）、項目間距、是否可捲動仍未規範。
 * **`text` 與 `keysym` 的混合送出**（例如一鍵送出多個 keysym 序列）。
   倉頡的簡碼、日文的濁音變換可能會需要。
 * **RTL 的完整語義。** `direction: rtl` 目前只鏡射列內順序，
   沒有處理 popup 展開方向與 hint 位置。
+* **`schema:picker` 選單本身的外觀。** 它現在是方案切換的唯一入口，
+  但格式只規定「有這個 action」，沒規定選單長什麼樣、用哪些顏色欄位。
+  這是 §8.6.6.1 補完之後浮出來的下一個同類缺口。
+* **候選列與鍵盤之間的過場。** `motion.candidate_change_ms` 只描述候選項自身，
+  沒描述「工具列 ⇄ 候選列」的切換，而那是使用者每次組字都會看到的動畫。
+
+### 本節之外：v1 實作回饋已修補的項目
+
+下列缺陷是 Android 端把 `bopomofo-dachen.yaml` 真正渲染出來時撞到的，
+已在對應章節補齊,列此備查:§4.4.1（縮放重複套用）、§8.6.6.1（工具列）、
+§8.8（padding 算在高度之內）、§8.8.1（active 的觸發條件）、
+§9.1.1（schema 切換的退回規則）、§9.4（keysym 回落所需的 ABI）、
+§9.4.1（`send.text` 撞上組字）、§9.5（`candidate:next/prev` 所需的 ABI）、
+§9.6（鍵面解析順序、圖示退化表、swipe 為 OPTIONAL）。
 
 ---
 

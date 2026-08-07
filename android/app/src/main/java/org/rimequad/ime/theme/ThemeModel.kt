@@ -139,6 +139,30 @@ data class CandidateStyle(
 
 data class ExpandButton(val show: Boolean, val color: Int, val size: Float)
 
+/**
+ * 工具列項目（§8.6.6.1）。
+ *
+ * 刻意重用 [LabelSource] 與 [KeyAction]：工具列項目就是「沒有 `send` 的鍵」，
+ * 不該為它發明第二套詞彙。鍵面文字的解析順序、圖示退化、active 觸發條件
+ * 都與按鍵完全相同（§9.6、§8.8.1），渲染器可以共用同一段程式碼。
+ */
+data class ToolbarItem(
+    val icon: String?,
+    val label: String,
+    val labelFrom: LabelSource,
+    val tap: KeyAction
+)
+
+/**
+ * 無候選時候選列顯示的工具列。
+ *
+ * 這不是裝飾:它是方案切換的唯一入口,所以 [items] 必定含有
+ * `schema:picker` 與 `settings`(解析器會補回被主題刪掉的必備項)。
+ */
+data class Toolbar(val show: Boolean, val items: List<ToolbarItem>) {
+    fun hasAction(verb: ActionVerb): Boolean = items.any { it.tap.verb == verb }
+}
+
 /** 行動端候選列。桌面端不消費。 */
 data class CandidateBar(
     val style: CandidateStyle,
@@ -150,7 +174,8 @@ data class CandidateBar(
     val scroll: ScrollMode,
     val expandButton: ExpandButton,
     val showPreeditInline: Boolean,
-    val emptyShowsToolbar: Boolean
+    val emptyShowsToolbar: Boolean,
+    val toolbar: Toolbar
 )
 
 data class Shadow(

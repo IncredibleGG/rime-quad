@@ -177,6 +177,17 @@ candidates:
       size: 18
     show_preedit_inline: true
     empty_shows_toolbar: true
+    # 無候選時顯示的工具列。這不是裝飾 —— schema:picker 是方案切換的唯一入口,
+    # 所以規範 §8.6.6.1 把它列為必備項:主題就算刪掉,解析器也會補回來。
+    toolbar:
+      show: true
+      items:
+        - { icon: "globe",          tap: "schema:picker" }
+        - { label_from: input_mode, tap: "toggle:ascii_mode" }
+        - { label_from: variant,    tap: "toggle:simplification" }
+        - { icon: "emoji",          tap: "emoji" }
+        - { icon: "settings",       tap: "settings" }
+        - { icon: "keyboard_hide",  tap: "hide_keyboard" }
 
   # 桌面端：懸浮候選窗
   window:

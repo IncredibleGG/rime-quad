@@ -347,6 +347,101 @@ class ThemeParserTest {
         for (n in ThemeDefaults.REQUIRED_KEY_STYLES) assertTrue(n, t.keyboard.keyStyles.containsKey(n))
     }
 
+    // ── §8.6.6.1 工具列 ───────────────────────────────────────────────────
+
+    @Test
+    fun toolbarDefaultsToTheNormativeItemListWhenAbsent() {
+        val r = loadInline("notoolbar", "notoolbar" to "format: rime-theme/1\nid: notoolbar\n")
+        val tb = r.value!!.candidates.bar.toolbar
+        assertEquals(0, r.diagnostics.size)
+        assertTrue(tb.show)
+        assertEquals(6, tb.items.size)
+        assertEquals(ThemeDefaults.TOOLBAR_ITEMS, tb.items)
+        assertTrue(tb.hasAction(ActionVerb.SCHEMA_PICKER))
+        assertTrue(tb.hasAction(ActionVerb.SETTINGS))
+    }
+
+    @Test
+    fun shippedThemesSpellOutTheSameToolbarAsTheDefaults() {
+        // default-light / default-dark 是規範的對照組，寫出來的必須等於預設值。
+        for (id in listOf("default-light", "default-dark")) {
+            val tb = loadShipped(id).value!!.candidates.bar.toolbar
+            assertEquals(id, ThemeDefaults.TOOLBAR_ITEMS, tb.items)
+        }
+    }
+
+    @Test
+    fun toolbarRestoresRequiredItemsAThemeTriedToRemove() {
+        val r = loadInline(
+            "slimbar",
+            "slimbar" to """
+                format: rime-theme/1
+                id: slimbar
+                candidates:
+                  bar:
+                    toolbar:
+                      items:
+                        - { icon: "emoji", tap: "emoji" }
+            """.trimIndent()
+        )
+        val tb = r.value!!.candidates.bar.toolbar
+        // 主題只留了 emoji，但方案切換與設定必須被補回來。
+        assertEquals(3, tb.items.size)
+        assertEquals(ActionVerb.EMOJI, tb.items[0].tap.verb)
+        assertTrue(tb.hasAction(ActionVerb.SCHEMA_PICKER))
+        assertTrue(tb.hasAction(ActionVerb.SETTINGS))
+        // 補回來要留下痕跡，但那是 INFO 而非 WARNING —— 主題仍然完全可用。
+        assertEquals(RepoFixtures.describe(r.diagnostics), 2, r.diagnostics.size)
+        assertTrue(r.diagnostics.all { it.severity == Severity.INFO })
+    }
+
+    @Test
+    fun toolbarItemWithoutATapActionIsDroppedNotFatal() {
+        val r = loadInline(
+            "badbar",
+            "badbar" to """
+                format: rime-theme/1
+                id: badbar
+                candidates:
+                  bar:
+                    toolbar:
+                      items:
+                        - { icon: "globe", tap: "schema:picker" }
+                        - { icon: "settings", tap: "settings" }
+                        - { icon: "emoji" }
+                        - { label: "x", tap: "explode:now" }
+            """.trimIndent()
+        )
+        val tb = r.value!!.candidates.bar.toolbar
+        assertEquals(2, tb.items.size)
+        assertEquals(2, r.diagnostics.size)
+        assertTrue(r.diagnostics.all { it.severity == Severity.WARNING })
+    }
+
+    @Test
+    fun toolbarItemsReuseTheLayoutActionAndLabelVocabulary() {
+        // 工具列項目就是「沒有 send 的鍵」——不該有第二套詞彙。
+        val defaults = ThemeDefaults.TOOLBAR_ITEMS
+        val lang = defaults.first { it.labelFrom == LabelSource.INPUT_MODE }
+        assertEquals(ActionVerb.TOGGLE_OPTION, lang.tap.verb)
+        assertEquals("ascii_mode", lang.tap.arg)
+        assertNull(lang.icon)
+        val picker = defaults.first { it.tap.verb == ActionVerb.SCHEMA_PICKER }
+        assertEquals("globe", picker.icon)
+        assertTrue(LayoutParser.isKnownIcon(picker.icon!!))
+    }
+
+    @Test
+    fun keysymFallbackSeamDefersUnknownNamesToNative() {
+        // §9.4：靜態表查不到時必須回落，而不是把該鍵當成 noop。
+        assertEquals(Keysym.VOID_SYMBOL, Keysym.resolve("Cyrillic_a"))
+        assertEquals(0x6C1, Keysym.resolveWith("Cyrillic_a") { 0x6C1 })
+        // 靜態表命中時不得呼叫 native。
+        assertEquals(0x31, Keysym.resolveWith("1") { throw AssertionError("native must not be consulted") })
+        // 尚未接上 native 時退化為 VOID（可觀察的過渡期偏離）。
+        assertEquals(Keysym.VOID_SYMBOL, Keysym.resolveWith("Cyrillic_a", null))
+    }
+
     @Test
     fun alphaModulationMultipliesRatherThanOverwrites() {
         assertEquals(

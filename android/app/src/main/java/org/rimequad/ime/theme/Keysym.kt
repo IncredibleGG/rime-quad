@@ -9,8 +9,13 @@ package org.rimequad.ime.theme
  *
  * 呼叫端的規範行為（docs/theme-format.md §9.4）：
  *   1. 先查本表；
- *   2. 查不到時**必須**回落到 `RimeGetKeycodeByName()`；
+ *   2. 查不到時**必須**回落到門面層的 `rs_keysym_by_name()`；
  *   3. 仍為 [VOID_SYMBOL] 時該鍵變成 noop + WARNING。
+ *
+ * 第 2 步是**執行期**的責任，不是解析期的：解析器在建置設定物件時通常還沒有
+ * 可用的 rime session。所以 [SendSpec.Keysym] 同時保留 `name` 與 `code`，
+ * `code == VOID_SYMBOL` 就是「這顆要問門面層」的訊號。
+ * 執行期請用 [resolveWith] 帶入 native 解析器，見該函式說明。
  *
  * ASCII 可見字元的 keysym 值等於其 ASCII 碼（0x20–0x7E），所以下表可由順序產生。
  */
@@ -106,6 +111,22 @@ object Keysym {
         }
         // 3) 名稱表
         return TABLE[t] ?: VOID_SYMBOL
+    }
+
+    /**
+     * §9.4 解析順序的完整版:靜態表查不到時回落到門面層。
+     *
+     * [native] 應直接接到 `rs_keysym_by_name()`（JNI）。傳 null 代表尚未接上，
+     * 此時行為退化為 [resolve] —— 這是**可觀察的偏離規範**，
+     * 只在門面層尚未暴露該函式的過渡期可接受。
+     *
+     * 用法：`Keysym.resolveWith(spec.name) { RimeCore.keysymByName(it) }`
+     */
+    fun resolveWith(spec: String, native: ((String) -> Int)?): Int {
+        val fast = resolve(spec)
+        if (fast != VOID_SYMBOL) return fast
+        if (native == null) return VOID_SYMBOL
+        return native(spec.trim())
     }
 
     fun unicodeToKeysym(codepoint: Int): Int =
