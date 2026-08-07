@@ -3,5 +3,18 @@
 .emulator/
 # 驗證 artifact 與測試靶 APK(截圖、logcat、dumpsys、debug keystore)
 build/
-*.png
-!docs/**/*.png
+# 模擬器截圖(手動抓的)
+screenshots/
+*.screenshot.png
+
+# --- librime 交叉編譯(scripts/build_native.sh)---
+# 交叉編譯中間產物(各 ABI 的 cmake/ninja build tree 與 staging prefix)
+third_party/build/
+# 下載並解壓的 Boost headers(header-only,由腳本自動取得)
+third_party/boost/
+third_party/boost_*.tar.gz
+third_party/boost_*.tar.gz.part
+# clone 進來的 librime 原始碼(含其 deps 子模組),不入本倉庫
+third_party/librime/
+# 建置日誌
+third_party/*.log

@@ -1,0 +1,171 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-07T05:41:13Z",
+  "generated_by": "scripts/build_native.sh",
+  "librime": {
+    "version": "1.17.0",
+    "commit": "1d0df6e40cdcac17a986adc65e4668ae84ae0ada",
+    "source_dir": "third_party/librime"
+  },
+  "toolchain": {
+    "ndk_version": "27.2.12479018",
+    "ndk_path": "/home/lc/Android/Sdk/ndk/27.2.12479018",
+    "cmake_version": "3.22.1-g37088a8",
+    "cmake_note": "必須用 Android SDK 內附的 cmake 3.22.1;CMake 4.x 已移除 FindBoost 模組。",
+    "stl": "c++_static",
+    "build_type": "Release",
+    "debug_info_stripped": true,
+    "debug_info_note": "NDK 預設帶 -g,未剝離的 librime.a 約 118 MiB。匯出時已套用 llvm-strip --strip-debug(保留所有連結符號)。需要完整 DWARF 時用 scripts/build_native.sh --keep-debug 重建。"
+  },
+  "boost": {
+    "version": "1.89.0",
+    "header_only": true,
+    "include_dir": "third_party/boost",
+    "abs_include_dir": "/home/lc/rime/third_party/boost",
+    "note": "CMAKE_SYSTEM_NAME=Android 時 librime 走 find_package(Boost 1.77.0) 不帶 COMPONENTS,只需要 headers,不需要編譯任何 Boost 二進位。下游若要編譯 librime 的私有標頭,需要把這個路徑加進 include path。"
+  },
+  "link_order": [
+    "librime.a",
+    "libopencc.a",
+    "libmarisa.a",
+    "libleveldb.a",
+    "libyaml-cpp.a",
+    "libglog.a"
+  ],
+  "link_order_note": "librime.a 依賴 opencc/glog/yaml-cpp/leveldb/marisa;libopencc.a 依賴 libmarisa.a,故 marisa 必須排在 opencc 之後。",
+  "system_libs": [
+    "log",
+    "m"
+  ],
+  "compile_definitions": {
+    "public_c_api": [],
+    "public_c_api_note": "只用 rime_api.h 的 C API 時不需要任何額外 define。",
+    "internal_cxx_headers": [
+      "RIME_VERSION=\"1.17.0\"",
+      "YAML_CPP_STATIC_DEFINE",
+      "Opencc_BUILT_AS_STATIC",
+      "GLOG_EXPORT=",
+      "GLOG_NO_EXPORT=",
+      "GLOG_DEPRECATED=__attribute__((deprecated))",
+      "BOOST_DLL_USE_STD_FS"
+    ],
+    "internal_cxx_headers_note": "若下游要 #include librime 的 C++ 私有標頭(third_party/prebuilt/<abi>/include/rime/…),必須帶上這些 define 才能和 .a 的 ABI 一致。"
+  },
+  "cmake_flags": {
+    "librime": [
+      "BUILD_SHARED_LIBS=OFF",
+      "BUILD_STATIC=ON",
+      "BUILD_TEST=OFF",
+      "BUILD_SAMPLE=OFF",
+      "BUILD_DATA=OFF",
+      "BUILD_SEPARATE_LIBS=OFF",
+      "BUILD_MERGED_PLUGINS=OFF",
+      "ENABLE_EXTERNAL_PLUGINS=OFF",
+      "ENABLE_LOGGING=ON",
+      "ENABLE_THREADING=ON",
+      "ENABLE_TIMESTAMP=ON",
+      "INSTALL_PRIVATE_HEADERS=ON"
+    ]
+  },
+  "runtime_notes": [
+    "opencc 的 .ocd2 詞典是執行期資源,本階段不處理;APK 需自行打包 opencc 的 share/opencc/*.json 與 *.ocd2,並讓 RimeTraits.shared_data_dir 底下的 opencc 目錄可以找到它們。",
+    "librime 的 shared_data_dir / user_data_dir / log_dir 必須是 app 可寫的路徑。",
+    "glog 已編入(ENABLE_LOGGING=ON),log 會寫到 RimeTraits.log_dir。"
+  ],
+  "abis": {
+    "arm64-v8a": {
+      "api_level": 21,
+      "triple": "aarch64-linux-android",
+      "clang_target": "aarch64-linux-android21",
+      "elf_machine": "AArch64",
+      "include_dir": "third_party/prebuilt/arm64-v8a/include",
+      "lib_dir": "third_party/prebuilt/arm64-v8a/lib",
+      "libs": [
+        {
+          "file": "librime.a",
+          "size_bytes": 13170414,
+          "size_human": "12.56 MiB",
+          "sha256": "40604333523304e85ec5ed9d3b57e7640ea0197f3eefbb6455d09fe6d4e5c124"
+        },
+        {
+          "file": "libopencc.a",
+          "size_bytes": 2376660,
+          "size_human": "2.27 MiB",
+          "sha256": "aed49ebd7c0ec5752a7b7a86daae263e5af4de1bcd6474b02a4012d9e0216d5a"
+        },
+        {
+          "file": "libmarisa.a",
+          "size_bytes": 361958,
+          "size_human": "0.35 MiB",
+          "sha256": "c6ce09ac3400d803053ce5468848807ec8dc6b99a14020c21eed58577345a34f"
+        },
+        {
+          "file": "libleveldb.a",
+          "size_bytes": 720978,
+          "size_human": "0.69 MiB",
+          "sha256": "651e6e1c62f631897e9abe211c6e8b46fe58197bdef8bac05f5cbb2f1a557d2b"
+        },
+        {
+          "file": "libyaml-cpp.a",
+          "size_bytes": 1084014,
+          "size_human": "1.03 MiB",
+          "sha256": "503f8ac506c7dc81b81d3fbe2ac6524af6aa4def6f5ee05c69de19037e121625"
+        },
+        {
+          "file": "libglog.a",
+          "size_bytes": 626602,
+          "size_human": "0.60 MiB",
+          "sha256": "6a63aa496536d83a80ba877969869cd987192f3cc54fae6799bd97129e9f34fd"
+        }
+      ],
+      "total_size_bytes": 18340626
+    },
+    "x86_64": {
+      "api_level": 21,
+      "triple": "x86_64-linux-android",
+      "clang_target": "x86_64-linux-android21",
+      "elf_machine": "Advanced Micro Devices X86-64",
+      "include_dir": "third_party/prebuilt/x86_64/include",
+      "lib_dir": "third_party/prebuilt/x86_64/lib",
+      "libs": [
+        {
+          "file": "librime.a",
+          "size_bytes": 12464770,
+          "size_human": "11.89 MiB",
+          "sha256": "7812a2f5eb9550979debccecc268e94105fc7b4d45bea6e308f2db7407fed710"
+        },
+        {
+          "file": "libopencc.a",
+          "size_bytes": 2278762,
+          "size_human": "2.17 MiB",
+          "sha256": "1c62d8492054122312abe7a596682ccf365bca9ed16d8e207ca5973fd14f52e6"
+        },
+        {
+          "file": "libmarisa.a",
+          "size_bytes": 352702,
+          "size_human": "0.34 MiB",
+          "sha256": "780d79549adeaaa454495c5987abdb6d74361332ea8283d0407c4890e6098c40"
+        },
+        {
+          "file": "libleveldb.a",
+          "size_bytes": 708542,
+          "size_human": "0.68 MiB",
+          "sha256": "10440da002e0c25abc4437f2ccea71c7e914394cc944072a532d798ad2c4f107"
+        },
+        {
+          "file": "libyaml-cpp.a",
+          "size_bytes": 1056636,
+          "size_human": "1.01 MiB",
+          "sha256": "3162cf9c8efe61c70a99ca27da781a96bc285d4938d1609dbf65d87ac413b08b"
+        },
+        {
+          "file": "libglog.a",
+          "size_bytes": 609028,
+          "size_human": "0.58 MiB",
+          "sha256": "5ed22b46a409ba5acb0fad235ac47be3bcaffea63e70b4d814fceb9cc273df90"
+        }
+      ],
+      "total_size_bytes": 17470440
+    }
+  }
+}

@@ -1,0 +1,21 @@
+diff --git a/src/rime_api.h b/src/rime_api.h
+index 2fccde0..72e936c 100644
+--- a/src/rime_api.h
++++ b/src/rime_api.h
+@@ -31,7 +31,16 @@ extern "C" {
+ #endif
+ #else /* _WIN32 */
+ #define RIME_DLL
++#if defined(__cplusplus)
++/* Give the flat C API C language linkage even when the definitions in
++   rime_api_impl.h are compiled without rime_api_deprecated.h in scope.
++   Without this, a static (non-Windows) build exports mangled C++ symbols
++   such as _Z9RimeSetupP13rime_traits_t, which cannot be resolved against
++   the extern "C" declarations in rime_api_deprecated.h. */
++#define RIME_API extern "C"
++#else
+ #define RIME_API
++#endif
+ #endif /* _WIN32 */
+ 
+ #ifndef RIME_DEPRECATED
