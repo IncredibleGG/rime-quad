@@ -96,6 +96,22 @@ if [ "$SKIP_EMU" -eq 0 ]; then
     bad "核心層測試失敗 —— 問題在 librime 或資料，不在 UI。見 $OUT/console.log"
   fi
 
+  step "5b. 清空 app 資料（驗證全新安裝的體驗）"
+  # 發布驗證不可以信任裝置上殘留的狀態。實際發生過：某條開發線在測試時
+  # 把裝置上的 default.custom.yaml 改成把九宮格排第一，於是這台機器的預設
+  # 方案不再是拼音，驗證因此失敗——但那份 APK 本身是好的。
+  #
+  # 反過來說，帶著舊資料驗證也會漏掉真正的問題：使用者拿到的是全新安裝，
+  # 首次要解壓資料、跑一次完整部署。那條路徑才是該驗的。
+  SER="${RIME_SERIAL:-${ANDROID_SERIAL:-}}"
+  if [ -n "$SER" ]; then
+    "$ADB" -s "$SER" shell pm clear org.rimequad.ime >/dev/null 2>&1 \
+      && ok "已清空 app 資料，接下來驗的是全新安裝的路徑" \
+      || echo "  [INFO] pm clear 失敗（app 可能尚未安裝），繼續"
+  else
+    echo "  [INFO] 未指定 RIME_SERIAL，略過清空；驗證結果可能受殘留狀態影響"
+  fi
+
   step "6. 真正的輸入驗證（走實體按鍵路徑）"
   # 注意：verify_ime.sh 用的 input text 走 commitText，會繞過組字，
   # 即使 librime 沒載入也會通過。這裡一定要用 verify_rime_compose.sh。
