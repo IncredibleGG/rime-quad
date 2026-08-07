@@ -1,11 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- 方案市集要拉 index.json 與套件 zip（docs/schema-store.md §1）。 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:theme="@style/Theme.RimeQuad">
 
         <!-- 設定／診斷畫面，同時是 method.xml 的 settingsActivity -->
@@ -18,6 +23,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+            設定畫面。軟鍵盤工具列的 settings action(規範 §8.6.6.1 的必備項)
+            指向這裡,使用者按下齒輪就直接落在設定,不必先經過診斷頁。
+            exported=false:沒有任何外部 app 需要開它。
+        -->
+        <activity
+            android:name=".prefs.SettingsActivity"
+            android:exported="false"
+            android:label="@string/app_name" />
 
         <!-- 輸入法服務宣告 -->
         <service

@@ -3,13 +3,23 @@ package org.rimequad.ime
 import android.content.Intent
 import android.content.res.Configuration
 import android.inputmethodservice.InputMethodService
+import android.text.InputType
 import android.util.Log
 import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalViewConfiguration
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.launch
 import org.rimequad.ime.core.AndroidKeyMap
 import org.rimequad.ime.core.RimeCore
 import org.rimequad.ime.core.RimeRuntime
@@ -18,10 +28,22 @@ import org.rimequad.ime.keyboard.KeyboardEvent
 import org.rimequad.ime.keyboard.KeyboardUiState
 import org.rimequad.ime.keyboard.LayoutHost
 import org.rimequad.ime.keyboard.RimeKeyboard
+import org.rimequad.ime.prefs.KeyBehavior
+import org.rimequad.ime.prefs.LocalKeyBehavior
+import org.rimequad.ime.prefs.LongPressViewConfiguration
+import org.rimequad.ime.prefs.PrefsStore
+import org.rimequad.ime.prefs.SettingsActivity
+import org.rimequad.ime.prefs.SpaceBehavior
+import org.rimequad.ime.prefs.UserPrefs
+import org.rimequad.ime.prefs.applyThemePrefs
+import org.rimequad.ime.prefs.applyUserOverrides
+import org.rimequad.ime.store.InstalledRegistry
+import org.rimequad.ime.store.StoreSettings
 import org.rimequad.ime.theme.ActionVerb
 import org.rimequad.ime.theme.KeyAction
 import org.rimequad.ime.theme.Keysym
 import org.rimequad.ime.theme.SendSpec
+import org.rimequad.ime.theme.Theme
 import org.rimequad.ime.ui.RimeTheme
 
 /**
@@ -39,6 +61,21 @@ class RimeInputMethodService : InputMethodService() {
 
     private companion object {
         const val TAG = "RimeIME"
+
+        /** librime 的開關名。設定畫面與候選列工具列指的是同兩個開關。 */
+        const val OPT_SIMPLIFICATION = "simplification"
+        const val OPT_ASCII_PUNCT = "ascii_punct"
+
+        /**
+         * 字形互斥選項組。隨附的 luna_pinyin / luna_pinyin_tw 用這一組表達簡繁,
+         * 而不是 `simplification`。見 [applyVariant] 的說明。
+         */
+        const val OPT_ZH_HANS = "zh_hans"
+        const val OPT_ZH_HANT = "zh_hant"
+        val VARIANT_OPTIONS = listOf("zh_hans", "zh_hant", "zh_hant_hk", "zh_hant_tw")
+
+        /** X11 的 space keysym。空白鍵行為偏好靠它認出空白鍵。 */
+        const val KEYSYM_SPACE = 0x0020
     }
 
     private var session: Long = RimeCore.INVALID_SESSION
@@ -49,26 +86,119 @@ class RimeInputMethodService : InputMethodService() {
 
     private var uiState by mutableStateOf(KeyboardUiState())
 
+    /* ─────────────────── 使用者偏好 ───────────────────
+     *
+     * 三層覆寫的最上層(docs 的設計契約):
+     *   主題 YAML → platform_overrides.android → 使用者偏好
+     * 前兩層在 ThemeParser 內完成,第三層是 [applyUserOverrides],
+     * 只作用在**已解析完成**的 Theme 物件上,不寫回任何 yaml。
+     */
+
+    private lateinit var prefsStore: PrefsStore
+
+    /**
+     * 目前生效的偏好。刻意用 [mutableStateOf] 而不是普通 var:
+     * 長按延遲與重複速度這類設定不會改變 [uiState],若 prefs 不是可觀測的,
+     * Compose 就不會因為它改變而重組,使用者要切出去再切回來才會生效 ——
+     * 那就不叫「立即生效」了。
+     */
+    private var prefs by mutableStateOf(UserPrefs())
+
+    /**
+     * 偏好變更的收集 scope。
+     *
+     * ⚠ Dispatchers.Main.immediate 不是隨手挑的:偏好一變就要重下
+     * rs_set_option,而 rime_shell.h 要求同一 session 的呼叫序列化在同一條
+     * 執行緒上。IME 的那條執行緒就是主執行緒,所以收集者也必須落在主執行緒。
+     */
+    private val prefsScope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
+
     /** 上一次看到的方案 id，用來偵測方案變動並套用 §9.1.1 的自動換佈局。 */
     private var lastSchemaId: String = ""
 
     /** onKeyDown 消費掉的 keycode，onKeyUp 要對應吃掉，否則宿主會收到落單的 up。 */
     private val consumedKeys = HashSet<Int>()
 
+    /**
+     * 方案市集的帳本。IME 只讀它一件事：方案 id → recommended_layout。
+     * 設定畫面裝完新方案後帳本會變，所以每次部署完成（phase READY）重讀一次。
+     */
+    private var storeRegistry: InstalledRegistry? = null
+
+    /** 市集與 IME 之間的交接點；這裡只讀 [StoreSettings.pendingSchema]。 */
+    private var storeSettings: StoreSettings? = null
+
+    /**
+     * 這個編輯框要不要繞過 librime、直接把字面上屏。判定見 [shouldBypassRime]。
+     * 由 [onStartInput] / [onStartInputView] 依宿主給的 [EditorInfo] 決定。
+     */
+    private var bypassRime = false
+
+    private fun reloadStoreRegistry() {
+        val user = RimeRuntime.userDirOrNull ?: return
+        storeRegistry = runCatching { InstalledRegistry.load(user) }.getOrNull()
+    }
+
+    /**
+     * 市集在設定畫面啟用了新方案之後，鍵盤要切過去。
+     *
+     * 為什麼不是設定畫面直接切：`rs_select_schema()` 要 session，而 session
+     * 必須由本 service 在自己的執行緒上建立與使用（rime_shell.h 的執行緒
+     * 約定）。所以設定畫面只留下一個字串，由這裡在**部署完成、session 重建
+     * 之後**兌現，兌現完就清掉。
+     *
+     * ⚠ 方案還沒出現在 `rs_schema_list()` 裡時**不可以**把 pendingSchema 清掉：
+     * 那代表部署失敗被回滾了，方案之後可能還會回來。清掉就等於把使用者的
+     * 「我要用這個方案」這件事默默丟了。
+     */
+    private fun consumePendingSchema() {
+        val settings = storeSettings ?: return
+        val wanted = settings.pendingSchema ?: return
+        if (session == RimeCore.INVALID_SESSION) return
+        if (RimeCore.schemaList().none { it.id == wanted }) {
+            Log.w(TAG, "待切換的方案 $wanted 不在 schema 清單裡，留著等下一次")
+            return
+        }
+        settings.pendingSchema = null
+        Log.i(TAG, "市集要求切換到方案 $wanted")
+        selectSchema(wanted)
+    }
+
     private val phaseListener: (RimeRuntime.Phase) -> Unit = { phase -> onPhase(phase) }
 
     override fun onCreate() {
         super.onCreate()
         uiState = uiState.copy(isStub = RimeCore.isStub())
+        // 偏好必須在第一次畫鍵盤之前就位,否則鍵盤會先用主題高度畫一次
+        // 再跳成使用者設定的高度。current 首次存取會阻塞讀一次檔案(幾百 bytes)。
+        prefsStore = PrefsStore.get(applicationContext)
+        prefs = prefsStore.current
         // 解壓在背景執行緒，rs_init 之後才切回主執行緒，這裡不會阻塞。
         RimeRuntime.start(applicationContext)
 
         // 佈局與主題不依賴 librime，可以先載起來 —— 鍵盤在部署完成前就畫得出來。
         config = ConfigRepository(applicationContext)
         layoutHost = LayoutHost(config)
+        // 市集裝進來的方案不可能出現在隨附佈局的 for_schema 裡（那些 yaml 跟著
+        // APK 出貨，不會知道未來會裝什麼），所以佈局只能靠索引宣告的
+        // recommended_layout 決定。少了這一行，使用者從市集裝了注音方案卻會
+        // 看到 QWERTY 鍵面，一個字都打不出來。
+        //
+        // 優先序：排在 for_schema 精確命中**之後**（見 LayoutHost.applySchema）。
+        // 本機佈局自己聲明「我適用於這個方案」時，不該被遠端索引蓋過去。
+        layoutHost.recommendedLayoutResolver = { id -> storeRegistry?.layoutForSchema(id) }
+        storeSettings = StoreSettings(applicationContext)
+        reloadStoreRegistry()
         layoutHost.ensureLoaded()
-        layoutHost.applyAppearance(systemInDarkMode())
+        layoutHost.applyThemePrefs(prefs, systemInDarkMode())
         syncConfigToUi()
+
+        // 「設定變更立即生效」的唯一機制:設定畫面一寫入 DataStore,這裡就
+        // 收到新值,重新選主題、重新套覆寫、重新下 rs_set_option。
+        // 不需要重啟輸入法,也不需要 IME 與設定畫面互相知道對方存在。
+        prefsStore.flow
+            .onEach { onPrefsChanged(it) }
+            .launchIn(prefsScope)
 
         RimeRuntime.addListener(phaseListener)
         Log.i(TAG, "onCreate: stub=${RimeCore.isStub()} phase=${RimeRuntime.phase}")
@@ -82,16 +212,100 @@ class RimeInputMethodService : InputMethodService() {
         // 而在 attach 當下崩潰。詳見 ComposeKeyboardHost 的註解。
         return newHost.createView(window?.window?.decorView) {
             RimeTheme {
-                RimeKeyboard(state = uiState, onEvent = ::handleEvent)
+                // 偏好 → 渲染層的全部接線就是這兩個 CompositionLocal:
+                //   · LocalKeyBehavior       震動開關與強度、按鍵音與音量、重複時間
+                //   · LocalViewConfiguration 長按門檻(detectTapGestures 讀的就是它)
+                // 這樣 KeyboardView 幾乎不必改,顏色與尺寸仍舊完全由主題驅動。
+                val current = uiState.theme
+                val behavior =
+                    if (current == null) KeyBehavior.DEFAULT
+                    else KeyBehavior.of(current.feedback, prefs)
+                CompositionLocalProvider(
+                    LocalKeyBehavior provides behavior,
+                    LocalViewConfiguration provides LongPressViewConfiguration(
+                        base = LocalViewConfiguration.current,
+                        longPressMs = behavior.longPressMs.toLong(),
+                    ),
+                ) {
+                    RimeKeyboard(state = uiState, onEvent = ::handleEvent)
+                }
             }
         }
+    }
+
+    override fun onStartInput(info: EditorInfo?, restarting: Boolean) {
+        super.onStartInput(info, restarting)
+        // 實體鍵盤可能在 input view 出現之前就開始送字，政策要先定下來。
+        applyEditorPolicy(info)
     }
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         host?.onStartInput()
         ensureSession()
+        consumePendingSchema()
+        applyEditorPolicy(info)
         refreshFromRime(consumeCommit = false)
+    }
+
+    /**
+     * 依宿主的 [EditorInfo] 決定這個編輯框走不走 librime。
+     *
+     * ── 為什麼需要這個判定 ────────────────────────────────────────────────
+     * 在這段之前，本 service 從來沒有讀過 `EditorInfo.inputType`，對每一種
+     * 編輯框都一視同仁地送進 librime、再用 `setComposingText()` 畫組字區。
+     * `scripts/verify_input_matrix.sh` 的型別矩陣把代價逼了出來：
+     *
+     * · **`TYPE_CLASS_NUMBER` 的框整個是死的。** 數字框的 `KeyListener` 會濾掉
+     *   非數字字元，於是每一通 `setComposingText("ni hao")` 都被宿主靜靜丟棄
+     *   ——使用者看到的就是「打字完全沒反應」；更糟的是 librime 那邊還一路
+     *   把 preedit 累積下去，引擎狀態與畫面徹底脫節。
+     * · **密碼會被 librime 學走。** 走 librime 就會進 speller 與使用者詞典。
+     *   密碼不該留在任何詞庫裡；在密碼框關掉組字與學習是各家 IME 的慣例。
+     *
+     * ── 回傳 true 的意思 ─────────────────────────────────────────────────
+     * 「這個框不經過 librime」：軟鍵盤的按鍵直接走 [fallbackKey] 上屏字面，
+     * 實體鍵盤則原封不動交還宿主自己處理。
+     */
+    private fun shouldBypassRime(info: EditorInfo?): Boolean {
+        val type = info?.inputType ?: return false
+        // TYPE_NULL：宿主明說「我自己處理 raw key event，別給我組字」。
+        if (type == InputType.TYPE_NULL) return true
+        return when (type and InputType.TYPE_MASK_CLASS) {
+            // 數字／電話／日期時間框只收得下字面字元，組字區必定被濾掉。
+            InputType.TYPE_CLASS_NUMBER,
+            InputType.TYPE_CLASS_PHONE,
+            InputType.TYPE_CLASS_DATETIME,
+            -> true
+
+            InputType.TYPE_CLASS_TEXT -> when (type and InputType.TYPE_MASK_VARIATION) {
+                InputType.TYPE_TEXT_VARIATION_PASSWORD,
+                InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD,
+                InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD,
+                -> true
+
+                else -> false
+            }
+
+            else -> false
+        }
+    }
+
+    private fun applyEditorPolicy(info: EditorInfo?) {
+        val bypass = shouldBypassRime(info)
+        if (bypass != bypassRime) {
+            Log.i(
+                TAG,
+                "編輯框政策：bypassRime=$bypass inputType=0x" +
+                    Integer.toHexString(info?.inputType ?: 0),
+            )
+        }
+        bypassRime = bypass
+        if (bypass) {
+            // 上一個框可能還留著組字狀態；不能讓它漏進密碼／數字框。
+            if (session != RimeCore.INVALID_SESSION) RimeCore.clearComposition(session)
+            currentInputConnection?.finishComposingText()
+        }
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {
@@ -107,14 +321,17 @@ class RimeInputMethodService : InputMethodService() {
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         // §8.2 執行期規則第 2 條：跟隨系統時切到 counterpart。
-        layoutHost.applyAppearance(
+        // §8.2 執行期規則第 2 條,再疊上使用者的「固定淺色／固定深色」偏好。
+        layoutHost.applyThemePrefs(
+            prefs,
             (newConfig.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
-                Configuration.UI_MODE_NIGHT_YES
+                Configuration.UI_MODE_NIGHT_YES,
         )
         syncConfigToUi()
     }
 
     override fun onDestroy() {
+        prefsScope.cancel()
         RimeRuntime.removeListener(phaseListener)
         host?.onDestroy()
         host = null
@@ -149,8 +366,14 @@ class RimeInputMethodService : InputMethodService() {
                     fatalMessage = null,
                     schemas = RimeCore.schemaList(),
                 )
+                // 市集可能剛裝了新方案，帳本變了。
+                reloadStoreRegistry()
                 // 部署會讓舊 session 失效，這裡一律重建。
                 rebuildSession()
+                // 方案 id 可能沒變，但佈局的來源（帳本）變了。清掉快取的
+                // lastSchemaId，強迫下一次快照重新套用一次佈局。
+                lastSchemaId = ""
+                consumePendingSchema()
                 refreshFromRime(consumeCommit = false)
             }
 
@@ -171,7 +394,10 @@ class RimeInputMethodService : InputMethodService() {
         session = RimeCore.sessionCreate()
         if (session == RimeCore.INVALID_SESSION) {
             Log.e(TAG, "建立 session 失敗: ${RimeCore.lastError()}")
+            return
         }
+        // 新 session 不記得上一個 session 的開關,偏好要重新推一次。
+        applyRimeOptions()
     }
 
     /** 部署後舊 session 會失效（見 rime_shell.h），這裡負責重建。 */
@@ -183,10 +409,116 @@ class RimeInputMethodService : InputMethodService() {
         }
     }
 
-    /** 把 [LayoutHost] 的當前佈局／層／主題搬進 UI 狀態。 */
+    /* ─────────────────── 使用者偏好 ─────────────────── */
+
+    /**
+     * 偏好變更的唯一入口。跑在主執行緒上(見 [prefsScope]),因此可以安全地
+     * 呼叫 rs_set_option —— rime_shell.h 的執行緒約定在這條路徑上仍然成立。
+     */
+    private fun onPrefsChanged(next: UserPrefs) {
+        val before = prefs
+        prefs = next
+        // 換主題／換深淺才需要重新載入主題檔;純值覆寫走 [effectiveTheme]。
+        if (before.themeId != next.themeId || before.appearanceMode != next.appearanceMode) {
+            layoutHost.applyThemePrefs(next, systemInDarkMode())
+        }
+        applyRimeOptions()
+        syncConfigToUi()
+    }
+
+    /**
+     * 把偏好裡的 librime 開關推給引擎。
+     *
+     * ⚠ 「未設定」(null)刻意**不呼叫** rs_set_option。那一項的語義是
+     * 「不干預,讓方案自己的預設生效」;若把 null 當成 false 送出去,
+     * 使用者一裝好就會被強制切成繁體與全形,而他從來沒做過那個選擇。
+     */
+    private fun applyRimeOptions() {
+        if (session == RimeCore.INVALID_SESSION) return
+        prefs.simplification?.let { applyVariant(it) }
+        prefs.asciiPunct?.let { want ->
+            if (RimeCore.getOption(session, OPT_ASCII_PUNCT) != want) {
+                RimeCore.setOption(session, OPT_ASCII_PUNCT, want)
+            }
+        }
+    }
+
+    /** 使用者切成簡體之前,原本開著的那個字形選項。用來把「切回繁體」還原到正確的一支。 */
+    private var savedVariantOption: String? = null
+
+    /**
+     * 簡繁切換。
+     *
+     * ⚠ 這裡不能只設 `simplification`。**隨附的 luna_pinyin 系列根本沒有那個開關** ——
+     * 它們用的是一組互斥選項:
+     *
+     * ```yaml
+     * - options: [ zh_hant, zh_hans, zh_hant_hk, zh_hant_tw ]
+     *   states:  [ 傳統漢字, 简化字, 香港字形, 臺灣字形 ]
+     * ```
+     *
+     * 只送 `simplification` 的話,在模擬器上實測打 `guojia` 仍然得到「國家」,
+     * 設定看起來完全沒作用。`simplification` 是 simplifier 元件的**預設**
+     * option_name,別的方案(例如五筆·簡入繁出)才會用到,所以兩種都要送。
+     *
+     * 切回繁體時**還原原本那一支**而不是硬設 `zh_hant`:使用者原本在
+     * 「臺灣字形」,切一趟簡體再切回來卻變成「傳統漢字」,字形會整批改變,
+     * 那不是他要求的。
+     */
+    private fun applyVariant(wantSimplified: Boolean) {
+        if (RimeCore.getOption(session, OPT_SIMPLIFICATION) != wantSimplified) {
+            RimeCore.setOption(session, OPT_SIMPLIFICATION, wantSimplified)
+        }
+        val current = VARIANT_OPTIONS.firstOrNull { RimeCore.getOption(session, it) }
+        if (wantSimplified) {
+            if (current != OPT_ZH_HANS) {
+                if (current != null) savedVariantOption = current
+                RimeCore.setOption(session, OPT_ZH_HANS, true)
+            }
+        } else if (current == OPT_ZH_HANS) {
+            RimeCore.setOption(session, savedVariantOption ?: OPT_ZH_HANT, true)
+        }
+    }
+
+    /** 把候選列工具列上的開關選擇回寫偏好,讓兩個入口不會漂移。 */
+    private fun rememberOptionChoice(option: String, value: Boolean) {
+        when (option) {
+            OPT_SIMPLIFICATION ->
+                prefsScope.launch { prefsStore.update { it.copy(simplification = value) } }
+
+            OPT_ASCII_PUNCT ->
+                prefsScope.launch { prefsStore.update { it.copy(asciiPunct = value) } }
+        }
+    }
+
+    /* ─────────────────── 主題 ─────────────────── */
+
+    private var overrideBase: Theme? = null
+    private var overridePrefs: UserPrefs? = null
+    private var overrideResult: Theme? = null
+
+    /**
+     * 三層覆寫的最後一步。
+     *
+     * 有快取的理由不只是省 CPU:Compose 靠**物件識別**決定要不要跳過重組,
+     * 每次按鍵都產生一個新的 Theme 物件會讓整塊鍵盤每一鍵都重畫一次。
+     * 偏好未設定時 [applyUserOverrides] 直接回傳原物件,所以預設路徑
+     * 連一個配置都沒有。
+     */
+    private fun effectiveTheme(): Theme? {
+        val base = layoutHost.theme ?: return null
+        if (base === overrideBase && prefs == overridePrefs) return overrideResult
+        val out = applyUserOverrides(base, prefs)
+        overrideBase = base
+        overridePrefs = prefs
+        overrideResult = out
+        return out
+    }
+
+    /** 把 [LayoutHost] 的當前佈局／層／主題搬進 UI 狀態,並套上使用者覆寫。 */
     private fun syncConfigToUi() {
         uiState = uiState.copy(
-            theme = layoutHost.theme,
+            theme = effectiveTheme(),
             layout = layoutHost.layout,
             layerId = layoutHost.layerId,
             configProblem = layoutHost.problem,
@@ -220,6 +552,8 @@ class RimeInputMethodService : InputMethodService() {
     }
 
     private fun processHardwareKey(event: KeyEvent, release: Boolean): Boolean {
+        // 密碼／數字框：回 false 讓宿主自己處理實體按鍵，不經過 librime。
+        if (bypassRime) return false
         ensureSession()
         if (session == RimeCore.INVALID_SESSION) return false
 
@@ -283,7 +617,33 @@ class RimeInputMethodService : InputMethodService() {
                     Log.w(TAG, "keysym '${spec.name}' 無法解析，該鍵視為 noop")
                     return
                 }
-                val consumed = RimeCore.processKey(session, code, spec.modifiers)
+                // ⚠ 規範缺口:「組字中按空白鍵要做什麼」在主題與佈局格式裡
+                // 都沒有欄位可以描述,佈局只能寫 send: { keysym: "space" }。
+                // 偏好選「一律送空白」時,先把組字沖出去再送半形空白 ——
+                // 順序與 §9.4.1 的字面文字路徑相同,理由也相同(commitText
+                // 會取代整個組字區)。未設定時完全不介入,行為與改動前一致。
+                if (code == KEYSYM_SPACE && prefs.spaceBehavior == SpaceBehavior.ALWAYS_SPACE) {
+                    // 送空白之前必須先把組字沖出去:InputConnection.commitText()
+                    // 會**取代整個組字區**,直接送空白會讓使用者剛打好的 preedit
+                    // 無聲消失,而 librime 那邊仍以為自己在組字。
+                    //
+                    // 不得改用 rs_clear_composition:使用者按空白的意思是
+                    // 「把剛打的字上屏,然後加空白」,不是「把剛打的字丟掉」。
+                    //
+                    // ⚠ §9.4.1 的字面文字路徑(SendSpec.Text)有同樣的要求,
+                    // 目前由另一位負責修復。這裡刻意自帶一份最小實作,不去依賴
+                    // 那一側尚未定案的 helper;等那邊落地後可以合併成同一支。
+                    if (RimeCore.commitComposition(session)) {
+                        refreshFromRime(consumeCommit = true, allowAutoCommit = false)
+                    }
+                    currentInputConnection?.finishComposingText()
+                    currentInputConnection?.commitText(" ", 1)
+                    layoutHost.afterKeySent()
+                    syncConfigToUi()
+                    return
+                }
+                // bypassRime 時完全不問 librime，直接走字面上屏那條路。
+                val consumed = !bypassRime && RimeCore.processKey(session, code, spec.modifiers)
                 if (!consumed) fallbackKey(code)
                 layoutHost.afterKeySent()
                 refreshFromRime()
@@ -291,11 +651,54 @@ class RimeInputMethodService : InputMethodService() {
 
             is SendSpec.Text -> {
                 // 形態 B：**繞過 librime**，直接上屏。
+                //
+                // ⚠ 但不能直接 commitText —— 見 [flushCompositionForLiteralText]。
+                flushCompositionForLiteralText()
                 currentInputConnection?.commitText(spec.text, 1)
                 layoutHost.afterKeySent()
                 syncConfigToUi()
             }
         }
+    }
+
+    /**
+     * §9.4.1：送出「字面文字」之前，必須先把組字內容沖出去。
+     *
+     * ── 不這麼做會發生什麼 ──────────────────────────────────────────────
+     * `InputConnection.commitText()` 會**取代整個組字區**。所以在組字中直接
+     * 送標點，使用者剛打好的 preedit 會無聲消失，而 librime 那邊完全不知情
+     * ——它仍然認為自己在組字，下一次按鍵會把已經消失的 preedit 重新畫回來。
+     * 重現路徑：注音方案打 `su3`（ㄋㄧˇ）→ 切到全形標點層 → 按「，」。
+     *
+     * ── 正確順序 ────────────────────────────────────────────────────────
+     *   1. rs_commit_composition()
+     *   2. 取下一份快照，把 commit_text 送給宿主
+     *   3. finishComposingText()
+     *   4. 才送字面文字（由呼叫端負責）
+     *
+     * ── 兩個容易搞錯的地方 ──────────────────────────────────────────────
+     * · **不得用 rs_clear_composition() 代替。** 使用者按標點的意思是
+     *   「把剛打的字上屏，然後加標點」，不是「把剛打的字丟掉」。
+     * · **不套用 rs_commit_composition 註解裡的 menu.count 政策。** 那條政策
+     *   回答的是「使用者按了確認鍵，現在該不該上屏」；這裡使用者按的是一顆
+     *   無關的標點鍵，語義是「我這段打完了」，所以無論 menu.count 為何都
+     *   應該沖出去。是兩個不同的問題，別混用。
+     */
+    private fun flushCompositionForLiteralText() {
+        ensureSession()
+        if (session == RimeCore.INVALID_SESSION) {
+            // 沒有 session 也要把宿主那邊的組字區收乾淨，否則後面的
+            // commitText 會把殘留的 preedit 一起吃掉。
+            currentInputConnection?.finishComposingText()
+            return
+        }
+        // 沒有在組字時 rs_commit_composition 回 false，什麼都不會發生。
+        if (RimeCore.commitComposition(session)) {
+            // 記憶體約定：每個輸入事件只 acquire 一次，並在那一次消費掉
+            // commit_text。refreshFromRime 就是那唯一的一次。
+            refreshFromRime(consumeCommit = true, allowAutoCommit = false)
+        }
+        currentInputConnection?.finishComposingText()
     }
 
     /** §9.5 的 action 分派。 */
@@ -310,7 +713,12 @@ class RimeInputMethodService : InputMethodService() {
             ActionVerb.SWITCH_LAYOUT -> action.arg?.let { layoutHost.switchLayout(it) }
 
             ActionVerb.TOGGLE_OPTION -> action.arg?.let { opt ->
-                RimeCore.setOption(session, opt, !RimeCore.getOption(session, opt))
+                val next = !RimeCore.getOption(session, opt)
+                RimeCore.setOption(session, opt, next)
+                // 工具列的簡繁／標點鍵與設定畫面是同一件事的兩個入口。
+                // 不回寫的話,使用者在鍵盤上切成簡體、回設定畫面卻看到「繁體」,
+                // 而且下一次 session 重建又會被偏好切回去。
+                rememberOptionChoice(opt, next)
                 refreshFromRime()
             }
 
@@ -369,8 +777,11 @@ class RimeInputMethodService : InputMethodService() {
 
             ActionVerb.HIDE_KEYBOARD -> requestHideSelf(0)
 
+            // 規範 §8.6.6.1 把 settings 列為工具列必備項:按下齒輪就該直接
+            // 落在設定,而不是先落在診斷頁再要使用者自己找。
             ActionVerb.SETTINGS -> startActivity(
-                Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                Intent(this, SettingsActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             )
 
             // 表情面板尚未實作，維持 noop 而不是假裝有效。
@@ -449,7 +860,7 @@ class RimeInputMethodService : InputMethodService() {
                 candidates = emptyList(),
                 highlighted = -1,
                 isStub = RimeCore.isStub(),
-                theme = layoutHost.theme,
+                theme = effectiveTheme(),
                 layout = layoutHost.layout,
                 layerId = layoutHost.layerId,
                 configProblem = layoutHost.problem,
@@ -493,18 +904,28 @@ class RimeInputMethodService : InputMethodService() {
         if (schemaId.isNotEmpty() && schemaId != lastSchemaId) {
             lastSchemaId = schemaId
             layoutHost.applySchema(schemaId)
+            // 換方案會重置 session 的開關,使用者選過的簡繁／標點要再推一次。
+            applyRimeOptions()
             Log.i(TAG, "方案 $schemaId → 佈局 ${layoutHost.layout?.id}")
         }
 
+        // §8.6.6 的 max_visible(可被使用者偏好覆寫):0 = 有多少畫多少。
+        // 在這裡截而不是在 KeyboardView 截,是因為 take 保序,截斷後的索引
+        // 與 rime 的頁內索引仍然一一對應,選字與刪字路徑一行都不用改。
+        val shownTheme = effectiveTheme()
+        val cap = shownTheme?.candidates?.bar?.maxVisible ?: 0
+        val visible =
+            if (cap > 0) snapshot.menu.candidates.take(cap) else snapshot.menu.candidates
+
         uiState = uiState.copy(
             preedit = snapshot.composition.preedit,
-            candidates = snapshot.menu.candidates,
+            candidates = visible,
             highlighted = snapshot.menu.highlighted,
             pageNo = snapshot.menu.pageNo,
             isLastPage = snapshot.menu.isLastPage,
             status = snapshot.status,
             isStub = RimeCore.isStub(),
-            theme = layoutHost.theme,
+            theme = shownTheme,
             layout = layoutHost.layout,
             layerId = layoutHost.layerId,
             configProblem = layoutHost.problem,

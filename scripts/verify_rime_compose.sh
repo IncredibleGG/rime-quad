@@ -178,7 +178,20 @@ if ! "$EMU" status >/dev/null 2>&1; then
   [ "$AUTO_START" -eq 1 ] || fail "模擬器沒在跑,且指定了 --no-start"
   "$EMU" start
 fi
-SERIAL="$("$ADB" devices | awk '/emulator-[0-9]+\tdevice/{print $1; exit}')"
+# 不可以「抓第一台」。多條開發線並行時會互相搶裝置 —— 實測發生過 A 線的
+# 驗證抓到 B 線的模擬器，force-stop 掉 B 正在測的 app，兩邊結果都不可信。
+# 序號一律可指定，並在偵測到多台時明確警告。
+if [ -n "${RIME_SERIAL:-${ANDROID_SERIAL:-}}" ]; then
+  SERIAL="${RIME_SERIAL:-$ANDROID_SERIAL}"
+  "$ADB" -s "$SERIAL" get-state >/dev/null 2>&1 || fail "指定的裝置 $SERIAL 未連線"
+else
+  SERIAL="$("$ADB" devices | awk '/emulator-[0-9]+\tdevice/{print $1; exit}')"
+  NDEV="$("$ADB" devices | grep -cE 'emulator-[0-9]+' || true)"
+  if [ "${NDEV:-0}" -gt 1 ]; then
+    echo "  [警告] 偵測到 $NDEV 台模擬器，自動選了 $SERIAL。"
+    echo "         並行測試時請用 RIME_SERIAL=emulator-XXXX 指定，否則會互相干擾。"
+  fi
+fi
 [ -n "$SERIAL" ] || fail "找不到已連線的模擬器"
 pass "模擬器 $SERIAL"
 

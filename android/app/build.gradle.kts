@@ -73,6 +73,21 @@ android {
         // 免得改套件名時漏改 res/xml。
         resValue("string", "ime_settings_activity", "$rimeNamespace.MainActivity")
 
+        // 方案市集的索引位置。docs/schema-store.md §5 說得很清楚：從 R2 搬到
+        // GitHub Releases 時「索引格式不需要變動，只需換掉 base_url」——
+        // 所以來源必須是可設定的，不能寫死在程式裡。
+        //
+        // 這裡是**預設值**；使用者可以在市集畫面改，改過的值存在
+        // SharedPreferences（見 StoreSettings）。本機驗證時指向
+        //   http://127.0.0.1:8099/index.json
+        // 搭配 `adb reverse tcp:8099 tcp:8099` 與 android/testdata/store。
+        buildConfigField(
+            "String",
+            "SCHEMA_INDEX_URL",
+            "\"" + (providers.gradleProperty("rime.indexUrl").orNull
+                ?: "https://pub-d6a54d2e5f5947e2b0b23fb8e27ce0a5.r2.dev/rime/schemas/index.json") + "\"",
+        )
+
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
         }
@@ -153,6 +168,8 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.ui.tooling.preview)
     debugImplementation(libs.androidx.compose.ui.tooling)
+
+    implementation(libs.androidx.datastore.preferences)
 
     testImplementation(libs.junit)
 }

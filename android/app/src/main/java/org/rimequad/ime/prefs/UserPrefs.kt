@@ -1,0 +1,214 @@
+package org.rimequad.ime.prefs
+
+import org.rimequad.ime.theme.HapticStrength
+
+/**
+ * 使用者偏好 —— 三層覆寫的最上層。
+ *
+ * ── 為什麼每一個欄位都是 nullable ────────────────────────────────────────
+ * `null` 的語義是「**使用者沒有設定過這一項**」，而不是「使用者選了預設值」。
+ * 這個區別是本檔最重要的設計決定：
+ *
+ *   · 存副本的作法（把主題目前的值抄一份進偏好）會讓「回復預設」變成
+ *     「回到當初抄下來的那個值」。主題檔更新之後，使用者永遠停在舊值上，
+ *     而且他無從得知為什麼別人的鍵盤變好看了他的沒有。
+ *   · 存 null 的作法讓「回復預設」等於「把這個 key 從儲存層刪掉」，
+ *     下一次解析主題檔取到什麼就是什麼。
+ *
+ * 因此 [toMap] **絕不**為 null 欄位寫入任何條目，[fromMap] 遇到缺席的
+ * key 也**絕不**填入預設值。這一對函式是純的，由 UserPrefsTest 直接驗證。
+ *
+ * ── 為什麼多半是「倍率」而不是絕對值 ────────────────────────────────────
+ * 鍵盤高度、候選字級這類設定若存絕對值（例如 240dp、18sp），同樣會有
+ * 「主題更新了但使用者被釘在舊數字上」的問題，而且換主題之後那個絕對值
+ * 通常不再合適。存倍率則是「相對於當前主題」的意圖，換主題、更新主題
+ * 都仍然說得通。
+ *
+ * ── 與主題格式的關係 ────────────────────────────────────────────────────
+ * 這一層**不寫回** `core/themes` 下的主題檔。那些檔案隨 APK 散佈，而且使用者
+ * 隨時可能換主題。覆寫發生在**已解析完成**的 [org.rimequad.ime.theme.Theme]
+ * 物件之上，見 [applyUserOverrides]。
+ */
+data class UserPrefs(
+
+    /* ─────────────── 鍵盤 ─────────────── */
+
+    /** 鍵盤高度倍率，套在主題 `keyboard.height` 的 ratio/min/max 上。 */
+    val keyboardHeightScale: Float? = null,
+
+    /** 對應主題 `feedback.sound`。 */
+    val soundEnabled: Boolean? = null,
+
+    /** 對應主題 `feedback.sound_volume`。 */
+    val soundVolume: Float? = null,
+
+    /** 對應主題 `feedback.haptic`。 */
+    val hapticEnabled: Boolean? = null,
+
+    /** 對應主題 `feedback.haptic_strength`。 */
+    val hapticStrength: HapticStrength? = null,
+
+    /**
+     * 長按觸發延遲（毫秒）。
+     * ⚠ 規範缺口：主題格式沒有這個欄位，`null` 只能退回 [KeyBehavior.DEFAULT]。
+     */
+    val longPressMs: Int? = null,
+
+    /** 按住到開始重複的延遲（毫秒）。⚠ 同上，規範缺口。 */
+    val repeatDelayMs: Int? = null,
+
+    /** 重複送出的間隔（毫秒）。⚠ 同上，規範缺口。 */
+    val repeatIntervalMs: Int? = null,
+
+    /** 鍵面角落小字（拼音佈局上的數字提示）。對應主題各 key_style 的 `hint_position`。 */
+    val hints: HintVisibility? = null,
+
+    /* ─────────────── 外觀 ─────────────── */
+
+    /**
+     * 使用者選定的主題 id；`null` = 用內建預設（`default-light` / `default-dark`）。
+     * 這一項**不是**主題欄位的覆寫，而是「載哪一份主題」，因此由
+     * [org.rimequad.ime.keyboard.LayoutHost] 消費而非 [applyUserOverrides]。
+     */
+    val themeId: String? = null,
+
+    /** 深淺色策略。`null` = 跟隨系統（§8.2 執行期規則第 2 條）。 */
+    val appearanceMode: AppearanceMode? = null,
+
+    /** 候選列字級倍率，套在 `candidates.bar` 的 label/text/comment size 與 bar 高度上。 */
+    val candidateSizeScale: Float? = null,
+
+    /* ─────────────── 輸入 ─────────────── */
+
+    /** 候選列最多顯示幾個；對應主題 `candidates.bar.max_visible`（0 = 不限）。 */
+    val candidateCount: Int? = null,
+
+    /** librime 的 `simplification` 開關。`null` = 不干預，交給方案自己的預設。 */
+    val simplification: Boolean? = null,
+
+    /** librime 的 `ascii_punct` 開關。`null` = 不干預。 */
+    val asciiPunct: Boolean? = null,
+
+    /** 空白鍵行為。⚠ 規範缺口：主題與佈局格式都沒有描述這件事。 */
+    val spaceBehavior: SpaceBehavior? = null,
+) {
+
+    /** true = 使用者一項都沒設定過，全部走主題檔的值。 */
+    val isPristine: Boolean get() = this == UserPrefs()
+
+    /**
+     * 序列化成「只含使用者真的設過的 key」的映射。
+     *
+     * 儲存層（[PrefsStore]）拿這份映射去寫 DataStore：出現在映射裡的 key 才寫，
+     * 沒出現的 key 一律 **remove**。這就是「回復預設 = 刪 key」的兌現處。
+     */
+    fun toMap(): Map<String, Any> {
+        val m = LinkedHashMap<String, Any>()
+        keyboardHeightScale?.let { m[K_HEIGHT_SCALE] = it }
+        soundEnabled?.let { m[K_SOUND] = it }
+        soundVolume?.let { m[K_SOUND_VOLUME] = it }
+        hapticEnabled?.let { m[K_HAPTIC] = it }
+        hapticStrength?.let { m[K_HAPTIC_STRENGTH] = it.name }
+        longPressMs?.let { m[K_LONG_PRESS_MS] = it }
+        repeatDelayMs?.let { m[K_REPEAT_DELAY_MS] = it }
+        repeatIntervalMs?.let { m[K_REPEAT_INTERVAL_MS] = it }
+        hints?.let { m[K_HINTS] = it.name }
+        themeId?.let { m[K_THEME_ID] = it }
+        appearanceMode?.let { m[K_APPEARANCE] = it.name }
+        candidateSizeScale?.let { m[K_CANDIDATE_SIZE] = it }
+        candidateCount?.let { m[K_CANDIDATE_COUNT] = it }
+        simplification?.let { m[K_SIMPLIFICATION] = it }
+        asciiPunct?.let { m[K_ASCII_PUNCT] = it }
+        spaceBehavior?.let { m[K_SPACE] = it.name }
+        return m
+    }
+
+    companion object {
+        const val K_HEIGHT_SCALE = "keyboard_height_scale"
+        const val K_SOUND = "sound_enabled"
+        const val K_SOUND_VOLUME = "sound_volume"
+        const val K_HAPTIC = "haptic_enabled"
+        const val K_HAPTIC_STRENGTH = "haptic_strength"
+        const val K_LONG_PRESS_MS = "long_press_ms"
+        const val K_REPEAT_DELAY_MS = "repeat_delay_ms"
+        const val K_REPEAT_INTERVAL_MS = "repeat_interval_ms"
+        const val K_HINTS = "key_hints"
+        const val K_THEME_ID = "theme_id"
+        const val K_APPEARANCE = "appearance_mode"
+        const val K_CANDIDATE_SIZE = "candidate_size_scale"
+        const val K_CANDIDATE_COUNT = "candidate_count"
+        const val K_SIMPLIFICATION = "opt_simplification"
+        const val K_ASCII_PUNCT = "opt_ascii_punct"
+        const val K_SPACE = "space_behavior"
+
+        /**
+         * 反序列化。**缺席的 key 一律留 null**，不得填入任何預設值 ——
+         * 填了就等於把預設值複製一份進偏好，正是本檔開頭要避免的事。
+         *
+         * 值的型別不符或列舉名認不得時，視同未設定（丟掉壞資料，不讓
+         * 一個壞掉的 key 把整份偏好拖垮）。
+         */
+        fun fromMap(m: Map<String, Any?>): UserPrefs = UserPrefs(
+            keyboardHeightScale = m.float(K_HEIGHT_SCALE),
+            soundEnabled = m.bool(K_SOUND),
+            soundVolume = m.float(K_SOUND_VOLUME),
+            hapticEnabled = m.bool(K_HAPTIC),
+            hapticStrength = m.enum(K_HAPTIC_STRENGTH, HapticStrength.entries),
+            longPressMs = m.int(K_LONG_PRESS_MS),
+            repeatDelayMs = m.int(K_REPEAT_DELAY_MS),
+            repeatIntervalMs = m.int(K_REPEAT_INTERVAL_MS),
+            hints = m.enum(K_HINTS, HintVisibility.entries),
+            themeId = m[K_THEME_ID] as? String,
+            appearanceMode = m.enum(K_APPEARANCE, AppearanceMode.entries),
+            candidateSizeScale = m.float(K_CANDIDATE_SIZE),
+            candidateCount = m.int(K_CANDIDATE_COUNT),
+            simplification = m.bool(K_SIMPLIFICATION),
+            asciiPunct = m.bool(K_ASCII_PUNCT),
+            spaceBehavior = m.enum(K_SPACE, SpaceBehavior.entries),
+        )
+
+        private fun Map<String, Any?>.float(k: String): Float? = (this[k] as? Number)?.toFloat()
+        private fun Map<String, Any?>.int(k: String): Int? = (this[k] as? Number)?.toInt()
+        private fun Map<String, Any?>.bool(k: String): Boolean? = this[k] as? Boolean
+        private fun <E : Enum<E>> Map<String, Any?>.enum(k: String, all: List<E>): E? {
+            val name = this[k] as? String ?: return null
+            return all.firstOrNull { it.name == name }
+        }
+    }
+}
+
+/** 深淺色策略（§8.2 的執行期外觀選擇）。 */
+enum class AppearanceMode { FOLLOW_SYSTEM, LIGHT, DARK }
+
+/**
+ * 鍵面 hint 的三態。
+ *
+ * 刻意不是 `Boolean`：`null`（未設定）與 `THEME` 是同一件事，但列舉本身
+ * 必須能表達「使用者主動要求跟隨主題」與「使用者主動要求關掉」的差別，
+ * 否則設定畫面的第三個選項無處可存。
+ */
+enum class HintVisibility {
+    /** 由主題各 key_style 的 `hint_position` 決定。 */
+    THEME,
+
+    /** 一律不顯示（拼音佈局上的數字提示對多數人是噪音）。 */
+    HIDDEN,
+
+    /** 一律顯示；主題寫 `none` 的 style 退回 `top_right`。 */
+    SHOWN,
+}
+
+/**
+ * 空白鍵行為。
+ *
+ * ⚠ 規範缺口：`docs/theme-format.md` 的主題與佈局格式都沒有描述
+ * 「組字中按空白鍵要做什麼」，佈局只能寫 `send: { keysym: "space" }`。
+ * 這個列舉因此是**實作層**的擴充，不是主題欄位的覆寫。
+ */
+enum class SpaceBehavior {
+    /** 把 space 交給 librime，由方案自己決定（多數方案 = 選第一個候選）。 */
+    SCHEMA_DEFAULT,
+
+    /** 一律先把組字內容上屏，再送一個半形空白。 */
+    ALWAYS_SPACE,
+}

@@ -41,6 +41,20 @@ class LayoutHost(private val repo: ConfigRepository) {
     /** `switch_layout:@previous` 用。 */
     private var previousLayoutId: String? = null
 
+    /**
+     * 方案市集提供的 `recommended_layout` 查詢（索引欄位，見
+     * docs/schema-store.md §1 與 [org.rimequad.ime.store.InstalledRegistry]）。
+     *
+     * 為什麼需要它：新導入的方案不可能出現在**隨附**佈局的 `for_schema` 裡
+     * —— 那些 yaml 是跟著 APK 出貨的，不會知道未來會裝什麼。少了這條線，
+     * 使用者啟用注音類方案卻看到 QWERTY 鍵面，鍵盤上根本沒有ㄅㄆㄇ，
+     * 一個字也打不出來。
+     *
+     * 優先序刻意排在 `for_schema` 精確命中**之後**：使用者自己放在
+     * user_data_dir 的佈局檔是本機的、明確的意圖，不該被遠端索引蓋過。
+     */
+    var recommendedLayoutResolver: ((schemaId: String) -> String?)? = null
+
     /** `layer_once:<id>` 送出一個鍵之後要回到的層；null 代表沒有待回彈的層。 */
     private var layerOnceReturn: String? = null
 
@@ -88,6 +102,17 @@ class LayoutHost(private val repo: ConfigRepository) {
         if (exact != null) {
             if (exact.id != layout?.id) switchLayout(exact.id)
             return
+        }
+        // 索引宣告的 recommended_layout。只有在該佈局真的載得起來時才採用，
+        // 否則索引寫錯一個 id 就會讓鍵盤消失。
+        recommendedLayoutResolver?.invoke(schemaId)?.let { wanted ->
+            if (wanted == layout?.id) return
+            if (load(wanted) != null) {
+                Log.i(TAG, "方案 $schemaId 依索引的 recommended_layout 切到 $wanted")
+                switchLayout(wanted)
+                return
+            }
+            Log.w(TAG, "索引建議的佈局 $wanted 載不起來，改用一般規則")
         }
         val current = layout
         if (current != null && current.matchesSchema(schemaId)) return

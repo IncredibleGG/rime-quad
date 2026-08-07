@@ -53,6 +53,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import kotlinx.coroutines.delay
 import org.rimequad.ime.core.RimeStatus
+import org.rimequad.ime.prefs.LocalKeyBehavior
 import org.rimequad.ime.theme.HintPosition
 import org.rimequad.ime.theme.KeyGeometry
 import org.rimequad.ime.theme.KeyboardLayout
@@ -680,9 +681,13 @@ private fun KeyView(
     val longPress = key.longPress
     val popup = key.popup
 
-    fun haptic() {
-        if (theme.feedback.haptic) view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-    }
+    // 按鍵回饋與重複時間來自使用者偏好(org.rimequad.ime.prefs.KeyBehavior):
+    // 震動開關與強度、按鍵音與音量、重複的起始延遲與間隔。
+    // 沒有人提供這個 CompositionLocal 時,KeyBehavior.DEFAULT 的行為與本檔
+    // 引入偏好之前**完全一致**(震動 KEYBOARD_TAP、無按鍵音、400/60 ms)。
+    val behavior = LocalKeyBehavior.current
+
+    fun haptic() = behavior.onKeyPress(view)
 
     /** §9.6 的點擊解析：tap → send → noop。 */
     fun fire() {
@@ -700,11 +705,11 @@ private fun KeyView(
 
     // §6.3：repeat 勝過 long_press；解析器已保證兩者不同時存在。
     if (key.repeat && pressed) {
-        LaunchedEffect(key) {
-            delay(400)
+        LaunchedEffect(key, behavior) {
+            delay(behavior.repeatDelayMs.toLong())
             while (true) {
                 key.send?.let { onEvent(KeyboardEvent.Send(it)) }
-                delay(60)
+                delay(behavior.repeatIntervalMs.toLong())
             }
         }
     }

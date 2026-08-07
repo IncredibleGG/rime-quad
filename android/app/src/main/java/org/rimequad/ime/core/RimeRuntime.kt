@@ -202,7 +202,20 @@ object RimeRuntime {
                 if (deployMillis < 0 && deployStartedAt > 0L) {
                     deployMillis = SystemClock.elapsedRealtime() - deployStartedAt
                 }
-                if (phase == Phase.DEPLOYING || phase == Phase.READY) setPhase(Phase.READY)
+                // ⚠ 這裡刻意**不**限定「只有 DEPLOYING / READY 才能轉 READY」。
+                //
+                // 方案市集的回滾流程是：部署失敗 → phase 變 FAILED → 還原
+                // schema_list → 再部署一次。若這裡守著「只有 DEPLOYING 才轉」，
+                // 那第二次的成功就吞不掉 FAILED，使用者的鍵盤會永遠停在
+                // 「初始化失敗」的紅字上 —— 回滾等於白做。
+                //
+                // 一次成功的部署就是「現在可以用了」的權威證據，不管前一刻
+                // 是什麼狀態。唯一的例外是還在解壓 assets（那時 librime 的
+                // 資料目錄還沒齊）。
+                if (phase != Phase.EXTRACTING) {
+                    initError = null
+                    setPhase(Phase.READY)
+                }
             }
 
             RimeDeployStatus.FAILURE -> {

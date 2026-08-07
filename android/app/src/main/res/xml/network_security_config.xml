@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  預設**不允許**明文 HTTP：正式索引在 R2 / GitHub 上，一律 https。
+
+  唯一的例外是 loopback。理由很具體：驗證整條導入流程時，假索引與假套件
+  由開發機上的 HTTP server 提供，經 `adb reverse tcp:8099 tcp:8099` 讓
+  模擬器的 127.0.0.1:8099 連回去。若不開這個洞，就只能改用自簽憑證，
+  那反而要在 app 裡塞一份信任錨，風險大得多。
+
+  loopback 位址無法從裝置外部到達，開放它不會擴大攻擊面。
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>
