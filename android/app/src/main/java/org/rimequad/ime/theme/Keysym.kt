@@ -128,6 +128,13 @@ object Modifiers {
     const val SUPER = 1 shl 3
     const val CAPS = 1 shl 4
 
+    /**
+     * `RS_MOD_RELEASE`。**佈局檔不得使用**（§9.4：軟鍵盤不模擬 key-up），
+     * 所以它刻意不在 [NAMES] 裡 —— 寫進 yaml 只會得到一則 WARNING。
+     * 它存在的唯一理由是實體鍵盤：`onKeyUp` 必須把這個位元送給 librime。
+     */
+    const val RELEASE = 1 shl 5
+
     private val NAMES = mapOf(
         "shift" to SHIFT,
         "control" to CONTROL,

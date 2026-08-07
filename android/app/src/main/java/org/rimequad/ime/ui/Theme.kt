@@ -8,10 +8,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
 /**
- * 暫用的極簡主題。
+ * **設定畫面**（MainActivity）用的 Material 主題。
  *
- * ⚠ 不要在這裡長出一套主題格式。真正的鍵盤主題由 core/themes 目錄的 yaml
- * 定義（另一條線負責），接上之後這裡只負責把解析結果轉成 ColorScheme。
+ * ⚠ 軟鍵盤**不吃**這裡的顏色。鍵盤的每一個顏色與尺寸都來自 core/themes
+ * 目錄的 yaml，由 `theme.ThemeParser` 解析、`keyboard.KeyboardView` 直接消費，
+ * 中間不經過 Material 的 ColorScheme。這裡只剩設定畫面在用。
  */
 
 private val DarkColors = darkColorScheme(

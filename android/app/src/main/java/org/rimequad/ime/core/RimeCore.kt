@@ -1,6 +1,7 @@
 package org.rimequad.ime.core
 
 import android.util.Log
+import org.rimequad.ime.theme.Modifiers
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -140,7 +141,7 @@ object RimeCore {
 
     /* ───────────────── 輸入 ───────────────── */
 
-    fun processKey(session: Long, keysym: Int, modifiers: Int = RimeModifier.NONE): Boolean =
+    fun processKey(session: Long, keysym: Int, modifiers: Int = Modifiers.NONE): Boolean =
         libraryLoaded && session != INVALID_SESSION && nativeProcessKey(session, keysym, modifiers)
 
     fun selectCandidate(session: Long, indexOnPage: Int): Boolean =

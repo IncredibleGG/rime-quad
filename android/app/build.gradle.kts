@@ -12,12 +12,18 @@ val rimeNamespace: String = providers.gradleProperty("rime.namespace").get()
 val rimeJniClass: String = providers.gradleProperty("rime.jniClass").get()
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 隨附執行期資料（schema、詞庫、opencc、essay 語言模型）。
+// 隨附執行期資料，共兩類：
 //
-// 這些檔案由 scripts/collect_data.sh 產生，體積 13MB，且**刻意不進版控**
-// （見專案根目錄 .gitignore 的 /core/data/）。所以這裡不把它們複製一份到
-// src/main/assets 提交上去，而是在建置時同步進 build/ 底下的 generated
-// assets 目錄 —— 產生物留在產生物該在的地方。
+//  1. librime 的執行期資料（schema、詞庫、opencc、essay 語言模型）。
+//     由 scripts/collect_data.sh 產生，體積 13MB，且**刻意不進版控**
+//     （見專案根目錄 .gitignore 的 /core/data/）。
+//
+//  2. 四端共用的宣告式配置：core/layouts（鍵盤佈局）與 core/themes（主題）。
+//     這一類**有**進版控，體積很小，但同樣不複製進 src/main/assets ——
+//     那會產生第二份會腐爛的副本，而且先前已被否決。唯一的真相是 core/。
+//
+// 兩類都走同一條 Sync 任務進 build/ 底下的 generated assets 目錄，
+// 產生物留在產生物該在的地方。
 //
 // 沒跑過 collect_data.sh 的機器一樣建置得起來，只是 APK 內沒有 schema，
 // 執行期 librime 部署會失敗；下面的 doFirst 會先警告。
@@ -25,19 +31,28 @@ val rimeJniClass: String = providers.gradleProperty("rime.jniClass").get()
 val rimeRepoRoot = layout.projectDirectory.dir("../..")
 val rimeSharedData = rimeRepoRoot.dir("core/data/shared")
 val rimeUserData = rimeRepoRoot.dir("core/data/user")
+val rimeLayouts = rimeRepoRoot.dir("core/layouts")
+val rimeThemes = rimeRepoRoot.dir("core/themes")
 val rimeGeneratedAssets = layout.buildDirectory.dir("generated/rimeAssets")
 
 val syncRimeData = tasks.register<Sync>("syncRimeData") {
-    description = "把 core/data 的隨附資料同步進 generated assets"
+    description = "把 core/data、core/layouts、core/themes 同步進 generated assets"
     into(rimeGeneratedAssets)
     from(rimeSharedData) { into("rime/shared") }
     from(rimeUserData) { into("rime/user") }
+    // 佈局與主題：assets 內的路徑刻意與 docs/theme-format.md §2.3 的
+    // 「隨附目錄」同名，四端的搜尋路徑因此長得一樣。
+    from(rimeLayouts) { into("rime/layouts") }
+    from(rimeThemes) { into("rime/themes") }
     doFirst {
         if (!rimeSharedData.asFile.isDirectory) {
             logger.warn(
                 "[rime] 找不到 ${rimeSharedData.asFile}，APK 將不含任何 schema。" +
                     " 先跑 scripts/collect_data.sh。"
             )
+        }
+        if (!rimeLayouts.asFile.isDirectory || !rimeThemes.asFile.isDirectory) {
+            logger.warn("[rime] 找不到 core/layouts 或 core/themes，鍵盤將畫不出來。")
         }
     }
 }

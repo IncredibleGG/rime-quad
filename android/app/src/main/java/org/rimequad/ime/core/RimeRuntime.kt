@@ -90,6 +90,14 @@ object RimeRuntime {
     lateinit var logDir: File
         private set
 
+    /**
+     * 主題／佈局搜尋路徑（docs/theme-format.md §2.3）用得到的目錄，
+     * 在 [start] 之前為 null。刻意不用 lateinit 的 getter，因為 UI 這一側
+     * 有可能在初始化完成之前就要畫鍵盤。
+     */
+    val userDirOrNull: File? get() = if (::userDataDir.isInitialized) userDataDir else null
+    val sharedDirOrNull: File? get() = if (::sharedDataDir.isInitialized) sharedDataDir else null
+
     private val mainHandler = Handler(Looper.getMainLooper())
     private val listeners = CopyOnWriteArrayList<(Phase) -> Unit>()
     private var started = false
