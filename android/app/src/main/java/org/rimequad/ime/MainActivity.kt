@@ -168,6 +168,9 @@ private fun SetupScreen(controller: StoreController, modifier: Modifier = Modifi
                 appendLine("實作: ${if (RimeCore.isStub()) "stub 假實作" else "真 librime"}")
                 appendLine("初始化階段: $phase")
                 RimeRuntime.initError?.let { appendLine("錯誤: $it") }
+                // 升級遷移的結果。平常是 null（沒事發生），只有真的補過
+                // 內建方案、或補了之後被回滾時才有內容。
+                RimeRuntime.migrationNote?.let { appendLine("內建方案遷移: $it") }
                 appendLine(
                     "解壓耗時: " +
                         if (RimeRuntime.extractMillis >= 0) "${RimeRuntime.extractMillis} ms" else "本次未解壓"

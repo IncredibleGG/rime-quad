@@ -111,6 +111,19 @@ class StoreController(context: Context) {
         val fraction: Float,
     )
 
+    /**
+     * **失敗**的結果。會停在一個要手動關掉的對話框上。
+     *
+     * ── 為什麼成功不走這裡 ─────────────────────────────────────────────
+     * 使用者按下「重新部署」的目的是**完成部署**，不是讀一份報告。成功時
+     * 再彈一個要他按「知道了」的對話框，等於在他已經達成目的之後多收一次
+     * 過路費 —— 真機回報的原話是「部署完就要退出界面對不」。
+     *
+     * 失敗則相反：訊息裡有 `rs_last_error()`、有回滾結果、有「請重新啟動
+     * app」這種需要他採取行動的指示。那種東西不能三秒後自己消失。
+     *
+     * 所以：成功 → [toast]（短暫、不擋路）；失敗 → 本對話框（不自動關）。
+     */
     data class ResultUi(
         val ok: Boolean,
         val message: String,
@@ -140,6 +153,13 @@ class StoreController(context: Context) {
 
     var result by mutableStateOf<ResultUi?>(null)
         private set
+
+    /** 成功時的短暫提示（snackbar）。[TOAST_MS] 之後自己消失。 */
+    var toast by mutableStateOf<String?>(null)
+        private set
+
+    /** 每次 showToast +1；延遲清除時比對，避免前一則的計時器把後一則關掉。 */
+    private var toastToken = 0
 
     var installedIds by mutableStateOf<Set<String>>(emptySet())
         private set
@@ -178,6 +198,15 @@ class StoreController(context: Context) {
     fun dismissResult() { result = null }
 
     fun dismissConfirm() { confirm = null }
+
+    fun dismissToast() { toast = null }
+
+    /** 一律在主執行緒呼叫（[finish] 已經 post 回主執行緒了）。 */
+    private fun showToast(text: String) {
+        toast = text
+        val token = ++toastToken
+        main.postDelayed({ if (toastToken == token) toast = null }, TOAST_MS)
+    }
 
     fun loadIndex() {
         if (loading) return
@@ -222,7 +251,7 @@ class StoreController(context: Context) {
         when (val r = DependencyResolver.resolve(idx, listOf(pkg.id), s.registry.ids)) {
             is DependencyResolver.Result.Ok -> {
                 if (r.plan.count == 0) {
-                    result = ResultUi(true, "「${pkg.name}」與它的相依都已安裝，直接啟用即可。", emptyList())
+                    showToast("「${pkg.name}」與它的相依都已安裝，直接啟用即可")
                 } else {
                     confirm = ConfirmPlan(pkg, r.plan)
                 }
@@ -257,7 +286,7 @@ class StoreController(context: Context) {
             }
 
             if (!alsoEnable) {
-                finish(true, "已安裝（尚未啟用）", listOf("到「已安裝」區塊按「啟用」才會加入 schema_list 並部署。"))
+                finish(true, "已安裝（尚未啟用）—— 到「已安裝」區塊按「啟用」才會部署", emptyList())
                 return@execute
             }
 
@@ -267,16 +296,14 @@ class StoreController(context: Context) {
                 return@execute
             }
             when (val en = s.setEnabled(schemaIds, enabled = true) { p -> postProgress(p) }) {
+                // 成功只留一行 —— 這行會變成 snackbar，使用者不必按確認。
+                // 佈局說明照樣塞得進去，因為它是他下一步真的會用到的資訊。
                 is SchemaStore.Outcome.Ok -> finish(
                     true,
-                    "「${plan.rootPackage.name}」已安裝並啟用",
+                    "「${plan.rootPackage.name}」已安裝並啟用，鍵盤會切到「${schemaIds.first()}」" +
+                        (plan.rootPackage.layoutNote?.let { "（$it）" } ?: ""),
                     pendingSchema = schemaIds.first(),
-                    details = buildList {
-                        add(en.message)
-                        add("可切換的方案：${schemaIds.joinToString("、")}")
-                        add("鍵盤下次出現時會自動切到「${schemaIds.first()}」。")
-                        plan.rootPackage.layoutNote?.let { add("鍵盤佈局說明：$it") }
-                    },
+                    details = emptyList(),
                 )
 
                 is SchemaStore.Outcome.Failed ->
@@ -322,8 +349,11 @@ class StoreController(context: Context) {
             when (val r = DeployGate.deployAndWait { ms ->
                 postProgress(SchemaStore.Progress.Deploying(ms))
             }) {
+                // 成功 → snackbar 一行，畫面自己退掉（見 ResultUi 的註解）。
+                // 「舊 session 已失效，鍵盤會自動重建」是實作細節，使用者
+                // 不需要知道，也不需要為了它按一次「知道了」。
                 is DeployGate.Outcome.Success ->
-                    finish(true, "部署成功（${r.elapsedMs} ms）", listOf("舊 session 已失效，鍵盤會自動重建 session。"))
+                    finish(true, "部署完成（耗時 ${formatSeconds(r.elapsedMs)} 秒）", emptyList())
 
                 is DeployGate.Outcome.Failure -> finish(
                     false, "部署失敗（${r.elapsedMs} ms）",
@@ -482,7 +512,15 @@ class StoreController(context: Context) {
         main.post {
             if (ok && pendingSchema != null) settings.pendingSchema = pendingSchema
             job = null
-            result = ResultUi(ok, message, details)
+            if (ok) {
+                // 成功 → 覆蓋層與對話框一起退掉，只留 snackbar。
+                result = null
+                showToast(message)
+            } else {
+                // 失敗 → 停在對話框上，使用者要讀錯誤訊息並決定怎麼辦。
+                toast = null
+                result = ResultUi(false, message, details)
+            }
             refreshLocalState()
             refreshTick++
             // 部署會讓舊 session 失效；schema 清單也變了。這裡只讀，不建 session
@@ -490,4 +528,18 @@ class StoreController(context: Context) {
             Log.i("StoreController", "完成：$message；目前 schema=${RimeCore.schemaList().size}")
         }
     }
+
+    companion object {
+        /**
+         * snackbar 停留時間。取 Material 的 `SnackbarDuration.Long`（10 秒）與
+         * `Short`（4 秒）之間：部署訊息帶著耗時數字，值得看清楚，但不該擋路。
+         */
+        const val TOAST_MS = 5_000L
+    }
+}
+
+/** 毫秒 → 「7.2」。部署耗時用秒講，使用者的直覺單位是秒不是毫秒。 */
+internal fun formatSeconds(ms: Long): String {
+    val tenths = (ms + 50) / 100
+    return "${tenths / 10}.${tenths % 10}"
 }

@@ -5,6 +5,8 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import org.rimequad.ime.store.BuiltinMigration
+import org.rimequad.ime.store.SchemaListPatch
 import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
 
@@ -15,6 +17,8 @@ import java.util.concurrent.CopyOnWriteArrayList
  *   filesDir/rime/shared  ← shared_data_dir，由 assets/rime/shared 解出，唯讀語意
  *   filesDir/rime/user    ← user_data_dir，可寫；assets/rime/user 只在檔案
  *                            不存在時「種下」初始內容，絕不覆蓋使用者的修改
+ *                            （新版新增的內建方案改由 BuiltinMigration
+ *                             逐項補上，見 migrateBuiltinSchemas）
  *   filesDir/rime/log     ← log_dir
  *
  * iOS 上這幾個路徑必須落在 App Group 容器內，見 rime_shell.h 的註解；
@@ -42,8 +46,18 @@ object RimeRuntime {
      * assets 內容有變時遞增，強制重新解壓 shared。
      * 1 → 只有佔位檔
      * 2 → 併入 core/data/shared（54 檔）與 core/data/user 初始內容
+     * 3 → 加入自撰的 t9_pinyin（九宮格）方案檔
+     *
+     * ⚠ **加東西進 core/data/shared 就必須遞增這個數字。** 這不是慣例問題，
+     * 是使用者拿不拿得到新方案的問題：舊裝置的 `.revision` 檔若還等於同一個
+     * 數字，整個 shared 目錄就會被判定「已是最新」而完全不解壓，新方案檔
+     * 永遠不會落地。
+     *
+     * 九宮格加進來時漏了這一步，實測後果是升級的使用者 shared 目錄裡沒有
+     * `t9_pinyin.schema.yaml`，於是 [BuiltinMigration] 把它加進 schema_list
+     * 之後 librime 部署直接失敗（回滾機制救了回來，但九宮格還是沒有）。
      */
-    private const val ASSET_REVISION = 2
+    private const val ASSET_REVISION = 3
 
     private const val ASSET_SHARED = "rime/shared"
     private const val ASSET_USER = "rime/user"
@@ -82,6 +96,28 @@ object RimeRuntime {
     @Volatile
     var deployMillis: Long = -1
         private set
+
+    /**
+     * 這次啟動的內建方案遷移結果，給診斷畫面看的一行字；null = 沒發生任何事。
+     * 見 [BuiltinMigration] 的檔頭：升級的使用者拿不到新增內建方案的那個 bug。
+     */
+    @Volatile
+    var migrationNote: String? = null
+        private set
+
+    /**
+     * 遷移動過 `default.custom.yaml` 時，這裡存著動之前的**整份內容**。
+     *
+     * 為什麼要存：遷移是在 `rs_init` 之前做的，所以 `rs_init` 內建的那次
+     * `start_maintenance(True)` 就是「加完之後的那一次部署」。萬一新方案
+     * 讓部署失敗，使用者的鍵盤會整個不能用 —— 這時要能還原回遷移前的狀態，
+     * 走的是與方案市集完全相同的回滾策略（存整份位元組、失敗原樣寫回、
+     * 再部署一次），見 SchemaStore.setEnabled 的註解。
+     *
+     * 部署成功即清空（等於 commit）。
+     */
+    @Volatile
+    private var migrationSnapshot: SchemaListPatch.Snapshot? = null
 
     lateinit var sharedDataDir: File
         private set
@@ -213,6 +249,8 @@ object RimeRuntime {
                 // 是什麼狀態。唯一的例外是還在解壓 assets（那時 librime 的
                 // 資料目錄還沒齊）。
                 if (phase != Phase.EXTRACTING) {
+                    // 遷移加進去的方案編得起來 → 這次遷移正式成立，快照可以丟了。
+                    migrationSnapshot = null
                     initError = null
                     setPhase(Phase.READY)
                 }
@@ -221,10 +259,38 @@ object RimeRuntime {
             RimeDeployStatus.FAILURE -> {
                 initError = "部署失敗: ${RimeCore.lastError()}"
                 setPhase(Phase.FAILED)
+                rollbackMigrationIfNeeded()
             }
 
             RimeDeployStatus.IDLE -> Unit
         }
+    }
+
+    /**
+     * 遷移之後那次部署失敗了 → 把 `default.custom.yaml` 還原成遷移前的樣子，
+     * 再部署一次把使用者拉回可用狀態。
+     *
+     * 執行緒：檔案 IO 與 `rs_deploy()` 都放到背景執行緒。這是合法的 ——
+     * rime_shell.h 明訂 `rs_deploy()` 是**唯一**允許跨執行緒呼叫的函式。
+     * 還原後那次部署成功時，上面 SUCCESS 分支會把 phase 從 FAILED 拉回
+     * READY（那段註解已經說明為什麼不能守住「只有 DEPLOYING 才轉」）。
+     *
+     * ⚠ 帳本**不**跟著還原。帳本記的是「曾經引入過」，而這次確實引入過了，
+     * 只是編不起來。若連帳本一起還原，下次啟動會再引入一次、再失敗一次，
+     * 使用者會陷入每次開機都壞掉的迴圈。試一次、記下來、不再自動重試，
+     * 之後要用就到市集手動啟用（那條路徑有完整的預檢與錯誤訊息）。
+     */
+    private fun rollbackMigrationIfNeeded() {
+        val snapshot = migrationSnapshot ?: return
+        migrationSnapshot = null
+        val note = migrationNote
+        Log.e(TAG, "遷移後的首次部署失敗，還原 default.custom.yaml（$note）")
+        Thread({
+            runCatching { SchemaListPatch.restore(userDataDir, snapshot) }
+                .onFailure { Log.e(TAG, "還原 default.custom.yaml 失敗", it) }
+            migrationNote = "新增的內建方案讓部署失敗，已還原設定（$note）"
+            RimeCore.deploy()
+        }, "rime-migration-rollback").start()
     }
 
     /** 供設定畫面顯示。 */
@@ -258,7 +324,57 @@ object RimeRuntime {
         // 升級 app 不可以把他的設定洗掉。
         copyAssetTree(context, ASSET_USER, userDataDir, overwrite = false)
 
+        // ⚠ 上面那行有一個必須補救的副作用：舊使用者的 default.custom.yaml
+        // 「已存在」，於是新版新增的內建方案（例如九宮格 t9_pinyin）永遠不會
+        // 出現在他的 schema_list 裡 —— 真機回報的就是這個。
+        //
+        // 補救的方式不是改成覆蓋（那會洗掉使用者的設定），而是**遷移**：
+        // 只把「從未引入過」的內建方案補進去，並記帳。使用者刻意停用過的
+        // 不會被塞回來。詳見 BuiltinMigration 的檔頭。
+        migrateBuiltinSchemas(context)
+
         return !upToDate
+    }
+
+    /** 在背景執行緒上跑（[prepareDataDirs] 的一部分），一定早於 `rs_init`。 */
+    private fun migrateBuiltinSchemas(context: Context) {
+        val shippedText = runCatching {
+            context.assets.open(BuiltinMigration.SHIPPED_ASSET).use {
+                it.readBytes().toString(Charsets.UTF_8)
+            }
+        }.getOrElse {
+            Log.w(TAG, "讀不到隨附的 ${BuiltinMigration.SHIPPED_ASSET}，略過內建方案遷移", it)
+            return
+        }
+
+        // 先存快照再動手：動了才有東西可以還原。
+        val snapshot = SchemaListPatch.snapshot(userDataDir)
+        // 搜尋順序與 librime 一致：user 在前、shared 在後。預檢靠它判斷
+        // 「隨附清單說有的方案，裝置上是不是真的有」。
+        val searchDirs = listOf(userDataDir, sharedDataDir)
+        val result = runCatching { BuiltinMigration.migrate(userDataDir, shippedText, searchDirs) }
+            .getOrElse {
+                // 遷移失敗不該讓輸入法開不起來 —— 使用者頂多是少一個方案。
+                Log.e(TAG, "內建方案遷移失敗，維持原設定", it)
+                return
+            }
+
+        result.skipped.forEach {
+            // 打包端的疏漏。使用者這次拿不到這個方案，但鍵盤照樣能用，
+            // 而且帳本沒記，修好之後下一次啟動就會補上。
+            Log.w(TAG, "內建方案 ${it.id} 預檢沒過，這次跳過：${it.reasons.joinToString("；")}")
+        }
+        if (result.changed) {
+            migrationSnapshot = snapshot
+            migrationNote = "已補上本版新增的內建方案：${result.added.joinToString("、")}"
+            Log.i(
+                TAG,
+                "內建方案遷移：隨附 ${result.shipped}，帳本 ${result.ledgerBefore} → " +
+                    "${result.ledgerAfter}，補上 ${result.added}",
+            )
+        } else {
+            Log.i(TAG, "內建方案遷移：無事可做（帳本 ${result.ledgerAfter}）")
+        }
     }
 
     private fun copyAssetTree(

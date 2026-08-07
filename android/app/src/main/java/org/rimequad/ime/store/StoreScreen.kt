@@ -22,6 +22,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Snackbar
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -146,7 +147,9 @@ fun StoreScreen(controller: StoreController, modifier: Modifier = Modifier) {
 fun StoreOverlays(controller: StoreController) {
     controller.job?.let { JobOverlay(it) }
     controller.confirm?.let { plan -> ConfirmDialog(controller, plan) }
+    // 只剩失敗才會走到這裡（見 StoreController.ResultUi 的註解）。
     controller.result?.let { r -> ResultDialog(controller, r) }
+    controller.toast?.let { t -> ToastBar(t) { controller.dismissToast() } }
 }
 
 /* ─────────────────────────── 來源設定 ─────────────────────────── */
@@ -422,6 +425,31 @@ private fun ConfirmDialog(controller: StoreController, plan: StoreController.Con
             }
         },
     )
+}
+
+/**
+ * 成功時的短暫提示。
+ *
+ * 真機回報：「診斷的重新部署。部署完就要退出界面對不。」—— 對。使用者按
+ * 那顆按鈕是為了完成部署，成功之後再攔他一次要他按「知道了」，只是在他
+ * 已經達成目的之後多收一次過路費。所以成功走這條：訊息照講，但不擋路，
+ * 幾秒後自己消失，也可以點掉。
+ *
+ * 失敗**不**走這裡，仍然停在 [ResultDialog] 上 —— 那些訊息裡有
+ * `rs_last_error()`、有回滾結果、有需要使用者採取行動的指示。
+ *
+ * 外層 Box 沒有掛任何 pointer 修飾子，所以不會攔截底下畫面的觸控。
+ */
+@Composable
+private fun ToastBar(text: String, onDismiss: () -> Unit) {
+    Box(
+        modifier = Modifier.fillMaxSize().padding(12.dp),
+        contentAlignment = Alignment.BottomCenter,
+    ) {
+        Snackbar(
+            action = { TextButton(onClick = onDismiss) { Text("關閉") } },
+        ) { Text(text, fontSize = 13.sp) }
+    }
 }
 
 @Composable
