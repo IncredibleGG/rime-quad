@@ -239,7 +239,13 @@ private fun SetupScreen(controller: StoreController, modifier: Modifier = Modifi
             },
         )
 
-        val enabled = remember(controller.refreshTick, phase) { controller.enabledSchemas }
+        // 這裡不能包 remember：enabledSchemas 是 controller 的 mutableStateOf，
+        // 由上面那個 LaunchedEffect 呼叫 refreshLocalState() 填進去——也就是
+        // **第一次組合之後**才有值。若 app 進來時 phase 已經是 READY，兩個鍵
+        // 都不會再變，memo 起來的空清單就會一路卡住（畫面顯示「已啟用 0」，
+        // 要按下「重新部署」把 refreshTick 推一格才會對）。直接讀 state，
+        // Compose 自己會在它被填好時重組。
+        val enabled = controller.enabledSchemas
         InfoCard(
             title = "schema_list patch（已啟用 ${enabled.size}）",
             body = if (enabled.isEmpty()) "default.custom.yaml 沒有 schema_list patch"
