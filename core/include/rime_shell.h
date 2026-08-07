@@ -116,6 +116,21 @@ bool rs_delete_candidate(rs_session s, int32_t index_on_page); /* 刪除使用�
 bool rs_change_page(rs_session s, bool backward);
 bool rs_clear_composition(rs_session s);
 
+/* 把目前的組字內容直接上屏。
+ *
+ * ⚠ 方案之間行為不同，前端不可假設「選字＝上屏」：
+ *   - 拼音類方案（luna_pinyin）選字當下就會產生 commit。
+ *   - 注音類方案（bopomofo）選字之後仍停留在組字狀態，
+ *     此時 status.is_composing 依然為 true，preedit 已是選中的文字，
+ *     必須由前端明確呼叫本函式（或送出 Enter）才會真正上屏。
+ *
+ * 正確的前端邏輯是：選字後檢查 is_composing，仍為 true 時才呼叫本函式。
+ *
+ * 回傳 true 代表有待讀取的 commit 文字，下一次 rs_snapshot_acquire()
+ * 會在 commit_text 拿到它。
+ */
+bool rs_commit_composition(rs_session s);
+
 /* ───────────────────────── 狀態快照 ───────────────────────── */
 
 typedef struct {

@@ -9,8 +9,9 @@
 // JNI 或 UI；若這裡就是紅的，再怎麼改 UI 也沒用。
 //
 // 用法：
-//   rime_console <shared_data_dir> <user_data_dir> <按鍵字母> [選字序號]
-//   例：rime_console /data/local/tmp/rime/shared /data/local/tmp/rime/user nihao 1
+//   rime_console <shared_data_dir> <user_data_dir> <按鍵字母> [選字序號] [方案id]
+//   例：rime_console .../shared .../user nihao 1
+//       rime_console .../shared .../user su3cl3 1 bopomofo_tw
 
 #include "rime_shell.h"
 
@@ -68,15 +69,17 @@ void dump(const char* tag, rs_session sess) {
 
 int main(int argc, char** argv) {
   if (argc < 4) {
-    std::fprintf(stderr,
-                 "用法: %s <shared_data_dir> <user_data_dir> <按鍵字母> [選字序號]\n",
-                 argv[0]);
+    std::fprintf(
+        stderr,
+        "用法: %s <shared_data_dir> <user_data_dir> <按鍵字母> [選字序號] [方案id]\n",
+        argv[0]);
     return 2;
   }
   const char* shared_dir = argv[1];
   const char* user_dir = argv[2];
   const char* keys = argv[3];
   const int select_index = (argc > 4) ? std::atoi(argv[4]) : 1;
+  const char* want_schema = (argc > 5) ? argv[5] : nullptr;
 
   std::printf("=== rime_shell 端到端測試 ===\n");
   std::printf("ABI version : %d\n", rs_abi_version());
@@ -127,6 +130,14 @@ int main(int argc, char** argv) {
   for (int32_t i = 0; i < n && i < 16; ++i)
     std::printf("    %s  (%s)\n", ids[i], names[i]);
 
+  if (want_schema) {
+    std::printf("\n切換方案 -> %s\n", want_schema);
+    if (!rs_select_schema(sess, want_schema)) {
+      std::fprintf(stderr, "切換方案失敗: %s\n", rs_last_error());
+      return 1;
+    }
+  }
+
   dump("初始", sess);
 
   // 逐字送出按鍵。X11 keysym 對 ASCII 可列印字元就是其 ASCII 值。
@@ -147,6 +158,20 @@ int main(int argc, char** argv) {
     std::printf("  rs_select_candidate 回傳 false: %s\n", rs_last_error());
 
   dump("選字後", sess);
+
+  // 方案差異：拼音在選字當下就上屏；注音選字後仍停留在組字狀態，
+  // 需要明確的確認動作。前端必須處理這個差異，不能假設選字＝上屏。
+  {
+    const rs_snapshot* s = rs_snapshot_acquire(sess);
+    const bool still_composing = s && s->status.is_composing;
+    rs_snapshot_release(sess);
+    if (still_composing) {
+      std::printf("\n--- 選字後仍在組字，明確送出 commit ---\n");
+      if (!rs_commit_composition(sess))
+        std::printf("  rs_commit_composition 回傳 false: %s\n", rs_last_error());
+      dump("commit 後", sess);
+    }
+  }
 
   rs_session_destroy(sess);
   rs_finalize();

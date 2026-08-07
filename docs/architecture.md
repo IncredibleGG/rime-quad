@@ -26,6 +26,29 @@ librime (C++, 靜態連結)
 - 前端**不可以**把 `const char*` 存起來跨事件使用。
 - 即使前端忘了 release，也不會洩漏 librime 的記憶體 —— 這是刻意的取捨，寧可多一次拷貝，也不要把跨語言的生命週期管理丟給 JNI 那一側。
 
+### 選字不等於上屏（四端都會踩）
+
+**不同方案的行為不一致，前端不可假設「選了候選字就會上屏」。**
+
+實測（模擬器上以 `tools/rime_console.cc` 驗證）：
+
+| 方案 | 選第 1 個候選之後 |
+|---|---|
+| `luna_pinyin_tw`（拼音） | 直接產生 commit，`is_composing` 轉為 false |
+| `bopomofo_tw`（注音） | **仍停留在組字狀態**，`is_composing` 依然為 true，`preedit` 變成選中的「你好」，但沒有 commit |
+
+注音方案需要一個明確的確認動作才會真正上屏。正確的前端邏輯是：
+
+```
+rs_select_candidate(...)
+snapshot = rs_snapshot_acquire(...)
+if (snapshot->status.is_composing)      // 還沒上屏
+    rs_commit_composition(...)          // 明確確認
+```
+
+這個差異是在端到端測試中發現的 —— 原本的 `rime_shell.h` 根本沒有暴露 commit 操作，
+只做拼音測試的話永遠不會察覺。`rs_commit_composition()` 就是為此補上的。
+
 ### commit 的消費語意
 
 librime 的 `get_commit` 是**取出即清除**。本層在每次 `rs_snapshot_acquire()` 都會呼叫它，所以：

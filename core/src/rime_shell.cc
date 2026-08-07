@@ -447,6 +447,14 @@ bool rs_clear_composition(rs_session s) {
   });
 }
 
+bool rs_commit_composition(rs_session s) {
+  return with_session(s, [&](Session* sess) {
+    // librime 的回傳值是「是否有待讀取的 commit 文字」，
+    // 正好就是前端需要知道的：true 代表下一次 acquire 會拿到 commit_text。
+    return g_api->commit_composition(sess->id) != False;
+  });
+}
+
 // ─────────────────────────────────────────────────────────────
 // 快照
 // ─────────────────────────────────────────────────────────────
