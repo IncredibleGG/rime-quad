@@ -1,335 +1,96 @@
 package org.rimequad.ime
 
-import android.content.Context
-import android.content.Intent
 import android.os.Bundle
-import android.provider.Settings
-import android.view.inputmethod.InputMethodManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import org.rimequad.ime.core.RimeCore
-import org.rimequad.ime.core.RimeDeployStatus
 import org.rimequad.ime.core.RimeRuntime
-import org.rimequad.ime.net.FirstRunNoticeHost
-import org.rimequad.ime.net.NetworkScreen
-import org.rimequad.ime.net.rememberNetworkEnabled
+import org.rimequad.ime.home.RimeAppScreen
 import org.rimequad.ime.prefs.PrefsStore
 import org.rimequad.ime.prefs.SettingsActivity
-import org.rimequad.ime.prefs.SettingsScreen
-import org.rimequad.ime.store.StoreController
-import org.rimequad.ime.store.StoreOverlays
-import org.rimequad.ime.store.StoreScreen
 import org.rimequad.ime.ui.RimeTheme
 import org.rimequad.ime.update.UpdateController
 
 /**
- * 設定／診斷畫面，同時也是 method.xml 指定的 settingsActivity。
+ * App 的唯一入口。同時也是 `method.xml` 指定的 settingsActivity。
  *
- * 現階段的職責很窄：告訴人「輸入法有沒有啟用」「native 那條線通了沒」。
+ * 這個 Activity 只做三件事：把 runtime 叫起來、決定第一幀要畫引導還是設定、
+ * 以及把「視窗焦點變了」這個事件轉給畫面。第三件事看起來最不起眼，
+ * 卻是整個引導流程能不能用的關鍵，理由見下面 [onWindowFocusChanged]。
  */
 class MainActivity : ComponentActivity() {
+
+    /**
+     * 每次視窗焦點變化就 +1。畫面拿它當作「立刻重查一次系統狀態」的訊號。
+     *
+     * ⚠ 為什麼不能只靠 `onResume()`：叫出系統輸入法選擇器的
+     * `showInputMethodPicker()` 開的是一個**系統對話框**，不是 Activity ——
+     * 我們全程維持 `RESUMED`，`onResume()` 一次都不會再被呼叫。實測（API 35）
+     * 只有 `mCurrentFocus` 變了兩次。寫在 onResume 裡的重新檢查因此永遠不跑，
+     * 使用者選好鍵盤回來，畫面還停在「還差一步」—— 這幾乎確定就是競品那個
+     * 三步精靈卡住的真正成因。
+     */
+    private var focusEpoch by mutableIntStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         RimeRuntime.start(applicationContext)
-        val store = StoreController(applicationContext)
-        // 啟動時的靜默更新檢查。沒網路、被節流、使用者關掉了 —— 三種情形
-        // 都只是安靜地什麼都不做，絕不打斷他。結果只會變成設定分頁上的紅點。
-        val updates = UpdateController.get(applicationContext)
-        updates.autoCheckOnStart(PrefsStore.get(applicationContext).current.autoCheckUpdate)
+
+        // ⚠ 這一個 key 必須**阻塞讀**。
+        //
+        // PrefsStore 背後是 DataStore，第一次讀是非同步的：若在 Compose 裡用
+        // `collectAsState(initial = …)` 拿它，第一幀一定是預設值（false），
+        // 於是**每一個既有使用者每次冷啟動都會看到引導頁閃一下**才切到設定頁。
+        // 那種閃爍比慢半秒惹人厭得多。`current` 的首次存取會阻塞讀一次檔案
+        // （幾百 bytes），成本可以忽略。
+        //
+        // 語義也要釘死：這個布林**只**決定開在哪一頁，它**不是**「輸入法可以用」
+        // 的證據 —— 那件事一律去問系統，見 home/ImeSetupState.kt。
+        val onboardingDone = PrefsStore.get(applicationContext).current.onboardingDone == true
+
+        // 啟動時的靜默更新檢查。沒網路、被連網開關擋下、被節流、使用者關掉了
+        // —— 每一種情形都只是安靜地什麼都不做，絕不打斷他。
+        UpdateController.get(applicationContext)
+            .autoCheckOnStart(PrefsStore.get(applicationContext).current.autoCheckUpdate)
+
+        val openStore = intent?.getIntExtra(SettingsActivity.EXTRA_TAB, 0) == SettingsActivity.TAB_STORE
+
         setContent {
             RimeTheme {
-                // SettingsActivity 的「方案管理」按鈕會帶著這個 extra 進來,
-                // 讓使用者一步落在市集分頁而不是預設分頁。沒有 extra 時照舊。
-                var tab by remember {
-                    mutableStateOf(intent?.getIntExtra(SettingsActivity.EXTRA_TAB, 0) ?: 0)
-                }
-                Scaffold { padding ->
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(padding)
-                            .padding(horizontal = 16.dp)
-                            .padding(top = 8.dp)
-                    ) {
-                        TabRow(selectedTabIndex = tab) {
-                            Tab(
-                                selected = tab == 0,
-                                onClick = { tab = 0 },
-                                text = { Text("診斷") },
-                            )
-                            Tab(
-                                selected = tab == 1,
-                                onClick = { tab = 1 },
-                                text = { Text("方案市集") },
-                            )
-                            // 設定分頁。內容全部在 org.rimequad.ime.prefs 底下,
-                            // 這裡只是掛上去的入口。
-                            Tab(
-                                selected = tab == 2,
-                                onClick = { tab = 2 },
-                                text = {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text("設定")
-                                        // 有新版本時分頁標題旁邊點一顆紅點。
-                                        // 這是整個 app 唯一會主動冒出來的更新提示 ——
-                                        // 不彈窗、不發通知，輸入法被打斷特別惹人厭。
-                                        if (updates.hasUpdate) {
-                                            Spacer(Modifier.size(6.dp))
-                                            Spacer(
-                                                Modifier
-                                                    .size(8.dp)
-                                                    .clip(CircleShape)
-                                                    .background(MaterialTheme.colorScheme.error)
-                                            )
-                                        }
-                                    }
-                                },
-                            )
-                            // 連網分頁。與其他三個分頁不同，這一個在開著的時候
-                            // 才點亮 —— 使用者一眼就知道「現在這個 app 會連網」。
-                            // 那顆點是主色而不是錯誤色：連網不是錯誤，是他自己選的。
-                            Tab(
-                                selected = tab == 3,
-                                onClick = { tab = 3 },
-                                text = {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text("連網")
-                                        if (rememberNetworkEnabled()) {
-                                            Spacer(Modifier.size(6.dp))
-                                            Spacer(
-                                                Modifier
-                                                    .size(8.dp)
-                                                    .clip(CircleShape)
-                                                    .background(MaterialTheme.colorScheme.primary)
-                                            )
-                                        }
-                                    }
-                                },
-                            )
-                        }
-                        Box(modifier = Modifier.padding(top = 12.dp)) {
-                            when (tab) {
-                                0 -> SetupScreen(
-                                    controller = store,
-                                    modifier = Modifier.fillMaxSize(),
-                                )
-
-                                2 -> SettingsScreen(
-                                    modifier = Modifier.fillMaxSize(),
-                                    onOpenSchemaStore = { tab = 1 },
-                                )
-
-                                3 -> NetworkScreen(modifier = Modifier.fillMaxSize())
-
-                                else -> StoreScreen(
-                                    controller = store,
-                                    modifier = Modifier.fillMaxSize(),
-                                )
-                            }
-                            // 部署進度／結果畫在分頁之外：兩個分頁按的是同一個
-                            // rs_deploy()，提示不該有兩套。
-                            StoreOverlays(store)
-                        }
-                    }
-                    // 首次啟動的離線說明。只講一次，看過就不再出現。
-                    // 放在 Scaffold 內容的最外層 —— 它是對話框，蓋在誰上面都一樣。
-                    FirstRunNoticeHost()
+                Surface(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.background),
+                    color = MaterialTheme.colorScheme.background,
+                ) {
+                    RimeAppScreen(
+                        openStore = openStore,
+                        focusEpoch = focusEpoch,
+                        startInOnboarding = !onboardingDone,
+                    )
                 }
             }
         }
     }
 
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        focusEpoch++
+    }
+
     /**
-     * 使用者是離開 app 去系統設定開「安裝未知的應用程式」的，回來時
-     * Compose 不會自己知道那個開關變了。在這裡推一下，畫面才不會一直
-     * 停在「尚未授權」。
+     * 使用者是離開 app 去系統設定開「安裝未知的應用程式」的，回來時 Compose
+     * 不會自己知道那個開關變了。在這裡推一下，畫面才不會一直停在「尚未授權」。
      */
     override fun onResume() {
         super.onResume()
         UpdateController.get(applicationContext).refreshInstallPermission()
-    }
-}
-
-@Composable
-private fun SetupScreen(controller: StoreController, modifier: Modifier = Modifier) {
-    val context = LocalContext.current
-    var deployStatus by remember { mutableStateOf(RimeCore.lastDeployStatus) }
-    var phase by remember { mutableStateOf(RimeRuntime.phase) }
-
-    DisposableEffect(Unit) {
-        val deployListener: (RimeDeployStatus) -> Unit = { deployStatus = it }
-        val phaseListener: (RimeRuntime.Phase) -> Unit = { phase = it }
-        RimeCore.addDeployListener(deployListener)
-        RimeRuntime.addListener(phaseListener)
-        onDispose {
-            RimeCore.removeDeployListener(deployListener)
-            RimeRuntime.removeListener(phaseListener)
-        }
-    }
-
-    // 進到診斷頁就把 schema_list / 已安裝清單讀進來，否則要切到市集頁才會有值。
-    LaunchedEffect(phase, controller.refreshTick) { controller.refreshLocalState() }
-
-    Column(
-        modifier = modifier.verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Text(
-            text = "RIME 四端輸入法（Android）",
-            style = MaterialTheme.typography.headlineSmall,
-        )
-
-        if (RimeCore.isStub()) {
-            InfoCard(
-                title = "⟦STUB⟧ 目前跑的是假實作",
-                body = "librime 尚未接上，候選字全是佔位資料。\n" +
-                    "third_party/prebuilt/<abi>/lib/librime.a 與 core/src/rime_shell.cc " +
-                    "齊備後重新建置，會自動切換成真的。",
-            )
-        }
-
-        InfoCard(
-            title = "原生層狀態",
-            body = buildString {
-                appendLine("so 載入: ${if (RimeCore.libraryLoaded) "成功" else "失敗 — ${RimeCore.libraryLoadError}"}")
-                appendLine("rime_shell ABI（執行期）: ${RimeCore.abiVersion()}")
-                appendLine("rime_shell ABI（so 編譯期）: ${RimeCore.compiledAbiVersion()}")
-                appendLine("上層要求 ABI: ${RimeCore.EXPECTED_ABI_VERSION}")
-                appendLine("ABI 相容: ${if (RimeCore.abiCompatible()) "是" else "否"}")
-                appendLine("實作: ${if (RimeCore.isStub()) "stub 假實作" else "真 librime"}")
-                appendLine("初始化階段: $phase")
-                RimeRuntime.initError?.let { appendLine("錯誤: $it") }
-                // 升級遷移的結果。平常是 null（沒事發生），只有真的補過
-                // 內建方案、或補了之後被回滾時才有內容。
-                RimeRuntime.migrationNote?.let { appendLine("內建方案遷移: $it") }
-                appendLine(
-                    "解壓耗時: " +
-                        if (RimeRuntime.extractMillis >= 0) "${RimeRuntime.extractMillis} ms" else "本次未解壓"
-                )
-                appendLine(
-                    "首次部署耗時: " +
-                        if (RimeRuntime.deployMillis >= 0) "${RimeRuntime.deployMillis} ms" else "進行中／未完成"
-                )
-                append("部署狀態: $deployStatus")
-            },
-        )
-
-        InfoCard(
-            title = "資料目錄",
-            body = RimeRuntime.describeDataDirs(),
-        )
-
-        // refreshTick：市集或「重新部署」跑完之後強制重讀，否則畫面上的
-        // schema 清單會停在部署前的樣子。
-        val schemas = remember(phase, controller.refreshTick) { RimeCore.schemaList() }
-        InfoCard(
-            title = "Schema（${schemas.size}）",
-            body = if (schemas.isEmpty()) {
-                "尚無可用 schema"
-            } else {
-                schemas.joinToString("\n") { "${it.id}  —  ${it.name}" }
-            },
-        )
-
-        // 這裡不能包 remember：enabledSchemas 是 controller 的 mutableStateOf，
-        // 由上面那個 LaunchedEffect 呼叫 refreshLocalState() 填進去——也就是
-        // **第一次組合之後**才有值。若 app 進來時 phase 已經是 READY，兩個鍵
-        // 都不會再變，memo 起來的空清單就會一路卡住（畫面顯示「已啟用 0」，
-        // 要按下「重新部署」把 refreshTick 推一格才會對）。直接讀 state，
-        // Compose 自己會在它被填好時重組。
-        val enabled = controller.enabledSchemas
-        InfoCard(
-            title = "schema_list patch（已啟用 ${enabled.size}）",
-            body = if (enabled.isEmpty()) "default.custom.yaml 沒有 schema_list patch"
-            else enabled.joinToString("\n"),
-        )
-
-        Button(
-            onClick = {
-                context.startActivity(
-                    Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                )
-            },
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text("① 到系統設定啟用本輸入法")
-        }
-
-        Button(
-            onClick = {
-                val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-                imm.showInputMethodPicker()
-            },
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text("② 切換到本輸入法")
-        }
-
-        // ⚠ 這裡刻意**不**直接呼叫 RimeCore.deploy()。
-        // rs_deploy() 是非同步的：直接呼叫會立刻返回，畫面上什麼都不會發生，
-        // 而背景其實跑了十幾秒（實測 模擬器 7.2s / 三星 S24U 首次 12.5s）。
-        // 使用者按下去只會看到「毫無反應」——這是真機回報的 bug。
-        // 走 controller.redeploy() 才有進行中狀態、耗時、成功／失敗提示，
-        // 以及部署後的 session 重建。
-        OutlinedButton(
-            onClick = { controller.redeploy() },
-            enabled = RimeRuntime.isReady && !controller.busy,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text(if (controller.busy) "部署中…" else "重新部署（rs_deploy）")
-        }
-    }
-}
-
-@Composable
-private fun InfoCard(title: String, body: String) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Text(text = title, fontWeight = FontWeight.SemiBold)
-            Text(
-                text = body,
-                fontSize = 13.sp,
-                fontFamily = FontFamily.Monospace,
-                modifier = Modifier.padding(top = 6.dp),
-            )
-        }
     }
 }

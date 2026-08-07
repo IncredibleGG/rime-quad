@@ -98,6 +98,20 @@ object RimeRuntime {
         private set
 
     /**
+     * 首次部署**已經跑了多久**（毫秒）；還沒開始或已經完成時回 -1。
+     *
+     * 引導頁拿它畫那條 3dp 的進度線。⚠ 這只是「跑了多久」，**不是真的進度** ——
+     * `rime_shell` 的 C ABI 沒有暴露部署進度，我們只知道起點。所以畫面上那條線
+     * 封頂在 95%，絕不自己走到 100%：一條走到底卻還沒好的進度條比沒有更傷。
+     */
+    val deployElapsedMillis: Long
+        get() = if (deployStartedAt > 0L && deployMillis < 0) {
+            SystemClock.elapsedRealtime() - deployStartedAt
+        } else {
+            -1
+        }
+
+    /**
      * 這次啟動的內建方案遷移結果，給診斷畫面看的一行字；null = 沒發生任何事。
      * 見 [BuiltinMigration] 的檔頭：升級的使用者拿不到新增內建方案的那個 bug。
      */
@@ -134,6 +148,17 @@ object RimeRuntime {
     val userDirOrNull: File? get() = if (::userDataDir.isInitialized) userDataDir else null
     val sharedDirOrNull: File? get() = if (::sharedDataDir.isInitialized) sharedDataDir else null
 
+    /**
+     * 不依賴 [start] 是否已跑過的路徑推導。
+     *
+     * 使用者自訂鍵位（[org.rimequad.ime.keyboard.UserLayoutStore]）與設定畫面
+     * 都可能在解壓／`rs_init` 完成之前就要讀寫 user_data_dir，而 [userDataDir]
+     * 是 `lateinit`。這個函式讓「路徑」與「初始化狀態」脫鉤 —— 路徑本來就只
+     * 由 `filesDir` 決定，跟 librime 有沒有起來無關。
+     */
+    fun userDataDirOf(context: Context): File =
+        File(File(context.applicationContext.filesDir, "rime"), "user")
+
     private val mainHandler = Handler(Looper.getMainLooper())
     private val listeners = CopyOnWriteArrayList<(Phase) -> Unit>()
     private var started = false
@@ -168,7 +193,8 @@ object RimeRuntime {
         val appContext = context.applicationContext
         val root = File(appContext.filesDir, "rime")
         sharedDataDir = File(root, "shared")
-        userDataDir = File(root, "user")
+        // 與 [userDataDirOf] 共用同一份定義，免得兩處各推導一次而漂移。
+        userDataDir = userDataDirOf(appContext)
         logDir = File(root, "log")
 
         if (!RimeCore.libraryLoaded) {
