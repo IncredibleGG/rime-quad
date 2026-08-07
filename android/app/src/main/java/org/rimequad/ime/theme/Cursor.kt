@@ -87,6 +87,18 @@ class Cursor internal constructor(
         }
     }
 
+    /**
+     * §4.2 / §6.3：超出範圍是**夾制 + WARNING**，不是靜默夾制。
+     *
+     * 使用者寫了 4.0 卻拿到 0.6，不告知是說不過去的；而且 §10 檢核第 9 條要求
+     * 四端對同一份壞檔案報出同樣多則診斷，靜默夾制會讓那一條直接失守。
+     * 純粹的夾制輔助函式 [clampInt] / [clampFloat] 仍然安靜，它們用於
+     * 執行期計算（如 HeightSpec.resolve），那裡沒有「使用者寫錯」的語義。
+     */
+    private fun reportClamp(value: String, bound: String, min: String, max: String) {
+        diag.warn(path, "$value is outside [$min, $max]; clamped to $bound", node?.line)
+    }
+
     fun int(default: Int, min: Int = Int.MIN_VALUE, max: Int = Int.MAX_VALUE): Int {
         val s = scalarText() ?: return default
         val v = s.trim().toIntOrNull() ?: s.trim().toDoubleOrNull()?.toInt()
@@ -94,7 +106,15 @@ class Cursor internal constructor(
             diag.warn(path, "'$s' is not an integer; using default $default", node?.line)
             return default
         }
-        return clampInt(v, min, max)
+        if (v < min) {
+            reportClamp(v.toString(), min.toString(), min.toString(), max.toString())
+            return min
+        }
+        if (v > max) {
+            reportClamp(v.toString(), max.toString(), min.toString(), max.toString())
+            return max
+        }
+        return v
     }
 
     fun number(default: Float, min: Float = -Float.MAX_VALUE, max: Float = Float.MAX_VALUE): Float {
@@ -104,7 +124,15 @@ class Cursor internal constructor(
             diag.warn(path, "'$s' is not a number; using default $default", node?.line)
             return default
         }
-        return clampFloat(v, min, max)
+        if (v < min) {
+            reportClamp(v.toString(), min.toString(), min.toString(), max.toString())
+            return min
+        }
+        if (v > max) {
+            reportClamp(v.toString(), max.toString(), min.toString(), max.toString())
+            return max
+        }
+        return v
     }
 
     /** 長度（dp）。見 §4.3：一律無單位數字。 */

@@ -265,7 +265,36 @@ class ThemeParserTest {
         val t = r.value
         assertNotNull(t)
         assertF(0.6f, t!!.keyboard.height.portrait.ratio)
-        assertEquals(1, r.diagnostics.size)
+        // 夾制**必須**留下痕跡：使用者寫了 4.0 卻拿到 0.6，靜默處理是不可接受的。
+        assertEquals(RepoFixtures.describe(r.diagnostics), 1, r.diagnostics.size)
+        assertEquals(Severity.WARNING, r.diagnostics[0].severity)
+        assertEquals("keyboard.height.portrait.ratio", r.diagnostics[0].path)
+        assertTrue(r.diagnostics[0].message.contains("clamped"))
+    }
+
+    @Test
+    fun clampingReportsBothBoundsAndIntegerFieldsToo() {
+        val r = loadInline(
+            "clamp2",
+            "clamp2" to """
+                format: rime-theme/1
+                id: clamp2
+                typography:
+                  font_scale_min: 0.1
+                keyboard:
+                  popup:
+                    max_columns: 99
+                motion:
+                  candidate_change_ms: 99999
+            """.trimIndent()
+        )
+        val t = r.value!!
+        assertF(0.5f, t.typography.fontScaleMin)   // 下界夾制
+        assertEquals(12, t.keyboard.popup.maxColumns)   // 上界夾制（int）
+        assertEquals(5000, t.motion.candidateChangeMs)  // duration 上界
+        assertEquals(RepoFixtures.describe(r.diagnostics), 3, r.diagnostics.size)
+        assertTrue(r.diagnostics.all { it.severity == Severity.WARNING })
+        assertTrue(r.diagnostics.all { it.message.contains("clamped") })
     }
 
     @Test
