@@ -142,6 +142,10 @@ bool rs_process_key(rs_session s, int32_t keysym, uint32_t modifiers);
 /* 直接選字／翻頁／清除，供 UI 點擊使用（不必偽造按鍵）。 */
 bool rs_select_candidate(rs_session s, int32_t index_on_page);
 bool rs_delete_candidate(rs_session s, int32_t index_on_page); /* 刪除使用者詞 */
+/* 移動高亮但不選中。供佈局的 candidate:next / candidate:prev 之類的動作使用：
+ * 前端從快照讀 menu.highlighted，加減一之後呼叫本函式。 */
+bool rs_highlight_candidate(rs_session s, int32_t index_on_page);
+
 bool rs_change_page(rs_session s, bool backward);
 bool rs_clear_composition(rs_session s);
 
@@ -238,6 +242,23 @@ bool rs_select_schema(rs_session s, const char* schema_id);
 /* librime 的具名開關，例如 "ascii_mode"、"simplification"、"full_shape"。 */
 bool rs_set_option(rs_session s, const char* option, bool value);
 bool rs_get_option(rs_session s, const char* option);
+
+/* ───────────────────── keysym 查表 ─────────────────────
+ *
+ * 這兩個函式是純查表，**不需要 rs_init()**，也不涉及任何 session。
+ * 存在的理由是佈局檔（core/layouts/*.yaml）以名稱指定 keysym，
+ * 而各端不應該各自維護一份會腐爛的名稱表 —— librime 自己就有權威的那一份。
+ */
+
+/* 由 X11 keysym 名稱取得 keysym 值，例如 "BackSpace" → 0xFF08。
+ * **查不到回傳 0**。（注意：librime 內部查不到時回傳的是 XK_VoidSymbol
+ * 0xffffff，那是個看起來很像有效 keysym 的值；本層一律正規化成 0，
+ * 避免前端把未知的鍵當成有效鍵送進引擎。） */
+int32_t rs_keysym_by_name(const char* name);
+
+/* 反向查詢，主要供除錯與日誌使用。查不到回傳 NULL。
+ * 回傳的是 librime 內部的靜態字串，永久有效，不需要複製或釋放。 */
+const char* rs_keysym_name(int32_t keysym);
 
 #ifdef __cplusplus
 }  /* extern "C" */

@@ -87,6 +87,22 @@ int main(int argc, char** argv) {
   std::printf("user        : %s\n", user_dir);
   std::printf("按鍵        : %s\n\n", keys);
 
+  // keysym 查表是純查表，不需要 rs_init()，所以在這裡先驗。
+  // 這兩個函式是對 librime 私有標頭的符號做就地重宣告，靠 C++ mangling 對上 ——
+  // 若 mangling 對不上會是連結錯誤，若查表邏輯錯了就會在這裡看出來。
+  {
+    static const char* kNames[] = {"BackSpace", "Return", "space",
+                                   "a",         "F5",     "no_such_key_name"};
+    std::printf("keysym 查表驗證（不需初始化）:\n");
+    for (const char* n : kNames) {
+      const int32_t k = rs_keysym_by_name(n);
+      const char* back = k ? rs_keysym_name(k) : nullptr;
+      std::printf("    %-18s -> 0x%06X  反查=%s\n", n, k,
+                  back ? back : "(NULL)");
+    }
+    std::printf("\n");
+  }
+
   rs_setup setup{};
   setup.shared_data_dir = shared_dir;
   setup.user_data_dir = user_dir;

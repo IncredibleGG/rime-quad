@@ -27,6 +27,21 @@
 #include <thread>
 #include <vector>
 
+// librime 私有標頭 rime/key_table.h 的宣告，在此就地重宣告而不 #include 它。
+//
+// 理由：那份私有標頭會連帶要求一整組 compile definitions（RIME_VERSION、
+// GLOG_EXPORT=、YAML_CPP_STATIC_DEFINE、Opencc_BUILT_AS_STATIC…）才能與
+// librime.a 的 ABI 對齊，為了兩個查表函式把那些全拉進來並不划算。
+//
+// 這兩個符號是 **C++ 連結**（key_table.h 沒有包在 extern "C" 裡，RIME_DLL
+// 只是可見性屬性），所以在 C++ 中以相同簽章重宣告即可對上同一個 mangled
+// 名稱。簽章若在上游變動，結果是連結錯誤而不是靜默失效。
+int RimeGetKeycodeByName(const char* name);
+const char* RimeGetKeyName(int keycode);
+
+// RimeGetKeycodeByName 查不到時回傳的是 XK_VoidSymbol，不是 0。
+#define RS_XK_VOID_SYMBOL 0xffffff
+
 namespace {
 
 RimeApi* g_api = nullptr;
@@ -447,6 +462,13 @@ bool rs_delete_candidate(rs_session s, int32_t index_on_page) {
   });
 }
 
+bool rs_highlight_candidate(rs_session s, int32_t index_on_page) {
+  return with_session(s, [&](Session* sess) {
+    return g_api->highlight_candidate_on_current_page(
+               sess->id, static_cast<size_t>(index_on_page)) != False;
+  });
+}
+
 bool rs_change_page(rs_session s, bool backward) {
   return with_session(s, [&](Session* sess) {
     return g_api->change_page(sess->id, backward ? True : False) != False;
@@ -565,6 +587,22 @@ bool rs_set_option(rs_session s, const char* option, bool value) {
     g_api->set_option(sess->id, option, value ? True : False);
     return true;
   });
+}
+
+/* ───────────────────── keysym 查表（不需初始化） ───────────────── */
+
+int32_t rs_keysym_by_name(const char* name) {
+  if (!name || !*name)
+    return 0;
+  const int code = RimeGetKeycodeByName(name);
+  // 對外一律用 0 表示「未知」，不要把 librime 的 XK_VoidSymbol 洩漏出去 ——
+  // 0xffffff 是個看起來很像有效 keysym 的值，前端若沒特別處理會把未知的鍵
+  // 當成有效鍵送進 librime。
+  return code == RS_XK_VOID_SYMBOL ? 0 : code;
+}
+
+const char* rs_keysym_name(int32_t keysym) {
+  return RimeGetKeyName(keysym);
 }
 
 bool rs_get_option(rs_session s, const char* option) {
