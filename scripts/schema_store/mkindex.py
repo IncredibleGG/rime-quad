@@ -88,6 +88,20 @@ META = {
    "日文輸入，用羅馬字打假名與漢字。", True),
  "ipa": ("國際音標",
    "打 IPA 音標符號，兩套轉寫（X-SAMPA 與雲龍）。語言學筆記、標音用。", True),
+ # ── 以下五套都需要 librime-lua（本專案已把它編進 librime，見 manifest.json）
+ "ice": ("雾凇拼音",
+   "目前最多人用的簡體拼音配置：詞庫大、開箱即用，還內建英文混輸、日期時間、"
+   "計算器等功能。想要一套「別人已經調好」的拼音就選這個。", True),
+ "moran": ("萬象拼音",
+   "以雙拼為核心的大型整合方案，可加輔助碼消重碼，詞庫非常大（下載約 30MB）。"
+   "適合已經熟悉雙拼、追求效率的人；第一次用拼音別從這裡開始。", False),
+ "openfly": ("小鶴音形",
+   "小鶴雙拼再配上字形輔助碼，重碼很少、打長句很順。要先學小鶴鍵位加字形碼。", False),
+ "keydo": ("鍵道·我流",
+   "音形碼頂功方案：編碼打滿就自動上屏，幾乎不用選字。代價是要重學一整套編碼規則。",
+   False),
+ "wubi86-jidian": ("五筆86·極點",
+   "五筆86 的極點版配置，附拼音混輸與擴充詞庫。已經會五筆的人換過來最順。", False),
  "prelude": ("基礎配置",
    "default.yaml、標點、符號與按鍵綁定。所有方案都要它。", False),
  "essay": ("語料庫（繁）",
@@ -117,6 +131,17 @@ for p in sorted(pkgs, key=lambda x: x["id"]):
     if p["schemas"] and not v.get("schemas_ok"):
         dropped.append({"id": p["id"], "repo": p["repo"], "stage": "verify",
                         "reason": "沒有任何方案通過部署"})
+        continue
+    # ── 用到 lua 的套件：deployed 不算數，必須真的打出字。
+    # 缺 librime-lua 時部署會回報 SUCCESS，只是引擎少了 translator/filter，
+    # 按下去沒有任何候選 —— deploy-only 閘門抓不到這種假成功。既然這一批
+    # 就是因為 lua 才進得來，閘門也就必須站在「輸入探針」這一關。
+    if p.get("needs_lua") and not (v.get("probe") or {}).get("keys"):
+        dropped.append({"id": p["id"], "repo": p["repo"], "stage": "verify",
+                        "reason": "方案用到 lua 元件，部署雖然成功，但輸入探針打不出"
+                                  "任何字 —— 這正是「缺 lua 會假成功」的樣子，不放行。"
+                                  + (" lua 錯誤：" + "；".join(
+                                      (v.get("lua") or {}).get("errors") or [])[:300])})
         continue
     kept_ids.add(p["id"])
 

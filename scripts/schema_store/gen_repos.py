@@ -17,6 +17,22 @@ def get(url):
 
 repos = {}
 
+# ── 分支覆寫 ──────────────────────────────────────────────────────────────
+# 少數上游的**預設分支不是可直接使用的方案**：執行期需要的檔案是由建置腳本
+# 產生的，只有發行分支才有。這種情況硬用預設分支的下場是部署直接失敗。
+#
+#   ksqsf/rime-moran（萬象拼音）：main 分支的 moran.chars.dict.yaml 與
+#   zrlf.dict.yaml 是 Makefile 用 uv/python 從 tools/data/ 產生的，repo 裡沒有；
+#   實測部署會炸在 `neither moran.chars.dict.yaml nor moran.chars.table.bin
+#   exists.`。上游另外維護 trad/ simp 兩個「已產生」的發行分支。本專案面向
+#   繁體使用者，取 trad。
+#
+# 這裡刻意只放「上游自己就這樣設計」的例外，不放任何為了讓某個方案過關而做的
+# 修補 —— 要改上游內容的話，那不是這條清單該解決的事。
+BRANCH_OVERRIDE = {
+    "ksqsf/rime-moran": "trad",
+}
+
 
 def ent(slug):
     return repos.setdefault(slug, {"repo": slug})
@@ -65,6 +81,11 @@ def walk(path):
 
 
 walk("")
+
+for slug, branch in BRANCH_OVERRIDE.items():
+    if slug in repos:
+        repos[slug]["branch"] = branch
+        repos[slug]["branch_override_reason"] = "預設分支缺少建置產生的執行期檔案"
 
 out = sorted(repos.values(), key=lambda r: r["repo"])
 os.makedirs(WORK, exist_ok=True)

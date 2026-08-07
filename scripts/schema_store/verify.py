@@ -92,23 +92,68 @@ def closure(pid):
 HANIHAO = "你好"
 
 
+def keyseqs(field):
+    """把詞庫裡的編碼欄轉成「實際要按的鍵序」，可能不只一種。
+
+    格式是空白分音節，有些方案（萬象）還把**輔助碼**寫在 `;` 之後：
+
+        你好\tni;re hk;nz      ← 主碼 nihk，輔助碼 re / nz
+
+    輔助碼是可打可不打的，主碼才是最短且一定成立的鍵序，所以主碼排前面。
+    兩種都是從該方案自己的詞庫讀出來的，沒有任何一個字是編的。
+    """
+    field = field.strip()
+    if not field:
+        return []
+    main = re.sub(r";[^\s]*", "", field).replace(" ", "")
+    full = field.replace(" ", "")
+    # 聲調數字在粵拼／潮州話這類方案是**可省略**的（詞庫存 nei5hou2，
+    # 實際打 neihou 就出得來，而且多數方案的 speller/alphabet 根本不收數字）。
+    # 一樣只是把同一筆詞條的編碼換個寫法，沒有無中生有。
+    notone = re.sub(r"\d", "", main)
+    return [c for c in dict.fromkeys([main, notone, full]) if c]
+
+
 def probe_candidates(p):
     stage = {q: by_id[q]["stage_dir"] for q in closure(p["id"]) if q in by_id}
 
     def find(fn):
+        # 先照路徑找（引用可能就寫成 cn_dicts/base），找不到再退回同名檔 ——
+        # 套件的 zip 不再一定是扁平的（見 docs/schema-store.md §2），
+        # 只比對根目錄的話，雾凇這種把詞庫分目錄放的方案就一個也查不到編碼。
+        base = os.path.basename(fn)
         for d in stage.values():
             fp = os.path.join(d, fn)
             if os.path.isfile(fp):
                 return fp
+        for d in stage.values():
+            for root, dirs, files in os.walk(d):
+                if base in files:
+                    return os.path.join(root, base)
         return None
 
+    # 探針只跑前幾個方案（每個都要在裝置上重跑一次，很慢），所以順序很重要：
+    # 先試「這個套件的招牌方案」。以前照 schema 檔名排序，雾凇拼音就會被
+    # 七個 double_pinyin_* 佔滿名額，主方案 rime_ice 根本輪不到 ——
+    # 索引裡留下的證據會是雙拼變體打出來的怪字，而不是使用者真正會用的那個。
+    pid = p["id"].replace("-", "_")
+    def _rank(s):
+        sid = s["id"]
+        if sid == pid or sid.replace("_", "") == pid.replace("_", ""):
+            return (0, sid)
+        if pid in sid or sid in pid:
+            return (1, sid)
+        return (2, sid)
+
     out = []
-    for sc in p["schemas"][:4]:
+    for sc in sorted(p["schemas"], key=_rank)[:4]:
         sp = find(sc["file"])
         if not sp:
             continue
         text = io.open(sp, encoding="utf-8", errors="replace").read()
-        dicts = re.findall(r"^\s*dictionary:\s*([^\s#\"']+)\s*$", text, re.M)
+        # 尾巴常常跟著註解（鍵道寫 `dictionary: keydo # 指定转换器所使用的词库`），
+        # 不放行註解的話這裡會抓不到任何詞庫，探針就只剩沒用的 "nihao"。
+        dicts = re.findall(r"^\s*dictionary:\s*([^\s#\"']+)\s*(?:#.*)?$", text, re.M)
         codes = []
         for dn in dict.fromkeys(dicts):
             for cand_fn in [dn + ".dict.yaml"]:
@@ -116,8 +161,18 @@ def probe_candidates(p):
                 if not dp:
                     continue
                 tables = [dp]
-                head = io.open(dp, encoding="utf-8", errors="replace").read(4000)
-                for m in re.finditer(r"^\s*-\s*([A-Za-z0-9_.\-]+)\s*$", head, re.M):
+                # import_tables 常常被上游寫成一大段附註解的清單（鍵道的
+                # keydo.chars 就排在第 4KB 之後），只讀 4000 字元會漏掉，
+                # 於是查不到單字編碼、探針只剩沒用的 "nihao"。
+                # 只取 YAML 標頭（`...` 之前），免得把 TSV 內文也當成清單掃。
+                head = io.open(dp, encoding="utf-8", errors="replace").read(60000)
+                head = re.split(r"^\.\.\.\s*$", head, maxsplit=1, flags=re.M)[0]
+                # import_tables 的寫法上游各行其是：帶不帶引號（小鶴音形寫
+                # `- 'openfly.primary'`）、帶不帶目錄（雾凇寫 `- cn_dicts/base`）、
+                # 後面接不接註解。只認光禿禿的名字會整批漏掉，探針就只剩 "nihao"。
+                for m in re.finditer(
+                        r"^\s*-\s*[\"']?([A-Za-z0-9_.\-/]+)[\"']?\s*(?:#.*)?$",
+                        head, re.M):
                     t = find(m.group(1) + ".dict.yaml")
                     if t:
                         tables.append(t)
@@ -130,16 +185,14 @@ def probe_candidates(p):
                         with io.open(t, encoding="utf-8", errors="replace") as f:
                             for line in f:
                                 if line.startswith(HANIHAO + "\t"):
-                                    code = line.split("\t")[1].strip()
-                                    if code:
-                                        codes.append(code.replace(" ", ""))
+                                    codes += keyseqs(line.split("\t")[1])
                                 elif line[:1] in per_char and line[1:2] == "\t":
-                                    c = line.split("\t")[1].strip().replace(" ", "")
                                     # 多音字要多留幾個讀音：粵拼的「好」先出現的是
                                     # hou3（喜好），hou2（好的）在後面，只取第一個會漏。
-                                    if c and c not in per_char[line[0]] \
-                                            and len(per_char[line[0]]) < 3:
-                                        per_char[line[0]].append(c)
+                                    for c in keyseqs(line.split("\t")[1]):
+                                        if c not in per_char[line[0]] \
+                                                and len(per_char[line[0]]) < 4:
+                                            per_char[line[0]].append(c)
                                 if len(codes) >= 2:
                                     break
                     except OSError:
@@ -181,7 +234,11 @@ def push_base():
 def make_run_dir(p, schemas, tag):
     run = f"{DEV}/run/{p['id']}{tag}"
     shell(f"rm -rf {run} && mkdir -p {run}/user")
-    cps = " && ".join(f"cp {DEV}/pool/{q}/* {run}/user/ 2>/dev/null || true"
+    # `cp -r <pool>/. <user>/` 而不是 `cp <pool>/*`：套件現在可能帶 lua/ 子目錄
+    # （librime-lua 的 package.path 寫死 <data_dir>/lua/?.lua，攤平就 require 不到）。
+    # 用 "/." 結尾是為了「合併」而不是「把 lua/ 塞進 lua/lua/」——
+    # 多個套件各自帶 lua/ 時這條差別是會不會壞掉的關鍵。
+    cps = " && ".join(f"cp -r {DEV}/pool/{q}/. {run}/user/ 2>/dev/null || true"
                       for q in closure(p["id"]) if q in by_id)
     shell(cps)
     # 上游 default.yaml 列的方案遠多於本套件提供的，未提供者部署會報錯 ——
@@ -198,6 +255,13 @@ def make_run_dir(p, schemas, tag):
 DEPLOY_RE = re.compile(r"^\[deploy\] (\w+)", re.M)
 SCHEMA_RE = re.compile(r"^\[schema\] ([^\t]+)\t(.*)$", re.M)
 COMMIT_RE = re.compile(r'^>>> COMMIT: "(.*)"$', re.M)
+# 政策迴圈每一輪印出的候選數。用來分辨「引擎真的產出候選」與「什麼都沒有」。
+CAND_RE = re.compile(r"候選=(\d+)")
+# librime-lua 自己的錯誤訊息（src/lua_gears.cc、src/modules.cc）。
+# "Compoment" 是上游的拼字，別「順手修好」—— 對不上就抓不到。
+LUA_ERR_RE = re.compile(
+    r"^.*(Lua Comp[oe]ment of \w+ +error|Lua\w*::\w+ of .* error\(|"
+    r"rime\.lua error).*$", re.M)
 
 
 def run_console(run, keys, sel="1", schema="", timeout=1500):
@@ -263,16 +327,48 @@ def verify(p):
             return res
 
     # ── 探針：真的打一次字
+    #
+    # 這一步比 deployed 重要得多。「缺 librime-lua 時部署照樣回報 SUCCESS，
+    # 只是引擎少了 translator，按下去沒有任何候選」是本專案踩過的坑 ——
+    # 所以凡是用到 lua 的套件，光有 deployed 一律不算數（閘門在 mkindex.py）。
+    #
+    # 兩級證據：
+    #   exact  打出「你好」。編碼是從該方案自己的詞庫查出來的，最強。
+    #   typed  打出了**某些字**（且過程中真的出現過候選）。雙拼、形碼這類
+    #          方案的「你好」編碼沒辦法從詞庫直接讀出來（詞庫存的是全拼，
+    #          speller/algebra 才是真正的鍵位），退到這一級仍然證明
+    #          「按鍵 → 候選 → 上屏」整條路是通的。
+    best = None
+    lua_errors = []
     for sid, keys in probe_candidates(p):
         if sid not in res["schemas_ok"]:
             continue
         out, err = run_console(run, keys, "1", sid, timeout=600)
         if err:
             continue
+        lua_errors += [m.group(0).strip()[:200] for m in LUA_ERR_RE.finditer(out)]
         cm = COMMIT_RE.findall(out)
+        cands = [int(x) for x in CAND_RE.findall(out)]
         if cm and cm[-1] == HANIHAO:
-            res["probe"] = {"schema": sid, "keys": keys, "expect": HANIHAO}
+            res["probe"] = {"schema": sid, "keys": keys, "expect": HANIHAO,
+                            "kind": "exact"}
             break
+        if best is None and cm and cm[-1] and max(cands or [0]) > 0:
+            best = {"schema": sid, "keys": keys, "expect": cm[-1], "kind": "typed"}
+    if not res["probe"] and best:
+        res["probe"] = best
+    if p.get("needs_lua"):
+        res["lua"] = {"needs_lua": True,
+                      "files": len(p.get("lua_files") or []),
+                      "errors": sorted(set(lua_errors))[:10]}
+        if res["probe"]:
+            res["notes"].append(
+                "lua 方案：探針 %s（keys=%s）實際上屏「%s」"
+                % (res["probe"]["kind"], res["probe"]["keys"],
+                   res["probe"]["expect"]))
+        else:
+            res["notes"].append(
+                "lua 方案但探針打不出任何字 —— 極可能是 lua 元件沒生效")
     shell(f"rm -rf {run}")
     return res
 
@@ -300,7 +396,10 @@ def worker(p):
         json.dump(res, open(path, "w"), ensure_ascii=False, indent=1)
         print(f"  {p['id']:22s} deployed={res['deployed']} "
               f"schemas={len(res['schemas_ok'])}/{len(p['schemas'])} "
-              f"probe={(res['probe'] or {}).get('keys', '-')}", flush=True)
+              f"probe={(res['probe'] or {}).get('keys', '-')}"
+              f"->{(res['probe'] or {}).get('expect', '-')}"
+              f"({(res['probe'] or {}).get('kind', '-')})"
+              f"{' LUA' if p.get('needs_lua') else ''}", flush=True)
     return res
 
 

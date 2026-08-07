@@ -67,6 +67,16 @@ data class ArchiveLimits(
         "gram",          // octagram 語言模型
         "json",          // opencc 設定
         "md",            // 說明文件
+        // lua：librime 已編入 librime-lua 外掛（見 third_party/prebuilt/
+        // manifest.json 的 plugins.lua），雾凇拼音、萬象等現代方案沒有 lua/
+        // 就只是一個「部署成功卻打不出字」的空殼。
+        //
+        // 這一條**確實是在放行會被執行的程式碼**，所以其他防線一項都不能少：
+        // 市集下載的套件有 sha256 與伺服器側的部署＋輸入探針驗證；使用者自帶的
+        // zip 沒有這些憑據，但 lua 是跑在 librime 自己的沙盒 Lua state 裡，
+        // 權限不高於同一包 zip 裡的 yaml 能造成的影響（兩者都能改變輸入行為）。
+        // 路徑穿越、符號連結、解壓炸彈這幾條照樣擋在前面。
+        "lua",
     ),
     /** 無副檔名但允許的檔名（比對時區分大小寫，這些是慣例全大寫）。 */
     val allowedBareNames: Set<String> = setOf(

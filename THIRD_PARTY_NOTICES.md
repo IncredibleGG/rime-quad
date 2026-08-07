@@ -8,6 +8,8 @@
 | 元件 | 用途 | 授權 | 授權檔位置 |
 |---|---|---|---|
 | [librime](https://github.com/rime/librime) | 輸入法核心引擎 | BSD-3-Clause | `third_party/librime/LICENSE` |
+| [librime-lua](https://github.com/hchunhui/librime-lua) | librime 的 Lua 外掛（`lua_translator`／`lua_filter`／`lua_processor`／`lua_segmentor`） | BSD-3-Clause | `third_party/librime-lua/LICENSE` |
+| [Lua](https://www.lua.org/) 5.4.8 | librime-lua 內嵌的 Lua 直譯器 | MIT | `third_party/librime-lua/thirdparty/lua5.4/lua.h`（檔尾的 Copyright Notice） |
 | [glog](https://github.com/google/glog) | 日誌 | BSD-3-Clause | `third_party/librime/deps/glog/COPYING` |
 | [LevelDB](https://github.com/google/leveldb) | 使用者詞典儲存 | BSD-3-Clause | `third_party/librime/deps/leveldb/LICENSE` |
 | [yaml-cpp](https://github.com/jbeder/yaml-cpp) | 配置與 schema 解析 | MIT | `third_party/librime/deps/yaml-cpp/LICENSE` |
@@ -24,6 +26,28 @@ LGPL-2.1 的相關義務（例如允許使用者替換該函式庫的重新連�
 **2. OpenCC 是 Apache-2.0，與 GPL-2 不相容、但與 GPL-3 相容。**
 這是本專案選擇 GPL-3 而非 GPL-2 的實質理由之一 —— 若日後有人提議改用 GPL-2，
 這條會直接擋下來。
+
+## 關於 librime-lua 與內嵌的 Lua 直譯器
+
+`librime-lua` 是**編進 `librime.a` 的內建外掛**，不是執行期動態載入的外掛
+（`ENABLE_EXTERNAL_PLUGINS=OFF`；建置細節見 `third_party/prebuilt/manifest.json`
+的 `plugins.lua`）。它讓 `lua_translator`／`lua_filter`／`lua_processor`／
+`lua_segmentor` 可用，雾凇拼音、萬象拼音、小鶴音形、鍵道、五筆86·極點等
+現代方案全都靠它。
+
+- **librime-lua：BSD-3-Clause。** 授權文字逐字讀過 `third_party/librime-lua/LICENSE`
+  （含「Neither the name of the copyright holder…」那一條，是三條款版而非兩條款版），
+  不是照抄 GitHub 的標記。
+- **Lua 5.4.8：MIT。** 授權文字在 `third_party/librime-lua/thirdparty/lua5.4/lua.h`
+  檔尾（`Copyright (C) 1994-2025 Lua.org, PUC-Rio`）。Lua 原始碼取自 librime-lua
+  上游自己維護的 `thirdparty` 分支（即上游 `action-install.sh` 的做法），
+  **不使用系統套件**，因為交叉編譯到 Android 沒有系統 lua 可用。
+
+兩者都與 GPL-3 相容（BSD-3-Clause 與 MIT 都是寬鬆授權）。散布時本檔案即為
+兩者要求的著作權標示與授權條款隨附。
+
+**方案套件裡的 `.lua` 腳本不屬於本節** —— 那是使用者從方案市集下載的執行期資料，
+授權隨各自的上游庫，登記在本檔案最後的「方案市集散布的第三方方案」一節。
 
 ## 關於參考現有 RIME 前端
 
@@ -80,15 +104,22 @@ OpenCC 的 `.ocd2` 詞典由本專案以 host 版 OpenCC 從其原始碼樹產�
 **授權是逐一讀該庫的授權檔判定的，不是照抄 GitHub 的標記。**
 結果並非全部都是 LGPL-3：
 
-- `Apache-2.0`：1 個套件
+- `Apache-2.0`：2 個套件
 - `CC-BY-4.0 AND ODbL-1.0`：1 個套件
-- `GPL-3.0-only`：12 個套件
+- `GPL-3.0-only`：15 個套件
 - `GPL-3.0-or-later`：1 個套件
 - `LGPL-3.0-only`：13 個套件
-- `MIT`：1 個套件
+- `MIT`：2 個套件
 
 沒有授權檔的上游庫一律**不收錄** —— 無法確認散布條件，也無法滿足
 `docs/schema-store.md` §2「zip 必須附 LICENSE」。
+
+**「LICENSE 檔寫什麼」不等於「資料可以散布」。** 有些上游是分層授權：程式碼一套、
+詞庫與配置檔另一套。這種庫同樣不收錄，因為我們散布的正好是後者。目前唯一命中的是
+小鶴音形（`amorphobia/openfly`）—— 它的 `LICENSE` 是 MIT，但 README 指明官方詞庫與
+原始配置檔適用 `flypy-eula.md`（小鶴 EULA，只授權安裝與使用，未授權散布）、
+其餘整理詞庫適用 `by-nc.md`（CC BY-NC，禁止商業使用）。`analyze.py` 會偵測這類檔名
+並排除該套件。
 
 | 套件 | 名稱 | 分類 | 授權 | 打包時的 commit |
 |---|---|---|---|---|
@@ -101,7 +132,10 @@ OpenCC 的 `.ocd2` 詞典由本專案以 host 版 OpenCC 從其原始碼樹產�
 | [cangjie](https://github.com/rime/rime-cangjie) | 倉頡五代 | 華語 | `LGPL-3.0-only` | `52d90a1` |
 | [combo-pinyin](https://github.com/rime/rime-combo-pinyin) | 宮保拼音 | 華語 | `GPL-3.0-only` | `862894a` |
 | [double-pinyin](https://github.com/rime/rime-double-pinyin) | 雙拼 | 華語 | `GPL-3.0-only` | `01a1328` |
+| [ice](https://github.com/iDvel/rime-ice) | 雾凇拼音 | 華語 | `GPL-3.0-only` | `569ff3b` |
+| [keydo](https://github.com/pingshunhuangalex/rime-keydo) | 鍵道·我流 | 華語 | `GPL-3.0-only` | `1d1f6c9` |
 | [luna-pinyin](https://github.com/rime/rime-luna-pinyin) | 朙月拼音 | 華語 | `LGPL-3.0-only` | `56b934b` |
+| [moran](https://github.com/ksqsf/rime-moran) | 萬象拼音 | 華語 | `GPL-3.0-only` | `556898f` |
 | [pinyin-simp](https://github.com/rime/rime-pinyin-simp) | 袖珍簡拼 | 華語 | `Apache-2.0` | `0c6861e` |
 | [quick](https://github.com/rime/rime-quick) | 速成 | 華語 | `LGPL-3.0-only` | `5dcdb9e` |
 | [radical-pinyin](https://github.com/mirtlecn/rime-radical-pinyin) | 部件拆字 | 華語 | `GPL-3.0-only` | `87e73d7` |
@@ -110,9 +144,11 @@ OpenCC 的 `.ocd2` 詞典由本專案以 host 版 OpenCC 從其原始碼樹產�
 | [stroke](https://github.com/rime/rime-stroke) | 五筆畫 | 華語 | `LGPL-3.0-only` | `3a4b0f4` |
 | [terra-pinyin](https://github.com/rime/rime-terra-pinyin) | 地球拼音 | 華語 | `LGPL-3.0-only` | `8a2c895` |
 | [wubi](https://github.com/rime/rime-wubi) | 五筆·86 | 華語 | `LGPL-3.0-only` | `152a0d3` |
+| [wubi86-jidian](https://github.com/KyleBing/rime-wubi86-jidian) | 五筆86·極點 | 華語 | `Apache-2.0` | `a194fb8` |
 | [zhengma](https://github.com/lotem/rime-zhengma) | 鄭碼 | 華語 | `GPL-3.0-only` | `bc5873c` |
 | [zrm](https://github.com/bigshans/rime-zrm) | 自然碼＋輔助碼 | 華語 | `GPL-3.0-only` | `4ef9a1d` |
 | [ipa](https://github.com/rime/rime-ipa) | 國際音標 | 其他語系 | `LGPL-3.0-only` | `22b7171` |
+| [kappajp](https://github.com/momijineko/Rime-KappaJP) | 河童五筆（日文） | 其他語系 | `MIT` | `3d572cc` |
 | [cantonese](https://github.com/rime/rime-cantonese) | 粵語拼音（粵拼） | 方言 | `CC-BY-4.0 AND ODbL-1.0` | `c99b16e` |
 | [dieghv](https://github.com/kahaani/dieghv) | 潮州話拼音 | 方言 | `GPL-3.0-only` | `1709bb7` |
 | [jyutping](https://github.com/rime/rime-jyutping) | 粵拼（傳統版） | 方言 | `LGPL-3.0-only` | `ee5e72b` |

@@ -176,6 +176,16 @@ int main(int argc, char** argv) {
     }
   }
 
+  // 有些方案預設就停在英文（ASCII）模式 —— 鍵道·我流 的 ascii_mode 初值是 1。
+  // 這種方案在真實使用上，使用者第一件事就是按中英切換；但自動化測試沒有那顆鍵，
+  // 於是每個按鍵都「未被消費」，看起來像方案壞掉。這裡等同於幫它按一下。
+  // 既有的拼音／注音案例初始就是 ascii=0，這段對它們不會執行，行為不變。
+  if (rs_get_option(sess, "ascii_mode")) {
+    std::printf("\n方案預設在英文模式，關掉 ascii_mode（等同使用者按中英切換）\n");
+    if (!rs_set_option(sess, "ascii_mode", false))
+      std::printf("  rs_set_option 失敗: %s\n", rs_last_error());
+  }
+
   dump("初始", sess);
 
   // 逐字送出按鍵。X11 keysym 對 ASCII 可列印字元就是其 ASCII 值。

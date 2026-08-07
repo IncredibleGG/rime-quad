@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-07T05:43:18Z",
+  "generated_at": "2026-08-07T15:24:24Z",
   "generated_by": "scripts/build_native.sh",
   "librime": {
     "version": "1.17.0",
@@ -17,6 +17,34 @@
     "debug_info_stripped": true,
     "debug_info_note": "NDK 預設帶 -g,未剝離的 librime.a 約 118 MiB。匯出時已套用 llvm-strip --strip-debug(保留所有連結符號)。需要完整 DWARF 時用 scripts/build_native.sh --keep-debug 重建。"
   },
+  "plugins": {
+    "lua": {
+      "enabled": true,
+      "upstream": "https://github.com/hchunhui/librime-lua.git",
+      "commit": "ec52e48ea18f11af37717a01c337f853215cf70b",
+      "license": "BSD-3-Clause",
+      "source_dir": "third_party/librime-lua",
+      "mounted_at": "third_party/librime/plugins/lua(symlink)",
+      "interpreter": {
+        "name": "Lua",
+        "version": "5.4.8",
+        "license": "MIT",
+        "source": "librime-lua 的 thirdparty 分支(上游 action-install.sh 的做法)",
+        "commit": "fa40fadd8af1e5b1fbd55703ccbd54476956d74c",
+        "source_dir": "third_party/librime-lua/thirdparty/lua5.4",
+        "note": "不找系統 lua5.4/luajit(交叉編譯到 Android 找不到),把 Lua 原始碼一起編進外掛的 object 檔。"
+      },
+      "provides": [
+        "lua_translator",
+        "lua_filter",
+        "lua_segmentor",
+        "lua_processor"
+      ],
+      "packaging": "BUILD_MERGED_PLUGINS=ON:外掛與 Lua 直譯器的 object 檔直接併入 librime.a,不另外產生靜態庫,連結順序不變。",
+      "registration": "上層 CMakeLists 依 rime_plugins_modules 定義 RIME_EXTRA_MODULES=(lua),rime_api.cc 因此會呼叫 rime_require_module_lua();librime.a 內同時存在該符號的定義(T)與引用(U),build_native.sh 的 verify_lua() 會檢查。",
+      "runtime_data": "librime-lua 會把 package.path 設成 <user>/lua/?.lua;<user>/lua/?/init.lua;<shared>/lua/?.lua;<shared>/lua/?/init.lua,並載入 <user>/rime.lua(不存在則 <shared>/rime.lua)。方案套件必須保留 lua/ 子目錄結構與 rime.lua。"
+    }
+  },
   "boost": {
     "version": "1.89.0",
     "header_only": true,
@@ -32,7 +60,7 @@
     "libyaml-cpp.a",
     "libglog.a"
   ],
-  "link_order_note": "librime.a 依賴 opencc/glog/yaml-cpp/leveldb/marisa;libopencc.a 依賴 libmarisa.a,故 marisa 必須排在 opencc 之後。",
+  "link_order_note": "librime.a 依賴 opencc/glog/yaml-cpp/leveldb/marisa;libopencc.a 依賴 libmarisa.a,故 marisa 必須排在 opencc 之後。librime-lua 外掛與 Lua 5.4 直譯器已併入 librime.a,不需要額外的 liblua.a,順序與加入 lua 之前完全相同。",
   "system_libs": [
     "log",
     "m"
@@ -59,7 +87,7 @@
       "BUILD_SAMPLE=OFF",
       "BUILD_DATA=OFF",
       "BUILD_SEPARATE_LIBS=OFF",
-      "BUILD_MERGED_PLUGINS=OFF",
+      "BUILD_MERGED_PLUGINS=ON",
       "ENABLE_EXTERNAL_PLUGINS=OFF",
       "ENABLE_LOGGING=ON",
       "ENABLE_THREADING=ON",
@@ -83,9 +111,9 @@
       "libs": [
         {
           "file": "librime.a",
-          "size_bytes": 13170414,
-          "size_human": "12.56 MiB",
-          "sha256": "40604333523304e85ec5ed9d3b57e7640ea0197f3eefbb6455d09fe6d4e5c124"
+          "size_bytes": 19149024,
+          "size_human": "18.26 MiB",
+          "sha256": "0cbeb5eee2e1bb5958fb3e3ccba82c960891d764b01a197060a8cb048b2b6e94"
         },
         {
           "file": "libopencc.a",
@@ -118,7 +146,7 @@
           "sha256": "6a63aa496536d83a80ba877969869cd987192f3cc54fae6799bd97129e9f34fd"
         }
       ],
-      "total_size_bytes": 18340626
+      "total_size_bytes": 24319236
     },
     "x86_64": {
       "api_level": 21,
@@ -130,9 +158,9 @@
       "libs": [
         {
           "file": "librime.a",
-          "size_bytes": 12464770,
-          "size_human": "11.89 MiB",
-          "sha256": "7812a2f5eb9550979debccecc268e94105fc7b4d45bea6e308f2db7407fed710"
+          "size_bytes": 17843178,
+          "size_human": "17.02 MiB",
+          "sha256": "8015a31d3f7edf76cb3e04a1025d49452918551d71cb3c32665cf2fbb3f2c1ff"
         },
         {
           "file": "libopencc.a",
@@ -165,7 +193,7 @@
           "sha256": "5ed22b46a409ba5acb0fad235ac47be3bcaffea63e70b4d814fceb9cc273df90"
         }
       ],
-      "total_size_bytes": 17470440
+      "total_size_bytes": 22848848
     }
   }
 }

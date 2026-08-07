@@ -16,6 +16,10 @@ third_party/boost_*.tar.gz
 third_party/boost_*.tar.gz.part
 # clone 進來的 librime 原始碼(含其 deps 子模組),不入本倉庫
 third_party/librime/
+# clone 進來的 librime-lua 外掛原始碼(含 thirdparty/ 底下的 Lua 5.4 原始碼);
+# 由 scripts/build_native.sh 依釘住的 commit 自動取得,並 symlink 到
+# third_party/librime/plugins/lua 供 librime 的 plugin 機制撿走。
+third_party/librime-lua/
 # 建置日誌
 third_party/*.log
 
@@ -58,3 +62,6 @@ ks-pass.txt
 key-pass.txt
 CREDENTIALS.txt
 /rime-signing/
+
+# 參考截圖(使用者提供,不進版控)
+/docs/reference/

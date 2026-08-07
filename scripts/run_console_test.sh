@@ -11,6 +11,9 @@
 #   ./run_console_test.sh --keys su3cl3 --schema bopomofo_tw --expect 你好
 #   ./run_console_test.sh --skip-push           # 資料已在裝置上，只重推執行檔
 #
+# 環境變數:
+#   RIME_SERIAL  指定模擬器（例：emulator-5560）。多條線並行時務必指定。
+#
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -55,8 +58,17 @@ L="$ROOT/third_party/prebuilt/$ABI/lib"
 echo "  $(stat -c%s "$BIN") bytes"
 
 # ---------------------------------------------------------------- 裝置 ---
-"$ROOT/scripts/emu.sh" status >/dev/null 2>&1 || "$ROOT/scripts/emu.sh" start
-SERIAL="$("$ADB" devices | awk '/emulator-[0-9]+\tdevice/{print $1; exit}')"
+# 這台機器上常同時有好幾個模擬器（多條線並行）。RIME_SERIAL 指名要用哪一台，
+# 沒指名才退回「挑第一個」。挑錯機器的症狀是資料推到別人的模擬器上，
+# 兩邊都莫名其妙，所以指名時一律嚴格檢查它真的在線。
+SERIAL="${RIME_SERIAL:-}"
+if [ -n "$SERIAL" ]; then
+  "$ADB" devices | grep -q "^${SERIAL}	device" \
+    || die "指定的 $SERIAL 不在線。目前: $("$ADB" devices | tr '\n' ' ')"
+else
+  "$ROOT/scripts/emu.sh" status >/dev/null 2>&1 || "$ROOT/scripts/emu.sh" start
+  SERIAL="$("$ADB" devices | awk '/emulator-[0-9]+\tdevice/{print $1; exit}')"
+fi
 [ -n "$SERIAL" ] || die "找不到模擬器"
 echo "=== 裝置 $SERIAL ==="
 

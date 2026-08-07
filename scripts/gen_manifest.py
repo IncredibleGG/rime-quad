@@ -54,6 +54,54 @@ def sha256(path):
     return h.hexdigest()
 
 
+def plugins_info():
+    """librime 的內建外掛。目前只有 librime-lua。
+
+    重點:lua 外掛(含 Lua 直譯器)是以 object 檔的形式**併進 librime.a**的
+    (BUILD_MERGED_PLUGINS=ON),沒有另外產生 liblua.a / librime-lua.a,
+    所以 link_order 完全不變 —— 下游不需要多連任何一個檔案。
+    """
+    if os.environ.get("ENABLE_LUA", "1") != "1":
+        return {"lua": {"enabled": False,
+                        "note": "以 scripts/build_native.sh --no-lua 建置,"
+                                "lua_translator/lua_filter 不可用。"}}
+    src = os.environ["LIBRIME_LUA_SRC"]
+    return {
+        "lua": {
+            "enabled": True,
+            "upstream": os.environ["LIBRIME_LUA_REPO"],
+            "commit": os.environ["LIBRIME_LUA_COMMIT"],
+            "license": "BSD-3-Clause",
+            "source_dir": rel(src),
+            "mounted_at": rel(os.path.join(LIBRIME_SRC, "plugins", "lua"))
+                          + "(symlink)",
+            "interpreter": {
+                "name": "Lua",
+                "version": os.environ["LUA_VERSION"],
+                "license": "MIT",
+                "source": "librime-lua 的 thirdparty 分支(上游 action-install.sh 的做法)",
+                "commit": os.environ["LIBRIME_LUA_TP_COMMIT"],
+                "source_dir": rel(os.path.join(src, "thirdparty", "lua5.4")),
+                "note": "不找系統 lua5.4/luajit(交叉編譯到 Android 找不到),"
+                        "把 Lua 原始碼一起編進外掛的 object 檔。",
+            },
+            "provides": ["lua_translator", "lua_filter", "lua_segmentor",
+                         "lua_processor"],
+            "packaging": "BUILD_MERGED_PLUGINS=ON:外掛與 Lua 直譯器的 object 檔"
+                         "直接併入 librime.a,不另外產生靜態庫,連結順序不變。",
+            "registration": "上層 CMakeLists 依 rime_plugins_modules 定義 "
+                            "RIME_EXTRA_MODULES=(lua),rime_api.cc 因此會呼叫 "
+                            "rime_require_module_lua();librime.a 內同時存在該符號的"
+                            "定義(T)與引用(U),build_native.sh 的 verify_lua() 會檢查。",
+            "runtime_data": "librime-lua 會把 package.path 設成 "
+                            "<user>/lua/?.lua;<user>/lua/?/init.lua;"
+                            "<shared>/lua/?.lua;<shared>/lua/?/init.lua,"
+                            "並載入 <user>/rime.lua(不存在則 <shared>/rime.lua)。"
+                            "方案套件必須保留 lua/ 子目錄結構與 rime.lua。",
+        }
+    }
+
+
 link_order = os.environ["LINK_ORDER"].split()
 system_libs = os.environ["SYSTEM_LIBS"].split()
 abis = os.environ["ABIS"].split()
@@ -118,6 +166,7 @@ manifest = {
                            "匯出時已套用 llvm-strip --strip-debug(保留所有連結符號)。"
                            "需要完整 DWARF 時用 scripts/build_native.sh --keep-debug 重建。",
     },
+    "plugins": plugins_info(),
     "boost": {
         "version": os.environ["BOOST_VERSION"],
         "header_only": True,
@@ -130,7 +179,9 @@ manifest = {
     # 靜態庫的順序會影響連結:被依賴者必須排在依賴者之後。
     "link_order": link_order,
     "link_order_note": "librime.a 依賴 opencc/glog/yaml-cpp/leveldb/marisa;"
-                       "libopencc.a 依賴 libmarisa.a,故 marisa 必須排在 opencc 之後。",
+                       "libopencc.a 依賴 libmarisa.a,故 marisa 必須排在 opencc 之後。"
+                       "librime-lua 外掛與 Lua 5.4 直譯器已併入 librime.a,"
+                       "不需要額外的 liblua.a,順序與加入 lua 之前完全相同。",
     "system_libs": system_libs,
     "compile_definitions": {
         "public_c_api": [],
@@ -152,7 +203,9 @@ manifest = {
         "librime": [
             "BUILD_SHARED_LIBS=OFF", "BUILD_STATIC=ON", "BUILD_TEST=OFF",
             "BUILD_SAMPLE=OFF", "BUILD_DATA=OFF", "BUILD_SEPARATE_LIBS=OFF",
-            "BUILD_MERGED_PLUGINS=OFF", "ENABLE_EXTERNAL_PLUGINS=OFF",
+            "BUILD_MERGED_PLUGINS=%s" % (
+                "ON" if os.environ.get("ENABLE_LUA", "1") == "1" else "OFF"),
+            "ENABLE_EXTERNAL_PLUGINS=OFF",
             "ENABLE_LOGGING=ON", "ENABLE_THREADING=ON", "ENABLE_TIMESTAMP=ON",
             "INSTALL_PRIVATE_HEADERS=ON",
         ],

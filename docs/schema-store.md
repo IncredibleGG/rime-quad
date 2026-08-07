@@ -71,7 +71,12 @@
       // 打包時實際驗證過的證據。未通過驗證的套件不得進入索引。
       "verified": {
         "deployed": true,                     // librime 部署成功
-        "probe": { "schema": "luna_pinyin_tw", "keys": "nihao", "expect": "你好" }
+        // 輸入探針：打包時在模擬器上真的送了這串按鍵、真的上屏了 expect。
+        // kind = "exact" 打出「你好」（編碼從該方案自己的詞庫查出來）
+        //      = "typed" 打出了 expect 這串字（雙拼／形碼的「你好」編碼沒辦法
+        //                從詞庫直接讀出來，退到這一級仍證明整條路是通的）
+        "probe": { "schema": "luna_pinyin_tw", "keys": "nihao",
+                   "expect": "你好", "kind": "exact" }
       }
     }
   ]
@@ -85,6 +90,11 @@
 - **`sha256` 行動端必須驗證。** 不符即整包丟棄，不可「先解壓再說」。
 - **`verified.deployed` 為 false 或缺漏的套件不得進索引。** 這是本設計的核心品質閘門：
   寧可少收一個方案，也不要讓使用者點下去才發現壞的。
+- **用到 `lua_*` 元件的套件，光有 `verified.deployed` 不算數，必須另外有
+  `verified.probe`。** 理由是這一類的失效方式和別人不同：缺少 librime-lua、
+  或 `lua/` 沒被正確打包時，**部署仍然回報 SUCCESS**，只是引擎少了
+  translator／filter，使用者按下去沒有任何候選。deploy-only 閘門看不到這種
+  假成功，只有「真的打出字」才看得到。
 - `categories[].hidden` 為 true 者不在市集列表顯示（例如 `prelude`、`essay` 這類
   只作為相依的基礎元件），但仍可被 `requires` 指名。
 
@@ -158,19 +168,39 @@ UPSTREAM.txt             ← 必須隨附：上游 URL、commit、打包時間
 - **不得包含目錄穿越路徑**（`..`、絕對路徑、符號連結）。打包端要保證，行動端仍要再驗一次。
 - opencc 詞典（`.ocd2`）由 APK 內建提供，套件**不應**重複打包。
 
-**「扁平」有兩個例外，只允許這兩個子目錄**（其餘一律視為違規）：
+### 攤平是預設，不是規則
 
-| 子目錄 | 用途 | 何時出現 |
+真正的規則是：**entry 名稱必須等於 librime 解析該檔案時用的相對路徑**。
+多數方案的引用不帶斜線（`dictionary: luna_pinyin`），解析出來就是根目錄的
+`luna_pinyin.dict.yaml`，所以看起來像「扁平」。但只要引用帶了斜線，
+librime 就是**照路徑**找檔案，攤平會直接讓部署失敗。實際踩過的四種：
+
+| 子目錄 | 用途 | 觸發 |
 |---|---|---|
+| `lua/`（與根目錄的 `rime.lua`） | librime-lua 的執行期腳本 | 方案用了 `lua_translator` / `lua_filter` / `lua_processor` / `lua_segmentor` |
+| 詞庫子目錄，例如 `cn_dicts/`、`en_dicts/` | 上游把詞庫分目錄放 | `import_tables: - cn_dicts/8105` |
 | `opencc/` | 上游自帶的 opencc 設定與詞表（`.json`／`.txt`，**不含 `.ocd2`**） | 方案用到 APK 沒內建的簡繁／emoji 轉換 |
 | `build/` | librime 預編譯產物（`*.table.bin`、`*.prism.bin`、`*.reverse.bin`） | 套件宣告了 `precompiled` |
 
-會有這兩個例外，是因為 librime 就是按這個目錄結構找檔案的：`opencc_config: t2hkf.json`
-只會到 `<data_dir>/opencc/` 底下找，攤平之後找不到；`build/` 同理。
+前兩條都是實測撞出來的，不是推測：
 
-**這兩個例外不放寬任何安全規則** —— entry 名稱正規化後仍必須落在目標目錄內，
-仍然拒絕 `..`、絕對路徑與符號連結，白名單仍然只收
-`.yaml`／`.txt`／`.json`／`.bin`／`LICENSE` 這幾類。
+- 攤平 `cn_dicts/8105.dict.yaml` 之後，雾凇拼音部署直接失敗：
+  `source file '.../cn_dicts/8105.dict.yaml' does not exist.`
+- 攤平 `lua/`：部署**照樣回報 SUCCESS**，但 `lua_translator` 一 require 就找不到
+  檔案，按下去沒有任何候選。librime-lua 的 `package.path` 寫死了
+  `<user>/lua/?.lua;<user>/lua/?/init.lua;<shared>/lua/?.lua;<shared>/lua/?/init.lua`，
+  而 `rime.lua` 只從資料目錄的**根**載入。這是最陰險的一種 ——
+  所以 §1 的品質閘門對用到 lua 的套件不接受「只有 deployed」。
+
+**放寬的只有「路徑」，安全規則一項都沒放寬：**
+
+- entry 名稱正規化後仍必須落在目標目錄內；仍然拒絕 `..`、絕對路徑、符號連結。
+- 目錄深度上限 **3 段**（`a/b/c.yaml`），打包端與行動端都檢查。
+- 副檔名白名單：`.yaml`／`.yml`／`.txt`／`.json`／`.lua`／`.gram`／`.ocd2`／`.md`
+  與無副檔名的 `LICENSE`。**`.bin` 不在白名單**（見行動端 `ArchiveGuard` 的註解）。
+- `.lua` 是**會被執行的程式碼**，白名單放它進來是有代價的決定。市集套件靠
+  sha256 + 伺服器側「實際部署 + 輸入探針」把關；使用者自帶的 zip 沒有這些憑據，
+  由 `ArchiveGuard` 的其餘各條與 librime 自己的 Lua state 邊界承接。
 
 ---
 

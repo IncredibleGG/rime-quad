@@ -25,12 +25,31 @@ SKIP_NAME_RE = re.compile(
     r"default\.custom\.yaml|installation\.yaml|user\.yaml|"
     r"README.*|readme.*"
     r")$", re.I)
-# 建置腳本 / CI / 前端設定 / lua 外掛 / opencc 自帶詞典，都不是套件內容
+# 建置腳本 / CI / 前端設定 / opencc 自帶詞典，都不是套件內容。
+#
+# `lua` 仍然留在這裡，但意思和以前**完全不同**：以前是「lua 外掛用不到，丟掉」，
+# 現在是「lua/ 不能走 cand 這條**攤平**的路」。librime-lua 把 package.path 設成
+# <data_dir>/lua/?.lua（見 third_party/prebuilt/manifest.json 的
+# plugins.lua.runtime_data），攤平之後 require 就找不到檔案 —— 而那正好是
+# 「部署 SUCCESS 但按下去沒候選」的成因。lua/ 由 collect_lua() 另外收集，
+# **保留目錄結構**。
 SKIP_DIR = {".git", ".github", ".vscode", "scripts", "script", "tools", "src",
             "tests", "test", "doc", "docs", "recipes", "opencc", "OpenCC",
             "lua", "logic", "img", "images", "bin", "node_modules", "release",
             "build", "dist", "assets", "myself"}
 LICENSE_FILE_RE = re.compile(r"^(licen[cs]e|copying|unlicen[cs]e)", re.I)
+# ── 「LICENSE 說 MIT」不代表資料可以散布 ────────────────────────────────
+# 小鶴音形（amorphobia/openfly）的 LICENSE 是 MIT，但 README 講得很清楚：
+#   官方詞庫與原始配置檔 → flypy-eula.md（小鶴 EULA，只授權「安裝與使用」，
+#                                        著作權全部保留，沒有散布權）
+#   其他整理詞庫與配置檔 → by-nc.md（CC BY-NC，禁止商業使用）
+#   程式碼部分           → LICENSE（MIT）
+# 我們散布的正好是詞庫與配置檔，也就是**不是 MIT 的那兩塊**。
+# 只讀 LICENSE 檔會漏掉這種「分層授權」，所以另外看有沒有這類檔名。
+# 全部上游庫掃過，目前只有 openfly 命中 —— 這條不會誤傷別人。
+RESTRICTIVE_FILE_RE = re.compile(
+    r"^(by[-_]?nc|.*eula|.*non[-_]?commercial|.*proprietary)([-_.].*)?\.(md|txt|html?)$",
+    re.I)
 BOPOMOFO_RE = re.compile(r"[ㄅ-ㄯ]")
 # 只認真正的韓文音節/日文假名，且要有一定數量 —— 相容用 Jamo（U+3131..U+318E）
 # 有些漢語方言方案拿去當音標符號用，會誤判（rime-Sautungva 就中過）。
@@ -40,6 +59,9 @@ SCRIPT_MIN = 3
 # 大千式的鍵位集合。注意上游的 alphabet 還帶了聲調鍵 " 6347"，
 # 所以比對用「集合包含」而不是字串相等 —— 一開始寫成相等，注音就被判成 qwerty 了。
 DACHEN_KEYS = set("1qaz2wsxedcrfv5tgbyhnujm8ik,9ol.0p;/-")
+# 「帶斜線的引用要原樣保留路徑」時，容許的最大目錄深度（0 = 根目錄）。
+# 2 代表 zip 內最多 3 段（a/b/c.yaml），對得上行動端 ArchiveGuard 的 maxDepth=4。
+MAX_REF_DEPTH = 2
 
 
 def sh(cmd, cwd):
@@ -47,6 +69,37 @@ def sh(cmd, cwd):
 
 
 # ───────────────────────────────────────────────── yaml 讀取（含超大詞庫） ──
+# librime 用的是 yaml-cpp，比 PyYAML 寬鬆得多。上游的 schema 檔踩到過兩種
+# PyYAML 會直接拋例外、yaml-cpp 卻照吃的寫法：
+#
+#   1. 純量裡夾**跳格字元**：雾凇拼音的自訂短語寫成 `- d\t的`
+#      → PyYAML: "found character '\t' that cannot start any token"
+#   2. 用到 YAML 1.1 的 `=`（value 型別）：雾凇的 `prefix: =`
+#      → PyYAML: "could not determine a constructor for the tag ...:value"
+#
+# 這不是小事：解析失敗的 schema 會**整個從 schemas 清單消失** ——
+# rime_ice、六個 double_pinyin_*、t9 全都因此不見了，等於收錄了一個
+# 沒有主方案的雾凇拼音。所以這裡要盡量把它讀出來，而不是一失敗就放棄。
+class _LenientLoader(yaml.SafeLoader):
+    pass
+
+
+_LenientLoader.add_constructor(
+    "tag:yaml.org,2002:value", lambda l, n: l.construct_scalar(n))
+# 未知 tag 一律當成 None，而不是讓整份文件解析失敗。
+# 明確註冊的標準 tag 仍然優先，所以字串/數字/對映的行為不變。
+_LenientLoader.add_multi_constructor("", lambda l, suffix, n: None)
+
+
+def lenient_load(text):
+    for candidate in (text, text.replace("\t", " ")):
+        try:
+            return yaml.load(candidate, Loader=_LenientLoader)
+        except Exception:
+            continue
+    return None
+
+
 _cache = {}
 
 
@@ -68,10 +121,7 @@ def read_yaml_head(path):
         _cache[path] = (None, "")
         return _cache[path]
     text = "".join(buf)
-    try:
-        doc = yaml.safe_load(text)
-    except Exception:
-        doc = None
+    doc = lenient_load(text)
     _cache[path] = (doc, text)
     return doc, text
 
@@ -203,6 +253,83 @@ def detect_or_later(repo_dir):
     return False
 
 
+# ─────────────────────────────────────────────────── lua 執行期資料 ────────
+# librime-lua 的載入規則（src/modules.cc 的 lua_init()）：
+#   package.path = <user>/lua/?.lua;<user>/lua/?/init.lua;
+#                  <shared>/lua/?.lua;<shared>/lua/?/init.lua
+#   然後載入 <user>/rime.lua（沒有才退到 <shared>/rime.lua）
+# 所以套件必須原樣保留 repo 根目錄的 rime.lua 與整個 lua/ 子樹。
+# **不做靜態相依解析**：schema 裡寫的是 `lua_translator@*foo` 或
+# `lua_translator@bar_translator`，前者對應 lua/foo.lua，後者對應 rime.lua 裡
+# 註冊的名字，而 lua 腳本之間還會互相 require。少收一個檔就是執行期爆炸，
+# 所以整個 lua/ 一起收 —— 這些檔案都很小（通常幾十 KB）。
+LUA_SKIP_DIR = {".git", ".github", "test", "tests", "spec"}
+LUA_DATA_EXT = (".lua", ".txt", ".json", ".yaml")
+# ArchiveGuard（行動端）與 docs/schema-store.md §2 的目錄深度上限是 4。
+LUA_MAX_DEPTH = 3
+
+
+def _walk_lua_tree(src_dir, repo_dir, prefix, out):
+    """把 src_dir 底下的 lua 資源收進 out，zip 內路徑 = prefix + 相對 src_dir 的路徑。"""
+    for root, dirs, files in os.walk(src_dir):
+        dirs[:] = [x for x in dirs if x not in LUA_SKIP_DIR]
+        for fn in files:
+            if not fn.endswith(LUA_DATA_EXT) or fn.startswith("."):
+                continue
+            p = os.path.join(root, fn)
+            if os.path.islink(p) or not os.path.isfile(p):
+                continue
+            sub = os.path.relpath(p, src_dir).replace(os.sep, "/")
+            name = prefix + sub
+            if name.count("/") + 1 > LUA_MAX_DEPTH:
+                continue
+            out.setdefault(name, os.path.relpath(p, repo_dir).replace(os.sep, "/"))
+
+
+def collect_lua(repo_dir):
+    """回傳 {zip 內的相對路徑: repo 內的相對路徑}，路徑一律用 '/'。
+
+    兩種上游佈局都要認：
+      A. 標準：<repo>/rime.lua + <repo>/lua/**            （多數方案）
+      B. 集中：<repo>/<某目錄>/rime.lua + 同目錄底下的其他 .lua
+         上游的安裝說明是「把那個目錄的內容鋪進 Rime 使用者資料夾」，
+         也就是 rime.lua 落在根、其餘落在 lua/ 底下 —— keydo 的 logic/ 就是這型。
+         判準用「哪個目錄裡有 rime.lua」，不是硬編目錄名。
+    """
+    out = {}
+    root_lua = os.path.join(repo_dir, "rime.lua")
+    if os.path.isfile(root_lua) and not os.path.islink(root_lua):
+        out["rime.lua"] = "rime.lua"
+
+    lua_dir = os.path.join(repo_dir, "lua")
+    if os.path.isdir(lua_dir):
+        _walk_lua_tree(lua_dir, repo_dir, "lua/", out)
+
+    if "rime.lua" not in out:
+        try:
+            tops = sorted(os.listdir(repo_dir))
+        except OSError:
+            tops = []
+        for name in tops:
+            d = os.path.join(repo_dir, name)
+            if name in LUA_SKIP_DIR or name == "lua" or not os.path.isdir(d):
+                continue
+            if not os.path.isfile(os.path.join(d, "rime.lua")):
+                continue
+            out["rime.lua"] = f"{name}/rime.lua"
+            for sub in sorted(os.listdir(d)):
+                sp = os.path.join(d, sub)
+                if sub == "rime.lua":
+                    continue
+                if os.path.isdir(sp):
+                    _walk_lua_tree(sp, repo_dir, f"lua/{sub}/", out)
+                elif sub.endswith(LUA_DATA_EXT) and not sub.startswith("."):
+                    out.setdefault("lua/" + sub,
+                                   os.path.relpath(sp, repo_dir).replace(os.sep, "/"))
+            break
+    return out
+
+
 # ────────────────────────────────────────────────────────────── 分類判斷 ──
 # 依據（寫進報告）：
 #   1. 以 rppi（RIME 官方套件索引）的分類路徑為第一來源 —— 那是上游自己的判斷。
@@ -263,8 +390,29 @@ for r in repos:
                                    "無法確認散布條件，也無法滿足規範 §2「zip 必須含 LICENSE」"})
         continue
 
-    # ── 候選檔案（basename -> 最淺的相對路徑）
-    cand = {}
+    restrictive = sorted(n for n in os.listdir(d)
+                         if RESTRICTIVE_FILE_RE.match(n)
+                         and os.path.isfile(os.path.join(d, n)))
+    if restrictive:
+        excluded.append({"id": pid, "repo": slug, "stage": "license",
+                         "reason": "上游庫是分層授權：除了 LICENSE（%s）之外還有 %s，"
+                                   "代表**詞庫與配置檔**另有 EULA / 非商業（NC）條款。"
+                                   "我們散布的正是那些檔案，不是程式碼，"
+                                   "在取得明確散布授權之前不收錄。"
+                                   % ("+".join(l["spdx"] for l in lic),
+                                      "、".join(restrictive))})
+        continue
+
+    # ── 候選檔案
+    #   cand   : basename -> (depth, 相對路徑)   ← 攤平世界
+    #   by_rel : "cn_dicts/8105.dict.yaml" -> 相對路徑 ← 保留目錄的世界
+    #
+    # 為什麼需要第二份：librime 對「帶斜線的引用」是**照路徑找檔案**的。
+    # 雾凇拼音的 rime_ice.dict.yaml 寫 `import_tables: - cn_dicts/8105`，
+    # 攤平成 8105.dict.yaml 之後 librime 會直接報
+    # `source file '.../cn_dicts/8105.dict.yaml' does not exist` 而部署失敗
+    # （這是實測出來的，不是推測）。所以引用一旦帶斜線，就必須原樣保留路徑。
+    cand, by_rel = {}, {}
     for root, dirs, files in os.walk(d):
         dirs[:] = [x for x in dirs if x not in SKIP_DIR]
         rel_root = os.path.relpath(root, d)
@@ -280,6 +428,9 @@ for r in repos:
             prev = cand.get(fn)
             if prev is None or depth < prev[0]:
                 cand[fn] = (depth, rel)
+            # 保留目錄結構的那一份索引，見下面 resolve() 的說明
+            if depth <= MAX_REF_DEPTH:
+                by_rel[rel.replace(os.sep, "/")] = rel
 
     # ── 這個庫「提供」哪些方案：優先取 root 層的 *.schema.yaml
     schema_files = {fn: v for fn, v in cand.items() if fn.endswith(".schema.yaml")}
@@ -297,33 +448,61 @@ for r in repos:
             closure.add(fn)
             queue.append(fn)
 
+    # ── lua 執行期資料（保留目錄結構，不進 closure 的攤平世界）
+    lua_files = collect_lua(d)
+
+    # closure 裡的 key 就是「zip 內的檔名」：不帶斜線的沿用 basename，
+    # 帶斜線的引用則原樣保留路徑。src_of() 把 key 換回 repo 內的相對路徑。
+    def src_of(key):
+        return cand[key][1] if key in cand else by_rel[key]
+
+    def resolve(ref):
+        """把一個引用解析成 closure 的 key；解析不到回傳 None（= 外部相依）。"""
+        r = str(ref).replace("\\", "/").lstrip("./")
+        if "/" in r:
+            # 帶斜線 → 一定要照路徑；退而求其次才用 basename（有些上游寫的是
+            # 別的佈局下的路徑，攤平後仍找得到同名檔）
+            return r if r in by_rel else (os.path.basename(r)
+                                          if os.path.basename(r) in cand else None)
+        return r if r in cand else None
+
     external, opencc_refs, needs_lua = set(), set(), False
     while queue:
         fn = queue.pop()
-        doc, text = read_yaml_head(os.path.join(d, cand[fn][1]))
+        doc, text = read_yaml_head(os.path.join(d, src_of(fn)))
         refs, occ, lua = scan_refs(doc, text)
         needs_lua = needs_lua or lua
         opencc_refs |= occ
         for ref in refs:
-            key = ref if ref in cand else os.path.basename(ref)
-            if key in cand:
-                if key not in closure:
-                    closure.add(key)
-                    queue.append(key)
-            else:
+            key = resolve(ref)
+            if key is None:
                 external.add(ref)
+            elif key not in closure:
+                closure.add(key)
+                queue.append(key)
 
     # ── 方案 metadata + speller 鍵位
     schemas, alphabets, bopomofo_any, nonascii_alpha = [], {}, False, {}
     for fn in sorted(advertised):
         doc, text = read_yaml_head(os.path.join(d, cand[fn][1]))
-        if not isinstance(doc, dict):
-            continue
-        sch = doc.get("schema") or {}
-        sid = sch.get("schema_id") or fn[:-len(".schema.yaml")]
-        sname = sch.get("name") or sid
-        alpha = ((doc.get("speller") or {}).get("alphabet")
-                 if isinstance(doc.get("speller"), dict) else None)
+        if isinstance(doc, dict):
+            sch = doc.get("schema") or {}
+            sid = sch.get("schema_id") or fn[:-len(".schema.yaml")]
+            sname = sch.get("name") or sid
+            alpha = ((doc.get("speller") or {}).get("alphabet")
+                     if isinstance(doc.get("speller"), dict) else None)
+        else:
+            # 連 lenient_load 都讀不出來時的最後防線：直接抓兩行欄位。
+            # 寧可用純文字撈出 schema_id，也不要讓一個方案憑空消失 ——
+            # 它會不會用，交給後面「在模擬器上真的部署一次」去判。
+            m = re.search(r"^\s*schema_id:\s*[\"']?([A-Za-z0-9_.\-]+)", text, re.M)
+            if not m:
+                continue
+            sid = m.group(1)
+            mn = re.search(r"^\s*name:\s*[\"']?([^\"'\n#]+)", text, re.M)
+            sname = (mn.group(1).strip() if mn else sid)
+            ma = re.search(r"^\s{2,}alphabet:\s*[\"']?([^\"'\n#]+)", text, re.M)
+            alpha = ma.group(1).rstrip() if ma else None
         if alpha is not None:
             alpha = str(alpha)
             alphabets[sid] = alpha
@@ -342,6 +521,13 @@ for r in repos:
                                    else "kana" if len(KANA_RE.findall(text)) >= SCRIPT_MIN
                                    else None)})
 
+    # 同一個 schema_id 可能被兩個檔案宣告（rime-Sautungva 的 sautungva_beta
+    # 就出現兩次）。index.json 與 default.custom.yaml 的 schema_list 都不該有
+    # 重複項，在這裡去掉，保留先出現的那一份。
+    seen_sid = set()
+    schemas = [s for s in schemas
+               if not (s["id"] in seen_sid or seen_sid.add(s["id"]))]
+
     pkgs.append({
         "id": pid, "repo": slug, "upstream": f"https://github.com/{slug}",
         "dir": d, "commit": sh(["git", "rev-parse", "HEAD"], d),
@@ -350,8 +536,10 @@ for r in repos:
         "rppi_license": r.get("rppi_license"),
         "rppi_path": r.get("rppi_path"), "rppi_name": r.get("rppi_name"),
         "rppi_labels": r.get("rppi_labels") or [],
-        "files": sorted(closure),
-        "paths": {fn: cand[fn][1] for fn in sorted(closure)},
+        "files": sorted(closure) + sorted(lua_files),
+        "paths": dict({fn: src_of(fn) for fn in sorted(closure)},
+                      **{k: lua_files[k] for k in sorted(lua_files)}),
+        "lua_files": sorted(lua_files),
         "schemas": schemas,
         "external_refs": sorted(external),
         "opencc_refs": sorted(opencc_refs),
@@ -502,16 +690,25 @@ for p in pkgs:
     p["recommended_layout"] = layout
     p["layout_note"] = " ".join(notes) if notes else None
 
-# ── 需要 librime-lua 的套件：本專案的 librime 未編入 lua 外掛。
-# 這類方案部署會「成功」但引擎少了 translator/filter，按下去沒有候選 ——
-# deploy-only 閘門抓不到，所以在這裡就擋掉，不讓它有機會混進索引。
+# ── 需要 librime-lua 的套件：**不再靜態擋掉**。
+#
+# 以前這裡把 needs_lua 的套件一律排除，理由是「本專案的 librime 未編入 lua 外掛，
+# 部署會假成功但打不出字」。現在 librime 已經把 librime-lua（含 Lua 5.4.8）
+# 編成內建 plugin（見 scripts/build_native.sh 的 ensure_librime_lua 與
+# third_party/prebuilt/manifest.json 的 plugins.lua），所以放行。
+#
+# 但「有 lua 就放行」只是**允許它進到驗證階段**，不是允許它進索引。
+# 「缺 lua 會假成功」這一課在這裡留下兩道防線：
+#   1. 缺 lua/ 檔案的套件在這裡就擋掉 —— 它一定會在裝置上 require 失敗；
+#   2. 真正的判準交給 verify.py 的**輸入探針**：deployed 只證明 yaml 讀得完，
+#      打得出字才證明 lua_translator 真的在跑（見 mkindex.py 的閘門）。
 keep = []
 for p in pkgs:
-    if p["needs_lua"]:
+    if p["needs_lua"] and not p["lua_files"]:
         excluded.append({"id": p["id"], "repo": p["repo"], "stage": "analyze",
                          "reason": "方案使用 lua_translator/lua_filter 等元件，"
-                                   "需要 librime-lua 外掛；本專案的 librime 未編入，"
-                                   "部署會假成功但打不出字"})
+                                   "但上游庫裡找不到任何 rime.lua 或 lua/*.lua，"
+                                   "裝到裝置上一定 require 失敗（部署仍會假成功）"})
     else:
         keep.append(p)
 pkgs = keep
@@ -541,6 +738,6 @@ for p in sorted(pkgs, key=lambda x: x["id"]):
     print(f"{p['id']:22s} {p['category']:9s} schemas={len(p['schemas']):2d} "
           f"files={len(p['files']):3d} req={','.join(p['requires']) or '-':30s} "
           f"lic={'+'.join(l['spdx'] for l in p['license_files'])}"
-          f"{' LUA' if p['needs_lua'] else ''}"
+          f"{' LUA(%d檔)' % len(p['lua_files']) if p['needs_lua'] else (' lua(%d檔)' % len(p['lua_files']) if p['lua_files'] else '')}"
           f"{' OPENCC:' + ','.join(sorted(set(p['opencc_refs']) - OPENCC_BUILTIN)) if set(p['opencc_refs']) - OPENCC_BUILTIN else ''}"
           f"{' MISSING:' + ','.join(p['missing_refs'][:4]) if p['missing_refs'] else ''}")

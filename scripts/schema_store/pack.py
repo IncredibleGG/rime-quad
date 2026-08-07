@@ -22,6 +22,11 @@ os.makedirs(DIST, exist_ok=True)
 shutil.rmtree(STAGE, ignore_errors=True)
 os.makedirs(STAGE)
 
+# 和行動端 ArchiveGuard.ArchiveLimits 的白名單保持一致。打包端先擋一次，
+# 行動端仍然會再擋一次（規範 §2「打包端要保證，行動端仍要再驗一次」）。
+ALLOWED_EXT = {"yaml", "yml", "txt", "json", "lua", "gram", "ocd2", "md"}
+ALLOWED_BARE = {"LICENSE", "UPSTREAM.txt"}
+
 CACHE = os.path.join(WORK, "packed.json")
 cache = json.load(open(CACHE)) if os.path.exists(CACHE) else {}
 reused = 0
@@ -47,7 +52,12 @@ for p in pkgs:
         src = os.path.join(d, p["paths"][fn])
         if os.path.islink(src) or not os.path.isfile(src):
             continue
+        # 規範 §2：zip 內原則上是扁平的，唯一的例外是 lua/（以及 opencc/、
+        # build/）。lua 之所以不能攤平，是因為 librime-lua 的 package.path
+        # 寫死了 <data_dir>/lua/?.lua —— 攤平之後 require 就找不到檔案。
         dst = os.path.join(st, fn)
+        if "/" in fn:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copyfile(src, dst)
         os.utime(dst, (ts, ts))
         names.append(fn)
@@ -102,13 +112,25 @@ for p in pkgs:
                        cwd=st, check=True)
     cache[sid] = {"sig": sig, "zip": os.path.basename(zpath)}
 
-    # ── 產出自檢：entry 名稱必須扁平、無穿越、無符號連結
+    # ── 產出自檢：路徑安全（規範 §2）。
+    # entry 名稱以 librime 實際解析到的相對路徑為準 —— 攤平是常態，但
+    # `import_tables: cn_dicts/8105`、`opencc_config`、librime-lua 的
+    # package.path 都是**照路徑**找檔案的，那幾類必須原樣保留。
+    # 深度上限 3 段是配合行動端 ArchiveGuard 的 maxDepth=4，留一格餘裕。
     with zipfile.ZipFile(zpath) as z:
         for info in z.infolist():
             n = info.filename
-            assert "/" not in n and "\\" not in n, f"{sid}: zip 內有目錄路徑 {n}"
+            assert "\\" not in n, f"{sid}: zip 內有反斜線 {n}"
+            assert n.count("/") <= 2, f"{sid}: zip 內路徑過深 {n}"
             assert not n.startswith(("/", "..")) and ".." not in n.split("/"), \
                 f"{sid}: zip 內有穿越路徑 {n}"
+            assert "." not in n.split("/") and "" not in n.split("/"), \
+                f"{sid}: zip 內有可疑路徑段 {n}"
+            # lua 只會出現在這兩個位置 —— librime-lua 就只從這兩個位置載入。
+            assert not n.endswith(".lua") or n == "rime.lua" \
+                or n.startswith("lua/"), f"{sid}: lua 檔不在 lua/ 也不是 rime.lua: {n}"
+            assert n.rsplit(".", 1)[-1].lower() in ALLOWED_EXT or n in ALLOWED_BARE, \
+                f"{sid}: 副檔名不在白名單 {n}"
             assert not (info.external_attr >> 16) & 0o120000 == 0o120000, \
                 f"{sid}: zip 內有符號連結 {n}"
             assert not n.endswith(".ocd2"), f"{sid}: 不該打包 .ocd2"

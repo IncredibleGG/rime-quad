@@ -207,6 +207,10 @@ class ArchiveGuardTest {
             "luna_pinyin.schema.yaml", "luna_pinyin.dict.yaml", "pinyin.yaml",
             "essay.txt", "UPSTREAM.txt", "LICENSE", "COPYING",
             "opencc/t2s.json", "opencc/TSCharacters.ocd2", "zh-hans.gram", "README.md",
+            // librime-lua 的執行期資料：rime.lua 在根、其餘在 lua/ 底下
+            // （package.path 就是這樣設的，攤平就 require 不到）
+            "rime.lua", "lua/date_translator.lua", "lua/cold_word_drop/filter.lua",
+            "cn_dicts/base.dict.yaml",
         ).forEach { assertNull("$it 應該被接受", ArchiveGuard.extensionProblemOf(it, limits)) }
 
         listOf(
