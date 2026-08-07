@@ -105,9 +105,13 @@ if [ "$SKIP_EMU" -eq 0 ]; then
   # 首次要解壓資料、跑一次完整部署。那條路徑才是該驗的。
   SER="${RIME_SERIAL:-${ANDROID_SERIAL:-}}"
   if [ -n "$SER" ]; then
-    "$ADB" -s "$SER" shell pm clear org.rimequad.ime >/dev/null 2>&1 \
-      && ok "已清空 app 資料，接下來驗的是全新安裝的路徑" \
-      || echo "  [INFO] pm clear 失敗（app 可能尚未安裝），繼續"
+    # 用 uninstall 而不是 pm clear。pm clear 只清資料，app 仍在，
+    # 於是裝置上殘留的 versionCode 會擋下較低版本的安裝 —— 實際發生過：
+    # 測試用的建置把 versionCode 調高到 26090100，正式建置 26080714 因此
+    # 被 Android 當成降版拒絕，關卡失敗但產品沒問題。
+    "$ADB" -s "$SER" uninstall org.rimequad.ime >/dev/null 2>&1 \
+      && ok "已移除舊安裝，接下來驗的是全新安裝的路徑" \
+      || echo "  [INFO] 無既有安裝可移除，繼續"
   else
     echo "  [INFO] 未指定 RIME_SERIAL，略過清空；驗證結果可能受殘留狀態影響"
   fi
@@ -125,6 +129,31 @@ if [ "$SKIP_EMU" -eq 0 ]; then
       bad "$NAME：$KEYS 沒有打出 $EXP，見 $OUT/verify-$KEYS.log"
     fi
   done
+
+  step "6b. 升級路徑（覆蓋安裝，不解除安裝）"
+  # 最近兩個真 bug 都出在這條路徑上：新增的內建方案進不到舊使用者、
+  # 以及降版被拒。全新安裝永遠測不到它們，而真實使用者絕大多數是升級。
+  PREV="$(ls -t "$ROOT"/release/*.apk 2>/dev/null | grep -v "$(basename "$APK")" | head -1)"
+  if [ -z "$PREV" ]; then
+    echo "  [INFO] release/ 下沒有前一版可用來測升級，略過"
+  else
+    echo "  前一版：$(basename "$PREV")"
+    if "$ADB" -s "$SER" install -r "$PREV" >/dev/null 2>&1; then
+      # 讓它跑一次，把舊版的 user 資料種下去
+      "$ADB" -s "$SER" shell monkey -p org.rimequad.ime -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || true
+      sleep 25
+      if "$ADB" -s "$SER" install -r "$APK" > "$OUT/upgrade.log" 2>&1; then
+        ok "舊版可被新版覆蓋安裝（簽章相容、versionCode 未降版）"
+        NEWVC="$("$ADB" -s "$SER" shell dumpsys package org.rimequad.ime 2>/dev/null | grep -oE 'versionCode=[0-9]+' | head -1)"
+        echo "       安裝後：$NEWVC"
+      else
+        bad "覆蓋安裝失敗 —— 現有使用者將無法升級，只能解除安裝重裝並失去詞典與設定"
+        head -5 "$OUT/upgrade.log" >&2
+      fi
+    else
+      echo "  [INFO] 前一版裝不上（可能簽章不同或降版），略過升級測試"
+    fi
+  fi
 
   step "7. 截圖存證"
   # 這一項不自動判定 —— 「醜」與「拉伸」沒辦法寫成斷言，只能靠人看。
