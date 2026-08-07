@@ -1,0 +1,319 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  cn-t9-pinyin — 九宮格拼音（華語慣例版，5 欄 × 4 列）
+#
+#  ── 它模仿的是什麼慣例 ───────────────────────────────────────────────────
+#
+#  依據使用者本人的 Galaxy S24U 實機照片（docs/reference/samsung/photo_1）
+#  重建，並與語燕輸入法（YuyanIme，BSD-3）的 t9_pinyin 截圖、搜狗／百度／
+#  訊飛的公開骨架交叉比對。四者的結構一致：
+#
+#      ┌──────┬───────┬───────┬───────┬──────┐
+#      │  ，  │ 分詞¹ │ abc²  │ def³  │  ⌫  │
+#      ├──────┼───────┼───────┼───────┼──────┤
+#      │  。  │ ghi⁴  │ jkl⁵  │ mno⁶  │ 重輸 │
+#      ├──────┼───────┼───────┼───────┼──────┤
+#      │  ？  │ pqrs⁷ │ tuv⁸  │ wxyz⁹ │  0   │
+#      ├──────┼───────┼───────┼───────┼──────┤
+#      │ !@#  │ 中/英 │  ␣    │  123  │  ⏎  │
+#      └──────┴───────┴───────┴───────┴──────┘
+#
+#  **這是 5 欄 × 4 列，不是 4 × 4。** 這一點是華語九宮格與西方 T9 最大的
+#  外觀差異，也是使用者一眼認出「這是中文輸入法」的依據：
+#
+#  * **最左整欄是標點**（，。？ + 符號層入口）。中文標點的使用密度遠高於
+#    英文，且中文沒有「打完單字按空白」的節奏，標點不該藏在 ?123 層裡。
+#  * **最右整欄是功能鍵**（⌫、重輸、0、⏎）。
+#  * **中間 3×3 才是 T9 字母**，而且左上角是「分詞」不是「1」。
+#  * **數字以右上角上標（hint）呈現**，1–9 對應九宮格位置；`0` 因為沒有
+#    對應的字母組，被放進右欄自成一鍵。這正是規範 §9.4 label / hint / send
+#    三欄位分離的用途：鍵面主字是 `abc`、角標是 `2`、送出的卻是 keysym `A`。
+#  * **字母是小寫**（abc / def / ghi），不是大寫。三星、搜狗、微信鍵盤皆然。
+#
+#  ── 「分詞」與「重輸」對應到什麼？（不是 ABI 缺口，兩者都已有對應）─────
+#
+#  * **分詞** = 手動切分音節。RIME 的音節分隔符由方案的 `speller/delimiter`
+#    定義，`t9_pinyin.schema.yaml` 是 `" '"`，所以這顆鍵送
+#    `send: { keysym: "apostrophe" }` 即可，**不需要新的 action verb**。
+#    例：「西安」在九宮格是 W G ＋ A M，中間不分詞會被理解成 xian（先）。
+#  * **重輸** = 清空目前整串輸入碼重來。對應 §9.5 既有的 `tap: "clear"`
+#    （門面層的 `rs_clear_composition`）。**也不需要新 verb。**
+#    九宮格一顆鍵代表 3–4 個字母，打錯時整串重打比逐鍵退格快得多，
+#    所以華語輸入法一律有這顆鍵，而西方鍵盤沒有。
+#
+#  ── 和現有 `t9-pinyin.yaml` 的差別 ───────────────────────────────────────
+#
+#  | | t9-pinyin（現有） | cn-t9-pinyin（本檔） |
+#  |---|---|---|
+#  | 結構 | 4 欄 × 4 列 | **5 欄 × 4 列**（+ 左標點欄、+ 右功能欄） |
+#  | 分詞 | 無此概念；「1」鍵送 keysym "1"，靠方案的 key_binder 兜 | **獨立鍵，直接送 apostrophe**（方案的 delimiter） |
+#  | 重輸 | 無；只有退格左滑（swipe 是 OPTIONAL 能力，可能未實作） | **常駐鍵**，`tap: "clear"`，不依賴 swipe |
+#  | 標點 | 全部藏在「'」的長按盤裡 | **，。？三顆常駐鍵**，各自另有長按盤 |
+#  | 0 | 打不出來 | **獨立鍵**（右欄第三格），與實機一致 |
+#  | 數字 | hint 印了 2–9 但按不出數字 | 1–9 為 hint（維持 T9 語義）＋ **`num` 層是真的數字盤** |
+#  | 字母 | 大寫 ABC | **小寫 abc**（與三星／搜狗／微信一致） |
+#  | 符號 | 「符」→ numeric-symbol（10 欄西式符號表） | **「!@#」→ cn-symbols**（7 欄、中英分頁、可翻頁） |
+#
+#  送出的 keysym 與方案 `t9_pinyin` 的 speller 契約完全相同
+#  （abc→A、def→D、ghi→G、jkl→J、mno→M、pqrs→P、tuv→T、wxyz→W），
+#  所以本檔與 t9-pinyin.yaml 可以互換，**不需要改方案**。
+#
+#  ── 佈版數字的由來 ───────────────────────────────────────────────────────
+#
+#  `units: 10`（不是 5，也不是 23）。理由是 §8.8.0 的鍵高公式用的是
+#  `key_spacing × (units − 1)` —— 它假設「一個單位一顆鍵」，units 一大，
+#  每單位寬就縮小，鍵高跟著掉到 `key_height.min`。
+#  實測（S24U，456.2 dp 寬，key_spacing 8，左右 padding 各 5）：
+#      units = 23 → 單位寬 13.3 dp → 13.3 × 1.34 = 17.8 dp → 夾到下界，極扁
+#      units = 10 → 單位寬 37.4 dp → 37.4 × 1.34 = 50.1 dp
+#                   → 經 cn-compact-* 的 key_height {54, 56} 夾到 **54 dp**
+#  實機九宮格鍵高 54.4 dp、全鍵盤 43.2 dp（九宮格的鍵比全鍵盤**高**），
+#  所以必須落在上界那一側。
+#  列內寬度另走 §9.3 的 `usable_w / units`（那條用的是 keys.count），
+#  因此 5 顆鍵照樣填滿整列。**兩條公式對 spacing 的算法不一致，
+#  是規範的一個瑕疵，已回報給主控。**
+#
+#  欄寬 1.7 / 2.2 量自實機照片：側欄 67.7 dp、中欄 88.5 dp（比值 0.765），
+#  取到能整除成 10.0 的整齊值：1.7 + 2.2×3 + 1.7 = 10.0。
+#  **四列全部使用同一組欄寬**，所以整個鍵盤是對齊的方格 —— 實機亦然。
+#
+#  ── 進得去也出得來 ───────────────────────────────────────────────────────
+#
+#  本佈局的每一個離開路徑（規範沒有「佈局選單」，所以必須自帶）：
+#    · 「!@#」        → cn-symbols（其底列的「中文」再走 @previous 回來）
+#    · 「123」        → 本檔 `num` 層（其「返回」鍵回到 `t9` 層）
+#    · 長按「123」    → cn-t9-pinyin-numrow（數字行版本）
+#    · 長按「␣」      → switch_layout:@primary（回到主要英數佈局）
+#    · 長按「中/英」  → schema:picker
+#    · 候選列工具列   → globe / 九鍵 / 全鍵（見 cn-compact-* 主題）
+#
+#  規範：docs/theme-format.md §9
+# ─────────────────────────────────────────────────────────────────────────────
+
+format: rime-layout/1
+id: cn-t9-pinyin
+revision: 1
+
+name:
+  en: "Pinyin 9-key (CN)"
+  zh-Hant: "九宮格拼音"
+  zh-Hans: "九宫格拼音"
+
+description:
+  zh-Hant: "5 欄 × 4 列九宮格：左標點欄、右功能欄、分詞鍵、重輸鍵、獨立 0 鍵。依三星 S24U 實機重建。"
+  zh-Hans: "5 列 × 4 行九宫格：左标点列、右功能列、分词键、重输键、独立 0 键。依三星 S24U 实机重建。"
+
+author: "rime-quad"
+license: "CC0-1.0"
+
+kind: grid
+targets: [android, ios]
+for_schema: ["t9_pinyin"]
+direction: ltr
+default_layer: t9
+primary: false
+
+metrics:
+  row_spacing: null
+  key_spacing: null
+  height_scale: 1.0
+
+layers:
+
+  # ── 九宮格主層 ───────────────────────────────────────────────────────────
+  - id: "t9"
+    label: "九宮格"
+    units: 10
+    rows:
+
+      - weight: 1.0
+        keys:
+          # 左標點欄。走 send.keysym 而非 send.text —— 讓 librime 的 punctuator
+          # 依 ascii_punct 開關自己決定要吐「，」還是「,」（§9.4 形態 B 的警告）。
+          # 符號**面板**的情形不同，見 cn-symbols.yaml 檔頭。
+          - id: "pu_comma"
+            label: "，"
+            width: 1.7
+            style: modifier
+            send: { keysym: "comma" }
+            popup:
+              layout: row
+              keys:
+                - { label: "、", send: { text: "、" } }
+                - { label: "；", send: { keysym: "semicolon" } }
+                - { label: "：", send: { keysym: "colon" } }
+          # 分詞：方案的 delimiter（t9_pinyin 為 " '"）。實機在這個位置印的是
+          # 「分词」而不是「1」，hint 才是 1 —— label / hint / send 三者分離。
+          - id: "delim"
+            label: "分詞"
+            hint: "1"
+            width: 2.2
+            style: modifier
+            send: { keysym: "apostrophe" }
+          - { id: "k_abc",  label: "abc",  hint: "2", width: 2.2, send: { keysym: "A" } }
+          - { id: "k_def",  label: "def",  hint: "3", width: 2.2, send: { keysym: "D" } }
+          - id: "backspace"
+            icon: backspace
+            width: 1.7
+            style: modifier
+            send: { keysym: "BackSpace" }
+            repeat: true
+
+      - weight: 1.0
+        keys:
+          - id: "pu_period"
+            label: "。"
+            width: 1.7
+            style: modifier
+            send: { keysym: "period" }
+            popup:
+              layout: row
+              keys:
+                - { label: "…", send: { text: "…" } }
+                - { label: "—", send: { text: "—" } }
+                - { label: "～", send: { text: "～" } }
+          - { id: "k_ghi", label: "ghi", hint: "4", width: 2.2, send: { keysym: "G" } }
+          - { id: "k_jkl", label: "jkl", hint: "5", width: 2.2, send: { keysym: "J" } }
+          - { id: "k_mno", label: "mno", hint: "6", width: 2.2, send: { keysym: "M" } }
+          # 重輸 = rs_clear_composition（§9.5 的 `clear`）。不依賴 swipe，
+          # 因為 swipe 是 OPTIONAL 能力，不能是唯一觸達路徑（§9.6）。
+          - id: "clear"
+            label: "重輸"
+            width: 1.7
+            style: modifier
+            tap: "clear"
+
+      - weight: 1.0
+        keys:
+          - id: "pu_question"
+            label: "？"
+            width: 1.7
+            style: modifier
+            send: { keysym: "question" }
+            popup:
+              layout: row
+              keys:
+                - { label: "！", send: { keysym: "exclam" } }
+                - { label: "·", send: { text: "·" } }
+                - { label: "…", send: { text: "…" } }
+          - { id: "k_pqrs", label: "pqrs", hint: "7", width: 2.2, send: { keysym: "P" } }
+          - { id: "k_tuv",  label: "tuv",  hint: "8", width: 2.2, send: { keysym: "T" } }
+          - { id: "k_wxyz", label: "wxyz", hint: "9", width: 2.2, send: { keysym: "W" } }
+          # 「0」沒有對應的字母組（T9 的 0 歷來是空白／符號），所以自成一鍵，
+          # 放在右欄第三格。實機如此。speller/alphabet 不含 0-9，
+          # 所以這一鍵不會被 speller 吃掉，會原樣透傳給宿主。
+          - { id: "d0", label: "0", width: 1.7, style: modifier, send: { keysym: "0" } }
+
+      - weight: 1.0
+        keys:
+          - id: "to_symbols"
+            label: "!@#"
+            width: 1.7
+            style: modifier
+            tap: "switch_layout:cn-symbols"
+          - id: "lang"
+            label_from: input_mode
+            label: "中"
+            width: 2.2
+            style: modifier
+            tap: "toggle:ascii_mode"
+            long_press: "schema:picker"
+          - id: "space"
+            icon: space
+            style: space
+            width: 2.2
+            label_from: schema_name
+            send: { keysym: "space" }
+            swipe:
+              left:  { tap: "cursor:left" }
+              right: { tap: "cursor:right" }
+            # 離開本佈局的主要出口。規範沒有「佈局選單」UI，所以每一份佈局
+            # 都必須自帶一顆回得去主要英數佈局的鍵，否則使用者會被鎖死。
+            long_press: "switch_layout:@primary"
+          - id: "to_num"
+            label: "123"
+            width: 2.2
+            style: modifier
+            tap: "layer:num"
+            long_press: "switch_layout:cn-t9-pinyin-numrow"
+          - id: "enter"
+            icon: enter
+            style: action
+            width: 1.7
+            send: { keysym: "Return" }
+
+  # ── 數字層（由「123」進入，「返回」離開）─────────────────────────────────
+  #
+  #  華語輸入法的「123」開的是**電話式九宮數字盤**（1-2-3 在上排），不是
+  #  西方鍵盤那條 1234567890 的橫列。左欄放運算符，右欄放 ⌫ / . / @
+  #  ——「.」與「@」在此是為了打小數與 email，搜狗／百度／語燕排法一致。
+  #  欄寬與 `t9` 層完全相同，切換時鍵盤不會跳動。
+  - id: "num"
+    label: "123"
+    units: 10
+    rows:
+
+      - weight: 1.0
+        keys:
+          - { id: "op_percent", label: "%", width: 1.7, style: modifier, send: { keysym: "percent" } }
+          - { id: "d1", label: "1", width: 2.2, send: { keysym: "1" } }
+          - { id: "d2", label: "2", width: 2.2, send: { keysym: "2" } }
+          - { id: "d3", label: "3", width: 2.2, send: { keysym: "3" } }
+          - id: "backspace"
+            icon: backspace
+            width: 1.7
+            style: modifier
+            send: { keysym: "BackSpace" }
+            repeat: true
+
+      - weight: 1.0
+        keys:
+          - { id: "op_slash", label: "/", width: 1.7, style: modifier, send: { keysym: "slash" } }
+          - { id: "d4", label: "4", width: 2.2, send: { keysym: "4" } }
+          - { id: "d5", label: "5", width: 2.2, send: { keysym: "5" } }
+          - { id: "d6", label: "6", width: 2.2, send: { keysym: "6" } }
+          - { id: "dot", label: ".", width: 1.7, style: modifier, send: { keysym: "period" } }
+
+      - weight: 1.0
+        keys:
+          - id: "op_minus"
+            label: "-"
+            width: 1.7
+            style: modifier
+            send: { keysym: "minus" }
+            popup:
+              layout: row
+              keys:
+                - { label: "+", send: { keysym: "plus" } }
+                - { label: "*", send: { keysym: "asterisk" } }
+                - { label: "=", send: { keysym: "equal" } }
+                - { label: "#", send: { keysym: "numbersign" } }
+          - { id: "d7", label: "7", width: 2.2, send: { keysym: "7" } }
+          - { id: "d8", label: "8", width: 2.2, send: { keysym: "8" } }
+          - { id: "d9", label: "9", width: 2.2, send: { keysym: "9" } }
+          - { id: "at", label: "@", width: 1.7, style: modifier, send: { keysym: "at" } }
+
+      - weight: 1.0
+        keys:
+          - id: "to_symbols"
+            label: "!@#"
+            width: 1.7
+            style: modifier
+            tap: "switch_layout:cn-symbols"
+          # 本層的出口。缺了它使用者只能靠「!@#」繞路離開。
+          - id: "back"
+            label: "返回"
+            width: 2.2
+            style: modifier
+            tap: "layer:t9"
+          - id: "space"
+            icon: space
+            style: space
+            width: 2.2
+            send: { keysym: "space" }
+            long_press: "switch_layout:@primary"
+          - { id: "d0", label: "0", width: 2.2, send: { keysym: "0" } }
+          - id: "enter"
+            icon: enter
+            style: action
+            width: 1.7
+            send: { keysym: "Return" }

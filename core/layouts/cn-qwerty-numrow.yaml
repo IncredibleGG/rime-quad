@@ -1,0 +1,341 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  cn-qwerty-numrow — 全鍵盤 ＋ 獨立數字列（華語慣例）
+#
+#  ── 它模仿的是什麼慣例 ───────────────────────────────────────────────────
+#
+#  依使用者 S24U 實機照片 photo_2 重建（三星中文鍵盤的「拼音全键盘」）：
+#
+#      1  2  3  4  5  6  7  8  9  0
+#      Q  W  E  R  T  Y  U  I  O  P
+#        A  S  D  F  G  H  J  K  L
+#      ⇧  Z  X  C  V  B  N  M   ⌫
+#      !#1 │ 中/英 │ ， │  ␣  │ 。 │ ⏎
+#
+#  四個和 Gboard／`qwerty.yaml` 不同的地方：
+#
+#  1. **獨立數字列常駐。** 華語輸入法幾乎都有這個選項（搜狗／百度／訊飛
+#     叫「數字行」，三星是預設開著）。我們現在只有 hint 上的小數字，
+#     而 hint 是**印上去的**，按下去送的仍是字母 —— 使用者按不出數字。
+#  2. **字母大寫呈現、送小寫 keysym。** 三星、搜狗、微信鍵盤在中文模式下
+#     一律印大寫。這是 §9.4 label / send 分離的又一個實證：鍵面 `Q`、
+#     送出 keysym `q`。（`qwerty.yaml` 是印小寫送小寫。）
+#  3. **底列六鍵，含 `，` 與 `。` 兩顆標點。** Gboard 是 `?123 , ␣ . ⏎`
+#     五鍵；華語鍵盤把中／英切換放進底列，且逗號句號並列 ——
+#     中文的標點密度高，兩顆都要常駐。
+#  4. **`!#1` 進的是 cn-symbols**（7 欄中文標點面板），不是西式的
+#     `numeric-symbol`。數字既然已經有一整列，符號鍵就專心給標點。
+#
+#  ── 和 `qwerty.yaml` 的差別 ──────────────────────────────────────────────
+#
+#  | | qwerty（現有） | cn-qwerty-numrow（本檔） |
+#  |---|---|---|
+#  | 列數 | 4 | **5**（多一列數字） |
+#  | 數字 | hint 印 1–0，需上滑或長按 | **常駐一整列，直接按** |
+#  | 字母 | 小寫 q w e | **大寫 Q W E**（送出仍是小寫） |
+#  | 底列 | `?123 / 中英 / ␣ / ， / ⏎` | **`!#1 / 中英 / ， / ␣ / 。 / ⏎`** |
+#  | 符號 | numeric-symbol（10 欄西式） | **cn-symbols**（7 欄中文標點分頁） |
+#  | 鍵高 | height_scale 1.0 | **0.80**（見下） |
+#  | primary | true | **false**（不搶預設，見下） |
+#
+#  ── 為什麼 `height_scale: 0.80` ──────────────────────────────────────────
+#
+#  同 `cn-t9-pinyin-numrow` 檔頭的推導。實機量到的事實是：**三星把鍵盤
+#  總高固定住，再除以列數**（四列九宮格 510 px、五列全鍵盤 505 px，
+#  只差 1%）。規範 §8.8.0 的模型剛好相反（列數愈多鍵盤愈高），照原樣
+#  出貨的話，使用者一打開數字列，鍵盤就長高 20%、把聊天視窗擠掉一段。
+#  §9.2 的 `height_scale` 是規範自己留的補償點，這裡用它把鍵高從
+#  54 dp 壓到 43.2 dp，與實機量到的 43.2 dp 相符。
+#
+#  ── 為什麼 `primary: false` 且 `for_schema: ["luna_pinyin"]` ─────────────
+#
+#  刻意**不**搶 `qwerty` 的 primary 身分：本檔與 `qwerty.yaml` 送出的
+#  keysym 完全相同（都是 a–z），對引擎沒有差別，純粹是外觀與便利性的
+#  偏好。設成 primary 會改變所有既有使用者的預設鍵盤，那不是這一輪該做
+#  的決定。
+#
+#  但**只掛 `["*"]` 的話這份佈局根本沒有入口**：
+#    · 規範沒有「鍵盤類型」選單（三星有，見實機 photo_5）。
+#    · §8.6.6.1 的候選列工具列**在 Android 端還沒接上** —— `toolbar.items`
+#      被 ThemeParser 完整解析（連必備項補回都做了），但 KeyboardView 的
+#      `Toolbar()` 是寫死的「方案名 + 佈局名」，完全不讀 items。
+#      所以「把切換鍵放進工具列」這條路目前走不通。已回報給主控。
+#
+#  折衷做法：`for_schema: ["luna_pinyin"]`（**只掛原版朙月拼音，不掛
+#  預設的 `luna_pinyin_tw`**）。效果是：
+#    · 預設使用者（luna_pinyin_tw）仍拿到 `qwerty`，**零行為變更**。
+#    · 想試華語風格全鍵盤的人，在方案選單選「朙月拼音」就會換過來；
+#      選回「朙月拼音·臺灣正體」就換回去 —— 進得去也出得來。
+#
+#  這同時示範了主控指出的產品模型：**三星把「方案」與「佈局」攤平成
+#  一份「鍵盤類型」清單**（拼音全键盘 / 拼音九键 / 双拼 / 笔画 / 五笔），
+#  使用者不必知道哪些是換方案、哪些是換佈局。`for_schema` 就是把兩者
+#  綁在一起的欄位，這裡是它的第一個真實用例。
+#
+#  ── 大寫層 ───────────────────────────────────────────────────────────────
+#
+#  `upper` 層是完整寫出的（§1.2 原則 1：不做隱式大寫推導）。
+#  注意兩層的**鍵面都是大寫**，差別只在送出的 keysym 有沒有 Shift ——
+#  這正是三星的行為，也是本格式 label / send 分離才做得到的事。
+#  ⇧ 鍵在 `upper` 層標 `active: true`，使用者看得出自己在哪一層。
+#
+#  規範：docs/theme-format.md §9、§9.2、§9.4
+# ─────────────────────────────────────────────────────────────────────────────
+
+format: rime-layout/1
+id: cn-qwerty-numrow
+revision: 1
+
+name:
+  en: "QWERTY + number row (CN)"
+  zh-Hant: "全鍵盤・數字列"
+  zh-Hans: "全键盘・数字行"
+
+description:
+  zh-Hant: "26 鍵全鍵盤加獨立數字列，鍵面大寫、送出小寫，底列含中英切換與逗號句號。依三星 S24U 實機重建。"
+  zh-Hans: "26 键全键盘加独立数字行，键面大写、送出小写，底行含中英切换与逗号句号。依三星 S24U 实机重建。"
+
+author: "rime-quad"
+license: "CC0-1.0"
+
+kind: alphabetic
+targets: [android, ios]
+for_schema: ["luna_pinyin"]
+direction: ltr
+default_layer: lower
+primary: false
+
+metrics:
+  row_spacing: null
+  key_spacing: null
+  height_scale: 0.80
+
+layers:
+
+  # ── 小寫層（鍵面大寫、送出小寫）──────────────────────────────────────────
+  - id: "lower"
+    label: "ABC"
+    units: 10
+    rows:
+
+      # 數字列。走 send.keysym，讓方案的 key_binder / speller 有機會消費；
+      # t9 以外的拼音方案 alphabet 不含 0-9，所以會原樣透傳給宿主。
+      - weight: 1.0
+        keys:
+          - { id: "n1", label: "1", send: { keysym: "1" } }
+          - { id: "n2", label: "2", send: { keysym: "2" } }
+          - { id: "n3", label: "3", send: { keysym: "3" } }
+          - { id: "n4", label: "4", send: { keysym: "4" } }
+          - { id: "n5", label: "5", send: { keysym: "5" } }
+          - { id: "n6", label: "6", send: { keysym: "6" } }
+          - { id: "n7", label: "7", send: { keysym: "7" } }
+          - { id: "n8", label: "8", send: { keysym: "8" } }
+          - { id: "n9", label: "9", send: { keysym: "9" } }
+          - { id: "n0", label: "0", send: { keysym: "0" } }
+
+      - weight: 1.0
+        keys:
+          - { id: "q", label: "Q", send: { keysym: "q" } }
+          - { id: "w", label: "W", send: { keysym: "w" } }
+          - { id: "e", label: "E", send: { keysym: "e" } }
+          - { id: "r", label: "R", send: { keysym: "r" } }
+          - { id: "t", label: "T", send: { keysym: "t" } }
+          - { id: "y", label: "Y", send: { keysym: "y" } }
+          - { id: "u", label: "U", send: { keysym: "u" } }
+          - { id: "i", label: "I", send: { keysym: "i" } }
+          - { id: "o", label: "O", send: { keysym: "o" } }
+          - { id: "p", label: "P", send: { keysym: "p" } }
+
+      # §9.3：置中用顯式 spacer，不靠任何自動置中規則。
+      - weight: 1.0
+        keys:
+          - { spacer: true, width: 0.5 }
+          - { id: "a", label: "A", send: { keysym: "a" } }
+          - { id: "s", label: "S", send: { keysym: "s" } }
+          - { id: "d", label: "D", send: { keysym: "d" } }
+          - { id: "f", label: "F", send: { keysym: "f" } }
+          - { id: "g", label: "G", send: { keysym: "g" } }
+          - { id: "h", label: "H", send: { keysym: "h" } }
+          - { id: "j", label: "J", send: { keysym: "j" } }
+          - { id: "k", label: "K", send: { keysym: "k" } }
+          - { id: "l", label: "L", send: { keysym: "l" } }
+          - { spacer: true, width: 0.5 }
+
+      - weight: 1.0
+        keys:
+          - id: "shift"
+            icon: shift
+            style: modifier
+            width: 1.5
+            tap: "layer_once:upper"
+            double_tap: "layer_lock:upper"
+          - { id: "z", label: "Z", send: { keysym: "z" } }
+          - { id: "x", label: "X", send: { keysym: "x" } }
+          - { id: "c", label: "C", send: { keysym: "c" } }
+          - { id: "v", label: "V", send: { keysym: "v" } }
+          - { id: "b", label: "B", send: { keysym: "b" } }
+          - { id: "n", label: "N", send: { keysym: "n" } }
+          - { id: "m", label: "M", send: { keysym: "m" } }
+          - id: "backspace"
+            icon: backspace
+            style: modifier
+            width: 1.5
+            send: { keysym: "BackSpace" }
+            repeat: true
+            swipe:
+              left: { tap: "clear" }
+
+      - weight: 1.0
+        keys:
+          - id: "to_symbols"
+            label: "!#1"
+            style: modifier
+            width: 1.5
+            tap: "switch_layout:cn-symbols"
+          - id: "lang"
+            label_from: input_mode
+            label: "中"
+            style: modifier
+            width: 1.0
+            tap: "toggle:ascii_mode"
+            long_press: "schema:picker"
+          - id: "comma"
+            label: "，"
+            width: 1.0
+            send: { keysym: "comma" }
+            popup:
+              layout: row
+              keys:
+                - { label: "、", send: { text: "、" } }
+                - { label: "；", send: { keysym: "semicolon" } }
+                - { label: "：", send: { keysym: "colon" } }
+                # 分詞符。全拼打「西安」需要 xi'an，這顆藏在逗號的長按盤裡
+                # （實機的全鍵盤把 ⇧ 放在第三列最左，沒有分詞鍵的位置）。
+                - { label: "'", send: { keysym: "apostrophe" } }
+          - id: "space"
+            icon: space
+            style: space
+            width: 4.0
+            label_from: schema_name
+            send: { keysym: "space" }
+            swipe:
+              left:  { tap: "cursor:left" }
+              right: { tap: "cursor:right" }
+            long_press: "schema:next"
+          - id: "period"
+            label: "。"
+            width: 1.0
+            send: { keysym: "period" }
+            popup:
+              layout: row
+              keys:
+                - { label: "？", send: { keysym: "question" } }
+                - { label: "！", send: { keysym: "exclam" } }
+                - { label: "…", send: { text: "…" } }
+          - id: "enter"
+            icon: enter
+            style: action
+            width: 1.5
+            send: { keysym: "Return" }
+
+  # ── 大寫層。鍵面同樣大寫，差別只在 send 帶 Shift。 ────────────────────────
+  - id: "upper"
+    label: "ABC"
+    units: 10
+    rows:
+
+      - weight: 1.0
+        keys:
+          - { id: "n1", label: "1", send: { keysym: "1" } }
+          - { id: "n2", label: "2", send: { keysym: "2" } }
+          - { id: "n3", label: "3", send: { keysym: "3" } }
+          - { id: "n4", label: "4", send: { keysym: "4" } }
+          - { id: "n5", label: "5", send: { keysym: "5" } }
+          - { id: "n6", label: "6", send: { keysym: "6" } }
+          - { id: "n7", label: "7", send: { keysym: "7" } }
+          - { id: "n8", label: "8", send: { keysym: "8" } }
+          - { id: "n9", label: "9", send: { keysym: "9" } }
+          - { id: "n0", label: "0", send: { keysym: "0" } }
+
+      - weight: 1.0
+        keys:
+          - { id: "q", label: "Q", send: { keysym: "Q", modifiers: [Shift] } }
+          - { id: "w", label: "W", send: { keysym: "W", modifiers: [Shift] } }
+          - { id: "e", label: "E", send: { keysym: "E", modifiers: [Shift] } }
+          - { id: "r", label: "R", send: { keysym: "R", modifiers: [Shift] } }
+          - { id: "t", label: "T", send: { keysym: "T", modifiers: [Shift] } }
+          - { id: "y", label: "Y", send: { keysym: "Y", modifiers: [Shift] } }
+          - { id: "u", label: "U", send: { keysym: "U", modifiers: [Shift] } }
+          - { id: "i", label: "I", send: { keysym: "I", modifiers: [Shift] } }
+          - { id: "o", label: "O", send: { keysym: "O", modifiers: [Shift] } }
+          - { id: "p", label: "P", send: { keysym: "P", modifiers: [Shift] } }
+
+      - weight: 1.0
+        keys:
+          - { spacer: true, width: 0.5 }
+          - { id: "a", label: "A", send: { keysym: "A", modifiers: [Shift] } }
+          - { id: "s", label: "S", send: { keysym: "S", modifiers: [Shift] } }
+          - { id: "d", label: "D", send: { keysym: "D", modifiers: [Shift] } }
+          - { id: "f", label: "F", send: { keysym: "F", modifiers: [Shift] } }
+          - { id: "g", label: "G", send: { keysym: "G", modifiers: [Shift] } }
+          - { id: "h", label: "H", send: { keysym: "H", modifiers: [Shift] } }
+          - { id: "j", label: "J", send: { keysym: "J", modifiers: [Shift] } }
+          - { id: "k", label: "K", send: { keysym: "K", modifiers: [Shift] } }
+          - { id: "l", label: "L", send: { keysym: "L", modifiers: [Shift] } }
+          - { spacer: true, width: 0.5 }
+
+      - weight: 1.0
+        keys:
+          - id: "shift"
+            icon: shift
+            style: modifier
+            width: 1.5
+            active: true
+            tap: "layer:lower"
+            double_tap: "layer_lock:upper"
+          - { id: "z", label: "Z", send: { keysym: "Z", modifiers: [Shift] } }
+          - { id: "x", label: "X", send: { keysym: "X", modifiers: [Shift] } }
+          - { id: "c", label: "C", send: { keysym: "C", modifiers: [Shift] } }
+          - { id: "v", label: "V", send: { keysym: "V", modifiers: [Shift] } }
+          - { id: "b", label: "B", send: { keysym: "B", modifiers: [Shift] } }
+          - { id: "n", label: "N", send: { keysym: "N", modifiers: [Shift] } }
+          - { id: "m", label: "M", send: { keysym: "M", modifiers: [Shift] } }
+          - id: "backspace"
+            icon: backspace
+            style: modifier
+            width: 1.5
+            send: { keysym: "BackSpace" }
+            repeat: true
+            swipe:
+              left: { tap: "clear" }
+
+      - weight: 1.0
+        keys:
+          - id: "to_symbols"
+            label: "!#1"
+            style: modifier
+            width: 1.5
+            tap: "switch_layout:cn-symbols"
+          - id: "lang"
+            label_from: input_mode
+            label: "中"
+            style: modifier
+            width: 1.0
+            tap: "toggle:ascii_mode"
+            long_press: "schema:picker"
+          - { id: "comma", label: "，", width: 1.0, send: { keysym: "comma" } }
+          - id: "space"
+            icon: space
+            style: space
+            width: 4.0
+            label_from: schema_name
+            send: { keysym: "space" }
+            swipe:
+              left:  { tap: "cursor:left" }
+              right: { tap: "cursor:right" }
+            long_press: "schema:next"
+          - { id: "period", label: "。", width: 1.0, send: { keysym: "period" } }
+          - id: "enter"
+            icon: enter
+            style: action
+            width: 1.5
+            send: { keysym: "Return" }

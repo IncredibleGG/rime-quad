@@ -1,0 +1,267 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  cn-t9-pinyin-numrow — 九宮格拼音 ＋ 獨立數字列
+#
+#  ── 它模仿的是什麼慣例 ───────────────────────────────────────────────────
+#
+#  「數字行」是搜狗／百度／訊飛／語燕都有的一個**設定開關**：在字母區上方
+#  釘一條 1234567890 的橫列，讓打數字不必切層。語燕的 README 把它列為
+#  自家的三大貼心功能之一（「输入数字要么切换到数字键盘，要么长按按键，
+#  对输入来说都不便捷，因此我开发了键盘数字行」）。
+#
+#  本檔＝`cn-t9-pinyin` 加上這條數字列。九宮格的 5 欄結構、hint 上標、
+#  分詞／重輸／0 鍵一字不改，只是整體往下移一列。
+#
+#  ── 為什麼 `height_scale: 0.80`（這是本檔最重要的一行）───────────────────
+#
+#  規範 §8.8.0 的高度模型是「列數愈多、鍵盤愈高」，而且刻意如此
+#  （「列數不同本來就該不同高，硬壓成同高就會壓扁」）。
+#
+#  **但華語輸入法的實際行為與此相反。** 量使用者的 S24U 實機截圖：
+#
+#  | 截圖 | 列數 | 鍵盤區總高 | 單鍵高 |
+#  |---|---|---|---|
+#  | photo_1 九宮格 | 4 | **510 截圖 px** | **54.4 dp** |
+#  | photo_2 全鍵盤＋數字列 | 5 | **505 截圖 px** | **43.2 dp** |
+#
+#  （比例尺：截圖 1182×2560 是 1440×3120 的等比縮圖，1 px = 0.3860 dp。）
+#
+#  兩者總高只差 1%，也就是說**三星是把鍵盤總高固定住、再除以列數**。
+#  使用者打開「數字行」時預期多一列數字，不預期鍵盤整體長高 20%
+#  ——鍵盤長高會把聊天視窗擠掉一整段，那是很明顯的退步。
+#
+#  規範側的逃生口正是 §9.2 的 `metrics.height_scale`（乘在鍵高上，
+#  且**在夾制之後**套用，所以能突破 `key_height.min`）。推導：
+#      主題 cn-compact-* 的 key_height 夾制後，units=10 的基準鍵高為 54 dp
+#      實機五列版鍵高 43.2 dp
+#      height_scale = 43.2 / 54 = **0.80**
+#  代入：5 × 43.2 + 4 × 12 + 8 = 272 dp，四列版是 4 × 54 + 3 × 12 + 8
+#  = 260 dp —— 相差 4.6%，與實機的 1% 同一個數量級，而不是 +20%。
+#
+#  → **這是規範 §8.8.0 與華語慣例的一處真實分歧，已回報給主控。**
+#    目前用 `height_scale` 手動補償是可行的，但代價是每一份「加了一列」的
+#    佈局都得自己算一次係數，而且係數與主題的 `key_height` 夾制耦合。
+#
+#  ── 和 `cn-t9-pinyin` 的差別 ─────────────────────────────────────────────
+#
+#  * 多一列 10 鍵的數字列（width 1.0 × 10，正好等於 units）
+#  * `height_scale: 0.80`（見上）
+#  * `for_schema: ["*"]` —— 刻意**不**宣告 `t9_pinyin`，避免與
+#    `cn-t9-pinyin` 搶同一個方案的自動命中（§9.1.1 第 1 步是「取搜尋路徑
+#    裡最先找到的那一份」，兩份都宣告會變成靠檔名排序決定，太隱晦）。
+#    進入方式：在 `cn-t9-pinyin` 長按「123」。
+#  * 「123」鍵長按改為切回 `cn-t9-pinyin`（來回都走得通）
+#
+#  規範：docs/theme-format.md §9、§9.2
+# ─────────────────────────────────────────────────────────────────────────────
+
+format: rime-layout/1
+id: cn-t9-pinyin-numrow
+revision: 1
+inherits: cn-t9-pinyin
+
+name:
+  en: "Pinyin 9-key + number row"
+  zh-Hant: "九宮格拼音・數字列"
+  zh-Hans: "九宫格拼音・数字行"
+
+description:
+  zh-Hant: "九宮格加一條獨立數字列。鍵高依實機比例縮到 0.80，避免鍵盤整體長高。"
+  zh-Hans: "九宫格加一条独立数字行。键高依实机比例缩到 0.80，避免键盘整体长高。"
+
+kind: grid
+# 不繼承 cn-t9-pinyin 的 ["t9_pinyin"]：避免兩份佈局搶同一個方案的自動命中。
+for_schema: ["*"]
+default_layer: t9
+primary: false
+
+metrics:
+  row_spacing: null
+  key_spacing: null
+  height_scale: 0.80
+
+# §7.2：序列一律整體取代，所以 layers 必須完整重寫（不能只加一列）。
+layers:
+
+  - id: "t9"
+    label: "九宮格・數字列"
+    units: 10
+    rows:
+
+      # ── 數字列。10 顆 × 1.0 單位，正好填滿 units，與下方九宮格對不齊
+      #    是刻意的：實機亦然（數字列自成一套節奏）。
+      - weight: 1.0
+        keys:
+          - { id: "n1", label: "1", send: { keysym: "1" } }
+          - { id: "n2", label: "2", send: { keysym: "2" } }
+          - { id: "n3", label: "3", send: { keysym: "3" } }
+          - { id: "n4", label: "4", send: { keysym: "4" } }
+          - { id: "n5", label: "5", send: { keysym: "5" } }
+          - { id: "n6", label: "6", send: { keysym: "6" } }
+          - { id: "n7", label: "7", send: { keysym: "7" } }
+          - { id: "n8", label: "8", send: { keysym: "8" } }
+          - { id: "n9", label: "9", send: { keysym: "9" } }
+          - { id: "n0", label: "0", send: { keysym: "0" } }
+
+      - weight: 1.0
+        keys:
+          - id: "pu_comma"
+            label: "，"
+            width: 1.7
+            style: modifier
+            send: { keysym: "comma" }
+            popup:
+              layout: row
+              keys:
+                - { label: "、", send: { text: "、" } }
+                - { label: "；", send: { keysym: "semicolon" } }
+                - { label: "：", send: { keysym: "colon" } }
+          - { id: "delim", label: "分詞", hint: "1", width: 2.2, style: modifier, send: { keysym: "apostrophe" } }
+          - { id: "k_abc", label: "abc", hint: "2", width: 2.2, send: { keysym: "A" } }
+          - { id: "k_def", label: "def", hint: "3", width: 2.2, send: { keysym: "D" } }
+          - id: "backspace"
+            icon: backspace
+            width: 1.7
+            style: modifier
+            send: { keysym: "BackSpace" }
+            repeat: true
+
+      - weight: 1.0
+        keys:
+          - id: "pu_period"
+            label: "。"
+            width: 1.7
+            style: modifier
+            send: { keysym: "period" }
+            popup:
+              layout: row
+              keys:
+                - { label: "…", send: { text: "…" } }
+                - { label: "—", send: { text: "—" } }
+                - { label: "～", send: { text: "～" } }
+          - { id: "k_ghi", label: "ghi", hint: "4", width: 2.2, send: { keysym: "G" } }
+          - { id: "k_jkl", label: "jkl", hint: "5", width: 2.2, send: { keysym: "J" } }
+          - { id: "k_mno", label: "mno", hint: "6", width: 2.2, send: { keysym: "M" } }
+          - { id: "clear", label: "重輸", width: 1.7, style: modifier, tap: "clear" }
+
+      - weight: 1.0
+        keys:
+          - id: "pu_question"
+            label: "？"
+            width: 1.7
+            style: modifier
+            send: { keysym: "question" }
+            popup:
+              layout: row
+              keys:
+                - { label: "！", send: { keysym: "exclam" } }
+                - { label: "·", send: { text: "·" } }
+                - { label: "…", send: { text: "…" } }
+          - { id: "k_pqrs", label: "pqrs", hint: "7", width: 2.2, send: { keysym: "P" } }
+          - { id: "k_tuv",  label: "tuv",  hint: "8", width: 2.2, send: { keysym: "T" } }
+          - { id: "k_wxyz", label: "wxyz", hint: "9", width: 2.2, send: { keysym: "W" } }
+          - { id: "d0", label: "0", width: 1.7, style: modifier, send: { keysym: "0" } }
+
+      - weight: 1.0
+        keys:
+          - id: "to_symbols"
+            label: "!@#"
+            width: 1.7
+            style: modifier
+            tap: "switch_layout:cn-symbols"
+          - id: "lang"
+            label_from: input_mode
+            label: "中"
+            width: 2.2
+            style: modifier
+            tap: "toggle:ascii_mode"
+            long_press: "schema:picker"
+          - id: "space"
+            icon: space
+            style: space
+            width: 2.2
+            label_from: schema_name
+            send: { keysym: "space" }
+            swipe:
+              left:  { tap: "cursor:left" }
+              right: { tap: "cursor:right" }
+            long_press: "switch_layout:@primary"
+          - id: "to_num"
+            label: "123"
+            width: 2.2
+            style: modifier
+            tap: "layer:num"
+            long_press: "switch_layout:cn-t9-pinyin"
+          - id: "enter"
+            icon: enter
+            style: action
+            width: 1.7
+            send: { keysym: "Return" }
+
+  # 數字層與 cn-t9-pinyin 相同（§7.2 序列整體取代，必須重寫）。
+  # 它只有四列，所以 height_scale 0.80 會讓它比主層矮 —— 這是可接受的：
+  # 切到數字盤時鍵盤高度不變（總高 = 5 列主層決定），鍵只是更寬鬆。
+  - id: "num"
+    label: "123"
+    units: 10
+    rows:
+
+      - weight: 1.0
+        keys:
+          - { id: "op_percent", label: "%", width: 1.7, style: modifier, send: { keysym: "percent" } }
+          - { id: "d1", label: "1", width: 2.2, send: { keysym: "1" } }
+          - { id: "d2", label: "2", width: 2.2, send: { keysym: "2" } }
+          - { id: "d3", label: "3", width: 2.2, send: { keysym: "3" } }
+          - id: "backspace"
+            icon: backspace
+            width: 1.7
+            style: modifier
+            send: { keysym: "BackSpace" }
+            repeat: true
+
+      - weight: 1.0
+        keys:
+          - { id: "op_slash", label: "/", width: 1.7, style: modifier, send: { keysym: "slash" } }
+          - { id: "d4", label: "4", width: 2.2, send: { keysym: "4" } }
+          - { id: "d5", label: "5", width: 2.2, send: { keysym: "5" } }
+          - { id: "d6", label: "6", width: 2.2, send: { keysym: "6" } }
+          - { id: "dot", label: ".", width: 1.7, style: modifier, send: { keysym: "period" } }
+
+      - weight: 1.0
+        keys:
+          - id: "op_minus"
+            label: "-"
+            width: 1.7
+            style: modifier
+            send: { keysym: "minus" }
+            popup:
+              layout: row
+              keys:
+                - { label: "+", send: { keysym: "plus" } }
+                - { label: "*", send: { keysym: "asterisk" } }
+                - { label: "=", send: { keysym: "equal" } }
+                - { label: "#", send: { keysym: "numbersign" } }
+          - { id: "d7", label: "7", width: 2.2, send: { keysym: "7" } }
+          - { id: "d8", label: "8", width: 2.2, send: { keysym: "8" } }
+          - { id: "d9", label: "9", width: 2.2, send: { keysym: "9" } }
+          - { id: "at", label: "@", width: 1.7, style: modifier, send: { keysym: "at" } }
+
+      - weight: 1.0
+        keys:
+          - id: "to_symbols"
+            label: "!@#"
+            width: 1.7
+            style: modifier
+            tap: "switch_layout:cn-symbols"
+          - { id: "back", label: "返回", width: 2.2, style: modifier, tap: "layer:t9" }
+          - id: "space"
+            icon: space
+            style: space
+            width: 2.2
+            send: { keysym: "space" }
+            long_press: "switch_layout:@primary"
+          - { id: "d0", label: "0", width: 2.2, send: { keysym: "0" } }
+          - id: "enter"
+            icon: enter
+            style: action
+            width: 1.7
+            send: { keysym: "Return" }

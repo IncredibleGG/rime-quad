@@ -1,0 +1,72 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  cn-compact-light — 華語鍵盤幾何（淺色）
+#
+#  與 `cn-compact-dark` 成對，完整說明見該檔檔頭。本檔只重述差異點：
+#
+#  * 幾何改動與深色版**完全相同**（key_height.max 56、key_spacing 8、
+#    候選列不顯示序號、工具列加「九鍵 / 全鍵」）。
+#  * 顏色一律沿用 `default-light`，本檔不覆寫任何 palette 條目。
+#
+#  規範 §8.2 規定「一份檔案描述且僅描述一種外觀」。深淺兩份都得寫，
+#  但靠 `inherits` 各自不到 60 行 —— 這正是規範說「代價很小」的意思。
+#
+#  ⚠ 深淺兩份的**幾何值必須手動保持同步**。規範沒有「只描述幾何、
+#    不描述外觀」的共用片段（`inherits` 是單一父代，而兩份的父代不同），
+#    所以這裡無可避免地重複了一次。已回報給主控作為格式缺口。
+#
+#  規範：docs/theme-format.md §7、§8.2、§8.6.6.1、§8.8.0.1
+# ─────────────────────────────────────────────────────────────────────────────
+
+format: rime-theme/1
+id: cn-compact-light
+revision: 1
+
+name:
+  en: "CN Compact Light"
+  zh-Hant: "華語緊湊 淺色"
+  zh-Hans: "华语紧凑 浅色"
+
+description:
+  zh-Hant: "以 default-light 為基底，只改幾何：九宮格鍵更高、鍵距更寬、候選列不顯示序號。配色不變。"
+  zh-Hans: "以 default-light 为基底，只改几何：九宫格键更高、键距更宽、候选栏不显示序号。配色不变。"
+
+author: "rime-quad"
+license: "CC0-1.0"
+
+appearance: light
+counterpart: cn-compact-dark
+inherits: default-light
+
+candidates:
+  bar:
+    label:
+      show: false
+    text:
+      size: 22
+    height: 46
+    toolbar:
+      show: true
+      items:
+        - { icon: "globe",          tap: "schema:picker" }
+        - { label: "九鍵",           tap: "schema:t9_pinyin" }
+        - { label: "全鍵",           tap: "switch_layout:cn-qwerty-numrow" }
+        - { label_from: input_mode, tap: "toggle:ascii_mode" }
+        - { label_from: variant,    tap: "toggle:simplification" }
+        - { icon: "settings",       tap: "settings" }
+        - { icon: "keyboard_hide",  tap: "hide_keyboard" }
+
+keyboard:
+  key_height:
+    min: 54
+    max: 56
+  key_spacing: 8
+  row_spacing: 12
+
+  key_styles:
+    default:
+      label_size: 30
+      hint_size: 12
+      hint_position: top_right
+    modifier:
+      label_size: 20
+      hint_position: top_right

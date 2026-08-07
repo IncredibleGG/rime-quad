@@ -1,0 +1,133 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  cn-compact-dark — 華語鍵盤幾何（深色）
+#
+#  ── 它模仿的是什麼慣例 ───────────────────────────────────────────────────
+#
+#  **這份主題只調幾何與層次，不調色相。** 配色沿用 `default-dark` 的中性
+#  藍灰調 —— 抄佈局慣例是正常的，抄某個產品的配色與品牌識別不是。
+#  本檔要對齊的是使用者 S24U 實機截圖裡量得出來的**尺寸事實**：
+#
+#  截圖檔為 1182×2560，是 1440×3120 的等比縮圖，故 1 截圖 px = 456.2/1182
+#  = 0.3860 dp（此比例尺與另一條線的 `intl-samsung.yaml` 一致，兩份獨立
+#  量測互相對上了）。
+#
+#  | 量測項目（photo_1 / photo_2 / photo_3，S24U 456.2 dp 寬） | 實機 | default-dark | 本檔 |
+#  |---|---|---|---|
+#  | 九宮格（4 列）鍵高 | **54.4 dp** | 50.1 | **54** |
+#  | 全鍵盤＋數字列（5 列）鍵高 | **43.2 dp** | 50.1 | **43.2**（佈局側 height_scale 0.80） |
+#  | 符號面板（7 欄）鍵高 | **58.0 dp** | 50.1 | **56** |
+#  | 鍵水平間距 | ≈ 8.4 dp | 6 | **8** |
+#  | 鍵垂直間距 | ≈ 12.4 dp | 12 | **12**（不動） |
+#  | 陰影 | 無 | elevation 0 | **0**（不動） |
+#  | 候選列數字序號 1. 2. 3. | **沒有** | show: true | **show: false** |
+#
+#  三個改動的理由：
+#
+#  1. **`key_height` 收成 {min: 54, max: 56}。** 規範 §8.8.0.1 明講「需要
+#     精確對齊某個參考鍵盤時，正確做法是收緊 `key_height` 的上下界，
+#     而不是去動 `key_aspect`」—— 這裡照做，`key_aspect` 維持 1.34。
+#     以 S24U（456.2 dp 寬、key_spacing 8、左右 padding 各 5）代入 §8.8.0：
+#         units = 10（九宮格與全鍵盤）→ 單位寬 37.42 → 37.42×1.34 = 50.1
+#                                      → clamp 到 **54**（實機 54.4）
+#         units =  7（符號面板）      → 單位寬 56.89 → 56.89×1.34 = 76.2
+#                                      → clamp 到 **56**（實機 58.0）
+#     兩個都落在實機的 ±4% 內，而且**是同一組上下界同時命中兩種欄數**
+#     —— 這正是 aspect 模型加夾制的設計意圖。
+#     五列的版本再由佈局側的 `height_scale: 0.80` 壓到 43.2（實機 43.2）。
+#
+#     順帶的好處：四種佈局的鍵盤總高幾乎相同（260 / 272 / 272 / 268 dp），
+#     所以在九宮格 ⇄ 全鍵盤 ⇄ 符號面板之間切換時，鍵盤不會忽高忽低。
+#     實機也是這樣（photo_1 與 photo_2 的鍵盤區總高只差 1%）。
+#  2. **`key_spacing` 6 → 8。** 實機水平間距比垂直間距小（8.4 vs 12.3），
+#     但比我們現在的 6 大。鍵面之間太擠會誤觸，這在 5 欄大鍵的九宮格上
+#     特別明顯。
+#  3. **候選列不顯示序號。** 行動端的華語輸入法（三星、搜狗、微信）候選
+#     一律沒有 `1. 2. 3.` —— 手機是用點的，不是用數字鍵選的，序號只是
+#     佔掉候選字的寬度。規範 §8.6.1 的註解已經預告了這件事
+#     （「桌面端的慣例是顯示 1. 候選，行動端候選列通常關掉標籤」），
+#     這裡把它兌現。桌面端的 `candidates.window` 不受影響。
+#
+#  ── 工具列：目前唯一的「鍵盤類型」入口 ───────────────────────────────────
+#
+#  三星有一個「鍵盤類型」選單（實機 photo_5），把「拼音全键盘 / 拼音九键 /
+#  双拼 / 笔画 / 五笔」攤平成一份卡片清單 —— 使用者只看到「我要用哪種
+#  鍵盤」，不必知道哪些是換方案、哪些是換佈局。
+#
+#  **我們沒有這個 UI。** 在補上之前，候選列工具列是唯一能觸達替代佈局的
+#  地方（§8.6.6.1 的 toolbar-item 接受任何 §9.5 的 action），所以這裡把
+#  「九鍵 / 全鍵」放進工具列充當臨時的鍵盤類型選單：
+#
+#    · 「九鍵」走 `schema:t9_pinyin` 而不是 `switch_layout:cn-t9-pinyin`
+#      —— 九宮格送的是 A/D/G/J/M/P/T/W，換佈局不換方案會讓全拼 speller
+#      收到一串垃圾。換方案之後 §9.1.1 會自動把佈局也換過去，這才是對的
+#      因果方向，也正是 `for_schema` 存在的理由。
+#    · 「全鍵」走 `switch_layout:cn-qwerty-numrow` —— 它與 `qwerty` 送出
+#      完全相同的 keysym，純粹是外觀偏好，不該動方案。
+#
+#  §8.6.6.1 規定 `schema:picker` 與 `settings` 為必備項，兩者都在。
+#
+#  規範：docs/theme-format.md §7（繼承）、§8.6.6.1、§8.8、§8.8.0.1
+# ─────────────────────────────────────────────────────────────────────────────
+
+format: rime-theme/1
+id: cn-compact-dark
+revision: 1
+
+name:
+  en: "CN Compact Dark"
+  zh-Hant: "華語緊湊 深色"
+  zh-Hans: "华语紧凑 深色"
+
+description:
+  zh-Hant: "以 default-dark 為基底，只改幾何：九宮格鍵更高、鍵距更寬、候選列不顯示序號。配色不變。"
+  zh-Hans: "以 default-dark 为基底，只改几何：九宫格键更高、键距更宽、候选栏不显示序号。配色不变。"
+
+author: "rime-quad"
+license: "CC0-1.0"
+
+appearance: dark
+counterpart: cn-compact-light
+inherits: default-dark
+
+candidates:
+  bar:
+    # 行動端華語輸入法的候選列沒有 1. 2. 3. 序號。
+    label:
+      show: false
+    # 候選字大一點：中文字在同樣的 sp 下視覺重量比拉丁字母輕。
+    text:
+      size: 22
+    height: 46
+    toolbar:
+      show: true
+      items:
+        - { icon: "globe",          tap: "schema:picker" }
+        - { label: "九鍵",           tap: "schema:t9_pinyin" }
+        - { label: "全鍵",           tap: "switch_layout:cn-qwerty-numrow" }
+        - { label_from: input_mode, tap: "toggle:ascii_mode" }
+        - { label_from: variant,    tap: "toggle:simplification" }
+        - { icon: "settings",       tap: "settings" }
+        - { icon: "keyboard_hide",  tap: "hide_keyboard" }
+
+keyboard:
+  # key_aspect 刻意不動（§8.8.0.1）：要對齊參考鍵盤就調 key_height 的界。
+  key_height:
+    min: 54
+    max: 56
+  key_spacing: 8
+  row_spacing: 12
+
+  key_styles:
+    # 九宮格的鍵面是 abc / pqrs / wxyz 這種 3–4 字的字母組，不是單一字母。
+    # 參考實作在 face.length > 2 時把字級乘 0.55，所以 label_size 要
+    # 相應放大，多字鍵才不會小到看不清（30 × 0.55 = 16.5sp）。
+    # 單字鍵（全鍵盤的 Q W E）則直接用 30sp，與實機的視覺重量相符。
+    default:
+      label_size: 30
+      hint_size: 12
+      hint_position: top_right
+    # 左標點欄與右功能欄用 modifier。實機上它們比字母鍵**暗**，
+    # default-dark 的 key_mod (#1E222A) 已經比 key (#2A2F38) 暗，符合。
+    modifier:
+      label_size: 20
+      hint_position: top_right

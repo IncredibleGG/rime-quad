@@ -1,0 +1,409 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  cn-symbols — 符號面板（7 欄 × 4 列，中／英分頁，可上下翻頁）
+#
+#  ── 它模仿的是什麼慣例 ───────────────────────────────────────────────────
+#
+#  依使用者 S24U 實機照片 photo_3（中文標點頁）與 photo_4（英文標點頁）重建。
+#  結構：
+#
+#      ┌────┬────┬────┬────┬────┬────┬────┐
+#      │ ， │ 。 │ ？ │ ！ │ 、 │ …… │ ⌫ │
+#      ├────┼────┼────┼────┼────┼────┼────┤
+#      │ @  │ ： │ ； │ ＆ │ ＾ │ ～ │ △ │   ← 上一頁
+#      ├────┼────┼────┼────┼────┼────┼────┤
+#      │“” │ “ │ ” │（）│ （ │ ） │ ▽ │   ← 下一頁
+#      ├────┴──┬─┴────┴──┬─┴────┼────┴────┤
+#      │ 返回  │  英文   │  ␣   │ 123 │ ⏎ │
+#      └───────┴─────────┴──────┴─────┴────┘
+#
+#  四個慣例，每一個都和現有的 `numeric-symbol.yaml` 不同：
+#
+#  1. **7 欄不是 10 欄。** 符號鍵是方的（實機量到 54 × 54 dp），因為符號
+#     字形寬、需要點擊面積；10 欄的字母節奏套在符號上會又擠又難點。
+#  2. **中文標點排在最前面，英文其次**，而且是**兩個獨立的頁**，不是混在
+#     一起。中文使用者要 `，。？！、……` 的頻率遠高於 `,.?!`。
+#  3. **分頁，用 △▽ 翻**，不是一頁塞完。一頁 18 個符號（3 列 × 6 欄），
+#     翻頁比縮小鍵面塞 40 個符號好按。
+#  4. **底列在每一層都完全一致**（返回 / 中英切換 / 空白 / 123 / ⏎）。
+#     這是實機最值得抄的一點：不管翻到哪一頁，離開的那顆鍵永遠在同一個
+#     位置，使用者不會迷路。本檔五個層的第四列**逐鍵相同**。
+#
+#  ── 分頁是怎麼做的：不需要新格式 ─────────────────────────────────────────
+#
+#  規範沒有「分頁」概念，但**用現有的 `layer` 就能完整模擬**，不必動格式：
+#  一頁＝一個 layer，△ / ▽ 就是 `tap: "layer:<上一頁 / 下一頁的 id>"`。
+#
+#      中文組：zh1 ⇄ zh2 ⇄ kao ⇄（回到 zh1，環狀）
+#      英文組：en1 ⇄ en2 ⇄（回到 en1，環狀）
+#      第二顆鍵在中文組標「英文」並指向 en1，在英文組標「中文」並指向 zh1
+#
+#  代價是**頁的鄰居必須逐一寫死**（沒有 `layer:@next`），加一頁要改兩個
+#  地方；以及**當前頁沒有天然的 active 指示**（§8.8.1 規則 2 只在鍵指向
+#  「當前層」時才 active，而 △▽ 依定義指向別層）。兩者都已回報給主控，
+#  但都不構成阻擋 —— 這一層是真的能用的。
+#
+#  ── 為什麼這裡的符號用 send.text，而鍵盤上的逗號用 send.keysym ───────────
+#
+#  §9.4 明講「把 `，` 寫成 `send: { text: "，" }` 是誤用」，理由是它繞過
+#  librime 的 `punctuator`，在英文模式下仍會吐全形逗號。
+#  **那條規則對鍵盤底列的逗號鍵是對的，對符號面板卻會讓面板失去意義：**
+#
+#      走 keysym 的話，`，`（中文頁）與 `,`（英文頁）送出的是同一個
+#      keysym `comma`，實際吐什麼完全由 `ascii_punct` 開關決定。
+#      於是「中文標點頁」和「英文標點頁」在任一模式下輸出**完全相同**，
+#      兩頁互為冗餘，使用者選了頁卻拿不到他選的那個字。
+#
+#  符號面板的語義是「我現在就要**這一個**字元」，是明示意圖，不該再被
+#  模式開關二次解釋。所以本檔的符號鍵一律走 `send: { text: ... }`，
+#  只有 ⌫ / ␣ / ⏎ 走 keysym（那三顆必須讓 librime 有機會消費，見 §9.5）。
+#  §9.4.1 規定的「組字中先沖出組字結果再上屏」由客戶端負責，已在
+#  §10 檢核清單第 13 條涵蓋。
+#
+#  → **這是 §9.4 需要補一句話的地方：規則應限定在「鍵盤主佈局的標點鍵」，
+#    並明確允許符號面板使用 text。已回報給主控，本檔不動規範。**
+#
+#  ── 和現有 `numeric-symbol.yaml` 的差別 ──────────────────────────────────
+#
+#  | | numeric-symbol（現有） | cn-symbols（本檔） |
+#  |---|---|---|
+#  | 欄數 | 10（字母鍵的節奏） | **7**（方形符號鍵） |
+#  | 層 | 2（numeric / symbol） | **5**（zh1 / zh2 / en1 / en2 / kao） |
+#  | 中文標點 | 只有長按盤裡零星幾個 | **兩整頁 36 個**，排在最前面 |
+#  | 顏文字 | 無 | **一頁 6 個**（華語輸入法必備分頁） |
+#  | 翻頁 | 無 | **△▽ 環狀翻頁** |
+#  | 底列 | 兩層之間鍵不同 | **五層逐鍵相同** |
+#  | 出口 | 「ABC」→ @primary | 「返回」→ **@previous**（回到來時的佈局） |
+#
+#  ── 佈版數字 ─────────────────────────────────────────────────────────────
+#
+#  `units: 7`，符號列 7 顆 × 1.0；底列 5 顆 [1, 1, 3, 1, 1] = 7.0。
+#  顏文字列 3 顆 [3, 3, 1] = 7.0（顏文字字串長，需要寬鍵）。
+#  S24U 實測：單位寬 (456.2 − 10 − 8×6) / 7 = 56.9 dp，
+#  鍵高 clamp(56.9 × 1.34, 42, 56) = 56 dp —— 接近實機的 54 × 54 方鍵。
+#
+#  規範：docs/theme-format.md §9、§9.4 形態 B
+# ─────────────────────────────────────────────────────────────────────────────
+
+format: rime-layout/1
+id: cn-symbols
+revision: 1
+
+name:
+  en: "Symbols (CN)"
+  zh-Hant: "符號面板"
+  zh-Hans: "符号面板"
+
+description:
+  zh-Hant: "7 欄符號面板：中文標點兩頁、英文標點兩頁、顏文字一頁，△▽ 翻頁，底列各層一致。"
+  zh-Hans: "7 列符号面板：中文标点两页、英文标点两页、颜文字一页，△▽ 翻页，底行各层一致。"
+
+author: "rime-quad"
+license: "CC0-1.0"
+
+kind: symbol
+targets: [android, ios]
+for_schema: ["*"]
+direction: ltr
+default_layer: zh1
+primary: false
+
+metrics:
+  row_spacing: null
+  key_spacing: null
+  height_scale: 1.0
+
+layers:
+
+  # ── 中文標點・第一頁（實機 photo_3）───────────────────────────────────────
+  - id: "zh1"
+    label: "中文標點 1"
+    units: 7
+    rows:
+
+      - weight: 1.0
+        keys:
+          - { id: "z1_comma",    label: "，", send: { text: "，" } }
+          - { id: "z1_period",   label: "。", send: { text: "。" } }
+          - { id: "z1_question", label: "？", send: { text: "？" } }
+          - { id: "z1_exclam",   label: "！", send: { text: "！" } }
+          - { id: "z1_dun",      label: "、", send: { text: "、" } }
+          - { id: "z1_ellipsis", label: "……", send: { text: "……" } }
+          - id: "backspace"
+            icon: backspace
+            style: modifier
+            send: { keysym: "BackSpace" }
+            repeat: true
+
+      - weight: 1.0
+        keys:
+          - { id: "z1_at",     label: "＠", send: { text: "＠" } }
+          - { id: "z1_colon",  label: "：", send: { text: "：" } }
+          - { id: "z1_semi",   label: "；", send: { text: "；" } }
+          - { id: "z1_amp",    label: "＆", send: { text: "＆" } }
+          - { id: "z1_caret",  label: "＾", send: { text: "＾" } }
+          - { id: "z1_tilde",  label: "～", send: { text: "～" } }
+          # △ 上一頁。環狀：zh1 的上一頁是中文組的最後一頁（顏文字）。
+          - id: "page_prev"
+            icon: arrow_up
+            style: modifier
+            tap: "layer:kao"
+
+      - weight: 1.0
+        keys:
+          # 「“”」這種成對符號，實機是插入一對並把游標移到中間。
+          # **本格式做不到**：一顆鍵只能有一個 action，而 `send.text` 之後
+          # 沒有辦法接一個 `cursor:left`。這裡退化成「插入一對、游標在後」，
+          # 另外提供拆開的單邊鍵。已回報給主控。
+          - { id: "z1_dquote_pair", label: "“”", send: { text: "“”" } }
+          - { id: "z1_dquote_l",    label: "“",  send: { text: "“" } }
+          - { id: "z1_dquote_r",    label: "”",  send: { text: "”" } }
+          - { id: "z1_paren_pair",  label: "（）", send: { text: "（）" } }
+          - { id: "z1_paren_l",     label: "（",  send: { text: "（" } }
+          - { id: "z1_paren_r",     label: "）",  send: { text: "）" } }
+          - id: "page_next"
+            icon: arrow_down
+            style: modifier
+            tap: "layer:zh2"
+
+      # ── 底列。五個層逐鍵相同 —— 這是實機最值得抄的一點。 ──────────────
+      - weight: 1.0
+        keys:
+          - { id: "bar_back", label: "返回", style: modifier, tap: "switch_layout:@previous" }
+          - { id: "bar_set",  label: "英文", style: modifier, tap: "layer:en1" }
+          - id: "space"
+            icon: space
+            style: space
+            width: 3.0
+            send: { keysym: "space" }
+            long_press: "switch_layout:@primary"
+          - { id: "bar_num", label: "123", style: modifier, tap: "switch_layout:numeric-symbol" }
+          - { id: "enter", icon: enter, style: action, send: { keysym: "Return" } }
+
+  # ── 中文標點・第二頁（括號、書名號、單位）─────────────────────────────────
+  - id: "zh2"
+    label: "中文標點 2"
+    units: 7
+    rows:
+
+      - weight: 1.0
+        keys:
+          - { id: "z2_ml", label: "「", send: { text: "「" } }
+          - { id: "z2_mr", label: "」", send: { text: "」" } }
+          - { id: "z2_dl", label: "『", send: { text: "『" } }
+          - { id: "z2_dr", label: "』", send: { text: "』" } }
+          - { id: "z2_bl", label: "《", send: { text: "《" } }
+          - { id: "z2_br", label: "》", send: { text: "》" } }
+          - id: "backspace"
+            icon: backspace
+            style: modifier
+            send: { keysym: "BackSpace" }
+            repeat: true
+
+      - weight: 1.0
+        keys:
+          - { id: "z2_ll", label: "【", send: { text: "【" } }
+          - { id: "z2_lr", label: "】", send: { text: "】" } }
+          - { id: "z2_tl", label: "〔", send: { text: "〔" } }
+          - { id: "z2_tr", label: "〕", send: { text: "〕" } }
+          - { id: "z2_al", label: "〈", send: { text: "〈" } }
+          - { id: "z2_ar", label: "〉", send: { text: "〉" } }
+          - id: "page_prev"
+            icon: arrow_up
+            style: modifier
+            tap: "layer:zh1"
+
+      - weight: 1.0
+        keys:
+          - { id: "z2_mid",  label: "·", send: { text: "·" } }
+          - { id: "z2_dash", label: "——", send: { text: "——" } }
+          - { id: "z2_yuan", label: "￥", send: { text: "￥" } }
+          - { id: "z2_deg",  label: "°", send: { text: "°" } }
+          - { id: "z2_permil", label: "‰", send: { text: "‰" } }
+          - { id: "z2_sect", label: "§", send: { text: "§" } }
+          - id: "page_next"
+            icon: arrow_down
+            style: modifier
+            tap: "layer:kao"
+
+      - weight: 1.0
+        keys:
+          - { id: "bar_back", label: "返回", style: modifier, tap: "switch_layout:@previous" }
+          - { id: "bar_set",  label: "英文", style: modifier, tap: "layer:en1" }
+          - id: "space"
+            icon: space
+            style: space
+            width: 3.0
+            send: { keysym: "space" }
+            long_press: "switch_layout:@primary"
+          - { id: "bar_num", label: "123", style: modifier, tap: "switch_layout:numeric-symbol" }
+          - { id: "enter", icon: enter, style: action, send: { keysym: "Return" } }
+
+  # ── 顏文字（華語輸入法必備分頁）───────────────────────────────────────────
+  #
+  #  搜狗、百度、訊飛、微信鍵盤都有獨立的「顏文字」分頁。顏文字字串長，
+  #  所以這一層改成 2 顆寬鍵 + 1 顆導覽鍵（3.0 + 3.0 + 1.0 = 7.0）。
+  #  units 維持 7，所以切到這一頁時鍵高不變、鍵盤不會跳動 —— 這是刻意的
+  #  （§8.8.0 的鍵高由 units 決定，units 一改鍵盤總高就會跳）。
+  - id: "kao"
+    label: "顏文字"
+    units: 7
+    rows:
+
+      - weight: 1.0
+        keys:
+          - { id: "kao1", label: "(*^▽^*)", width: 3.0, send: { text: "(*^▽^*)" } }
+          - { id: "kao2", label: "(╯°□°)╯", width: 3.0, send: { text: "(╯°□°)╯" } }
+          - id: "backspace"
+            icon: backspace
+            style: modifier
+            send: { keysym: "BackSpace" }
+            repeat: true
+
+      - weight: 1.0
+        keys:
+          - { id: "kao3", label: "(￣▽￣)", width: 3.0, send: { text: "(￣▽￣)" } }
+          - { id: "kao4", label: "(╥﹏╥)", width: 3.0, send: { text: "(╥﹏╥)" } }
+          - id: "page_prev"
+            icon: arrow_up
+            style: modifier
+            tap: "layer:zh2"
+
+      - weight: 1.0
+        keys:
+          - { id: "kao5", label: "(>_<)", width: 3.0, send: { text: "(>_<)" } }
+          - { id: "kao6", label: "╮(╯_╰)╭", width: 3.0, send: { text: "╮(╯_╰)╭" } }
+          - id: "page_next"
+            icon: arrow_down
+            style: modifier
+            tap: "layer:zh1"
+
+      - weight: 1.0
+        keys:
+          - { id: "bar_back", label: "返回", style: modifier, tap: "switch_layout:@previous" }
+          - { id: "bar_set",  label: "英文", style: modifier, tap: "layer:en1" }
+          - id: "space"
+            icon: space
+            style: space
+            width: 3.0
+            send: { keysym: "space" }
+            long_press: "switch_layout:@primary"
+          - { id: "bar_num", label: "123", style: modifier, tap: "switch_layout:numeric-symbol" }
+          - { id: "enter", icon: enter, style: action, send: { keysym: "Return" } }
+
+  # ── 英文標點・第一頁（實機 photo_4）───────────────────────────────────────
+  - id: "en1"
+    label: "英文標點 1"
+    units: 7
+    rows:
+
+      - weight: 1.0
+        keys:
+          - { id: "e1_exclam",   label: "!", send: { text: "!" } }
+          - { id: "e1_question", label: "?", send: { text: "?" } }
+          - { id: "e1_period",   label: ".", send: { text: "." } }
+          - { id: "e1_comma",    label: ",", send: { text: "," } }
+          - { id: "e1_parenl",   label: "(", send: { text: "(" } }
+          - { id: "e1_parenr",   label: ")", send: { text: ")" } }
+          - id: "backspace"
+            icon: backspace
+            style: modifier
+            send: { keysym: "BackSpace" }
+            repeat: true
+
+      - weight: 1.0
+        keys:
+          - { id: "e1_at",    label: "@", send: { text: "@" } }
+          - { id: "e1_colon", label: ":", send: { text: ":" } }
+          - { id: "e1_semi",  label: ";", send: { text: ";" } }
+          - { id: "e1_slash", label: "/", send: { text: "/" } }
+          - { id: "e1_minus", label: "-", send: { text: "-" } }
+          - { id: "e1_under", label: "_", send: { text: "_" } }
+          - id: "page_prev"
+            icon: arrow_up
+            style: modifier
+            tap: "layer:en2"
+
+      - weight: 1.0
+        keys:
+          - { id: "e1_star",  label: "*", send: { text: "*" } }
+          - { id: "e1_pct",   label: "%", send: { text: "%" } }
+          - { id: "e1_tilde", label: "~", send: { text: "~" } }
+          - { id: "e1_caret", label: "^", send: { text: "^" } }
+          - { id: "e1_hash",  label: "#", send: { text: "#" } }
+          - { id: "e1_amp",   label: "&", send: { text: "&" } }
+          - id: "page_next"
+            icon: arrow_down
+            style: modifier
+            tap: "layer:en2"
+
+      - weight: 1.0
+        keys:
+          - { id: "bar_back", label: "返回", style: modifier, tap: "switch_layout:@previous" }
+          - { id: "bar_set",  label: "中文", style: modifier, tap: "layer:zh1" }
+          - id: "space"
+            icon: space
+            style: space
+            width: 3.0
+            send: { keysym: "space" }
+            long_press: "switch_layout:@primary"
+          - { id: "bar_num", label: "123", style: modifier, tap: "switch_layout:numeric-symbol" }
+          - { id: "enter", icon: enter, style: action, send: { keysym: "Return" } }
+
+  # ── 英文標點・第二頁（引號、括號、運算、貨幣）─────────────────────────────
+  - id: "en2"
+    label: "英文標點 2"
+    units: 7
+    rows:
+
+      - weight: 1.0
+        keys:
+          - { id: "e2_dquote", label: "\"", send: { text: "\"" } }
+          - { id: "e2_quote",  label: "'", send: { text: "'" } }
+          - { id: "e2_brackl", label: "[", send: { text: "[" } }
+          - { id: "e2_brackr", label: "]", send: { text: "]" } }
+          - { id: "e2_bracel", label: "{", send: { text: "{" } }
+          - { id: "e2_bracer", label: "}", send: { text: "}" } }
+          - id: "backspace"
+            icon: backspace
+            style: modifier
+            send: { keysym: "BackSpace" }
+            repeat: true
+
+      - weight: 1.0
+        keys:
+          - { id: "e2_less",  label: "<", send: { text: "<" } }
+          - { id: "e2_more",  label: ">", send: { text: ">" } }
+          - { id: "e2_plus",  label: "+", send: { text: "+" } }
+          - { id: "e2_equal", label: "=", send: { text: "=" } }
+          - { id: "e2_bar",   label: "|", send: { text: "|" } }
+          - { id: "e2_bslash", label: "\\", send: { text: "\\" } }
+          - id: "page_prev"
+            icon: arrow_up
+            style: modifier
+            tap: "layer:en1"
+
+      - weight: 1.0
+        keys:
+          - { id: "e2_dollar", label: "$", send: { text: "$" } }
+          - { id: "e2_euro",   label: "€", send: { text: "€" } }
+          - { id: "e2_pound",  label: "£", send: { text: "£" } }
+          - { id: "e2_yen",    label: "¥", send: { text: "¥" } }
+          - { id: "e2_bullet", label: "•", send: { text: "•" } }
+          - { id: "e2_grave",  label: "`", send: { text: "`" } }
+          - id: "page_next"
+            icon: arrow_down
+            style: modifier
+            tap: "layer:en1"
+
+      - weight: 1.0
+        keys:
+          - { id: "bar_back", label: "返回", style: modifier, tap: "switch_layout:@previous" }
+          - { id: "bar_set",  label: "中文", style: modifier, tap: "layer:zh1" }
+          - id: "space"
+            icon: space
+            style: space
+            width: 3.0
+            send: { keysym: "space" }
+            long_press: "switch_layout:@primary"
+          - { id: "bar_num", label: "123", style: modifier, tap: "switch_layout:numeric-symbol" }
+          - { id: "enter", icon: enter, style: action, send: { keysym: "Return" } }

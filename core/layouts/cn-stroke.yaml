@@ -1,0 +1,190 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  cn-stroke — 五筆畫（橫豎撇捺折），5 欄 × 4 列
+#
+#  ── 它模仿的是什麼慣例 ───────────────────────────────────────────────────
+#
+#  三星的「鍵盤類型」選單（實機 photo_5）把「笔画」與「拼音全键盘 / 拼音
+#  九键 / 双拼 / 五笔」並列成同一份清單。語燕輸入法也內建筆畫鍵盤
+#  （images/stroke_pinyin.jpg）。筆畫是華語使用者查**不會唸的字**的標準
+#  手段 —— 繁體使用者尤其需要，因為異體字與罕用字用拼音／注音查不到。
+#
+#  排法沿用語燕的骨架，但**外框完全對齊本專案的 `cn-t9-pinyin`**
+#  （同樣 5 欄 × 4 列、同樣的 1.7 / 2.2 欄寬、同樣的左標點欄與右功能欄）：
+#
+#      ┌──────┬───────┬───────┬───────┬──────┐
+#      │  ，  │ 一 h  │ 丨 s  │ 丿 p  │  ⌫  │
+#      ├──────┼───────┼───────┼───────┼──────┤
+#      │  。  │ 丶 n  │ 乙 z  │ 分詞  │ 重輸 │
+#      ├──────┼───────┼───────┼───────┼──────┤
+#      │  ？  │ 反查  │ 全鍵  │ 中/英 │  0   │
+#      ├──────┼───────┼───────┼───────┼──────┤
+#      │ !@#  │  方案 │  ␣    │  123  │  ⏎  │
+#      └──────┴───────┴───────┴───────┴──────┘
+#
+#  這樣做的理由是實機截圖最值得抄的那一點：**各層底列保持一致，使用者
+#  不會迷路**。從九宮格切到筆畫，手指的肌肉記憶完全不必重學。
+#
+#  ── keysym 對照（與 `core/data/shared/stroke.schema.yaml` 的契約）────────
+#
+#  該方案的 `speller/alphabet` 是 a–z，筆畫以五個字母編碼，
+#  並由 `translator/preedit_format` 把它們轉寫成康熙部首顯示：
+#
+#      橫 一 → h      豎 丨 → s      撇 丿 → p
+#      捺 丶 → n      折 乙 → z
+#
+#  所以鍵面印筆形、送出的是字母 keysym —— 又一個 label / send 分離的用例
+#  （與注音大千、九宮格同一個機制，第三種用途）。
+#
+#  「反查」送 keysym `grave`：該方案的 `reverse_lookup/prefix` 是 "`"，
+#  打 ` 之後接拼音可以反查該字的筆順（tips 顯示〔拼音〕）。
+#  「分詞」送 `apostrophe`，對應 `speller/delimiter: " '"`。
+#
+#  ── 和現有佈局的差別 ─────────────────────────────────────────────────────
+#
+#  現有 `core/layouts/` 沒有任何筆畫佈局。使用者啟用 `stroke` 方案後，
+#  §9.1.1 第 1 步找不到精確命中，會退回 `qwerty` —— 鍵面是 a–z，
+#  使用者得自己記得「橫是 h、豎是 s」才打得出字。本檔補上這個洞：
+#  `for_schema: ["stroke"]` 會讓方案一切過去，鍵盤就自動換成筆形鍵面。
+#
+#  規範：docs/theme-format.md §9.1.1、§9.4
+# ─────────────────────────────────────────────────────────────────────────────
+
+format: rime-layout/1
+id: cn-stroke
+revision: 1
+
+name:
+  en: "Five Strokes"
+  zh-Hant: "五筆畫"
+  zh-Hans: "五笔画"
+
+description:
+  zh-Hant: "橫豎撇捺折五鍵。鍵面印筆形、送出字母 keysym。外框與九宮格一致，底列相同。"
+  zh-Hans: "横竖撇捺折五键。键面印笔形、送出字母 keysym。外框与九宫格一致，底行相同。"
+
+author: "rime-quad"
+license: "CC0-1.0"
+
+kind: grid
+targets: [android, ios]
+for_schema: ["stroke"]
+direction: ltr
+default_layer: stroke
+primary: false
+
+metrics:
+  row_spacing: null
+  key_spacing: null
+  height_scale: 1.0
+
+layers:
+
+  - id: "stroke"
+    label: "五筆畫"
+    units: 10
+    rows:
+
+      - weight: 1.0
+        keys:
+          - id: "pu_comma"
+            label: "，"
+            width: 1.7
+            style: modifier
+            send: { keysym: "comma" }
+            popup:
+              layout: row
+              keys:
+                - { label: "、", send: { text: "、" } }
+                - { label: "；", send: { keysym: "semicolon" } }
+                - { label: "：", send: { keysym: "colon" } }
+          - { id: "s_heng", label: "一", hint: "橫", width: 2.2, send: { keysym: "h" } }
+          - { id: "s_shu",  label: "丨", hint: "豎", width: 2.2, send: { keysym: "s" } }
+          - { id: "s_pie",  label: "丿", hint: "撇", width: 2.2, send: { keysym: "p" } }
+          - id: "backspace"
+            icon: backspace
+            width: 1.7
+            style: modifier
+            send: { keysym: "BackSpace" }
+            repeat: true
+
+      - weight: 1.0
+        keys:
+          - id: "pu_period"
+            label: "。"
+            width: 1.7
+            style: modifier
+            send: { keysym: "period" }
+            popup:
+              layout: row
+              keys:
+                - { label: "…", send: { text: "…" } }
+                - { label: "—", send: { text: "—" } }
+                - { label: "～", send: { text: "～" } }
+          - { id: "s_na",  label: "丶", hint: "捺", width: 2.2, send: { keysym: "n" } }
+          - { id: "s_zhe", label: "乙", hint: "折", width: 2.2, send: { keysym: "z" } }
+          - { id: "delim", label: "分詞", width: 2.2, style: modifier, send: { keysym: "apostrophe" } }
+          - { id: "clear", label: "重輸", width: 1.7, style: modifier, tap: "clear" }
+
+      - weight: 1.0
+        keys:
+          - id: "pu_question"
+            label: "？"
+            width: 1.7
+            style: modifier
+            send: { keysym: "question" }
+            popup:
+              layout: row
+              keys:
+                - { label: "！", send: { keysym: "exclam" } }
+                - { label: "·", send: { text: "·" } }
+                - { label: "…", send: { text: "…" } }
+          # 反查：stroke 方案的 reverse_lookup 前綴是 "`"，接拼音可查筆順。
+          - { id: "lookup", label: "反查", width: 2.2, style: modifier, send: { keysym: "grave" } }
+          - id: "to_alpha"
+            label: "全鍵"
+            width: 2.2
+            style: modifier
+            tap: "switch_layout:@primary"
+          - id: "lang"
+            label_from: input_mode
+            label: "中"
+            width: 2.2
+            style: modifier
+            tap: "toggle:ascii_mode"
+          - { id: "d0", label: "0", width: 1.7, style: modifier, send: { keysym: "0" } }
+
+      - weight: 1.0
+        keys:
+          - id: "to_symbols"
+            label: "!@#"
+            width: 1.7
+            style: modifier
+            tap: "switch_layout:cn-symbols"
+          # 刻意不用 icon: globe —— §9.6 的替代字形是 🌐，在多數 Android 字體裡
+          # 會被 Noto Color Emoji 接手畫成彩色圖案，夾在單色鍵面中很突兀。
+          # 沒有向量資源時，純文字 label 比彩色 emoji 好。已回報給主控。
+          - id: "schema"
+            label: "方案"
+            width: 2.2
+            style: modifier
+            tap: "schema:picker"
+          - id: "space"
+            icon: space
+            style: space
+            width: 2.2
+            label_from: schema_name
+            send: { keysym: "space" }
+            swipe:
+              left:  { tap: "cursor:left" }
+              right: { tap: "cursor:right" }
+            long_press: "switch_layout:@primary"
+          - id: "to_num"
+            label: "123"
+            width: 2.2
+            style: modifier
+            tap: "switch_layout:numeric-symbol"
+          - id: "enter"
+            icon: enter
+            style: action
+            width: 1.7
+            send: { keysym: "Return" }
