@@ -98,6 +98,47 @@ def plugins_info():
                             "<shared>/lua/?.lua;<shared>/lua/?/init.lua,"
                             "並載入 <user>/rime.lua(不存在則 <shared>/rime.lua)。"
                             "方案套件必須保留 lua/ 子目錄結構與 rime.lua。",
+            # 這一段是對外承諾的一部分,不是實作細節:方案市集下載的是
+            # 第三方 Lua,使用者有權知道那些腳本被允許做什麼。
+            "sandbox": {
+                "patch": "patches/librime-lua@sandbox.patch",
+                "applied_in": "src/lib/lua.cc(pmain,luaL_openlibs 之後、"
+                              "modules.cc 的 lua_init 執行 rime.lua 之前)",
+                "why": "librime-lua 上游呼叫 luaL_openlibs(),開的是完整標準"
+                       "函式庫。而 modules.cc 在模組初始化時就會 dofile "
+                       "<user>/rime.lua —— 使用者還沒選到那個方案,腳本就已經"
+                       "跑了。等於「下載即執行任意程式碼」。實測(rime_console)"
+                       "確認沙盒之前 os.execute() 真的執行了外部指令、"
+                       "io.popen() 真的開了子行程、package.loadlib() 真的載入了"
+                       "libc.so;app 的 uid 屬於 inet 群組,載入原生碼之後可以"
+                       "自己 socket(),完全繞過 net/NetworkGate.kt。",
+                "removed": ["os.execute", "os.exit", "os.remove", "os.rename",
+                            "os.tmpname", "os.setlocale", "io.popen",
+                            "package.loadlib", "package.cpath",
+                            "package.searchers[3] (C 模組載入器)",
+                            "package.searchers[4] (all-in-one 載入器)",
+                            "debug.getregistry", "debug.sethook", "debug.gethook",
+                            "debug.setupvalue", "debug.setlocal",
+                            "debug.upvaluejoin", "debug.upvalueid",
+                            "debug.setcstacklimit", "debug.debug",
+                            "load/loadfile/dofile 的二進位 chunk(強制 mode=t)"],
+                "kept": ["string", "table", "math", "coroutine", "utf8",
+                         "io.*(方案要讀自己的資料檔;開不了 socket)",
+                         "os.date", "os.time", "os.clock", "os.difftime",
+                         "os.getenv", "require", "package.path",
+                         "package.config", "debug.getinfo", "debug.traceback"],
+                "compat_basis": "移除清單是掃過方案市集裡雾凇(rime-ice)與"
+                                "萬象(rime-moran)全部 46 個 .lua 決定的:"
+                                "它們用到 os.date/os.time/os.getenv/os.clock/"
+                                "io.open/require/package.config/load(明確傳 't')/"
+                                "debug.getinfo,對上面每一個被移除的項目都是零使用。"
+                                "改完兩者仍能部署並打出「你好」。",
+                "not_claimed": "這不是完整隔離。io.* 仍可讀寫 app 私有目錄,"
+                               "真正的隔離需要另一個行程與 seccomp,不在這一層。",
+                "fail_mode": "沙盒字串裝不上時,pmain 會把 os/io/package/debug/"
+                             "require/load/loadfile/dofile 整組設成 nil —— "
+                             "lua 方案會壞,但不會默默退回完整標準函式庫。",
+            },
         }
     }
 

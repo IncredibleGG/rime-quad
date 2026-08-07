@@ -92,8 +92,13 @@ fun NetworkSwitchCard(modifier: Modifier = Modifier) {
             }
             if (on) {
                 Spacer(Modifier.height(6.dp))
+                // 這顆開關在設定頁也按得到，使用者不一定看過 NetworkRequiredCard，
+                // 所以「開著等於向你的網路告知」這句話在這裡也要講一次。
                 Text(
-                    text = "每一次實際發生的連網都會記在「連網」分頁的紀錄裡，你可以自己核對。",
+                    text = "每一次實際發生的連網都會記在「連網」分頁的紀錄裡，你可以自己核對。" +
+                        "另外要知道：開著的時候一旦真的連線，你的網路就會看得到這台裝置" +
+                        "連了哪個網域（DNS 與 TLS 的連線目標是明文，改不掉）。" +
+                        "我們的請求本身不含這個 app 的名字，但「有沒有連」瞞不了。",
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -126,6 +131,19 @@ fun NetworkRequiredCard(what: String, modifier: Modifier = Modifier) {
                     "用完隨時關掉，關掉就回到完全離線。",
                 fontSize = 13.sp,
                 modifier = Modifier.padding(top = 6.dp),
+            )
+            // ⚠ 這一段是刻意放在「開啟連網」按鈕**上面**的，不是放在說明的最後。
+            //   使用者按下按鈕之前就該知道代價，按完才告訴他等於沒說。
+            Text(
+                text = "要老實說的代價：連線一旦發生，你的網路（電信商、Wi-Fi 的主人、" +
+                    "中間的任何一方）就會知道這台裝置連了 github.com 之類的網域。" +
+                    "我們送出的請求裡不含這個 app 的名字，但 DNS 查詢與 TLS 的" +
+                    "連線目標本來就是明文，這一點我們瞞不了，也不打算假裝瞞得了。" +
+                    "如果你所在的環境連「裝了哪個輸入法」都不方便被知道，" +
+                    "那就別開這個開關 —— 離線的功能已經是完整的。",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp),
             )
             Spacer(Modifier.height(10.dp))
             Button(

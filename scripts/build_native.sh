@@ -198,9 +198,16 @@ ensure_librime_lua() {
 }
 
 # ---------------------------------------------------------------- patches
-# patches/<name>.patch 會被套用到對應的 submodule。目前無需任何 patch,
-# 但保留機制:新增的 patch 檔請以 "<submodule 相對路徑>@<說明>.patch" 命名,
+# patches/<name>.patch 會被套用到對應的 submodule。命名規則是
+# "<submodule 相對路徑>@<說明>.patch",路徑裡的 / 寫成 __,
 # 例如 deps__opencc@skip-tools.patch -> 套用於 third_party/librime/deps/opencc。
+#
+# 兩個特例(名字直接對到頂層目錄,不走 librime/ 底下的相對路徑):
+#   librime@...      -> third_party/librime
+#   librime-lua@...  -> third_party/librime-lua
+# librime-lua 之所以要特例:它實際是以 symlink 掛在
+# third_party/librime/plugins/lua,寫成 plugins__lua@... 也能用,但那樣
+# patch 檔名就綁死在 symlink 的名字上,改名就靜默失效。直接指名來源目錄。
 apply_patches() {
   shopt -s nullglob
   local patches=("${PATCH_DIR}"/*.patch)
@@ -217,6 +224,8 @@ apply_patches() {
     rel="${rel//__//}"
     if [[ "${rel}" == "librime" ]]; then
       target="${LIBRIME_SRC}"
+    elif [[ "${rel}" == "librime-lua" ]]; then
+      target="${LIBRIME_LUA_SRC}"
     else
       target="${LIBRIME_SRC}/${rel}"
     fi

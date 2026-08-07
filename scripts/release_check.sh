@@ -32,6 +32,19 @@ ok()   { echo "  [PASS] $*"; PASS=$((PASS+1)); }
 bad()  { echo "  [FAIL] $*" >&2; FAIL=$((FAIL+1)); }
 step() { echo; echo "=== $* ==="; }
 
+step "0. 離線稽核（產品定位）"
+# 放在第 1 關之前,而且是**不需要模擬器**的一關 —— 它擋的不是「會不會壞」,
+# 是「我們對使用者講的話還算不算數」。無審查、離線為預設、經得起審計,
+# 這些是這個 app 存在的理由;功能壞了可以下一版補,定位破了補不回來。
+#
+# 檢查項目與每一項的理由見 scripts/audit_offline.sh 的檔頭。
+if "$ROOT/scripts/audit_offline.sh" > "$OUT/audit-offline.log" 2>&1; then
+  ok "離線稽核全數通過（$(grep -c '\[PASS\]' "$OUT/audit-offline.log") 項）"
+else
+  bad "離線稽核未通過 —— 這份建置不符合本專案對外的承諾，不要發布"
+  grep -A2 '\[FAIL\]' "$OUT/audit-offline.log" | head -20 >&2
+fi
+
 step "1. 工作區狀態"
 cd "$ROOT"
 if git diff --quiet && git diff --cached --quiet; then

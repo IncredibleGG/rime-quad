@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!--
         ⚠ 讀到這裡的人多半是來查「你說你不連網，為什麼有網路權限」的。答案：
@@ -33,9 +34,49 @@
     -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!--
+        ⚠ allowBackup=false。這一行是隱私邊界，不是效能設定，改它之前請先讀完。
+
+        Android 的「自動備份」會把 app 私有目錄整個同步到使用者的 Google Drive。
+        它是**系統元件代勞**的：不經過我們的行程，因此
+          · 不經過 net/NetworkGate.kt，「單一出口」那句話管不到它；
+          · 連網紀錄一筆都不會有 —— 使用者照我們教的方法查，會查到「乾淨」，
+            但資料其實已經出境了。
+
+        實測(bmgr backupnow + com.android.localtransport,見
+        scripts/audit_offline.sh 檔頭)確認 allowBackup=true 時被打包帶走的有：
+          · files/rime/user/*.userdb/    使用者詞庫 —— 打過什麼字的直接證據
+          · files/rime/user/installation.yaml
+                                        installation_id,一組跨重裝穩定的 UUID
+          · files/rime/user/user.yaml    schema_access_time：何時用過哪個方案
+          · files/rime/user/rimequad-store.json、sp/rimequad-store.xml
+                                        裝了哪些第三方方案
+          · files/net/                   連網紀錄本身
+
+        為什麼是全關，而不是用 dataExtractionRules 精細排除詞庫：
+          1. 就算規則寫得完美、只帶走佈景偏好，Google 端仍然會留下一筆
+             「這個帳號裝了 org.rimequad.ime」。對一個以規避監控為賣點的
+             輸入法來說，那正是我們在別處(User-Agent)努力避免的自報家門。
+             換來的好處只是鍵盤高度倍率跟著換機走 —— 不成比例。
+          2. 排除規則是 fail-open 的：只寫 <exclude> 時，將來新增的目錄
+             預設會被備份。本專案其他每一道閘門都是 fail-closed,
+             這裡不該破例。
+          3. Android 11 以下走 android:fullBackupContent、12 以上走
+             android:dataExtractionRules,兩套規則要各寫一份且都不能寫錯。
+             寫錯的下場是靜默失效 —— 沒有任何錯誤訊息會告訴你詞庫還在外流。
+
+        代價要說清楚：使用者換手機時，詞庫與設定不會自動跟過去。
+        我們認為誠實的替代方案是**使用者自己匯出**(主動、看得見、
+        去處由使用者決定),而不是背著他上傳到某家公司的雲端。
+        ⚠ 匯出/匯入功能目前尚未實作，見 audit_offline.sh 檔頭的未竟事項。
+
+        tools:replace 的用途：manifest 合併時，任何相依函式庫都可能帶進
+        自己的 allowBackup。加上它，這裡的值一定贏，而不是看合併順序。
+    -->
     <application
         android:name=".RimeApp"
-        android:allowBackup="true"
+        android:allowBackup="false"
+        tools:replace="android:allowBackup"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"

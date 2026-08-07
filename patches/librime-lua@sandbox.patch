@@ -1,0 +1,106 @@
+diff --git a/src/lib/lua.cc b/src/lib/lua.cc
+index 72f1682..786e987 100644
+--- a/src/lib/lua.cc
++++ b/src/lib/lua.cc
+@@ -197,9 +197,101 @@ namespace LuaImpl {
+   static const char makeclosurekey = 'k';
+   static const char luakey = 'k';
+ 
++  // ═══════════════════════════════════════════════════════════════════════
++  //  RimeQuad 沙盒 —— 由 patches/librime-lua@sandbox.patch 加入,不是上游程式碼
++  // ═══════════════════════════════════════════════════════════════════════
++  //
++  // 為什麼需要:這個 app 的方案市集會從 GitHub 下載第三方方案,使用者也能
++  // 自行匯入 zip。方案裡的 .lua 由 librime-lua 直接執行 —— 而且 modules.cc
++  // 是在**模組初始化**時就 dofile 使用者資料目錄下的 rime.lua,不必等使用者
++  // 選到那個方案。等於「下載即執行任意程式碼」。
++  //
++  // 原本 luaL_openlibs() 開的是**完整**標準函式庫。實測(rime_console 上跑
++  // 探針)確認在沙盒之前:
++  //   · os.execute() 真的執行了外部指令
++  //   · io.popen() 真的開了子行程並讀到輸出
++  //   · package.loadlib("/system/lib64/libc.so","*") 真的載入了原生碼
++  // app 的 uid 屬於 inet 群組(因為有 INTERNET 權限),所以載入原生碼之後
++  // 自己 socket() 是通的 —— 那條路完全繞過 net/NetworkGate.kt,
++  // 「全 app 只有一個連網出口」對匯入的方案就不成立。
++  //
++  // 移除清單是**看實際用量**決定的,不是憑感覺:把方案市集裡的雾凇(rime-ice)
++  // 與萬象(rime-moran)全部 .lua 掃過一遍,用到的是
++  //   os.date(73) os.time(22) os.getenv(1) os.clock(1)
++  //   io.open(6) io.write io.output io.close
++  //   require(21) package.config(1) load(3,且都明確傳 't') debug.getinfo(2)
++  // 底下移除的每一項在這兩套方案裡都是**零使用**。
++  //
++  // 沒有做的事(要說清楚,才不會被當成比實際更強的保證):
++  //   · io 仍然開著。方案確實要讀自己的資料檔,而檔案讀寫受 Android
++  //     app sandbox 限制,開不了 socket。這是取捨,不是疏漏。
++  //   · 這不是防惡意程式的完整隔離,是把「能直接跳出行程 / 載入原生碼」
++  //     這條最短的路關掉。真正的隔離要另一個行程與 seccomp,不在這一層。
++  static const char kRimeQuadSandbox[] = R"SANDBOX(
++local removed_os = { "execute", "exit", "remove", "rename", "tmpname", "setlocale" }
++for _, k in ipairs(removed_os) do os[k] = nil end
++
++io.popen = nil
++
++-- 原生 .so 的載入路徑:loadlib 本身,加上 package.searchers 裡的 C 載入器
++-- (3 = C 模組, 4 = all-in-one)。留下 1 = preload 與 2 = .lua 檔,
++-- require 對純 Lua 模組仍然照常運作。
++package.loadlib = nil
++package.cpath = ""
++package.searchers[4] = nil
++package.searchers[3] = nil
++
++local removed_debug = { "getregistry", "sethook", "gethook", "setupvalue",
++                        "setlocal", "upvaluejoin", "upvalueid",
++                        "setcstacklimit", "debug" }
++for _, k in ipairs(removed_debug) do debug[k] = nil end
++
++-- 只收文字 chunk。精心構造的 Lua bytecode 可以破壞 VM 的記憶體安全,
++-- 那等於繞過上面所有限制直接跑原生碼。保留 load 的其餘語義:
++-- env 參數「有沒有傳」必須原樣轉發 —— 補一個 nil 進去會把 _ENV 設成 nil。
++local _load, _loadfile = load, loadfile
++
++load = function(chunk, chunkname, mode, ...)
++  if select("#", ...) > 0 then return _load(chunk, chunkname, "t", ...) end
++  return _load(chunk, chunkname, "t")
++end
++
++loadfile = function(filename, mode, ...)
++  if select("#", ...) > 0 then return _loadfile(filename, "t", ...) end
++  return _loadfile(filename, "t")
++end
++
++dofile = function(filename)
++  local f, err = loadfile(filename)
++  if not f then error(err, 2) end
++  return f()
++end
++)SANDBOX";
++
+   static int pmain(lua_State *L) {
+     luaL_openlibs(L);
+     xluaopen_utf8(L);
++    // 順序很重要:沙盒必須在 modules.cc 的 lua_init 跑 rime.lua **之前**
++    // 就裝好。lua_init 是透過 Lua::to_state 在建構子之後才呼叫的,而 pmain
++    // 在建構子裡,所以這裡是對的位置。
++    //
++    // 裝不上沙盒時**不能**就這樣繼續 —— 那等於悄悄退回完整標準函式庫,
++    // 是這個專案最不能接受的失敗方式(fail-open)。
++    //
++    // 但也不適合直接 lua_error:pmain 是由建構子裡的 lua_call(非保護呼叫)
++    // 跑的,丟例外會走到 panic → abort(),使用者看到的是輸入法整個掛掉。
++    // 所以改成把危險的函式庫整組拔掉:lua 方案會壞,而且會壞得很明顯,
++    // 但不會有任何東西從這裡漏出去。壞掉優於默默放行。
++    if (luaL_dostring(L, kRimeQuadSandbox) != LUA_OK) {
++      lua_pop(L, 1);  // 丟掉錯誤訊息,堆疊要留乾淨
++      static const char *const kNuke[] = {
++        "os", "io", "package", "debug", "require", "dofile", "loadfile", "load",
++      };
++      for (size_t i = 0; i < sizeof(kNuke) / sizeof(kNuke[0]); i++) {
++        lua_pushnil(L);
++        lua_setglobal(L, kNuke[i]);
++      }
++    }
+     lua_register(L, "yield", yield);
+     export_set(L);
+ 

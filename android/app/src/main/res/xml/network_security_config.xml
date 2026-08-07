@@ -1,19 +1,33 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  預設**不允許**明文 HTTP：正式索引在 R2 / GitHub 上，一律 https。
+  一律不允許明文 HTTP。正式索引在 R2 / GitHub 上，全部是 https。
 
-  唯一的例外是 loopback。理由很具體：驗證整條導入流程時，假索引與假套件
-  由開發機上的 HTTP server 提供，經 `adb reverse tcp:8099 tcp:8099` 讓
-  模擬器的 127.0.0.1:8099 連回去。若不開這個洞，就只能改用自簽憑證，
-  那反而要在 app 裡塞一份信任錨，風險大得多。
+  ── 為什麼連 loopback 都不留 ────────────────────────────────────────────
+  這裡原本開了 127.0.0.1 / localhost / 10.0.2.2 的明文例外，理由是「本機測試
+  用假索引」。移除的原因有兩個：
 
-  loopback 位址無法從裝置外部到達，開放它不會擴大攻擊面。
+    1. 那個理由已經不成立 —— 全專案沒有任何一支腳本用 `adb reverse` 或
+       127.0.0.1 測索引（可自行 grep 驗證）。它是一個沒有使用者的例外。
+
+    2. 它不是沒有代價的。loopback 例外讓「同一台裝置上的另一個 app 開一個
+       本機 server 冒充索引來源」變成可行：那個 app 不需要任何特殊權限就能
+       listen 在 127.0.0.1，而我們會用明文去連、拿到它給的方案清單。
+       套件本身有雜湊校驗，但**索引**決定了我們去哪裡下載、顯示什麼給使用者。
+
+  ── 為什麼不是「只在 debug flavor 留著」 ────────────────────────────────
+  因為本專案側載發布的就是 **debug** 建置（見 build.gradle.kts 的 buildTypes
+  註解：使用者手上跑的是 app-debug.apk）。把例外放進 src/debug/ 等於原封不動
+  發給每一個使用者，只是換個地方藏 —— 對這個專案來說 debug 不是「內部用」。
+
+  ── 將來真的需要它的話 ──────────────────────────────────────────────────
+  請新增一個**獨立的 build type**（例如 `loopback`，initWith(debug)），
+  把帶例外的設定放進 src/loopback/res/xml/network_security_config.xml。
+  build type 的 source set 天生會覆蓋 main，不會有資源重複的問題，產出的也是
+  另一個檔名（app-loopback.apk），不可能被 release_check / publish_apk 誤發。
+
+  **不要**直接改這個檔案然後想著待會改回來。scripts/audit_offline.sh 會檢查
+  這個檔裡沒有 cleartextTrafficPermitted="true"，改了會讓發布關卡變紅。
 -->
 <network-security-config>
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">127.0.0.1</domain>
-        <domain includeSubdomains="false">localhost</domain>
-        <domain includeSubdomains="false">10.0.2.2</domain>
-    </domain-config>
     <base-config cleartextTrafficPermitted="false" />
 </network-security-config>

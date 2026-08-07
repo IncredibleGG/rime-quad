@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-07T15:24:24Z",
+  "generated_at": "2026-08-07T19:17:16Z",
   "generated_by": "scripts/build_native.sh",
   "librime": {
     "version": "1.17.0",
@@ -42,7 +42,56 @@
       ],
       "packaging": "BUILD_MERGED_PLUGINS=ON:外掛與 Lua 直譯器的 object 檔直接併入 librime.a,不另外產生靜態庫,連結順序不變。",
       "registration": "上層 CMakeLists 依 rime_plugins_modules 定義 RIME_EXTRA_MODULES=(lua),rime_api.cc 因此會呼叫 rime_require_module_lua();librime.a 內同時存在該符號的定義(T)與引用(U),build_native.sh 的 verify_lua() 會檢查。",
-      "runtime_data": "librime-lua 會把 package.path 設成 <user>/lua/?.lua;<user>/lua/?/init.lua;<shared>/lua/?.lua;<shared>/lua/?/init.lua,並載入 <user>/rime.lua(不存在則 <shared>/rime.lua)。方案套件必須保留 lua/ 子目錄結構與 rime.lua。"
+      "runtime_data": "librime-lua 會把 package.path 設成 <user>/lua/?.lua;<user>/lua/?/init.lua;<shared>/lua/?.lua;<shared>/lua/?/init.lua,並載入 <user>/rime.lua(不存在則 <shared>/rime.lua)。方案套件必須保留 lua/ 子目錄結構與 rime.lua。",
+      "sandbox": {
+        "patch": "patches/librime-lua@sandbox.patch",
+        "applied_in": "src/lib/lua.cc(pmain,luaL_openlibs 之後、modules.cc 的 lua_init 執行 rime.lua 之前)",
+        "why": "librime-lua 上游呼叫 luaL_openlibs(),開的是完整標準函式庫。而 modules.cc 在模組初始化時就會 dofile <user>/rime.lua —— 使用者還沒選到那個方案,腳本就已經跑了。等於「下載即執行任意程式碼」。實測(rime_console)確認沙盒之前 os.execute() 真的執行了外部指令、io.popen() 真的開了子行程、package.loadlib() 真的載入了libc.so;app 的 uid 屬於 inet 群組,載入原生碼之後可以自己 socket(),完全繞過 net/NetworkGate.kt。",
+        "removed": [
+          "os.execute",
+          "os.exit",
+          "os.remove",
+          "os.rename",
+          "os.tmpname",
+          "os.setlocale",
+          "io.popen",
+          "package.loadlib",
+          "package.cpath",
+          "package.searchers[3] (C 模組載入器)",
+          "package.searchers[4] (all-in-one 載入器)",
+          "debug.getregistry",
+          "debug.sethook",
+          "debug.gethook",
+          "debug.setupvalue",
+          "debug.setlocal",
+          "debug.upvaluejoin",
+          "debug.upvalueid",
+          "debug.setcstacklimit",
+          "debug.debug",
+          "load/loadfile/dofile 的二進位 chunk(強制 mode=t)"
+        ],
+        "kept": [
+          "string",
+          "table",
+          "math",
+          "coroutine",
+          "utf8",
+          "io.*(方案要讀自己的資料檔;開不了 socket)",
+          "os.date",
+          "os.time",
+          "os.clock",
+          "os.difftime",
+          "os.getenv",
+          "require",
+          "package.path",
+          "package.config",
+          "debug.getinfo",
+          "debug.traceback"
+        ],
+        "compat_basis": "移除清單是掃過方案市集裡雾凇(rime-ice)與萬象(rime-moran)全部 46 個 .lua 決定的:它們用到 os.date/os.time/os.getenv/os.clock/io.open/require/package.config/load(明確傳 't')/debug.getinfo,對上面每一個被移除的項目都是零使用。改完兩者仍能部署並打出「你好」。",
+        "not_claimed": "這不是完整隔離。io.* 仍可讀寫 app 私有目錄,真正的隔離需要另一個行程與 seccomp,不在這一層。",
+        "fail_mode": "沙盒字串裝不上時,pmain 會把 os/io/package/debug/require/load/loadfile/dofile 整組設成 nil —— lua 方案會壞,但不會默默退回完整標準函式庫。"
+      }
     }
   },
   "boost": {
@@ -111,9 +160,9 @@
       "libs": [
         {
           "file": "librime.a",
-          "size_bytes": 19149024,
+          "size_bytes": 19151864,
           "size_human": "18.26 MiB",
-          "sha256": "0cbeb5eee2e1bb5958fb3e3ccba82c960891d764b01a197060a8cb048b2b6e94"
+          "sha256": "53d1ba550f12cea791ab7e0d99fae4cb622bd3b0e5794fff7e943e6753fac3d2"
         },
         {
           "file": "libopencc.a",
@@ -146,7 +195,7 @@
           "sha256": "6a63aa496536d83a80ba877969869cd987192f3cc54fae6799bd97129e9f34fd"
         }
       ],
-      "total_size_bytes": 24319236
+      "total_size_bytes": 24322076
     },
     "x86_64": {
       "api_level": 21,
@@ -158,9 +207,9 @@
       "libs": [
         {
           "file": "librime.a",
-          "size_bytes": 17843178,
+          "size_bytes": 17846034,
           "size_human": "17.02 MiB",
-          "sha256": "8015a31d3f7edf76cb3e04a1025d49452918551d71cb3c32665cf2fbb3f2c1ff"
+          "sha256": "672b566bd3f80fe97e9ee5a4c5319b51a8515e2351870b773786c96eb89d3b47"
         },
         {
           "file": "libopencc.a",
@@ -193,7 +242,7 @@
           "sha256": "5ed22b46a409ba5acb0fad235ac47be3bcaffea63e70b4d814fceb9cc273df90"
         }
       ],
-      "total_size_bytes": 22848848
+      "total_size_bytes": 22851704
     }
   }
 }
