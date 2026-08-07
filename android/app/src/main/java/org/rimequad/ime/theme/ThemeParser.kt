@@ -162,10 +162,14 @@ object ThemeParser {
     private val SELECTION_KEYS = setOf("color", "text_color")
 
     private val KEYBOARD_KEYS = setOf(
-        "background", "height", "padding", "row_spacing", "key_spacing",
-        "honor_bottom_inset", "key_styles", "popup", "press_preview"
+        "background", "key_aspect", "key_height", "max_screen_ratio", "padding",
+        "row_spacing", "key_spacing", "honor_bottom_inset", "key_styles",
+        "popup", "press_preview",
+        // 已被取代，仍列為「已知」以免產生 unknown field 噪音；見 §8.8.0.2
+        "height"
     )
-    private val HEIGHT_SPEC_KEYS = setOf("ratio", "min", "max")
+    private val KEY_HEIGHT_KEYS = setOf("min", "max")
+    private val MAX_SCREEN_RATIO_KEYS = setOf("portrait", "landscape")
     private val PADDING_KEYS = setOf("left", "top", "right", "bottom")
     private val KEY_STYLE_KEYS = setOf(
         "background", "pressed_background", "foreground", "pressed_foreground",
@@ -531,10 +535,26 @@ object ThemeParser {
     private fun parseKeyboard(c: Cursor, m: Metrics): Keyboard {
         c.warnUnknownKeys(KEYBOARD_KEYS)
 
-        val heightCursor = c.mapping("height")
-        heightCursor.warnUnknownKeys(setOf("portrait", "landscape"))
-        val portrait = parseHeightSpec(heightCursor.mapping("portrait"), 0.33f, 180f, 320f, 0.6f)
-        val landscape = parseHeightSpec(heightCursor.mapping("landscape"), 0.52f, 120f, 240f, 0.8f)
+        // §8.8.0.2：舊的 height 區塊已被取代，忽略但要讓使用者知道。
+        if (c.child("height").exists) {
+            c.diag.info(
+                "keyboard.height",
+                "the screen-ratio height model was replaced by key_aspect / key_height / " +
+                    "max_screen_ratio (spec 8.8); this block is ignored",
+                c.child("height").node?.line
+            )
+        }
+        val keyHeight = c.mapping("key_height")
+        keyHeight.warnUnknownKeys(KEY_HEIGHT_KEYS)
+        val ratios = c.mapping("max_screen_ratio")
+        ratios.warnUnknownKeys(MAX_SCREEN_RATIO_KEYS)
+        val geometry = KeyGeometry(
+            aspect = c.child("key_aspect").number(1.28f, 0.6f, 2.5f),
+            keyHeightMin = keyHeight.child("min").length(40f, 20f, 200f),
+            keyHeightMax = keyHeight.child("max").length(56f, 20f, 200f),
+            maxScreenRatioPortrait = ratios.child("portrait").ratio(0.45f, 0.2f, 0.8f),
+            maxScreenRatioLandscape = ratios.child("landscape").ratio(0.62f, 0.2f, 0.9f)
+        )
 
         val pad = c.mapping("padding")
         pad.warnUnknownKeys(PADDING_KEYS)
@@ -577,14 +597,14 @@ object ThemeParser {
 
         return Keyboard(
             background = c.child("background").color(0xFFD0D0D0.toInt()),
-            height = KeyboardHeight(portrait, landscape),
+            geometry = geometry,
             padding = EdgeInsets(
-                left = pad.child("left").length(3f, 0f, 64f),
+                left = pad.child("left").length(5f, 0f, 64f),
                 top = pad.child("top").length(4f, 0f, 64f),
-                right = pad.child("right").length(3f, 0f, 64f),
-                bottom = pad.child("bottom").length(6f, 0f, 64f)
+                right = pad.child("right").length(5f, 0f, 64f),
+                bottom = pad.child("bottom").length(4f, 0f, 64f)
             ),
-            rowSpacing = c.child("row_spacing").length(6f, 0f, 32f),
+            rowSpacing = c.child("row_spacing").length(12f, 0f, 32f),
             keySpacing = c.child("key_spacing").length(6f, 0f, 32f),
             honorBottomInset = c.child("honor_bottom_inset").bool(true),
             keyStyles = styles,
@@ -593,20 +613,6 @@ object ThemeParser {
         )
     }
 
-    private fun parseHeightSpec(
-        c: Cursor,
-        defRatio: Float,
-        defMin: Float,
-        defMax: Float,
-        ratioMax: Float
-    ): HeightSpec {
-        c.warnUnknownKeys(HEIGHT_SPEC_KEYS)
-        return HeightSpec(
-            ratio = c.child("ratio").number(defRatio, 0.15f, ratioMax),
-            min = c.child("min").length(defMin, 0f, 1024f),
-            max = c.child("max").length(defMax, 0f, 2048f)
-        )
-    }
 
     private fun parseKeyStyle(c: Cursor, base: KeyStyle): KeyStyle {
         c.warnUnknownKeys(KEY_STYLE_KEYS)

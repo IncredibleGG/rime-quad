@@ -1,0 +1,158 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  t9-pinyin — 九宮格拼音（4 欄 × 4 列）
+#
+#  ⚠ 本佈局**目前無法單獨運作**，它需要一個對應的 T9 方案（schema）。
+#     見 docs/theme-format.md §9.4 與本次交付報告的「九宮格技術路線」。
+#
+#  ── 為什麼佈局檔不需要「一鍵多值」的能力 ───────────────────────────────
+#
+#  九宮格是**模糊輸入**：一顆「ABC」鍵要能打出 a、b、c 任一個。直覺上會以為
+#  格式必須支援「一顆鍵送出多個候選字元」。**這個直覺是錯的。**
+#
+#  librime 的 `Engine::ProcessKey(const KeyEvent&)` 一次只吃一個 keycode，
+#  沒有「送出一組候選 keysym」的 API。模糊性完全由方案端的 prism 承擔：
+#  T9 方案的 `speller/algebra` 會把**詞典裡的拼音音節**轉寫成按鍵序列，
+#  於是 prism 裡「A」這條邊本來就同時通往所有含 a/b/c 的音節。
+#
+#  所以前端這顆鍵送出的就是**單一 keysym**，「ABC」只是畫在鍵面上的字。
+#  這正是本格式 label / hint / send 三者分離的第二個實證
+#  —— 與注音大千同一個機制，不同的用途。
+#
+#  ── 按鍵 → keysym 對照（與方案的 speller/alphabet 必須一致）─────────────
+#
+#  採 YuyanIme（語燕，BSD-3）驗證過的做法：每組字母取一個**代表大寫字母**
+#  當作 speller 的 alphabet，而不是用數字 2-9。
+#
+#      ABC → A      JKL → J      PQRS → P
+#      DEF → D      MNO → M      TUV  → T
+#      GHI → G                   WXYZ → W
+#
+#  用字母而非數字的好處：方案的 alphabet 不必含 0-9，數字鍵因此不會被
+#  speller 吃掉（社群的 rime-ice / 萬象 T9 方案都得另外用 key_binder 把
+#  數字輸出救回來，這裡不必）。
+#
+#  驗證用例：「你好」= ni + hao
+#      ni  → n(MNO)=M, i(GHI)=G          → M G
+#      hao → h(GHI)=G, a(ABC)=A, o(MNO)=M → G A M
+#      完整按鍵序列：M G G A M（五鍵）
+#
+#  ── 這份佈局需要什麼才會動 ─────────────────────────────────────────────
+#
+#  需要一個 `t9_pinyin.schema.yaml`（約 2–4 KB，共用現有拼音詞典，不需新詞庫）：
+#    speller/alphabet: 'ADGJMPTW'（上表的八個代表字母）
+#    speller/algebra:  把詞典音節逐字母 xlit 成代表字母，
+#                      外加 `abbrev/^([a-z]).+$/$1/` 超級簡拼（九宮格天然模糊，
+#                      靠簡拼補召回）
+#    translator/prism: 另取名，避免與全拼方案的 prism 撞檔
+#  方案 id 定案後請同步修改下方的 `for_schema`。
+#
+#  ⚠ 本檔尚未經過實機驗證 —— 方案不存在就沒有東西可以驗。方案落地後
+#     第一件事就是照上面的「M G G A M」打出「你好」。
+#
+#  規範：docs/theme-format.md §9
+# ─────────────────────────────────────────────────────────────────────────────
+
+format: rime-layout/1
+id: t9-pinyin
+revision: 1
+
+name:
+  en: "Pinyin 9-key"
+  zh-Hant: "九宮格拼音"
+  zh-Hans: "九宫格拼音"
+
+description:
+  zh-Hant: "4x4 九宮格。鍵面印 ABC、送出 keysym A，模糊比對由 T9 方案負責。"
+
+kind: grid
+targets: [android, ios]
+# ⚠ 佔位值：T9 方案尚未建立，方案 id 定案後必須同步修改。
+for_schema: ["luna_pinyin_t9", "t9"]
+direction: ltr
+default_layer: t9
+primary: false
+
+author: "rime-quad"
+license: "CC0-1.0"
+
+metrics:
+  row_spacing: null
+  key_spacing: null
+  height_scale: 1.0
+
+layers:
+
+  - id: t9
+    label: "九宮格"
+    units: 4
+    rows:
+
+      - weight: 1.0
+        keys:
+          # 「1」鍵在 T9 方案裡通常被 key_binder 綁成分詞符（apostrophe）。
+          # 前端老實送 keysym "1"，要不要當分詞符由方案決定 —— 同 §9.4 的原則。
+          - id: "k1"
+            label: "'"
+            hint: "1"
+            send: { keysym: "1" }
+            popup:
+              layout: grid
+              columns: 3
+              keys:
+                - { label: "，", send: { keysym: "comma" } }
+                - { label: "。", send: { keysym: "period" } }
+                - { label: "？", send: { keysym: "question" } }
+                - { label: "！", send: { keysym: "exclam" } }
+                - { label: "、", send: { text: "、" } }
+                - { label: "…", send: { text: "…" } }
+          - { id: "k2", label: "ABC",  hint: "2", send: { keysym: "A" } }
+          - { id: "k3", label: "DEF",  hint: "3", send: { keysym: "D" } }
+          - id: "backspace"
+            icon: backspace
+            style: modifier
+            send: { keysym: "BackSpace" }
+            repeat: true
+            swipe:
+              left: { tap: "clear" }
+
+      - weight: 1.0
+        keys:
+          - { id: "k4", label: "GHI",  hint: "4", send: { keysym: "G" } }
+          - { id: "k5", label: "JKL",  hint: "5", send: { keysym: "J" } }
+          - { id: "k6", label: "MNO",  hint: "6", send: { keysym: "M" } }
+          - id: "to_symbols"
+            label: "符"
+            style: modifier
+            tap: "switch_layout:numeric-symbol"
+
+      - weight: 1.0
+        keys:
+          - { id: "k7", label: "PQRS", hint: "7", send: { keysym: "P" } }
+          - { id: "k8", label: "TUV",  hint: "8", send: { keysym: "T" } }
+          - { id: "k9", label: "WXYZ", hint: "9", send: { keysym: "W" } }
+          - id: "lang"
+            label_from: input_mode
+            style: modifier
+            tap: "toggle:ascii_mode"
+            long_press: "schema:picker"
+
+      - weight: 1.0
+        keys:
+          - id: "to_alpha"
+            label: "ABC"
+            style: modifier
+            tap: "switch_layout:@primary"
+          - id: "space"
+            icon: space
+            style: space
+            width: 2.0
+            label_from: schema_name
+            send: { keysym: "space" }
+            swipe:
+              left: { tap: "cursor:left" }
+              right: { tap: "cursor:right" }
+            long_press: "schema:next"
+          - id: "enter"
+            icon: enter
+            style: action
+            send: { keysym: "Return" }

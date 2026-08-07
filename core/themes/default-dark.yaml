@@ -108,11 +108,11 @@ typography:
 
 # ── 全域度量 ──────────────────────────────────────────────────────────────
 metrics:
-  corner_radius: 8
+  corner_radius: 7
   border_width: 0
   padding: 6
   spacing: 4
-  elevation: 2
+  elevation: 0
 
 # ── 候選呈現（行動端候選列與桌面端候選窗共用的部分）────────────────────────
 candidates:
@@ -234,23 +234,29 @@ preedit:
 keyboard:
   background: "$bg"
 
-  height:
-    portrait:
-      ratio: 0.33
-      min: 190
-      max: 300
-    landscape:
-      ratio: 0.52
-      min: 130
-      max: 220
+  # §8.8.0 高度模型：鍵寬 → 鍵高 → 鍵盤高。鍵盤總高是算出來的，不是設定的。
+  #
+  # Gboard 實測基準（同一份 Gboard，兩種螢幕）：
+  #   1080x2400 @420dpi（411dp 寬）  鍵 35.4 x 47.0 dp   aspect 1.33
+  #   1440x3120 @505dpi（456dp 寬）  鍵 39.6 x 47.2 dp   aspect 1.19
+  # 鍵高兩邊都是 47dp —— Gboard 其實用固定鍵高，aspect 只是被動結果。
+  # 我們仍以 aspect 為主控（才能讓 11 欄的注音與 10 欄的 QWERTY 一樣胖瘦），
+  # 再用 key_height 的上下界把結果夾回 Gboard 那條線附近。
+  key_aspect: 1.34
+  key_height:
+    min: 42
+    max: 50
+  max_screen_ratio:
+    portrait: 0.45
+    landscape: 0.62
 
   padding:
-    left: 3
-    right: 3
+    left: 5
+    right: 5
     top: 4
-    bottom: 6
+    bottom: 4
 
-  row_spacing: 6
+  row_spacing: 12
   key_spacing: 6
   honor_bottom_inset: true
 
@@ -260,16 +266,16 @@ keyboard:
       pressed_background: "$key_pressed"
       foreground: "$fg"
       pressed_foreground: "$fg"
-      corner_radius: 8
+      corner_radius: 7
       border_width: 0
       border_color: transparent
-      elevation: 1
+      elevation: 0
       font: key
-      label_size: 22
-      hint_size: 10
+      label_size: 26
+      hint_size: 11
       hint_color: "$muted"
       hint_position: top_right
-      icon_size: 22
+      icon_size: 24
       active_background: "$accent"
       active_foreground: "$on_accent"
 
@@ -278,16 +284,16 @@ keyboard:
       pressed_background: "$key_mod_pressed"
       foreground: "$fg_dim"
       pressed_foreground: "$fg"
-      corner_radius: 8
+      corner_radius: 7
       border_width: 0
       border_color: transparent
-      elevation: 1
+      elevation: 0
       font: key
-      label_size: 16
-      hint_size: 9
+      label_size: 18
+      hint_size: 10
       hint_color: "$muted"
       hint_position: none
-      icon_size: 20
+      icon_size: 22
       active_background: "$accent@35%"
       active_foreground: "$fg"
 
@@ -296,16 +302,16 @@ keyboard:
       pressed_background: "$accent_pressed"
       foreground: "$on_accent"
       pressed_foreground: "$on_accent"
-      corner_radius: 8
+      corner_radius: 7
       border_width: 0
       border_color: transparent
-      elevation: 1
+      elevation: 0
       font: key
-      label_size: 16
-      hint_size: 9
+      label_size: 18
+      hint_size: 10
       hint_color: "$on_accent@70%"
       hint_position: none
-      icon_size: 20
+      icon_size: 22
       active_background: "$accent_pressed"
       active_foreground: "$on_accent"
 
@@ -314,16 +320,16 @@ keyboard:
       pressed_background: "$key_pressed"
       foreground: "$muted"
       pressed_foreground: "$fg"
-      corner_radius: 8
+      corner_radius: 7
       border_width: 0
       border_color: transparent
-      elevation: 1
+      elevation: 0
       font: key
-      label_size: 13
-      hint_size: 9
+      label_size: 14
+      hint_size: 10
       hint_color: "$muted"
       hint_position: none
-      icon_size: 18
+      icon_size: 20
       active_background: "$key_pressed"
       active_foreground: "$fg"
 
@@ -332,16 +338,16 @@ keyboard:
       pressed_background: "$accent@40%"
       foreground: "$accent"
       pressed_foreground: "$on_accent"
-      corner_radius: 8
+      corner_radius: 7
       border_width: 0
       border_color: transparent
-      elevation: 1
+      elevation: 0
       font: key
-      label_size: 20
-      hint_size: 10
+      label_size: 24
+      hint_size: 11
       hint_color: "$accent@70%"
       hint_position: top_right
-      icon_size: 20
+      icon_size: 22
       active_background: "$accent"
       active_foreground: "$on_accent"
 

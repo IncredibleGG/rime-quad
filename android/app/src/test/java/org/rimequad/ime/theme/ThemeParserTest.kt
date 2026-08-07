@@ -48,7 +48,7 @@ class ThemeParserTest {
         assertEquals(0xFF4C8DFF.toInt(), dark.candidates.shared.item.highlightBackground)
         assertF(44f, dark.candidates.bar.height)
         assertEquals(Backdrop.NONE, dark.candidates.window.backdrop)
-        assertF(0.33f, dark.keyboard.height.portrait.ratio)
+        assertF(1.34f, dark.keyboard.geometry.aspect)
 
         val light = loadShipped("default-light").value!!
         assertEquals(Appearance.LIGHT, light.appearance)
@@ -56,8 +56,11 @@ class ThemeParserTest {
         // 深淺兩份刻意在「結構性」欄位上不同，證明 §8.2 的兩檔決策。
         assertF(1f, light.candidates.bar.borderTopWidth)
         assertF(0f, dark.candidates.bar.borderTopWidth)
-        assertF(3f, light.metrics.elevation)
-        assertF(2f, dark.metrics.elevation)
+        // Gboard 四列皆無陰影，實測確認；兩份主題一起改平。
+        assertF(0f, light.metrics.elevation)
+        assertF(0f, dark.metrics.elevation)
+        assertF(0f, light.keyboard.keyStyle("default").elevation)
+        assertF(0f, dark.keyboard.keyStyle("default").elevation)
     }
 
     // ── 檢核 2：繼承 ───────────────────────────────────────────────────────
@@ -257,18 +260,16 @@ class ThemeParserTest {
                 format: rime-theme/1
                 id: clamp
                 keyboard:
-                  height:
-                    portrait:
-                      ratio: 4.0
+                  key_aspect: 9.0
             """.trimIndent()
         )
         val t = r.value
         assertNotNull(t)
-        assertF(0.6f, t!!.keyboard.height.portrait.ratio)
-        // 夾制**必須**留下痕跡：使用者寫了 4.0 卻拿到 0.6，靜默處理是不可接受的。
+        assertF(2.5f, t!!.keyboard.geometry.aspect)
+        // 夾制**必須**留下痕跡：使用者寫了 9.0 卻拿到 2.5，靜默處理是不可接受的。
         assertEquals(RepoFixtures.describe(r.diagnostics), 1, r.diagnostics.size)
         assertEquals(Severity.WARNING, r.diagnostics[0].severity)
-        assertEquals("keyboard.height.portrait.ratio", r.diagnostics[0].path)
+        assertEquals("keyboard.key_aspect", r.diagnostics[0].path)
         assertTrue(r.diagnostics[0].message.contains("clamped"))
     }
 
@@ -495,13 +496,97 @@ class ThemeParserTest {
         assertEquals(0, ThemeLoader.load("plat", src, Platform.ANDROID).diagnostics.size)
     }
 
+    // ── §8.8.0 高度模型 ───────────────────────────────────────────────────
+
+    private fun resolveQwerty(theme: Theme, widthDp: Float, heightDp: Float, units: Float = 10f, rows: Int = 4) =
+        theme.keyboard.geometry.resolve(
+            widthDp = widthDp,
+            availHeightDp = heightDp,
+            landscape = false,
+            units = units,
+            rowsWeight = rows.toFloat(),
+            rowCount = rows,
+            padding = theme.keyboard.padding,
+            keySpacing = theme.keyboard.keySpacing,
+            rowSpacing = theme.keyboard.rowSpacing,
+        )
+
     @Test
-    fun heightResolutionFollowsRatioThenClamp() {
-        val h = HeightSpec(ratio = 0.33f, min = 190f, max = 300f)
-        assertF(264f, h.resolve(800f))   // 0.33 * 800
-        assertF(300f, h.resolve(1400f))  // 夾到 max
-        assertF(190f, h.resolve(400f))   // 夾到 min
-        assertF(330f, h.resolve(800f, 1.25f)) // height_scale 在夾制之後
+    fun keyHeightDerivesFromKeyWidthNotScreenHeight() {
+        val t = loadShipped("default-light").value!!
+        // 同樣寬度、螢幕高差 300dp：鍵高必須完全一樣。
+        val short = resolveQwerty(t, 411.4f, 700f)
+        val tall = resolveQwerty(t, 411.4f, 1000f)
+        assertF(short.keyHeight, tall.keyHeight)
+        assertF(short.keyWidth, tall.keyWidth)
+        // 這正是初稿模型做不到的：初稿下 700 與 1000 會給出不同鍵高。
+    }
+
+    @Test
+    fun aspectRatioStaysSaneAcrossScreenWidths() {
+        val t = loadShipped("default-light").value!!
+        for (w in listOf(360f, 411.4f, 456.2f, 480f)) {
+            val r = resolveQwerty(t, w, 900f)
+            val aspect = r.keyHeight / r.keyWidth
+            // 初稿在 S24U 上是 1.94（使用者說「被拉伸」）。新模型必須遠低於此。
+            assertTrue("寬 $w 的 aspect = $aspect", aspect in 1.15f..1.55f)
+        }
+    }
+
+    @Test
+    fun elevenColumnLayoutKeepsTheSameAspectAsTenColumn() {
+        val t = loadShipped("default-light").value!!
+        val ten = resolveQwerty(t, 456.2f, 988f, units = 10f, rows = 4)
+        val eleven = resolveQwerty(t, 456.2f, 988f, units = 11f, rows = 5)
+        // 11 欄鍵較窄，鍵高也必須跟著變矮 —— 不能只變窄不變矮。
+        assertTrue(eleven.keyWidth < ten.keyWidth)
+        assertTrue(eleven.keyHeight <= ten.keyHeight)
+        val da = kotlin.math.abs(
+            (ten.keyHeight / ten.keyWidth) - (eleven.keyHeight / eleven.keyWidth)
+        )
+        assertTrue("兩者 aspect 差 $da", da < 0.12f)
+    }
+
+    @Test
+    fun keyboardHeightIsComputedAndPaddingAddsToIt() {
+        val t = loadShipped("default-light").value!!
+        val r = resolveQwerty(t, 456.2f, 988f)
+        val expected = r.keyHeight * 4f + t.keyboard.rowSpacing * 3f +
+            t.keyboard.padding.top + t.keyboard.padding.bottom
+        assertF(expected, r.keyboardHeight)
+    }
+
+    @Test
+    fun maxScreenRatioIsTheSafetyNetOnShortScreens() {
+        val t = loadShipped("default-light").value!!
+        // 極矮的視窗（摺疊機外螢幕）：安全網必須壓下鍵高。
+        val r = resolveQwerty(t, 456.2f, 320f)
+        assertTrue(r.keyboardHeight <= 320f * t.keyboard.geometry.maxScreenRatioPortrait + 0.01f)
+        assertTrue(r.keyHeight < t.keyboard.geometry.keyHeightMax)
+    }
+
+    @Test
+    fun legacyHeightBlockIsIgnoredWithAnInfoDiagnostic() {
+        val r = loadInline(
+            "legacyheight",
+            "legacyheight" to """
+                format: rime-theme/1
+                id: legacyheight
+                keyboard:
+                  height:
+                    portrait:
+                      ratio: 0.33
+                      min: 190
+                      max: 300
+            """.trimIndent()
+        )
+        val t = r.value
+        assertNotNull("舊主題不得因高度模型改版而拒絕載入", t)
+        assertEquals(RepoFixtures.describe(r.diagnostics), 1, r.diagnostics.size)
+        assertEquals(Severity.INFO, r.diagnostics[0].severity)
+        assertEquals("keyboard.height", r.diagnostics[0].path)
+        // 退回預設 aspect 模型
+        assertF(1.28f, t!!.keyboard.geometry.aspect)
     }
 
     @Test

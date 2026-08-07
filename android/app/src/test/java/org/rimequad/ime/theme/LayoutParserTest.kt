@@ -103,6 +103,38 @@ class LayoutParserTest {
         assertEquals(ActionVerb.CANDIDATE_NEXT_PAGE, space.swipe[SwipeDirection.UP]!!.tap!!.verb)
     }
 
+    // ── 九宮格：證明格式不需要「一鍵多值」 ─────────────────────────────────
+
+    @Test
+    fun ninekeyNeedsNoMultiValueKeyExtension() {
+        val layout = loadShipped("t9-pinyin").value!!
+        assertEquals(LayoutKind.GRID, layout.kind)
+        assertEquals(4.0f, layout.layer("t9")!!.units, 0.001f)
+
+        // 「ABC」鍵送出的是**單一** keysym 'A'(0x41)，不是三個字元。
+        // 模糊比對由 T9 方案的 prism 承擔，前端只送一個鍵 ——
+        // 這證明佈局格式不需要「一鍵多值」的擴充。
+        val abc = key(layout, "t9", "k2")
+        assertEquals("ABC", abc.label)
+        assertEquals("2", abc.hint)          // hint 仍是使用者熟悉的數字
+        val send = abc.send as SendSpec.Keysym
+        assertEquals(0x41, send.code)
+        assertEquals(Modifiers.NONE, send.modifiers)
+
+        // 八顆字母鍵各送一個代表大寫字母（YuyanIme 驗證過的 speller alphabet）。
+        for ((id, code) in listOf(
+            "k2" to 0x41, "k3" to 0x44, "k4" to 0x47, "k5" to 0x4A,
+            "k6" to 0x4D, "k7" to 0x50, "k8" to 0x54, "k9" to 0x57
+        )) {
+            assertEquals(id, code, (key(layout, "t9", id).send as SendSpec.Keysym).code)
+        }
+
+        // 「你好」的按鍵序列 M G G A M —— 方案落地後照這個序列實測。
+        val nihao = listOf("k6", "k4", "k4", "k2", "k6")
+        val codes = nihao.map { (key(layout, "t9", it).send as SendSpec.Keysym).code }
+        assertEquals(listOf(0x4D, 0x47, 0x47, 0x41, 0x4D), codes)
+    }
+
     // ── 檢核 7：列寬總和 ──────────────────────────────────────────────────
 
     @Test

@@ -44,13 +44,18 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import kotlinx.coroutines.delay
 import org.rimequad.ime.core.RimeStatus
 import org.rimequad.ime.theme.HintPosition
+import org.rimequad.ime.theme.KeyGeometry
+import org.rimequad.ime.theme.KeyboardLayout
 import org.rimequad.ime.theme.KeyStyle
 import org.rimequad.ime.theme.LabelSource
 import org.rimequad.ime.theme.LayoutKey
@@ -98,7 +103,12 @@ fun RimeKeyboard(
         system = LocalDensity.current.fontScale,
     )
 
-    Column(modifier = modifier.fillMaxWidth().background(Color(theme.keyboard.background))) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(Color(theme.keyboard.background))
+            .padding(bottom = bottomInsetDp(theme.keyboard.honorBottomInset)),
+    ) {
         CandidateBar(state = state, theme = theme, scaler = scaler, onEvent = onEvent)
         if (state.schemaPickerOpen) {
             SchemaPicker(state = state, theme = theme, scaler = scaler, onEvent = onEvent)
@@ -111,6 +121,29 @@ fun RimeKeyboard(
 /* ────────────────────────────── 尺寸 ────────────────────────────── */
 
 /**
+ * §8.8 的 `honor_bottom_inset`。
+ *
+ * 系統會在 IME 視窗底部自行畫「收起鍵盤」箭頭、輸入法切換鈕與手勢列。
+ * 不讓出這段高度的話，那些東西會直接壓在我們最後一列鍵上面 ——
+ * 使用者看到的就是「鍵盤底下多出一條只放了一個小圖示的空白列」，
+ * 而且最後一列的鍵有一部分按不到。Gboard 讓出的是約 60dp。
+ *
+ * 這裡刻意直接向 View 問 inset，而不是用 Compose 的 `navigationBarsPadding()`：
+ * IME 視窗的 inset 是否派送給 Compose，取決於 InputMethodService 有沒有呼叫過
+ * `setDecorFitsSystemWindows(false)`，那不在本檔案的掌握範圍內；
+ * `ViewCompat.getRootWindowInsets()` 兩種情況下都拿得到值。
+ */
+@Composable
+private fun bottomInsetDp(enabled: Boolean): Dp {
+    if (!enabled) return 0.dp
+    val view = LocalView.current
+    val px = ViewCompat.getRootWindowInsets(view)
+        ?.getInsets(WindowInsetsCompat.Type.navigationBars())
+        ?.bottom ?: 0
+    return with(LocalDensity.current) { px.toDp() }
+}
+
+/**
  * §4.4 的有效字體縮放。
  *
  * Compose 的 `.sp` 本身會再乘一次系統 fontScale，所以這裡先把它除掉，
@@ -120,12 +153,48 @@ private class Scaler(private val effective: Float, private val system: Float) {
     fun sp(size: Float): TextUnit = (size * effective / (if (system > 0f) system else 1f)).sp
 }
 
+/**
+ * §8.8.0 的高度模型：鍵寬 → 鍵高 → 鍵盤高。
+ *
+ * 注意 `units` 與 `rowsWeight` 取自**當前 layer**，所以 11 欄的注音與 10 欄的
+ * QWERTY 會得到相同的鍵長寬比（鍵較窄時鍵也較矮），而不是前者更瘦長。
+ */
 @Composable
-private fun keyboardHeightDp(theme: Theme, heightScale: Float): Float {
+private fun keyboardGeometry(
+    theme: Theme,
+    layout: KeyboardLayout,
+    layer: LayoutLayer,
+): KeyGeometry.Resolved {
     val config = LocalConfiguration.current
-    val landscape = config.orientation == Configuration.ORIENTATION_LANDSCAPE
-    val spec = if (landscape) theme.keyboard.height.landscape else theme.keyboard.height.portrait
-    return spec.resolve(config.screenHeightDp.toFloat(), heightScale)
+    return theme.keyboard.geometry.resolve(
+        widthDp = config.screenWidthDp.toFloat(),
+        availHeightDp = config.screenHeightDp.toFloat(),
+        landscape = config.orientation == Configuration.ORIENTATION_LANDSCAPE,
+        units = layer.units,
+        rowsWeight = layer.rows.fold(0f) { acc, r -> acc + r.weight },
+        rowCount = layer.rows.size,
+        padding = theme.keyboard.padding,
+        keySpacing = layout.metrics.keySpacing ?: theme.keyboard.keySpacing,
+        rowSpacing = layout.metrics.rowSpacing ?: theme.keyboard.rowSpacing,
+        heightScale = layout.metrics.heightScale,
+    )
+}
+
+/** 佈局尚未載入時的名目鍵盤高度：以 10 欄 4 列估算。 */
+@Composable
+private fun nominalKeyboardHeight(theme: Theme): Float {
+    val config = LocalConfiguration.current
+    return theme.keyboard.geometry.resolve(
+        widthDp = config.screenWidthDp.toFloat(),
+        availHeightDp = config.screenHeightDp.toFloat(),
+        landscape = config.orientation == Configuration.ORIENTATION_LANDSCAPE,
+        units = 10f,
+        rowsWeight = 4f,
+        rowCount = 4,
+        padding = theme.keyboard.padding,
+        keySpacing = theme.keyboard.keySpacing,
+        rowSpacing = theme.keyboard.rowSpacing,
+    ).keyboardHeight
 }
 
 /* ────────────────────────────── 候選列 ────────────────────────────── */
@@ -305,7 +374,15 @@ private fun SchemaPicker(
     scaler: Scaler,
     onEvent: (KeyboardEvent) -> Unit,
 ) {
-    val height = keyboardHeightDp(theme, heightScale = 1.0f)
+    // 方案選單取代鍵盤時，高度必須跟被取代的那塊一致，否則面板會跳動。
+    // 佈局尚未載入時退回一個 10 欄 4 列的名目幾何。
+    val layout = state.layout
+    val layer = state.layer
+    val height = if (layout != null && layer != null) {
+        keyboardGeometry(theme, layout, layer).keyboardHeight
+    } else {
+        nominalKeyboardHeight(theme)
+    }
     val style = theme.keyboard.keyStyle("default")
     Column(
         modifier = Modifier
@@ -403,7 +480,7 @@ private fun KeyGrid(
         return
     }
 
-    val height = keyboardHeightDp(theme, layout.metrics.heightScale)
+    val height = keyboardGeometry(theme, layout, layer).keyboardHeight
     // §9.2：佈局的 metrics 覆寫主題的間距（null = 沿用主題）。
     val rowSpacing = layout.metrics.rowSpacing ?: theme.keyboard.rowSpacing
     val keySpacing = layout.metrics.keySpacing ?: theme.keyboard.keySpacing

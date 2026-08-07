@@ -227,18 +227,68 @@ data class Preedit(
     val selection: SelectionStyle
 )
 
-data class HeightSpec(val ratio: Float, val min: Float, val max: Float) {
+/**
+ * §8.8.0 的高度模型。
+ *
+ * **因果方向是 鍵寬 → 鍵高 → 鍵盤高**，而不是初稿的 螢幕高 → 鍵盤高 → 鍵高。
+ * 初稿的方向讓鍵高綁在螢幕高度、鍵寬綁在螢幕寬度，長寬比因此完全失控：
+ * 在 20:9 的長螢幕上鍵會被拉成 1:1.94，使用者看到的就是「被拉伸」。
+ */
+data class KeyGeometry(
+    val aspect: Float,
+    val keyHeightMin: Float,
+    val keyHeightMax: Float,
+    val maxScreenRatioPortrait: Float,
+    val maxScreenRatioLandscape: Float
+) {
+    /** 一次算完的結果，供渲染器直接使用。 */
+    data class Resolved(val keyWidth: Float, val keyHeight: Float, val keyboardHeight: Float)
+
     /**
-     * §8.8 的鍵盤高度演算法。[heightScale] 來自佈局的 `metrics.height_scale`，
-     * 在夾制之後才乘上去，然後再夾一次到 [min, 1.5 * max]。
+     * @param widthDp     鍵盤可用寬度（通常是螢幕寬）
+     * @param availHeightDp 當前方向下宿主視窗可用高度，只用於安全網
+     * @param units       當前 layer 的欄數（§9.3）
+     * @param rowsWeight  當前 layer 的 Σ row.weight（不是列數 —— 列可以有不同權重）
+     * @param rowCount    當前 layer 的列數，只用來算列間距總和
+     * @param heightScale 佈局的 `metrics.height_scale`（§9.2）
      */
-    fun resolve(availableDp: Float, heightScale: Float = 1.0f): Float {
-        val base = clampFloat(availableDp * ratio, min, max)
-        return clampFloat(base * heightScale, min, max * 1.5f)
+    fun resolve(
+        widthDp: Float,
+        availHeightDp: Float,
+        landscape: Boolean,
+        units: Float,
+        rowsWeight: Float,
+        rowCount: Int,
+        padding: EdgeInsets,
+        keySpacing: Float,
+        rowSpacing: Float,
+        heightScale: Float = 1.0f
+    ): Resolved {
+        val safeUnits = if (units <= 0f) 1f else units
+        val safeRowsW = if (rowsWeight <= 0f) 1f else rowsWeight
+        val gaps = if (rowCount > 1) rowCount - 1 else 0
+
+        // 1. 鍵寬：與螢幕高度無關
+        val innerW = widthDp - padding.left - padding.right - keySpacing * (safeUnits - 1f)
+        val keyW = (if (innerW > 0f) innerW else 0f) / safeUnits
+
+        // 2. 鍵高：由鍵寬推導，夾制後才套 height_scale
+        var keyH = clampFloat(keyW * aspect, keyHeightMin, keyHeightMax) * heightScale
+
+        // 3. 鍵盤高是算出來的
+        val chrome = rowSpacing * gaps + padding.top + padding.bottom
+        var h = keyH * safeRowsW + chrome
+
+        // 4. 安全網：不得超過螢幕的這個比例
+        val ratio = if (landscape) maxScreenRatioLandscape else maxScreenRatioPortrait
+        val cap = availHeightDp * ratio
+        if (availHeightDp > 0f && h > cap) {
+            keyH = ((cap - chrome) / safeRowsW).coerceAtLeast(1f)
+            h = keyH * safeRowsW + chrome
+        }
+        return Resolved(keyWidth = keyW, keyHeight = keyH, keyboardHeight = h)
     }
 }
-
-data class KeyboardHeight(val portrait: HeightSpec, val landscape: HeightSpec)
 
 data class EdgeInsets(val left: Float, val top: Float, val right: Float, val bottom: Float)
 
@@ -286,7 +336,7 @@ data class PressPreviewStyle(
 /** 僅行動端消費；桌面端實作必須整段忽略。 */
 data class Keyboard(
     val background: Int,
-    val height: KeyboardHeight,
+    val geometry: KeyGeometry,
     val padding: EdgeInsets,
     val rowSpacing: Float,
     val keySpacing: Float,

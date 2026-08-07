@@ -20,7 +20,7 @@ object RepoFixtures {
 
     val themeIds = listOf("default-light", "default-dark", "sakura-light", "sakura-dark")
 
-    val layoutIds = listOf("qwerty", "numeric-symbol", "bopomofo-dachen")
+    val layoutIds = listOf("qwerty", "numeric-symbol", "bopomofo-dachen", "t9-pinyin")
 
     private fun findCore(): File {
         var dir: File? = File("").absoluteFile

@@ -326,6 +326,22 @@ min_client: "0.4.0"
 被標記為 deprecated 的欄位 **必須** 在下一個 major 之前持續被支援，
 且解析器 **應** 對其產生 INFO 級診斷。
 
+### 5.7 v1 期間的一次性例外（鍵盤高度模型）
+
+§8.8 的高度模型在 v1 發布後被改寫，`keyboard.height.*` 被 `key_aspect` /
+`key_height` / `max_screen_ratio` 取代。依 §5.2 這應該遞增 major，
+**本次刻意不遞增**，理由如下：
+
+1. 舊模型是**缺陷**而非設計選擇 —— 它讓鍵高綁螢幕高、鍵寬綁螢幕寬，
+   長寬比必然失控。保留它沒有任何價值。
+2. 此時尚無任何第三方主題（客戶端版本 0.1.x），影響範圍為零。
+3. 遞增 major 會讓所有 v1 文件被拒絕載入，代價遠大於收益。
+
+補償措施：舊 `height:` 區塊被忽略時 **必須** 產生 INFO 診斷（§8.8.0.2），
+使用者看得到「你的主題用的是舊高度模型」。
+
+**這個例外不會再有第二次。** 客戶端進入 1.0 之後，任何語義變更一律遞增 major。
+
 ---
 
 ## 6. 錯誤處理約定
@@ -795,42 +811,98 @@ items:
 | 欄位 | 型別 | 預設 |
 |---|---|---|
 | `background` | color | `#D0D0D0` |
-| `height.portrait.ratio` | ratio 0.15–0.6 | `0.33` |
-| `height.portrait.min` | length | `180` |
-| `height.portrait.max` | length | `320` |
-| `height.landscape.ratio` | ratio 0.15–0.8 | `0.52` |
-| `height.landscape.min` | length | `120` |
-| `height.landscape.max` | length | `240` |
-| `padding.left` / `.right` / `.top` / `.bottom` | length | `3` / `3` / `4` / `6` |
-| `row_spacing` | length 0–32 | `6` |
+| `key_aspect` | number 0.6–2.5 | `1.28` |
+| `key_height.min` | length 20–200 | `40` |
+| `key_height.max` | length 20–200 | `56` |
+| `max_screen_ratio.portrait` | ratio 0.2–0.8 | `0.45` |
+| `max_screen_ratio.landscape` | ratio 0.2–0.9 | `0.62` |
+| `padding.left` / `.right` / `.top` / `.bottom` | length | `5` / `5` / `4` / `4` |
+| `row_spacing` | length 0–32 | `12` |
 | `key_spacing` | length 0–32 | `6` |
 | `honor_bottom_inset` | bool | `true` |
 
-**鍵盤高度（規範性）：**
+#### 8.8.0 高度模型：由鍵寬推鍵高，不由螢幕高推鍵盤高
+
+**規範 v1 初稿的模型是錯的，本節取代它。** 初稿以
+`鍵盤高 = clamp(螢幕高 × ratio, min, max)` 為主，鍵高再由鍵盤高平分而來。
+這個模型有一個致命缺陷：**鍵高綁在螢幕高度上，鍵寬卻綁在螢幕寬度上**，
+兩者各自獨立變動，鍵的長寬比因此完全失控。在 20:9 的長螢幕上
+（實測 S24U：ratio 0.33 撞上 `max: 300` → 鍵高 68dp，而鍵寬只有 35dp）
+長寬比被拉到 1:1.94，使用者的原話是「感覺被拉伸了,然後沒有自適應」。
+
+正確的因果方向是**鍵寬 → 鍵高 → 鍵盤高**：
 
 ```
-avail  = 當前方向下宿主視窗的可用高度（dp）
-         Android: WindowMetrics.bounds 高度 − 系統列 insets
-         iOS:     UIScreen.main.bounds 高度
-h      = clamp(avail * ratio, min, max)
-total  = h + candidates.bar.height + (honor_bottom_inset ? 手勢列 inset : 0)
+# 1. 鍵寬:由可用寬度、欄數、鍵距決定。與螢幕高度無關。
+key_w = (kb_width − padding.left − padding.right − key_spacing × (units − 1)) / units
+
+# 2. 鍵高:由鍵寬乘上 key_aspect，再夾制到絕對上下界。
+#    height_scale 來自佈局（§9.2），在夾制之後套用。
+key_h = clamp(key_w × key_aspect, key_height.min, key_height.max) × height_scale
+
+# 3. 鍵盤高度是**算出來的結果**，不是設定值。
+h = key_h × rows + row_spacing × (rows − 1) + padding.top + padding.bottom
+
+# 4. 安全網:鍵盤永遠不得超過螢幕的這個比例（摺疊機、平板橫放、超小螢幕）。
+h_cap = avail × max_screen_ratio.<當前方向>
+if h > h_cap:
+    # 反推鍵高，讓鍵盤剛好塞得下；此時 key_aspect 讓位給安全網。
+    key_h = (h_cap − padding.top − padding.bottom − row_spacing × (rows − 1)) / rows
+    h = h_cap
+
+total = h + candidates.bar.height + (honor_bottom_inset ? 系統底部 inset : 0)
 ```
 
-**`padding` 算在 `h` 之內。** `h` 是整塊軟鍵盤區域的高度，
-`keyboard.padding` 是這塊區域的**內縮**，不額外增加高度；
-按鍵列在 `h` 扣掉 `padding.top` / `padding.bottom` 之後的空間裡佈版
-（與 §9.3 佈版演算法的 `usable_h` 一致）。
+`avail` = 當前方向下宿主視窗的可用高度（dp）。
+`units` 與 `rows` 來自**當前 layer**（§9.3），所以：
 
-也就是說，把 `padding.top` 從 4 改成 20 **不會**讓鍵盤變高，只會讓按鍵變扁。
-候選列高度 `candidates.bar.height` 則是**外加**在 `h` 之上的，兩者語義不同，
-這是本節最容易做錯的一格。
+* 注音大千是 11 欄，鍵寬比 QWERTY 的 10 欄窄，鍵高**跟著等比變窄**，
+  兩份佈局的鍵長得一樣胖瘦。舊模型下 11 欄的鍵會比 10 欄的更瘦長。
+* 鍵盤總高會隨佈局的列數改變（大千 5 列比 QWERTY 4 列高一列）。
+  這是刻意的：列數不同本來就該不同高，硬壓成同高就會壓扁。
 
-**為什麼是比例而不是絕對值：** 從 5 吋機到 13 吋平板，同一個絕對高度不是太胖就是太扁。
-**為什麼還要 min/max：** 純比例在超長螢幕（21:9）上會產生過高的鍵盤，
-在小平板上又會過矮。比例定基調，夾制擋極端。
+**`padding` 算在 `h` 之內**（`h` 已含 padding，見第 3 步），
+`candidates.bar.height` 則是**外加**在 `h` 之上。兩者語義不同，最容易搞混。
 
-`height_scale`（見 §9.2）由佈局提供，乘在 `h` 上、夾制**之後**套用，
-再夾一次到 `[min, 1.5*max]`。
+#### 8.8.0.1 `key_aspect` 該設多少：實測基準
+
+Gboard（Android 參考對象）在兩種螢幕上的實測值：
+
+| 螢幕 | 鍵寬 | 鍵高 | 實際 aspect |
+|---|---|---|---|
+| 1080×2400 @420dpi（411.4 dp 寬） | 35.4 dp | 47.0 dp | 1.33 |
+| 1440×3120 @505dpi（456.2 dp 寬） | 39.6 dp | 47.2 dp | 1.19 |
+
+**注意這組數字說的事情，和「aspect 是常數」不一樣。**
+Gboard 的鍵高在兩種螢幕上都是 47 dp（差 0.2 dp），鍵寬卻從 35.4 變成 39.6 ——
+也就是說 Gboard 用的是**固定鍵高**，aspect 只是被動的結果。
+
+本規範仍選擇 aspect 作為主控參數，而不是照抄固定鍵高，理由有二：
+
+1. 固定鍵高無法處理欄數變化。11 欄的注音在固定鍵高下會明顯比 10 欄的 QWERTY 瘦長，
+   而這正是初稿模型被詬病的同一個病灶，只是換了個地方發作。
+2. 固定鍵高在平板上會產生極寬極扁的鍵（800 dp 寬的平板上鍵寬 76 dp、鍵高 47 dp）。
+
+`key_height.min` / `max` 就是用來把 aspect 的結果拉回 Gboard 那條線的：
+預設 `key_aspect: 1.28` 搭配 `key_height: {min: 40, max: 56}`，
+在上表兩種螢幕上分別得到 44.4 dp 與 50.3 dp，夾住 Gboard 的 47 dp。
+**在需要精確對齊某個參考鍵盤時，正確做法是收緊 `key_height` 的上下界，
+而不是去動 `key_aspect`。**
+
+#### 8.8.0.2 相容性與版本
+
+本節改變了既有欄位的語義，依 §5.2 本應遞增 major。**本次刻意不遞增**，
+並把它記為 v1 期間的一次性例外（見 §5.7）。移除的欄位：
+
+| 移除 | 取代 |
+|---|---|
+| `height.portrait.ratio` / `height.landscape.ratio` | `max_screen_ratio.<方向>`（語義從「目標」變成「上限」） |
+| `height.portrait.max` / `height.landscape.max` | `max_screen_ratio` + `key_height.max` |
+| `height.portrait.min` / `height.landscape.min` | `key_height.min` |
+
+解析器遇到舊的 `height:` 區塊 **必須** 忽略它並產生一則 INFO 診斷，
+指出該主題使用的是已被取代的高度模型、且已改用預設的 aspect 模型。
+**不得** 因此拒絕載入 —— 舊主題只是會長得跟作者預期不同，而不是壞掉。
 
 #### 8.8.1 `keyboard.key_styles`
 
@@ -1000,7 +1072,7 @@ total  = h + candidates.bar.height + (honor_bottom_inset ? 手勢列 inset : 0)
 |---|---|---|---|
 | `row_spacing` | length \| null | `null` | `null` = 用主題的值 |
 | `key_spacing` | length \| null | `null` | 同上 |
-| `height_scale` | number 0.5–2.0 | `1.0` | 乘在主題算出的鍵盤高度上（§8.8） |
+| `height_scale` | number 0.5–2.0 | `1.0` | 乘在**鍵高**上（§8.8.0 第 2 步），鍵盤總高隨之改變 |
 
 注音佈局比 QWERTY 多一列，`key_spacing` 調小、`height_scale` 調大是常見需求，
 所以這個覆寫點必須存在於佈局側而非主題側。
@@ -1457,7 +1529,14 @@ key_patches:
 12. 系統字體縮放調到最大時，文字放大倍率恰為 `font_scale_max`（不是它的平方）。
 13. 組字中按下 `send: {text: ...}` 的鍵：組字內容先上屏，標點接在其後，
     兩者皆不遺失（§9.4.1）。
-14. 把 `keyboard.padding.top` 從 4 改成 20：鍵盤總高度**不變**，按鍵變扁。
+14. 把 `keyboard.padding.top` 從 4 改成 20：鍵盤總高度**增加 16dp**，按鍵高度不變
+    （新模型下鍵盤高是算出來的，padding 是加項；這與初稿相反）。
+15. 同一份主題在 411 dp 寬與 456 dp 寬的螢幕上，鍵的**長寬比一致**
+    （皆為 `key_aspect`，除非撞到 `key_height` 夾制）。這是初稿模型做不到的一條。
+16. 同一份主題下，10 欄的 `qwerty` 與 11 欄的 `bopomofo-dachen`，
+    鍵的長寬比相同（鍵較窄時鍵也較矮），而不是後者更瘦長。
+17. 舊主題（含 `keyboard.height:` 區塊、無 `key_aspect`）仍能載入，
+    產生恰好一則 INFO 診斷，且渲染採用預設 aspect 模型。
 
 ---
 
