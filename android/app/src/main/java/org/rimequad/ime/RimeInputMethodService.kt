@@ -29,8 +29,12 @@ import org.rimequad.ime.keyboard.KeyboardTypes
 import org.rimequad.ime.keyboard.SchemaLanguages
 import org.rimequad.ime.keyboard.KeyboardUiState
 import org.rimequad.ime.keyboard.LayoutHost
+import org.rimequad.ime.home.CurrentKeyboard
+import org.rimequad.ime.home.KeyboardPanelRequest
+import org.rimequad.ime.keyboard.PanelRoute
 import org.rimequad.ime.keyboard.RemappingLayoutRepository
 import org.rimequad.ime.keyboard.RimeKeyboard
+import org.rimequad.ime.keyboard.ThemeChoice
 import org.rimequad.ime.keyboard.UserLayoutStore
 import org.rimequad.ime.prefs.KeyBehavior
 import org.rimequad.ime.prefs.LocalKeyBehavior
@@ -80,6 +84,9 @@ class RimeInputMethodService : InputMethodService() {
 
         /** X11 的 space keysym。空白鍵行為偏好靠它認出空白鍵。 */
         const val KEYSYM_SPACE = 0x0020
+
+        /** 這一組配色等於「沒有指定主題」，見 buildThemeChoices。 */
+        const val DEFAULT_THEME_FAMILY = "default"
     }
 
     private var session: Long = RimeCore.INVALID_SESSION
@@ -128,6 +135,14 @@ class RimeInputMethodService : InputMethodService() {
      * 執行緒上。IME 的那條執行緒就是主執行緒,所以收集者也必須落在主執行緒。
      */
     private val prefsScope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
+
+    /**
+     * 拖曳中的鍵盤高度草稿。null = 沒有人在拖。
+     *
+     * 刻意不寫進偏好：拖曳每移動一個像素就寫一次 DataStore 交易是不可行的，
+     * 而且使用者按「回原本」時那些中間值必須完全不存在過。
+     */
+    private var heightDraft: Float? = null
 
     /** 上一次看到的方案 id，用來偵測方案變動並套用 §9.1.1 的自動換佈局。 */
     private var lastSchemaId: String = ""
@@ -275,6 +290,12 @@ class RimeInputMethodService : InputMethodService() {
         consumePendingSchema()
         applyEditorPolicy(info)
         refreshFromRime(consumeCommit = false)
+        // 設定頁的「鍵盤高度 › 開始調」留下的一次性請求。**高度不是一個數字，
+        // 是一個手勢** —— 設定頁裡只有一顆會把使用者帶到鍵盤上的按鈕，
+        // 所以鍵盤升起來時要自己進入拖曳模式，否則他到了這裡還要再找一次。
+        if (KeyboardPanelRequest.consume(this) == KeyboardPanelRequest.HEIGHT) {
+            openPanel(PanelRoute.HEIGHT)
+        }
     }
 
     /**
@@ -356,7 +377,10 @@ class RimeInputMethodService : InputMethodService() {
             RimeCore.clearComposition(session)
         }
         currentInputConnection?.finishComposingText()
-        uiState = uiState.copy(schemaPickerOpen = false)
+        // 面板不跨編輯框存活：使用者切去別的 app 再回來，看到的是鍵盤，
+        // 不是他上次忘了關的設定面板。
+        heightDraft = null
+        uiState = uiState.copy(panel = PanelRoute.NONE, heightDraft = null)
         host?.onFinishInput()
     }
 
@@ -554,10 +578,13 @@ class RimeInputMethodService : InputMethodService() {
      */
     private fun effectiveTheme(): Theme? {
         val base = layoutHost.theme ?: return null
-        if (base === overrideBase && prefs == overridePrefs) return overrideResult
-        val out = applyUserOverrides(base, prefs)
+        // 拖曳中的高度草稿就是「這一刻的偏好」——套在同一條路徑上，
+        // 使用者拖到哪裡看到的就是最後的樣子，不必另做一套預覽渲染。
+        val want = if (heightDraft != null) prefs.copy(keyboardHeightScale = heightDraft) else prefs
+        if (base === overrideBase && want == overridePrefs) return overrideResult
+        val out = applyUserOverrides(base, want)
         overrideBase = base
-        overridePrefs = prefs
+        overridePrefs = want
         overrideResult = out
         return out
     }
@@ -568,6 +595,9 @@ class RimeInputMethodService : InputMethodService() {
             theme = effectiveTheme(),
             layout = layoutHost.layout,
             layerId = layoutHost.layerId,
+            // 面板上每一格都要印出「現在是什麼」,所以偏好必須跟著進 UI 狀態。
+            prefs = prefs,
+            heightDraft = heightDraft,
             configProblem = layoutHost.problem,
         )
     }
@@ -581,6 +611,14 @@ class RimeInputMethodService : InputMethodService() {
      */
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        // 系統返回鍵是面板的第四條回路（另外三條：底列全程露著、`✕`、`‹`）。
+        // 少了這一條，使用者按返回會直接把整個鍵盤收掉 —— 面板還開著，
+        // 下次叫出鍵盤又是那個面板，看起來就像卡住了。
+        if (keyCode == KeyEvent.KEYCODE_BACK && uiState.panel != PanelRoute.NONE) {
+            openPanel(uiState.panel.back())
+            consumedKeys.add(keyCode)
+            return true
+        }
         if (processHardwareKey(event, release = false)) {
             consumedKeys.add(keyCode)
             return true
@@ -635,36 +673,121 @@ class RimeInputMethodService : InputMethodService() {
                 refreshFromRime()
             }
 
-            is KeyboardEvent.OpenSchemaPicker -> openKeyboardTypePicker()
+            is KeyboardEvent.OpenPanel -> openPanel(event.route)
 
-            is KeyboardEvent.CloseSchemaPicker ->
-                uiState = uiState.copy(schemaPickerOpen = false)
+            is KeyboardEvent.PanelBack -> openPanel(uiState.panel.back())
 
             is KeyboardEvent.SelectKeyboardType -> {
                 selectKeyboardType(event.schemaId, event.layoutId)
-                uiState = uiState.copy(schemaPickerOpen = false)
+                // 選完直接回到八格，不是整片收掉：使用者剛換了鍵盤，
+                // 下一件想做的事多半還在同一個面板上（例如順手把高度調一下）。
+                openPanel(PanelRoute.QUICK)
+            }
+
+            // 面板上每一格改的都是偏好的某一個欄位；偏好本來就有唯一的消費點，
+            // 這裡直接把要做的事交給它。寫入是非同步的，但 prefsStore.flow 的
+            // 收集者就在主執行緒上（見 prefsScope），畫面下一幀就會反映。
+            is KeyboardEvent.EditPrefs ->
+                prefsScope.launch { prefsStore.update(event.block) }
+
+            // 拖曳期間只動記憶體裡的草稿：每一個像素一次 DataStore 交易是不可行的。
+            is KeyboardEvent.DragHeight -> {
+                heightDraft = event.scale
+                syncConfigToUi()
+            }
+
+            is KeyboardEvent.CommitHeight -> {
+                val v = heightDraft
+                heightDraft = null
+                if (v != null) prefsScope.launch { prefsStore.update { it.copy(keyboardHeightScale = v) } }
+                openPanel(PanelRoute.QUICK)
+            }
+
+            // 「回原本」= 丟掉草稿**並且**把使用者設過的高度刪掉，回到主題檔的值。
+            // 只丟草稿是不夠的：使用者上一次調過的高度還留著，畫面會停在一個
+            // 他明明按了「回原本」卻沒有回去的地方。
+            is KeyboardEvent.ResetHeight -> {
+                heightDraft = null
+                prefsScope.launch { prefsStore.update { it.copy(keyboardHeightScale = null) } }
+                syncConfigToUi()
+            }
+
+            is KeyboardEvent.OpenAppSettings -> {
+                openPanel(PanelRoute.NONE)
+                startActivity(
+                    Intent(this, SettingsActivity::class.java)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
             }
         }
     }
 
-    /* ─────────────────── 鍵盤類型選單 ─────────────────── */
+    /* ─────────────────── 鍵盤上的面板 ─────────────────── */
 
     /**
-     * 打開選單。清單在**打開的當下**才算，不是持續維護的狀態：
-     * 方案可能剛從市集裝進來、佈局可能剛被使用者放進 user_data_dir，
-     * 兩者都不會通知我們。開一次算一次是最省事也最不會過期的作法。
+     * 面板的唯一切換點。
+     *
+     * 清單在**打開的當下**才算，不是持續維護的狀態：方案可能剛從市集裝進來、
+     * 佈局可能剛被使用者放進 user_data_dir、主題目錄可能剛多了一份 —— 三者
+     * 都不會通知我們。開一次算一次是最省事也最不會過期的作法。
      */
-    private fun openKeyboardTypePicker() {
-        val schemas = RimeCore.schemaList()
-        uiState = uiState.copy(
-            schemaPickerOpen = true,
-            schemas = schemas,
-            keyboardTypes = KeyboardTypes.build(
-                schemas,
-                layoutHost.layoutBriefs(ConfigRepository.LOCALE),
-            ),
-        )
+    private fun openPanel(route: PanelRoute) {
+        var next = uiState.copy(panel = route)
+        if (route == PanelRoute.TYPES) {
+            val schemas = RimeCore.schemaList()
+            next = next.copy(
+                schemas = schemas,
+                keyboardTypes = KeyboardTypes.build(
+                    schemas,
+                    layoutHost.layoutBriefs(ConfigRepository.LOCALE),
+                ),
+            )
+        }
+        if (route == PanelRoute.APPEARANCE && uiState.themeChoices.isEmpty()) {
+            next = next.copy(themeChoices = buildThemeChoices())
+        }
+        // 離開高度編輯器時把草稿收掉，不要讓一個沒按「好了」的預覽跟著使用者走。
+        if (route != PanelRoute.HEIGHT && heightDraft != null) heightDraft = null
+        uiState = next
+        syncConfigToUi()
     }
+
+    /**
+     * 「外觀」面板上那一排配色。
+     *
+     * 一組淺／深主題在使用者眼裡是**一個**配色 —— 深淺是旁邊那個控制項的事。
+     * 所以這裡按 id 去掉 `-light` / `-dark` 收成家族，並一律釘淺色那一份：
+     * 跟隨系統時 LayoutHost 會在夜間自己跳到它宣告的 counterpart。
+     */
+    private fun buildThemeChoices(): List<ThemeChoice> {
+        val ids = runCatching { config.themeIds() }.getOrDefault(emptyList())
+        val out = LinkedHashMap<String, ThemeChoice>()
+        for (id in ids.sorted()) {
+            val family = id.removeSuffix("-light").removeSuffix("-dark")
+            if (out.containsKey(family)) continue
+            val theme = config.loadTheme(id).value ?: continue
+            var name = theme.name.get(ConfigRepository.LOCALE).ifEmpty { id }
+            for (suffix in listOf("淺色", "深色", "Light", "Dark")) {
+                if (name.endsWith(suffix)) name = name.dropLast(suffix.length)
+            }
+            name = name.trimEnd(' ', '・', '·', '-').ifEmpty { family }
+            val pin = if (id.endsWith("-dark")) "$family-light" else id
+            // 「預設」那一組對應的是**沒有指定主題**，不是「指定 default-light」。
+            // 存一份預設值的副本正是 UserPrefs 檔頭第一條要避開的事：主題檔日後
+            // 更新了，抄過副本的使用者會被永遠釘在舊的那一份上。
+            val pinned = if (family == DEFAULT_THEME_FAMILY) {
+                ""
+            } else if (ids.contains(pin)) {
+                pin
+            } else {
+                id
+            }
+            out[family] = ThemeChoice(family, name, pinned)
+        }
+        return out.values.toList()
+    }
+
+    /* ─────────────────── 鍵盤類型選單 ─────────────────── */
 
     /**
      * 使用者在選單裡挑了一種鍵盤：方案與佈局**同時**換過去。
@@ -682,6 +805,7 @@ class RimeInputMethodService : InputMethodService() {
         if (layoutId != null && layoutHost.layout?.id != layoutId) {
             layoutHost.switchLayout(layoutId)
         }
+        CurrentKeyboard.publish(this, schemaId, layoutHost.layout?.id)
         syncConfigToUi()
     }
 
@@ -825,7 +949,7 @@ class RimeInputMethodService : InputMethodService() {
             ActionVerb.SCHEMA_PREV -> cycleSchema(-1)
             // §8.6.6.1 的必備項。工具列的地球鍵、佈局裡任何 `tap: schema:picker`
             // 的鍵都落在這裡 —— 全部走同一個入口，選單內容只有一份。
-            ActionVerb.SCHEMA_PICKER -> openKeyboardTypePicker()
+            ActionVerb.SCHEMA_PICKER -> openPanel(PanelRoute.TYPES)
 
             ActionVerb.SCHEMA_SELECT -> action.arg?.let { selectSchema(it) }
 
@@ -873,12 +997,11 @@ class RimeInputMethodService : InputMethodService() {
 
             ActionVerb.HIDE_KEYBOARD -> requestHideSelf(0)
 
-            // 規範 §8.6.6.1 把 settings 列為工具列必備項:按下齒輪就該直接
-            // 落在設定,而不是先落在診斷頁再要使用者自己找。
-            ActionVerb.SETTINGS -> startActivity(
-                Intent(this, SettingsActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            )
+            // 規範 §8.6.6.1 把 settings 列為工具列必備項。改動前它直接開 App ——
+            // 那正是這一版要避開的事：**使用者需要調整的當下，他正在打字。**
+            // 現在這顆齒輪打開的是鍵盤上的六格面板，App 只留在面板右下角
+            // 那一行最不顯眼的「全部設定 ›」後面。
+            ActionVerb.SETTINGS -> openPanel(PanelRoute.QUICK)
 
             // 表情面板尚未實作，維持 noop 而不是假裝有效。
             ActionVerb.EMOJI -> Log.i(TAG, "emoji 面板尚未實作")
@@ -965,6 +1088,8 @@ class RimeInputMethodService : InputMethodService() {
                 theme = effectiveTheme(),
                 layout = layoutHost.layout,
                 layerId = layoutHost.layerId,
+                prefs = prefs,
+                heightDraft = heightDraft,
                 configProblem = layoutHost.problem,
             )
             return
@@ -1008,6 +1133,9 @@ class RimeInputMethodService : InputMethodService() {
             layoutHost.applySchema(schemaId)
             // 換方案會重置 session 的開關,使用者選過的簡繁／標點要再推一次。
             applyRimeOptions()
+            // App 那一側要顯示「現在打的是哪一種鍵盤」,而它拿不到 IME 的執行期
+            // 狀態。這裡單向廣播一次,是整條線唯一的寫入點。
+            CurrentKeyboard.publish(this, schemaId, layoutHost.layout?.id)
             Log.i(TAG, "方案 $schemaId → 佈局 ${layoutHost.layout?.id}")
         }
 
@@ -1030,6 +1158,8 @@ class RimeInputMethodService : InputMethodService() {
             theme = shownTheme,
             layout = layoutHost.layout,
             layerId = layoutHost.layerId,
+            prefs = prefs,
+            heightDraft = heightDraft,
             configProblem = layoutHost.problem,
             schemas = if (uiState.schemas.isEmpty()) RimeCore.schemaList() else uiState.schemas,
         )

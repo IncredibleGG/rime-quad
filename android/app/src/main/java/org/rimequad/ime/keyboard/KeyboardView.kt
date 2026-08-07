@@ -8,6 +8,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -117,17 +118,168 @@ fun RimeKeyboard(
             .padding(bottom = bottomInsetDp(theme.keyboard.honorBottomInset)),
     ) {
         CandidateBar(state = state, theme = theme, scaler = scaler, onEvent = onEvent)
-        // 鍵盤類型選單是**浮層**，不是取代品：底下那一列鍵仍然露出來、仍然按得動。
+        // 面板一律是**浮層**，不是取代品：底下那一列鍵仍然露出來、仍然按得動。
         // 抄的是三星的處理（docs/reference/samsung/photo_5）。理由不是好看 ——
         // 一個把整個鍵盤蓋掉的面板，只要它自己的關閉鍵出了任何差錯，
-        // 使用者就沒有第二條路可走。出口永遠看得見，這條規矩對選單同樣適用。
+        // 使用者就沒有第二條路可走。出口永遠看得見，這條規矩對每一個面板都適用。
         Box {
             KeyGrid(state = state, theme = theme, scaler = scaler, onEvent = onEvent)
-            if (state.schemaPickerOpen) {
-                SchemaPicker(state = state, theme = theme, scaler = scaler, onEvent = onEvent)
+            if (state.panel != PanelRoute.NONE) {
+                KeyboardPanelHost(state = state, theme = theme, scaler = scaler, onEvent = onEvent)
             }
         }
     }
+}
+
+/* ────────────────────────────── 面板 ────────────────────────────── */
+
+/**
+ * 依 [KeyboardUiState.panel] 畫出對應的面板。
+ *
+ * 三種形態：
+ *   · **蓋住鍵區、留下底列**（八格、鍵盤類型、外觀、空白鍵）
+ *   · **收成頂端一條**（手感、候選字）—— 那兩項非得按得到鍵、看得到候選字不可
+ *   · **原地變暗 + 把手**（高度）
+ */
+@Composable
+private fun BoxScope.KeyboardPanelHost(
+    state: KeyboardUiState,
+    theme: Theme,
+    scaler: Scaler,
+    onEvent: (KeyboardEvent) -> Unit,
+) {
+    val style = theme.keyboard.keyStyle("default")
+    val panelScaler = PanelScaler { size -> scaler.sp(size) }
+    val layout = state.layout
+    val layer = state.layer
+    val fullHeight = if (layout != null && layer != null) {
+        keyboardGeometry(theme, layout, layer).keyboardHeight
+    } else {
+        nominalKeyboardHeight(theme)
+    }
+    val panelHeight = if (layout != null && layer != null) {
+        panelHeightLeavingBottomRow(theme, layout, layer, fullHeight)
+    } else {
+        fullHeight
+    }
+    val close = { onEvent(KeyboardEvent.OpenPanel(PanelRoute.NONE)) }
+    val back = { onEvent(KeyboardEvent.PanelBack) }
+
+    when (state.panel) {
+        PanelRoute.NONE -> Unit
+
+        PanelRoute.QUICK -> PanelFrame(
+            heightDp = panelHeight,
+            theme = theme,
+            style = style,
+            scaler = panelScaler,
+            title = "調整",
+            showBack = false,
+            onBack = back,
+            onClose = close,
+            trailing = {
+                AllSettingsLink(style, panelScaler) { onEvent(KeyboardEvent.OpenAppSettings) }
+            },
+            subtitle = "底下這排隨時能繼續打字",
+        ) {
+            QuickPanelContent(state, style, panelScaler, theme, onEvent)
+        }
+
+        PanelRoute.TYPES -> PanelFrame(
+            heightDp = panelHeight,
+            theme = theme,
+            style = style,
+            scaler = panelScaler,
+            title = "鍵盤類型",
+            showBack = true,
+            onBack = back,
+            onClose = close,
+            trailing = {
+                AllSettingsLink(style, panelScaler) { onEvent(KeyboardEvent.OpenAppSettings) }
+            },
+            subtitle = "選了立刻換",
+        ) {
+            SchemaPickerContent(state = state, theme = theme, scaler = scaler, onEvent = onEvent)
+        }
+
+        PanelRoute.APPEARANCE -> PanelFrame(
+            heightDp = panelHeight,
+            theme = theme,
+            style = style,
+            scaler = panelScaler,
+            title = "外觀",
+            showBack = true,
+            onBack = back,
+            onClose = close,
+        ) {
+            AppearancePanelContent(state, style, panelScaler, onEvent)
+        }
+
+        PanelRoute.TEXT -> PanelFrame(
+            heightDp = panelHeight,
+            theme = theme,
+            style = style,
+            scaler = panelScaler,
+            title = "打出來的字",
+            showBack = true,
+            onBack = back,
+            onClose = close,
+        ) {
+            TextPanelContent(state, style, panelScaler, onEvent)
+        }
+
+        PanelRoute.FEEL -> TopStrip(
+            theme = theme,
+            style = style,
+            scaler = panelScaler,
+            title = "手感",
+            onBack = back,
+            onClose = close,
+        ) {
+            FeelStripContent(state, style, panelScaler, theme, onEvent)
+        }
+
+        PanelRoute.CANDIDATES -> TopStrip(
+            theme = theme,
+            style = style,
+            scaler = panelScaler,
+            title = "候選字",
+            onBack = back,
+            onClose = close,
+        ) {
+            CandidatesStripContent(state, style, panelScaler, theme, onEvent)
+        }
+
+        PanelRoute.HEIGHT -> HeightEditor(
+            state = state,
+            theme = theme,
+            style = style,
+            scaler = panelScaler,
+            keyboardHeightDp = fullHeight,
+            onEvent = onEvent,
+        )
+    }
+}
+
+/**
+ * 浮層高度 = 鍵盤高度 − 最後一列。
+ *
+ * 底列（空白、Enter、退格、中英）必須整列露出來 —— 這是所有鍵盤內面板
+ * 「出口結構性存在」的兌現處，不是每個面板各自記得加返回鍵。
+ */
+internal fun panelHeightLeavingBottomRow(
+    theme: Theme,
+    layout: KeyboardLayout,
+    layer: LayoutLayer,
+    keyboardHeight: Float,
+): Float {
+    val rowSpacing = layout.metrics.rowSpacing ?: theme.keyboard.rowSpacing
+    val pad = theme.keyboard.padding
+    val weights = layer.rows.fold(0f) { acc, r -> acc + r.weight }
+    val usable = keyboardHeight - pad.top - pad.bottom - rowSpacing * (layer.rows.size - 1)
+    val lastRow = if (weights > 0f) usable * (layer.rows.lastOrNull()?.weight ?: 0f) / weights else 0f
+    return (keyboardHeight - lastRow - rowSpacing - pad.bottom)
+        .coerceAtLeast(keyboardHeight * 0.5f)
 }
 
 /* ────────────────────────────── 尺寸 ────────────────────────────── */
@@ -266,6 +418,47 @@ private fun CandidateBar(
                     maxLines = 1,
                     modifier = Modifier.padding(horizontal = theme.preedit.paddingH.dp),
                 )
+            }
+
+            // 「候選字」面板打開時，候選列**自己就是預覽**：不另畫一條假的示範列，
+            // 而是把真的候選列填上樣本字，讓它跟著「一次幾個」「字多大」即時變化。
+            // 走的是同一段程式碼，所以看到的就是最後的樣子。
+            if (state.candidates.isEmpty() && state.panel == PanelRoute.CANDIDATES) {
+                val cap = bar.maxVisible
+                val sample = if (cap > 0) SAMPLE_CANDIDATES.take(cap) else SAMPLE_CANDIDATES
+                LazyRow(
+                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(style.item.spacing.dp),
+                    contentPadding = PaddingValues(horizontal = 4.dp),
+                ) {
+                    itemsIndexed(sample) { index, word ->
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(style.item.cornerRadius.dp))
+                                .background(
+                                    Color(
+                                        if (index == 0) style.item.highlightBackground
+                                        else style.item.background
+                                    )
+                                )
+                                .padding(
+                                    horizontal = style.item.paddingH.dp,
+                                    vertical = style.item.paddingV.dp,
+                                ),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = word,
+                                fontSize = scaler.sp(style.text.size),
+                                color = Color(
+                                    if (index == 0) style.text.highlightColor else style.text.color
+                                ),
+                            )
+                        }
+                    }
+                }
+                return@Row
             }
 
             if (state.candidates.isEmpty()) {
@@ -430,64 +623,14 @@ private fun Toolbar(
  * [LayoutHost.pinLayout]，之後的自動切換不再覆蓋它（§9.1.1 的 SHOULD）。
  */
 @Composable
-private fun SchemaPicker(
+private fun SchemaPickerContent(
     state: KeyboardUiState,
     theme: Theme,
     scaler: Scaler,
     onEvent: (KeyboardEvent) -> Unit,
 ) {
-    // 浮層高度 = 鍵盤高度 − 最後一列 —— 底列（空白、Enter、退格、中英）
-    // 必須整列露出來。佈局尚未載入時沒有底列可露，就用名目幾何鋪滿。
-    val layout = state.layout
-    val layer = state.layer
-    val height = if (layout != null && layer != null) {
-        val g = keyboardGeometry(theme, layout, layer)
-        val rowSpacing = layout.metrics.rowSpacing ?: theme.keyboard.rowSpacing
-        val pad = theme.keyboard.padding
-        val weights = layer.rows.fold(0f) { acc, r -> acc + r.weight }
-        val usable = g.keyboardHeight - pad.top - pad.bottom -
-            rowSpacing * (layer.rows.size - 1)
-        val lastRow = if (weights > 0f) {
-            usable * (layer.rows.lastOrNull()?.weight ?: 0f) / weights
-        } else {
-            0f
-        }
-        (g.keyboardHeight - lastRow - rowSpacing - pad.bottom)
-            .coerceAtLeast(g.keyboardHeight * 0.5f)
-    } else {
-        nominalKeyboardHeight(theme)
-    }
     val style = theme.keyboard.keyStyle("default")
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(height.dp)
-            .background(Color(theme.keyboard.background))
-            // 浮層必須自己吃掉點擊。少了這一行，點在選單空白處會穿透到底下
-            // 的鍵上 —— 使用者以為自己在關選單，實際上打出了一個字。
-            .pointerInput(Unit) { detectTapGestures { } }
-            .padding(horizontal = 8.dp, vertical = 6.dp),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = "⌨  鍵盤類型",
-                fontSize = scaler.sp(style.labelSize * 0.75f),
-                color = Color(style.foreground),
-                modifier = Modifier.weight(1f),
-            )
-            // 進得去也要出得來：選單一定有一顆看得見的關閉鍵。
-            Text(
-                text = "✕",
-                fontSize = scaler.sp(style.labelSize * 0.75f),
-                color = Color(style.foreground),
-                modifier = Modifier
-                    .clickable { onEvent(KeyboardEvent.CloseSchemaPicker) }
-                    .padding(horizontal = 12.dp, vertical = 4.dp),
-            )
-        }
+    Column(modifier = Modifier.fillMaxSize()) {
         if (state.keyboardTypes.isEmpty()) {
             Text(
                 text = "尚無可用方案（rs_schema_list 回傳空）",

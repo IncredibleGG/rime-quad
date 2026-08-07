@@ -98,6 +98,20 @@ object RimeRuntime {
         private set
 
     /**
+     * 首次部署**已經跑了多久**（毫秒）；還沒開始或已經完成時回 -1。
+     *
+     * 引導頁拿它畫那條 3dp 的進度線。⚠ 這只是「跑了多久」，**不是真的進度** ——
+     * `rime_shell` 的 C ABI 沒有暴露部署進度，我們只知道起點。所以畫面上那條線
+     * 封頂在 95%，絕不自己走到 100%：一條走到底卻還沒好的進度條比沒有更傷。
+     */
+    val deployElapsedMillis: Long
+        get() = if (deployStartedAt > 0L && deployMillis < 0) {
+            SystemClock.elapsedRealtime() - deployStartedAt
+        } else {
+            -1
+        }
+
+    /**
      * 這次啟動的內建方案遷移結果，給診斷畫面看的一行字；null = 沒發生任何事。
      * 見 [BuiltinMigration] 的檔頭：升級的使用者拿不到新增內建方案的那個 bug。
      */

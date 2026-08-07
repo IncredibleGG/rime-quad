@@ -123,10 +123,32 @@ data class UserPrefs(
     /**
      * 首次啟動的離線說明看過了。`null` = 還沒看過。
      *
-     * 副作用是「全部回復預設」會讓說明再出現一次 —— 那是對的，因為同一次
-     * 回復也把連網開關關回去了，兩件事該一起重來。
+     * 為什麼放在偏好而不是另開一個 SharedPreferences：少一個儲存層就少一個
+     * 要解釋的東西。副作用是「全部回復預設」會讓說明再出現一次 —— 那是
+     * 對的，因為同一次回復也把連網開關關回去了，兩件事該一起重來。
      */
     val offlineNoticeSeen: Boolean? = null,
+
+    /* ─────────────── 引導 ─────────────── */
+
+    /**
+     * 曾經走完一次首次啟動的引導。`null` = 還沒有。
+     *
+     * ⚠ **語義必須釘死**：它**只**決定 app 冷啟時預設落在哪一頁；
+     * 它**不是**「輸入法可以用」的證據。
+     *
+     * 因為使用者完全可能在引導完成之後，到系統設定裡把鍵盤換回別的。那時
+     * app 應該開在設定（他已經是老手了），但首頁的狀態卡片必須誠實地顯示
+     * 「現在打字用的不是這個鍵盤」並給一顆一鍵切回去的按鈕。把兩件事綁在
+     * 同一個布林上，就會做出一個「明明不能用卻說一切正常」的 app。
+     *
+     * 寫入時機是**第一次觀察到系統說我們已經是預設輸入法**，而不是「使用者
+     * 按了完成」—— 一律以系統事實為準（見 home/Onboarding.kt）。
+     *
+     * ⚠ 消費端必須**阻塞讀**這一個 key（`PrefsStore.current`），不能等
+     * DataStore 的非同步首讀，否則既有使用者每次冷啟動都會看到引導頁閃一下。
+     */
+    val onboardingDone: Boolean? = null,
 
     /* ─────────────── 更新 ─────────────── */
 
@@ -171,6 +193,7 @@ data class UserPrefs(
         spaceBehavior?.let { m[K_SPACE] = it.name }
         networkEnabled?.let { m[K_NETWORK_ENABLED] = it }
         offlineNoticeSeen?.let { m[K_OFFLINE_NOTICE_SEEN] = it }
+        onboardingDone?.let { m[K_ONBOARDING_DONE] = it }
         autoCheckUpdate?.let { m[K_AUTO_CHECK_UPDATE] = it }
         return m
     }
@@ -195,6 +218,7 @@ data class UserPrefs(
         const val K_SPACE = "space_behavior"
         const val K_NETWORK_ENABLED = "network_enabled"
         const val K_OFFLINE_NOTICE_SEEN = "offline_notice_seen"
+        const val K_ONBOARDING_DONE = "onboarding_done"
         const val K_AUTO_CHECK_UPDATE = "auto_check_update"
 
         /**
@@ -224,6 +248,7 @@ data class UserPrefs(
             spaceBehavior = m.enum(K_SPACE, SpaceBehavior.entries),
             networkEnabled = m.bool(K_NETWORK_ENABLED),
             offlineNoticeSeen = m.bool(K_OFFLINE_NOTICE_SEEN),
+            onboardingDone = m.bool(K_ONBOARDING_DONE),
             autoCheckUpdate = m.bool(K_AUTO_CHECK_UPDATE),
         )
 
