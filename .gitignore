@@ -1,0 +1,7 @@
+# --- Android 模擬器 / 自動化驗證(scripts/emu.sh, scripts/verify_ime.sh)---
+# 模擬器執行期產物(pid、模擬器日誌、臨時截圖)
+.emulator/
+# 驗證 artifact 與測試靶 APK(截圖、logcat、dumpsys、debug keystore)
+build/
+*.png
+!docs/**/*.png
