@@ -35,3 +35,6 @@ android/app/.cxx/
 android/.kotlin/
 # 本機 SDK 路徑(sdk.dir),因機器而異,不入版控
 local.properties
+
+# publish_apk.sh 的暫存產物
+/release/
