@@ -1,0 +1,218 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  numeric-symbol — 數字層與符號層
+#
+#  一份佈局檔可以容納多個層；層之間用 action "layer:<id>" 切換，
+#  回到英數佈局則用 "switch_layout:@primary"（跨檔切換）。
+#
+#  本檔同時示範 send 的兩種形態的分工：
+#    · send.keysym — ASCII 可由 X11 keysym 表達者一律走此路，
+#      讓 librime 的 punctuator 有機會把 "," 轉成 "，"（中文模式下）。
+#    · send.text   — librime 不認得的字元（€ £ ¥ • §）直接上屏，
+#      繞過引擎。用錯會導致中文標點自動轉換失效。
+#
+#  規範：docs/theme-format.md §9.4「送出什麼」
+# ─────────────────────────────────────────────────────────────────────────────
+
+format: rime-layout/1
+id: numeric-symbol
+revision: 1
+
+name:
+  en: "Numbers & Symbols"
+  zh-Hant: "數字與符號"
+  zh-Hans: "数字与符号"
+
+description:
+  zh-Hant: "數字層與符號層，由英數佈局的 ?123 鍵進入。"
+
+author: "rime-quad"
+license: "CC0-1.0"
+
+kind: symbol
+targets: [android, ios]
+for_schema: ["*"]
+direction: ltr
+default_layer: numeric
+primary: false
+
+metrics:
+  row_spacing: null
+  key_spacing: null
+  height_scale: 1.0
+
+layers:
+
+  # ── 數字層 ───────────────────────────────────────────────────────────────
+  - id: "numeric"
+    label: "?123"
+    units: 10
+    rows:
+
+      - weight: 1.0
+        keys:
+          - { id: "n1", label: "1", send: { keysym: "1" }, popup: { keys: [ { label: "一", send: { text: "一" } }, { label: "壹", send: { text: "壹" } } ] } }
+          - { id: "n2", label: "2", send: { keysym: "2" }, popup: { keys: [ { label: "二", send: { text: "二" } }, { label: "貳", send: { text: "貳" } } ] } }
+          - { id: "n3", label: "3", send: { keysym: "3" }, popup: { keys: [ { label: "三", send: { text: "三" } }, { label: "參", send: { text: "參" } } ] } }
+          - { id: "n4", label: "4", send: { keysym: "4" }, popup: { keys: [ { label: "四", send: { text: "四" } }, { label: "肆", send: { text: "肆" } } ] } }
+          - { id: "n5", label: "5", send: { keysym: "5" }, popup: { keys: [ { label: "五", send: { text: "五" } }, { label: "伍", send: { text: "伍" } } ] } }
+          - { id: "n6", label: "6", send: { keysym: "6" }, popup: { keys: [ { label: "六", send: { text: "六" } }, { label: "陸", send: { text: "陸" } } ] } }
+          - { id: "n7", label: "7", send: { keysym: "7" }, popup: { keys: [ { label: "七", send: { text: "七" } }, { label: "柒", send: { text: "柒" } } ] } }
+          - { id: "n8", label: "8", send: { keysym: "8" }, popup: { keys: [ { label: "八", send: { text: "八" } }, { label: "捌", send: { text: "捌" } } ] } }
+          - { id: "n9", label: "9", send: { keysym: "9" }, popup: { keys: [ { label: "九", send: { text: "九" } }, { label: "玖", send: { text: "玖" } } ] } }
+          - { id: "n0", label: "0", send: { keysym: "0" }, popup: { keys: [ { label: "〇", send: { text: "〇" } }, { label: "零", send: { text: "零" } } ] } }
+
+      - weight: 1.0
+        keys:
+          - id: "minus"
+            label: "-"
+            send: { keysym: "minus" }
+            popup:
+              layout: row
+              keys:
+                - { label: "–", send: { text: "–" } }
+                - { label: "—", send: { text: "—" } }
+                - { label: "_", send: { keysym: "underscore" } }
+          - { id: "slash",      label: "/", send: { keysym: "slash" } }
+          - { id: "colon",      label: ":", send: { keysym: "colon" } }
+          - { id: "semicolon",  label: ";", send: { keysym: "semicolon" } }
+          - { id: "parenleft",  label: "(", send: { keysym: "parenleft" } }
+          - { id: "parenright", label: ")", send: { keysym: "parenright" } }
+          - { id: "dollar",     label: "$", send: { keysym: "dollar" },
+              popup: { layout: row, keys: [ { label: "€", send: { text: "€" } }, { label: "£", send: { text: "£" } }, { label: "¥", send: { text: "¥" } }, { label: "₩", send: { text: "₩" } } ] } }
+          - { id: "ampersand",  label: "&", send: { keysym: "ampersand" } }
+          - { id: "at",         label: "@", send: { keysym: "at" } }
+          - { id: "quotedbl",   label: "\"", send: { keysym: "quotedbl" },
+              popup: { layout: row, keys: [ { label: "「", send: { text: "「" } }, { label: "」", send: { text: "」" } }, { label: "『", send: { text: "『" } }, { label: "』", send: { text: "』" } } ] } }
+
+      - weight: 1.0
+        keys:
+          - id: "to_symbol"
+            label: "#+="
+            style: modifier
+            width: 1.5
+            tap: "layer:symbol"
+          - { id: "period",     label: ".", send: { keysym: "period" } }
+          - { id: "comma",      label: ",", send: { keysym: "comma" } }
+          - { id: "question",   label: "?", send: { keysym: "question" } }
+          - { id: "exclam",     label: "!", send: { keysym: "exclam" } }
+          - { id: "apostrophe", label: "'", send: { keysym: "apostrophe" } }
+          - { id: "asciitilde", label: "~", send: { keysym: "asciitilde" } }
+          - { id: "percent",    label: "%", send: { keysym: "percent" } }
+          - id: "backspace"
+            icon: backspace
+            style: modifier
+            width: 1.5
+            send: { keysym: "BackSpace" }
+            repeat: true
+            swipe:
+              left: { tap: "clear" }
+
+      - weight: 1.0
+        keys:
+          - id: "to_alpha"
+            label: "ABC"
+            style: modifier
+            width: 1.5
+            tap: "switch_layout:@primary"
+          - id: "lang"
+            label_from: input_mode
+            style: modifier
+            width: 1.25
+            tap: "toggle:ascii_mode"
+            long_press: "schema:picker"
+          - id: "space"
+            icon: space
+            style: space
+            width: 4.5
+            send: { keysym: "space" }
+            swipe:
+              left:  { tap: "cursor:left" }
+              right: { tap: "cursor:right" }
+          - { id: "period2", label: ".", width: 1.25, send: { keysym: "period" } }
+          - id: "enter"
+            icon: enter
+            style: action
+            width: 1.5
+            send: { keysym: "Return" }
+
+  # ── 符號層 ───────────────────────────────────────────────────────────────
+  - id: "symbol"
+    label: "#+="
+    units: 10
+    rows:
+
+      - weight: 1.0
+        keys:
+          - { id: "bracketleft",  label: "[", send: { keysym: "bracketleft" } }
+          - { id: "bracketright", label: "]", send: { keysym: "bracketright" } }
+          - { id: "braceleft",    label: "{", send: { keysym: "braceleft" } }
+          - { id: "braceright",   label: "}", send: { keysym: "braceright" } }
+          - { id: "numbersign",   label: "#", send: { keysym: "numbersign" } }
+          - { id: "percent2",     label: "%", send: { keysym: "percent" } }
+          - { id: "asciicircum",  label: "^", send: { keysym: "asciicircum" } }
+          - { id: "asterisk",     label: "*", send: { keysym: "asterisk" } }
+          - { id: "plus",         label: "+", send: { keysym: "plus" } }
+          - { id: "equal",        label: "=", send: { keysym: "equal" } }
+
+      - weight: 1.0
+        keys:
+          - { id: "underscore", label: "_", send: { keysym: "underscore" } }
+          - { id: "backslash",  label: "\\", send: { keysym: "backslash" } }
+          - { id: "bar",        label: "|", send: { keysym: "bar" } }
+          - { id: "less",       label: "<", send: { keysym: "less" },
+              popup: { layout: row, keys: [ { label: "《", send: { text: "《" } }, { label: "〈", send: { text: "〈" } } ] } }
+          - { id: "greater",    label: ">", send: { keysym: "greater" },
+              popup: { layout: row, keys: [ { label: "》", send: { text: "》" } }, { label: "〉", send: { text: "〉" } } ] } }
+          - { id: "euro",       label: "€", send: { text: "€" } }
+          - { id: "sterling",   label: "£", send: { text: "£" } }
+          - { id: "yen",        label: "¥", send: { text: "¥" } }
+          - { id: "bullet",     label: "•", send: { text: "•" } }
+          - { id: "section",    label: "§", send: { text: "§" } }
+
+      - weight: 1.0
+        keys:
+          - id: "to_numeric"
+            label: "123"
+            style: modifier
+            width: 1.5
+            tap: "layer:numeric"
+          - { id: "period",      label: ".", send: { keysym: "period" } }
+          - { id: "comma",       label: ",", send: { keysym: "comma" } }
+          - { id: "question",    label: "?", send: { keysym: "question" } }
+          - { id: "exclam",      label: "!", send: { keysym: "exclam" } }
+          - { id: "apostrophe",  label: "'", send: { keysym: "apostrophe" } }
+          - { id: "degree",      label: "°", send: { text: "°" } }
+          - { id: "ellipsis",    label: "…", send: { text: "…" } }
+          - id: "backspace"
+            icon: backspace
+            style: modifier
+            width: 1.5
+            send: { keysym: "BackSpace" }
+            repeat: true
+            swipe:
+              left: { tap: "clear" }
+
+      - weight: 1.0
+        keys:
+          - id: "to_alpha"
+            label: "ABC"
+            style: modifier
+            width: 1.5
+            tap: "switch_layout:@primary"
+          - id: "lang"
+            label_from: input_mode
+            style: modifier
+            width: 1.25
+            tap: "toggle:ascii_mode"
+            long_press: "schema:picker"
+          - id: "space"
+            icon: space
+            style: space
+            width: 4.5
+            send: { keysym: "space" }
+          - { id: "period2", label: ".", width: 1.25, send: { keysym: "period" } }
+          - id: "enter"
+            icon: enter
+            style: action
+            width: 1.5
+            send: { keysym: "Return" }

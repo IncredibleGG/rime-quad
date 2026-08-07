@@ -1,0 +1,59 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  sakura-light — 繼承機制示範（淺色）
+#
+#  與 sakura-dark 成對。存在的理由是證明規範 §4「一份檔案描述一種外觀」
+#  在實務上不會造成負擔：一個變體主題的兩份檔案各約 40 行，
+#  而不是複製兩份 400 行的完整主題。
+#
+#  規範：docs/theme-format.md §4、§7
+# ─────────────────────────────────────────────────────────────────────────────
+
+format: rime-theme/1
+id: sakura-light
+revision: 1
+
+name:
+  en: "Sakura Light"
+  zh-Hant: "櫻 淺色"
+  zh-Hans: "樱 浅色"
+
+description:
+  zh-Hant: "以 default-light 為基底，只換主色與候選字體。"
+
+author: "rime-quad"
+license: "CC0-1.0"
+
+appearance: light
+counterpart: sakura-dark
+inherits: default-light
+
+palette:
+  accent:          "#E0537C"
+  accent_pressed:  "#C43F66"
+  on_accent:       "#FFFFFF"
+  key:             "#FFFBFC"
+  key_pressed:     "#F0DCE3"
+  key_mod:         "#E4CBD4"
+  key_mod_pressed: "#D6B7C2"
+  bg:              "#EFDCE3"
+  surface:         "#FDF7F9"
+  surface_alt:     "#FFFFFF"
+
+candidates:
+  item:
+    corner_radius: 14
+  window:
+    corner_radius: 14
+
+typography:
+  fonts:
+    candidate:
+      family: ["Iansui", "$system"]
+      script_fallback:
+        hant: ["Iansui", "Noto Serif CJK TC", "$system-hant"]
+
+keyboard:
+  key_styles:
+    accent:
+      border_color: null
+      border_width: null

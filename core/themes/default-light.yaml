@@ -1,0 +1,377 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  default-light — 參考實作主題（淺色）
+#
+#  與 default-dark 結構完全對稱，但刻意在若干欄位上採用不同的「結構性」取值
+#  （elevation、border_width、shadow 強度），用以證明一件事：
+#  深淺兩色並非只有顏色不同，因此規範選擇「一份檔案描述一種外觀」。
+#
+#  規範：docs/theme-format.md
+# ─────────────────────────────────────────────────────────────────────────────
+
+format: rime-theme/1
+id: default-light
+revision: 1
+
+name:
+  en: "Default Light"
+  zh-Hant: "預設淺色"
+  zh-Hans: "默认浅色"
+
+description:
+  en: "Reference light theme. Every field written out explicitly."
+  zh-Hant: "參考淺色主題，所有欄位皆明確寫出。"
+
+author: "rime-quad"
+license: "CC0-1.0"
+
+appearance: light
+counterpart: default-dark
+inherits: null
+
+palette:
+  bg:               "#D6D9E0"
+  surface:          "#F7F8FA"
+  surface_alt:      "#FFFFFF"
+  key:              "#FFFFFF"
+  key_pressed:      "#DCE0E8"
+  key_mod:          "#C4C9D4"
+  key_mod_pressed:  "#B0B6C4"
+  accent:           "#2563EB"
+  accent_pressed:   "#1D4FD7"
+  on_accent:        "#FFFFFF"
+  fg:               "#11151C"
+  fg_dim:           "#3C4453"
+  muted:            "#6B7484"
+  divider:          "#D3D8E0"
+  shadow:           "#0F172A33"
+  danger:           "#D92D20"
+
+typography:
+  respect_system_font_scale: true
+  font_scale_min: 0.85
+  font_scale_max: 1.30
+
+  fonts:
+    ui:
+      family: ["$system"]
+      weight: 400
+      italic: false
+      script_fallback:
+        hant: ["$system-hant", "Noto Sans CJK TC", "PingFang TC", "Microsoft JhengHei UI"]
+        hans: ["$system-hans", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei UI"]
+        jpan: ["$system-jpan", "Noto Sans CJK JP", "Hiragino Sans", "Yu Gothic UI"]
+        kore: ["$system-kore", "Noto Sans CJK KR", "Apple SD Gothic Neo", "Malgun Gothic"]
+
+    candidate:
+      family: ["$system"]
+      weight: 400
+      italic: false
+      script_fallback:
+        hant: ["$system-hant", "Noto Serif CJK TC", "Noto Sans CJK TC", "PingFang TC", "Microsoft JhengHei UI"]
+        hans: ["$system-hans", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei UI"]
+        jpan: ["$system-jpan", "Noto Sans CJK JP", "Hiragino Sans", "Yu Gothic UI"]
+        kore: ["$system-kore", "Noto Sans CJK KR", "Apple SD Gothic Neo", "Malgun Gothic"]
+
+    label:
+      family: ["$system"]
+      weight: 500
+      italic: false
+      script_fallback: {}
+
+    comment:
+      family: ["$system"]
+      weight: 400
+      italic: false
+      script_fallback:
+        hant: ["$system-hant", "Noto Sans CJK TC"]
+        hans: ["$system-hans", "Noto Sans CJK SC"]
+
+    key:
+      family: ["$system"]
+      weight: 400
+      italic: false
+      script_fallback:
+        hant: ["$system-hant", "Noto Sans CJK TC", "PingFang TC"]
+        hans: ["$system-hans", "Noto Sans CJK SC", "PingFang SC"]
+
+    preedit:
+      family: ["$mono", "$system"]
+      weight: 400
+      italic: false
+      script_fallback: {}
+
+  assets: []
+
+metrics:
+  corner_radius: 8
+  border_width: 0
+  padding: 6
+  spacing: 4
+  elevation: 3
+
+candidates:
+  orientation: horizontal
+
+  label:
+    show: true
+    format: "{label}"
+    size: 12
+    color: "$muted"
+    highlight_color: "$on_accent@75%"
+
+  text:
+    size: 20
+    color: "$fg"
+    highlight_color: "$on_accent"
+
+  comment:
+    show: true
+    position: after
+    size: 12
+    color: "$muted"
+    highlight_color: "$on_accent@70%"
+
+  item:
+    padding_h: 10
+    padding_v: 6
+    spacing: 4
+    corner_radius: 6
+    min_width: 0
+    background: transparent
+    highlight_background: "$accent"
+    border_width: 0
+    border_color: transparent
+    highlight_border_width: 0
+    highlight_border_color: transparent
+
+  separator:
+    show: false
+    color: "$divider"
+    width: 1
+
+  page_indicator:
+    show: true
+    style: arrows
+    color: "$muted"
+    disabled_color: "$muted@40%"
+    size: 14
+
+  bar:
+    height: 44
+    background: "$surface"
+    border_top_width: 1
+    border_top_color: "$divider"
+    orientation: horizontal
+    max_visible: 0
+    scroll: expandable
+    expand_button:
+      show: true
+      color: "$muted"
+      size: 18
+    show_preedit_inline: true
+    empty_shows_toolbar: true
+
+  window:
+    background: "$surface"
+    orientation: horizontal
+    corner_radius: 10
+    padding: 8
+    border_width: 1
+    border_color: "$divider"
+    min_width: 120
+    max_width: 520
+    placement: auto
+    offset_x: 0
+    offset_y: 6
+    follow_caret: true
+    backdrop: none
+    opacity: 1.0
+    shadow:
+      show: true
+      radius: 22
+      offset_x: 0
+      offset_y: 6
+      color: "$shadow"
+
+preedit:
+  show: true
+  size: 16
+  color: "$fg_dim"
+  background: transparent
+  padding_h: 10
+  padding_v: 6
+  corner_radius: 0
+  caret:
+    show: true
+    color: "$accent"
+    width: 1.5
+    blink: true
+  selection:
+    color: "$accent@25%"
+    text_color: "$fg"
+
+keyboard:
+  background: "$bg"
+
+  height:
+    portrait:
+      ratio: 0.33
+      min: 190
+      max: 300
+    landscape:
+      ratio: 0.52
+      min: 130
+      max: 220
+
+  padding:
+    left: 3
+    right: 3
+    top: 4
+    bottom: 6
+
+  row_spacing: 6
+  key_spacing: 6
+  honor_bottom_inset: true
+
+  key_styles:
+    default:
+      background: "$key"
+      pressed_background: "$key_pressed"
+      foreground: "$fg"
+      pressed_foreground: "$fg"
+      corner_radius: 8
+      border_width: 0
+      border_color: transparent
+      elevation: 2
+      font: key
+      label_size: 22
+      hint_size: 10
+      hint_color: "$muted"
+      hint_position: top_right
+      icon_size: 22
+      active_background: "$accent"
+      active_foreground: "$on_accent"
+
+    modifier:
+      background: "$key_mod"
+      pressed_background: "$key_mod_pressed"
+      foreground: "$fg_dim"
+      pressed_foreground: "$fg"
+      corner_radius: 8
+      border_width: 0
+      border_color: transparent
+      elevation: 1
+      font: key
+      label_size: 16
+      hint_size: 9
+      hint_color: "$muted"
+      hint_position: none
+      icon_size: 20
+      active_background: "$accent@30%"
+      active_foreground: "$fg"
+
+    action:
+      background: "$accent"
+      pressed_background: "$accent_pressed"
+      foreground: "$on_accent"
+      pressed_foreground: "$on_accent"
+      corner_radius: 8
+      border_width: 0
+      border_color: transparent
+      elevation: 2
+      font: key
+      label_size: 16
+      hint_size: 9
+      hint_color: "$on_accent@70%"
+      hint_position: none
+      icon_size: 20
+      active_background: "$accent_pressed"
+      active_foreground: "$on_accent"
+
+    space:
+      background: "$key"
+      pressed_background: "$key_pressed"
+      foreground: "$muted"
+      pressed_foreground: "$fg"
+      corner_radius: 8
+      border_width: 0
+      border_color: transparent
+      elevation: 2
+      font: key
+      label_size: 13
+      hint_size: 9
+      hint_color: "$muted"
+      hint_position: none
+      icon_size: 18
+      active_background: "$key_pressed"
+      active_foreground: "$fg"
+
+    accent:
+      background: "$accent@14%"
+      pressed_background: "$accent@28%"
+      foreground: "$accent"
+      pressed_foreground: "$on_accent"
+      corner_radius: 8
+      border_width: 1
+      border_color: "$accent@35%"
+      elevation: 0
+      font: key
+      label_size: 20
+      hint_size: 10
+      hint_color: "$accent@70%"
+      hint_position: top_right
+      icon_size: 20
+      active_background: "$accent"
+      active_foreground: "$on_accent"
+
+  popup:
+    show: true
+    background: "$surface_alt"
+    foreground: "$fg"
+    highlight_background: "$accent"
+    highlight_foreground: "$on_accent"
+    corner_radius: 8
+    item_size: 22
+    item_padding: 10
+    elevation: 8
+    max_columns: 6
+
+  press_preview:
+    show: true
+    background: "$surface_alt"
+    foreground: "$fg"
+    size: 28
+    corner_radius: 8
+    elevation: 8
+
+motion:
+  enabled: true
+  respect_reduce_motion: true
+  curve: standard
+  key_press_ms: 40
+  key_release_ms: 90
+  candidate_change_ms: 120
+  popup_ms: 90
+  window_show_ms: 110
+
+feedback:
+  haptic: true
+  haptic_strength: medium
+  sound: false
+  sound_volume: 0.3
+
+platform_overrides:
+  android: {}
+  ios:
+    keyboard:
+      height:
+        portrait:
+          ratio: 0.31
+  macos:
+    candidates:
+      window:
+        backdrop: vibrancy
+  windows:
+    candidates:
+      window:
+        corner_radius: 8

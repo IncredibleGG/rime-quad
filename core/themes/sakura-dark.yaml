@@ -1,0 +1,67 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  sakura-dark — 繼承機制示範（深色）
+#
+#  這份主題只做四件事，其餘全部繼承自 default-dark：
+#    1. 換主色（palette 逐鍵合併，未提及的顏色仍沿用父主題）
+#    2. 加大候選項圓角（深層 mapping 遞迴合併，只寫要改的那一格）
+#    3. 換候選字體堆疊（序列整體取代，不做逐元素合併）
+#    4. 用 null 刪除父主題設定，讓該欄位回到規範預設值
+#
+#  規範：docs/theme-format.md §7「繼承與合併」
+# ─────────────────────────────────────────────────────────────────────────────
+
+format: rime-theme/1
+id: sakura-dark
+revision: 1
+
+name:
+  en: "Sakura Dark"
+  zh-Hant: "櫻 深色"
+  zh-Hans: "樱 深色"
+
+description:
+  zh-Hant: "以 default-dark 為基底，只換主色與候選字體。"
+
+author: "rime-quad"
+license: "CC0-1.0"
+
+appearance: dark
+counterpart: sakura-light
+inherits: default-dark
+
+# 1) palette 是 mapping，逐鍵合併：未列出的 bg / fg / muted … 全部沿用父主題。
+palette:
+  accent:          "#F5789E"
+  accent_pressed:  "#DB5C83"
+  on_accent:       "#2A0E17"
+  key:             "#2E2830"
+  key_pressed:     "#3E3540"
+  key_mod:         "#241F26"
+  key_mod_pressed: "#2E2830"
+  bg:              "#151016"
+  surface:         "#1E1822"
+  surface_alt:     "#2A222E"
+
+# 2) 深層 mapping 遞迴合併：這裡只改 corner_radius，
+#    padding_h / background / highlight_background … 全部沿用父主題。
+candidates:
+  item:
+    corner_radius: 14
+  window:
+    corner_radius: 14
+
+# 3) 序列整體取代：父主題的 family 不會與此處合併，而是被完全丟棄。
+#    script_fallback 本身是 mapping 所以仍逐鍵合併，只有 hant 這條清單被換掉。
+typography:
+  fonts:
+    candidate:
+      family: ["Iansui", "$system"]
+      script_fallback:
+        hant: ["Iansui", "Noto Serif CJK TC", "$system-hant"]
+
+# 4) 顯式 null = 刪除父主題的設定，該欄位回到規範預設值（transparent / 0）。
+keyboard:
+  key_styles:
+    accent:
+      border_color: null
+      border_width: null

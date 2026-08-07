@@ -1,0 +1,296 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  bopomofo-dachen — 注音（大千 / 標準）佈局
+#
+#  這份佈局是格式的壓力測試，它用到了 QWERTY 完全用不到的能力：
+#
+#  1. label 與 send 徹底解耦。
+#     librime 的 bopomofo 方案，其 speller/alphabet 是 ASCII：ㄅ 的輸入碼是 "1"，
+#     ㄆ 的輸入碼是 "q"。所以按鍵上印的是 ㄅ，送出去的 keysym 卻必須是 "1"。
+#     如果格式把「鍵面文字」等同於「送出內容」（多數簡易鍵盤格式的做法），
+#     注音就無法描述 —— 這是本格式堅持 label / hint / send 三者分離的唯一理由。
+#
+#  2. hint 承載「這個鍵在實體鍵盤上是哪一顆」，是注音使用者的肌肉記憶錨點。
+#
+#  3. 11 欄的網格、逐列不同的 weight、逐鍵不同的 width 權重。
+#     QWERTY 是 10 欄且列高一致，撐不出這些欄位。
+#
+#  4. 聲調鍵用 popup.layout: grid + columns 排出九宮格式彈出盤。
+#
+#  5. 同檔多層 + send.text 全形標點層。
+#
+#  ⚠ 一聲（ˉ）在 librime bopomofo 方案中就是空白鍵，且空白鍵同時承擔
+#     「選字確認」。這個歧義由 librime 自己解決，前端不得自作聰明分支，
+#     所以空白鍵只是老實地送 keysym space。
+#
+#  規範：docs/theme-format.md §9
+# ─────────────────────────────────────────────────────────────────────────────
+
+format: rime-layout/1
+id: bopomofo-dachen
+revision: 1
+
+name:
+  en: "Bopomofo (Dachen)"
+  zh-Hant: "注音 大千"
+  zh-Hans: "注音 大千"
+
+description:
+  zh-Hant: "標準大千注音排列。鍵面為注音符號，送出的是對應的 ASCII keysym。"
+
+kind: phonetic
+targets: [android, ios]
+for_schema: ["bopomofo", "bopomofo_tw", "bopomofo_express", "bopomofo_hsu"]
+direction: ltr
+default_layer: bopomofo
+primary: false
+
+author: "rime-quad"
+license: "CC0-1.0"
+
+metrics:
+  row_spacing: null
+  key_spacing: 4
+  height_scale: 1.0
+
+layers:
+
+  # ── 注音層（11 欄）───────────────────────────────────────────────────────
+  - id: "bopomofo"
+    label: "ㄅㄆㄇ"
+    units: 11
+    rows:
+
+      # 首列較矮：聲母與聲調混排，字面較小，不需要與主鍵同高。
+      - weight: 0.88
+        keys:
+          - { id: "b_",   label: "ㄅ", hint: "1", send: { keysym: "1" } }
+          - { id: "d_",   label: "ㄉ", hint: "2", send: { keysym: "2" } }
+          - id: "tone3"
+            label: "ˇ"
+            hint: "3"
+            style: accent
+            send: { keysym: "3" }
+            swipe:
+              up: { send: { keysym: "4" } }
+            popup:
+              layout: grid
+              columns: 2
+              keys:
+                - { label: "ˊ", send: { keysym: "6" } }
+                - { label: "ˇ", send: { keysym: "3" } }
+                - { label: "ˋ", send: { keysym: "4" } }
+                - { label: "˙", send: { keysym: "7" } }
+          - id: "tone4"
+            label: "ˋ"
+            hint: "4"
+            style: accent
+            send: { keysym: "4" }
+            popup:
+              layout: grid
+              columns: 2
+              keys:
+                - { label: "ˊ", send: { keysym: "6" } }
+                - { label: "ˇ", send: { keysym: "3" } }
+                - { label: "ˋ", send: { keysym: "4" } }
+                - { label: "˙", send: { keysym: "7" } }
+          - { id: "zh_",  label: "ㄓ", hint: "5", send: { keysym: "5" } }
+          - id: "tone2"
+            label: "ˊ"
+            hint: "6"
+            style: accent
+            send: { keysym: "6" }
+            popup:
+              layout: grid
+              columns: 2
+              keys:
+                - { label: "ˊ", send: { keysym: "6" } }
+                - { label: "ˇ", send: { keysym: "3" } }
+                - { label: "ˋ", send: { keysym: "4" } }
+                - { label: "˙", send: { keysym: "7" } }
+          - id: "tone5"
+            label: "˙"
+            hint: "7"
+            style: accent
+            send: { keysym: "7" }
+            popup:
+              layout: grid
+              columns: 2
+              keys:
+                - { label: "ˊ", send: { keysym: "6" } }
+                - { label: "ˇ", send: { keysym: "3" } }
+                - { label: "ˋ", send: { keysym: "4" } }
+                - { label: "˙", send: { keysym: "7" } }
+          - { id: "a_",   label: "ㄚ", hint: "8", send: { keysym: "8" } }
+          - { id: "ai_",  label: "ㄞ", hint: "9", send: { keysym: "9" } }
+          - { id: "an_",  label: "ㄢ", hint: "0", send: { keysym: "0" } }
+          - { id: "er_",  label: "ㄦ", hint: "-", send: { keysym: "minus" } }
+
+      - weight: 1.0
+        keys:
+          - { id: "p_",   label: "ㄆ", hint: "q", send: { keysym: "q" } }
+          - { id: "t_",   label: "ㄊ", hint: "w", send: { keysym: "w" } }
+          - { id: "g_",   label: "ㄍ", hint: "e", send: { keysym: "e" } }
+          - { id: "j_",   label: "ㄐ", hint: "r", send: { keysym: "r" } }
+          - { id: "ch_",  label: "ㄔ", hint: "t", send: { keysym: "t" } }
+          - { id: "z_",   label: "ㄗ", hint: "y", send: { keysym: "y" } }
+          - { id: "i_",   label: "ㄧ", hint: "u", send: { keysym: "u" } }
+          - { id: "o_",   label: "ㄛ", hint: "i", send: { keysym: "i" } }
+          - { id: "ei_",  label: "ㄟ", hint: "o", send: { keysym: "o" } }
+          - { id: "en_",  label: "ㄣ", hint: "p", send: { keysym: "p" } }
+          - id: "backspace"
+            icon: backspace
+            style: modifier
+            width: 1.0
+            send: { keysym: "BackSpace" }
+            repeat: true
+            swipe:
+              left: { tap: "clear" }
+
+      - weight: 1.0
+        keys:
+          - { id: "m_",   label: "ㄇ", hint: "a", send: { keysym: "a" } }
+          - { id: "n_",   label: "ㄋ", hint: "s", send: { keysym: "s" } }
+          - { id: "k_",   label: "ㄎ", hint: "d", send: { keysym: "d" } }
+          - { id: "q_",   label: "ㄑ", hint: "f", send: { keysym: "f" } }
+          - { id: "sh_",  label: "ㄕ", hint: "g", send: { keysym: "g" } }
+          - { id: "c_",   label: "ㄘ", hint: "h", send: { keysym: "h" } }
+          - { id: "u_",   label: "ㄨ", hint: "j", send: { keysym: "j" } }
+          - { id: "e_",   label: "ㄜ", hint: "k", send: { keysym: "k" } }
+          - { id: "ao_",  label: "ㄠ", hint: "l", send: { keysym: "l" } }
+          - { id: "ang_", label: "ㄤ", hint: ";", send: { keysym: "semicolon" } }
+          - id: "enter"
+            icon: enter
+            style: action
+            width: 1.0
+            send: { keysym: "Return" }
+
+      # 末列僅 10 鍵，用 width 1.1 撐滿 11 欄。
+      - weight: 1.0
+        keys:
+          - { id: "f_",   label: "ㄈ", hint: "z", width: 1.1, send: { keysym: "z" } }
+          - { id: "l_",   label: "ㄌ", hint: "x", width: 1.1, send: { keysym: "x" } }
+          - { id: "h_",   label: "ㄏ", hint: "c", width: 1.1, send: { keysym: "c" } }
+          - { id: "x_",   label: "ㄒ", hint: "v", width: 1.1, send: { keysym: "v" } }
+          - { id: "r_",   label: "ㄖ", hint: "b", width: 1.1, send: { keysym: "b" } }
+          - { id: "s_",   label: "ㄙ", hint: "n", width: 1.1, send: { keysym: "n" } }
+          - { id: "v_",   label: "ㄩ", hint: "m", width: 1.1, send: { keysym: "m" } }
+          - { id: "eh_",  label: "ㄝ", hint: ",", width: 1.1, send: { keysym: "comma" } }
+          - { id: "ou_",  label: "ㄡ", hint: ".", width: 1.1, send: { keysym: "period" } }
+          - { id: "eng_", label: "ㄥ", hint: "/", width: 1.1, send: { keysym: "slash" } }
+
+      - weight: 1.0
+        keys:
+          - id: "to_punct"
+            label: "，。"
+            style: modifier
+            width: 1.6
+            tap: "layer:punct"
+            long_press: "switch_layout:numeric-symbol"
+          - id: "lang"
+            label_from: input_mode
+            style: modifier
+            width: 1.6
+            tap: "toggle:ascii_mode"
+            long_press: "schema:picker"
+          # 一聲（ˉ）與「選字確認」共用空白鍵，交由 librime 判定。
+          - id: "space"
+            icon: space
+            style: space
+            width: 4.6
+            label_from: schema_name
+            send: { keysym: "space" }
+            swipe:
+              left:  { tap: "cursor:left" }
+              right: { tap: "cursor:right" }
+              up:    { tap: "candidate:next_page" }
+              down:  { tap: "candidate:prev_page" }
+            long_press: "schema:next"
+          - id: "comma"
+            label: "，"
+            width: 1.6
+            send: { keysym: "comma" }
+            popup:
+              layout: grid
+              columns: 3
+              keys:
+                - { label: "。", send: { keysym: "period" } }
+                - { label: "、", send: { text: "、" } }
+                - { label: "？", send: { keysym: "question" } }
+                - { label: "！", send: { keysym: "exclam" } }
+                - { label: "；", send: { keysym: "semicolon" } }
+                - { label: "：", send: { keysym: "colon" } }
+          - id: "hide"
+            icon: keyboard_hide
+            style: modifier
+            width: 1.6
+            tap: "hide_keyboard"
+            long_press: "toggle:simplification"
+
+  # ── 全形標點層 ───────────────────────────────────────────────────────────
+  #  這些字元 librime 的 punctuator 未必映射得到，直接以 send.text 上屏。
+  - id: "punct"
+    label: "，。"
+    units: 11
+    rows:
+
+      - weight: 1.0
+        keys:
+          - { id: "p_comma",  label: "，", width: 1.375, send: { text: "，" } }
+          - { id: "p_period", label: "。", width: 1.375, send: { text: "。" } }
+          - { id: "p_dun",    label: "、", width: 1.375, send: { text: "、" } }
+          - { id: "p_semi",   label: "；", width: 1.375, send: { text: "；" } }
+          - { id: "p_colon",  label: "：", width: 1.375, send: { text: "：" } }
+          - { id: "p_quest",  label: "？", width: 1.375, send: { text: "？" } }
+          - { id: "p_excl",   label: "！", width: 1.375, send: { text: "！" } }
+          - { id: "p_ell",    label: "…", width: 1.375, send: { text: "…" } }
+
+      - weight: 1.0
+        keys:
+          - { id: "p_lq",     label: "「", width: 1.375, send: { text: "「" } }
+          - { id: "p_rq",     label: "」", width: 1.375, send: { text: "」" } }
+          - { id: "p_lqq",    label: "『", width: 1.375, send: { text: "『" } }
+          - { id: "p_rqq",    label: "』", width: 1.375, send: { text: "』" } }
+          - { id: "p_lb",     label: "（", width: 1.375, send: { text: "（" } }
+          - { id: "p_rb",     label: "）", width: 1.375, send: { text: "）" } }
+          - { id: "p_ldb",    label: "《", width: 1.375, send: { text: "《" } }
+          - { id: "p_rdb",    label: "》", width: 1.375, send: { text: "》" } }
+
+      - weight: 1.0
+        keys:
+          - { id: "p_dash",   label: "——", width: 1.375, send: { text: "——" } }
+          - { id: "p_tilde",  label: "～", width: 1.375, send: { text: "～" } }
+          - { id: "p_dot",    label: "·", width: 1.375, send: { text: "·" } }
+          - { id: "p_hash",   label: "＃", width: 1.375, send: { text: "＃" } }
+          - { id: "p_at",     label: "＠", width: 1.375, send: { text: "＠" } }
+          - { id: "p_amp",    label: "＆", width: 1.375, send: { text: "＆" } }
+          - { id: "p_star",   label: "＊", width: 1.375, send: { text: "＊" } }
+          - id: "backspace"
+            icon: backspace
+            style: modifier
+            width: 1.375
+            send: { keysym: "BackSpace" }
+            repeat: true
+
+      - weight: 1.0
+        keys:
+          - id: "to_bopomofo"
+            label: "ㄅㄆㄇ"
+            style: modifier
+            width: 1.6
+            tap: "layer:bopomofo"
+          - id: "to_symbols"
+            label: "?123"
+            style: modifier
+            width: 1.6
+            tap: "switch_layout:numeric-symbol"
+          - id: "space"
+            icon: space
+            style: space
+            width: 4.6
+            send: { keysym: "space" }
+          - { id: "p_period2", label: "。", width: 1.6, send: { text: "。" } }
+          - id: "enter"
+            icon: enter
+            style: action
+            width: 1.6
+            send: { keysym: "Return" }

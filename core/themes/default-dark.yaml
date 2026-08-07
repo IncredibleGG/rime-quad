@@ -1,0 +1,390 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  default-dark — 參考實作主題（深色）
+#
+#  本檔案刻意「寫滿」每一個規範定義的欄位，即使值等同預設值。
+#  目的是讓四端的解析器實作者能以本檔案作為對照組：
+#  凡是本檔出現的欄位，解析器就必須認得。
+#
+#  規範：docs/theme-format.md
+# ─────────────────────────────────────────────────────────────────────────────
+
+format: rime-theme/1
+id: default-dark
+revision: 1
+
+name:
+  en: "Default Dark"
+  zh-Hant: "預設深色"
+  zh-Hans: "默认深色"
+
+description:
+  en: "Reference dark theme. Every field written out explicitly."
+  zh-Hant: "參考深色主題，所有欄位皆明確寫出。"
+
+author: "rime-quad"
+license: "CC0-1.0"
+
+appearance: dark
+counterpart: default-light
+inherits: null
+
+# ── 調色盤 ────────────────────────────────────────────────────────────────
+# 其他欄位以 $name 參照。允許 $name@alpha 做透明度調變。
+palette:
+  bg:               "#101216"   # 鍵盤整體底色
+  surface:          "#1A1D23"   # 候選列 / 候選窗底色
+  surface_alt:      "#22262E"   # 次級面板（長按彈窗）
+  key:              "#2A2F38"
+  key_pressed:      "#3A4150"
+  key_mod:          "#1E222A"   # shift / 退格 / 層切換
+  key_mod_pressed:  "#2A2F38"
+  accent:           "#4C8DFF"
+  accent_pressed:   "#3A76E0"
+  on_accent:        "#FFFFFF"
+  fg:               "#E6E9EF"
+  fg_dim:           "#A8B0BF"
+  muted:            "#7A8496"
+  divider:          "#333944"
+  shadow:           "#000000A0"
+  danger:           "#FF6B6B"
+
+# ── 字體 ──────────────────────────────────────────────────────────────────
+typography:
+  respect_system_font_scale: true
+  font_scale_min: 0.85
+  font_scale_max: 1.30
+
+  fonts:
+    ui:
+      family: ["$system"]
+      weight: 400
+      italic: false
+      script_fallback:
+        hant: ["$system-hant", "Noto Sans CJK TC", "PingFang TC", "Microsoft JhengHei UI"]
+        hans: ["$system-hans", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei UI"]
+        jpan: ["$system-jpan", "Noto Sans CJK JP", "Hiragino Sans", "Yu Gothic UI"]
+        kore: ["$system-kore", "Noto Sans CJK KR", "Apple SD Gothic Neo", "Malgun Gothic"]
+
+    candidate:
+      family: ["$system"]
+      weight: 400
+      italic: false
+      script_fallback:
+        hant: ["$system-hant", "Noto Serif CJK TC", "Noto Sans CJK TC", "PingFang TC", "Microsoft JhengHei UI"]
+        hans: ["$system-hans", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei UI"]
+        jpan: ["$system-jpan", "Noto Sans CJK JP", "Hiragino Sans", "Yu Gothic UI"]
+        kore: ["$system-kore", "Noto Sans CJK KR", "Apple SD Gothic Neo", "Malgun Gothic"]
+
+    label:
+      family: ["$system"]
+      weight: 500
+      italic: false
+      script_fallback: {}
+
+    comment:
+      family: ["$system"]
+      weight: 400
+      italic: false
+      script_fallback:
+        hant: ["$system-hant", "Noto Sans CJK TC"]
+        hans: ["$system-hans", "Noto Sans CJK SC"]
+
+    key:
+      family: ["$system"]
+      weight: 400
+      italic: false
+      script_fallback:
+        hant: ["$system-hant", "Noto Sans CJK TC", "PingFang TC"]
+        hans: ["$system-hans", "Noto Sans CJK SC", "PingFang SC"]
+
+    preedit:
+      family: ["$mono", "$system"]
+      weight: 400
+      italic: false
+      script_fallback: {}
+
+  # 主題可自帶字體檔（相對於主題套件根目錄）。不支援的端必須忽略而非報錯。
+  assets: []
+
+# ── 全域度量 ──────────────────────────────────────────────────────────────
+metrics:
+  corner_radius: 8
+  border_width: 0
+  padding: 6
+  spacing: 4
+  elevation: 2
+
+# ── 候選呈現（行動端候選列與桌面端候選窗共用的部分）────────────────────────
+candidates:
+  orientation: horizontal
+
+  label:
+    show: true
+    format: "{label}"
+    size: 12
+    color: "$muted"
+    highlight_color: "$on_accent@75%"
+
+  text:
+    size: 20
+    color: "$fg"
+    highlight_color: "$on_accent"
+
+  comment:
+    show: true
+    position: after
+    size: 12
+    color: "$muted"
+    highlight_color: "$on_accent@70%"
+
+  item:
+    padding_h: 10
+    padding_v: 6
+    spacing: 4
+    corner_radius: 6
+    min_width: 0
+    background: transparent
+    highlight_background: "$accent"
+    border_width: 0
+    border_color: transparent
+    highlight_border_width: 0
+    highlight_border_color: transparent
+
+  separator:
+    show: false
+    color: "$divider"
+    width: 1
+
+  page_indicator:
+    show: true
+    style: arrows
+    color: "$muted"
+    disabled_color: "$muted@40%"
+    size: 14
+
+  # 行動端：附著於鍵盤上方的候選列
+  bar:
+    height: 44
+    background: "$surface"
+    border_top_width: 0
+    border_top_color: "$divider"
+    orientation: horizontal
+    max_visible: 0
+    scroll: expandable
+    expand_button:
+      show: true
+      color: "$muted"
+      size: 18
+    show_preedit_inline: true
+    empty_shows_toolbar: true
+
+  # 桌面端：懸浮候選窗
+  window:
+    background: "$surface"
+    orientation: horizontal
+    corner_radius: 10
+    padding: 8
+    border_width: 1
+    border_color: "$divider"
+    min_width: 120
+    max_width: 520
+    placement: auto
+    offset_x: 0
+    offset_y: 6
+    follow_caret: true
+    backdrop: none
+    opacity: 1.0
+    shadow:
+      show: true
+      radius: 18
+      offset_x: 0
+      offset_y: 4
+      color: "$shadow"
+
+# ── 組字串（preedit / composition）────────────────────────────────────────
+preedit:
+  show: true
+  size: 16
+  color: "$fg_dim"
+  background: transparent
+  padding_h: 10
+  padding_v: 6
+  corner_radius: 0
+  caret:
+    show: true
+    color: "$accent"
+    width: 1.5
+    blink: true
+  selection:
+    color: "$accent@30%"
+    text_color: "$fg"
+
+# ── 軟鍵盤（僅行動端消費；桌面端必須忽略整個區塊）─────────────────────────
+keyboard:
+  background: "$bg"
+
+  height:
+    portrait:
+      ratio: 0.33
+      min: 190
+      max: 300
+    landscape:
+      ratio: 0.52
+      min: 130
+      max: 220
+
+  padding:
+    left: 3
+    right: 3
+    top: 4
+    bottom: 6
+
+  row_spacing: 6
+  key_spacing: 6
+  honor_bottom_inset: true
+
+  key_styles:
+    default:
+      background: "$key"
+      pressed_background: "$key_pressed"
+      foreground: "$fg"
+      pressed_foreground: "$fg"
+      corner_radius: 8
+      border_width: 0
+      border_color: transparent
+      elevation: 1
+      font: key
+      label_size: 22
+      hint_size: 10
+      hint_color: "$muted"
+      hint_position: top_right
+      icon_size: 22
+      active_background: "$accent"
+      active_foreground: "$on_accent"
+
+    modifier:
+      background: "$key_mod"
+      pressed_background: "$key_mod_pressed"
+      foreground: "$fg_dim"
+      pressed_foreground: "$fg"
+      corner_radius: 8
+      border_width: 0
+      border_color: transparent
+      elevation: 1
+      font: key
+      label_size: 16
+      hint_size: 9
+      hint_color: "$muted"
+      hint_position: none
+      icon_size: 20
+      active_background: "$accent@35%"
+      active_foreground: "$fg"
+
+    action:
+      background: "$accent"
+      pressed_background: "$accent_pressed"
+      foreground: "$on_accent"
+      pressed_foreground: "$on_accent"
+      corner_radius: 8
+      border_width: 0
+      border_color: transparent
+      elevation: 1
+      font: key
+      label_size: 16
+      hint_size: 9
+      hint_color: "$on_accent@70%"
+      hint_position: none
+      icon_size: 20
+      active_background: "$accent_pressed"
+      active_foreground: "$on_accent"
+
+    space:
+      background: "$key"
+      pressed_background: "$key_pressed"
+      foreground: "$muted"
+      pressed_foreground: "$fg"
+      corner_radius: 8
+      border_width: 0
+      border_color: transparent
+      elevation: 1
+      font: key
+      label_size: 13
+      hint_size: 9
+      hint_color: "$muted"
+      hint_position: none
+      icon_size: 18
+      active_background: "$key_pressed"
+      active_foreground: "$fg"
+
+    accent:
+      background: "$accent@22%"
+      pressed_background: "$accent@40%"
+      foreground: "$accent"
+      pressed_foreground: "$on_accent"
+      corner_radius: 8
+      border_width: 0
+      border_color: transparent
+      elevation: 1
+      font: key
+      label_size: 20
+      hint_size: 10
+      hint_color: "$accent@70%"
+      hint_position: top_right
+      icon_size: 20
+      active_background: "$accent"
+      active_foreground: "$on_accent"
+
+  popup:
+    show: true
+    background: "$surface_alt"
+    foreground: "$fg"
+    highlight_background: "$accent"
+    highlight_foreground: "$on_accent"
+    corner_radius: 8
+    item_size: 22
+    item_padding: 10
+    elevation: 6
+    max_columns: 6
+
+  press_preview:
+    show: true
+    background: "$surface_alt"
+    foreground: "$fg"
+    size: 28
+    corner_radius: 8
+    elevation: 6
+
+# ── 動效 ──────────────────────────────────────────────────────────────────
+motion:
+  enabled: true
+  respect_reduce_motion: true
+  curve: standard
+  key_press_ms: 40
+  key_release_ms: 90
+  candidate_change_ms: 120
+  popup_ms: 90
+  window_show_ms: 110
+
+# ── 觸覺 / 聲音回饋（僅行動端）────────────────────────────────────────────
+feedback:
+  haptic: true
+  haptic_strength: medium
+  sound: false
+  sound_volume: 0.3
+
+# ── 平台覆寫（在繼承鏈合併之後套用）───────────────────────────────────────
+platform_overrides:
+  android: {}
+  ios:
+    keyboard:
+      height:
+        portrait:
+          ratio: 0.31
+  macos:
+    candidates:
+      window:
+        backdrop: vibrancy
+  windows:
+    candidates:
+      window:
+        corner_radius: 8
