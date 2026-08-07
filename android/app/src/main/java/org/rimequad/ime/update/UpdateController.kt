@@ -173,26 +173,54 @@ class UpdateController private constructor(context: Context) {
     private fun applyManifest(m: VersionManifest, announce: Boolean) {
         latest = m
         verdict = UpdateCheck.verdict(installedVersionCode, m)
-        // 換了一個版本，先前下載好的那份就不算數了。
-        if (verifiedApk?.name?.contains(m.versionCode.toString()) == false) {
-            verifiedApk = null
-            if (phase == Phase.READY_TO_INSTALL) phase = Phase.IDLE
-        }
-        // 已經下載好、檔案還在、摘要也對得上 → 直接進入可安裝狀態，
-        // 不要讓使用者為了同一份檔案下載第二次。
-        cachedApkFor(m)?.let {
-            verifiedApk = it
-            phase = Phase.READY_TO_INSTALL
-        }
         if (announce) {
             status = when (verdict) {
-                UpdateVerdict.UPDATE_AVAILABLE -> "有新版本：${m.versionName}"
+                // 不重複「有新版本：<版號>」—— 卡片標題已經用紅點與粗體說了一次，
+                // 在它正下方再說一遍只是噪音。這裡只確認「你按的那一下有作用」。
+                UpdateVerdict.UPDATE_AVAILABLE -> "檢查完成。"
                 UpdateVerdict.UP_TO_DATE -> "已是最新版本。"
                 UpdateVerdict.DOWNGRADE ->
                     "伺服器上的版本（${m.versionName}）比本機舊，不提供更新。"
                 null -> null
             }
         }
+
+        if (verdict != UpdateVerdict.UPDATE_AVAILABLE) {
+            // 沒有東西要裝了。快取裡那 26MB 必須清掉,而且「安裝」按鈕必須消失 ——
+            // 實測踩到過:更新裝完之後系統會把行程收掉,install() 裡那個刪檔的
+            // 回呼根本沒機會跑,下次開起來就看到一顆「安裝」按鈕要你再裝一次
+            // 已經裝好的版本。清理因此不能只掛在成功回呼上。
+            verifiedApk = null
+            if (phase == Phase.READY_TO_INSTALL) phase = Phase.IDLE
+            worker.execute { updateDir().listFiles()?.forEach { it.delete() } }
+            return
+        }
+
+        // 已經下載好、檔案還在、摘要也對得上 → 直接進入可安裝狀態，
+        // 不要讓使用者為了同一份檔案下載第二次。
+        //
+        // 這一段丟到背景做：驗一次摘要要讀 26MB，在主執行緒上做會讓設定頁
+        // 卡住半秒以上。
+        worker.execute {
+            purgeStaleApks(m)
+            val cached = cachedApkFor(m)
+            main.post {
+                // 期間可能又檢查到別的版本、或使用者已經自己按了下載。
+                if (cached != null && latest?.versionCode == m.versionCode && !busy &&
+                    verifiedApk == null
+                ) {
+                    verifiedApk = cached
+                    phase = Phase.READY_TO_INSTALL
+                    status = "先前已下載並通過驗證，可以直接安裝。"
+                }
+            }
+        }
+    }
+
+    /** 刪掉快取裡不是目標版本的 APK。留著只是佔空間。 */
+    private fun purgeStaleApks(m: VersionManifest) {
+        val keep = apkFileFor(m).name
+        updateDir().listFiles()?.forEach { if (it.name != keep) it.delete() }
     }
 
     /* ───────────────────────── 下載 ───────────────────────── */
