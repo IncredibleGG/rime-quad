@@ -26,9 +26,12 @@ import org.rimequad.ime.core.RimeRuntime
 import org.rimequad.ime.keyboard.ConfigRepository
 import org.rimequad.ime.keyboard.KeyboardEvent
 import org.rimequad.ime.keyboard.KeyboardTypes
+import org.rimequad.ime.keyboard.SchemaLanguages
 import org.rimequad.ime.keyboard.KeyboardUiState
 import org.rimequad.ime.keyboard.LayoutHost
+import org.rimequad.ime.keyboard.RemappingLayoutRepository
 import org.rimequad.ime.keyboard.RimeKeyboard
+import org.rimequad.ime.keyboard.UserLayoutStore
 import org.rimequad.ime.prefs.KeyBehavior
 import org.rimequad.ime.prefs.LocalKeyBehavior
 import org.rimequad.ime.prefs.LongPressViewConfiguration
@@ -85,6 +88,18 @@ class RimeInputMethodService : InputMethodService() {
     private lateinit var config: ConfigRepository
     private lateinit var layoutHost: LayoutHost
 
+    /** 使用者自訂鍵位。設定畫面與本服務在同一個行程，拿到的是同一個實例。 */
+    private lateinit var userLayouts: UserLayoutStore
+
+    /**
+     * 上一次套用過的 [UserLayoutStore.version]。
+     *
+     * 設定畫面改了自訂之後，本服務不見得活著、也不見得有 view，所以不走回呼，
+     * 改成「下次要用鍵盤的時候比對一次」（[onStartInputView]）。慢一拍是可以
+     * 接受的 —— 使用者按下交換之後總得先回到某個輸入框才看得到鍵盤。
+     */
+    private var userLayoutsVersion = 0
+
     private var uiState by mutableStateOf(KeyboardUiState())
 
     /* ─────────────────── 使用者偏好 ───────────────────
@@ -138,6 +153,9 @@ class RimeInputMethodService : InputMethodService() {
     private fun reloadStoreRegistry() {
         val user = RimeRuntime.userDirOrNull ?: return
         storeRegistry = runCatching { InstalledRegistry.load(user) }.getOrNull()
+        // 帳本裡的語言標記比隨 APK 出貨的那一份新，而且知道方案是哪個套件裝的
+        // （方案 id 不是全域唯一的）。疊上去給鍵盤類型選單的分組用。
+        SchemaLanguages.applyInstalled(storeRegistry?.languageTags() ?: emptyMap())
     }
 
     /**
@@ -179,7 +197,13 @@ class RimeInputMethodService : InputMethodService() {
 
         // 佈局與主題不依賴 librime，可以先載起來 —— 鍵盤在部署完成前就畫得出來。
         config = ConfigRepository(applicationContext)
-        layoutHost = LayoutHost(config)
+        // 使用者自訂鍵位掛在 repository 這一層：狀態機（LayoutHost）完全不必
+        // 知道這件事存在，切換規則一行都沒改。見 RemappingLayoutRepository。
+        userLayouts = UserLayoutStore.get(RimeRuntime.userDataDirOf(applicationContext))
+        userLayoutsVersion = userLayouts.version
+        layoutHost = LayoutHost(
+            RemappingLayoutRepository(config) { id -> userLayouts.remapFor(id) }
+        )
         // 市集裝進來的方案不可能出現在隨附佈局的 for_schema 裡（那些 yaml 跟著
         // APK 出貨，不會知道未來會裝什麼），所以佈局只能靠索引宣告的
         // recommended_layout 決定。少了這一行，使用者從市集裝了注音方案卻會
@@ -246,6 +270,7 @@ class RimeInputMethodService : InputMethodService() {
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         host?.onStartInput()
+        refreshUserLayoutsIfChanged()
         ensureSession()
         consumePendingSchema()
         applyEditorPolicy(info)
@@ -271,6 +296,19 @@ class RimeInputMethodService : InputMethodService() {
      * 「這個框不經過 librime」：軟鍵盤的按鍵直接走 [fallbackKey] 上屏字面，
      * 實體鍵盤則原封不動交還宿主自己處理。
      */
+    /**
+     * 使用者剛在設定裡改過自訂鍵位 → 丟掉佈局快取重載一次。
+     * 沒有變更時這是一次 int 比較，放在 `onStartInputView` 上不會有成本。
+     */
+    private fun refreshUserLayoutsIfChanged() {
+        val v = userLayouts.version
+        if (v == userLayoutsVersion) return
+        userLayoutsVersion = v
+        layoutHost.invalidateLayouts()
+        syncConfigToUi()
+        Log.i(TAG, "使用者自訂鍵位已變更（v$v），佈局重載為 ${layoutHost.layout?.id}")
+    }
+
     private fun shouldBypassRime(info: EditorInfo?): Boolean {
         val type = info?.inputType ?: return false
         // TYPE_NULL：宿主明說「我自己處理 raw key event，別給我組字」。
