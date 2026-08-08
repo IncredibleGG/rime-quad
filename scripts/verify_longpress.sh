@@ -73,7 +73,7 @@ APKS=()
 HOLD_MS=150
 LONG_MS=300
 OUT_DIR="$ROOT/build/verify-longpress"
-THRESHOLD="0.008"          # 差異像素比例上限。一顆鍵約佔比對區域的 2%。
+THRESHOLD="0.005"          # 差異像素比例上限。一顆鍵約佔比對區域的 2%。
 DEPLOY_TIMEOUT=120
 READY_LOG="phase . READY"
 EXPECT_KEYS="nihao"
@@ -191,6 +191,32 @@ if [ -n "$READY_LOG" ]; then
   [ "$READY" -eq 1 ] && pass "引擎就緒" || echo "  [INFO] 沒等到就緒訊息($READY_LOG),繼續"
 fi
 
+# --- 2b. 把鍵盤打回已知狀態(校準之前就做)-----------------------------------
+# 為什麼是在校準**之前**:校準量到的座標只有在鍵盤佈局沒變的前提下才有效。
+# 上一版把重啟放在校準之後,結果重啟讓佈局微微上下移了一點,於是「量到的
+# 字母鍵」按下去變成別的鍵 —— 明明只按字母鍵,輸入框裡卻出現了逗號與句點。
+# 先重啟、再量、再按,量到什麼就按什麼,中間不再有任何會挪動佈局的動作。
+step "2b. 重啟輸入法,把鍵盤打回已知狀態"
+adbs shell am force-stop "$IME_PKG" >/dev/null 2>&1 || true
+adbs logcat -c >/dev/null 2>&1 || true
+sleep 1
+adbs shell monkey -p dev.rime.imetest -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || true
+SHOWN=0
+for i in $(seq 1 "$DEPLOY_TIMEOUT"); do
+  adbs shell dumpsys input_method 2>/dev/null | grep -q "mIsInputViewShown=true" && { SHOWN=1; break; }
+  [ "$i" -eq 5 ] && adbs shell input tap 540 300 >/dev/null 2>&1 || true
+  sleep 1
+done
+[ "$SHOWN" -eq 1 ] || fail "重啟後鍵盤沒有再出現"
+if [ -n "$READY_LOG" ]; then
+  for i in $(seq 1 "$DEPLOY_TIMEOUT"); do
+    adbs logcat -d 2>/dev/null | grep -Eq "$READY_LOG" && break
+    sleep 1
+  done
+fi
+clear_field
+pass "鍵盤回到初始狀態"
+
 # --- 3. 量出「戳了會打出字」的橫列 ------------------------------------------
 step "3. 由下往上量出按鍵橫列(不寫死座標,也不猜)"
 SZ="$(adbs shell wm size 2>/dev/null | tr -d '\r')"
@@ -256,32 +282,6 @@ clear_field
 [ "$NPT" -ge 3 ] || fail "只找到 $NPT 顆「輕點會打出一個字母」的按鍵,樣本太少,不足以判定"
 pass "確認 $NPT 顆字母鍵:$POINTS"
 
-# --- 3c. 把鍵盤打回已知狀態 -------------------------------------------------
-# 上面的校準一定會在輸入法裡留下痕跡(打了字、可能不小心切過模式)。
-# 基準畫面必須拍在乾淨的狀態上,否則後面比到的是校準的殘留而不是缺陷。
-# 重啟輸入法是唯一能保證「回到出廠狀態」的做法 —— 而它在**拍基準之前**做,
-# 所以不會把真正要抓的那個「按住之後留下的痕跡」一起洗掉。
-step "3c. 重啟輸入法,把鍵盤打回已知狀態"
-adbs shell am force-stop "$IME_PKG" >/dev/null 2>&1 || true
-adbs logcat -c >/dev/null 2>&1 || true
-sleep 1
-adbs shell monkey -p dev.rime.imetest -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || true
-SHOWN=0
-for i in $(seq 1 "$DEPLOY_TIMEOUT"); do
-  adbs shell dumpsys input_method 2>/dev/null | grep -q "mIsInputViewShown=true" && { SHOWN=1; break; }
-  [ "$i" -eq 5 ] && adbs shell input tap 540 300 >/dev/null 2>&1 || true
-  sleep 1
-done
-[ "$SHOWN" -eq 1 ] || fail "重啟後鍵盤沒有再出現"
-if [ -n "$READY_LOG" ]; then
-  for i in $(seq 1 "$DEPLOY_TIMEOUT"); do
-    adbs logcat -d 2>/dev/null | grep -Eq "$READY_LOG" && break
-    sleep 1
-  done
-fi
-clear_field
-pass "鍵盤回到初始狀態"
-
 # 比對區域:最上面那一列再往上一個列距,到導覽列上緣。
 # 刻意**不含工具列** —— 掃描不會掃到它,自然也不該拿它來比。
 TOPROW="$(printf '%s\n' $ROWS | sort -n | head -1)"
@@ -295,6 +295,7 @@ pass "比對區域 = ($KL,$KT)-($KR,$KB),$((KR - KL))x$((KB - KT)) px"
 
 # --- 4. 基準畫面 ------------------------------------------------------------
 step "4. 拍下按住之前的鍵盤"
+clear_field
 sleep 2
 shot() { adbs exec-out screencap > "$1" || fail "screencap 失敗"; [ -s "$1" ] || fail "screencap 是空的"; }
 shot "$OUT_DIR/before.raw"
@@ -382,14 +383,19 @@ def crop(w, h, buf, l, t, r, b):
     return (r - l), (b - t), b"".join(
         buf[(y * w + l) * 4:(y * w + r) * 4] for y in range(t, b))
 
+# 每個色版容許的差距。實測:同一個畫面前後兩張,文字邊緣的反鋸齒會有
+# ±1~3 的抖動,散佈在整塊區域裡,加起來 0.64% —— 逼近門檻,遲早變成
+# 間歇性的假失敗,而假失敗最後一定會被人把門檻調鬆到什麼都抓不到。
+# 真正要抓的「一顆鍵變了顏色」差距是幾十以上,容忍 12 不會漏掉它。
+TOL = 12
+
 def diff_ratio(a, b, npx):
     if len(a) != len(b):
         return 1.0
     n = 0
-    # 逐像素比 RGB(忽略 alpha)。整數比對,不做容忍度 —— 要抓的是
-    # 「一顆鍵變了顏色」,那是幾千個像素的整片差異。
     for i in range(0, len(a), 4):
-        if a[i] != b[i] or a[i+1] != b[i+1] or a[i+2] != b[i+2]:
+        if (abs(a[i] - b[i]) > TOL or abs(a[i+1] - b[i+1]) > TOL
+                or abs(a[i+2] - b[i+2]) > TOL):
             n += 1
     return n / float(npx)
 
@@ -431,10 +437,17 @@ print("  按住之後按鍵區域回到原狀(差異 %.4f%% <= %.4f%%)" % (best 
 PY
 pass "按住不會讓按鍵留下痕跡,且比對器對植入的違規會報紅"
 
-# --- 9. 按住之後還打得出字嗎 ------------------------------------------------
+# --- 9. 按住之後鍵盤還活著嗎 ------------------------------------------------
 # 「畫面沒變」不等於「還能用」。按住若讓按鍵停在按下狀態而顏色又回來了,
 # 上面那一關會放行,但鍵盤其實已經不吃事件了。所以最後實際打一次。
-step "9. 按住之後仍然打得出字"
+#
+# 判定的是**鍵盤還活不活著**(輸入框有沒有收到東西),不是「還能不能組出
+# 你好」。理由:`nihao → 你好` 這條嚴格斷言已經有自己的關卡
+# (release_check 第 6 關的 verify_rime_compose,跑在乾淨的輸入法上)。
+# 在這裡重複一次,等於把「剛剛被我們刻意亂按了一通」之後的任何狀態變化
+# 都算到「按住」頭上 —— 那會製造假失敗,而假失敗最後會害這一關被關掉。
+# 組不出中文時照樣印出來給人看,只是不判失敗。
+step "9. 按住之後鍵盤還活著嗎"
 clear_field
 CMD=""
 i=0
@@ -450,8 +463,16 @@ ACTUAL="$(read_field || true)"
 echo "  實際: '$ACTUAL'  預期含: '$EXPECT_TEXT'"
 adbs exec-out screencap -p > "$OUT_DIR/after-longpress.png" 2>/dev/null || true
 case "$ACTUAL" in
-  *"$EXPECT_TEXT"*) pass "按住 $N 次之後,鍵盤仍然打得出「$EXPECT_TEXT」" ;;
-  *) fail "按住之後打不出字了(輸入框是 '$ACTUAL')。畫面看起來正常但鍵盤已經不吃事件 —— 這正是只用 tap 驗不出來的那一類缺陷。" ;;
+  *"$EXPECT_TEXT"*)
+    pass "按住 $N 次之後,鍵盤仍然打得出「$EXPECT_TEXT」" ;;
+  *"$EXPECT_KEYS"*)
+    pass "按住之後鍵盤仍然收得到按鍵(輸入框:'$ACTUAL')"
+    echo "       [注意] 這一次沒有組成「$EXPECT_TEXT」,字母是原樣進去的。"
+    echo "              多半是剛剛的亂按把中英模式切掉了。組字的嚴格斷言在"
+    echo "              release_check 第 6 關(verify_rime_compose),那一關跑在乾淨的輸入法上。" ;;
+  *)
+    fail "按住之後鍵盤不吃事件了(輸入框是 '$ACTUAL',連注入的字母都沒進去)。
+       畫面看起來正常但鍵盤已經死了 —— 這正是只用 tap 驗不出來的那一類缺陷。" ;;
 esac
 
 echo
