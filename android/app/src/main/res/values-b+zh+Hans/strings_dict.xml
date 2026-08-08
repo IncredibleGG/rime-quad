@@ -36,6 +36,7 @@
     <string name="backup_note_imported_unflushed">这个文件自己注明了最近的字可能没存进去。其他东西都拿回来了。</string>
     <string name="backup_note_missing_schema">这几种键盘这台手机上还没有，已经跳过：%1$s。到「下载更多键盘」装回来之后，你存下来的字也会跟着回来。</string>
     <string name="backup_note_rolled_back">你的设置已经回到原本的样子。</string>
+    <string name="backup_note_unreadable_dict">这几种键盘的字是用这个版本还读不懂的方式存的，已经跳过：%1$s。更新 App 之后再恢复一次。</string>
     <string name="backup_list_separator">、</string>
 
     <string name="backup_err_no_data_dir">键盘还在启动，等一下再试一次。</string>

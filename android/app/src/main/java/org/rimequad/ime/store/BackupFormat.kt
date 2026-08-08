@@ -102,6 +102,17 @@ object BackupFormat {
         else -> Verdict.OK
     }
 
+    /**
+     * **本端**讀得動的詞典載體。
+     *
+     * 規範 §3.1 說「讀取端必須兩種都認得」，而 Android 現在只做得到一種
+     * （`rime-userdb-text` 要靠 librime 的 `UserDictManager::Restore` 合併，
+     * 而 `rime_shell.h` 沒有那個進入點）。這個集合就是那份差距的**唯一**
+     * 記載處：讀不動的會被指名報給使用者，不會安靜地少一本。
+     * 等 `rs_sync_user_data()` 進了 ABI，這裡多加一個字串就好。
+     */
+    val READABLE_ENCODINGS: Set<String> = setOf(ENCODING_LEVELDB_DIR)
+
     /** 路徑是不是落在允許的前綴底下。**這是解壓前的第一道閘門。** */
     fun isAllowedEntry(path: String): Boolean =
         ALLOWED_PREFIXES.any { path.startsWith(it) && path.length > it.length }
@@ -208,6 +219,19 @@ data class BackupManifest(
 
     /** 至少有一本詞典沒能證明自己是完整的。UI 要據此加一行說明。 */
     val hasUnflushedUserDb: Boolean get() = userDbs.any { !it.flushed }
+
+    /**
+     * 本端讀不動的那幾本詞典。
+     *
+     * ⚠ **這個函式存在的理由是「不要安靜地少一本」。** 規範 §3.1 定義了兩種
+     * 載體，而 Android 目前只讀得動 `leveldb-dir`。若匯入流程只是「把 `dict/`
+     * 底下的目錄搬過去」，一份 `rime-userdb-text` 的備份會**完全正常地匯入成功**，
+     * 只是使用者的詞庫一本都沒回來 —— 又是一個沒有錯誤訊息的資料遺失。
+     *
+     * 所以：讀不動就要說出是哪一本、為什麼。
+     */
+    fun unreadableUserDbs(supported: Set<String>): List<BackupUserDb> =
+        userDbs.filterNot { it.encoding in supported }
 }
 
 /**

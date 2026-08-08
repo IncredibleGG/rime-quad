@@ -129,6 +129,38 @@ class BackupFormatTest {
         assertEquals(BackupFormat.ENCODING_LEVELDB_DIR, m.userDbs.single().encoding)
     }
 
+    /* ─────────────── 讀不動的載體 ─────────────── */
+
+    /**
+     * ⚠ 規範 §3.1 有兩種詞典載體，而 Android 只讀得動 `leveldb-dir`。
+     *
+     * 若匯入只是「把 dict/ 底下的目錄搬過去」，一份 `rime-userdb-text` 的備份
+     * 會**完全正常地匯入成功**，只是使用者的詞庫一本都沒回來 —— 沒有任何
+     * 錯誤訊息。這條測試守的就是「讀不動要說出是哪一本」。
+     */
+    @Test
+    fun `讀不動的載體要被指名，不可以安靜地少一本`() {
+        val m = manifest()
+        val unreadable = m.unreadableUserDbs(BackupFormat.READABLE_ENCODINGS)
+        assertEquals(listOf("bopomofo"), unreadable.map { it.name })
+
+        // 兩種都支援時就沒有讀不動的 —— 等 rs_sync_user_data() 進 ABI 之後
+        // READABLE_ENCODINGS 多加一個字串，這一行就是那天的驗收。
+        assertTrue(
+            m.unreadableUserDbs(
+                setOf(BackupFormat.ENCODING_LEVELDB_DIR, BackupFormat.ENCODING_USERDB_TEXT)
+            ).isEmpty()
+        )
+    }
+
+    @Test
+    fun `未知的載體也算讀不動`() {
+        val m = manifest().copy(
+            userDbs = listOf(BackupUserDb("x", "some-future-format", "dict/x", true))
+        )
+        assertEquals(listOf("x"), m.unreadableUserDbs(BackupFormat.READABLE_ENCODINGS).map { it.name })
+    }
+
     /* ─────────────── 路徑白名單 ─────────────── */
 
     @Test

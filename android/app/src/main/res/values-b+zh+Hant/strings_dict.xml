@@ -36,6 +36,7 @@
     <string name="backup_note_imported_unflushed">這個檔案自己註明了最近的字可能沒存進去。其他東西都拿回來了。</string>
     <string name="backup_note_missing_schema">這幾種鍵盤這支手機上還沒有，已經跳過：%1$s。到「下載更多鍵盤」裝回來之後，你存下來的字也會跟著回來。</string>
     <string name="backup_note_rolled_back">你的設定已經回到原本的樣子。</string>
+    <string name="backup_note_unreadable_dict">這幾種鍵盤的字是用這個版本還讀不懂的方式存的，已經跳過：%1$s。更新 App 之後再還原一次。</string>
     <string name="backup_list_separator">、</string>
 
     <string name="backup_err_no_data_dir">鍵盤還在啟動，等一下再試一次。</string>

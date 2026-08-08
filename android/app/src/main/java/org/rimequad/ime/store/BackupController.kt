@@ -421,6 +421,17 @@ class BackupController private constructor(context: Context) {
             }
         }
 
+        // 4g. 這個版本讀不動的載體（規範 §3.1 的 rime-userdb-text）。
+        //     不指名報出來的話，使用者會拿到一個「匯入成功」但一本詞庫都
+        //     沒回來的結果 —— 又是一次沒有錯誤訊息的資料遺失。
+        val unreadable = manifest.unreadableUserDbs(BackupFormat.READABLE_ENCODINGS)
+        if (unreadable.isNotEmpty()) {
+            notes += str(
+                R.string.backup_note_unreadable_dict,
+                unreadable.joinToString(str(R.string.backup_list_separator)) { it.name },
+            )
+        }
+
         if (manifest.hasUnflushedUserDb) notes += str(R.string.backup_note_imported_unflushed)
         return notes
     }

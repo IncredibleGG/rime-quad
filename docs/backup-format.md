@@ -118,6 +118,10 @@ layout/        自訂鍵位
 
 **兩種載體，讀取端必須兩種都認得，寫出端可以只產生其中一種。**
 
+> 過渡期的例外：某一端還沒做到「兩種都認得」時，**必須把讀不動的那幾本詞典
+> 指名報給使用者**，不得安靜略過。安靜略過的長相是「匯入成功，但一本詞庫都
+> 沒回來」，而使用者要到幾天之後才會發現。Android 現況見 §8。
+
 | `encoding` | 形態 | 誰產生 |
 |---|---|---|
 | `rime-userdb-text` | librime 自己的 `<name>.userdb.txt` 文字快照 | 桌面端（規劃中） |
@@ -322,7 +326,7 @@ librime 的 `Memory::OnCommit` 在使用者上屏之後**開一個交易**再把
 
 | 端 | 匯出 | 匯入 | 備註 |
 |---|---|---|---|
-| Android | ✅ `leveldb-dir` | ✅ 兩種都讀得進來的介面已定義，實際只驗過 `leveldb-dir` | SAF（`ACTION_CREATE_DOCUMENT` / `ACTION_OPEN_DOCUMENT`），**不要求任何儲存權限** |
+| Android | ✅ `leveldb-dir` | ⚠ 只讀得動 `leveldb-dir`；碰到 `rime-userdb-text` **會指名報給使用者**（`BackupFormat.READABLE_ENCODINGS`），不會安靜地少一本 | SAF（`ACTION_CREATE_DOCUMENT` / `ACTION_OPEN_DOCUMENT`），**不要求任何儲存權限** |
 | macOS | 未做 | 未做 | |
 | Windows | 未做 | 未做 | |
 | iOS | 未做 | 未做 | |

@@ -55,6 +55,8 @@
     <!-- %1$s = 方案名清單 -->
     <string name="backup_note_missing_schema">These keyboards are not on this phone yet, so they were skipped: %1$s. Install them from “Download more keyboards” and the words you saved for them will come back too.</string>
     <string name="backup_note_rolled_back">Your settings were put back the way they were.</string>
+    <!-- %1$s = 讀不動的詞庫名清單 -->
+    <string name="backup_note_unreadable_dict">The words for these keyboards are stored in a format this version cannot read yet, so they were skipped: %1$s. Update the app and restore again.</string>
     <string name="backup_list_separator">, </string>
 
     <!-- ── 錯誤。每一種都要說出使用者下一步能做什麼 ── -->
