@@ -168,6 +168,22 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
 - `[2026-08-08] [Windows] ⚠ 給其餘三端(尤其是 macOS/iOS 會做常駐進程的):**進入點若是寬字元版本,glog 會在初始化時空指標解參考。** glog 的 ProgramInvocationShortName() 在 Windows/MSVC 上走 const_basename(__argv[0])(deps/glog/src/utilities.cc 的 HAVE___ARGV 分支),而 __argv 只有在 CRT 以窄字元進入點啟動時才會被填 —— 用 wmain 的話 CRT 只填 __wargv,__argv 是 NULL。症狀是「一啟動就 0xC0000005,堆疊在 glog 深處」,與進入點看起來毫無關聯,花了五輪 CI 才查到(run #16–#20)。tools/rime_console.cc 用的是 main,所以它一直是綠的。Apple 端不走這條路徑,但**任何新的、會連結 librime 的執行檔都要注意進入點**,而且不要相信「rime_console 過了所以引擎沒問題」——引擎沒問題,是宿主的進入點有問題。`
 - `[2026-08-08] [Windows] 驗證用的使用者目錄要明確指定方案。librime 把「上次選的方案」記在 <user>/user.yaml。Windows 的 verify_ime.sh 沿用 verify_console.sh 編好的使用者目錄以省下詞庫編譯時間,結果拿到的是上一支腳本最後選的注音,nihao 被打成「所噢草莓」。四端的驗證腳本若有共用使用者目錄的,同樣要明著選方案 ——「不指定」不是中性的。`
 
+- `[2026-08-08] [macOS] **Windows 端回報的六個候選窗規範缺口全部關掉了,可以開始讀主題檔了。** docs/theme-format.md 新增/改寫:`
+  1. `**§8.6.7.2 `max_width` 溢出** —— 取消「由實作決定」。裁決是 **不得丟棄候選**:一頁有幾個候選由方案的 page_size 決定,序號標籤與使用者按的數字鍵一一對應,丟掉第 5 個之後他按 5 仍然會選到那個看不見的字。`shrink` 縮欄寬 + 尾端加 `…`;`clip` 裁的是**像素不是候選**,且不得改變落點。另外 `max_width` **不是硬上界**:9a(shrink 縮到 item.min_width 還放不下 → 窗跟著變寬)與 9b(第一個候選一定看得見)兩條例外,都不產生診斷(§10 第 4b 條的但書)。**直排橫排走同一套** —— 依 orientation 分岔的溢出行為不合規。`
+  2. `**§8.6.4.1 item 內部間距** —— 新增 `label_gap` / `comment_gap` / `comment_gap_v`,前兩者的**預設值就是 `metrics.spacing`**,所以 Windows 目前的行為已經合規、不必改。附規範性的量測演算法(空段不留空隙、min_width 夾在含 padding 之後)。這一節同時關掉 §11 的「量測與排版是分開的兩件事」。`
+  3. `**§8.6.7.3 `anchor`** —— `follow_caret: false` 落在哪一個角。新欄位,**預設 `bottom_trailing` 就是 Windows 目前取的右下**。語義用 leading/trailing 而不是左右(留給 RTL),螢幕取「含插入點的那一個」並有三段回落,offset 在此模式下是**向內的邊距**。`
+  4. `**§8.6.0 字體綁定** —— §8.4 一直有具名字體堆疊,但沒說哪一塊文字用哪一個,Windows 因此整個候選窗退回系統 UI 字型。現在規定 label→`fonts.label`、text→`fonts.candidate`、comment→`fonts.comment`、preedit→`fonts.preedit`、status_bar→`fonts.ui`,並新增選用的 `font` 欄位(值是 `typography.fonts` 的**鍵名**,不是家族名)。**桌面端不得改用系統 UI 字型當預設**——`$system` 代號已經是那個意思,走代號才能讓「有指定」與「沒指定」是同一條程式路徑。`
+  5. `**§8.6.7.4 退化** —— `backdrop`/`opacity`/`shadow` 做不到時的行為寫死了,而且**退化不得改變排版**(陰影不佔空間,§10 第 19–22 條那幾組數字在四端必須相同)。診斷是 INFO、每個欄位每次載入最多一則、且**不參與 §10 第 9 條的比對**(它們是平台能力相依的)。`opacity` 下界改成 0.05 —— 0 的候選窗等於這個輸入法壞了。`
+  6. `**§11 的多欄與狀態列** —— 確認已被 §8.6.7.1 與 §8.12 覆蓋,§8.12 末段寫了一段給第三個桌面端:中/英、簡/繁的指示就是 `source: input_mode_pair` 與 `source: variant`,字面規範性、四端一致;`status_bar.show` 預設 false 是刻意的,但**「預設關閉」不是「可以不做」**。桌面端剩下的狀態列缺口只有「`source` 全是文字、沒有圖示」,在補上之前不要自己發明。`
+  `另外順手關掉 §11 的「preedit 在桌面端有兩個地方可以畫」:§8.7 新增裁決 —— 組字串**必須**交給宿主(marked text / TSF composition string),`preedit.show` 在桌面端的語義變成「候選窗裡是否再畫一份」,**桌面端預設 false**(行動端仍為 true)。§10 新增第 26–33 條可逐項驗算的檢核。`
+- `[2026-08-08] [macOS] ⚠ **「輸入模式 ↔ 方案 ↔ 簡繁」四端已經各錯一次,規則寫進 docs/settings-model.md §4。** macOS 註冊了 .Hant/.Hans 兩個輸入模式但兩個都載入繁體方案(使用者選簡體、打 hao le 得到「號」);Windows 只註冊 0x0404 一個 langid,連選都沒得選。兩者都是**畫面完全正常、自動化全過**,錯的只有打出來是哪一種字。裁決:(a) 輸入模式的字集認不出來時回 unspecified,**不要預設繁體**;(b) 方案的字集**語言標籤優先**,沒標籤才用命名慣例,`luna_pinyin` 的預設輸出是繁體所以「含 pinyin 就是簡體」這種規則不可以加;(c) 挑方案的優先順序是 為此模式釘的 → 全域釘的 → 字集相符的第一個 → 清單第一個,而且**釘的方案即使字集不符也照做**(靠 simplification 補,不偷偷換掉使用者選的東西);(d) `simplification` **無條件設**,對不存在的 switch 呼叫 rs_set_option 是安全的,判斷「這個方案有沒有這個開關」要解析第三方 YAML、猜錯的機會更大;(e) **RIME 的 simplification 是單向的(繁→簡)**,所以「繁體模式 + 只裝了簡體方案」做不到,介面上不得宣稱做得到。⚠ Windows 端要註冊 0x0804 才有這條規則可用,那個「待裁決」現在有答案了:**要註冊**,否則簡體使用者連選都沒得選。`
+- `[2026-08-08] [macOS] **設定介面的資訊架構寫成 docs/settings-model.md,四端共用,以 Android 現況為基準。** 七頁:輸入方案/外觀/文字/我的詞庫/方案市集/連網/進階 ——「鍵盤」在桌面端改叫「輸入方案」(桌面沒有軟鍵盤可選),「手感」**整頁拿掉**(震動、按鍵音、長按延遲都是軟鍵盤專屬,做一頁全灰的比不做更糟),多一頁「詞庫」。文件同時釘死**設定存在哪裡**的三層:A=`default.custom.yaml` 的 patch(librime 自己讀的東西一律放這裡,換別的 RIME 前端也有效)、B=各端自己的偏好檔(鍵名共用)、C=session 選項(由 B 推導,不落地)。⚠ 兩條介面紀律建議四端都做成 CI 斷言:**每一項設定都要有一句白話**、**不得把 YAML 欄位名搬到畫面上**(macOS 端把它做成型別強制 + 禁用字掃描,這種規則靠 code review 記住一定會漏)。`
+- `[2026-08-08] [macOS] **使用者詞庫的格式定了,四端互通,見 docs/settings-model.md §5。** 走 RIME 既有的自訂短語機制:`<user>/custom_phrase.txt` 是 TSV(詞/編碼/權重),掛載用 `<schema>.custom.yaml` 的 `table_translator@custom_phrase` + `db_class: stabledb`。**沒有走 librime 的 userdb**,因為 rime_shell.h 的 ABI 沒有匯出它的增刪介面(要加得由協調端動 core/)。純文字的三個好處:四端都做得到、使用者看得懂改得動也備份得了、換去鼠鬚管或小狼毫照樣有效。⚠ 兩條容易做錯的:CRLF 必須讀得懂(Windows 端匯出的帶 \r,留著會讓權重欄變成「1\r」而解析失敗,錯誤訊息卻像使用者打錯字);`<schema>.custom.yaml` **只有在第一行有我們的標記時才可以覆寫**,使用者自己寫的那份裡常有他調了很久的按鍵綁定。Android 端的 task #39 可以直接讀同一個檔案。`
+- `[2026-08-08] [macOS] ⚠ **「裝在正確的地方」現在驗得到了,Windows 端的等價做法應該也成立。** 我們(和 Windows)都犯過同一個錯:驗了 bundle 結構與宣告,但**全部是在打包好的檔案上驗的**,沒有一關問過「放到正確位置之後系統認不認」。apple/scripts/verify_pkg.sh 分三層:pkgutil --expand 檢查安裝路徑與 postinstall → `installer -pkg ... -target CurrentUserHomeDirectory` **真的裝一次**並斷言檔案落點 → `lsregister -dump` 與 `TISCreateInputSourceList` 問系統認不認。**第三層在 runner 上查不到**,原因是 TIS 掃描 ~/Library/Input Methods 的時機綁在有登入的圖形工作階段,而 runner 是背景工作階段;腳本把原因印出來但不判失敗 —— 試過並知道為什麼也是結論。前兩層是實打實的新覆蓋。`
+- `[2026-08-08] [macOS] ⚠ **給四端:「圖示是一塊空白方框」有兩個獨立的原因,查一個會漏另一個。** (a) 系統設定的輸入來源清單顯示的是 **app 圖示**(`CFBundleIconFile` / `.icns`),不是輸入法的選單列圖示(`tsInputModeMenuIconFileKey` / `.tiff`)——我們原本只有後者,而且 bundle 裡根本沒有 `.icns`。(b) 那份 `.tiff` 是手寫 IFD 產生的,缺 `RowsPerStrip`(tag 278)與 `PlanarConfiguration`(tag 284):多數解碼器讀得出來,**ImageIO 讀不出來**,而讀不出來的樣子就是一塊空白,沒有錯誤訊息。改成產生器只產 PNG(格式簡單,zlib 就寫得出來),`.icns` 與多解析度 `.tiff` 交給系統自帶的 `iconutil` 與 `tiffutil`。教訓與「工具的輸出格式不是穩定介面」是同一類:**自己手寫二進位格式的代價,會在很久以後以「看起來像沒裝好」的樣子出現。**`
+- `[2026-08-08] [macOS] ⚠ **給四端:沒有在地化顯示名的輸入法,清單裡顯示的是它的 id。** 真機看到的是 `org.rimequad.inputmethod.RimeQuad.Hans`。macOS 的解法是 `Resources/<lang>.lproj/InfoPlist.strings`,而**鍵就是輸入模式的 id 本身**(TIS 拿 id 去查在地化字串)。所以那個 id 現在同時出現在 Info.plist、三份 .strings、以及 RimeQuadKit 的 InputModeBinding 三個地方,verify_pkg.sh 把它們釘在一起。Windows 的語言列名稱走的是資源 DLL 裡的字串資源,機制不同但**失敗的樣子一樣**:使用者看到一個沒有人敢點的東西。`
+- `[2026-08-08] [macOS] 只動了 apple/、.github/workflows/macos.yml、docs/theme-format.md、docs/settings-model.md(新檔)。沒有動 android/、windows/、core/、scripts/。`
+
 ---
 
 ## 6. 各端狀態
@@ -185,20 +201,20 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
 - **Android** — 可用的產品。拼音/注音/九宮格、鍵盤與主題由 YAML 驅動、鍵盤類型選單、
   自定義鍵位、方案市集(34 個)、離線開關與連網紀錄、應用內升級與金鑰輪替、
   介面在地化(英/繁/簡)。354 項單元測試、16 項發布關卡。
-- **macOS** — **輸入法本體已成形(IMKit + 候選窗),但 UI 沒有被任何自動化驗過。**
-  核心層仍綠(從原始碼建 librime 1.17.0 + 5 依賴 + librime-lua,`nihao → 你好`、
-  `su3cl3 → 你好` 兩組斷言 + 反向測試 + 四方案部署 + 執行期資料)。
-  這一輪新增:`RimeQuad.app`(IMKServer + `@objc(RimeQuadInputController)` + 自繪
-  NSPanel 候選窗)、純邏輯層 `RimeQuadKit`(RTS YAML 讀取器、主題綁定與繼承、
-  診斷 code+args、keysym 映射與修飾鍵狀態機、候選窗排版、上屏政策、狀態列),
-  **105 項單元測試 + 5 個變異測試**(對四個檔案各植入一個真違規,斷言對應的那一組
-  會紅 —— 不只證明有跑,還證明是哪一組在測什麼)。
-  CI 另驗 bundle 結構、Info.plist 的 IMKit 宣告、二進位裡有 ObjC 類別符號、
-  InputMethodKit 有連上、librime 是靜態連結,並**執行**二進位的 `--self-check`
-  向真的 librime 問 keysym 表裡每一個名稱。bundle 驗證同樣有反向測試。
-  ⚠ **runner 沒有登入的圖形工作階段,所以候選窗、實際打字、修飾鍵、VoiceOver、
-  各宿主 app 的相容性一項都沒驗到。完整清單見 apple/README.md §3。**
-  規範 `docs/theme-format.md` 由本端擴充(見 §5),Windows 端可直接繼承。
+- **macOS** — **輸入法本體 + 視覺化設定介面 + `.pkg` 安裝檔。使用者已在真 Mac 上
+  打出字,但這一輪新增的 UI 一頁都沒有被自動化開啟過。**
+  這一輪:七頁設定介面(輸入方案/外觀/文字/詞庫/市集/連網/進階,IA 見
+  `docs/settings-model.md`)、IMKit 選單當入口、`.pkg` 一鍵安裝、
+  三種語言的輸入來源顯示名與圖示(修真機回報的「顯示成 bundle id + 空白方框」)、
+  輸入模式↔方案↔簡繁綁對(修真機回報的「選簡體卻打出繁體」)、
+  離線守門的單一出口 + 連網紀錄、方案市集(索引/相依/sha256/壓縮檔守門/安裝回滾)、
+  使用者詞庫(TSV,四端互通)。
+  **207 項單元測試 + 10 個變異測試**;CI 另驗 bundle 結構、IMKit 宣告、
+  ObjC 類別符號、靜態連結、`--self-check`、**`.pkg` 真的裝到正確位置**、
+  **使用者詞庫真的會改變輸出**(經真的 librime)、**單一連網出口**(含反向測試)。
+  ⚠ **設定視窗、跨行程部署、市集的真實下載、switcher 熱鍵一項都沒被自動化碰過。**
+  完整清單見 `apple/README.md` §3。
+  規範 `docs/theme-format.md` 由本端擴充(見 §5),Windows 端的六個缺口已全部關閉。
 - **Windows** — 核心層已綠,**TSF 輸入法已寫出但沒有人在真 Windows 上用過**。
 
   第一個里程碑(核心層,協調端整理的那一段,保留):
