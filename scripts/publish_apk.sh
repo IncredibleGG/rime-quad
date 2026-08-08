@@ -110,6 +110,104 @@ echo "  notes       : $NOTES"
 echo "  目的地      : $REMOTE_DIR"
 printf '%s' "$BADGING" | grep -E "^package:|^native-code:" | sed 's/^/  /'
 
+# ---------------------------------------------------------- 簽章 ---
+# 這一關擋的是「發出去之後所有既有使用者都裝不上來」。
+#
+# Android 的規矩:APK 的簽章不同就無法覆蓋安裝,使用者只能移除重裝 ——
+# 自訂詞庫與鍵位設定一起消失。而這支腳本原本一道簽章檢查都沒有,卻又支援
+# `--apk <任意路徑>`,於是最容易發生的事就是把 CI 建的 APK 發出去:
+# CI 上完全沒有簽章設定(workflow 裡零個 secrets),build.gradle.kts 會落入
+# 「找不到 signing.properties」的退路,用 runner 每次隨機新生的 debug 金鑰簽,
+# 而且每跑一次就換一把。那種 APK 看起來完全正常,aapt2 讀得出 versionCode,
+# 檔頭也是 PK\x03\x04 —— 前面每一道關卡都會放行。
+#
+# 比對方式刻意不需要金鑰密碼:apksigner 讀 lineage 與 APK 自身就夠了。
+#   1. APK 內嵌的輪替鏈必須與 ~/rime-signing/signing-lineage.bin 逐一相符;
+#   2. API 28+ 的有效簽章者必須是鏈上最後一把(目前的正式金鑰);
+#   3. API 26–27(只認 v1/v2)的簽章者必須是鏈的根(舊 debug 金鑰),
+#      否則舊機器上的使用者升不上去。
+#
+# 前置條件缺席時**一律中止**,不是略過。這個專案已經被「安靜跳過的檢查」
+# 咬過好幾次(發布關卡的升級測試曾因順序寫反被判略過,報出一片全綠)。
+SIGNING_DIR="${RIME_SIGNING_DIR:-$HOME/rime-signing}"
+LINEAGE_REF="$SIGNING_DIR/signing-lineage.bin"
+APKSIGNER="$(dirname "$AAPT")/apksigner"
+
+[ -x "$APKSIGNER" ] || die "找不到 apksigner($APKSIGNER),無法驗證簽章。拒絕發布。"
+[ -f "$LINEAGE_REF" ] || die "找不到輪替證明 $LINEAGE_REF,無法確認這份 APK 簽得對不對。
+拒絕發布 —— 沒有這個檔就無法分辨「正確簽章」與「隨便一把 debug 金鑰」。"
+
+# 取出一條鏈的所有 SHA-256(依 Signer #1、#2… 的順序)
+lineage_chain() {
+  local out
+  out="$("$APKSIGNER" lineage --in "$1" --print-certs 2>/dev/null || true)"
+  printf '%s\n' "$out" \
+    | sed -n 's/^Signer #[0-9]* in lineage certificate SHA-256 digest: //p'
+}
+
+# 取出某個 SDK 區間下實際生效的簽章者
+signer_in_range() {
+  local out digest
+  out="$("$APKSIGNER" verify --min-sdk-version "$2" --max-sdk-version "$3" \
+          --print-certs "$1" 2>/dev/null || true)"
+  digest="$(printf '%s\n' "$out" \
+            | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')"
+  # 只取第一行。不用 head,避免 SIGPIPE 配上 pipefail 變成間歇性失敗。
+  printf '%s' "${digest%%$'\n'*}"
+}
+
+REF_CHAIN="$(lineage_chain "$LINEAGE_REF")"
+[ -n "$REF_CHAIN" ] || die "讀不出 $LINEAGE_REF 的憑證鏈"
+EXPECT_ROOT="$(printf '%s' "$REF_CHAIN" | sed -n '1p')"
+EXPECT_CURRENT="$(printf '%s\n' "$REF_CHAIN" | tail -1)"
+
+APK_CHAIN="$(lineage_chain "$ROOT/release/$NAME")"
+
+echo
+echo "=== 簽章檢查 ==="
+SIGFAIL=0
+
+if [ "$APK_CHAIN" != "$REF_CHAIN" ]; then
+  echo "  [失敗] APK 內嵌的輪替鏈與 $LINEAGE_REF 不符" >&2
+  echo "    預期:" >&2; printf '%s\n' "$REF_CHAIN" | sed 's/^/      /' >&2
+  echo "    實得:" >&2
+  if [ -z "$APK_CHAIN" ]; then
+    echo "      (沒有輪替鏈 —— 這份 APK 不是用正式金鑰加 lineage 簽的)" >&2
+  else
+    printf '%s\n' "$APK_CHAIN" | sed 's/^/      /' >&2
+  fi
+  SIGFAIL=1
+else
+  echo "  [OK] 輪替鏈與 $LINEAGE_REF 相符（$(printf '%s\n' "$REF_CHAIN" | wc -l | tr -d ' ') 把金鑰）"
+fi
+
+GOT_CURRENT="$(signer_in_range "$ROOT/release/$NAME" 28 35)"
+if [ "$GOT_CURRENT" = "$EXPECT_CURRENT" ]; then
+  echo "  [OK] API 28+ 的簽章者 = ${EXPECT_CURRENT:0:16}…（目前的正式金鑰）"
+else
+  echo "  [失敗] API 28+ 的簽章者是 '${GOT_CURRENT:-無}',預期 $EXPECT_CURRENT" >&2
+  SIGFAIL=1
+fi
+
+GOT_ROOT="$(signer_in_range "$ROOT/release/$NAME" 26 27)"
+if [ "$GOT_ROOT" = "$EXPECT_ROOT" ]; then
+  echo "  [OK] API 26–27 的簽章者 = ${EXPECT_ROOT:0:16}…（鏈的根，舊機器升得上去）"
+else
+  echo "  [失敗] API 26–27 的簽章者是 '${GOT_ROOT:-無}',預期 $EXPECT_ROOT" >&2
+  SIGFAIL=1
+fi
+
+if [ "$SIGFAIL" -ne 0 ]; then
+  echo >&2
+  echo "這份 APK 的簽章與正式金鑰不符。發出去的話,**所有既有使用者都會裝不上來**" >&2
+  echo "(INSTALL_FAILED_UPDATE_INCOMPATIBLE),只能移除重裝、失去自訂詞庫。" >&2
+  echo >&2
+  echo "最可能的原因:這份 APK 是在沒有 $SIGNING_DIR 的機器上建的(例如 CI runner)," >&2
+  echo "build.gradle.kts 會退回 Android 預設的 debug 金鑰並只印一行警告。" >&2
+  echo "請在有簽章金鑰的機器上重建再發。" >&2
+  exit 1
+fi
+
 # ------------------------------------------------------ 單調性檢查 ---
 # versionCode 必須單調遞增,否則 Android 自己的升級語意與 app 內的更新
 # 判斷同時失效 —— 而且使用者按下「更新」會裝不上去(系統不允許降級)。

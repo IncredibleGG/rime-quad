@@ -41,9 +41,6 @@ jobs:
 
     env:
       ARCH: x64
-      # 必須與 third_party/prebuilt/manifest.json 的 librime.commit 一致 ——
-      # 四端共用同一顆引擎是這個專案的前提。改這裡等於換掉引擎。
-      LIBRIME_COMMIT: 1d0df6e40cdcac17a986adc65e4668ae84ae0ada
       BOOST_VERSION: 1.89.0
       # CMake 4 移除了 FindBoost,而 librime 靠 find_package(Boost) 找 header-only
       # 的 Boost —— 非 LINUX 分支不帶 REQUIRED,所以 4.x 上不會報錯,只會在編譯時
@@ -95,8 +92,9 @@ jobs:
           esac
 
       # librime + 5 個相依編一次要十幾分鐘,而它們只由釘住的 commit 決定。
-      # key 帶上 build.sh 的雜湊:改了建置選項就必須重編,否則會拿到一份
-      # 「用舊選項編的、但看起來是新的」prefix —— 那種漂移最難查。
+      # key 帶上 build.sh **與 scripts/fetch_librime.sh** 的雜湊:改了建置選項或
+      # 換了 librime 的 commit,就必須重編。少了 fetch_librime.sh 那一半,
+      # 「換引擎但快取沒失效」會安靜地拿舊 prefix 繼續跑 —— 那種漂移最難查。
       #
       # 用 restore + save 而不是 cache:save 那一步必須 `if: success()`。
       # actions/cache 的 post step 不管成敗都會存,那會把一份**建到一半就失敗的**
@@ -106,7 +104,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: third_party/build/windows-x64/prefix
-          key: winprefix-x64-${{ env.LIBRIME_COMMIT }}-${{ hashFiles('windows/build.sh') }}-v1
+          key: winprefix-x64-${{ hashFiles('scripts/fetch_librime.sh', 'windows/build.sh') }}-v1
 
       # Boost 只有建 deps 時才用得到,所以整組跟著 prefix 的命中與否走。
       # 只取 header 樹(librime 不需要任何 Boost 二進位)。快取的是解壓後的結果:
@@ -129,7 +127,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: third_party/build/windows-x64/prefix
-          key: winprefix-x64-${{ env.LIBRIME_COMMIT }}-${{ hashFiles('windows/build.sh') }}-v1
+          key: winprefix-x64-${{ hashFiles('scripts/fetch_librime.sh', 'windows/build.sh') }}-v1
 
       # 快取命中時 prefix 有了,但 collect_data.sh 要的 .ocd2 擺放位置沒有 ——
       # 那是每次都要重做的一步(只是複製檔案,很快)。
