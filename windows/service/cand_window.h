@@ -16,6 +16,7 @@
 
 #include <windows.h>
 
+#include <atomic>
 #include <mutex>
 
 #include "../common/cand_layout.h"
@@ -54,6 +55,13 @@ class CandidateWindow : public CandidateUi {
   void Update(const Snapshot& snap, const RECT& caret) override;
   void Hide() override;
 
+  // 候選字級的倍率(設定介面的「候選字大小」)。1.0 = 規範預設值。
+  //
+  // ⚠ 存的是**倍率**不是絕對字級。理由與 Android 端相同:主題更新或
+  //   換主題之後,絕對值會把使用者釘在一個過時的數字上,而他不會知道
+  //   為什麼別人的候選窗看起來不一樣。
+  void SetTextScale(double scale);
+
  private:
   static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l);
   // 不用 captureless lambda 轉函式指標:LPTHREAD_START_ROUTINE 是 WINAPI
@@ -75,6 +83,7 @@ class CandidateWindow : public CandidateUi {
   RECT pending_caret_{};
 
   // 以下只在 UI 執行緒上碰。
+  std::atomic<double> text_scale_{1.0};
   Snapshot shown_;
   RECT caret_{};
   CandidateStyle style_;

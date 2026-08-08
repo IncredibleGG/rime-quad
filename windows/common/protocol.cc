@@ -170,6 +170,13 @@ std::string EncodeHello(uint32_t seq, const Hello& m) {
   PutU32(&s, m.shell_abi);
   PutU32(&s, m.host_pid);
   PutStr(&s, m.host_exe);
+  // ⚠ v1 的位元組佈局到上面為止,**一個位元都不可以動**。
+  //   新欄位只在 m.proto >= 2 時才寫 —— 降級重試(ipc_client.cc)靠的
+  //   就是「同一支程式送得出 v1 訊息」這件事。
+  if (m.proto >= 2) {
+    PutU32(&s, m.input_langid);
+    PutStr(&s, m.profile_guid);
+  }
   return s;
 }
 
@@ -266,6 +273,18 @@ bool DecodeHello(const std::string& p, uint32_t* seq, Hello* out) {
   if (!c.U32(&out->shell_abi)) return false;
   if (!c.U32(&out->host_pid)) return false;
   if (!c.Str(&out->host_exe)) return false;
+  // 格式是自描述的:讀不讀尾巴由訊息自己宣告的版本決定,
+  // 不是由「我這一版編譯時知道什麼」決定。
+  //
+  // ⚠ 這裡不可以寫成「有剩就讀」。那樣的話一則被截斷或被塞了垃圾的
+  //   v1 訊息會被當成 v2 解,而下面的 AtEnd() 就再也擋不住它。
+  if (out->proto >= 2) {
+    if (!c.U32(&out->input_langid)) return false;
+    if (!c.Str(&out->profile_guid)) return false;
+  } else {
+    out->input_langid = 0;
+    out->profile_guid.clear();
+  }
   return c.AtEnd();
 }
 
@@ -340,6 +359,7 @@ bool DecodeSimple(const std::string& p, uint32_t* seq, uint64_t* session) {
     case Op::kSessionEnd:
     case Op::kCommitComposition:
     case Op::kClear:
+    case Op::kOpenSettings:  // v2 起。單向,沒有回覆。
       break;
     default:
       return false;

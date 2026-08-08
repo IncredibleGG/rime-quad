@@ -88,8 +88,46 @@ jobs:
       # 匯出的四個 COM 進入點齊不齊、DLL 有沒有意外的相依。
       # 後者守的是 /MT:相依到 VCRUNTIME140.dll 的話,在沒裝 VC++ 執行檔套件
       # 的機器上 DLL 會在載入階段失敗,而症狀是「輸入法在某些程式裡不存在」。
-      - name: 二進位結構檢查（匯出符號、相依白名單）
+      - name: 二進位結構檢查（匯出符號、相依白名單、**沒有網路相依**）
         run: ./windows/check_binaries.sh third_party/build/windows-x64/logic/bin
+
+      # 離線稽核。Android 端的 scripts/audit_offline.sh 在原始碼層面守
+      # 「整個 app 只有一個檔案碰得到網路」,這一支是 Windows 端的對應物。
+      # 目前的主張更強:**一個檔案都沒有**。
+      - name: 離線稽核（原始碼層面:沒有任何檔案碰網路 API）
+        run: ./windows/audit_offline_win.sh
+
+      # 與上面「框架必須會紅」同一個約定:--self-check 植入一個真的
+      # WinHttpOpen 呼叫,並要求腳本**非零結束**。一支只會印綠字的稽核
+      # 腳本比沒有更糟 —— 它讓人以為有人在看。
+      - name: 反向測試（離線稽核必須抓得到植入的違規）
+        run: |
+          if ./windows/audit_offline_win.sh --self-check; then
+            echo "!! 植入了一個真的 WinHttpOpen 呼叫,稽核腳本卻以 0 結束 —— 它不會紅" >&2
+            exit 1
+          fi
+          echo "反向測試通過:離線稽核會紅"
+
+      # 安裝程式最貴的失敗模式是「忘了把執行期資料包進去」——
+      # 那樣的話安裝程式編得出來、安裝成功、輸入法也註冊得上,
+      # 然後一個字都打不出來,而且沒有任何錯誤訊息。
+      # make_installer.sh 有一道逐項點名的 payload 檢查在擋它;
+      # 這一步用一棵故意殘缺的樹去跑那道檢查,要求它真的紅。
+      # 放在快速 job 是因為它只是 shell 邏輯,不需要 librime、也不需要 ISCC。
+      - name: 反向測試（安裝包資料檢查必須會紅）
+        run: ./windows/make_installer.sh --self-check
+
+      # ⚠ 這一步存在的理由是**迴圈長度**。
+      #
+      # ISCC 是逐段解析的:前面一段語法錯了就中止,後面的 [Messages] / [Code]
+      # 根本沒被看過。而真正的安裝程式建置在 core-x64 的最後面 —— 一輪二十分鐘,
+      # 一次只能發現一個錯。(實測:第一次就是這樣,[UninstallRun] 的一個旗標
+      # 讓整段 [Messages] 與 [Code] 都還沒被檢查過。)
+      #
+      # 這裡用一棵**假的** payload 把同一份 .iss 完整編一次。不需要 librime、
+      # 不需要執行期資料,四分鐘就有答案。內容對不對不是這一步的事。
+      - name: 安裝程式腳本必須編得過（快速把關）
+        run: ./windows/make_installer.sh --lint
 
       - name: 上傳瘦 DLL 與測試執行檔
         if: always()
@@ -245,6 +283,13 @@ jobs:
       - name: 端到端 IPC 驗證（經由具名管道:nihao → 你好）
         run: ./windows/verify_ime.sh
 
+      # ── 安裝程式 ────────────────────────────────────────────────
+      # 打包工具是 Inno Setup(理由見 windows/installer/rimequad.iss 檔頭)。
+      # 這一步同時會逐項點名檢查要裝進去的東西 —— 尤其是 core/data/shared,
+      # 少了它會裝出一個「註冊得上但一個字都打不出來」的輸入法。
+      - name: 建置安裝程式（RimeQuad-Setup-x64.exe）
+        run: ./windows/make_installer.sh
+
       - name: 上傳建置與驗證日誌
         if: always()
         uses: actions/upload-artifact@v4
@@ -255,9 +300,10 @@ jobs:
             third_party/build/windows-x64/verify/logs/
             third_party/build/windows-x64/ime-verify/
             third_party/build/windows-x64/ime/bin/*.map
+            third_party/build/windows-x64/installer/iscc*.log
           if-no-files-found: warn
 
-      - name: 上傳產物（DLL、服務、console）
+      - name: 上傳產物（DLL、服務、console、驗證工具）
         if: success()
         uses: actions/upload-artifact@v4
         with:
@@ -265,5 +311,105 @@ jobs:
           path: |
             third_party/build/windows-x64/ime/bin/rime_tsf.dll
             third_party/build/windows-x64/ime/bin/rime_service.exe
+            third_party/build/windows-x64/ime/bin/rime_ime_setup.exe
+            third_party/build/windows-x64/ime/bin/rime_probe.exe
             third_party/build/windows-x64/console/bin/rime_console.exe
           if-no-files-found: error
+
+      # ⚠ 名字是固定的(不帶 sha)。協調端的發布流程會照這個名字來抓。
+      #   改名字等於讓發布流程安靜地抓不到東西。
+      - name: 上傳安裝程式
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RimeQuad-Setup-x64
+          path: third_party/build/windows-x64/installer/RimeQuad-Setup-x64.exe
+          if-no-files-found: error
+
+  # ────────────────────────────────────────────────────────────────
+  # 安裝驗證:在一台**乾淨的** runner 上真的裝一次、驗一次、解除安裝一次。
+  #
+  # ⚠ 這個 job 是這一輪最有價值的東西,比安裝程式本身還有價值。
+  #
+  # 上一輪把「regsvr32 是否真的註冊成功、輸入法是否出現在系統的清單上」
+  # 列在「只有人做得到」那一欄。那個判斷有一半是錯的:windows-latest 的
+  # runner 上我們是系統管理員,所以這一整條跑得動 ——
+  #
+  #   靜默安裝 → 斷言登錄檔真的長出東西 → 用 TSF 的 API 列舉出自己
+  #   → 用**安裝好的**服務與資料經由真的具名管道打出「你好」
+  #   → 靜默解除安裝 → 斷言登錄檔清乾淨、而使用者詞典還在
+  #
+  # 刻意獨立成一個 job 而不是接在 core-x64 後面:那台機器上有完整的建置樹,
+  # 而「裝出來的東西自己就夠了」正是要驗的事。在建置樹旁邊驗,
+  # 驗到的可能是建置樹裡的檔案。
+  # ────────────────────────────────────────────────────────────────
+  install-x64:
+    runs-on: windows-latest
+    needs: core-x64
+    timeout-minutes: 90
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: 關掉 autocrlf
+        run: |
+          git config --global core.autocrlf input
+          git config --global core.longpaths true
+
+      # 只為了取得驗證腳本。二進位一律從 artifact 來 —— 這個 job 不建任何東西。
+      - name: 取出原始碼
+        uses: actions/checkout@v4
+
+      - name: 下載安裝程式
+        uses: actions/download-artifact@v4
+        with:
+          name: RimeQuad-Setup-x64
+          path: dist
+
+      - name: 下載驗證工具（probe、setup）
+        uses: actions/download-artifact@v4
+        with:
+          name: rime-windows-x64-${{ github.sha }}
+          path: tools-dl
+
+      # ⚠ 不要假設 artifact 裡的檔案是攤平的。
+      #
+      # upload-artifact@v4 會保留「所有來源路徑的最短共同祖先」以下的結構,
+      # 而那一包同時來自 ime/bin/ 與 console/bin/,於是解出來是
+      # tools-dl/ime/bin/rime_probe.exe,不是 tools-dl/rime_probe.exe。
+      # 用 find 定位,並且**找不到就明確失敗** —— 讓路徑猜錯以
+      # 「找不到檔案」的形式在後面某一步爆掉,是最難查的一種。
+      - name: 定位下載回來的檔案
+        run: |
+          find dist tools-dl -type f | sed 's/^/  /'
+          locate_one() {
+            local name="$1" hit
+            hit="$(find tools-dl -name "$name" -type f | head -1)"
+            [ -n "$hit" ] || { echo "!! artifact 裡找不到 $name" >&2; exit 1; }
+            echo "$hit"
+          }
+          [ -f dist/RimeQuad-Setup-x64.exe ] \
+            || { echo "!! 缺少 dist/RimeQuad-Setup-x64.exe" >&2; exit 1; }
+          {
+            echo "SETUP_EXE=dist/RimeQuad-Setup-x64.exe"
+            echo "PROBE_EXE=$(locate_one rime_probe.exe)"
+            echo "TOOL_EXE=$(locate_one rime_ime_setup.exe)"
+          } >> "$GITHUB_ENV"
+
+      # runner 本身就是系統管理員,所以靜默安裝跑得動。
+      - name: 安裝、斷言、解除安裝、斷言
+        run: |
+          ./windows/verify_installer.sh \
+            --setup "$SETUP_EXE" \
+            --probe "$PROBE_EXE" \
+            --tool  "$TOOL_EXE"
+
+      - name: 上傳安裝驗證日誌
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-install-verify-${{ github.sha }}
+          path: dist/verify/
+          if-no-files-found: warn

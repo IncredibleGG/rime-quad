@@ -26,6 +26,18 @@ class IpcClient {
   // 服務執行檔的位置(與 DLL 同目錄)。空字串 = 不嘗試自動啟動。
   void SetServicePath(std::wstring path) { service_path_ = std::move(path); }
 
+  // 使用者是從哪一個語言設定檔啟用這個輸入法的(0 = 不知道)。
+  //
+  // ⚠ 值變了必須**重新握手**:服務進程是在 HELLO 當下決定預設方案的,
+  //   而三份設定檔共用同一個 CLSID —— 使用者在 zh-Hant 與 zh-Hans 之間切換時
+  //   TSF 不會重新 Activate 這個文字服務,只會通知 profile 換了。
+  //   不重連的話,切過去之後仍然是上一個語言的方案,而使用者剛剛做的動作
+  //   看起來完全沒有效果。
+  void SetProfile(uint32_t langid, const std::string& profile_guid);
+
+  // 協商出來的線路版本。0 = 還沒握手。
+  uint32_t negotiated_proto() const { return negotiated_proto_; }
+
   // 需要時連線 + 握手 + 建立 session。已經好了就直接回 true。
   // **不會阻塞超過設定的逾時**,而且失敗時會照退避節流,不會每顆按鍵都重試。
   bool EnsureReady();
@@ -44,13 +56,21 @@ class IpcClient {
   void SendCaretRect(int32_t l, int32_t t, int32_t r, int32_t b);
   void SendFocus(bool focused);
 
+  // 叫服務進程把設定視窗開起來(語言列按鈕與系統匣都走這一條)。
+  // 回傳 false = 沒送出去(沒連上,或對面是 v1 的服務)。
+  // ⚠ 回傳 false 時呼叫端**必須**有別的辦法把設定叫出來,否則那顆按鈕
+  //   就是這個專案抓過四次的「看得到但摸不到」。
+  bool SendOpenSettings();
+
   void Close();
 
   LinkPhase phase() const { return link_.phase(); }
 
  private:
   bool Connect();
-  bool Handshake();
+  // proto = 這一次要宣告的線路版本。降級重試就是拿不同的值再來一次。
+  bool ConnectAndHandshake(uint32_t proto);
+  bool Handshake(uint32_t proto);
   bool OpenSession();
   bool Exchange(const std::string& payload, uint32_t seq, std::string* reply,
                 DWORD timeout_ms);
@@ -69,6 +89,9 @@ class IpcClient {
   uint32_t seq_ = 0;
   std::wstring service_path_;
   int64_t last_launch_ms_ = -1;
+  uint32_t langid_ = 0;
+  std::string profile_guid_;
+  uint32_t negotiated_proto_ = 0;
 };
 
 }  // namespace rimewin

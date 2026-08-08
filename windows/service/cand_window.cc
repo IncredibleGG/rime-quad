@@ -12,6 +12,9 @@ constexpr wchar_t kClassName[] = L"RimeQuadCandidateWindow";
 constexpr UINT WM_RIME_UPDATE = WM_APP + 1;
 constexpr UINT WM_RIME_HIDE = WM_APP + 2;
 constexpr UINT WM_RIME_QUIT = WM_APP + 3;
+// 候選字級改了。單獨一則訊息而不是沿用 UPDATE:UPDATE 會把
+// pending_ 讀進 shown_,而設定改的時候 pending_ 可能是空的。
+constexpr UINT WM_RIME_RESTYLE = WM_APP + 4;
 
 COLORREF ToColorRef(const Rgba& c) { return RGB(c.r, c.g, c.b); }
 
@@ -68,6 +71,16 @@ void CandidateWindow::Update(const Snapshot& snap, const RECT& caret) {
   if (thread_id_) ::PostThreadMessageW(thread_id_, WM_RIME_UPDATE, 0, 0);
 }
 
+void CandidateWindow::SetTextScale(double scale) {
+  // 夾回一個講得通的範圍。值來自設定檔,而設定檔使用者改得到 ——
+  // 0 會讓字型高度變成 0(整片空白),100 會讓候選窗比螢幕還大。
+  if (!(scale > 0.2)) scale = 0.2;
+  if (scale > 4.0) scale = 4.0;
+  text_scale_.store(scale);
+  // 立刻重畫:下一次有候選時才生效的話,使用者會以為這個選項沒有作用。
+  if (thread_id_) ::PostThreadMessageW(thread_id_, WM_RIME_RESTYLE, 0, 0);
+}
+
 void CandidateWindow::Hide() {
   if (thread_id_) ::PostThreadMessageW(thread_id_, WM_RIME_HIDE, 0, 0);
 }
@@ -100,6 +113,11 @@ void CandidateWindow::UiThread() {
     if (msg.hwnd == nullptr) {
       switch (msg.message) {
         case WM_RIME_UPDATE:
+          Relayout();
+          continue;
+        case WM_RIME_RESTYLE:
+          // 候選窗現在可能是隱藏的(沒有候選)。Relayout 對空清單
+          // 會直接 Hide,所以這裡不必分情況。
           Relayout();
           continue;
         case WM_RIME_HIDE:
@@ -205,6 +223,12 @@ void CandidateWindow::Relayout() {
   scaled.window.border_width *= dpi_scale_;
   scaled.window.max_width *= dpi_scale_;
   scaled.metrics.spacing *= dpi_scale_;
+  // 使用者選的候選字級。**排版與繪製要用同一個值**:量測用一個、
+  // 畫用另一個的話,字會畫到框外面,而畫面看起來只是「有點擠」。
+  const double ts = text_scale_.load();
+  scaled.label.size *= ts;
+  scaled.text.size *= ts;
+  scaled.comment.size *= ts;
 
   layout_ = ComputeLayout(shown_.items, scaled, [this](const std::string& s,
                                                        double size) {
@@ -249,9 +273,11 @@ void CandidateWindow::Paint(HDC hdc) {
 
   ::SetBkMode(mem, TRANSPARENT);
 
-  HFONT f_label = MakeFont(style_.label.size * dpi_scale_);
-  HFONT f_text = MakeFont(style_.text.size * dpi_scale_);
-  HFONT f_comment = MakeFont(style_.comment.size * dpi_scale_);
+  // 與 Relayout 用同一個倍率(見那裡的說明)。
+  const double ts = text_scale_.load();
+  HFONT f_label = MakeFont(style_.label.size * dpi_scale_ * ts);
+  HFONT f_text = MakeFont(style_.text.size * dpi_scale_ * ts);
+  HFONT f_comment = MakeFont(style_.comment.size * dpi_scale_ * ts);
 
   for (size_t i = 0; i < layout_.items.size(); ++i) {
     const ItemLayout& box = layout_.items[i];

@@ -62,14 +62,53 @@ SRCS=(
   "${SCRIPT_DIR}"/tsf/*.cc
   "${SCRIPT_DIR}"/winshared/*.cc
   "${SCRIPT_DIR}"/service/*.cc
+  "${SCRIPT_DIR}"/setup/*.cc
   "${SCRIPT_DIR}/tests/probe_main.cc"
   "${SCRIPT_DIR}/tests/test_win32_layouts.cc"
 )
 
+# ── 檢查不了的檔案 ───────────────────────────────────────────────
+#
+# mingw-w64 的 ctfutb.h 是**不完整的**:它有 ITfLangBarItem / ITfLangBarItemMgr,
+# 但沒有 ITfLangBarItemButton、TfLBIClick、ITfMenu、TF_LANGBARITEMINFO。
+# 真正的 Windows SDK 有。所以 tsf/lang_bar.cc 在這支腳本裡檢查不了。
+#
+# ⚠ 跳過一定要**大聲**,而且要會自己過期。這個專案抓過「測試是綠的,
+#   因為它沒在測」;一個安靜的跳過清單就是那件事的溫床。
+#   所以下面先編一個探針:如果哪天 mingw 補上了那個介面,探針會編得過,
+#   而這支腳本會**失敗並叫人把跳過拿掉**。
+SKIP=("${SCRIPT_DIR}/tsf/lang_bar.cc")
+
+probe="$(mktemp /tmp/rimewin-langbar-probe.XXXXXX.cc)"
+cat > "${probe}" <<'PROBE'
+#include <windows.h>
+#include <msctf.h>
+#include <ctfutb.h>
+ITfLangBarItemButton* g_probe = nullptr;
+PROBE
+if "${MINGW}" -std=c++17 -fsyntax-only -DUNICODE -D_UNICODE \
+     -DWIN32_LEAN_AND_MEAN "${probe}" >/dev/null 2>&1; then
+  rm -f "${probe}"
+  die "mingw 的 ctfutb.h 現在有 ITfLangBarItemButton 了 ——
+  請把這支腳本裡的 SKIP 清單清空,讓 tsf/lang_bar.cc 也被檢查。"
+fi
+rm -f "${probe}"
+
 fail=0
 checked=0
+skipped=0
 for f in "${SRCS[@]}"; do
   [ -f "${f}" ] || continue
+  skip=0
+  for sk in "${SKIP[@]}"; do
+    [ "${f}" = "${sk}" ] && skip=1
+  done
+  if [ "${skip}" -eq 1 ]; then
+    skipped=$((skipped + 1))
+    printf '  SKIP %s(mingw 的 ctfutb.h 缺 ITfLangBarItemButton;只有 MSVC 檢查得到)\n' \
+      "${f#${ROOT}/}"
+    continue
+  fi
   checked=$((checked + 1))
   if "${MINGW}" "${FLAGS[@]}" "${f}"; then
     printf '  ok   %s\n' "${f#${ROOT}/}"
@@ -81,6 +120,10 @@ done
 
 # 一個檔案都沒檢查,卻報「通過」——那正是這個專案抓過的失敗模式。
 [ "${checked}" -gt 0 ] || die "一個原始檔都沒檢查到"
+if [ "${skipped}" -gt 0 ]; then
+  printf '\033[1;33m[warn]\033[0m 跳過了 %d 個檔案 —— 它們只有 CI 上的 MSVC 檢查得到。\n' \
+    "${skipped}"
+fi
 log "檢查了 ${checked} 個檔案"
 [ "${fail}" -eq 0 ] || die "語法檢查失敗,見上。"
 log "語法檢查通過 ✓(提醒:這不等於 MSVC 會過)"

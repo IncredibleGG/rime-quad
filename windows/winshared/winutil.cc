@@ -1,5 +1,10 @@
 #include "winutil.h"
 
+// StringFromGUID2 住在 objbase.h。WIN32_LEAN_AND_MEAN 之下 windows.h 不會
+// 把它帶進來 —— 而 mingw 的標頭會,所以 syntax_check_mingw.sh 是綠的、
+// MSVC 才紅。這正是那支腳本檔頭寫的「它綠了不代表 MSVC 會綠」。
+#include <objbase.h>
+
 #include <sddl.h>
 
 #include <vector>
@@ -57,6 +62,22 @@ std::wstring RimePipeName() {
   std::wstring sid = CurrentUserSidString();
   if (sid.empty()) sid = L"unknown";
   return L"\\\\.\\pipe\\rime-quad." + sid + L".v1";
+}
+
+std::wstring RimeServiceQuitEventName() {
+  std::wstring sid = CurrentUserSidString();
+  if (sid.empty()) sid = L"unknown";
+  return L"Local\\RimeQuadServiceQuit." + sid;
+}
+
+std::wstring RimeSettingsEventName() {
+  return L"Local\\RimeQuadSettings." + CurrentUserSidString();
+}
+
+std::string GuidToUtf8(const GUID& g) {
+  wchar_t buf[64] = {0};
+  if (::StringFromGUID2(g, buf, 64) == 0) return std::string();
+  return WideToUtf8(buf);
 }
 
 bool IsProcessElevated() {
