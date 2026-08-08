@@ -67,7 +67,12 @@ MUTATIONS=(
   "Sources/RimeQuadKit/CommitPolicy.swift|if s.menuCount > 0 { return .keepComposing }|if s.menuCount > 99 { return .keepComposing }|CommitPolicyTests"
   "Sources/RimeQuadKit/ThemeParser.swift|w.lines = c.child(\"lines\").int(1, min: 0, max: 16)|w.lines = c.child(\"lines\").int(2, min: 0, max: 16)|ThemeParserTests"
   "Sources/RimeQuadKit/StatusFace.swift|public static let latin = \"En\"|public static let latin = \"英\"|StatusFaceTests"
-  "Sources/RimeQuadKit/InputModeBinding.swift|case .hans: return true|case .hans: return false|SessionOptionsTests"
+  # ⚠ 這一格原本指向 InputModeBinding.simplificationOption,而變異測試
+  #   自己抓到了那個錯:紅的是 InputModeBindingTests,不是 SessionOptionsTests。
+  #   兩組都會碰到那一行,所以它證明不了「SessionOptionsTests 在測什麼」。
+  #   換成只有 SessionOptions 這一層碰得到的規則:「文字」頁明確選繁體時,
+  #   simplification 必須是 false(而且要蓋過輸入模式)。
+  "Sources/RimeQuadKit/SessionOptions.swift|case .traditional: out[\"simplification\"] = false|case .traditional: out[\"simplification\"] = true|SessionOptionsTests"
   "Sources/RimeQuadKit/SettingsCatalog.swift|blurb: T(\"打勾的方案才會出現在切換清單裡。可以拖曳排序,最上面那一個是預設。\",|blurb: T(\"改 schema_list\",|SettingsCatalogTests"
   "Sources/RimeQuadKit/ArchiveGuard.swift|\"yaml\", \"yml\", \"txt\", \"ocd2\", \"gram\", \"json\", \"md\", \"lua\",|\"yaml\", \"yml\", \"txt\", \"ocd2\", \"gram\", \"json\", \"md\", \"lua\", \"bin\",|ArchiveGuardTests"
   "Sources/RimeQuadKit/UserPhrases.swift|out.insert(p, at: 0)|out.append(p)|UserPhrasesTests"
