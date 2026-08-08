@@ -41,7 +41,34 @@ enum class LinkFailure {
   kIoError,         // 寫入或讀取失敗,對面多半已經不在了
   kBadMessage,      // 解碼失敗或序號對不上 —— 串流錯位,不可重新同步
   kServiceError,    // 對面明確回了 ERROR
+  // 對面**乾淨地**把連線關掉了(讀到 0 位元組),而不是我們等到逾時。
+  //
+  // ⚠ 這一格與 kTimeout 分開,不是為了好看。舊服務收到它解不開的 v2 HELLO
+  //   時做的正是這件事:整則丟掉、關掉連線。若把它記成 kTimeout,
+  //   「對面拒絕了我們的版本」與「對面只是慢」就變成同一個值 ——
+  //   而前者該降級重試 v1,後者不該(再試一次只是多花 300ms 的宿主 UI
+  //   執行緒時間,而且會把真正的原因蓋掉)。
+  kPeerClosed,
 };
+
+// 給診斷訊息用的名字。**不是**給程式判斷用的:比對請直接比 enum。
+//
+// 存在的理由:「連不上服務或握手失敗」這種把好幾種原因併成一句的訊息,
+// 會讓下一個看到它的人往錯的方向查。每一種失敗都要說得出自己的名字。
+inline const char* LinkFailureName(LinkFailure k) {
+  switch (k) {
+    case LinkFailure::kConnectFailed: return "開不了管道";
+    case LinkFailure::kHandshake:     return "握手版本不合";
+    case LinkFailure::kTimeout:       return "逾時";
+    case LinkFailure::kIoError:       return "I/O 失敗";
+    case LinkFailure::kBadMessage:    return "訊息解不開或序號錯位";
+    case LinkFailure::kServiceError:  return "服務回了 ERROR";
+    case LinkFailure::kPeerClosed:    return "對面關掉了連線";
+  }
+  // 沒有 default:新增一個列舉值而忘了給名字時,編譯器會用 -Wswitch 提醒。
+  // 走到這裡代表值不在列舉範圍內(記憶體被踩了),說出來比回空字串好。
+  return "(未知的失敗種類)";
+}
 
 class LinkState {
  public:

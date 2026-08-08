@@ -15,6 +15,57 @@
 
 namespace rimewin {
 
+// EnsureReady() 失敗在**哪一步**。
+//
+// ⚠ 這三步的修法完全不同,所以絕對不可以併成一句話講:
+//
+//   kPipe       管道開不起來。服務沒在監聽,或 SID / 權限對不上。
+//               → 要查的是服務進程的監聽迴圈(service.log 的 [pipe] 行),
+//                 不是協議。
+//   kHandshake  連上了,但 HELLO 談不攏(線路版本或 rime_shell ABI)。
+//               → 兩邊不是同一次建置的產物。要查的是「誰是舊的」。
+//   kSession    握手過了,SESSION_NEW 失敗或逾時。
+//               → 協議沒問題,是服務端太慢(多半是第一次載入方案詞典)。
+//                 要查的是服務端那一段做了什麼、為什麼超過預算。
+//
+// 這個列舉存在的直接理由:上一版的 rime_probe 對這三種情形一律印
+// 「連不上服務或握手失敗」,於是 CI 紅了也不知道該往哪裡查。
+enum class ReadyStage {
+  kNone,       // 還沒試過,或成功了
+  kPipe,
+  kHandshake,
+  kSession,
+};
+
+inline const char* ReadyStageName(ReadyStage s) {
+  switch (s) {
+    case ReadyStage::kNone:      return "(沒有失敗)";
+    case ReadyStage::kPipe:      return "開管道";
+    case ReadyStage::kHandshake: return "握手";
+    case ReadyStage::kSession:   return "建立 session";
+  }
+  return "(未知的階段)";
+}
+
+// 上一次嘗試的完整結果。診斷訊息要能說出「對方回了什麼」,
+// 不能只說「不合」—— 版本不合時,對方報的版本就是唯一有用的線索。
+struct ReadyDiagnosis {
+  ReadyStage stage = ReadyStage::kNone;
+  LinkFailure failure = LinkFailure::kConnectFailed;
+  // 開管道失敗時的 GetLastError()。ERROR_FILE_NOT_FOUND(2)= 沒有這條管道;
+  // ERROR_ACCESS_DENIED(5)= 管道在,但這個身分開不了(提權 / 非提權)。
+  // 這兩者長得一樣但完全不同,所以錯誤碼一定要留下來。
+  unsigned long os_error = 0;
+  uint32_t tried_proto = 0;   // 我方最後宣告的線路版本
+  uint32_t my_shell_abi = 0;  // 我方編譯時看到的 RIME_SHELL_ABI_VERSION
+  bool peer_replied = false;  // 服務端有沒有回一則解得開的 HELLO_OK
+  HelloOk peer;               // 它回了什麼
+  // 真正開過管道的次數。**不含**被連線狀態機的退避擋掉的那些 ——
+  // 「重試 100 次」不等於「嘗試了 100 次」,見 common/link_state.h
+  // 與 tests/test_link_state.cc 的 link_backoff_eats_almost_all_of_a_naive_retry_loop。
+  uint32_t attempts = 0;
+};
+
 class IpcClient {
  public:
   IpcClient();
@@ -66,6 +117,21 @@ class IpcClient {
 
   LinkPhase phase() const { return link_.phase(); }
 
+  // 上一次 EnsureReady() 的診斷。DLL 不需要它(它只需要「能不能吃按鍵」),
+  // 存在是為了讓 rime_probe 與日後的診斷工具講得出人話。
+  const ReadyDiagnosis& diagnosis() const { return diag_; }
+
+  // 把連線狀態機歸零(退避、失敗計數、階段),連線本身也收掉。
+  //
+  // ⚠ **DLL 不可以呼叫這個。** 退避是它保護宿主 UI 執行緒的手段:
+  //   服務真的死掉時,沒有退避就等於每一顆按鍵都在 UI 執行緒上開一次管道。
+  //
+  //   給誰用:驗證用的 rime_probe。它的等待迴圈要「真的試 N 次」,
+  //   而退避會把那 N 次吃掉大半(握手不合的退避是 30 秒,於是十秒的
+  //   等待迴圈裡只有第一次是真的)。那對 DLL 是正確行為,對一個
+  //   宣稱「重試 N 次」的測試工具則是謊報。
+  void ResetLink();
+
  private:
   bool Connect();
   // proto = 這一次要宣告的線路版本。降級重試就是拿不同的值再來一次。
@@ -75,7 +141,9 @@ class IpcClient {
   bool Exchange(const std::string& payload, uint32_t seq, std::string* reply,
                 DWORD timeout_ms);
   bool WriteAllTimed(const std::string& data, DWORD timeout_ms);
-  bool ReadFrameTimed(std::string* payload, DWORD timeout_ms);
+  // eof 收「對面乾淨地關掉了連線」(讀到 0 位元組)。與逾時分開,
+  // 理由見 common/link_state.h 的 LinkFailure::kPeerClosed。
+  bool ReadFrameTimed(std::string* payload, DWORD timeout_ms, bool* eof);
   void SendOneWay(const std::string& payload);
   bool RequestResult(const std::string& payload, uint32_t seq, Result* out);
   void Fail(LinkFailure kind);
@@ -92,6 +160,7 @@ class IpcClient {
   uint32_t langid_ = 0;
   std::string profile_guid_;
   uint32_t negotiated_proto_ = 0;
+  ReadyDiagnosis diag_;
 };
 
 }  // namespace rimewin
