@@ -174,6 +174,14 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
 
 > 自己更新自己那一行。
 
+> **2026-08-08 發布現況**(三端都在 R2 上,commit `98e52d8`):
+> Android `rime/rime-latest.apk`(versionCode 26080810)、
+> macOS `rime/macos/RimeQuad-latest.tar.gz`(arm64、ad-hoc 簽章)、
+> Windows `rime/windows/RimeQuad-windows-x64-latest.zip`(x64)。
+> 桌面兩端由 `scripts/publish_desktop.sh` 打包 —— CI artifact 本身不含執行期
+> 資料,直接給使用者會是「裝得起來、一個字都打不出來」。
+> **桌面兩端沒有任何人按過一顆鍵。**
+
 - **Android** — 可用的產品。拼音/注音/九宮格、鍵盤與主題由 YAML 驅動、鍵盤類型選單、
   自定義鍵位、方案市集(34 個)、離線開關與連網紀錄、應用內升級與金鑰輪替、
   介面在地化(英/繁/簡)。354 項單元測試、16 項發布關卡。
