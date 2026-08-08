@@ -45,7 +45,9 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -65,6 +67,7 @@ import androidx.core.view.WindowInsetsCompat
 import kotlinx.coroutines.delay
 import org.rimequad.ime.core.RimeStatus
 import org.rimequad.ime.prefs.LocalKeyBehavior
+import org.rimequad.ime.R
 import org.rimequad.ime.theme.HintPosition
 import org.rimequad.ime.theme.KeyGeometry
 import org.rimequad.ime.theme.KeyboardLayout
@@ -105,7 +108,7 @@ fun RimeKeyboard(
         Box(
             modifier.fillMaxWidth().height(120.dp),
             contentAlignment = Alignment.Center,
-        ) { Text(state.busyMessage ?: "正在載入主題…") }
+        ) { Text(state.busyMessage ?: stringResource(R.string.keyboard_loading_theme)) }
         return
     }
 
@@ -177,14 +180,14 @@ private fun BoxScope.KeyboardPanelHost(
             theme = theme,
             style = style,
             scaler = panelScaler,
-            title = "調整",
+            title = stringResource(R.string.panel_title_quick),
             showBack = false,
             onBack = back,
             onClose = close,
             trailing = {
                 AllSettingsLink(style, panelScaler) { onEvent(KeyboardEvent.OpenAppSettings) }
             },
-            subtitle = "底下這排隨時能繼續打字",
+            subtitle = stringResource(R.string.panel_subtitle_quick),
         ) {
             QuickPanelContent(state, style, panelScaler, theme, onEvent)
         }
@@ -194,14 +197,14 @@ private fun BoxScope.KeyboardPanelHost(
             theme = theme,
             style = style,
             scaler = panelScaler,
-            title = "鍵盤類型",
+            title = stringResource(R.string.panel_keyboard_type),
             showBack = true,
             onBack = back,
             onClose = close,
             trailing = {
                 AllSettingsLink(style, panelScaler) { onEvent(KeyboardEvent.OpenAppSettings) }
             },
-            subtitle = "選了立刻換",
+            subtitle = stringResource(R.string.panel_subtitle_types),
         ) {
             SchemaPickerContent(state = state, theme = theme, scaler = scaler, onEvent = onEvent)
         }
@@ -211,7 +214,7 @@ private fun BoxScope.KeyboardPanelHost(
             theme = theme,
             style = style,
             scaler = panelScaler,
-            title = "外觀",
+            title = stringResource(R.string.panel_appearance),
             showBack = true,
             onBack = back,
             onClose = close,
@@ -224,7 +227,7 @@ private fun BoxScope.KeyboardPanelHost(
             theme = theme,
             style = style,
             scaler = panelScaler,
-            title = "打出來的字",
+            title = stringResource(R.string.panel_group_output),
             showBack = true,
             onBack = back,
             onClose = close,
@@ -236,7 +239,7 @@ private fun BoxScope.KeyboardPanelHost(
             theme = theme,
             style = style,
             scaler = panelScaler,
-            title = "手感",
+            title = stringResource(R.string.panel_feel),
             onBack = back,
             onClose = close,
         ) {
@@ -247,7 +250,7 @@ private fun BoxScope.KeyboardPanelHost(
             theme = theme,
             style = style,
             scaler = panelScaler,
-            title = "候選字",
+            title = stringResource(R.string.panel_candidates),
             onBack = back,
             onClose = close,
         ) {
@@ -401,7 +404,7 @@ private fun CandidateBar(
             val notice = state.fatalMessage
                 ?: state.busyMessage
                 ?: state.configProblem
-                ?: if (state.isStub) "⟦STUB⟧ 未接 librime，候選字為假資料" else null
+                ?: if (state.isStub) stringResource(R.string.keyboard_stub_notice) else null
 
             if (notice != null) {
                 Text(
@@ -652,7 +655,7 @@ private fun SchemaPickerContent(
     Column(modifier = Modifier.fillMaxSize()) {
         if (state.keyboardTypes.isEmpty()) {
             Text(
-                text = "尚無可用方案（rs_schema_list 回傳空）",
+                text = stringResource(R.string.keyboard_no_schema),
                 fontSize = scaler.sp(style.labelSize * 0.7f),
                 color = Color(style.hintColor),
             )
@@ -664,7 +667,11 @@ private fun SchemaPickerContent(
             for (group in state.keyboardTypes) {
                 item(key = "group:" + group.title) {
                     Text(
-                        text = group.title,
+                        // ⚠ 一定要經過 localizedGroupTitle。分組鍵在 [KeyboardTypes]
+                        // 裡是寫死的中文代號（那是為了讓純函式測得動），直接畫出來
+                        // 就是把「中文（臺灣正體）」印在英文使用者的鍵盤上 ——
+                        // 而 App 裡同一份清單顯示的是 "Chinese (Taiwan)"。
+                        text = localizedGroupTitle(LocalContext.current, group.title),
                         fontSize = scaler.sp(style.hintSize * 1.15f),
                         color = Color(style.hintColor),
                         maxLines = 1,
@@ -725,13 +732,15 @@ private fun KeyboardTypeCard(
             .padding(horizontal = 10.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // 「自動選擇鍵盤」那張卡的標題同樣是代號不是文案,見 KeyboardTypeLabels。
+        val shown = type.localized(LocalContext.current)
         Column(modifier = Modifier.weight(1f)) {
             // 主標題是佈局名 = 使用者眼裡的鍵盤長相；副標題是方案名。
             // 兩者合起來就是那個組合標題：「九宮格拼音 ／ 朙月拼音」。
             // 分兩行而不是串成一行，是因為分組之後同一組裡方案名大量重複，
             // 串成一行會讓每一項的前半截長得一模一樣，反而看不出差別。
             Text(
-                text = type.title,
+                text = shown.title,
                 fontSize = scaler.sp(style.labelSize * 0.62f),
                 color = Color(if (current) style.activeForeground else style.foreground),
                 maxLines = 1,
@@ -740,7 +749,7 @@ private fun KeyboardTypeCard(
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                text = type.subtitle,
+                text = shown.subtitle,
                 fontSize = scaler.sp(style.hintSize),
                 // 選中的那張卡是 active 配色（多半是強調色底），主題的 hintColor
                 // 是配著一般底色調出來的，壓在強調色上會糊掉。選中時改用
@@ -787,7 +796,8 @@ private fun KeyGrid(
     if (layout == null || layer == null) {
         Box(Modifier.fillMaxWidth().height(160.dp), contentAlignment = Alignment.Center) {
             Text(
-                text = state.configProblem ?: "佈局尚未載入",
+                text = state.configProblem
+                    ?: stringResource(R.string.keyboard_layout_not_loaded),
                 color = Color(theme.candidates.shared.text.color),
             )
         }
@@ -1144,6 +1154,10 @@ internal fun faceOf(
     label: String,
     status: RimeStatus,
 ): String {
+    // ⚠ 底下這幾個漢字**刻意不進 strings.xml**。它們不是介面文案,是§9.4 的
+    // 鍵面:一顆中文輸入法的「中／En」鍵在英文系統上仍然印「中」,「繁／简」
+    // 鍵印的就是那兩個字本身 —— 那是它切換的東西,不是它的說明。四端共用
+    // 同一份鍵面才對得起來,翻成 Trad/Simp 反而是把規範改掉。
     val fromStatus = when (labelFrom) {
         LabelSource.NONE -> null
         LabelSource.INPUT_MODE -> if (status.isAsciiMode) INPUT_MODE_LATIN else INPUT_MODE_CJK

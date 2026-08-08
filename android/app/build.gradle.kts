@@ -308,6 +308,19 @@ tasks.withType<Test>().configureEach {
     inputs.dir(rimeThemes)
         .withPathSensitivity(PathSensitivity.RELATIVE)
         .withPropertyName("rimeThemes")
+    // res/ 同理,而且更隱蔽。StringCatalogTest 與 PanelStringsTest 直接讀
+    // src/main/res/values*/strings.xml 的**原始檔**(讀 R 沒有用:aapt 早就
+    // 把「這個語系缺這個 key」回落成預設值了)。但 testDebugUnitTest 的輸入
+    // 只有編譯產物與 R.jar,而 R.jar 只在**新增或刪除 key** 時才變 ——
+    // 改一句翻譯的文字,什麼都不會失效:
+    //
+    //     > Task :app:testDebugUnitTest UP-TO-DATE
+    //
+    // 也就是說,這個專案的在地化防線在「只改翻譯」的那一次從來沒跑過,
+    // 而那正是它唯一該跑的時候。
+    inputs.dir(layout.projectDirectory.dir("src/main/res"))
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+        .withPropertyName("appResources")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

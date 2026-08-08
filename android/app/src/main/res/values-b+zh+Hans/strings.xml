@@ -372,4 +372,60 @@
     <string name="remap_reset_one_done">「%1$s」已回到基础布局的原样。</string>
     <string name="remap_reset_all_done">全部自定义键位已清除。</string>
 
+
+    <!-- ─────────────── 鍵盤上的設定面板（keyboard/KeyboardPanels.kt）─────────────── -->
+    <!--
+      ⚠ 這一區的字**每一條都很窄**。標籤欄固定 64dp，格子只有面板寬的三分之一，
+        分段控制一格約 90dp，而且全部 maxLines=1 —— 太長不會換行，會直接被截掉，
+        而截掉在畫面上看起來只是「這個詞比較短」，不會有任何錯誤。
+        譯文請優先選短詞，寧可縮寫也不要湊完整句子。長度由 PanelStringsTest 守著。
+
+      ⚠ 與 App 設定頁重複的概念（繁體／簡體、全形／半形…）**刻意共用同一個 key**，
+        不另外寫一份。兩份對照表遲早會漂移成兩套不同的說法，而使用者會在同一個
+        設定的兩個入口看到兩種講法。只有 App 那份太長塞不進面板時才另立 panel_*。
+    -->
+    <string name="panel_title_quick">调整</string>
+    <string name="panel_subtitle_quick">底下这排随时能继续打字</string>
+    <string name="panel_subtitle_types">选了立刻换</string>
+    <string name="panel_group_look">键盘的样子</string>
+    <string name="panel_group_output">打出来的字</string>
+    <string name="panel_height">高度</string>
+    <string name="panel_appearance">外观</string>
+    <string name="panel_feel">手感</string>
+    <string name="panel_keyboard_type">键盘类型</string>
+    <string name="panel_candidates">候选字</string>
+    <string name="panel_text">文字</string>
+    <string name="panel_height_standard">标准</string>
+    <string name="panel_height_taller">高一点</string>
+    <string name="panel_height_shorter">矮一点</string>
+    <string name="panel_keyboard_type_auto">自动</string>
+    <string name="panel_hints">键上小字</string>
+    <string name="panel_hints_show">显示</string>
+    <string name="panel_hints_hide">不显示</string>
+    <string name="panel_long_press">长按</string>
+    <string name="panel_candidate_count">一次几个</string>
+    <string name="panel_candidate_size">字多大</string>
+    <string name="panel_space_commits">送出候选字</string>
+    <string name="panel_space_always">一律打空格</string>
+    <string name="panel_variant_traditional_short">繁</string>
+    <string name="panel_variant_simplified_short">简</string>
+    <string name="panel_punct_full_short">全角</string>
+    <string name="panel_punct_half_short">半角</string>
+    <string name="panel_feel_try">↓ 直接按下面的键试试看</string>
+    <string name="panel_candidates_preview">↑ 上面那条就是实际的样子</string>
+    <string name="panel_height_drag">上下拖动上缘调整</string>
+    <string name="panel_height_reset">回原本</string>
+    <string name="panel_height_done">好了</string>
+    <string name="panel_all_settings">全部设定 ›</string>
+
+    <!-- %1$s = 名字，%2$s = 目前的值。 -->
+    <string name="panel_summary_pair">%1$s·%2$s</string>
+
+    <!-- ─────────── 鍵盤本體上的狀態訊息（keyboard/KeyboardView.kt）─────────── -->
+
+    <string name="keyboard_loading_theme">正在载入主题…</string>
+    <string name="keyboard_stub_notice">⟦STUB⟧ 未接 librime，候选字为假资料</string>
+    <string name="keyboard_no_schema">尚无可用方案（rs_schema_list 返回空）</string>
+    <string name="keyboard_layout_not_loaded">布局尚未载入</string>
+
 </resources>

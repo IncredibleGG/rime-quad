@@ -445,4 +445,60 @@
     <string name="remap_reset_one_done">“%1$s” is back to how the layout shipped.</string>
     <string name="remap_reset_all_done">Every key change has been cleared.</string>
 
+
+    <!-- ─────────────── 鍵盤上的設定面板（keyboard/KeyboardPanels.kt）─────────────── -->
+    <!--
+      ⚠ 這一區的字**每一條都很窄**。標籤欄固定 64dp，格子只有面板寬的三分之一，
+        分段控制一格約 90dp，而且全部 maxLines=1 —— 太長不會換行，會直接被截掉，
+        而截掉在畫面上看起來只是「這個詞比較短」，不會有任何錯誤。
+        譯文請優先選短詞，寧可縮寫也不要湊完整句子。長度由 PanelStringsTest 守著。
+
+      ⚠ 與 App 設定頁重複的概念（繁體／簡體、全形／半形…）**刻意共用同一個 key**，
+        不另外寫一份。兩份對照表遲早會漂移成兩套不同的說法，而使用者會在同一個
+        設定的兩個入口看到兩種講法。只有 App 那份太長塞不進面板時才另立 panel_*。
+    -->
+    <string name="panel_title_quick">Adjust</string>
+    <string name="panel_subtitle_quick">You can keep typing on the row below</string>
+    <string name="panel_subtitle_types">Applies straight away</string>
+    <string name="panel_group_look">The keyboard</string>
+    <string name="panel_group_output">What you type</string>
+    <string name="panel_height">Height</string>
+    <string name="panel_appearance">Look</string>
+    <string name="panel_feel">Feel</string>
+    <string name="panel_keyboard_type">Keyboard</string>
+    <string name="panel_candidates">Candidates</string>
+    <string name="panel_text">Text</string>
+    <string name="panel_height_standard">Standard</string>
+    <string name="panel_height_taller">Taller</string>
+    <string name="panel_height_shorter">Shorter</string>
+    <string name="panel_keyboard_type_auto">Automatic</string>
+    <string name="panel_hints">Key hints</string>
+    <string name="panel_hints_show">Show</string>
+    <string name="panel_hints_hide">Hide</string>
+    <string name="panel_long_press">Long press</string>
+    <string name="panel_candidate_count">How many</string>
+    <string name="panel_candidate_size">Size</string>
+    <string name="panel_space_commits">Picks candidate</string>
+    <string name="panel_space_always">Always space</string>
+    <string name="panel_variant_traditional_short">Trad</string>
+    <string name="panel_variant_simplified_short">Simp</string>
+    <string name="panel_punct_full_short">Full</string>
+    <string name="panel_punct_half_short">Half</string>
+    <string name="panel_feel_try">↓ Just press the keys below</string>
+    <string name="panel_candidates_preview">↑ That row above is the real thing</string>
+    <string name="panel_height_drag">Drag the top edge</string>
+    <string name="panel_height_reset">Undo</string>
+    <string name="panel_height_done">Done</string>
+    <string name="panel_all_settings">All settings ›</string>
+
+    <!-- %1$s = 名字，%2$s = 目前的值。 -->
+    <string name="panel_summary_pair">%1$s · %2$s</string>
+
+    <!-- ─────────── 鍵盤本體上的狀態訊息（keyboard/KeyboardView.kt）─────────── -->
+
+    <string name="keyboard_loading_theme">Loading theme…</string>
+    <string name="keyboard_stub_notice">⟦STUB⟧ librime is not wired up; these candidates are fake</string>
+    <string name="keyboard_no_schema">No input schemas available (rs_schema_list came back empty)</string>
+    <string name="keyboard_layout_not_loaded">Layout has not loaded yet</string>
+
 </resources>

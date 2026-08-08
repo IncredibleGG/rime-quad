@@ -23,6 +23,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import org.rimequad.ime.keyboard.localized
+import org.rimequad.ime.keyboard.localizedGroupTitle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.rimequad.ime.R
@@ -185,26 +187,9 @@ private fun localizedLanguages(): LanguageTable {
 private fun looksSimplified(l: java.util.Locale): Boolean =
     l.script == "Hans" || (l.script.isEmpty() && l.country in setOf("CN", "SG"))
 
-internal fun localizedGroupTitle(context: Context, raw: String): String = when (raw) {
-    KeyboardTypes.ZH_TW -> context.getString(R.string.lang_group_zh_tw)
-    KeyboardTypes.ZH_HK -> context.getString(R.string.lang_group_zh_hk)
-    KeyboardTypes.YUE -> context.getString(R.string.lang_group_yue)
-    KeyboardTypes.ZH -> context.getString(R.string.lang_group_zh)
-    KeyboardTypes.OTHER -> context.getString(R.string.lang_group_other)
-    else -> raw
-}
-
-/**
- * 「這個方案一份佈局都配不上」時 [KeyboardTypes] 會放一張寫著
- * [KeyboardType.AUTO_LABEL] 的卡。那個常數是純函式裡的字面值（它要能在
- * JVM 單元測試裡被斷言），所以在地化在這裡做，不在那裡做。
- */
-private fun KeyboardType.localized(context: Context): KeyboardType =
-    if (layoutName == KeyboardType.AUTO_LABEL) {
-        copy(layoutName = context.getString(R.string.keyboard_auto_label))
-    } else {
-        this
-    }
+// localizedGroupTitle 與 KeyboardType.localized 已搬到
+// keyboard/KeyboardTypeLabels.kt —— 鍵盤上的方案選單也要用同一份,
+// 兩邊各留一份的下場是同一個分組在 App 與鍵盤上叫兩個不同的名字。
 
 /**
  * 引導頁上要問的那個問題，只放得下**幾張卡**。
