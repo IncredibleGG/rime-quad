@@ -1,0 +1,63 @@
+name: Native (librime 交叉編譯)
+
+# 為什麼這個是獨立的、而且不是每次 push 都跑:
+#
+#   `third_party/prebuilt/` 底下的靜態庫（librime 與 5 個依賴，含編進去的
+#   librime-lua）**有進版控**，所以日常的 APK 建置直接用它們，幾分鐘就好。
+#   代價是「committed 的 .a 是不是真的能從原始碼重建出來」變成一件沒人檢查的事。
+#
+#   這個 workflow 就是那個檢查。手動觸發、每月一次，從原始碼把兩個 ABI 重編一遍，
+#   確認建置腳本仍然可用、上游沒有把我們踩到的坑改掉又踩出新的。
+#
+#   它**不會**自動更新 committed 的 .a —— 換掉那些是有意識的決定（會改變所有
+#   使用者拿到的引擎），必須有人看過差異再手動提交。
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 每月 1 號，UTC 03:00
+    - cron: '0 3 1 * *'
+
+jobs:
+  cross-compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: 取出原始碼
+        uses: actions/checkout@v4
+
+      - name: 設定 Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: 安裝 NDK 與 CMake
+        run: |
+          # 必須與 manifest.json 記錄的一致。另外注意:一定要用 SDK 內附的
+          # cmake 3.22.1，不可用系統的 cmake 4.x —— CMake 4 移除了 FindBoost，
+          # header-only 的 Boost 查找會直接失敗。
+          sdkmanager --install "ndk;27.2.12479018" "cmake;3.22.1" > /dev/null
+
+      - name: 交叉編譯（arm64-v8a）
+        run: ./scripts/build_native.sh arm64-v8a
+
+      - name: 交叉編譯（x86_64）
+        run: ./scripts/build_native.sh x86_64
+
+      - name: 與版控中的產物比對
+        run: |
+          # 不強制相同（編譯器版本、時戳都可能造成差異），但把差異印出來，
+          # 讓人決定要不要更新。靜默的漂移比明顯的差異危險。
+          git status --short third_party/prebuilt/ || true
+          echo "--- 大小對照 ---"
+          for abi in arm64-v8a x86_64; do
+            for f in third_party/prebuilt/$abi/lib/*.a; do
+              printf "%-52s %s\n" "$f" "$(stat -c%s "$f")"
+            done
+          done
+
+      - name: 上傳重建的靜態庫
+        uses: actions/upload-artifact@v4
+        with:
+          name: prebuilt-${{ github.sha }}
+          path: third_party/prebuilt/
+          if-no-files-found: error

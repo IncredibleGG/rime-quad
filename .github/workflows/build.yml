@@ -1,0 +1,111 @@
+name: Android
+
+# 為什麼這個 workflow 看起來比一般 Android 專案複雜:
+#
+#   這個 App 的 assets 裡有 13MB 的輸入方案資料（詞庫、語言模型、opencc 詞典），
+#   而那些資料是**產生出來的**，不在版控裡（見 .gitignore）。少了它們，建置照樣
+#   會成功，但產出的是一個「裝得起來、鍵盤畫得出來、一個字都打不出來」的輸入法
+#   —— 而且沒有任何建置錯誤會提醒你。
+#
+#   所以下面第 3、4 步不是可選的:先取得上游方案原始資料（版本已釘死），再用
+#   host 版 opencc 產生 .ocd2 詞典（交叉編譯出來的 opencc 是 Android 執行檔，
+#   在 CI 上跑不了，這一步必須用 host 編一份）。
+#
+#   librime 與其依賴的靜態庫（third_party/prebuilt/）**有進版控**，所以這裡不必
+#   重新交叉編譯 —— 那是 native.yml 的工作。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: 取出原始碼
+        uses: actions/checkout@v4
+
+      - name: 設定 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 設定 Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: 安裝 NDK 與 CMake
+        run: |
+          # 版本必須與 third_party/prebuilt/manifest.json 記錄的一致 ——
+          # 那些 .a 就是用這個 NDK 編出來的，混用會出現難查的 ABI 問題。
+          sdkmanager --install "ndk;27.2.12479018" "cmake;3.22.1" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - name: 取得方案原始資料（版本已釘死）
+        run: ./scripts/fetch_rime_data.sh
+
+      - name: 建 host 版 opencc 以產生詞典
+        run: |
+          # 交叉編譯時 opencc 的 Dictionaries target 會執行剛編出來的 Android 版
+          # opencc_dict，在交叉環境必炸，所以那一步被繞開了。.ocd2 只能用 host 版產生。
+          cmake -S third_party/librime/deps/opencc -B third_party/build/host-opencc \
+                -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+                -DENABLE_GTEST=OFF -DENABLE_BENCHMARK=OFF -DBUILD_PYTHON=OFF \
+                -DBUILD_DOCUMENTATION=OFF -DOPENCC_ENABLE_INSTALL=ON \
+                -DCMAKE_INSTALL_PREFIX="$PWD/third_party/build/host-opencc-install"
+          cmake --build third_party/build/host-opencc -j"$(nproc)"
+          cmake --install third_party/build/host-opencc
+
+      - name: 組裝執行期資料
+        run: ./scripts/collect_data.sh
+
+      - name: 離線稽核（確認沒有第二個連網出口）
+        run: ./scripts/audit_offline.sh
+
+      - name: 單元測試
+        run: ./gradlew --console=plain :app:testDebugUnitTest
+        working-directory: android
+
+      - name: 建置 APK
+        run: ./gradlew --console=plain :app:assembleDebug
+        working-directory: android
+
+      - name: 確認 APK 真的含有方案資料
+        run: |
+          # 這一步存在的理由見檔頭:少了 assets，前面每一步都會成功。
+          APK=android/app/build/outputs/apk/debug/app-debug.apk
+          LIST="$(unzip -l "$APK")"
+          fail=0
+          for want in 'assets/rime/shared/essay.txt' 'lib/arm64-v8a/' 'lib/x86_64/'; do
+            case "$LIST" in *"$want"*) echo "  ✓ $want" ;;
+              *) echo "  !! 缺少 $want" >&2; fail=1 ;;
+            esac
+          done
+          n="$(printf '%s\n' "$LIST" | grep -c 'assets/rime/.*\.yaml' || true)"
+          echo "  隨附 yaml: $n"
+          [ "$n" -gt 0 ] || { echo "  !! assets 裡沒有任何 yaml" >&2; fail=1; }
+          exit $fail
+
+      - name: 上傳 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-${{ github.sha }}
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: 上傳測試報告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ github.sha }}
+          path: android/app/build/reports/tests/
+          if-no-files-found: ignore
