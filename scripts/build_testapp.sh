@@ -84,6 +84,7 @@ public class MainActivity extends Activity {
 
     /** 自動化用來定位輸入框的 content-description。 */
     public static final String INPUT_DESC = "rime_test_input";
+    private EditText mInput;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -116,16 +117,40 @@ public class MainActivity extends Activity {
                         | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
 
         input.requestFocus();
-        input.post(new Runnable() {
-            @Override
-            public void run() {
-                InputMethodManager imm =
-                        (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
-                if (imm != null) {
-                    imm.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT);
-                }
-            }
-        });
+        mInput = input;
+        askForKeyboard();
+    }
+
+    // 為什麼要重試,而不是在 onCreate 裡叫一次就好:
+    //
+    //   onCreate 裡的 showSoftInput() 可能跑在視窗拿到焦點之前。那時 IMM 還沒有
+    //   「served view」,請求會被丟掉 —— logcat 裡是
+    //     ImeTracker: onFailed at PHASE_CLIENT_VIEW_SERVED
+    //   而且**完全沒有其他徵兆**:輸入法進程根本不會被啟動,看起來就像輸入法壞了。
+    //
+    //   這是個競態,所以它時好時壞。CI 上同一個 commit 一次過、一次沒過,
+    //   查了才知道是這支測試靶自己沒把鍵盤叫起來,不是輸入法的問題。
+    private void askForKeyboard() {
+        if (mInput == null) return;
+        InputMethodManager imm =
+                (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imm == null) return;
+        mInput.requestFocus();
+        imm.showSoftInput(mInput, InputMethodManager.SHOW_IMPLICIT);
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (!hasFocus) return;
+        // 拿到焦點之後才是真正有效的那一次。再補幾次,涵蓋首次部署把 IME
+        // 進程拖慢、系統把請求丟掉的情況。
+        askForKeyboard();
+        for (int i = 1; i <= 6; i++) {
+            mInput.postDelayed(new Runnable() {
+                @Override public void run() { askForKeyboard(); }
+            }, i * 2000L);
+        }
     }
 }
 JAVA

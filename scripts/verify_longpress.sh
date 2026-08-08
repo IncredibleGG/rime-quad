@@ -184,7 +184,9 @@ SHOWN=0
 for i in $(seq 1 "$DEPLOY_TIMEOUT"); do
   adbs shell dumpsys input_method > "$OUT_DIR/input_method.txt" 2>/dev/null || true
   grep -q "mIsInputViewShown=true" "$OUT_DIR/input_method.txt" && { SHOWN=1; break; }
-  [ "$i" -eq 5 ] && adbs shell input tap 540 300 >/dev/null 2>&1 || true
+  # 每 10 秒補點一次:只點一次的話,錯過那一下就再也沒有人去叫鍵盤了。
+  # 見 verify_rime_compose.sh 裡同一段的註解。
+  [ $((i % 10)) -eq 5 ] && adbs shell input tap 540 300 >/dev/null 2>&1 || true
   sleep 1
 done
 [ "$SHOWN" -eq 1 ] || fail "鍵盤在 ${DEPLOY_TIMEOUT}s 內沒有出現"
@@ -214,7 +216,9 @@ adbs shell monkey -p dev.rime.imetest -c android.intent.category.LAUNCHER 1 >/de
 SHOWN=0
 for i in $(seq 1 "$DEPLOY_TIMEOUT"); do
   adbs shell dumpsys input_method 2>/dev/null | grep -q "mIsInputViewShown=true" && { SHOWN=1; break; }
-  [ "$i" -eq 5 ] && adbs shell input tap 540 300 >/dev/null 2>&1 || true
+  # 每 10 秒補點一次:只點一次的話,錯過那一下就再也沒有人去叫鍵盤了。
+  # 見 verify_rime_compose.sh 裡同一段的註解。
+  [ $((i % 10)) -eq 5 ] && adbs shell input tap 540 300 >/dev/null 2>&1 || true
   sleep 1
 done
 [ "$SHOWN" -eq 1 ] || fail "重啟後鍵盤沒有再出現"

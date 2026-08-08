@@ -258,11 +258,28 @@ SHOWN=0
 for i in $(seq 1 "$DEPLOY_TIMEOUT"); do
   adbs shell dumpsys input_method > "$OUT_DIR/input_method.txt" 2>/dev/null || true
   if grep -q "mIsInputViewShown=true" "$OUT_DIR/input_method.txt"; then SHOWN=1; break; fi
-  [ "$i" -eq 5 ] && adbs shell input tap 540 300 >/dev/null 2>&1 || true
+  # 每 10 秒補點一次輸入框。只點一次不夠:視窗剛開時點下去可能還沒 layout 完,
+  # 而那一次錯過就再也沒有人去叫鍵盤了。
+  [ $((i % 10)) -eq 5 ] && adbs shell input tap 540 300 >/dev/null 2>&1 || true
   [ $((i % 15)) -eq 0 ] && echo "  ...已等待 ${i}s(首次部署較慢屬正常)"
   sleep 1
 done
-[ "$SHOWN" -eq 1 ] || fail "鍵盤在 ${DEPLOY_TIMEOUT}s 內沒有出現。若是首次部署卡住,查 $OUT_DIR/logcat.txt 中 rime 的部署訊息"
+if [ "$SHOWN" -ne 1 ]; then
+  # 分辨兩件很不一樣的事:
+  #   (a) 宿主 app 根本沒把鍵盤叫起來 → ImeTracker 會記 onFailed,
+  #       而且輸入法進程完全不會被啟動。那是測試靶或宿主的問題。
+  #   (b) 叫了、輸入法也起來了,但畫面沒出現 → 那才是我們的 bug。
+  # 少了這一句,兩者在報告裡長得一模一樣。
+  adbs logcat -d > "$OUT_DIR/logcat.txt" 2>/dev/null || true
+  REQ=$(grep -c "ImeTracker.*onRequestShow" "$OUT_DIR/logcat.txt" 2>/dev/null || echo 0)
+  BAD=$(grep -c "ImeTracker.*onFailed" "$OUT_DIR/logcat.txt" 2>/dev/null || echo 0)
+  IMEUP=$(grep -c "$IME_PKG.*nativeloader\|Start proc.*$IME_PKG" "$OUT_DIR/logcat.txt" 2>/dev/null || echo 0)
+  echo "  [INFO] ImeTracker:請求 $REQ 次、失敗 $BAD 次;輸入法進程啟動跡象 $IMEUP 次"
+  if [ "$REQ" -gt 0 ] && [ "$BAD" -ge "$REQ" ] && [ "$IMEUP" -eq 0 ]; then
+    echo "  [INFO] 每一次請求都失敗、而且輸入法進程從沒被啟動 —— 指向宿主/測試靶沒把鍵盤叫起來,不是輸入法本身"
+  fi
+  fail "鍵盤在 ${DEPLOY_TIMEOUT}s 內沒有出現。若是首次部署卡住,查 $OUT_DIR/logcat.txt 中 rime 的部署訊息"
+fi
 pass "鍵盤已顯示"
 
 CUR_ID="$(grep -o 'mCurId=[^ ]*' "$OUT_DIR/input_method.txt" | head -1 | cut -d= -f2)"
