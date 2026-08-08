@@ -174,6 +174,14 @@ set -e
 }
 ok "安裝程式以 0 結束"
 
+# 安裝程式自己記下來的那幾行(註冊、enable-user 的兩種身分各自的結果)。
+# 一律印出來,不是只在失敗時 —— 「enable-user 沒跑到」與「跑了但回錯」
+# 在報表上長得一模一樣,而要分辨得再等一輪 CI。
+if [ -f "${WORK}/install.log" ]; then
+  echo "  --- 安裝程式的記錄 ---"
+  tr -d '\r' < "${WORK}/install.log" | grep -a 'RimeQuad:' | sed 's/^/    /' || true
+fi
+
 # ── 檔案真的在嗎 ──────────────────────────────────────────────────
 #
 # ⚠ data\shared 是這一段的重點。少了它,前面每一步都會成功、服務起得來、
@@ -522,13 +530,33 @@ else
      這是唯一一項重裝也補救不回來的失敗。"
 fi
 
-# 檔案有沒有清乾淨(允許 restartreplace 留下待重開機刪除的殘骸)。
-if [ -d "${INSTALL_DIR}" ]; then
-  left="$(find "${INSTALL_DIR}" -type f 2>/dev/null | wc -l | tr -d ' ')"
-  [ "${left}" -eq 0 ] && ok "安裝目錄已清空" \
-    || note_fail "安裝目錄還留著 ${left} 個檔案:$(find "${INSTALL_DIR}" -type f | head -5 | tr '\n' ' ')"
-else
+# ── 檔案有沒有清乾淨 ──────────────────────────────────────────────
+#
+# ⚠ 要斷言的是「**我們的**檔案都不在了」,不是「目錄裡一個檔案都沒有」。
+#
+# Inno 的解除安裝程式沒有辦法在執行中刪掉自己,它用 MoveFileEx 排到下次開機
+# 才刪 —— 所以靜默解除安裝之後 unins000.exe / unins000.dat 還在是**正常的**,
+# 不是我們沒清乾淨。(實測:第一次跑就只剩這一個檔案,而其餘全部清光。)
+# 把它判成失敗的話,這道斷言會在產品完全正確時紅,而那看起來像產品壞了。
+#
+# 先給它一點時間:解除安裝程式返回之後,刪檔還在收尾。
+for i in $(seq 1 30); do
+  [ -d "${INSTALL_DIR}" ] || break
+  remaining="$(find "${INSTALL_DIR}" -type f ! -name 'unins*' 2>/dev/null | wc -l | tr -d ' ')"
+  [ "${remaining}" -eq 0 ] && break
+  sleep 1
+done
+
+if [ ! -d "${INSTALL_DIR}" ]; then
   ok "安裝目錄已移除"
+else
+  ours="$( (find "${INSTALL_DIR}" -type f ! -name 'unins*' 2>/dev/null || true) | wc -l | tr -d ' ')"
+  if [ "${ours}" -eq 0 ]; then
+    left_all="$( (find "${INSTALL_DIR}" -type f 2>/dev/null || true) | wc -l | tr -d ' ')"
+    ok "我們的檔案都清掉了(還剩 ${left_all} 個 Inno 自己的 unins*,下次開機由系統刪除)"
+  else
+    note_fail "安裝目錄還留著 ${ours} 個**我們的**檔案:$( (find "${INSTALL_DIR}" -type f ! -name 'unins*' | head -5 | tr '\n' ' ') )"
+  fi
 fi
 
 echo

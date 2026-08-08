@@ -173,10 +173,14 @@ fi
 command -v cygpath >/dev/null 2>&1 || die "必須在 Git Bash / MSYS2 下執行"
 w() { cygpath -w "$1"; }
 
+# --lint 只驗 .iss 本身,用的是假的 payload —— 它刻意要能在**沒有** librime
+# 產物、也沒有執行期資料的快速 job 上跑。那正是它四分鐘就有答案的原因。
+if [ "${LINT}" -eq 0 ]; then
 [ -d "${BIN}" ] || die "找不到 ${BIN};先跑 windows/build.sh ime"
 [ -d "${ROOT}/core/data/shared" ] \
   || die "缺少 core/data/shared。先跑 scripts/fetch_rime_data.sh 與 scripts/collect_data.sh
   少了它,安裝程式會裝出一個「註冊得上但一個字都打不出來」的輸入法。"
+fi
 
 # ---------------------------------------------------------------- 版本
 #

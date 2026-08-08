@@ -241,9 +241,37 @@ begin
   // check 才會去確認登錄檔真的長出東西、而且 TSF 的列舉 API 看得到我們。
   RunSetupVerbOrFail('check');
 
-  // 使用者那一側。**失敗不中止安裝**:輸入法已經全機註冊好了,使用者仍然
-  // 可以自己從「設定」把它加進來。為了這一步讓整個安裝回滾是不成比例的。
-  ExecAsOriginalUser(Exe, 'enable-user', '', SW_HIDE, ewWaitUntilTerminated, Rc);
+  // ── 使用者那一側 ────────────────────────────────────────────────
+  //
+  // **兩種身分都跑**,而且都 best-effort。
+  //
+  //   · ExecAsOriginalUser 是正確的那一條:使用者用系統管理員帳號提權安裝時,
+  //     提權後的 HKCU 是**那個管理員的**,真正在用電腦的人什麼都沒拿到。
+  //   · 但它需要拿得到「原始使用者」的權杖,而那來自 shell(Explorer)。
+  //     沒有互動式桌面的環境(例如 CI runner)上它拿不到,於是整步靜靜地
+  //     什麼都沒做 —— 實測就是這樣:全機註冊全綠,HKCU 底下一片空白。
+  //   · 所以提權那一條也跑一次。它寫的是執行安裝那個帳號的 HKCU,
+  //     對「自己就是管理員」的一般情況正好是對的。
+  //
+  // 失敗不中止安裝:輸入法已經全機註冊好了,使用者仍然可以自己從「設定」
+  // 把它加進來。為了這一步讓整個安裝回滾是不成比例的。
+  //
+  // 結果寫進安裝記錄(/LOG)。沒有它的話,「enable-user 沒跑到」與
+  // 「跑了但 EnableLanguageProfile 回錯」在報表上長得一模一樣,
+  // 而要分辨得再等一輪 CI。
+  try
+    if ExecAsOriginalUser(Exe, 'enable-user', '', SW_HIDE, ewWaitUntilTerminated, Rc) then
+      Log('RimeQuad: enable-user(登入者)rc=' + IntToStr(Rc))
+    else
+      Log('RimeQuad: enable-user(登入者)**啟動失敗** —— 多半是沒有互動式 shell');
+  except
+    Log('RimeQuad: ExecAsOriginalUser 不可用');
+  end;
+
+  if Exec(Exe, 'enable-user', '', SW_HIDE, ewWaitUntilTerminated, Rc) then
+    Log('RimeQuad: enable-user(目前身分)rc=' + IntToStr(Rc))
+  else
+    Log('RimeQuad: enable-user(目前身分)啟動失敗');
 end;
 
 // 解除安裝時的收尾。
