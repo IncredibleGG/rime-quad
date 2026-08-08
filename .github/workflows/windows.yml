@@ -97,8 +97,16 @@ jobs:
       - name: 離線稽核（原始碼層面:沒有任何檔案碰網路 API）
         run: ./windows/audit_offline_win.sh
 
+      # 與上面「框架必須會紅」同一個約定:--self-check 植入一個真的
+      # WinHttpOpen 呼叫,並要求腳本**非零結束**。一支只會印綠字的稽核
+      # 腳本比沒有更糟 —— 它讓人以為有人在看。
       - name: 反向測試（離線稽核必須抓得到植入的違規）
-        run: ./windows/audit_offline_win.sh --self-check
+        run: |
+          if ./windows/audit_offline_win.sh --self-check; then
+            echo "!! 植入了一個真的 WinHttpOpen 呼叫,稽核腳本卻以 0 結束 —— 它不會紅" >&2
+            exit 1
+          fi
+          echo "反向測試通過:離線稽核會紅"
 
       # 安裝程式最貴的失敗模式是「忘了把執行期資料包進去」——
       # 那樣的話安裝程式編得出來、安裝成功、輸入法也註冊得上,

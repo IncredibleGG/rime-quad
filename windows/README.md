@@ -186,7 +186,16 @@ CI 一輪要幾分鐘到十幾分鐘。這兩支在開發機(Ubuntu)上就跑得
 windows/run_logic_tests.sh          # g++ 編 common/ + tests/,跑 54 個案例
 windows/run_logic_tests.sh --asan   # 加 ASan/UBSan(解碼器的模糊邊界)
 MINGW=<mingw g++> windows/syntax_check_mingw.sh   # tsf/ 與 service/ 的語法檢查
+windows/audit_offline_win.sh                     # 原始碼層面的離線稽核
+windows/audit_offline_win.sh --self-check        # 它的反向測試
 ```
+
+⚠ `syntax_check_mingw.sh` 目前**跳過** `tsf/lang_bar.cc`:mingw-w64 的
+`ctfutb.h` 沒有 `ITfLangBarItemButton`(真正的 Windows SDK 有)。
+跳過是大聲的,而且**會自己過期** —— 腳本先編一個探針,mingw 哪天補上了
+就會失敗並叫人把跳過拿掉。為了讓跳過只有一個檔案,`tsf/lang_bar.h` 對外
+只露四個函式與一個不透明型別;型別露在標頭上的話,`text_service.cc`
+(全案最大的檔案)也會一起檢查不了。
 
 `syntax_check_mingw.sh` **不是建置**,是 `-fsyntax-only`。它綠了不代表 MSVC 會綠;
 但它紅了 MSVC 幾乎一定也紅,而它十秒就給答案。取得 mingw 的方法(不需要 root)
@@ -405,6 +414,13 @@ Windows 端要做的只是**發現使用者換了方案**(從快照的 `schema_i
 | 測試框架本身會不會紅 | `rime_tests --self-check`(反向測試) |
 | 安裝包少了執行期資料就出不了貨 | `make_installer.sh --self-check`(反向測試) |
 | **真的裝一次:登錄檔、TSF 列舉、打字、解除安裝** | `verify_installer.sh`,見下 |
+| **langid → 方案/字形**(含 v1↔v2 的線路相容) | `test_schema_choice.cc` / `test_proto_compat.cc` |
+| 設定的讀寫:三態、未知鍵保留、下拉索引、值不能偽造一行 | `test_settings.cc` |
+| 方案排序寫回 `default.custom.yaml`(含「看不懂就明著失敗」) | `test_schema_list_patch.cc` |
+| 離線守門的判斷與紀錄格式(尚未接上,見下) | `test_net_policy.cc` |
+| **原始碼裡沒有任何檔案碰網路 API** | `audit_offline_win.sh`(含反向測試) |
+| **產物的匯入表裡沒有網路 DLL** | `check_binaries.sh` 的 `NET_DLLS` |
+| **裝好的**那份 `rime_service.exe` 真的替簡體使用者選簡體方案 | `verify_installer.sh` §5b(含反向測試) |
 
 ### 這一輪從「驗不了」搬到「驗得了」的
 
@@ -496,6 +512,43 @@ Windows 端要做的只是**發現使用者換了方案**(從快照的 `schema_i
 10. **`ToUnicodeEx` 的死鍵狀態沒有被我們吃掉。** 程式碼帶了「不改動鍵盤狀態」
     的旗標,但那件事只有真的按一次法文的 `^` 再按 `e` 才驗得到。
 
+### 這一輪新增、而且**一項都沒有被驗過**的
+
+⚠ 這一整段是這一輪最需要人去按一遍的地方。CI 驗到的是「判斷邏輯對」與
+「編得起來」,**沒有一個像素、沒有一次點擊被驗證過**。
+
+11. **`ITfInputProcessorProfileMgr::GetActiveProfile` 在 `ActivateEx` 的當下
+    回傳的是不是我們。** 註冊完的 CTF 快取有延遲(實測 0.12 秒看不到、
+    22 秒後看得到,見下面「三件實際踩到的事」),`Activate` 的當下會不會
+    也有同一類延遲**沒有驗過**。有三層退路(ProfileMgr → GetCurrentLanguage
+    → `LOWORD(GetKeyboardLayout(0))`),但**三層都沒有被執行過一次**。
+12. **`ITfInputProcessorProfileActivationSink` 到底會不會被呼叫。** 這是
+    「使用者從繁體切到簡體」唯一的通知管道 —— 少了它,切換完全沒有效果。
+    整條路徑目前是紙上的。
+13. **語言列上到底看不看得到那顆「設定」按鈕。** `TF_LBI_STYLE_SHOWNINTRAY`
+    是照文件加的;`GetIcon` 回 `E_FAIL` 讓它退回顯示文字,那是慣例,
+    **沒有在任何一個宿主上看過**。
+14. **按下那顆按鈕之後設定視窗會不會出現。** 三條路(IPC / 具名事件 /
+    CreateProcess)一條都沒被走過。UWP 宿主那一條尤其可疑。
+15. **系統匣圖示會不會出現、右鍵選單三項會不會動。** 「結束輸入法服務」
+    走的是具名事件而不是 TerminateProcess(詞庫是 LevelDB,中途拔掉會壞),
+    但那條路沒被跑過。
+16. **設定視窗長什麼樣。** 排版是算出來的,不是量出來的 —— 在 125% / 150%
+    DPI 下控制項會不會重疊、中文字會不會被截斷,**完全沒有看過**。
+    高 DPI 下 `SysTabControl32` 的內容區偏移是我照經驗值寫死的。
+17. **每一顆控制項是不是真的做了它宣稱的事。** 這正是這個專案抓過四次的
+    那一類問題,而 Windows 端到目前為止**一顆按鈕都沒有被人按過**。
+    最可疑的三個:
+    - 「套用順序」之後 librime 有沒有真的照新順序;
+    - 「字形」改了之後**現有的**輸入視窗會不會立刻變(`SetOptionAll` 只對
+      目前活著的 session 生效,而每個宿主進程各有一個 session);
+    - 「候選字大小」改了之後候選窗會不會重畫(走的是一則自訂訊息)。
+18. **重新部署的進度與結果。** 序號那一段解的是「上一輪的結果被讀成這一輪」,
+    而那個 bug 只有在**首次部署剛好還沒結束**時才會出現 —— 那個時間窗
+    在 CI 上構造不出來。
+19. **`--settings` 在已經有服務在跑時真的把訊息傳過去了。**
+20. **explorer 重啟之後系統匣圖示會不會回來**(`TaskbarCreated`)。
+
 ### 已知的功能缺口(不是忘了,是本輪範圍外)
 
 - **只有 x64。** arm64 未做(Windows on ARM 的宿主要 arm64 的 DLL);
@@ -505,13 +558,10 @@ Windows 端要做的只是**發現使用者換了方案**(從快照的 `schema_i
   要補得另外掛低階鍵盤 hook。
 - **沒有顯示屬性(組字底線)。** 未實作 `ITfDisplayAttributeProvider`,
   preedit 在部分宿主裡不會有視覺區別。
-- **沒有系統匣圖示、沒有設定介面。** 服務靠 DLL 自動啟動;結束的方式是
-  `rime_ime_setup.exe stop-service`(送具名事件,安裝程式與解除安裝程式用它),
-  但使用者手上沒有按鈕。
-- **簡體使用者選 zh-Hans 那一份,打出來仍然是繁體字。** 語言設定檔已經按
-  langid 分開註冊了(見上面「註冊在哪些語言底下」),但服務進程不知道
-  使用者是從哪一份進來的,預設方案仍是 `schema_list` 的第一項
-  `luna_pinyin_tw`。要解得讓 DLL 把 profile 的 langid 帶進 IPC。
+- ~~**沒有系統匣圖示、沒有設定介面。**~~ 本輪已加,見上面「設定介面」。
+- ~~**簡體使用者選 zh-Hans 那一份,打出來仍然是繁體字。**~~ 本輪已解,
+  見上面「這兩件事現在接起來了」。⚠ 但**只驗到判斷層**:引擎真的照著切,
+  以及使用者真的看到簡體字,仍然要人去按一遍(見上面第 11–13 項)。
 - **`enable-user` 只做 `EnableLanguageProfile`。** 它不會替使用者把
   「中文(繁體/簡體)」加進 Windows 的語言清單 —— 那需要 `input.dll` 的
   `InstallLayoutOrTip`,而那不是有文件的 API。所以使用者的語言清單裡
@@ -521,12 +571,69 @@ Windows 端要做的只是**發現使用者換了方案**(從快照的 `schema_i
   在 Windows 上會**部署成功但一個候選都沒有**。補上時
   `patches/librime-lua@sandbox.patch` 必須同時到位 —— `build.sh` 有一道會
   擋下建置的檢查。
-- **沒有離線出口的對應物。** Windows 端目前不連網,所以還沒有東西要守;
-  一旦加入方案市集或升級檢查,必須先做出等價的閘門與連網紀錄,
-  而且**先確認做得到再寫進文案**。
+- **Windows 端目前完全不連網,而這件事現在驗得到了。**
+  `audit_offline_win.sh` 在原始碼層面斷言「`windows/` 底下沒有任何一個檔案
+  碰網路 API」(並有反向測試:植入一個真的 `WinHttpOpen` 必須被抓到),
+  `check_binaries.sh` 在產物的匯入表層面斷言同一件事。
+  `ws2_32.dll` 只放行給服務進程 —— leveldb 與 glog 為了取主機名連結它,
+  那是 librime 的相依,不是我們開的連線;**瘦 DLL 一律是零**。
+
+  離線守門的**判斷邏輯與紀錄格式**已經移植好並有測試
+  (`common/net_policy.cc`,來自 Android 的 `NetworkGate` / `NetworkLog`),
+  但**還沒有任何東西呼叫它** —— 方案市集這一輪沒有做。要接的時候,
+  `audit_offline_win.sh` 的檔頭寫了必須先做完哪三件事。
 - **`VK_DECIMAL` 一律映成 `KP_Decimal`。** 德文等佈局的數字鍵台小數點其實是逗號,
   X11 有 `KP_Separator` 表示它,但要分辨得回頭問佈局。
 - **候選窗沒有多欄/表格排版、沒有狀態列。** 等規範(見上一節)。
+
+---
+
+## 刻意沒有做的
+
+**寧可少一個分頁,不要多一個點了沒反應的按鈕。** 這個專案抓過四個
+「畫面完全正常、自動化全過」的鍵,所以下面每一項都是明著決定不做,
+不是忘了。
+
+| 沒做 | 為什麼 |
+|---|---|
+| **方案市集(下載)** | 見下面一整段 |
+| **連網分頁** | 沒有東西會用到那個開關。一個什麼都不影響的開關就是一顆死鍵 |
+| **候選窗主題 / 外觀分頁** | 規範的六個缺口 macOS 端正在補(`coordination.md` §5)。規範落地前做等於自己發明一套 |
+| **詞庫匯出匯入** | `docs/backup-format.md` 還不在 `main` 上(`dict` 支線還沒產出) |
+| **全域熱鍵** | 衝突了使用者不會知道是我們幹的 |
+| **語言列按鈕的下拉選單** | 一顆按鈕、一件事。選單項目是「看得到但摸不到」最容易長出來的地方;要多做幾件事的入口是系統匣的右鍵選單(在服務進程那一側,改壞了不會把宿主帶走) |
+| **自己的系統匣圖示** | 目前用 `IDI_APPLICATION`。要換得加一份 `.rc`,那會把資源編譯器拉進建置 —— 留給有美術資源的時候 |
+
+### 方案市集為什麼沒做
+
+它是這一輪明著砍掉的最大一塊,理由值得寫下來,因為下一輪會再撞到:
+
+**Windows 上沒有現成的 zip 解壓路徑可以用,而且不能用現成的。**
+
+- 我們的相依裡沒有 zlib(librime 的五個相依是 glog / yaml-cpp / leveldb /
+  marisa / opencc,一個都不含 DEFLATE)。
+- Windows 內建的 Compression API(`cabinet.dll`)只有 XPRESS / MSZIP / LZMS,
+  **沒有 raw DEFLATE**,對 zip 沒有用。
+- Shell 的 zip folders(`IShellDispatch::CopyHere`)可以解壓,但它會
+  **繞過我們自己的 `ArchiveGuard`** —— 而 zip slip 的防護必須是我們的,
+  不能是解壓器的。`docs/schema-store.md` §4 把那條列成「缺一不可」。
+
+所以正確的做法是**自己寫一份 inflate**(純邏輯,可以在 Ubuntu 上對
+Python 產生的 deflate 串流跑測試,而且每一個 entry 的 CRC32 都驗一次 ——
+inflate 有 bug 會被抓到而不是安靜地寫出壞詞庫)。那大約是
+「zip 中央目錄解析 + inflate + SHA-256 + WinHTTP + 安裝與回滾 + 市集 UI」
+六塊,不是這一輪塞得下的量。**做一半的下載按鈕比沒有更糟。**
+
+已經先落地的地基(有測試,沒接上):
+
+- `common/net_policy.cc` —— 開關(未設 == 關)、fail-closed、
+  每一跳的 scheme 檢查、轉址上限、大小上限、以及**連網紀錄只記真的
+  發生過的連線**(被開關擋下的嘗試不記 —— 記了的話「開關從沒開過 →
+  紀錄是空的」這句話就不成立,而那句話正是使用者稽核我們的方式)。
+- `common/schema_list_patch.cc` —— 裝好之後要把方案加進 `schema_list`,
+  失敗要回滾。改寫與回滾用的是同一支函式。
+- `audit_offline_win.sh` —— 在還沒有連線的今天就先立好那道牆,
+  哪天有人加了連線它會紅,而檔頭寫了必須同時做完哪三件事。
 
 ---
 

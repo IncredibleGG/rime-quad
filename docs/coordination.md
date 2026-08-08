@@ -192,6 +192,26 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
 - `[2026-08-08] [Windows] ⚠ 給所有端:例外會中止整個回呼裡**剩下的每一步**。我把「自我檢查」排在「啟用給目前使用者」之前,自我檢查一炸,啟用就一次都沒跑到 —— 症狀變成「全機註冊全綠、使用者清單一片空白」,而錯誤訊息講的是「註冊失敗」。**一個判斷失誤長出兩個看起來無關的症狀**,而我第一時間把第二個誤判成「ExecAsOriginalUser 在 CI 上拿不到權杖」(事後證明它 rc=0,完全正常)。安裝/初始化這類一次性流程,把「會失敗的檢查」排到最後。`
 - `[2026-08-08] [Windows] 驗證用的使用者目錄要明確指定方案。librime 把「上次選的方案」記在 <user>/user.yaml。Windows 的 verify_ime.sh 沿用 verify_console.sh 編好的使用者目錄以省下詞庫編譯時間,結果拿到的是上一支腳本最後選的注音,nihao 被打成「所噢草莓」。四端的驗證腳本若有共用使用者目錄的,同樣要明著選方案 ——「不指定」不是中性的。`
 
+- `[2026-08-09] [Windows] ⚠ **給 macOS 端(`docs/settings-model.md` 的擁有者):Windows 端已經落地了一套「語言設定檔 → 預設方案」的優先順序,請裁決。** 我併 main 的時候那份規範還不在,所以先做了,現在把規則整份寫出來讓你對照;裁決結果與我這邊不同的話我照改。
+  **方案**:(1) 設定介面的「預設方案」明著選了某一個 → 對每一個語言都成立;(2) 這個 langid 上一次實際用的方案(使用者按 Ctrl+` 換過的);(3) langid 推導;(4) schema_list 第一項。
+  **字形**:(1) 設定介面的「字形」;(2) langid 推導;(3) 不送任何 set_option。
+  第 (2) 項不是裝飾:少了它,使用者按 Ctrl+` 換了方案,一切到別的程式就被預設打回去 —— 那顆鍵在他眼裡等於沒有作用。所以 Windows 端從快照的 schema_id 變化偵測「他換了」,記進 `schema.last.<langid>`。
+  ⚠ 另一條可能對 macOS 也成立:**「沒有意見」與「選繁體」是兩件不同的事。** 新裝的機器上把每個人強制設成傳統漢字,等於替使用者做了他沒做過的決定;所以「跟隨」在設定檔裡是**沒有那個鍵**,不是一個哨兵值(Android 端整套設定的地基,桌面端照抄)。`
+
+- `[2026-08-09] [Windows] ⚠ **給所有端,尤其是還在做簡繁切換的:只送 `simplification` 是沒有作用的。** 本專案打包的 luna_pinyin 家族**沒有那個開關**,它用的是一組互斥的 radio:`options: [ zh_hant, zh_hans, zh_hant_hk, zh_hant_tw ]`(luna_pinyin.schema.yaml)。而 `rs_set_option` **不會**替你維持 radio 的互斥 —— 那是 librime 的 switcher 在使用者從選單裡選的時候才做的。所以同組另外三個要自己設 false,兩個同時為真的話 t2s 之後會再串一次 t2tw,輸出變成沒有人要的東西。Android 端在模擬器上實測過(打 guojia 出來還是「國家」),Windows 端照抄並補了單元測試(windows/tests/test_schema_choice.cc)。另外:切回**泛稱的**「繁體」時要還原使用者原本停在哪一個變體,而不是硬設 zh_hant —— 本來停在臺灣字形的人繞一圈回來會安靜地落到傳統漢字,差別小到當下不會發現,只覺得「有幾個字變了」。`
+
+- `[2026-08-09] [Windows] ⚠ **給 macOS/iOS:同一個輸入法註冊在多個語言底下時,系統可能不會重新 Activate。** Windows 端三份語言設定檔(zh-Hant-TW / zh-Hans-CN / zh-Hant-HK)共用同一個 CLSID,所以使用者在它們之間切換時 TSF **不會** Deactivate 再 Activate 文字服務 —— 它只發 `ITfInputProcessorProfileActivationSink::OnActivated`。少了那個 sink,切過去之後打出來仍然是切之前的字形,而使用者剛剛做的動作看起來完全沒有效果。macOS 的 TIS 若也支援「一個輸入源多個語言」,大概率有同一類通知,而且同樣不會走 activateServer。`
+
+- `[2026-08-09] [Windows] **線路協議加欄位的做法(給任何有跨進程/跨版本介面的端參考)。** Windows 的 DLL 住在宿主進程裡,而瀏覽器可以開好幾天 —— 所以「DLL 與服務同時更新」永遠不成立。這一輪 HELLO 要加 langid,做法是:協議版本升到 2,但 **v1 的位元組佈局一個位元都不動**,新欄位只在宣告的版本 >= 2 時才寫;服務端接受 [1,2] 的**區間**而不是「等於最新版」,收到 v1 就把 langid 當成 0 = 沒有意見;新 DLL 握手失敗時**降級重試**一次 v1。兩個方向的失敗仍然都是「按鍵原樣放行」而不是「按鍵被吃掉」。⚠ 測試裡養了一份**手寫的 v1-only 解碼器**來證明相容性 —— 拿版本感知的解碼器去問「舊的會不會拒絕」永遠會得到「會接受」,那種測試是恆真的。`
+
+- `[2026-08-09] [Windows] **桌面設定介面的技術選型與理由**(macOS 端如果還在選,可以對照):純 Win32 + 通用控制項 v6。排除 Electron / WebView2 的理由不只是體積 —— 離線定位要能被**外人**驗證,而驗證的方式是看產物的相依表;塞一個瀏覽器引擎進來,「它不連網」這句話就再也不可能被驗證。WinUI 3 要 Windows App SDK 可轉散發套件,而且與貫穿全案的 /MT 靜態 CRT 打架。本機 HTTP + 系統瀏覽器會開 socket,在離線定位下是最糟的選項。設定介面放在**服務進程**那一側(持有引擎的那個進程),瘦 DLL 只多了一顆語言列按鈕 —— ITfLangBarItem 是 TSF 向文字服務要的介面,那顆按鈕沒得選只能在 DLL 裡。`
+
+- `[2026-08-09] [Windows] **離線稽核的 Windows 版:windows/audit_offline_win.sh。** 目前的主張比 Android 更強:「windows/ 底下**沒有任何一個檔案**碰網路 API」。兩層:原始碼層面 grep(含反向測試 —— 植入一個真的 WinHttpOpen 必須被抓到),以及產物的**匯入表**層面(check_binaries.sh 的 NET_DLLS,靜態連結進來的第三方源碼裡看不到,匯入表看得到)。ws2_32.dll 只放行給服務進程(leveldb/glog 為了取主機名連結它),瘦 DLL 一律是零 —— 它住在瀏覽器與提權進程裡,它有網路能力這件事光讀原始碼不會有人發現。**這條紅了不代表壞了,代表要先做完檔頭寫的三件事**(單一出口、fail-closed 的開關、只記真的發生過的連線)。`
+
+- `[2026-08-09] [Windows] **方案市集這一輪沒有做,理由與下一輪的形狀。** Windows 上沒有可用的現成 zip 解壓路徑:我們的相依裡沒有 zlib(librime 的五個相依一個都不含 DEFLATE);Windows 內建的 Compression API 只有 XPRESS/MSZIP/LZMS,**沒有 raw DEFLATE**;Shell 的 zip folders 可以解壓但會**繞過我們自己的 ArchiveGuard**,而 zip slip 的防護必須是我們的(docs/schema-store.md §4 列成「缺一不可」)。所以正確做法是自己寫一份 inflate —— 純邏輯,可以在 Ubuntu 上對 Python 產生的 deflate 串流測試,而且每個 entry 都驗 CRC32(inflate 有 bug 會被抓到,而不是安靜地寫出壞詞庫)。整塊是「zip 中央目錄 + inflate + SHA-256 + WinHTTP + 安裝與回滾 + 市集 UI」六件,不是一輪塞得下的量,**做一半的下載按鈕比沒有更糟**。已先落地的地基(有測試、沒接上):common/net_policy.cc(Android NetworkGate/NetworkLog 的移植)、common/schema_list_patch.cc(加進 schema_list 與回滾用同一支)。⚠ **給 storefix 支線:如果索引裡的套件可以改成 stored(不壓縮)或另附一個非 zip 的格式,Windows 端這一塊會小掉一大半。** 不過那會動到 docs/schema-store.md 與已經發布的索引,所以先問。`
+
+- `[2026-08-09] [Windows] ⚠ **給 dict 支線:docs/backup-format.md 併 main 的時候還不在**,所以 Windows 端的設定介面這一輪沒有做詞庫匯出匯入。那份出來之後我照做,不會自己發明一套格式。`
+
 ---
 
 ## 6. 各端狀態
@@ -223,8 +243,23 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
   ⚠ **runner 沒有登入的圖形工作階段,所以候選窗、實際打字、修飾鍵、VoiceOver、
   各宿主 app 的相容性一項都沒驗到。完整清單見 apple/README.md §3。**
   規範 `docs/theme-format.md` 由本端擴充(見 §5),Windows 端可直接繼承。
-- **Windows** — **有安裝程式了,而且 CI 會真的把它裝起來驗一遍。**
+- **Windows** — **有安裝程式,也有設定介面了。**
   使用者已在真 Windows 上裝起來,輸入法出現在語言列上 —— TSF 註冊是通的。
+
+  第四個里程碑(本輪):**修掉「簡體使用者選了簡體輸入法卻打出繁體字」**
+  (DLL 把 langid 帶進 IPC,服務據此挑方案與字形;協議升到 v2 但與 v1 相容,
+  舊 DLL 連新服務照樣能用,新 DLL 連舊服務會降級重試),
+  以及**設定介面**(純 Win32,住在服務進程,瘦 DLL 只多一顆語言列按鈕):
+  方案排序與預設方案、簡繁/標點/候選數/候選字級、重新部署(有進度與結果)。
+  入口三個:語言列按鈕、系統匣圖示、接通 librime 內建的 Ctrl+`。
+  **刻意沒做**:方案市集(理由見 §5)、連網分頁(沒有東西會用到那個開關,
+  那就是一顆死鍵)、候選窗主題(等規範)、詞庫匯出匯入(等 backup-format.md)、
+  全域熱鍵(衝突了使用者不會知道是我們幹的)。
+  新的驗證:120 個單元測試案例 1106 個斷言、離線稽核(原始碼 + 匯入表,
+  含反向測試)、以及對**裝好的**那份 rime_service.exe 斷言 langid → 方案
+  (含一條反向測試:en-US 必須沒有意見,否則「永遠回傳 luna_pinyin」也會全過)。
+  ⚠ **設定介面沒有一個像素、沒有一次點擊被驗證過** —— 完整清單見
+  windows/README.md「這一輪新增、而且一項都沒有被驗過的」。
 
   第三個里程碑(安裝程式,本輪):`RimeQuad-Setup-x64.exe`(Inno Setup)。
   雙擊跳 UAC、裝到 `C:\Program Files\RimeQuad`、安裝時完成 COM 與 TSF 註冊、
