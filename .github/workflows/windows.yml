@@ -1,0 +1,173 @@
+name: Windows (核心驗證)
+
+# 這個 workflow 驗的是「Windows 上的核心層真的打得出字」,不是「編得出來」。
+#
+# 為什麼需要它:Windows 端唯一的建置與驗證管道就是這裡。開發機是一台
+# 編不了 Windows 的 Ubuntu,而 TSF 需要註冊 COM in-proc server 並有真實輸入
+# 情境,CI runner 上做不到。所以驗證分兩層(docs/handoff-windows.md §8):
+#
+#   1. 這個 workflow —— 不經 UI 直接驅動 librime,斷言 nihao → 你好、
+#      注音 su3cl3 → 你好。核心與資料對不對,在這裡就會知道。
+#   2. 只有人做得到的 —— 真的裝上去、在真的輸入框裡打一遍。無可取代。
+#
+# **這一輪只有第 1 層,而且刻意只有第 1 層。** 沒有 TSF、沒有 COM、沒有候選窗。
+# 核心層沒綠之前做 UI,出問題分不出是誰的錯 —— 這個專案已經吃過這個虧。
+#
+# 已知缺口(不是忘了,是這一輪的範圍外,見 windows/README.md):
+#   · 只做 x64,arm64 未做;
+#   · 沒有編 librime-lua —— 倚賴 lua_translator / lua_filter 的第三方方案
+#     在 Windows 上會部署成功但沒有任何候選。windows/build.sh 裡有一道
+#     守門:只要哪天把 lua 掛上去而沒帶 sandbox patch,建置就會停。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core-x64:
+    runs-on: windows-latest
+    timeout-minutes: 120
+
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      ARCH: x64
+      # 必須與 third_party/prebuilt/manifest.json 的 librime.commit 一致 ——
+      # 四端共用同一顆引擎是這個專案的前提。改這裡等於換掉引擎。
+      LIBRIME_COMMIT: 1d0df6e40cdcac17a986adc65e4668ae84ae0ada
+      BOOST_VERSION: 1.89.0
+      # CMake 4 移除了 FindBoost,而 librime 靠 find_package(Boost) 找 header-only
+      # 的 Boost —— 非 LINUX 分支不帶 REQUIRED,所以 4.x 上不會報錯,只會在編譯時
+      # 噴一整片找不到 boost 標頭。釘住 3.x 的理由與 Android 端釘 cmake 3.22.1 相同。
+      PINNED_CMAKE: 3.31.6
+
+    steps:
+      # runner 的系統 gitconfig 預設 core.autocrlf=true。不關掉的話 checkout
+      # 會把所有 LF 換成 CRLF,bash 腳本的 shebang 變成 `#!/usr/bin/env bash\r`
+      # 而直接無法執行。必須在 checkout **之前**設。
+      - name: 關掉 autocrlf
+        run: |
+          git config --global core.autocrlf input
+          git config --global core.longpaths true
+
+      - name: 取出原始碼
+        uses: actions/checkout@v4
+
+      - name: 釘住 CMake ${{ env.PINNED_CMAKE }}
+        shell: pwsh
+        run: |
+          $ver = "${{ env.PINNED_CMAKE }}"
+          $url = "https://github.com/Kitware/CMake/releases/download/v$ver/cmake-$ver-windows-x86_64.zip"
+          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\cmake.zip"
+          Expand-Archive -Path "$env:RUNNER_TEMP\cmake.zip" -DestinationPath "$env:RUNNER_TEMP\cmake" -Force
+          "$env:RUNNER_TEMP\cmake\cmake-$ver-windows-x86_64\bin" |
+            Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: 確認工具鏈
+        run: |
+          ver="$(cmake --version)"
+          echo "$ver"
+          # 刻意不用 `cmake --version | head -1 | grep`:head 讀完就關掉 pipe,
+          # cmake 可能收到 SIGPIPE 以 141 結束,配上 GitHub 預設的 pipefail
+          # 就是**間歇性**失敗 —— 比明確的失敗難查得多。
+          case "$ver" in
+            *"${PINNED_CMAKE}"*) ;;
+            *) echo "cmake 不是釘住的 ${PINNED_CMAKE},PATH 沒生效" >&2; exit 1 ;;
+          esac
+
+      # librime + 5 個相依編一次要十幾分鐘,而它們只由釘住的 commit 決定。
+      # key 帶上 build.sh 的雜湊:改了建置選項就必須重編,否則會拿到一份
+      # 「用舊選項編的、但看起來是新的」prefix —— 那種漂移最難查。
+      #
+      # 用 restore + save 而不是 cache:save 那一步必須 `if: success()`。
+      # actions/cache 的 post step 不管成敗都會存,那會把一份**建到一半就失敗的**
+      # prefix 存進去,之後每一輪都命中它、跳過重建,然後以完全無關的方式失敗。
+      - name: 還原已建置的 librime 與相依
+        id: cache-prefix
+        uses: actions/cache/restore@v4
+        with:
+          path: third_party/build/windows-x64/prefix
+          key: winprefix-x64-${{ env.LIBRIME_COMMIT }}-${{ hashFiles('windows/build.sh') }}-v1
+
+      # Boost 只有建 deps 時才用得到,所以整組跟著 prefix 的命中與否走。
+      # 只取 header 樹(librime 不需要任何 Boost 二進位)。快取的是解壓後的結果:
+      # 190MB 的 tarball 重抓不算慢,但在 NTFS 上解壓上萬個小檔很慢,那才是要省的。
+      - name: 還原 Boost headers
+        id: cache-boost
+        if: steps.cache-prefix.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: third_party/boost
+          key: boost-${{ env.BOOST_VERSION }}-headers-v1
+
+      - name: 建置 librime 與 5 個相依
+        if: steps.cache-prefix.outputs.cache-hit != 'true'
+        run: ./windows/build.sh deps
+
+      # 只有真的建成功(build.sh 末尾的 verify_prefix 過了)才存。
+      - name: 保存已建置的 librime 與相依
+        if: success() && steps.cache-prefix.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: third_party/build/windows-x64/prefix
+          key: winprefix-x64-${{ env.LIBRIME_COMMIT }}-${{ hashFiles('windows/build.sh') }}-v1
+
+      # 快取命中時 prefix 有了,但 collect_data.sh 要的 .ocd2 擺放位置沒有 ——
+      # 那是每次都要重做的一步(只是複製檔案,很快)。
+      - name: 保存 Boost headers
+        if: success() && steps.cache-prefix.outputs.cache-hit != 'true' && steps.cache-boost.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: third_party/boost
+          key: boost-${{ env.BOOST_VERSION }}-headers-v1
+
+      - name: 從快取的 prefix 補上 opencc 詞典位置
+        if: steps.cache-prefix.outputs.cache-hit == 'true'
+        run: |
+          dest=third_party/build/host-opencc-install/share/opencc
+          mkdir -p "$dest"
+          cp third_party/build/windows-x64/prefix/share/opencc/*.ocd2 "$dest/"
+          cp third_party/build/windows-x64/prefix/share/opencc/*.json "$dest/"
+          echo "$(ls "$dest"/*.ocd2 | wc -l) 個 .ocd2"
+
+      - name: 取得方案原始資料（版本已釘死）
+        run: ./scripts/fetch_rime_data.sh
+
+      # core/data/shared 不在版控裡(見 .gitignore)。少了它,前面每一步都會成功,
+      # 而 rime_console 會啟動、部署、然後一個候選都給不出來。
+      - name: 組裝執行期資料
+        run: ./scripts/collect_data.sh
+
+      - name: 建置 rime_console（core/src/rime_shell.cc + tools/rime_console.cc）
+        run: ./windows/build.sh console
+
+      # 這一步就是里程碑本身。
+      - name: 核心驗證（nihao → 你好、注音 su3cl3 → 你好）
+        run: ./windows/verify_console.sh
+
+      - name: 上傳建置與驗證日誌
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-logs-${{ github.sha }}
+          path: |
+            third_party/build/windows-x64/*.log
+            third_party/build/windows-x64/verify/logs/
+          if-no-files-found: warn
+
+      - name: 上傳 rime_console.exe
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rime-console-x64-${{ github.sha }}
+          path: third_party/build/windows-x64/console/bin/rime_console.exe
+          if-no-files-found: error
