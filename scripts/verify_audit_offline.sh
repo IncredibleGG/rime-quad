@@ -43,6 +43,26 @@ cleanup() { [ "$KEEP" -eq 1 ] || rm -rf "$TMP"; }
 trap cleanup EXIT
 [ "$KEEP" -eq 1 ] && echo "暫存目錄：$TMP"
 
+# ── 準備一份「已套用 patch」的 librime-lua 原始碼 ────────────────────────
+# ⚠ 不能直接抄 third_party/librime-lua 的工作區。那份的狀態取決於有沒有人
+#   跑過 scripts/build_native.sh：在開發機上通常是套過 patch 的，在 CI 上
+#   通常**沒有**（scripts/verify_lua_sandbox.sh 只把 patch 套到自己的暫存副本）。
+#   抄到沒套 patch 的那份，基準會直接紅在「沙盒不完整」，而真正的原因是
+#   「這棵樹本來就沒套」——一個看起來像安全問題的環境問題。
+#   所以這裡自己從 HEAD 匯出乾淨的原始碼再套一次 patch，與環境無關。
+LUA_SRC_DIR="$ROOT/third_party/librime-lua"
+PATCHED_SRC=""
+if [ -d "$LUA_SRC_DIR/.git" ]; then
+  mkdir -p "$TMP/patched"
+  if git -C "$LUA_SRC_DIR" archive HEAD src > "$TMP/lua-src.tar" 2>/dev/null &&
+     tar -xf "$TMP/lua-src.tar" -C "$TMP/patched" 2>/dev/null &&
+     ( cd "$TMP/patched" && git apply "$ROOT/patches/librime-lua@sandbox.patch" ) 2>/dev/null; then
+    PATCHED_SRC="$TMP/patched"
+  else
+    echo "  [SKIP] patch 套不上乾淨的 librime-lua —— 沙盒那幾條植入這一輪不會跑" >&2
+  fi
+fi
+
 # ── 一棵剛好夠 audit_offline.sh 讀完的樹 ─────────────────────────────────
 # 只複製它真的會讀的東西。third_party/prebuilt 用 symlink（18MB 的 .a
 # 複製 15 次太慢），要動它的那一條案例會自己換成真目錄。
@@ -60,9 +80,15 @@ make_tree() {   # make_tree <名字> -> 印出樹的路徑
   cp -a "$ROOT/core/src" "$T/core/src" 2>/dev/null
   cp -a "$ROOT/core/include" "$T/core/include" 2>/dev/null
   cp -a "$ROOT/patches" "$T/patches"
-  for f in src/lib/lua.cc src/modules.cc src/lua_gears.h; do
-    cp "$ROOT/third_party/librime-lua/$f" "$T/third_party/librime-lua/$f"
-  done
+  if [ -n "$PATCHED_SRC" ]; then
+    for f in src/lib/lua.cc src/modules.cc src/lua_gears.h; do
+      cp "$PATCHED_SRC/$f" "$T/third_party/librime-lua/$f"
+    done
+  else
+    # 沒有原始碼時整個目錄不要存在，audit_offline.sh 才會走它的 [SKIP] 分支
+    # （而不是對著半棵樹得出「沙盒不見了」這種錯誤結論）。
+    rm -rf "$T/third_party/librime-lua"
+  fi
   ln -s "$ROOT/third_party/prebuilt" "$T/third_party/prebuilt"
   printf '%s' "$T"
 }
@@ -227,20 +253,29 @@ expect_red "多了一個 READ_CONTACTS 權限" "未列入白名單的權限" m_p
 m_no_patch() { rm -f "$1/patches/librime-lua@sandbox.patch"; }
 expect_red "沙盒 patch 檔被刪掉" "沙盒的來源不見了" m_no_patch
 
+# 底下四條都要動 librime-lua 的原始碼。取不到就**明說跳過**，
+# 不要讓「沒跑」長得像「跑過而且過了」。
+skip_lua_cases() {
+  echo "  [SKIP] 取不到 librime-lua 原始碼 —— 沙盒的 4 條植入這一輪完全沒有跑"
+  echo "         先跑：scripts/verify_lua_sandbox.sh（它會把原始碼抓下來）"
+}
+
+if [ -z "$PATCHED_SRC" ]; then skip_lua_cases; fi
+
 m_sandbox_commented() {
   # 這一條就是當年真的抓到的漏洞：被註解掉的 `-- package.loadlib = nil`
   # 曾經被當成「還在」而放行。
   sub_once "$1/third_party/librime-lua/src/lib/lua.cc" \
     'package.loadlib = nil' '-- package.loadlib = nil'
 }
-expect_red "沙盒被註解掉（不是刪掉）" "第一層(lua.cc)的允許清單" m_sandbox_commented
+[ -n "$PATCHED_SRC" ] && expect_red "沙盒被註解掉（不是刪掉）" "第一層(lua.cc)的允許清單" m_sandbox_commented
 
 m_io_allowlist_gone() {
   sub_once "$1/third_party/librime-lua/src/lib/lua.cc" \
     'for k in pairs(io) do if not keep_io[k] then io[k] = nil end end' \
     '-- 有人把 io 的允許清單拿掉了'
 }
-expect_red "第一層少了 io 允許清單" "第一層(lua.cc)的允許清單" m_io_allowlist_gone
+[ -n "$PATCHED_SRC" ] && expect_red "第一層少了 io 允許清單" "第一層(lua.cc)的允許清單" m_io_allowlist_gone
 
 m_order_swapped() {
   # 把 rime.lua 的執行搬到第二層沙盒之前 —— 順序錯了等於沒做，
@@ -250,14 +285,14 @@ m_order_swapped() {
     '  types_init(L);
   luaL_dofile(L, user_file.c_str());   // 有人把它搬到沙盒之前了'
 }
-expect_red "第二層被搬到 rime.lua 之後" "第二層沒有裝在 rime.lua 之前" m_order_swapped
+[ -n "$PATCHED_SRC" ] && expect_red "第二層被搬到 rime.lua 之後" "第二層沒有裝在 rime.lua 之前" m_order_swapped
 
 m_hook_removed() {
   sub_once "$1/third_party/librime-lua/src/lua_gears.h" \
     '    ::rimequad_lua_ensure_init();' \
     '    // ::rimequad_lua_ensure_init();'
 }
-expect_red "延後的掛勾被註解掉" "延後的掛勾" m_hook_removed
+[ -n "$PATCHED_SRC" ] && expect_red "延後的掛勾被註解掉" "延後的掛勾" m_hook_removed
 
 m_stale_lib() {
   # symlink 換成真目錄，塞一顆「沒有沙盒」的 librime.a：
