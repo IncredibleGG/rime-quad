@@ -105,12 +105,18 @@ BADIDS="$(/usr/libexec/PlistBuddy -c "Print :ComponentInputModeDict:tsInputModeL
 [ -z "${BADIDS}" ]; check "每個 TISInputSourceID 都以 ${BUNDLE_ID} 為前綴" $?
 
 # ── 4. 類別名:plist 與二進位必須對得上 ────────────────────
-# Swift 會把類別名 mangle 成 _TtC8RimeQuad24RimeQuadInputController。
-# IMKit 用 NSClassFromString(plist 裡那個名字) 找它,少了 @objc(...) 就找不到,
-# 而症狀是「完全沒反應且沒有錯誤訊息」—— 這是本專案最典型的
-# 「編得出來不等於能用」。
-nm -gU "${BIN}" 2>/dev/null | grep -q "_OBJC_CLASS_\$_${CTRL}$"
-check "二進位裡有 ObjC 類別 ${CTRL}（@objc(...) 有生效）" $?
+# ⚠ 這一條**不在這裡斷言**,在第 7 步的 --self-check 裡。
+#
+# 原本這裡是 `nm -gU | grep _OBJC_CLASS_$_...`,但那是在猜 IMKit 怎麼找類別;
+# 實測在 macos-26 / arm64 上 grep 不到（符號表的形態與假設不同),而 .app
+# 其實是好的 —— 也就是說這條斷言在**該綠的時候紅**,和「該紅的時候不紅」
+# 一樣糟。IMKit 真正做的是 NSClassFromString(plist 裡那個字串),
+# 所以改由二進位自己照做一次(SelfCheck.swift)。那才是這一問的正解。
+#
+# 這裡只留一個**不判定成敗**的診斷,讓下一個人看得到符號表長什麼樣。
+echo "  · nm 診斷（不判定成敗）:"
+nm "${BIN}" 2>/dev/null | grep -c . | sed 's/^/      符號數 /' || echo "      nm 讀不出符號表"
+nm "${BIN}" 2>/dev/null | grep -i "${CTRL}" | head -3 | sed 's/^/      /' || true
 
 # ── 5. 連結 ────────────────────────────────────────────────
 otool -L "${BIN}" | grep -q InputMethodKit
@@ -118,9 +124,9 @@ check "連上 InputMethodKit.framework" $?
 otool -L "${BIN}" | grep -q AppKit
 check "連上 AppKit.framework" $?
 
-# librime 是靜態連結的,所以不該出現在 otool -L,但符號要在。
-nm -U "${BIN}" 2>/dev/null | grep -q "_rs_process_key"
-check "rime_shell 門面已靜態連入（找得到 rs_process_key）" $?
+# librime 是靜態連結的,所以不該出現在 otool -L。
+# 「門面真的連進來了」同樣由 --self-check 回答（它直接呼叫 rs_abi_version 與
+# rs_keysym_by_name —— 呼叫得動就是連進來了,比 grep 符號表可靠）。
 otool -L "${BIN}" | grep -q "librime\.\(dylib\|[0-9]*\.dylib\)" && \
   bad "librime 被動態連結了 —— 這份 .app 換一台機器就跑不起來" || \
   ok "librime 是靜態連結"

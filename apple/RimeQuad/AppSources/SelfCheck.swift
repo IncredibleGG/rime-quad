@@ -14,6 +14,8 @@
 //
 
 import Foundation
+import AppKit
+import InputMethodKit
 
 enum SelfCheck {
 
@@ -41,6 +43,29 @@ enum SelfCheck {
         } else {
             check("rs_keysym_name(0xFF08)", false, "回傳 NULL")
         }
+
+        // 2b. **IMKit 找不找得到 controller 類別。**
+        //
+        // 這一問原本是拿 `nm` grep `_OBJC_CLASS_$_...` 來回答的，那是在猜。
+        // IMKit 實際做的事是 `NSClassFromString(Info.plist 裡那個字串)`，
+        // 所以就照做一次 —— 這同時驗了三件事：@objc(...) 有生效、
+        // plist 裡的名字沒打錯、而且那個類別真的是 IMKInputController。
+        //
+        // 少了 @objc(...) 時，Swift 會把類別名 mangle 成
+        // `_TtC8RimeQuad24RimeQuadInputController`，NSClassFromString 回傳 nil，
+        // 而症狀是「輸入法裝得起來、選單裡看得到、一個字都打不出來，
+        // 且完全沒有錯誤訊息」。
+        let declared = Bundle.main.infoDictionary?["InputMethodServerControllerClass"] as? String
+        check("Info.plist 宣告了 InputMethodServerControllerClass", declared != nil, declared ?? "缺")
+        if let declared {
+            let cls = NSClassFromString(declared)
+            check("NSClassFromString(\"\(declared)\") 找得到類別（@objc(...) 有生效）", cls != nil)
+            if let cls {
+                check("\(declared) 是 IMKInputController 的子類別", cls is IMKInputController.Type)
+            }
+        }
+        let conn = Bundle.main.infoDictionary?["InputMethodConnectionName"] as? String
+        check("Info.plist 宣告了 InputMethodConnectionName", !(conn ?? "").isEmpty, conn ?? "缺")
 
         // 3. PhysicalKeys 的每一個名稱都要查得到。這是本檔存在的主要理由。
         var bad: [(UInt16, String)] = []
