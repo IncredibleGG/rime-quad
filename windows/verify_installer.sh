@@ -400,7 +400,10 @@ fi
   && ok "範本 default.custom.yaml 已補進使用者目錄" \
   || note_fail "使用者目錄裡沒有 default.custom.yaml —— schema_list 會退回上游那一份,
      而它列了我們沒有詞庫的方案(部署噴錯,使用者看到的是「有些方案沒有候選」)"
-n_user="$(find "${USER_DIR}" -type f 2>/dev/null | wc -l | tr -d ' ')"
+# `|| true` 不是裝飾:使用者目錄不存在時 find 以 1 結束,配上 pipefail 會讓
+# 整支腳本在這一行**當場死掉** —— 而那正好是我最需要看到後面那幾項診斷的時候
+# (前一步剛剛才報「沒有建立使用者目錄」)。
+n_user="$( (find "${USER_DIR}" -type f 2>/dev/null || true) | wc -l | tr -d ' ')"
 ok "使用者目錄裡有 ${n_user} 個檔案"
 
 # ── 安裝目錄一個位元都不該變 ──────────────────────────────────────

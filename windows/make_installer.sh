@@ -44,7 +44,13 @@ PAYLOAD="${WORK}/payload"
 OUT_NAME="RimeQuad-Setup-${ARCH}.exe"
 
 SELF_CHECK=0
-[ "${1:-}" = "--self-check" ] && SELF_CHECK=1
+LINT=0
+case "${1:-}" in
+  --self-check) SELF_CHECK=1 ;;
+  --lint)       LINT=1 ;;
+  "")           ;;
+  *)            die "未知參數: $1(用 --self-check 或 --lint)" ;;
+esac
 
 # ---------------------------------------------------------------- payload 檢查
 #
@@ -197,25 +203,6 @@ VERSION_INFO="0.1.${V3}.${V4}"
 APP_VERSION="0.1.0+${STAMP}.${SHA}"
 log "版本: ${APP_VERSION}  (VersionInfoVersion=${VERSION_INFO})"
 
-# ---------------------------------------------------------------- payload
-log "組裝 payload: ${PAYLOAD}"
-rm -rf "${PAYLOAD}"
-mkdir -p "${PAYLOAD}/data"
-
-cp "${BIN}/rime_tsf.dll"       "${PAYLOAD}/"
-cp "${BIN}/rime_service.exe"   "${PAYLOAD}/"
-cp "${BIN}/rime_ime_setup.exe" "${PAYLOAD}/"
-
-# rime_probe.exe / rime_tests.exe **刻意不裝**:那是驗證用的東西,
-# 不是使用者機器上該有的。安裝目錄裡多一支執行檔就多一個要解釋的東西。
-cp -r "${ROOT}/core/data/shared" "${PAYLOAD}/data/shared"
-cp -r "${ROOT}/core/data/user"   "${PAYLOAD}/data/user"
-
-log "檢查 payload(缺任何一項都不出貨)"
-verify_payload "${PAYLOAD}" || die "payload 不完整,見上。
-  這道檢查擋下的是本專案最貴的一種失敗:每一步都成功,而使用者裝上去打不出字。"
-log "payload 檢查通過 ✓  ($(find "${PAYLOAD}" -type f | wc -l | tr -d ' ') 個檔案)"
-
 # ---------------------------------------------------------------- ISCC
 find_iscc() {
   if [ -n "${ISCC:-}" ]; then echo "${ISCC}"; return; fi
@@ -224,7 +211,8 @@ find_iscc() {
   for p in \
     "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" \
     "/c/Program Files/Inno Setup 6/ISCC.exe" \
-    "/c/ProgramData/chocolatey/lib/InnoSetup/tools/ISCC.exe"
+    "/c/ProgramData/chocolatey/lib/InnoSetup/tools/ISCC.exe" \
+    "/c/ProgramData/Chocolatey/bin/ISCC.exe"
   do
     [ -x "${p}" ] && { echo "${p}"; return; }
   done
@@ -258,16 +246,16 @@ head -c 3 "${ISS}" | od -An -tx1 | tr -d ' \n' | grep -q 'efbbbf' \
 #   (以 / 開頭)自動換成 Windows 路徑,`/DPayloadDir=…` 會被改得面目全非。
 #   `//X` 會被還原成 `/X`。這是本倉庫既有的慣例(見 check_binaries.sh 的
 #   `dumpbin.exe //exports` 與 build.sh 的 `cmd //c`)。
-run_iscc() {
-  local arch="$1"
+iscc_once() {
+  # $1 = 架構指示詞, $2 = payload 目錄, $3 = 輸出目錄, $4 = 日誌
   "${ISCC_EXE}" //Qp \
-    "//DPayloadDir=$(w "${PAYLOAD}")" \
+    "//DPayloadDir=$(w "$2")" \
     "//DAppVersion=${APP_VERSION}" \
     "//DVersionInfo=${VERSION_INFO}" \
-    "//DArchDirective=${arch}" \
-    "//O$(w "${WORK}")" \
+    "//DArchDirective=$1" \
+    "//O$(w "$3")" \
     "$(w "${ISS}")" \
-    > "${WORK}/iscc-${arch}.log" 2>&1
+    > "$4" 2>&1
 }
 
 # ── x64 的指示詞在 Inno 6.3 改了名字 ────────────────────────────
@@ -279,26 +267,84 @@ run_iscc() {
 # 刻意**不去解析 `ISCC /?` 的版本字串**:那個輸出的格式本身就不是穩定介面
 # (協調端才被同一類問題咬過一次 —— apksigner 在兩台機器上印不一樣的字,
 #  於是簽得完全正確的 APK 被判成沒有簽章者)。改成直接試,試不過換另一個。
-# 常見路徑一次就中,不多花時間。
+compile_installer() {
+  # $1 = payload 目錄, $2 = 輸出目錄, $3 = 日誌前綴
+  local cand
+  ARCH_DIRECTIVE=""
+  for cand in x64compatible x64; do
+    if iscc_once "${cand}" "$1" "$2" "$3-${cand}.log"; then
+      ARCH_DIRECTIVE="${cand}"
+      cp "$3-${cand}.log" "$3.log"
+      log "ArchitecturesAllowed=${cand} ✓"
+      return 0
+    fi
+    log "  ${cand} 不成立,換下一個"
+  done
+  for cand in x64compatible x64; do
+    echo "--- $(basename "$3")-${cand}.log ---"
+    tail -40 "$3-${cand}.log" 2>/dev/null || true
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------- --lint
+#
+# 只驗「這份 .iss 編不編得過」,用一棵**假的** payload。
+#
+# 為什麼要有這一步:ISCC 是逐段解析的,前面一段語法錯了就中止,
+# 後面的 [Messages] / [Code] 根本沒被看過。而真正的建置在 core-x64 的最後面 ——
+# 一輪二十分鐘,一次只能發現一個錯。
+# 這一步不需要 librime、不需要執行期資料,放在快速 job 裡四分鐘就有答案。
+#
+# 假的 payload 是刻意的:這裡驗的是**腳本本身**,內容對不對由 verify_payload
+# 與 windows/verify_installer.sh 負責 —— 兩件事不要混在一起。
+if [ "${LINT}" -eq 1 ]; then
+  LINT_DIR="${WORK}/lint"
+  rm -rf "${LINT_DIR}"
+  mkdir -p "${LINT_DIR}/payload/data/shared/opencc" "${LINT_DIR}/payload/data/user" \
+           "${LINT_DIR}/out"
+  for f in rime_tsf.dll rime_service.exe rime_ime_setup.exe; do
+    : > "${LINT_DIR}/payload/${f}"
+  done
+  : > "${LINT_DIR}/payload/data/shared/default.yaml"
+  : > "${LINT_DIR}/payload/data/shared/opencc/t2s.ocd2"
+  : > "${LINT_DIR}/payload/data/user/default.custom.yaml"
+
+  log "lint:用假的 payload 編一次,只驗 .iss 本身"
+  compile_installer "${LINT_DIR}/payload" "${LINT_DIR}/out" "${WORK}/iscc-lint" \
+    || die "安裝程式腳本編不過,見上。
+  (這一步用的是假的 payload —— 錯的是 windows/installer/rimequad.iss 本身,
+   不是要裝的內容。)"
+  [ -f "${LINT_DIR}/out/${OUT_NAME}" ] \
+    || die "lint 編過了卻沒有產生 ${OUT_NAME} —— OutputBaseFilename 或 //O 不對"
+  log "安裝程式腳本編得過 ✓(產物已丟棄,那不是真的安裝程式)"
+  rm -rf "${LINT_DIR}"
+  exit 0
+fi
+
+# ---------------------------------------------------------------- payload
+log "組裝 payload: ${PAYLOAD}"
+rm -rf "${PAYLOAD}"
+mkdir -p "${PAYLOAD}/data"
+
+cp "${BIN}/rime_tsf.dll"       "${PAYLOAD}/"
+cp "${BIN}/rime_service.exe"   "${PAYLOAD}/"
+cp "${BIN}/rime_ime_setup.exe" "${PAYLOAD}/"
+
+# rime_probe.exe / rime_tests.exe **刻意不裝**:那是驗證用的東西,
+# 不是使用者機器上該有的。安裝目錄裡多一支執行檔就多一個要解釋的東西。
+cp -r "${ROOT}/core/data/shared" "${PAYLOAD}/data/shared"
+cp -r "${ROOT}/core/data/user"   "${PAYLOAD}/data/user"
+
+log "檢查 payload(缺任何一項都不出貨)"
+verify_payload "${PAYLOAD}" || die "payload 不完整,見上。
+  這道檢查擋下的是本專案最貴的一種失敗:每一步都成功,而使用者裝上去打不出字。"
+log "payload 檢查通過 ✓  ($(find "${PAYLOAD}" -type f | wc -l | tr -d ' ') 個檔案)"
+
 rm -f "${WORK}/${OUT_NAME}"
 log "編譯安裝程式"
-ARCH_DIRECTIVE=""
-for cand in x64compatible x64; do
-  if run_iscc "${cand}"; then
-    ARCH_DIRECTIVE="${cand}"
-    cp "${WORK}/iscc-${cand}.log" "${WORK}/iscc.log"
-    log "ArchitecturesAllowed=${cand} ✓"
-    break
-  fi
-  log "  ${cand} 不被這個版本的 ISCC 接受,換下一個"
-done
-if [ -z "${ARCH_DIRECTIVE}" ]; then
-  for cand in x64compatible x64; do
-    echo "--- iscc-${cand}.log ---"
-    tail -40 "${WORK}/iscc-${cand}.log" 2>/dev/null || true
-  done
-  die "ISCC 兩種架構指示詞都失敗,見上"
-fi
+compile_installer "${PAYLOAD}" "${WORK}" "${WORK}/iscc" \
+  || die "ISCC 兩種架構指示詞都失敗,見上"
 
 [ -f "${WORK}/${OUT_NAME}" ] || {
   tail -40 "${WORK}/iscc.log"

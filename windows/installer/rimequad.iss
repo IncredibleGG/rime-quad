@@ -121,16 +121,15 @@ Source: "{#PayloadDir}\rime_ime_setup.exe"; DestDir: "{app}"; Flags: ignoreversi
 ;   make_installer.sh 在編譯之前會逐項點名檢查這棵樹,缺了就不出安裝程式。
 Source: "{#PayloadDir}\data\*"; DestDir: "{app}\data"; Flags: ignoreversion recursesubdirs createallsubdirs
 
-[UninstallRun]
-; 順序有意義,而且 [UninstallRun] 是在**刪檔案之前**跑的 —— 這幾支都住在
-; 即將被刪掉的目錄裡。
+; ⚠ 解除安裝要做的事(停服務、停用、反註冊)**不在 [UninstallRun]**,
+;   在底下 [Code] 的 CurUninstallStepChanged(usUninstall)。
 ;
-; runasoriginaluser:解除安裝是提權跑的,但服務是使用者自己那一支,
-; 而 HKCU 也是使用者自己的。用提權的權杖去做這兩件事,停到的是不存在的
-; 服務、清到的是管理員帳號的登錄檔,而真正在用電腦的那個人什麼都沒被清。
-Filename: "{app}\rime_ime_setup.exe"; Parameters: "stop-service --dir ""{app}"""; RunOnceId: "RimeStopService"; Flags: runhidden waituntilterminated runasoriginaluser
-Filename: "{app}\rime_ime_setup.exe"; Parameters: "disable-user";  RunOnceId: "RimeDisableUser";  Flags: runhidden waituntilterminated runasoriginaluser
-Filename: "{app}\rime_ime_setup.exe"; Parameters: "unregister";    RunOnceId: "RimeUnregister";   Flags: runhidden waituntilterminated
+;   原因:那三件事裡有兩件必須以**登入者**的身分做(服務是使用者自己那一支,
+;   HKCU 也是使用者自己的),而 runasoriginaluser 是 [Run] 專屬的旗標 ——
+;   放進 [UninstallRun] 會讓 ISCC 直接拒絕編譯:
+;     「Parameter "Flags" includes a flag that is not supported in this section.」
+;   (實測過,CI run 上就是這個錯。)
+;   搬到 [Code] 之後順序、身分、以及失敗時的記錄都在我們手上,反而更清楚。
 
 ; ⚠ 沒有 [UninstallDelete] 去碰 %APPDATA%\RimeQuad,而且**不可以加**。
 ;   那裡是使用者的詞典、自訂短語與設定 —— 是使用者的資料,不是我們的檔案。
@@ -247,10 +246,78 @@ begin
   ExecAsOriginalUser(Exe, 'enable-user', '', SW_HIDE, ewWaitUntilTerminated, Rc);
 end;
 
+// 解除安裝時的收尾。
+//
+// usUninstall 是**刪檔案之前**,所以 {app}\rime_ime_setup.exe 還在 ——
+// 這三件事全都要靠它。
+//
+// 身分很重要,而且兩種都要跑:
+//   · 服務是**登入者**那一支,結束事件在他的工作階段命名空間裡;
+//     HKCU 也是他的。這兩件要 ExecAsOriginalUser。
+//   · 但使用者也可能是以另一個帳號提權來解除安裝的,那時提權那一側
+//     才找得到東西。所以提權身分也跑一次。
+//   · unregister 寫的是 HKLM,只有提權那一側做得到。
+//
+// 全部 best-effort:解除安裝不該因為服務停不掉就失敗。真的清乾淨了沒有,
+// 由 CI 的 windows/verify_installer.sh 去斷言,不是靠這裡的結束碼。
+procedure UninstallCleanup;
+var
+  Exe, AppDir: String;
+  Rc: Integer;
+begin
+  AppDir := ExpandConstant('{app}');
+  Exe := AppDir + '\' + SetupExeName;
+  if not FileExists(Exe) then begin
+    Log('RimeQuad: 找不到 ' + Exe + ',跳過反註冊');
+    Exit;
+  end;
+
+  // ⚠ ExecAsOriginalUser 包在 try 裡。
+  //
+  // Inno 有一部分的支援函式在**解除安裝**的情境下不能呼叫,叫了會丟例外。
+  // 我沒有辦法在這台機器上確認它屬不屬於那一類,而賭錯的後果是
+  // 「解除安裝走到一半丟出例外」—— 比停不掉服務嚴重得多。
+  // 包起來之後,最壞情況只是退回下面提權那一次,清理照樣完成。
+  try
+    if ExecAsOriginalUser(Exe, 'stop-service --dir "' + AppDir + '"', '',
+                          SW_HIDE, ewWaitUntilTerminated, Rc) then
+      Log('RimeQuad: stop-service(登入者)rc=' + IntToStr(Rc))
+    else
+      Log('RimeQuad: stop-service(登入者)啟動失敗');
+  except
+    Log('RimeQuad: ExecAsOriginalUser 在解除安裝情境下不可用,改走提權那一條');
+  end;
+
+  if Exec(Exe, 'stop-service --dir "' + AppDir + '"', '',
+          SW_HIDE, ewWaitUntilTerminated, Rc) then
+    Log('RimeQuad: stop-service(提權)rc=' + IntToStr(Rc));
+
+  try
+    if ExecAsOriginalUser(Exe, 'disable-user', '', SW_HIDE, ewWaitUntilTerminated, Rc) then
+      Log('RimeQuad: disable-user(登入者)rc=' + IntToStr(Rc))
+    else
+      Log('RimeQuad: disable-user(登入者)啟動失敗');
+  except
+    Log('RimeQuad: disable-user(登入者)無法執行');
+  end;
+  // 提權那一側的 HKCU 也清一次(unregister 會刪掉整棵 HKCU CTF 子樹)。
+  if Exec(Exe, 'disable-user', '', SW_HIDE, ewWaitUntilTerminated, Rc) then
+    Log('RimeQuad: disable-user(提權)rc=' + IntToStr(Rc));
+
+  if Exec(Exe, 'unregister', '', SW_HIDE, ewWaitUntilTerminated, Rc) then
+    Log('RimeQuad: unregister rc=' + IntToStr(Rc))
+  else
+    Log('RimeQuad: unregister 啟動失敗 —— 登錄檔會留下殘骸');
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   UserDir: String;
 begin
+  if CurUninstallStep = usUninstall then begin
+    UninstallCleanup;
+    Exit;
+  end;
   if CurUninstallStep <> usPostUninstall then Exit;
   // 明著告訴使用者他的詞典還在、在哪裡。悄悄留下一個資料夾跟悄悄刪掉一樣糟。
   UserDir := ExpandConstant('{userappdata}\RimeQuad');

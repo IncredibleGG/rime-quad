@@ -100,6 +100,18 @@ jobs:
       - name: 反向測試（安裝包資料檢查必須會紅）
         run: ./windows/make_installer.sh --self-check
 
+      # ⚠ 這一步存在的理由是**迴圈長度**。
+      #
+      # ISCC 是逐段解析的:前面一段語法錯了就中止,後面的 [Messages] / [Code]
+      # 根本沒被看過。而真正的安裝程式建置在 core-x64 的最後面 —— 一輪二十分鐘,
+      # 一次只能發現一個錯。(實測:第一次就是這樣,[UninstallRun] 的一個旗標
+      # 讓整段 [Messages] 與 [Code] 都還沒被檢查過。)
+      #
+      # 這裡用一棵**假的** payload 把同一份 .iss 完整編一次。不需要 librime、
+      # 不需要執行期資料,四分鐘就有答案。內容對不對不是這一步的事。
+      - name: 安裝程式腳本必須編得過（快速把關）
+        run: ./windows/make_installer.sh --lint
+
       - name: 上傳瘦 DLL 與測試執行檔
         if: always()
         uses: actions/upload-artifact@v4
