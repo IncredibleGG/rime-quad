@@ -30,7 +30,7 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
 
     init() {
         let window = NSWindow(
-            contentRect: NSRect(origin: .zero, size: Metrics.windowSize),
+            contentRect: NSRect(origin: .zero, size: SettingsMetrics.windowSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false)
         window.title = "RimeQuad"
@@ -55,7 +55,7 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
         sidebar.backgroundColor = .clear
         sidebar.selectionHighlightStyle = .sourceList
         let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("page"))
-        col.width = Metrics.sidebarWidth - 20
+        col.width = SettingsMetrics.sidebarWidth - 20
         sidebar.addTableColumn(col)
         sidebar.dataSource = self
         sidebar.delegate = self
@@ -83,7 +83,7 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
             effect.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             effect.topAnchor.constraint(equalTo: root.topAnchor),
             effect.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            effect.widthAnchor.constraint(equalToConstant: Metrics.sidebarWidth),
+            effect.widthAnchor.constraint(equalToConstant: SettingsMetrics.sidebarWidth),
             sideScroll.topAnchor.constraint(equalTo: effect.topAnchor, constant: 10),
             sideScroll.leadingAnchor.constraint(equalTo: effect.leadingAnchor, constant: 8),
             sideScroll.trailingAnchor.constraint(equalTo: effect.trailingAnchor, constant: -8),
@@ -158,7 +158,7 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
         let stack = NSStackView(views: blocks)
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = Metrics.rowSpacing
+        stack.spacing = SettingsMetrics.rowSpacing
         stack.setCustomSpacing(4, after: blocks[0])
 
         let scroll = UI.scrollingPage(stack)

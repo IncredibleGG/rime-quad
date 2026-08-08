@@ -10,7 +10,12 @@ import AppKit
 
 // MARK: - 版面常數
 
-enum Metrics {
+/// ⚠ 名字不能只叫 `Metrics`:RimeQuadKit 已經有一個 `Metrics`
+///   (主題規範 §8.5 的那一塊),而 AppSources 與 Kit 編在同一個
+///   module 裡。撞名的錯誤訊息會變成「type 'Metrics' has no member
+///   'pagePadding'」與莫名其妙的 Float16 轉型失敗 —— 看起來完全
+///   不像是撞名。
+enum SettingsMetrics {
     static let sidebarWidth: CGFloat = 208
     static let pagePadding: CGFloat = 24
     static let rowSpacing: CGFloat = 18
@@ -110,13 +115,13 @@ enum UI {
         content.translatesAutoresizingMaskIntoConstraints = false
         doc.addSubview(content)
         NSLayoutConstraint.activate([
-            content.topAnchor.constraint(equalTo: doc.topAnchor, constant: Metrics.pagePadding),
+            content.topAnchor.constraint(equalTo: doc.topAnchor, constant: SettingsMetrics.pagePadding),
             content.leadingAnchor.constraint(equalTo: doc.leadingAnchor,
-                                             constant: Metrics.pagePadding),
+                                             constant: SettingsMetrics.pagePadding),
             content.trailingAnchor.constraint(equalTo: doc.trailingAnchor,
-                                              constant: -Metrics.pagePadding),
+                                              constant: -SettingsMetrics.pagePadding),
             content.bottomAnchor.constraint(equalTo: doc.bottomAnchor,
-                                            constant: -Metrics.pagePadding),
+                                            constant: -SettingsMetrics.pagePadding),
         ])
         scroll.documentView = doc
         // 讓內容寬度跟著視窗走,不然文字不會換行。
