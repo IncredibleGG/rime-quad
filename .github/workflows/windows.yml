@@ -254,6 +254,7 @@ jobs:
             third_party/build/windows-x64/*.log
             third_party/build/windows-x64/verify/logs/
             third_party/build/windows-x64/ime-verify/
+            third_party/build/windows-x64/ime/bin/*.map
           if-no-files-found: warn
 
       - name: 上傳產物（DLL、服務、console）

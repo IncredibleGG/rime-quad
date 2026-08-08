@@ -195,6 +195,10 @@ target_link_libraries(rime_service PRIVATE
   rime_common rime_winshared
   ${RIME_STATIC_LIBS} ${RIME_SYSTEM_LIBS}
   user32 gdi32 shell32)
+# /MAP:服務進程崩掉時,崩潰過濾器印的是 RVA;要把 RVA 變成函式名就需要這份
+# 對照表。CI 會把它一起上傳。這是在沒有偵錯器、沒有符號伺服器的機器上
+# 唯一查得動的辦法 —— 而 Windows 端的建置機器正是這種機器。
+target_link_options(rime_service PRIVATE /MAP)
 
 message(STATUS "rime    : ${RIME_LIB}")
 message(STATUS "opencc  : ${OPENCC_LIB}")

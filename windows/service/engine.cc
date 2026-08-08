@@ -1,6 +1,7 @@
 #include "engine.h"
 
 #include <chrono>
+#include <cstdio>
 
 #include "../common/ime_policy.h"
 #include "rime_shell.h"
@@ -58,6 +59,17 @@ Snapshot Convert(const rs_snapshot* s) {
   return out;
 }
 
+// 啟動階段的標記。只在啟動時印幾行,不是熱路徑。
+//
+// 存在的理由很具體:CI run #16/#17 上 rime_service.exe 在 rs_init 附近
+// 以 0xC0000005 崩潰,而同一個 job 裡的 rime_console(同一份 rime_shell.cc、
+// 同一批靜態庫)是綠的。沒有這幾行的話,「崩在我的執行緒機制裡」與
+// 「崩在 librime 裡」分不開,而那兩者的修法完全不同。
+void Mark(const char* what) {
+  std::fprintf(stderr, "[engine] %s\n", what);
+  std::fflush(stderr);
+}
+
 }  // namespace
 
 Engine::Engine() {}
@@ -73,7 +85,9 @@ bool Engine::Start(const std::string& shared_dir, const std::string& user_dir,
     std::unique_lock<std::mutex> lock(mu_);
     started_ = true;
   }
+  Mark("Post 之前(主執行緒)");
   Post([&] {
+    Mark("進入引擎執行緒");
     rs_setup setup{};
     setup.shared_data_dir = shared_dir.c_str();
     setup.user_data_dir = user_dir.c_str();
@@ -84,9 +98,13 @@ bool Engine::Start(const std::string& shared_dir, const std::string& user_dir,
     setup.log_dir = log_dir.c_str();
     setup.app_name = "rime.windows";
     setup.on_deploy = &OnDeploy;
+    Mark("呼叫 rs_init");
     ok = rs_init(&setup);
+    Mark(ok ? "rs_init 回傳 true" : "rs_init 回傳 false");
     if (!ok) init_error_ = rs_last_error();
+    Mark("rs_last_error 讀取完畢");
   });
+  Mark("Post 返回");
   return ok;
 }
 

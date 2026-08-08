@@ -57,9 +57,19 @@ void Err(const char* fmt, ...) {
 // 讓「服務崩了」與「服務沒起來」變成兩件分得開的事。
 LONG WINAPI CrashFilter(EXCEPTION_POINTERS* info) {
   if (info && info->ExceptionRecord) {
-    Err("[service] **崩潰** 例外碼 0x%08lX,位址 %p\n",
-        static_cast<unsigned long>(info->ExceptionRecord->ExceptionCode),
+    // 位址本身沒有用:ASLR 每次都不一樣。真正查得動的是 **RVA**
+    // (位址減掉模組基底),因為那個可以拿去對連結器產生的 .map 檔。
+    // rime_service 連結時帶了 /MAP,而 CI 會把 .map 一起上傳。
+    const unsigned char* base =
+        reinterpret_cast<const unsigned char*>(::GetModuleHandleW(nullptr));
+    const unsigned char* at = reinterpret_cast<const unsigned char*>(
         info->ExceptionRecord->ExceptionAddress);
+    Err("[service] **崩潰** 例外碼 0x%08lX 位址 %p 基底 %p",
+        static_cast<unsigned long>(info->ExceptionRecord->ExceptionCode),
+        static_cast<const void*>(at), static_cast<const void*>(base));
+    if (base && at > base)
+      Err(" RVA 0x%08llX", static_cast<unsigned long long>(at - base));
+    Err("\n");
   } else {
     Err("[service] **崩潰**(沒有例外資訊)\n");
   }

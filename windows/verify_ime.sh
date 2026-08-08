@@ -39,7 +39,10 @@ while [ $# -gt 0 ]; do
 done
 
 command -v cygpath >/dev/null 2>&1 || die "必須在 Git Bash / MSYS2 下執行"
-w() { cygpath -w "$1"; }
+# cygpath -m(正斜線)而不是 -w(反斜線):windows/verify_console.sh 餵給
+# rime_console 的就是 -m 的形式,而那條路已經在這個 runner 上驗過很多次。
+# 兩支驗證腳本走不同形式的路徑,等於在比較兩件不同的事。
+w() { cygpath -m "$1"; }
 
 [ -f "${BIN}/rime_service.exe" ] || die "找不到 ${BIN}/rime_service.exe;先跑 windows/build.sh ime"
 [ -f "${BIN}/rime_probe.exe" ]   || die "找不到 ${BIN}/rime_probe.exe"
