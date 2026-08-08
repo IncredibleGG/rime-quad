@@ -35,6 +35,10 @@ val rimeUserData = rimeRepoRoot.dir("core/data/user")
 val rimeLayouts = rimeRepoRoot.dir("core/layouts")
 val rimeThemes = rimeRepoRoot.dir("core/themes")
 val rimeSchemaLanguages = rimeRepoRoot.file("core/schema-languages.json")
+
+// 主題／佈局格式規範。不是建置的輸入，是**測試**的輸入：
+// DiagnosticCodeSpecTest 直接讀 §6.5.1 的碼表（見下方 tasks.withType<Test>）。
+val rimeThemeFormatSpec = rimeRepoRoot.file("docs/theme-format.md")
 val rimeGeneratedAssets = layout.buildDirectory.dir("generated/rimeAssets")
 
 val syncRimeData = tasks.register<Sync>("syncRimeData") {
@@ -321,6 +325,14 @@ tasks.withType<Test>().configureEach {
     inputs.dir(layout.projectDirectory.dir("src/main/res"))
         .withPathSensitivity(PathSensitivity.RELATIVE)
         .withPropertyName("appResources")
+    // docs/theme-format.md 同理,而且是跨端的:DiagnosticCodeSpecTest 直接讀
+    // §6.5.1 的診斷碼表,拿它跟 DiagnosticCode 逐項比對(抄一份常數表會腐爛,
+    // 而腐爛的方式正好是「規範改了、測試還是綠的」)。規範由 macOS 端維護、
+    // 不在這個模組裡,不宣告成輸入的話它改了這邊會判 UP-TO-DATE ——
+    // 那正是這個專案吃過兩次虧的「該紅的時候安靜地不跑」。
+    inputs.file(rimeThemeFormatSpec)
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+        .withPropertyName("rimeThemeFormatSpec")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

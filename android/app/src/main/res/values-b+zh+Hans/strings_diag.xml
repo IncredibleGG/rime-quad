@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  诊断消息（简体中文）。key 集合、位置参数集合都必须与 values/strings_diag.xml
+  完全一致，由 DiagnosticStringsTest 守着。
+
+  ⚠ 目录名是 BCP 47 的 values-b+zh+Hans，不是 values-zh-rCN。
+
+  这不是繁体那一份的字对字转换：文件／文件夹／布局／默认这些词在两岸不一样，
+  逐条重写过。
+-->
+<resources>
+
+    <!-- ── 致命（§6.2 F1–F10）────────────────────────────────────── -->
+    <string name="diag_fatal_yaml_syntax">这个文件的格式不合法：%1$s</string>
+    <string name="diag_fatal_root_not_mapping">这个文件的最外层必须是一组设置项。</string>
+    <string name="diag_fatal_format_missing">“%1$s”少了必需的 format 那一行。</string>
+    <string name="diag_fatal_format_malformed">“%2$s”里的 format 标记“%1$s”写法不合法。</string>
+    <string name="diag_fatal_format_kind_mismatch">“%3$s”是“%1$s”文件，但这里需要的是“%2$s”文件。</string>
+    <string name="diag_fatal_format_major_unsupported">“%1$s”用的是 %2$s 格式第 %3$s 版，本应用最多支持到第 %4$s 版。请更新应用。</string>
+    <string name="diag_fatal_id_missing">“%1$s”少了必需的 id 那一行。</string>
+    <string name="diag_fatal_id_invalid">“%1$s”不是合法的 id。请用 1 到 64 个字符，只能是 a-z、0-9、点、减号和下划线。</string>
+    <string name="diag_fatal_id_mismatch">id“%1$s”与文件名“%2$s”不一致。</string>
+    <string name="diag_fatal_document_not_found">每一个搜索文件夹里都找不到“%1$s”。</string>
+    <string name="diag_fatal_parent_not_found">这个文件继承自“%1$s”，但找不到那一份。</string>
+    <string name="diag_fatal_inherits_cycle">继承关系绕成了一个圈：%1$s</string>
+    <string name="diag_fatal_inherits_too_deep">继承层数超过 %1$s 份文件。</string>
+    <string name="diag_fatal_min_client">这个文件需要 %1$s 版以后的应用，当前是 %2$s 版。</string>
+    <string name="diag_fatal_layers_missing">一份键盘布局至少要有一层。</string>
+    <string name="diag_fatal_default_layer_unknown">这份布局里没有“%1$s”这一层。</string>
+    <string name="diag_fatal_alpha_layer_unknown">这份布局里没有“%1$s”这一层。</string>
+    <string name="diag_fatal_layer_empty">“%1$s”这一层没有任何按键。</string>
+
+    <!-- ── 可回复（§6.3）─────────────────────────────────────────── -->
+    <string name="diag_unknown_field">本应用不认识“%1$s”这个设置，已忽略。</string>
+    <string name="diag_unknown_field_2">本应用不认识“%1$s”这个设置，已忽略。你想写的是“%2$s”吗？</string>
+    <string name="diag_duplicate_key">“%1$s”在这里设置了不止一次，以最后一次为准。</string>
+    <string name="diag_type_mismatch">这里应该是%1$s，却是%2$s，改用内置值。</string>
+    <string name="diag_bad_bool">“%1$s”不是“是”或“否”，改用内置值。</string>
+    <string name="diag_bad_number">“%1$s”不是数字，改用内置值。</string>
+    <string name="diag_out_of_range">%1$s 超出允许范围 %2$s 到 %3$s，已调整为 %4$s。</string>
+    <string name="diag_bad_enum">“%1$s”不是 %2$s 之一，改用“%3$s”。</string>
+    <string name="diag_bad_color">本应用读不懂颜色“%1$s”，改用内置颜色。</string>
+    <string name="diag_palette_not_scalar">色板里的“%1$s”不是单一的值，已丢弃。</string>
+    <string name="diag_palette_bad_color">色板里的“%1$s”设成了“%2$s”，那不是合法的颜色，已丢弃。</string>
+    <string name="diag_palette_unresolved_ref">色板里的“%1$s”指向“%2$s”，但那个查不到，已丢弃。</string>
+    <string name="diag_palette_self_reference">色板里的“%1$s”指向它自己，已丢弃。</string>
+    <string name="diag_palette_cycle_or_too_deep">色板里的“%1$s”绕成了一个圈，或者层数太深，已丢弃。</string>
+    <string name="diag_entry_dropped">这份列表里有一条的写法不对，已丢弃。</string>
+    <string name="diag_asset_incomplete">自带字体要同时写 family 和 file，已丢弃。</string>
+    <string name="diag_asset_path_escape">字体文件“%1$s”不在这个主题文件夹里面，已丢弃。</string>
+    <string name="diag_unknown_script_tag">本应用不认识“%1$s”这种文字系统，已忽略。</string>
+    <string name="diag_unknown_icon">本应用没有“%1$s”这个图标，改为显示文字。</string>
+    <string name="diag_unknown_action">按键做不到“%1$s”这件事，这个键按了不会有反应。</string>
+    <string name="diag_bad_action_argument">“%1$s”少了必需的部分，或者那个部分不合法，这个键按了不会有反应。</string>
+    <string name="diag_toolbar_item_no_tap">这个工具栏按钮按了没有任何动作，已丢弃。</string>
+    <string name="diag_status_item_no_source">这个状态栏项目没有可显示的内容，已丢弃。</string>
+    <string name="diag_nested_platform_overrides">platform_overrides 里面不能再放一层 platform_overrides，里面那一层已忽略。</string>
+
+    <!-- ── INFO（§6.4）───────────────────────────────────────────── -->
+    <string name="diag_required_item_restored">工具栏必须保留“%1$s”，已经加回去了。</string>
+    <string name="diag_deprecated_field">“%1$s”已经不再使用，以后会移除。</string>
+    <string name="diag_feature_unsupported">这台设备做不到“%1$s：%2$s”，改用普通的样子。</string>
+    <string name="diag_legacy_block_ignored">“%1$s”属于旧的键盘高度算法，已忽略。</string>
+
+    <!-- ── 暂定码：规范正文要求发诊断，§6.5.1 的码表还没有这一格 ─── -->
+    <string name="diag_unknown_keysym">内置的按键名称表里没有“%1$s”，改为在打字时问输入引擎。</string>
+    <string name="diag_unknown_modifier">本应用不认识“%1$s”这个组合键，已忽略。</string>
+    <string name="diag_unknown_swipe_direction">“%1$s”不是滑动方向，已忽略。</string>
+    <string name="diag_mutually_exclusive">同一个键不能同时设“%1$s”和“%2$s”，以“%2$s”为准。</string>
+    <string name="diag_send_incomplete">这个键要送出的按键名称或文字两者都没有写，按了不会有反应。</string>
+    <string name="diag_row_width_mismatch">这一行加起来是 %1$s，但“%3$s”这一层的宽度是 %2$s。</string>
+    <string name="diag_key_patch_no_target">这份布局里没有 id 是“%1$s”的键，那项改动已忽略。</string>
+    <string name="diag_action_target_missing">“%1$s”指向不存在的“%2$s”，这个键按了不会有反应。</string>
+    <string name="diag_auto_for_schema_wildcard">auto_for_schema 只匹配指名的输入方案，写“*”没有意义，已丢弃。</string>
+    <string name="diag_user_remap_unapplicable">你自定义的键位已经套不到这个键盘上：%1$s</string>
+
+
+    <!-- ── type_mismatch 的两个参数（DiagnosticTerm）──────────────── -->
+    <string name="diag_kind_mapping">一组设置</string>
+    <string name="diag_kind_sequence">一份列表</string>
+    <string name="diag_kind_scalar">单一的值</string>
+    <string name="diag_kind_null">空的</string>
+    <string name="diag_kind_string_list">一份文字列表</string>
+    <string name="diag_kind_localized_string">一段文字（或每种语言各一段）</string>
+
+</resources>

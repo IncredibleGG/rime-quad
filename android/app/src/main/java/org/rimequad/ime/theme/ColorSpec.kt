@@ -1,5 +1,11 @@
 package org.rimequad.ime.theme
 
+import org.rimequad.ime.theme.DiagnosticCode.PALETTE_BAD_COLOR
+import org.rimequad.ime.theme.DiagnosticCode.PALETTE_CYCLE_OR_TOO_DEEP
+import org.rimequad.ime.theme.DiagnosticCode.PALETTE_NOT_SCALAR
+import org.rimequad.ime.theme.DiagnosticCode.PALETTE_SELF_REFERENCE
+import org.rimequad.ime.theme.DiagnosticCode.PALETTE_UNRESOLVED_REF
+
 /**
  * 顏色字面值的解析（docs/theme-format.md §4.7）。
  *
@@ -109,7 +115,7 @@ internal object PaletteResolver {
         for ((k, v) in node.entries) {
             val s = (v as? YamlNode.Scalar)?.value
             if (s == null) {
-                cursor.diag.warn("palette.$k", "expected a color literal; entry dropped", v.line)
+                cursor.diag.add(PALETTE_NOT_SCALAR, "palette.$k", v.line, listOf(k))
                 continue
             }
             raw[k] = s
@@ -131,7 +137,7 @@ internal object PaletteResolver {
     ): Int? {
         done[name]?.let { return it }
         if (depth >= MAX_DEPTH) {
-            cursor.diag.warn("palette.$name", "reference chain too deep or cyclic; entry dropped")
+            cursor.diag.add(PALETTE_CYCLE_OR_TOO_DEEP, "palette.$name", args = listOf(name))
             return null
         }
         val spec = raw[name] ?: return null
@@ -140,20 +146,24 @@ internal object PaletteResolver {
             val at = t.indexOf('@')
             val target = (if (at < 0) t.substring(1) else t.substring(1, at)).trim()
             if (target == name) {
-                cursor.diag.warn("palette.$name", "self-reference; entry dropped")
+                cursor.diag.add(PALETTE_SELF_REFERENCE, "palette.$name", args = listOf(name))
                 return null
             }
             val base = resolveOne(target, raw, done, depth + 1, cursor) ?: run {
-                cursor.diag.warn("palette.$name", "unresolved reference '\$$target'; entry dropped")
+                cursor.diag.add(
+                    PALETTE_UNRESOLVED_REF, "palette.$name", args = listOf(name, target)
+                )
                 return null
             }
             val single = mapOf(target to base)
             val v = ColorSpec.resolve(t, single)
-            if (v == null) cursor.diag.warn("palette.$name", "invalid color '$t'; entry dropped")
+            if (v == null) {
+                cursor.diag.add(PALETTE_BAD_COLOR, "palette.$name", args = listOf(name, t))
+            }
             return v
         }
         val v = ColorSpec.resolve(t, emptyMap())
-        if (v == null) cursor.diag.warn("palette.$name", "invalid color '$t'; entry dropped")
+        if (v == null) cursor.diag.add(PALETTE_BAD_COLOR, "palette.$name", args = listOf(name, t))
         return v
     }
 }

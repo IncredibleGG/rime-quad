@@ -1,5 +1,13 @@
 package org.rimequad.ime.theme
 
+import org.rimequad.ime.theme.DiagnosticCode.ASSET_INCOMPLETE
+import org.rimequad.ime.theme.DiagnosticCode.ASSET_PATH_ESCAPE
+import org.rimequad.ime.theme.DiagnosticCode.LEGACY_BLOCK_IGNORED
+import org.rimequad.ime.theme.DiagnosticCode.REQUIRED_ITEM_RESTORED
+import org.rimequad.ime.theme.DiagnosticCode.TOOLBAR_ITEM_NO_TAP
+import org.rimequad.ime.theme.DiagnosticCode.UNKNOWN_ICON
+import org.rimequad.ime.theme.DiagnosticCode.UNKNOWN_SCRIPT_TAG
+
 /** 規範 §8 欄位表所列的內建預設值。這是「欄位缺失 → 採預設值」的唯一來源。 */
 object ThemeDefaults {
 
@@ -274,11 +282,11 @@ object ThemeParser {
             val family = m.child("family").string("")
             val file = m.child("file").string("")
             if (family.isEmpty() || file.isEmpty()) {
-                c.diag.warn(a.path, "font asset needs both 'family' and 'file'; dropped", a.node?.line)
+                c.diag.add(ASSET_INCOMPLETE, a.path, a.node?.line)
                 continue
             }
             if (file.startsWith("/") || file.contains("..")) {
-                c.diag.warn(a.path, "font asset path must stay inside the theme package; dropped", a.node?.line)
+                c.diag.add(ASSET_PATH_ESCAPE, a.path, a.node?.line, listOf(file))
                 continue
             }
             assets.add(
@@ -305,7 +313,7 @@ object ThemeParser {
         val fallback = LinkedHashMap<String, List<String>>()
         for (script in fallbackCursor.keys()) {
             if (!KNOWN_SCRIPTS.contains(script)) {
-                c.diag.warn("${fallbackCursor.path}.$script", "unknown ISO 15924 script tag; ignored")
+                c.diag.add(UNKNOWN_SCRIPT_TAG, "${fallbackCursor.path}.$script", args = listOf(script))
                 continue
             }
             fallback[script] = fallbackCursor.child(script).stringList(emptyList())
@@ -442,13 +450,13 @@ object ThemeParser {
             val tapCursor = m.child("tap")
             val raw = tapCursor.stringOrNull()
             if (raw == null) {
-                diag.warn(entry.path, "toolbar item needs a 'tap' action; dropped", entry.node?.line)
+                diag.add(TOOLBAR_ITEM_NO_TAP, entry.path, entry.node?.line)
                 continue
             }
             val action = Actions.parse(raw, tapCursor.path, diag, tapCursor.node?.line) ?: continue
             val icon = m.child("icon").stringOrNull()
             if (icon != null && !LayoutParser.isKnownIcon(icon)) {
-                diag.warn("${m.path}.icon", "unknown icon '$icon'; falling back to the label", m.node?.line)
+                diag.add(UNKNOWN_ICON, "${m.path}.icon", m.node?.line, listOf(icon))
             }
             items.add(
                 ToolbarItem(
@@ -468,13 +476,17 @@ object ThemeParser {
         path: String
     ): List<ToolbarItem> {
         val out = ArrayList(items)
+        val base = if (path.isEmpty()) "candidates.bar.toolbar" else path
         for (required in ThemeDefaults.REQUIRED_TOOLBAR_ITEMS) {
             if (out.any { it.tap.verb == required.tap.verb }) continue
-            out.add(required)
-            diag.info(
-                if (path.isEmpty()) "candidates.bar.toolbar" else path,
-                "the toolbar must expose '${required.tap.raw}'; the required item was added back"
+            // ⚠ 路徑要帶到補回去的那一格。必備項有兩個，兩個都被刪掉時
+            // 若共用 `<toolbar>` 這個路徑，兩則 INFO 的 (severity, code, path)
+            // 會一模一樣，去重之後只剩一則，使用者就不知道另一個也被補了。
+            diag.add(
+                REQUIRED_ITEM_RESTORED, "$base.items[${out.size}]",
+                args = listOf(required.tap.raw)
             )
+            out.add(required)
         }
         return out
     }
@@ -545,11 +557,9 @@ object ThemeParser {
 
         // §8.8.0.2：舊的 height 區塊已被取代，忽略但要讓使用者知道。
         if (c.child("height").exists) {
-            c.diag.info(
-                "keyboard.height",
-                "the screen-ratio height model was replaced by key_aspect / key_height / " +
-                    "max_screen_ratio (spec 8.8); this block is ignored",
-                c.child("height").node?.line
+            c.diag.add(
+                LEGACY_BLOCK_IGNORED, "keyboard.height", c.child("height").node?.line,
+                listOf("keyboard.height")
             )
         }
         val keyHeight = c.mapping("key_height")

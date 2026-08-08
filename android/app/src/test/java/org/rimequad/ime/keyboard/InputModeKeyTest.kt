@@ -8,6 +8,7 @@ import org.junit.Assert.assertTrue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
 import org.junit.Test
+import org.rimequad.ime.theme.DiagnosticCode
 import org.rimequad.ime.core.RimeStatus
 import org.rimequad.ime.theme.ActionVerb
 import org.rimequad.ime.theme.Actions
@@ -50,11 +51,27 @@ class InputModeKeyTest {
         assertEquals("input_mode:toggle", a.raw)
     }
 
+    /**
+     * 未知的 `input_mode:<x>` 要被擋下來、要留下診斷，但**不是致命的**。
+     *
+     * 這條原本斷言 `diag.hasErrors` —— 也就是要求這件事是致命錯誤。
+     * 規範 §6.2 的致命清單（F1–F10）沒有這一條，而 §6.3 明寫「已知 verb、
+     * 參數不合法 → 該鍵變 noop + WARNING」。舊行為的後果是：一顆鍵上的一個
+     * 錯字讓**整份佈局載不起來**，使用者看到的是鍵盤整個換掉，而不是那一顆鍵
+     * 沒反應 —— 比缺陷本身更難查。
+     *
+     * 嚴重度改由 code 決定之後（§6.5），產生點已經沒有地方可以自己選一級了。
+     */
     @Test
-    fun anUnknownInputModeActionIsRejectedRatherThanSilentlyIgnored() {
+    fun anUnknownInputModeActionIsRejectedButIsNotFatal() {
         val diag = Diagnostics()
         assertNull(Actions.parse("input_mode:sideways", "t", diag, null))
-        assertTrue(diag.hasErrors)
+        assertFalse("§6.2 的致命清單沒有這一條", diag.hasErrors)
+        assertEquals(
+            listOf(DiagnosticCode.BAD_ACTION_ARGUMENT),
+            diag.items.map { it.code },
+        )
+        assertEquals(listOf("input_mode:sideways"), diag.items[0].args)
     }
 
     /** 舊動詞仍然合法：只切模式，不動佈局。兩者語義不同，不是別名。 */
