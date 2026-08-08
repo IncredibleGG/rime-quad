@@ -77,7 +77,11 @@ bool Engine::Start(const std::string& shared_dir, const std::string& user_dir,
     rs_setup setup{};
     setup.shared_data_dir = shared_dir.c_str();
     setup.user_data_dir = user_dir.c_str();
-    setup.log_dir = log_dir.empty() ? nullptr : log_dir.c_str();
+    // ⚠ 空字串與 NULL 語意不同(rime_shell.h 檔頭):"" = 只寫 stderr,
+    //   NULL = 交給 librime 決定暫存目錄。這裡一律傳字串,空的就是 ""。
+    //   tools/rime_console.cc 走的正是 "" 那一條,而那條在這個 runner 上
+    //   已經驗證過很多次;NULL 那條沒有人走過。不要在服務進程上開新路。
+    setup.log_dir = log_dir.c_str();
     setup.app_name = "rime.windows";
     setup.on_deploy = &OnDeploy;
     ok = rs_init(&setup);

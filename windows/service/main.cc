@@ -15,6 +15,7 @@
 
 #include <windows.h>
 
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -26,6 +27,44 @@
 #include "rime_shell.h"
 
 namespace {
+
+// 全部輸出走**窄字元 UTF-8**,不用 fwprintf。
+//
+// 兩個理由,而第二個是實際踩到的:
+//   1. tools/rime_console.cc 已經證明這條路在 Windows 上是對的 ——
+//      輸出導進檔案,拿到的是原始 UTF-8 位元組,不經過主控台的代碼頁轉換。
+//   2. 在同一個 FILE* 上混用寬字元與窄字元 I/O 是未定義行為,而 librime
+//      與 glog 用的是窄字元。我們先 fwprintf 過的話,之後它們寫同一條串流
+//      的行為就沒有保證了。
+void Say(const char* fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  std::vfprintf(stdout, fmt, ap);
+  va_end(ap);
+  std::fflush(stdout);
+}
+
+void Err(const char* fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  std::vfprintf(stderr, fmt, ap);
+  va_end(ap);
+  std::fflush(stderr);
+}
+
+// 服務進程崩掉時,使用者看到的只是「輸入法忽然沒反應了」——
+// 而 DLL 那邊會 fail-open,連錯誤訊息都沒有。至少把例外碼與位址印出來,
+// 讓「服務崩了」與「服務沒起來」變成兩件分得開的事。
+LONG WINAPI CrashFilter(EXCEPTION_POINTERS* info) {
+  if (info && info->ExceptionRecord) {
+    Err("[service] **崩潰** 例外碼 0x%08lX,位址 %p\n",
+        static_cast<unsigned long>(info->ExceptionRecord->ExceptionCode),
+        info->ExceptionRecord->ExceptionAddress);
+  } else {
+    Err("[service] **崩潰**(沒有例外資訊)\n");
+  }
+  return EXCEPTION_EXECUTE_HANDLER;
+}
 
 std::string EnvUtf8(const wchar_t* name) {
   wchar_t buf[32768];
@@ -61,6 +100,8 @@ void EnsureDir(const std::string& utf8) {
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
+  ::SetUnhandledExceptionFilter(&CrashFilter);
+
   std::string shared = EnvUtf8(L"RIME_SHARED_DATA_DIR");
   std::string user = EnvUtf8(L"RIME_USER_DATA_DIR");
   std::string log = EnvUtf8(L"RIME_LOG_DIR");
@@ -82,7 +123,7 @@ int wmain(int argc, wchar_t** argv) {
     else if (a == L"--quit-after" && i + 1 < argc) quit_after = _wtoi(argv[++i]);
     else if (a == L"--ready-file" && i + 1 < argc) ready_file = argv[++i];
     else {
-      std::fwprintf(stderr, L"未知參數: %s\n", a.c_str());
+      Err("未知參數: %s\n", rimewin::WideToUtf8(a).c_str());
       return 2;
     }
   }
@@ -90,11 +131,15 @@ int wmain(int argc, wchar_t** argv) {
   if (shared.empty()) shared = DefaultSharedDir();
   if (user.empty()) user = DefaultUserDir();
   EnsureDir(user);
+  // log 為空時傳 ""(只寫 stderr)而**不是** NULL(交給 librime 決定暫存目錄)。
+  // rime_shell.h 明說兩者語意不同,而 tools/rime_console.cc 走的是 "" 那條 ——
+  // 那條已經在這個 runner 上驗證過很多次了。服務進程的 stderr 本來就會被
+  // 導進檔案,沒有必要另外開一份 glog 的檔案日誌。
 
   if (!DirExists(shared)) {
     // 明確報出來。少了共用資料目錄的話,後面每一步都會「成功」,
     // 而使用者看到的是「輸入法有反應但一個候選都沒有」—— 最難查的失敗。
-    std::fwprintf(stderr, L"找不到共用資料目錄: %hs\n", shared.c_str());
+    Err("找不到共用資料目錄: %s\n", shared.c_str());
     return 1;
   }
 
@@ -122,23 +167,26 @@ int wmain(int argc, wchar_t** argv) {
     if (set_ctx) set_ctx(reinterpret_cast<HANDLE>(static_cast<INT_PTR>(-4)));
   }
 
-  std::fwprintf(stdout, L"[service] shell ABI = %d\n", rs_abi_version());
-  std::fwprintf(stdout, L"[service] shared = %hs\n", shared.c_str());
-  std::fwprintf(stdout, L"[service] user   = %hs\n", user.c_str());
-  std::fflush(stdout);
+  Say("[service] shell ABI = %d\n", rs_abi_version());
+  Say("[service] shared = %s\n", shared.c_str());
+  Say("[service] user   = %s\n", user.c_str());
+  Say("[service] log    = %s\n", log.empty() ? "(stderr)" : log.c_str());
 
   rimewin::Engine engine;
+  Say("[service] rs_init ...\n");
   if (!engine.Start(shared, user, log)) {
-    std::fwprintf(stderr, L"rs_init 失敗: %hs\n", engine.last_error().c_str());
+    Err("rs_init 失敗: %s\n", engine.last_error().c_str());
     return 1;
   }
+  Say("[service] rs_init OK\n");
   if (wait_deploy > 0 && !engine.WaitDeploy(wait_deploy)) {
     // 部署失敗時 rs_last_error() 是空字串 —— librime 的 C API 不提供原因
     // (docs/handoff-windows.md §5)。所以這裡只能說「失敗了」,
     // 不要假裝知道為什麼。
-    std::fwprintf(stderr, L"部署未在 %d 秒內成功\n", wait_deploy);
+    Err("部署未在 %d 秒內成功\n", wait_deploy);
     return 1;
   }
+  if (wait_deploy > 0) Say("[service] 部署完成\n");
 
   rimewin::NullCandidateUi null_ui;
   rimewin::CandidateWindow window;
@@ -147,14 +195,18 @@ int wmain(int argc, wchar_t** argv) {
     if (window.Start())
       ui = &window;
     else
-      std::fwprintf(stderr, L"候選窗建立失敗,改以無 UI 模式繼續\n");
+      Err("候選窗建立失敗,改以無 UI 模式繼續\n");
   }
+
+  Say("[service] 候選窗 %s\n", no_ui ? "(--no-ui,不建)" : "已就緒");
 
   rimewin::PipeServer server(&engine, ui);
   if (!server.Start()) {
-    std::fwprintf(stderr, L"具名管道建立失敗(可能已經有一支服務在跑)\n");
+    Err("具名管道建立失敗(可能已經有一支服務在跑)\n");
     return 1;
   }
+  Say("[service] 管道 = %s\n",
+      rimewin::WideToUtf8(rimewin::RimePipeName()).c_str());
 
   if (!ready_file.empty()) {
     HANDLE f = ::CreateFileW(ready_file.c_str(), GENERIC_WRITE, 0, nullptr,
@@ -165,8 +217,7 @@ int wmain(int argc, wchar_t** argv) {
       ::CloseHandle(f);
     }
   }
-  std::fwprintf(stdout, L"[service] ready\n");
-  std::fflush(stdout);
+  Say("[service] ready\n");
 
   if (quit_after > 0) {
     ::Sleep(static_cast<DWORD>(quit_after) * 1000);
