@@ -75,6 +75,11 @@ ok()   { echo "  [PASS] $*"; PASS=$((PASS+1)); }
 bad()  { echo "  [FAIL] $*" >&2; FAIL=$((FAIL+1)); }
 step() { echo; echo "=== $* ==="; }
 note() { [ "$VERBOSE" -eq 1 ] && echo "         $*"; return 0; }
+# 略過**一定要印出來**,而且要說清楚「這一項這一次沒有檢查任何東西」。
+# 這個專案已經被「測試安靜地跳過自己」咬過三次(升級測試、LayoutEscapeTest、
+# grep -oP 的詞庫檢查),所以略過不走 note。
+SKIP=0
+skipped() { echo "  [SKIP] $*"; SKIP=$((SKIP+1)); }
 
 # 把命中的行印出來(最多 N 行),讓失敗訊息可以直接動手修而不必再 grep 一次。
 show() { printf '%s\n' "$1" | sed -n "1,${2:-10}p" | sed 's/^/         /' >&2; }
@@ -222,7 +227,8 @@ sys.stdout.write(re.sub(r"<!--.*?-->", "", open(sys.argv[1], encoding="utf-8").r
 ' "$1" 2>/dev/null; }
 if [ ! -f "$NETSEC" ]; then
   bad "找不到 network_security_config.xml"
-elif xml_no_comments "$NETSEC" | grep -q 'cleartextTrafficPermitted="true"'; then
+elif NETSEC_TXT="$(xml_no_comments "$NETSEC")"; \
+     case "$NETSEC_TXT" in *'cleartextTrafficPermitted="true"'*) true ;; *) false ;; esac; then
   bad "network_security_config.xml 開了明文例外 —— 發布用的設定不該有"
   show "$(xml_no_comments "$NETSEC" | grep -n 'cleartextTrafficPermitted="true"')" 10
 else
@@ -261,48 +267,132 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-step "8. Lua 沙盒仍在(第三方方案不能跳出行程)"
+step "8. Lua 沙盒仍在(第三方方案不能跳出行程,也不能亂讀檔)"
 # 方案市集下載的是第三方 Lua,而 librime-lua 的 modules.cc 在**模組初始化**時
 # 就會 dofile 使用者資料目錄下的 rime.lua —— 使用者根本還沒選到那個方案。
 # 沒有沙盒的話,那些腳本可以 os.execute / io.popen / package.loadlib,
 # 自己開 socket 完全繞過 NetworkGate。
+#
+# 沙盒有兩層(patches/librime-lua@sandbox.patch 同時改三個檔):
+#   src/lib/lua.cc   第一層:允許清單(os / io / debug 只留方案真的用得到的)
+#   src/modules.cc   第二層:io 與 loadfile 收斂到 RIME 的兩個資料目錄,
+#                    並把 rime.lua 延後到「第一個 lua 元件被建立」才跑
+#   src/lua_gears.h  延後的掛勾
+#
+# ⚠ 這一項只驗「沙盒還在原始碼裡、而且順序對」。**它擋不住「沙盒不再擋得住
+#   任何東西」** —— 那要靠 scripts/verify_lua_sandbox.sh(真的 Lua 直譯器 +
+#   39 條探針 + 4 個變異測試)與 scripts/verify_lua_deferral.sh(真的引擎)。
+#   讀 patch 說「看起來有擋」不算數,這一行是寫給下一個維護者的。
 SANDBOX_PATCH="$ROOT/patches/librime-lua@sandbox.patch"
-LUA_CC="$ROOT/third_party/librime-lua/src/lib/lua.cc"
+LUA_SRC="$ROOT/third_party/librime-lua"
 if [ ! -f "$SANDBOX_PATCH" ]; then
   bad "找不到 patches/librime-lua@sandbox.patch —— 沙盒的來源不見了"
 else
   ok "沙盒 patch 存在"
 fi
-if [ ! -f "$LUA_CC" ]; then
-  note "third_party/librime-lua 還沒抓下來,略過「已套用」檢查"
-else
-  # ⚠ 一定要排除被註解掉的行。第一版沒排除,結果把
-  #   `-- package.loadlib = nil`(有人把沙盒關掉了)當成「還在」而放行 ——
-  #   這個漏洞是靠故意植入違規的演練抓到的,不是靠讀這支腳本。
-  #   Lua 的行註解是 --,C++ 那側是 //。
-  MISSING=""
-  for tok in 'kRimeQuadSandbox' 'os\[k\] = nil' 'package\.loadlib = nil' \
-             'io\.popen = nil' 'package\.searchers\[3\] = nil' \
-             'debug\[k\] = nil' 'chunkname, "t"'; do
-    grep -E "$tok" "$LUA_CC" | grep -qvE '^[[:space:]]*(--|//)' \
-      || MISSING="$MISSING ${tok//\\/}"
+
+# 沙盒的每一項在 patch 檔裡也要看得到。這樣就算 third_party/ 沒抓下來
+# (CI 的快車道就是這樣),這一項仍然在檢查東西,而不是整段略過。
+if [ -f "$SANDBOX_PATCH" ]; then
+  PATCH_MISSING=""
+  for tok in 'kRimeQuadSandbox' 'kRimeQuadPathSandbox' 'rimequad_lua_ensure_init'; do
+    grep -q "$tok" "$SANDBOX_PATCH" || PATCH_MISSING="$PATCH_MISSING $tok"
   done
-  if [ -z "$MISSING" ]; then
-    ok "librime-lua 的 lua.cc 已套用沙盒"
+  if [ -z "$PATCH_MISSING" ]; then
+    ok "patch 檔裡兩層沙盒與延後掛勾都在"
   else
-    bad "lua.cc 的沙盒不完整,缺:$MISSING(升級 librime-lua 後忘了重套 patch?)"
-  fi
-  # 沙盒必須在 luaL_openlibs 之後、rime.lua 之前生效。順序錯了等於沒做。
-  if [ -n "$(grep -n 'luaL_openlibs' "$LUA_CC")" ]; then
-    L_OPEN="$(grep -n 'luaL_openlibs' "$LUA_CC" | head -1 | cut -d: -f1)"
-    L_SBOX="$(grep -n 'luaL_dostring(L, kRimeQuadSandbox' "$LUA_CC" | head -1 | cut -d: -f1)"
-    if [ -n "$L_SBOX" ] && [ "$L_SBOX" -gt "$L_OPEN" ]; then
-      ok "沙盒安裝在 luaL_openlibs 之後(第 $L_OPEN -> $L_SBOX 行)"
-    else
-      bad "沙盒沒有安裝在 luaL_openlibs 之後 —— 順序錯了等於沒做"
-    fi
+    bad "patch 檔缺:$PATCH_MISSING"
   fi
 fi
+
+# ⚠ 一定要排除被註解掉的行。第一版沒排除,結果把
+#   `-- package.loadlib = nil`(有人把沙盒關掉了)當成「還在」而放行 ——
+#   這個漏洞是靠故意植入違規的演練抓到的,不是靠讀這支腳本。
+#   Lua 的行註解是 --,C++ 那側是 //。
+check_tokens() {   # check_tokens <檔案> <說明> <token...>
+  local f="$1" what="$2"; shift 2
+  if [ ! -f "$f" ]; then
+    note "$f 不在,略過"
+    return 0
+  fi
+  local missing="" tok
+  for tok in "$@"; do
+    local hits
+    hits="$(grep -E "$tok" "$f" 2>/dev/null | grep -vE '^[[:space:]]*(--|//)' || true)"
+    [ -n "$hits" ] || missing="$missing ${tok//\\/}"
+  done
+  if [ -z "$missing" ]; then
+    ok "$what"
+  else
+    bad "$what —— 缺:$missing(升級 librime-lua 後忘了重套 patch?)"
+  fi
+}
+
+LUA_CC="$LUA_SRC/src/lib/lua.cc"
+MODULES_CC="$LUA_SRC/src/modules.cc"
+GEARS_H="$LUA_SRC/src/lua_gears.h"
+if [ ! -f "$LUA_CC" ]; then
+  skipped "third_party/librime-lua 還沒抓下來 —— 只驗了 patch 檔本身,沒有驗到套用後的原始碼"
+else
+  # 第一層:允許清單。三個 pairs 迴圈缺一個,就有一整組標準庫是全開的。
+  check_tokens "$LUA_CC" "第一層(lua.cc)的允許清單完整" \
+    'kRimeQuadSandbox' 'for k in pairs\(os\) do' 'for k in pairs\(io\) do' \
+    'for k in pairs\(debug\) do' 'package\.loadlib = nil' \
+    'package\.searchers\[3\] = nil' 'package\.path = ""' 'chunkname, "t"'
+  # 第二層:路徑收斂 + 搜尋器 + 延後
+  check_tokens "$MODULES_CC" "第二層(modules.cc)的路徑收斂與延後都在" \
+    'kRimeQuadPathSandbox' 'package\.searchers\[2\] = function' \
+    'is_write\(mode\)' 'rimequad_lua_ensure_init' 'rimequad_lua_nuke'
+  check_tokens "$GEARS_H" "延後的掛勾接在元件建立處" '::rimequad_lua_ensure_init\(\);'
+
+  # 順序:第一層必須在 luaL_openlibs 之後。順序錯了等於沒做。
+  L_OPEN="$(grep -n 'luaL_openlibs' "$LUA_CC" | head -1 | cut -d: -f1)"
+  L_SBOX="$(grep -n 'luaL_dostring(L, kRimeQuadSandbox' "$LUA_CC" | head -1 | cut -d: -f1)"
+  if [ -n "$L_OPEN" ] && [ -n "$L_SBOX" ] && [ "$L_SBOX" -gt "$L_OPEN" ]; then
+    ok "第一層裝在 luaL_openlibs 之後(第 $L_OPEN -> $L_SBOX 行)"
+  else
+    bad "第一層沒有裝在 luaL_openlibs 之後 —— 順序錯了等於沒做"
+  fi
+  # 順序:第二層必須在 rime.lua 之前。rime.lua 是第三方內容。
+  M_SBOX="$(grep -n 'kRimeQuadPathSandbox,' "$MODULES_CC" | head -1 | cut -d: -f1)"
+  M_RIME="$(grep -n 'luaL_dofile(L, user_file' "$MODULES_CC" | head -1 | cut -d: -f1)"
+  if [ -n "$M_SBOX" ] && [ -n "$M_RIME" ] && [ "$M_SBOX" -lt "$M_RIME" ]; then
+    ok "第二層裝在 rime.lua 之前(第 $M_SBOX -> $M_RIME 行)"
+  else
+    bad "第二層沒有裝在 rime.lua 之前 —— rime.lua 是第三方內容,順序錯了等於沒做"
+  fi
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+step "8b. 使用者手上那顆引擎真的帶著沙盒"
+# patches/ 底下的 patch 只有在 scripts/build_native.sh 重跑之後才會進到
+# third_party/prebuilt/<abi>/lib/librime.a,而**那個 .a 才是使用者拿到的東西**。
+# 改了 patch 卻沒重建 = 原始碼上看起來安全、出貨的引擎完全沒變,
+# 而且沒有任何測試會紅。這一項就是為了讓那件事不可能沉默地發生。
+SANDBOX_MARK='rimequad-path-sandbox'
+FOUND_A=0
+for a in "$ROOT"/third_party/prebuilt/*/lib/librime.a; do
+  [ -f "$a" ] || continue
+  FOUND_A=1
+  ABI_NAME="$(basename "$(dirname "$(dirname "$a")")")"
+  # ⚠ 這裡**不能**用 `strings ... | grep -q`。grep -q 命中就立刻結束,strings
+  #   還在寫 18MB 的輸出,收到 SIGPIPE 而以 141 結束;set -o pipefail 把整條
+  #   pipeline 判成失敗,於是「找得到沙盒」被讀成「找不到」。
+  #   這支腳本第一版就是這樣寫的,結果一顆**確實帶著沙盒**的 librime.a 被判成
+  #   沒有沙盒。同樣的坑這個專案已經咬過兩次(發布關卡的「缺語言模型」誤報、
+  #   桌面發布腳本的「包裡沒有 .app」誤報),這是第三次。
+  #   grep -c 會把輸入讀完才結束,所以沒有 SIGPIPE;數字存進變數再比對。
+  #   (檔案大到不適合整個塞進 shell 變數,所以不走 `case "$STR" in`。)
+  NHIT="$(strings "$a" 2>/dev/null | grep -c "$SANDBOX_MARK" || true)"
+  if [ -z "$NHIT" ]; then
+    skipped "$ABI_NAME:strings 讀不出東西 —— 沒有驗到這顆引擎"
+  elif [ "$NHIT" -gt 0 ]; then
+    ok "$ABI_NAME 的 librime.a 帶著沙盒(命中 $NHIT 處)"
+  else
+    bad "$ABI_NAME 的 librime.a **沒有**沙盒 —— patches/ 改過但沒有重跑 scripts/build_native.sh $ABI_NAME"
+  fi
+done
+[ "$FOUND_A" -eq 1 ] || skipped "third_party/prebuilt 底下沒有 librime.a —— 沒有驗到出貨的引擎"
 
 # ─────────────────────────────────────────────────────────────────────────────
 step "9. 沒有多出來的權限"
@@ -325,9 +415,65 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
+step "10. 傳遞相依:最終產物裡誰碰得到網路"
+# 第 1 項是對 android/app/src 下 grep,那擋得住**我們自己**多寫一個出口,
+# 擋不住傳遞相依:build.gradle.kts 只寫了 androidx 那幾行,而 androidx 自己
+# 會拉進別的東西。實測這個 APK 裡就有 okio(androidx.datastore 帶進來的),
+# 它有 Okio.source(Socket) 這類 socket 輔助函式 —— 原始碼 grep 一個字都看不到。
+#
+# 所以這一項問的是**最終產物**:dex 裡有哪些類別引用得到網路型別。
+# 判準是集合相等(多一個少一個都紅),清單釘在 scripts/dex_network_refs.py。
+APK_FOR_DEX=""
+for cand in "$ROOT/android/app/build/outputs/apk/debug/app-debug.apk" \
+            "$ROOT/android/app/build/outputs/apk/release/app-release.apk"; do
+  [ -f "$cand" ] && APK_FOR_DEX="$cand" && break
+done
+DEXREFS="$ROOT/scripts/dex_network_refs.py"
+if [ -z "$APK_FOR_DEX" ]; then
+  skipped "找不到已建置的 APK —— **這一輪沒有掃過傳遞相依**。release_check.sh 會先建 APK,那時才算真的驗過"
+elif [ ! -f "$DEXREFS" ]; then
+  bad "找不到 scripts/dex_network_refs.py —— 產物層的單一出口證明不見了"
+else
+  DEXOUT="$(python3 "$DEXREFS" "$APK_FOR_DEX" 2>&1)"; DEXRC=$?
+  case "$DEXRC" in
+    0) printf '%s\n' "$DEXOUT"; PASS=$((PASS+1)) ;;
+    2) skipped "dex 掃描跑不起來(缺 dexdump?)—— 沒有驗到傳遞相依"
+       printf '%s\n' "$DEXOUT" | sed 's/^/         /' >&2 ;;
+    *) bad "APK 裡碰得到網路的類別與釘死的清單不一致"
+       printf '%s\n' "$DEXOUT" | sed 's/^/       /' >&2 ;;
+  esac
+fi
+
+# 另外一條 fail-fast 的粗篩:整包函式庫等級的東西(crash reporter、HTTP 客戶端、
+# WorkManager)出現在 dex 裡就是紅,不必等引用者比對。
+if [ -n "$APK_FOR_DEX" ] && command -v unzip >/dev/null 2>&1; then
+  DEXTMP="$(mktemp -d)"
+  unzip -q -o "$APK_FOR_DEX" 'classes*.dex' -d "$DEXTMP" 2>/dev/null || true
+  DEXN="$(ls "$DEXTMP"/classes*.dex 2>/dev/null | wc -l)"
+  if [ "$DEXN" -eq 0 ]; then
+    bad "APK 裡抽不出任何 classes.dex —— 粗篩沒有真的執行,不能算通過"
+  else
+    DEX_BAD='okhttp3/|retrofit2/|com/android/volley|io/ktor/|org/apache/http/|com/google/firebase|com/crashlytics|io/sentry/|com/bugsnag/|org/acra/|com/microsoft/appcenter|androidx/work/|com/google/android/gms/analytics|com/google/android/gms/measurement|com/umeng/|com/tencent/bugly|cn/jpush/|com/igexin/'
+    DEX_HITS=""
+    for d in "$DEXTMP"/classes*.dex; do
+      H="$(grep -a -o -E "$DEX_BAD" "$d" 2>/dev/null | sort -u || true)"
+      [ -n "$H" ] && DEX_HITS="${DEX_HITS}${H}"$'\n'
+    done
+    DEX_HITS="$(printf '%s' "$DEX_HITS" | sort -u | grep -v '^$' || true)"
+    if [ -z "$DEX_HITS" ]; then
+      ok "APK 的 $DEXN 個 dex 裡沒有 crash reporter / 分析 SDK / HTTP 客戶端 / WorkManager"
+    else
+      bad "APK 裡出現了會自己連網或回報的函式庫(可能是某個相依偷偷帶進來的)"
+      show "$DEX_HITS" 15
+    fi
+  fi
+  rm -rf "$DEXTMP"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
 echo
 echo "============================================"
-echo " 離線稽核:通過 $PASS 項,失敗 $FAIL 項"
+echo " 離線稽核:通過 $PASS 項,失敗 $FAIL 項,略過 $SKIP 項"
 echo "============================================"
 if [ "$FAIL" -gt 0 ]; then
   echo "「離線為預設、無審查、經得起審計」這句話現在不成立。修好再發布。" >&2

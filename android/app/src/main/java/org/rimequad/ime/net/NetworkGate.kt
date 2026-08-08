@@ -45,6 +45,14 @@ import java.security.MessageDigest
  *      一筆：時間、主機、原因、結果、位元組數。使用者在「連網」分頁自己看。
  *      轉址的每一跳都各記一筆 —— 「它到底連了哪些主機」不能被一次轉址藏起來。
  *
+ *   4. **轉址不出原主機**（[redirectAllowed]）。使用者（或索引）給的網址是
+ *      哪一台，就只會連到哪一台。伺服器回一個指向別處的 302，我們中止並記一筆，
+ *      不跟過去。沒有這一條的話，第 3 點就只是「事後看得到」而不是「擋得住」：
+ *      一個被改過的索引、或一台被接管的伺服器，可以把每一次下載都導到
+ *      第三方，而使用者要等到翻連網紀錄才會發現。
+ *      也不允許 https → http 的降級。
+ *
+
  * ── 這裡**不**記錄什麼 ──────────────────────────────────────────────────
  * 不記錄使用者輸入的任何內容 —— 一個字都不記。輸入內容根本不會離開
  * librime 與鍵盤，也不會進入本檔。紀錄裡連 URL 的**路徑與查詢字串**都不存，
@@ -219,6 +227,8 @@ object NetworkGate {
         blockedOrNull(purpose, label)?.let { return it }
 
         var current = url
+        // 最初那個網址就是這次下載被允許連的**唯一**主機。轉址不得離開它。
+        val origin = url
         var redirects = 0
         while (true) {
             // 每一跳都重新問一次開關：使用者可能在下載途中把它關掉，
@@ -269,9 +279,22 @@ object NetworkGate {
                         record(host, purpose, label, NetworkOutcome.FAILED, 0, "轉址過多")
                         return Result.Err("轉址次數過多")
                     }
-                    current = URL(parsed, loc).toString()
-                    // 轉址也是一次真的連線，而且下一跳可能是完全不同的主機。
-                    // 不記的話，紀錄就會漏掉使用者最想知道的那一件事。
+                    val next = URL(parsed, loc).toString()
+                    // 轉址不得換主機、不得降級。這是**這一次下載**的邊界：
+                    // 使用者給的是哪一台，就只連哪一台。
+                    if (!redirectAllowed(origin, next)) {
+                        dest.delete()
+                        record(
+                            host, purpose, label, NetworkOutcome.FAILED, 0,
+                            "HTTP $code 想轉去 ${hostOf(next)}，已中止",
+                        )
+                        return Result.Err(
+                            "轉址想把連線換到別的地方（${hostOf(origin)} → ${hostOf(next)}），已中止"
+                        )
+                    }
+                    current = next
+                    // 轉址也是一次真的連線。不記的話，紀錄就會漏掉使用者最想
+                    // 知道的那一件事。
                     record(host, purpose, label, NetworkOutcome.REDIRECTED, 0, "HTTP $code → ${hostOf(current)}")
                     continue
                 }
@@ -346,6 +369,41 @@ object NetworkGate {
         } catch (e: Exception) {
             file
         }
+    }
+
+    /**
+     * 這一跳的轉址可不可以跟。
+     *
+     * 規則只有兩條，刻意簡單到可以一眼看完：
+     *   · 目標必須是**同一個主機**（大小寫不敏感）
+     *   · 不准 https → http 的降級
+     *
+     * ── 為什麼抽成純函式 ────────────────────────────────────────────────
+     * 這是一條**安全規則**，不該只有「架一台會回 302 的伺服器」才驗得到。
+     * 抽出來之後 [org.rimequad.ime.net.NetworkRedirectTest] 可以直接對它下
+     * 二十幾組斷言，而測試自己一個 socket 都不用開 —— 這個專案的規矩是
+     * 連測試都不准出現第二個連網出口。
+     *
+     * ── 這條規則**沒有**擋住什麼 ────────────────────────────────────────
+     * 它管的是「連上去之後被導去別處」。若一開始那個網址本身就指向第三方
+     * （索引的 `base_url` 或套件的 `file` 是遠端給的，見
+     *  [resolveUrl]），這裡看到的「原主機」就已經是第三方了。那條路要靠
+     * 索引簽章才擋得住，見 docs/offline-threat-model.md §5。
+     *
+     * 連接埠**不比**：同一台主機的另一個埠仍然是同一個經營者，而我們自己的
+     * 發布路徑不會換埠。
+     */
+    fun redirectAllowed(from: String, to: String): Boolean {
+        val f = try { URL(from) } catch (e: Exception) { return false }
+        val t = try { URL(to) } catch (e: Exception) { return false }
+        if (t.protocol != "http" && t.protocol != "https") return false
+        if (f.protocol.equals("https", ignoreCase = true) &&
+            !t.protocol.equals("https", ignoreCase = true)
+        ) return false
+        val fh = f.host ?: return false
+        val th = t.host ?: return false
+        if (fh.isEmpty() || th.isEmpty()) return false
+        return fh.equals(th, ignoreCase = true)
     }
 
     /** 給紀錄與 UI 用的主機名。解不開時回原字串的前 60 字，不回 null。 */
