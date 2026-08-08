@@ -447,15 +447,17 @@ void SettingsWindow::CreateUi(HWND hwnd) {
   ::SetWindowPos(hwnd, nullptr, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER);
   LayoutUi();
   ShowTab(0);
-  ReloadFromSettings();
+  // ⚠ 這裡**不**去問引擎要方案清單。CreateUi 跑在 WM_CREATE 裡,
+  //   而 Engine::SchemaList 會同步等引擎執行緒 —— 服務剛啟動時那條執行緒
+  //   可能正在做首次部署前的準備。真的卡住的話 Start() 會逾時,
+  //   而症狀是「設定視窗有時候叫不出來」,間歇性又難查。
+  //   內容由 WM_RIME_OPEN(真的要顯示的時候)才載入。
 }
 
 void SettingsWindow::LayoutUi() {
   if (!hwnd_) return;
   RECT rc{};
   ::GetClientRect(hwnd_, &rc);
-  const int S = [&](int v) { return static_cast<int>(v * dpi_scale_); }(1);
-  (void)S;
   auto px = [&](int v) { return static_cast<int>(v * dpi_scale_); };
   const int pad = px(10);
   const int W = rc.right - rc.left;

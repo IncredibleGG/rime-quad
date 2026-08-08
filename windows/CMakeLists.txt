@@ -92,7 +92,10 @@ target_include_directories(rime_common PUBLIC
 # Windows 專用的一小撮工具(UTF 轉換、SID、管道名)。
 # 與 common/ 分開放,免得哪天有人在 common/ 裡順手 include windows.h。
 add_library(rime_winshared STATIC winshared/winutil.cc)
-target_link_libraries(rime_winshared PUBLIC advapi32)
+# ole32:StringFromGUID2(GuidToUtf8)。它已經在瘦 DLL 的允許清單裡,
+# 而且每一個載入 COM 的進程本來就有 —— 但 rime_probe 只連 winshared,
+# 所以要放在 PUBLIC,不然那一支會是 LNK2019。
+target_link_libraries(rime_winshared PUBLIC advapi32 ole32)
 
 add_executable(rime_tests
   tests/test_main.cc

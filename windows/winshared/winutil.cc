@@ -1,5 +1,10 @@
 #include "winutil.h"
 
+// StringFromGUID2 住在 objbase.h。WIN32_LEAN_AND_MEAN 之下 windows.h 不會
+// 把它帶進來 —— 而 mingw 的標頭會,所以 syntax_check_mingw.sh 是綠的、
+// MSVC 才紅。這正是那支腳本檔頭寫的「它綠了不代表 MSVC 會綠」。
+#include <objbase.h>
+
 #include <sddl.h>
 
 #include <vector>
