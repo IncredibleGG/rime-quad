@@ -116,7 +116,12 @@ jobs:
         id: vc
         run: |
           set -euo pipefail
-          CODE="$(./scripts/ci_version_code.sh)"
+          # 版本號要以**這次要發到哪裡**的線上版本為基準。手動觸發若指定了
+          # rime/test,基準就該是 rime/test/version.json ——
+          # 拿正式路徑的號碼去比,測試路徑上那個刻意調高的版號會把發布擋下,
+          # 而那個失敗跟「這份建置有問題」一點關係都沒有。
+          TARGET_DIR="${{ inputs.remote_dir || 'rime' }}"
+          CODE="$(./scripts/ci_version_code.sh --dir "$TARGET_DIR")"
           echo "code=$CODE" >> "$GITHUB_OUTPUT"
           # 為什麼寫進 $HOME/.gradle 而不是 android/gradle.properties:
           # 後者在版控裡,寫進去會讓工作區變髒,而 release_check.sh 第 1 關

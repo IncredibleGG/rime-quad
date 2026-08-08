@@ -29,9 +29,24 @@
 #     一個看起來像重大缺陷、其實是測試自己按出來的假失敗。
 #
 #   所以改成**由下往上實際量**:在畫面中線由下往上逐點輕點,記下「戳了會打出
-#   字」的那幾條橫列。會打出字 = 那裡是一顆做事的按鍵。由下往上而且找到三列
-#   就停,所以永遠掃不到工具列(它在鍵盤最上緣),齒輪不會被誤觸。
+#   **一個英文字母**」的那幾條橫列。由下往上而且找到三列就停,所以永遠掃不到
+#   工具列(它在鍵盤最上緣),齒輪不會被誤觸。
 #   量不到就中止 —— 沒有座標就不可能驗這件事,寧可紅也不要報一個沒驗到的綠。
+#
+#   為什麼判準是「打出一個英文字母」而不是「打出東西」:
+#     · 空的 EditText 在 uiautomator 裡 text 是**提示字**(本專案是 "type here"),
+#       所以「非空字串」這個判準會把桌布也當成按鍵。實測踩過。
+#     · `?123` 換層、`中/En` 換模式而且換佈局、`⇧` 換大小寫、空白鍵與 Enter
+#       另有語意 —— 它們都不會產生一個字母,於是自己把自己排除掉。
+#       不必在腳本裡寫死「哪一顆是模式鍵」(寫死會跟著佈局腐爛)。
+#
+# 為什麼按住的時間停在 500ms 以下:
+#
+#   Android 的長按門檻是 500ms。跨過去之後叫出來的是**合法的** UI ——
+#   替代字元彈出盤、鍵盤選擇器,實測還有一次直接跳進系統設定的「個人字典」。
+#   那些變化用像素比對跟真正的缺陷長得一模一樣,分不出來。
+#   而要重現的那個缺陷只需要「按住 100ms 以上」,所以停在 150/300ms:
+#   涵蓋了要驗的東西,又不會把合法行為誤判成缺陷。
 #
 # 比對器本身也會被驗:
 #
@@ -56,7 +71,7 @@ ADB="$SDK/platform-tools/adb"
 IME_ID=""
 APKS=()
 HOLD_MS=150
-LONG_MS=700
+LONG_MS=300
 OUT_DIR="$ROOT/build/verify-longpress"
 THRESHOLD="0.008"          # 差異像素比例上限。一顆鍵約佔比對區域的 2%。
 DEPLOY_TIMEOUT=120
@@ -115,6 +130,15 @@ for n in root.iter("node"):
         best = n.get("text")
 print(best)
 PY
+}
+
+# 「這一戳有沒有打出一個英文字母」。理由見檔頭:空欄位會回傳提示字,
+# 而模式鍵不會產生字母 —— 這個判準同時解掉這兩件事。
+typed_letter() {
+  case "$1" in
+    [a-z]) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 clear_field() {
@@ -187,20 +211,20 @@ while [ "$Y" -gt $((SH * 45 / 100)) ] && [ "$NROW" -lt 3 ]; do
   adbs shell input tap "$CX" "$Y" >/dev/null 2>&1 || true
   sleep 0.6
   T="$(read_field || true)"
-  if [ -n "$T" ]; then
+  if typed_letter "$T"; then
     # 同一列會連中好幾次,離上一列太近的視為同一列。
     if [ "$LASTY" -eq 0 ] || [ $((LASTY - Y)) -gt $((SH / 40)) ]; then
       ROWS="$ROWS $Y"; LASTY="$Y"; NROW=$((NROW + 1))
-      echo "  y=$Y 打出 '$T' → 這是一條按鍵橫列"
+      echo "  y=$Y 打出字母 '$T' → 這是一條字母鍵橫列"
     fi
   fi
   Y=$((Y - STEP))
 done
 clear_field
-[ "$NROW" -ge 2 ] || fail "由下往上掃到畫面中線都只量到 $NROW 條按鍵橫列。
+[ "$NROW" -ge 2 ] || fail "由下往上掃到畫面中線都只量到 $NROW 條字母鍵橫列。
        沒有座標就驗不了「按住」,而報一個沒驗到的綠燈比紅燈糟。
        先確認鍵盤真的在前景、而且按鍵按下去會出字。"
-pass "量到 $NROW 條按鍵橫列:$ROWS"
+pass "量到 $NROW 條字母鍵橫列:$ROWS"
 
 # --- 3b. 逐點確認,把會改變鍵盤狀態的鍵剔掉 ---------------------------------
 # 同一條橫列上不是每顆鍵都「只是打出一個字」:`?123` 會換層、`中/En` 會換
@@ -210,7 +234,7 @@ pass "量到 $NROW 條按鍵橫列:$ROWS"
 # 篩選條件很簡單而且剛好就是我們要的:**輕點它會不會打出字**。
 # 會打出字的就是普通按鍵,換層/換模式的那幾顆一顆都不會 —— 它們自己把
 # 自己排除掉了,不必在腳本裡寫死「哪一顆是模式鍵」(寫死就會跟著佈局腐爛)。
-step "3b. 逐點確認(把換層、換模式、換大小寫的鍵剔掉)"
+step "3b. 逐點確認(只留下輕點會打出一個字母的鍵)"
 POINTS=""
 NPT=0
 for ry in $ROWS; do
@@ -220,17 +244,17 @@ for ry in $ROWS; do
     adbs shell input tap "$X" "$ry" >/dev/null 2>&1 || true
     sleep 0.6
     T="$(read_field || true)"
-    if [ -n "$T" ]; then
+    if typed_letter "$T"; then
       POINTS="$POINTS ${X},${ry}"
       NPT=$((NPT + 1))
     else
-      echo "  ($X,$ry) 輕點沒有打出字 → 多半是模式鍵,不拿它做比對"
+      echo "  ($X,$ry) 輕點沒有打出字母(得到 '$T')→ 不是普通字母鍵,不按它"
     fi
   done
 done
 clear_field
-[ "$NPT" -ge 3 ] || fail "只找到 $NPT 顆「輕點會打出字」的按鍵,樣本太少,不足以判定"
-pass "確認 $NPT 顆普通按鍵:$POINTS"
+[ "$NPT" -ge 3 ] || fail "只找到 $NPT 顆「輕點會打出一個字母」的按鍵,樣本太少,不足以判定"
+pass "確認 $NPT 顆字母鍵:$POINTS"
 
 # --- 3c. 把鍵盤打回已知狀態 -------------------------------------------------
 # 上面的校準一定會在輸入法裡留下痕跡(打了字、可能不小心切過模式)。
@@ -262,7 +286,9 @@ pass "鍵盤回到初始狀態"
 # 刻意**不含工具列** —— 掃描不會掃到它,自然也不該拿它來比。
 TOPROW="$(printf '%s\n' $ROWS | sort -n | head -1)"
 KL=0; KR="$SW"
-KT=$((TOPROW - STEP * 2)); [ "$KT" -lt 0 ] && KT=0
+# 只往上讓一個掃描步距。讓太多會把工具列(齒輪、中/En、繁)含進比對區域,
+# 而那一排的外觀本來就會隨模式改變。
+KT=$((TOPROW - STEP)); [ "$KT" -lt 0 ] && KT=0
 KB=$((SH * 97 / 100))
 [ "$((KB - KT))" -gt 100 ] || fail "比對區域不合理:($KL,$KT)-($KR,$KB)"
 pass "比對區域 = ($KL,$KT)-($KR,$KB),$((KR - KL))x$((KB - KT)) px"
@@ -306,15 +332,24 @@ step "6. 清空輸入並回到閒置狀態"
 # 比到的就變成殘影而不是缺陷。長按的彈出盤在手指放開時本來就會收掉。
 clear_field
 sleep 3
+# ⚠ 只看 mIsInputViewShown 不夠:實測過畫面早就跳到系統設定的「個人字典」,
+#   那個欄位卻還是 true(它慢一拍)。前景視窗必須真的還是測試靶,否則
+#   拍到的是別的畫面,比出來的 100% 差異看起來像重大缺陷而其實不是。
 SHOWN2=0
 for i in $(seq 1 20); do
-  adbs shell dumpsys input_method 2>/dev/null | grep -q "mIsInputViewShown=true" && { SHOWN2=1; break; }
+  FG="$(adbs shell dumpsys window 2>/dev/null | grep -m1 'mCurrentFocus' || true)"
+  SHOWNV="$(adbs shell dumpsys input_method 2>/dev/null | grep -c 'mIsInputViewShown=true' || true)"
+  case "$FG" in
+    *dev.rime.imetest*)
+      [ "${SHOWNV:-0}" -ge 1 ] && { SHOWN2=1; break; } ;;
+  esac
   adbs shell monkey -p dev.rime.imetest -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || true
   sleep 2
 done
-[ "$SHOWN2" -eq 1 ] || fail "清空之後鍵盤不見了,無法比對(這本身也可能是缺陷)"
+[ "$SHOWN2" -eq 1 ] || fail "按住之後畫面沒有回到測試靶+鍵盤(前景是 '${FG:-未知}')。
+       按住把使用者帶離了輸入的畫面 —— 這本身就值得看一眼。"
 sleep 2
-pass "已清空,鍵盤仍在"
+pass "已清空,測試靶與鍵盤都還在"
 
 step "7. 拍下按住之後的鍵盤"
 shot "$OUT_DIR/after1.raw"
