@@ -19,14 +19,22 @@
 #
 # ── 用法(Git Bash)─────────────────────────────────────────────
 #
-#   windows/build.sh              # deps + console
+#   windows/build.sh              # deps + console + ime
 #   windows/build.sh deps         # 只建 librime 與 5 個相依
 #   windows/build.sh console      # 只建 rime_console.exe(需先有 deps)
+#   windows/build.sh ime          # TSF DLL + 服務進程 + 測試(需先有 deps)
+#   windows/build.sh logic        # 只建**不需要 librime** 的那一組:
+#                                 #   瘦 DLL、單元測試、probe。不必有 deps,
+#                                 #   一分鐘以內編完 —— CI 的快速 job 用它。
 #   windows/build.sh --clean      # 先清掉中間產物再建
 #
 # 產出:
 #   third_party/build/windows-<arch>/prefix/{include,lib,share}
 #   third_party/build/windows-<arch>/console/bin/rime_console.exe
+#   third_party/build/windows-<arch>/ime/bin/{rime_tsf.dll,rime_service.exe,
+#                                             rime_tests.exe,rime_probe.exe}
+#   third_party/build/windows-<arch>/logic/bin/{rime_tsf.dll,rime_tests.exe,
+#                                               rime_probe.exe}
 #
 set -euo pipefail
 
@@ -77,18 +85,23 @@ PATCH_DIR="${ROOT}/patches"
 DO_CLEAN=0
 DO_DEPS=0
 DO_CONSOLE=0
+DO_IME=0
+DO_LOGIC=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --clean)  DO_CLEAN=1 ;;
     deps)     DO_DEPS=1 ;;
     console)  DO_CONSOLE=1 ;;
-    -h|--help) sed -n '2,32p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    ime)      DO_IME=1 ;;
+    logic)    DO_LOGIC=1 ;;
+    -h|--help) sed -n '2,40p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) die "未知參數: $1" ;;
   esac
   shift
 done
-if [ "${DO_DEPS}" -eq 0 ] && [ "${DO_CONSOLE}" -eq 0 ]; then
-  DO_DEPS=1; DO_CONSOLE=1
+if [ "${DO_DEPS}" -eq 0 ] && [ "${DO_CONSOLE}" -eq 0 ] \
+   && [ "${DO_IME}" -eq 0 ] && [ "${DO_LOGIC}" -eq 0 ]; then
+  DO_DEPS=1; DO_CONSOLE=1; DO_IME=1
 fi
 
 # ---------------------------------------------------------------- 前置檢查
@@ -114,9 +127,13 @@ command -v "${CMAKE}" >/dev/null 2>&1 || die "找不到 cmake"
 CMAKE_VER="$("${CMAKE}" --version)"
 CMAKE_VER="${CMAKE_VER%%$'\n'*}"   # 第一行:"cmake version 3.31.6"
 CMAKE_VER="${CMAKE_VER##* }"       # 最後一個空白之後:"3.31.6"
-case "${CMAKE_VER}" in
-  3.*) ;;
-  *) die "偵測到 cmake ${CMAKE_VER};必須使用 CMake 3.x。
+# 只有 deps 那條路徑需要 CMake 3.x —— 那是 librime 的 find_package(Boost)
+# 的限制,不是我們自己的。瘦 DLL 與單元測試那一組跟 Boost 沒有關係,
+# 硬要它們也釘住 3.x,等於讓最該跑得快的那個 CI job 多下載一份 CMake。
+case "${CMAKE_VER}:${DO_DEPS}" in
+  3.*:*) ;;
+  *:0) ;;
+  *) die "偵測到 cmake ${CMAKE_VER};建 librime 相依必須使用 CMake 3.x。
   CMake 4 移除了 FindBoost 模組,而 librime 以 find_package(Boost) 找 header-only 的
   Boost,4.x 會直接找不到 —— 而且因為非 LINUX 分支不帶 REQUIRED,它不會報錯,
   只會在編譯時噴一整片找不到 boost 標頭。
@@ -505,7 +522,9 @@ build_console() {
     > "${bdir}.configure.log" 2>&1 \
     || { tail -80 "${bdir}.configure.log"; die "console configure 失敗"; }
   log "[console] build"
-  "${CMAKE}" --build "$(w "${bdir}")" --parallel "${NPROC}" \
+  # 只建 rime_console 這一個目標。同一份 CMakeLists 也描述了瘦 DLL 與測試,
+  # 但那些由 ime / logic 那兩條路徑負責 —— 在這裡順便建一次只是白等。
+  "${CMAKE}" --build "$(w "${bdir}")" --target rime_console --parallel "${NPROC}" \
     > "${bdir}.build.log" 2>&1 \
     || { tail -120 "${bdir}.build.log"; die "console build 失敗"; }
 
@@ -514,8 +533,68 @@ build_console() {
   log "console 完成: ${exe} ($(stat -c%s "${exe}" 2>/dev/null || echo ?) bytes)"
 }
 
+# ---------------------------------------------------------------- ime / logic
+#
+# 兩者用同一份 windows/CMakeLists.txt,差別只有給不給 RIME_PREFIX:
+#   給了  → 連 rime_service(librime)一起建;
+#   不給  → 只建瘦 DLL、單元測試、probe。
+#
+# **瘦 DLL 不需要 RIME_PREFIX 才編得起來,這件事本身就是架構的驗證。**
+# 哪天它需要了,代表有東西跑錯邊 —— librime 跑進了每一個宿主進程裡。
+configure_and_build() {
+  local name="$1"; shift
+  local bdir="${BUILD_ROOT}/${name}"
+  log "[${name}] configure"
+  "${CMAKE}" -S "$(w "${SCRIPT_DIR}")" -B "$(w "${bdir}")" \
+    -G Ninja \
+    "-DCMAKE_MAKE_PROGRAM=$(w "${NINJA}")" \
+    "-DCMAKE_BUILD_TYPE=Release" \
+    "$@" \
+    > "${bdir}.configure.log" 2>&1 \
+    || { tail -80 "${bdir}.configure.log"; die "${name} configure 失敗"; }
+  log "[${name}] build"
+  "${CMAKE}" --build "$(w "${bdir}")" --parallel "${NPROC}" \
+    > "${bdir}.build.log" 2>&1 \
+    || { tail -160 "${bdir}.build.log"; die "${name} build 失敗"; }
+}
+
+require_artifacts() {
+  local dir="$1"; shift
+  local missing=0 f
+  for f in "$@"; do
+    if [ -f "${dir}/${f}" ]; then
+      printf '    ✓ %s (%s bytes)\n' "${f}" "$(stat -c%s "${dir}/${f}" 2>/dev/null || echo ?)"
+    else
+      printf '    !! 缺少 %s\n' "${f}" >&2; missing=1
+    fi
+  done
+  [ "${missing}" -eq 0 ] || die "產物不齊,見上。"
+}
+
+build_ime() {
+  [ -f "${PREFIX}/include/rime_api.h" ] \
+    || die "沒有 ${PREFIX};ime 需要 librime。先跑 windows/build.sh deps
+  (只要瘦 DLL 與單元測試的話用 windows/build.sh logic,那個不需要 librime。)"
+  configure_and_build ime "-DRIME_PREFIX=$(w "${PREFIX}")"
+  require_artifacts "${BUILD_ROOT}/ime/bin" \
+    rime_tsf.dll rime_service.exe rime_tests.exe rime_probe.exe
+}
+
+build_logic() {
+  configure_and_build logic
+  require_artifacts "${BUILD_ROOT}/logic/bin" \
+    rime_tsf.dll rime_tests.exe rime_probe.exe
+  # 這裡刻意再確認一次 rime_service.exe **不在**:logic 這一組不該把
+  # 服務進程建出來。若它出現了,代表 CMakeLists 的分界線破了。
+  if [ -f "${BUILD_ROOT}/logic/bin/rime_service.exe" ]; then
+    die "logic 組不該產出 rime_service.exe —— 瘦 DLL 那一側跑進 librime 了。"
+  fi
+}
+
 # ---------------------------------------------------------------- main
 if [ "${DO_DEPS}" -eq 1 ]; then build_deps; fi
 if [ "${DO_CONSOLE}" -eq 1 ]; then build_console; fi
+if [ "${DO_IME}" -eq 1 ]; then build_ime; fi
+if [ "${DO_LOGIC}" -eq 1 ]; then build_logic; fi
 
 log "全部完成 ✓"

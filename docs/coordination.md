@@ -112,6 +112,29 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
 - `[2026-08-08] [macOS] Android 的 CI 目前是紅的,且與 macOS 無關:build.yml 的「建 host 版 opencc」步驟需要 third_party/librime/deps/opencc 的**原始碼**,但 third_party/librime/ 是 gitignore 的,該 workflow 又沒有任何步驟去取得它 → CMake Error: source directory does not exist。在我第一個 commit 之前就已經是紅的(run #4)。Android 端請自行確認,我沒有動 android/。`
 - `[2026-08-08] [macOS] CMake 4 的已知問題只中了一半:Android 的 build_native.sh 註記「CMake 4 移除 FindBoost **且** 對舊的 cmake_minimum_required 下限更嚴」。macOS runner 是 cmake 4.4.0,實測只有前者成立 —— 補一份 25 行的 header-only FindBoost 墊片(apple/scripts/build_macos.sh 的 create_findboost_shim)就過了,下限問題在這組釘死的依賴版本上沒有重現。Windows 端不必為此釘 CMake 3.x。`
 
+- `[2026-08-08] [Windows] 候選窗規範的缺口,實作桌面候選窗時撞到的。我沒有改 docs/theme-format.md（規範所有權在 macOS 端），以下照 §2 回報：`
+  1. **`§8.6.7 max_width` 的溢出行為寫的是「換行／截斷,由實作決定」。**
+     那正好是最需要一致的地方。Windows 目前的行為是**橫排時截斷**(並記錄
+     被丟掉幾個候選)、**直排時不截字讓窗變寬**;而且第一個候選一定放進去,
+     就算它自己就超過 max_width —— 給一個空的候選窗比太寬更難理解。
+     兩端各自決定的話,同一份主題在 macOS 與 Windows 上會看到不同數量的候選。
+  2. **標籤↔候選文字↔註解之間的間距沒有欄位。** `§8.6.4` 只有 item 之間的
+     `spacing`,item **內部**三段之間沒有。Windows 暫用 `metrics.spacing`。
+  3. **`§8.6.7 follow_caret: false` 說「固定在螢幕角落」,沒說哪一個角。**
+     Windows 暫取右下。
+  4. **桌面候選窗的字型家族沒有欄位。** `§8.6.1–8.6.3` 只有 `size` 與 `color`。
+     Windows 暫用系統 UI 字型(`SPI_GETNONCLIENTMETRICS`),只套規範裡有的字級。
+  5. **`§8.6.7` 的 `backdrop` / `opacity` / `shadow.*` 在 Windows 上要用
+     分層視窗才做得到,而規範沒有說不支援時該怎麼退化**(只有 `backdrop`
+     那一列寫了「必須靜默退化為 none」)。Windows 目前這三項都還沒實作。
+  6. `§11` 已列的多欄/表格排版與狀態列外觀,Windows 端確認同樣撞到:
+     中/英、簡/繁的狀態指示目前**完全沒有畫**,因為沒有規範可依。
+  `→ 待 macOS 端動規範時一併裁決。在那之前 Windows 端刻意只用規範已寫下的欄位、
+     取規範預設值、不讀主題檔 —— 做滿等於自己發明一套。`
+- `[2026-08-08] [Windows] 產品決定待確認:TSF 的輸入法設定檔目前註冊在 langid 0x0404(zh-Hant-TW)底下,因為內建方案是 luna_pinyin_tw / bopomofo_tw。要不要另外註冊一份 0x0804(zh-Hans)是產品決定,不是技術限制 —— 多一份 profile 就多一個 GUID。→ 待裁決`
+- `[2026-08-08] [Windows] 只動了 windows/ 與 .github/workflows/windows.yml。workflow 的 on.push.branches 加了 windows 分支(原本只有 main,推到自己的分支不會跑 CI)。沒有動 core/、docs/theme-format.md、android/、apple/。`
+- `[2026-08-08] [Windows] 給其餘三端參考:core/include/rime_shell.h 的 rs_modifier 與 librime 的遮罩是兩套東西(kSuperMask 1<<26 是後者,由 core/src/rime_shell.cc 的 to_rime_mask 轉換)。Windows 端在 windows/tests/test_keymap.cc 放了一條斷言把自己那份重寫的 Mod 位元與 rime_shell.h 的 RS_MOD_* 逐位釘在一起,順便釘住 RIME_SHELL_ABI_VERSION == 1。core/ 那邊若要動 ABI,這條會紅。`
+
 ---
 
 ## 6. 各端狀態
@@ -128,5 +151,19 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
   中途 commit 騙過去;另有一個**反向測試**步驟故意餵錯的預期值,斷言不判失敗就讓 CI 紅。
   另驗四個方案都部署成功、執行期資料齊全。核心產物打包上傳(apple/scripts/package_core.sh)。
   **尚未開始:IMKit、候選窗、Swift 綁定 —— 下一輪。CI 沒有圖形工作階段,驗不了 UI。**
-- **Windows** — 未開始。第一個里程碑:核心驗證在 `windows-latest` 上打出「你好」。
+- **Windows** — 核心層已綠,TSF 輸入法已寫出但**沒有人在真 Windows 上用過**。
+  瘦 DLL(`rime_tsf.dll`,只做 TSF 協議 + 按鍵映射 + IPC,不含 librime)
+  加獨立服務進程(`rime_service.exe`,rime_shell + librime + 候選窗),
+  兩者以具名管道通訊(DACL 只授權目前使用者的 SID)。
+  按鍵映射不用常數表 —— 會產生字元的鍵一律問 `ToUnicodeEx(..., hkl)`,
+  並以**真實**的德文/法文佈局在 CI 上驗證(`LoadKeyboardLayout`)。
+  CI 兩個 job:`logic-x64`(不需 librime,幾分鐘)與 `core-x64`。
+  驗到的:編得起來、四個 COM 匯出齊全、DLL 相依白名單(守 `/MT`)、
+  54 個單元測試 + 反向測試、既有的 `rime_console` 核心驗證不回歸、
+  以及**經由真的具名管道**驅動服務打出「你好」。
+  **驗不到的(清單見 `windows/README.md`「沒有被驗證的部分」):**
+  regsvr32 註冊、TSF 組字、候選窗的樣子、在記事本/瀏覽器裡真的打得出字。
+  **CI 綠不等於能用 —— 需要有人在真 Windows 上跑一遍。**
+  已知缺口:只有 x64、沒有修飾鍵事件(TSF 不給)、沒有顯示屬性、
+  沒有系統匣與安裝程式、沒有 librime-lua。
 - **iOS** — 未開始。

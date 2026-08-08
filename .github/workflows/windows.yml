@@ -1,27 +1,32 @@
-name: Windows (核心驗證)
+name: Windows (核心驗證 + TSF)
 
-# 這個 workflow 驗的是「Windows 上的核心層真的打得出字」,不是「編得出來」。
+# 這個 workflow 分成兩個 job,分界線是「要不要 librime」:
 #
-# 為什麼需要它:Windows 端唯一的建置與驗證管道就是這裡。開發機是一台
-# 編不了 Windows 的 Ubuntu,而 TSF 需要註冊 COM in-proc server 並有真實輸入
-# 情境,CI runner 上做不到。所以驗證分兩層(docs/handoff-windows.md §8):
+#   logic-x64  幾分鐘。瘦 DLL、單元測試、真實鍵盤佈局測試、二進位結構檢查。
+#              **不需要 librime** —— 那本身就是架構的驗證:TSF 的 DLL 被載入到
+#              每一個宿主進程裡,它如果需要 librime 才編得起來,就代表
+#              librime 跑進了瀏覽器與提權進程。
+#   core-x64   十幾分鐘(有快取時幾分鐘)。librime + 服務進程 + 端到端 IPC 驗證。
 #
-#   1. 這個 workflow —— 不經 UI 直接驅動 librime,斷言 nihao → 你好、
-#      注音 su3cl3 → 你好。核心與資料對不對,在這裡就會知道。
-#   2. 只有人做得到的 —— 真的裝上去、在真的輸入框裡打一遍。無可取代。
+# ⚠ **綠燈不等於能用。** TSF 需要註冊 COM in-proc server 並有真實的文字輸入
+#   情境,`windows-latest` runner 上做不到。所以:
 #
-# **這一輪只有第 1 層,而且刻意只有第 1 層。** 沒有 TSF、沒有 COM、沒有候選窗。
-# 核心層沒綠之前做 UI,出問題分不出是誰的錯 —— 這個專案已經吃過這個虧。
+#   CI 驗得到:編得起來、匯出的 COM 進入點齊全、DLL 沒有意外的相依、
+#             按鍵映射(含真實的德文/法文佈局)、線路格式的編解碼、
+#             組字政策、候選窗排版、fail-open 狀態機、
+#             以及**經由真的具名管道**驅動服務打出「你好」。
 #
-# 已知缺口(不是忘了,是這一輪的範圍外,見 windows/README.md):
-#   · 只做 x64,arm64 未做;
-#   · 沒有編 librime-lua —— 倚賴 lua_translator / lua_filter 的第三方方案
-#     在 Windows 上會部署成功但沒有任何候選。windows/build.sh 裡有一道
-#     守門:只要哪天把 lua 掛上去而沒帶 sandbox patch,建置就會停。
+#   CI 驗不到:regsvr32 註冊、TSF 的 Activate/組字/edit session、
+#             候選窗的樣子與位置、在記事本或瀏覽器裡真的打得出字、
+#             以及「每一顆鍵是不是都真的做了它宣稱的事」。
+#             這些只有人在真 Windows 上跑得到,清單見 windows/README.md。
+#
+#   這個專案吃過「編得出來不等於能用」的虧:編譯成功、單元測試全過、
+#   發布關卡全綠,而使用者一裝就按鍵永久變灰。**不要因為這裡綠了就說做完了。**
 
 on:
   push:
-    branches: [main]
+    branches: [main, windows]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -31,9 +36,77 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ────────────────────────────────────────────────────────────────
+  # 快速 job:不碰 librime。開發時最常紅的就是這一組,所以讓它先跑完。
+  # ────────────────────────────────────────────────────────────────
+  logic-x64:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      ARCH: x64
+
+    steps:
+      # runner 的系統 gitconfig 預設 core.autocrlf=true。不關掉的話 checkout
+      # 會把所有 LF 換成 CRLF,bash 腳本的 shebang 變成 `#!/usr/bin/env bash\r`
+      # 而直接無法執行。必須在 checkout **之前**設。
+      - name: 關掉 autocrlf
+        run: |
+          git config --global core.autocrlf input
+          git config --global core.longpaths true
+
+      - name: 取出原始碼
+        uses: actions/checkout@v4
+
+      - name: 安裝 Ninja
+        run: pip install ninja
+
+      # 這一組不需要釘住 CMake 3.x —— 那個限制來自 librime 的
+      # find_package(Boost),與瘦 DLL 和單元測試無關。runner 自帶的就夠。
+      - name: 建置瘦 DLL、單元測試、probe
+        run: ./windows/build.sh logic
+
+      - name: 單元測試
+        run: ./third_party/build/windows-x64/logic/bin/rime_tests.exe
+
+      # 反向測試。這個專案有過「測試是綠的,因為它沒在測」:
+      # 發布關卡的升級測試因步驟順序寫反被判「略過」而報出一片全綠。
+      # 這一步故意讓一個斷言失敗,並要求它**非零結束** ——
+      # 上面那一步的綠燈要成立,得先證明它會紅。
+      - name: 反向測試（框架必須會紅）
+        run: |
+          if ./third_party/build/windows-x64/logic/bin/rime_tests.exe --self-check; then
+            echo "!! --self-check 竟然以 0 結束 —— 測試框架不會紅,上面的綠燈都不算數" >&2
+            exit 1
+          fi
+          echo "反向測試通過:框架會紅"
+
+      # 匯出的四個 COM 進入點齊不齊、DLL 有沒有意外的相依。
+      # 後者守的是 /MT:相依到 VCRUNTIME140.dll 的話,在沒裝 VC++ 執行檔套件
+      # 的機器上 DLL 會在載入階段失敗,而症狀是「輸入法在某些程式裡不存在」。
+      - name: 二進位結構檢查（匯出符號、相依白名單）
+        run: ./windows/check_binaries.sh third_party/build/windows-x64/logic/bin
+
+      - name: 上傳瘦 DLL 與測試執行檔
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-logic-${{ github.sha }}
+          path: |
+            third_party/build/windows-x64/logic/bin/
+            third_party/build/windows-x64/*.log
+          if-no-files-found: warn
+
+  # ────────────────────────────────────────────────────────────────
+  # 重 job:librime + 核心驗證 + 服務進程 + 端到端 IPC 驗證。
+  # ────────────────────────────────────────────────────────────────
   core-x64:
     runs-on: windows-latest
-    timeout-minutes: 120
+    timeout-minutes: 150
 
     defaults:
       run:
@@ -48,9 +121,6 @@ jobs:
       PINNED_CMAKE: 3.31.6
 
     steps:
-      # runner 的系統 gitconfig 預設 core.autocrlf=true。不關掉的話 checkout
-      # 會把所有 LF 換成 CRLF,bash 腳本的 shebang 變成 `#!/usr/bin/env bash\r`
-      # 而直接無法執行。必須在 checkout **之前**設。
       - name: 關掉 autocrlf
         run: |
           git config --global core.autocrlf input
@@ -129,8 +199,6 @@ jobs:
           path: third_party/build/windows-x64/prefix
           key: winprefix-x64-${{ hashFiles('scripts/fetch_librime.sh', 'windows/build.sh') }}-v1
 
-      # 快取命中時 prefix 有了,但 collect_data.sh 要的 .ocd2 擺放位置沒有 ——
-      # 那是每次都要重做的一步(只是複製檔案,很快)。
       - name: 保存 Boost headers
         if: success() && steps.cache-prefix.outputs.cache-hit != 'true' && steps.cache-boost.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -138,6 +206,8 @@ jobs:
           path: third_party/boost
           key: boost-${{ env.BOOST_VERSION }}-headers-v1
 
+      # 快取命中時 prefix 有了,但 collect_data.sh 要的 .ocd2 擺放位置沒有 ——
+      # 那是每次都要重做的一步(只是複製檔案,很快)。
       - name: 從快取的 prefix 補上 opencc 詞典位置
         if: steps.cache-prefix.outputs.cache-hit == 'true'
         run: |
@@ -158,9 +228,22 @@ jobs:
       - name: 建置 rime_console（core/src/rime_shell.cc + tools/rime_console.cc）
         run: ./windows/build.sh console
 
-      # 這一步就是里程碑本身。
+      # 第一個里程碑:核心層真的打得出字。這一步紅了就不必看後面 ——
+      # 引擎與資料都不對的話,再怎麼改 TSF 都沒用。
       - name: 核心驗證（nihao → 你好、注音 su3cl3 → 你好）
         run: ./windows/verify_console.sh
+
+      - name: 建置 TSF DLL 與服務進程
+        run: ./windows/build.sh ime
+
+      - name: 二進位結構檢查（含服務進程）
+        run: ./windows/check_binaries.sh third_party/build/windows-x64/ime/bin
+
+      # 走**真的**具名管道:probe → 線路格式 → 服務 → rime_shell → librime。
+      # 也就是 DLL 會走的每一段,除了 TSF 本身。而 probe 用的 IpcClient 就是
+      # DLL 用的同一份原始碼 —— 另寫一個測試用戶端的話,驗到的是那一份。
+      - name: 端到端 IPC 驗證（經由具名管道:nihao → 你好）
+        run: ./windows/verify_ime.sh
 
       - name: 上傳建置與驗證日誌
         if: always()
@@ -170,12 +253,16 @@ jobs:
           path: |
             third_party/build/windows-x64/*.log
             third_party/build/windows-x64/verify/logs/
+            third_party/build/windows-x64/ime-verify/
           if-no-files-found: warn
 
-      - name: 上傳 rime_console.exe
+      - name: 上傳產物（DLL、服務、console）
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: rime-console-x64-${{ github.sha }}
-          path: third_party/build/windows-x64/console/bin/rime_console.exe
+          name: rime-windows-x64-${{ github.sha }}
+          path: |
+            third_party/build/windows-x64/ime/bin/rime_tsf.dll
+            third_party/build/windows-x64/ime/bin/rime_service.exe
+            third_party/build/windows-x64/console/bin/rime_console.exe
           if-no-files-found: error
