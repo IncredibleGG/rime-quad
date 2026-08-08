@@ -138,6 +138,9 @@ jobs:
           ./scripts/publish_apk.sh --check-only --apk "$APK_PATH"
 
       - name: 上傳 APK
+        # 關卡紅了的時候更需要拿到那份 APK —— 「簽章不對」這種判定,
+        # 不把檔案撈下來親自驗一次是查不出原因的。
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: rime-apk

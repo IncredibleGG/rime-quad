@@ -173,18 +173,24 @@ pass "已送出 $N 次按住"
 
 # --- 6. 復原畫面 ------------------------------------------------------------
 step "6. 清空輸入並回到閒置狀態"
-# 按住可能上了幾個字或叫出彈出盤。先送 BACK 收掉彈出盤(收不到就是沒有),
-# 再退格清空,最後給動畫時間落地 —— 否則比到的是漣漪而不是缺陷。
-adbs shell input keyevent KEYCODE_BACK >/dev/null 2>&1 || true
-sleep 1
-adbs shell dumpsys input_method 2>/dev/null | grep -q "mIsInputViewShown=true" || {
-  adbs shell monkey -p dev.rime.imetest -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || true
-  sleep 3
-}
+# 不送 BACK。BACK 在鍵盤顯示時的預設行為是收起鍵盤,收起再叫出來會換一次
+# 視窗動畫,比到的就變成動畫殘影而不是缺陷。長按的彈出盤在手指放開時本來
+# 就會收掉,不需要幫它收。
+# 只做兩件事:退格清空,然後等動畫落地。
 CMD=""; for i in $(seq 1 40); do CMD="${CMD}input keyevent 67; "; done
 adbs shell "$CMD" >/dev/null 2>&1 || true
 sleep 3
-pass "已清空"
+# 鍵盤若在這段期間被收掉了,後面比的是兩張不同的東西 —— 那會得到一個
+# 很大的差異值,看起來像缺陷但其實是測試自己弄丟了鍵盤。所以先確認。
+SHOWN2=0
+for i in $(seq 1 20); do
+  adbs shell dumpsys input_method 2>/dev/null | grep -q "mIsInputViewShown=true" && { SHOWN2=1; break; }
+  adbs shell monkey -p dev.rime.imetest -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || true
+  sleep 2
+done
+[ "$SHOWN2" -eq 1 ] || fail "清空之後鍵盤不見了,無法比對(這本身也可能是缺陷,看 $OUT_DIR)"
+sleep 2
+pass "已清空,鍵盤仍在"
 
 step "7. 拍下按住之後的鍵盤"
 shot "$OUT_DIR/after1.raw"

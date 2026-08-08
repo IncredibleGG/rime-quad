@@ -178,14 +178,31 @@ lineage_chain() {
 }
 
 # 取出某個 SDK 區間下實際生效的簽章者
+#
+# ⚠ apksigner 有兩種標題寫法,而且**同一支工具對不同 APK 會給不同的寫法**:
+#     Signer #1 certificate SHA-256 digest: …
+#     Signer (minSdkVersion=28, maxSdkVersion=35) #1 certificate SHA-256 digest: …
+#   後者出現在指定的區間跨過輪替邊界、或簽章區塊的版本組合讓工具想講清楚時。
+#   原本只認前者,於是 CI 建的 APK 明明簽對了卻被判成「沒有簽章者」——
+#   一個把**好的**建置擋下來的檢查,下場通常是被人整個關掉。
+#   兩種都認,而且抓不到時要把 apksigner 說了什麼原封不動印出來:
+#   「讀不出來」與「簽錯了」是完全不同的兩件事,不能都報成同一句。
 signer_in_range() {
   local out digest
   out="$("$APKSIGNER" verify --min-sdk-version "$2" --max-sdk-version "$3" \
-          --print-certs "$1" 2>/dev/null || true)"
+          --print-certs "$1" 2>&1 || true)"
   digest="$(printf '%s\n' "$out" \
-            | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')"
+            | sed -n -E 's/^Signer (\([^)]*\) )?#1 certificate SHA-256 digest: //p')"
   # 只取第一行。不用 head,避免 SIGPIPE 配上 pipefail 變成間歇性失敗。
-  printf '%s' "${digest%%$'\n'*}"
+  digest="${digest%%$'\n'*}"
+  if [ -z "$digest" ]; then
+    {
+      echo "  ── apksigner verify --min-sdk-version $2 --max-sdk-version $3 的完整輸出 ──"
+      printf '%s\n' "$out" | sed 's/^/    /'
+      echo "  ──────────────────────────────────────────────────────────────"
+    } >&2
+  fi
+  printf '%s' "$digest"
 }
 
 REF_CHAIN="$(lineage_chain "$LINEAGE_REF")"
