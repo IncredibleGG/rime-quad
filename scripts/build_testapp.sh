@@ -12,6 +12,40 @@
 #   package  : dev.rime.imetest
 #   activity : dev.rime.imetest/.MainActivity
 #   輸入框的 content-desc 為 rime_test_input
+#
+# ── 「畫面下方」那個輸入框(--ez bottom true)──────────────────────────────
+#
+# 預設的靶欄位在**畫面最上面**。那個位置有一個測不到的東西:鍵盤有沒有把宿主
+# 的內容蓋掉。最上面的框不管鍵盤佔多少空間都看得見,所以「鍵盤蓋住輸入框」
+# 這一整類缺陷在這支測試靶上是隱形的 —— 而那正是使用者最常遇到的形態
+# (聊天室、搜尋列、表單的最後一欄都在畫面下緣)。
+#
+# 所以多一個**選用**的下緣欄位:
+#
+#   am start -n dev.rime.imetest/.MainActivity --ez bottom true
+#     → 版面變成「標題 + 上方框 + 彈性空白 + 下緣框」,焦點落在下緣框,
+#       content-desc 為 rime_test_input_bottom。
+#
+#   --ez insets false
+#     → **不**安裝 WindowInsets 監聽器。給 scripts/verify_insets.sh 當反向對照:
+#       這樣下緣框一定會被鍵盤蓋住,用來證明那支檢查在該紅的時候會紅。
+#
+# ⚠ **`android:windowSoftInputMode="adjustResize"` 在這裡是沒有作用的,不要拿它
+#   當判準。** 這一點花了一輪才查清楚:`SOFT_INPUT_ADJUST_RESIZE` 自 API 30 起
+#   已棄用,而 targetSdk 35 又強制 edge-to-edge,於是這個 Activity 不但輸入框
+#   不會被推上去,連標題都畫到狀態列底下。**換成 Gboard 一模一樣** ——
+#   所以「下緣框被蓋住」單獨看完全不能證明輸入法有問題,那是宿主自己沒有
+#   消費 insets。要驗輸入法,宿主必須先是個正常的宿主:
+#
+#     root.setOnApplyWindowInsetsListener(... getInsets(Type.ime() | Type.systemBars()) ...)
+#
+#   下緣模式因此一律安裝這個監聽器,並把量到的 ime bottom 寫進標題的
+#   content-desc(`ime_inset_bottom=<px>`),讓自動化讀得到一個數字而不是猜像素。
+#
+# ⚠ 不帶 extra 時的行為與加這段之前**完全相同**(下緣框根本不會被加進
+#   view 樹,監聽器也不會裝)。verify_ime.sh / verify_rime_compose.sh /
+#   verify_longpress.sh 都靠這個靶,它們掃的是畫面下半部,
+#   多一個看不見的框會讓它們戳錯東西。
 
 set -euo pipefail
 
@@ -70,6 +104,8 @@ import android.app.Activity;
 import android.content.Context;
 import android.os.Bundle;
 import android.view.Gravity;
+import android.view.View;
+import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.EditText;
@@ -79,27 +115,42 @@ import android.widget.TextView;
 /**
  * 只做一件事:顯示一個 EditText 並強制彈出軟鍵盤。
  * 給自動化測試(verify_ime.sh)當輸入目標用。
+ *
+ * 選用的第二個框(intent extra `bottom`)貼在畫面下緣,用來驗「鍵盤有沒有把
+ * 宿主的內容蓋掉」—— 上方那個框無論鍵盤佔多少空間都看得見,測不到這件事。
+ * 詳見本檔頭的說明。
  */
 public class MainActivity extends Activity {
 
     /** 自動化用來定位輸入框的 content-description。 */
     public static final String INPUT_DESC = "rime_test_input";
+    /** 貼在畫面下緣的那個框(只有 `--ez bottom true` 時才存在)。 */
+    public static final String BOTTOM_DESC = "rime_test_input_bottom";
     private EditText mInput;
+    /** 標題,兼作「宿主收到的 ime inset」的看板(寫在 content-desc 上)。 */
+    private TextView mTitle;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        boolean bottom = getIntent() != null
+                && getIntent().getBooleanExtra("bottom", false);
+        // 反向對照用:關掉 insets 消費,下緣框就會被鍵盤蓋住。
+        boolean useInsets = getIntent() == null
+                || getIntent().getBooleanExtra("insets", true);
+
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setGravity(Gravity.TOP);
-        int pad = (int) (16 * getResources().getDisplayMetrics().density);
+        final int pad = (int) (16 * getResources().getDisplayMetrics().density);
         root.setPadding(pad, pad * 4, pad, pad);
 
         TextView title = new TextView(this);
         title.setText("RIME IME Test Target");
         title.setTextSize(20);
         root.addView(title);
+        mTitle = title;
 
         EditText input = new EditText(this);
         input.setContentDescription(INPUT_DESC);
@@ -110,14 +161,57 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
+        // 下緣框:一個 weight=1 的空白把它推到畫面最底。
+        // 只有明確要求時才加進 view 樹 —— 既有的驗證腳本會掃畫面下半部,
+        // 多一個它們不知道的框會讓它們戳錯東西。
+        EditText bottomInput = null;
+        if (bottom) {
+            View spacer = new View(this);
+            LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f);
+            root.addView(spacer, sp);
+
+            bottomInput = new EditText(this);
+            bottomInput.setContentDescription(BOTTOM_DESC);
+            bottomInput.setHint("bottom field");
+            bottomInput.setTextSize(24);
+            bottomInput.setSingleLine(false);
+            root.addView(bottomInput, new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT));
+        }
+
         setContentView(root);
 
         getWindow().setSoftInputMode(
                 WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE
                         | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
 
-        input.requestFocus();
-        mInput = input;
+        // 下緣模式才裝 insets 監聽器。**這一段才是真正讓「鍵盤有沒有蓋住內容」
+        // 有意義的東西** —— 沒有它,這個 Activity 對 Gboard 與對本專案的輸入法
+        // 一樣會被蓋住(實測過),那個結果不能拿來指控任何一方。
+        if (bottom && useInsets && android.os.Build.VERSION.SDK_INT >= 30) {
+            root.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+                @Override
+                public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
+                    android.graphics.Insets bars =
+                            insets.getInsets(WindowInsets.Type.systemBars());
+                    android.graphics.Insets ime =
+                            insets.getInsets(WindowInsets.Type.ime());
+                    int bottomPad = Math.max(bars.bottom, ime.bottom);
+                    v.setPadding(v.getPaddingLeft(), bars.top + pad,
+                            v.getPaddingRight(), bottomPad);
+                    // 量到的數字給自動化讀。讀數字比比像素可靠,而且失敗訊息
+                    // 能直接說出「宿主收到的 ime inset 是 0」。
+                    mTitle.setContentDescription("ime_inset_bottom=" + ime.bottom);
+                    return insets;
+                }
+            });
+            root.requestApplyInsets();
+        }
+
+        mInput = bottomInput != null ? bottomInput : input;
+        mInput.requestFocus();
         askForKeyboard();
     }
 
