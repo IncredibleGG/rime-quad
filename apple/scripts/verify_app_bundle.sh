@@ -113,6 +113,13 @@ BADIDS="$(/usr/libexec/PlistBuddy -c "Print :ComponentInputModeDict:tsInputModeL
 # 一樣糟。IMKit 真正做的是 NSClassFromString(plist 裡那個字串),
 # 所以改由二進位自己照做一次(SelfCheck.swift)。那才是這一問的正解。
 #
+# ── 實測到的答案（macos-26 / arm64 / swiftc -O）──────────────
+#   000000010034d980 s _OBJC_CLASS_$_RimeQuadInputController
+#                    ^ 小寫 s = **local** 符號,不是 global S。
+# 所以 `nm -g`（只列 global）永遠看不到它 —— 單一模組編譯下 swiftc 沒有把
+# 這個類別符號設成 external。改用 `nm` 不加 -g 就看得到,但那仍然是在假設
+# 「符號在＝IMKit 找得到」,而那個等號沒有人保證。
+#
 # 這裡只留一個**不判定成敗**的診斷,讓下一個人看得到符號表長什麼樣。
 echo "  · nm 診斷（不判定成敗）:"
 nm "${BIN}" 2>/dev/null | grep -c . | sed 's/^/      符號數 /' || echo "      nm 讀不出符號表"
