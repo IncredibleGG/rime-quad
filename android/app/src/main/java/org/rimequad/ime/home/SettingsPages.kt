@@ -57,6 +57,7 @@ import org.rimequad.ime.prefs.PrefsStore
 import org.rimequad.ime.prefs.SpaceBehavior
 import org.rimequad.ime.prefs.UserPrefs
 import org.rimequad.ime.prefs.resolveBaseTheme
+import org.rimequad.ime.store.BackupSection
 import org.rimequad.ime.store.StoreController
 import org.rimequad.ime.store.StoreScreen
 import org.rimequad.ime.update.UpdateController
@@ -618,6 +619,13 @@ fun AdvancedPage(controller: StoreController, onBack: () -> Unit) {
                 },
             )
         }
+
+        // 換手機的路徑。allowBackup=false 的代價就是這一段 —— 沒有它，
+        // 使用者換手機等於從零開始。放在「更新」之前：它比更新更常被找。
+        // 整塊 UI 住在 store/BackupSection.kt，這裡只留入口。
+        Spacer(Modifier.height(22.dp))
+        SectionLabel(stringResource(R.string.backup_section))
+        BackupSection()
 
         Spacer(Modifier.height(22.dp))
         SectionLabel(stringResource(R.string.advanced_updates))

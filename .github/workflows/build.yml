@@ -29,9 +29,15 @@ name: Android
 
 on:
   push:
-    branches: [main]
+    # 一行一項:四條支線各自要把自己的分支加進來,
+    # 單行陣列 [main, a, b] 讓每一條都改同一行 = 必然衝突。
+    branches:
+      - main
+      - dict
   pull_request:
-    branches: [main]
+    branches:
+      - main
+      - dict
   workflow_dispatch:
     inputs:
       publish:

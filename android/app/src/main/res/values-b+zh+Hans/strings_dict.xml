@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    匯出／匯入（備份）的簡體中文字串。key 與 placeholder 必須與
+    values/strings_dict.xml 完全一致，由 store/DictStringsTest.kt 守。
+-->
+<resources>
+
+    <string name="backup_section">换手机的时候</string>
+    <string name="backup_export">把全部存成一个文件</string>
+    <string name="backup_export_sub">键盘跟你学过的字，加上你的键盘与设置</string>
+    <string name="backup_import">从文件恢复</string>
+    <string name="backup_import_sub">把之前存下来的那个文件里的东西拿回来</string>
+
+    <string name="backup_file_name">rime-backup-%1$s.zip</string>
+
+    <string name="backup_stage_flush">正在把你打过的字整理好…</string>
+    <string name="backup_stage_copy">正在复制你打过的字…</string>
+    <string name="backup_stage_pack">正在写文件…</string>
+    <string name="backup_stage_read">正在读文件…</string>
+    <string name="backup_stage_verify">正在检查文件…</string>
+    <string name="backup_stage_apply">正在放回去…</string>
+    <string name="backup_stage_deploy">正在重新整理词条…</string>
+
+    <string name="backup_result_ok_title">好了</string>
+    <string name="backup_result_failed_title">这次没有成功</string>
+    <string name="backup_result_dismiss">知道了</string>
+    <string name="backup_export_done">已存好：%1$d 份词条、共 %2$d 个文件。</string>
+    <string name="backup_import_done">已恢复：%1$d 份词条、共 %2$d 个文件。</string>
+
+    <string name="backup_confirm_title">要从这个文件恢复吗？</string>
+    <string name="backup_confirm_body">这会用文件里的字，换掉这台手机学过的字。你存下那个文件之后才学到的东西会不见。</string>
+    <string name="backup_confirm_ok">恢复</string>
+    <string name="backup_confirm_cancel">取消</string>
+
+    <string name="backup_note_unflushed">刚才键盘正在忙，所以你最近打的字有可能没被存进这个文件。如果刚打的字你想留着，先把键盘收起来，再存一次。</string>
+    <string name="backup_note_imported_unflushed">这个文件自己注明了最近的字可能没存进去。其他东西都拿回来了。</string>
+    <string name="backup_note_missing_schema">这几种键盘这台手机上还没有，已经跳过：%1$s。到「下载更多键盘」装回来之后，你存下来的字也会跟着回来。</string>
+    <string name="backup_note_rolled_back">你的设置已经回到原本的样子。</string>
+    <string name="backup_list_separator">、</string>
+
+    <string name="backup_err_no_data_dir">键盘还在启动，等一下再试一次。</string>
+    <string name="backup_err_nothing">目前还没有东西可以存。</string>
+    <string name="backup_err_unstable">键盘还在写「%1$s」，这时候复制会少掉一些字。先把键盘收起来，再试一次。</string>
+    <string name="backup_err_io">文件读不到或写不进去。%1$s</string>
+    <string name="backup_err_too_big">这个文件大得不可能是我们的备份。</string>
+    <string name="backup_err_not_a_backup">这个文件不是这个 App 存出来的备份。</string>
+    <string name="backup_err_manifest_broken">这个文件看起来是备份，但里面那份「有哪些东西」的清单坏了。</string>
+    <string name="backup_err_too_new">这份备份是比较新的版本存出来的。请先更新 App，再试一次。</string>
+    <string name="backup_err_too_old">这份备份太旧，这个版本读不了。</string>
+    <string name="backup_err_missing_entry">文件不完整 —— 少了「%1$s」，多半是复制到一半被截断。这次什么都没有改动。</string>
+    <string name="backup_err_content_mismatch">文件坏了：里面有一段跟备份自己记的对不上。这次什么都没有改动。</string>
+    <string name="backup_err_unsafe_path">这个文件里有不该出现在备份里的东西，所以什么都没有恢复。</string>
+    <string name="backup_err_empty">这份备份是空的。</string>
+    <string name="backup_err_deploy_failed">东西都拿回来了，但键盘接着整理词条的时候失败了。%1$s</string>
+    <string name="backup_err_deploy_no_reason">没有给原因。</string>
+    <string name="backup_err_deploy_timeout">整理词条花的时间太久了。可以到这一页按「重新整理词条」再试一次。</string>
+    <string name="backup_err_deploy_not_started">键盘没办法开始整理词条。请重开 App，再按一次「重新整理词条」。</string>
+
+</resources>
