@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    匯出／匯入（備份）的繁體中文字串。key 與 placeholder 必須與
+    values/strings_dict.xml 完全一致，由 store/DictStringsTest.kt 守。
+-->
+<resources>
+
+    <string name="backup_section">換手機的時候</string>
+    <string name="backup_export">把全部存成一個檔案</string>
+    <string name="backup_export_sub">鍵盤跟你學過的字，加上你的鍵盤與設定</string>
+    <string name="backup_import">從檔案還原</string>
+    <string name="backup_import_sub">把之前存下來的那個檔案裡的東西拿回來</string>
+
+    <string name="backup_file_name">rime-backup-%1$s.zip</string>
+
+    <string name="backup_stage_flush">正在把你打過的字整理好…</string>
+    <string name="backup_stage_copy">正在複製你打過的字…</string>
+    <string name="backup_stage_pack">正在寫檔案…</string>
+    <string name="backup_stage_read">正在讀檔案…</string>
+    <string name="backup_stage_verify">正在檢查檔案…</string>
+    <string name="backup_stage_apply">正在放回去…</string>
+    <string name="backup_stage_deploy">正在重新整理字詞…</string>
+
+    <string name="backup_result_ok_title">好了</string>
+    <string name="backup_result_failed_title">這次沒有成功</string>
+    <string name="backup_result_dismiss">知道了</string>
+    <string name="backup_export_done">已存好：%1$d 份字詞、總共 %2$d 個檔案。</string>
+    <string name="backup_import_done">已還原：%1$d 份字詞、總共 %2$d 個檔案。</string>
+
+    <string name="backup_confirm_title">要從這個檔案還原嗎？</string>
+    <string name="backup_confirm_body">這會用檔案裡的字，換掉這支手機學過的字。你存下那個檔案之後才學到的東西會不見。</string>
+    <string name="backup_confirm_ok">還原</string>
+    <string name="backup_confirm_cancel">取消</string>
+
+    <string name="backup_note_unflushed">剛才鍵盤正在忙，所以你最近打的字有可能沒被存進這個檔案。如果剛剛打的字你想留著，先把鍵盤收起來，再存一次。</string>
+    <string name="backup_note_imported_unflushed">這個檔案自己註明了最近的字可能沒存進去。其他東西都拿回來了。</string>
+    <string name="backup_note_missing_schema">這幾種鍵盤這支手機上還沒有，已經跳過：%1$s。到「下載更多鍵盤」裝回來之後，你存下來的字也會跟著回來。</string>
+    <string name="backup_note_rolled_back">你的設定已經回到原本的樣子。</string>
+    <string name="backup_note_unreadable_dict">這幾種鍵盤的字是用這個版本還讀不懂的方式存的，已經跳過：%1$s。更新 App 之後再還原一次。</string>
+    <string name="backup_list_separator">、</string>
+
+    <string name="backup_err_no_data_dir">鍵盤還在啟動，等一下再試一次。</string>
+    <string name="backup_err_nothing">目前還沒有東西可以存。</string>
+    <string name="backup_err_unstable">鍵盤還在寫「%1$s」，這時候複製會少掉一些字。先把鍵盤收起來，再試一次。</string>
+    <string name="backup_err_io">檔案讀不到或寫不進去。%1$s</string>
+    <string name="backup_err_too_big">這個檔案大得不可能是我們的備份。</string>
+    <string name="backup_err_not_a_backup">這個檔案不是這個 App 存出來的備份。</string>
+    <string name="backup_err_manifest_broken">這個檔案看起來是備份，但裡面那份「有哪些東西」的清單壞了。</string>
+    <string name="backup_err_too_new">這份備份是比較新的版本存出來的。請先更新 App，再試一次。</string>
+    <string name="backup_err_too_old">這份備份太舊，這個版本讀不了。</string>
+    <string name="backup_err_missing_entry">檔案不完整 —— 少了「%1$s」，多半是複製到一半被截斷。這次什麼都沒有改動。</string>
+    <string name="backup_err_content_mismatch">檔案壞了：裡面有一段跟備份自己記的對不起來。這次什麼都沒有改動。</string>
+    <string name="backup_err_unsafe_path">這個檔案裡有不該出現在備份裡的東西，所以什麼都沒有還原。</string>
+    <string name="backup_err_empty">這份備份是空的。</string>
+    <string name="backup_err_deploy_failed">東西都拿回來了，但鍵盤接著整理字詞的時候失敗了。%1$s</string>
+    <string name="backup_err_deploy_no_reason">沒有給原因。</string>
+    <string name="backup_err_deploy_timeout">整理字詞花的時間太久了。可以到這一頁按「重新整理字詞」再試一次。</string>
+    <string name="backup_err_deploy_not_started">鍵盤沒辦法開始整理字詞。請重開 App，再按一次「重新整理字詞」。</string>
+
+</resources>

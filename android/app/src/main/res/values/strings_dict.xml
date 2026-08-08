@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    匯出／匯入（備份）用的字串。
+
+    ⚠ **開新檔而不是加進 strings.xml。** Android 會把 values/ 底下所有 xml 併起來，
+    分檔不影響行為，但省掉同一個檔案被多條支線同時改的必然衝突。
+
+    ⚠ **這一份是回落語系，必須是英文。** 找不到使用者語系時 Android 用它。
+    繁簡兩份在 values-b+zh+Hant / values-b+zh+Hans。三份的 key 與 placeholder
+    由 store/DictStringsTest.kt 釘住 —— 專案裡既有的 StringCatalogTest 寫死了
+    只讀 `strings.xml`，看不到這一份（已回報 coordination §5）。
+
+    用字原則跟著整個 App 走：使用者是麻瓜，不是 RIME 老手。
+    不出現「詞典」「部署」「schema」「userdb」這些字，只講他關心的事 ——
+    「你打過的字」「鍵盤」「設定」。
+-->
+<resources>
+
+    <!-- ── 進階頁的區塊 ── -->
+    <string name="backup_section">Moving to a new phone</string>
+    <string name="backup_export">Save everything to a file</string>
+    <string name="backup_export_sub">The words the keyboard learned from you, plus your keyboards and settings</string>
+    <string name="backup_import">Restore from a file</string>
+    <string name="backup_import_sub">Bring everything back from a file you saved before</string>
+
+    <!-- 建議的檔名。%1$s 是日期，例如 20260808。 -->
+    <string name="backup_file_name">rime-backup-%1$s.zip</string>
+
+    <!-- ── 進行中 ── -->
+    <string name="backup_stage_flush">Getting your words ready…</string>
+    <string name="backup_stage_copy">Copying your words…</string>
+    <string name="backup_stage_pack">Writing the file…</string>
+    <string name="backup_stage_read">Reading the file…</string>
+    <string name="backup_stage_verify">Checking the file…</string>
+    <string name="backup_stage_apply">Putting everything back…</string>
+    <string name="backup_stage_deploy">Sorting the words again…</string>
+
+    <!-- ── 結果 ── -->
+    <string name="backup_result_ok_title">Done</string>
+    <string name="backup_result_failed_title">That did not work</string>
+    <string name="backup_result_dismiss">OK</string>
+    <!-- %1$d = 幾本詞庫，%2$d = 檔案總數 -->
+    <string name="backup_export_done">Saved: %1$d word lists and %2$d files in total.</string>
+    <string name="backup_import_done">Restored: %1$d word lists and %2$d files in total.</string>
+
+    <!-- ── 匯入前的確認 ── -->
+    <string name="backup_confirm_title">Restore from this file?</string>
+    <string name="backup_confirm_body">This replaces the words this phone has learned with the ones in the file. Anything it learned since you saved that file will be gone.</string>
+    <string name="backup_confirm_ok">Restore</string>
+    <string name="backup_confirm_cancel">Cancel</string>
+
+    <!-- ── 提醒（不是錯誤，但使用者要知道） ── -->
+    <string name="backup_note_unflushed">The keyboard was busy, so the words you typed most recently may not be in this file. Close the keyboard and save again if you just typed something you want to keep.</string>
+    <string name="backup_note_imported_unflushed">This file says its newest words may be missing. Everything else came back.</string>
+    <!-- %1$s = 方案名清單 -->
+    <string name="backup_note_missing_schema">These keyboards are not on this phone yet, so they were skipped: %1$s. Install them from “Download more keyboards” and the words you saved for them will come back too.</string>
+    <string name="backup_note_rolled_back">Your settings were put back the way they were.</string>
+    <!-- %1$s = 讀不動的詞庫名清單 -->
+    <string name="backup_note_unreadable_dict">The words for these keyboards are stored in a format this version cannot read yet, so they were skipped: %1$s. Update the app and restore again.</string>
+    <string name="backup_list_separator">, </string>
+
+    <!-- ── 錯誤。每一種都要說出使用者下一步能做什麼 ── -->
+    <string name="backup_err_no_data_dir">The keyboard is still starting up. Wait a moment and try again.</string>
+    <string name="backup_err_nothing">There is nothing to save yet.</string>
+    <!-- %1$s = 詞庫名 -->
+    <string name="backup_err_unstable">The keyboard is still writing to “%1$s”, so the copy would be missing words. Close the keyboard and try again.</string>
+    <!-- %1$s = 系統給的原因，英文，給我們看的 -->
+    <string name="backup_err_io">Could not read or write the file. %1$s</string>
+    <string name="backup_err_too_big">That file is far too big to be one of our backups.</string>
+    <string name="backup_err_not_a_backup">That file is not a backup made by this app.</string>
+    <string name="backup_err_manifest_broken">That file looks like a backup, but the list of what is inside it is damaged.</string>
+    <string name="backup_err_too_new">That backup was made by a newer version of this app. Update the app first, then try again.</string>
+    <string name="backup_err_too_old">That backup is too old for this version to read.</string>
+    <!-- %1$s = 缺少的項目路徑 -->
+    <string name="backup_err_missing_entry">The file is incomplete — “%1$s” is missing. It was probably cut short while being copied. Nothing was changed.</string>
+    <string name="backup_err_content_mismatch">The file is damaged: part of it does not match what the backup says it should be. Nothing was changed.</string>
+    <string name="backup_err_unsafe_path">That file contains something that does not belong in a backup, so nothing was restored.</string>
+    <string name="backup_err_empty">That backup is empty.</string>
+    <!-- %1$s = rs_last_error() -->
+    <string name="backup_err_deploy_failed">Everything came back, but the keyboard could not sort the words afterwards. %1$s</string>
+    <string name="backup_err_deploy_no_reason">No reason was given.</string>
+    <string name="backup_err_deploy_timeout">Sorting the words took too long. Try “Sort the words again” on this page.</string>
+    <string name="backup_err_deploy_not_started">The keyboard could not start sorting the words. Restart the app, then try “Sort the words again”.</string>
+
+</resources>
