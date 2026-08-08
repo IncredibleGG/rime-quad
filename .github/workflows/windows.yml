@@ -345,22 +345,37 @@ jobs:
           name: rime-windows-x64-${{ github.sha }}
           path: tools-dl
 
-      - name: 確認拿到的東西
+      # ⚠ 不要假設 artifact 裡的檔案是攤平的。
+      #
+      # upload-artifact@v4 會保留「所有來源路徑的最短共同祖先」以下的結構,
+      # 而那一包同時來自 ime/bin/ 與 console/bin/,於是解出來是
+      # tools-dl/ime/bin/rime_probe.exe,不是 tools-dl/rime_probe.exe。
+      # 用 find 定位,並且**找不到就明確失敗** —— 讓路徑猜錯以
+      # 「找不到檔案」的形式在後面某一步爆掉,是最難查的一種。
+      - name: 定位下載回來的檔案
         run: |
-          ls -l dist tools-dl
-          # download-artifact 會攤平目錄結構;若哪天不再攤平,這裡會直接說出來,
-          # 而不是讓後面的步驟以「找不到檔案」的形式失敗。
-          for f in dist/RimeQuad-Setup-x64.exe tools-dl/rime_probe.exe tools-dl/rime_ime_setup.exe; do
-            [ -f "$f" ] || { echo "!! 缺少 $f" >&2; exit 1; }
-          done
+          find dist tools-dl -type f | sed 's/^/  /'
+          locate_one() {
+            local name="$1" hit
+            hit="$(find tools-dl -name "$name" -type f | head -1)"
+            [ -n "$hit" ] || { echo "!! artifact 裡找不到 $name" >&2; exit 1; }
+            echo "$hit"
+          }
+          [ -f dist/RimeQuad-Setup-x64.exe ] \
+            || { echo "!! 缺少 dist/RimeQuad-Setup-x64.exe" >&2; exit 1; }
+          {
+            echo "SETUP_EXE=dist/RimeQuad-Setup-x64.exe"
+            echo "PROBE_EXE=$(locate_one rime_probe.exe)"
+            echo "TOOL_EXE=$(locate_one rime_ime_setup.exe)"
+          } >> "$GITHUB_ENV"
 
       # runner 本身就是系統管理員,所以靜默安裝跑得動。
       - name: 安裝、斷言、解除安裝、斷言
         run: |
           ./windows/verify_installer.sh \
-            --setup dist/RimeQuad-Setup-x64.exe \
-            --probe tools-dl/rime_probe.exe \
-            --tool  tools-dl/rime_ime_setup.exe
+            --setup "$SETUP_EXE" \
+            --probe "$PROBE_EXE" \
+            --tool  "$TOOL_EXE"
 
       - name: 上傳安裝驗證日誌
         if: always()
