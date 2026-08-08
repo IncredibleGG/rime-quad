@@ -116,6 +116,7 @@ public enum SchemaCatalog {
             var value = String(line[line.index(after: colon)...])
                 .trimmingCharacters(in: .whitespaces)
             if value.hasPrefix("#") { value = "" }
+            value = stripAnchor(value)
             value = stripQuotes(value)
             guard !value.isEmpty else { continue }
             switch key {
@@ -126,6 +127,19 @@ public enum SchemaCatalog {
             }
         }
         return h
+    }
+
+    /// `&anchor 值` → `值`;`*alias` → `` (別名指向別處,這裡解不了)。
+    ///
+    /// 方案檔是完整 YAML,錨點很常見(`name: &n 朙月拼音`)。不剝掉的話
+    /// 畫面上會出現「&n 朙月拼音」,而使用者只會覺得這個 app 壞了。
+    static func stripAnchor(_ s: String) -> String {
+        guard let first = s.first else { return s }
+        if first == "*" { return "" }
+        guard first == "&" else { return s }
+        let rest = s.dropFirst()
+        guard let space = rest.firstIndex(where: { $0 == " " || $0 == "\t" }) else { return "" }
+        return String(rest[space...]).trimmingCharacters(in: .whitespaces)
     }
 
     static func stripQuotes(_ s: String) -> String {

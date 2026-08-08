@@ -238,9 +238,13 @@ public enum MiniJson {
         mutating func number() throws -> String {
             let start = i
             if i < s.count, s[i] == "-" { i += 1 }
+            let intStart = i
             var digits = 0
             while i < s.count, s[i] >= "0", s[i] <= "9" { i += 1; digits += 1 }
             guard digits > 0 else { throw error("不是合法的值") }
+            // 前導零是壞檔案的訊號(RFC 8259 不允許)。放寬它等於接受
+            // 一份被別的工具寫壞的索引,而壞在哪裡沒有人看得出來。
+            if digits > 1, s[intStart] == "0" { throw error("數字有前導零") }
             if i < s.count, s[i] == "." {
                 i += 1
                 var frac = 0

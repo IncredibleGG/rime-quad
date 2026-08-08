@@ -31,12 +31,17 @@ log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 log "swift test"
 OUT="$(swift test 2>&1)"
 RC=$?
-printf '%s\n' "${OUT}" | tail -40
-
 if [ "${RC}" -ne 0 ]; then
-  echo "!! 單元測試失敗" >&2
+  # ⚠ 只印 tail 的話,失敗的斷言多半已經被後面幾百行「passed」擠出畫面。
+  #   這裡先把**失敗的那幾行**單獨抓出來 —— 修的時候需要的就只有這些。
+  echo "!! 單元測試失敗。失敗的斷言:" >&2
+  printf '%s\n' "${OUT}" | grep -E "error:|XCTAssert|: failed|' failed" | head -60 >&2
+  echo "--- 最後 40 行 ---" >&2
+  printf '%s\n' "${OUT}" | tail -40 >&2
   exit 1
 fi
+
+printf '%s\n' "${OUT}" | tail -12
 
 # xcodebuild/swift-testing 的輸出格式:
 #   Executed 87 tests, with 0 failures (0 unexpected) in 0.123 (0.456) seconds

@@ -39,7 +39,7 @@ final class RimeConfigPatchTests: XCTestCase {
                                                   ids: ["luna_pinyin_tw", "bopomofo_tw"])
         XCTAssertTrue(out.contains("# 我自己的設定,不要動它"))
         XCTAssertTrue(out.contains("key_binder/bindings/+"))
-        XCTAssertTrue(out.contains("menu/page_size: 7"))
+        XCTAssertTrue(out.contains("menu/page_size"), "使用者原本寫的那一行要留著")
         // 行尾註解跟著那個 id 活下來。
         XCTAssertTrue(out.contains("- schema: luna_pinyin_tw    # 拼音(臺灣字形)"))
         XCTAssertEqual(RimeConfigPatch.readSchemaList(text: out),

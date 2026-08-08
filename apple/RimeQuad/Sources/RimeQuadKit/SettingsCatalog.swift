@@ -404,9 +404,9 @@ public enum SettingsCatalog {
                 id: "advanced.import",
                 kind: .action,
                 title: T("匯入自己準備的方案檔", "导入自己准备的方案文件", "Import your own schema file"),
-                blurb: T("從別的地方下載的 .zip 或 .yaml。會先檢查安全性再裝進去。",
-                         "从别的地方下载的 .zip 或 .yaml。会先检查安全性再装进去。",
-                         "A .zip or .yaml you got elsewhere. It is checked for safety before anything is installed."),
+                blurb: T("從別的地方拿到的方案壓縮檔或單一設定檔。裝之前會先檢查它有沒有夾帶奇怪的東西。",
+                         "从别的地方拿到的方案压缩档或单一配置档。装之前会先检查它有没有夹带奇怪的东西。",
+                         "A schema archive or single config file you got elsewhere. It is checked for anything odd before being installed."),
                 storage: .none),
             SettingSpec(
                 id: "advanced.language",
