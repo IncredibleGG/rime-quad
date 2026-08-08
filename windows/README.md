@@ -21,7 +21,18 @@
 CI:`.github/workflows/windows.yml`(`windows-latest`)。綠燈的意思是上面那兩個
 斷言真的過了,不是「編得出來」。
 
-本機重跑(需要一台 Windows + VS 2022 + Git Bash):
+已實測通過的內容(x64,MSVC 14.51 / VS 18,librime 1d0df6e):
+
+```
+nihao  → 候選 你好/妳好/逆號/擬好/你 → 選 1 → COMMIT "你好"
+su3cl3 → preedit ㄋㄧˇ ㄏㄠˇ → 選 1 → 仍在組字(preedit「你好」)→ 明確 commit → COMMIT "你好"
+```
+
+注音那條走的正是 `rime_shell.h` 裡寫的那條政策:選字之後 `is_composing` 仍為
+true,要靠 `menu.count == 0` 才能判定「轉換完成待確認」。只測拼音永遠碰不到它。
+
+本機重跑(需要一台 Windows + 含 C++ 工具集的 Visual Studio + Git Bash;
+`build.sh` 用 `vswhere` 自己找 VS,不必是特定版本):
 
 ```bash
 windows/build.sh
