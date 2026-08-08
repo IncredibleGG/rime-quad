@@ -183,7 +183,10 @@ final class DeployGate: Deployer {
         RimeEngine.shared.deploy()
 
         while true {
-            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.2))
+            // ⚠ 與 RemoteDeployer 同一條理由:這條是背景執行緒,
+            //   RunLoop.run() 會立刻返回並讓迴圈空轉燒 CPU。
+            //   部署回呼由 RimeEngine dispatch 回主執行緒寫進 result(有鎖)。
+            Thread.sleep(forTimeInterval: 0.2)
             lock.lock()
             let r = result
             lock.unlock()

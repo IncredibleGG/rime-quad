@@ -21,7 +21,7 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
     private let model = SettingsModel()
     private let sidebar = NSTableView()
     private let contentBox = NSView()
-    private let overlay = BusyOverlay()
+    private let overlay = BusyOverlay(frame: .zero)
     private var pageIndex = 0
 
     private var lang: UiLanguage { model.lang }
@@ -170,7 +170,9 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
             scroll.trailingAnchor.constraint(equalTo: contentBox.trailingAnchor),
             scroll.bottomAnchor.constraint(equalTo: contentBox.bottomAnchor),
         ])
-        contentBox.addSubview(overlay, positioned: .above, relativeTo: nil)
+        // ⚠ **不要**在這裡把 overlay 搬進 contentBox。它的 constraint 綁在
+        //   root 上,換父視圖會讓那些 constraint 全部失效(執行期才會爆)。
+        //   overlay 是 root 的子視圖而且加在 contentBox 之後,本來就在上層。
     }
 
     private func body(for page: SettingsPage) -> [NSView] {

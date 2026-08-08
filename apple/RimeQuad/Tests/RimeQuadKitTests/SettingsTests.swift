@@ -223,7 +223,23 @@ final class SettingsCatalogTests: XCTestCase {
         XCTAssertNil(SettingsCatalog.page(id: "feel"))
         XCTAssertNotNil(SettingsCatalog.page(id: "schemas"))
         XCTAssertNotNil(SettingsCatalog.page(id: "network"))
-        XCTAssertNotNil(SettingsCatalog.page(id: "dictionary"))
+    }
+
+    /// ⚠ **「我的詞庫」還沒上架,而且這是刻意的。**
+    ///
+    /// verify_user_dict.sh 用真的 librime 證明了:我們寫出的
+    /// custom_phrase.txt 與掛載檔格式正確,但加了詞之後候選裡沒有那個詞。
+    /// 一頁按鈕都按得下去、加完還看得到、而回去打字什麼都不會發生的設定頁,
+    /// 比沒有這一頁更糟。
+    ///
+    /// 這條斷言釘住那個決定:**verify_user_dict.sh 綠了才可以把它加回去**,
+    /// 而加回去的那一刻這條會紅,提醒你順手把這段註解也刪掉。
+    func testDictionaryPageIsNotShippedYet() {
+        XCTAssertNil(SettingsCatalog.page(id: "dictionary"),
+                     "詞庫那一頁要等 verify_user_dict.sh 綠了才能上架")
+        // 但規格與程式碼都留著,不是刪掉。
+        XCTAssertEqual(SettingsCatalog.dictionaryPage.id, "dictionary")
+        XCTAssertFalse(SettingsCatalog.dictionaryPage.items.isEmpty)
     }
 }
 

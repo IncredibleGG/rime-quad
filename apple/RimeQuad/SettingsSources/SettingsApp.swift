@@ -67,7 +67,10 @@ final class RemoteDeployer: Deployer {
         if let host = SettingsPaths.hostAppURL {
             let cfg = NSWorkspace.OpenConfiguration()
             cfg.activates = false
-            NSWorkspace.shared.openApplication(at: host, configuration: cfg)
+            // 明著給 completionHandler:這個方法有 async 多載,不給的話
+            // 有機會撞上多載歧義,而那是編譯期才會知道的事。
+            NSWorkspace.shared.openApplication(at: host, configuration: cfg,
+                                               completionHandler: { _, _ in })
         }
 
         center.postNotificationName(Notification.Name(IPC.requestName), object: nil,
@@ -75,7 +78,11 @@ final class RemoteDeployer: Deployer {
                                     deliverImmediately: true)
 
         while true {
-            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.1))
+            // ⚠ 這裡**不能**用 `RunLoop.current.run(...)`:這條是背景執行緒,
+            //   它沒有任何 input source,run() 會立刻返回,整個迴圈變成
+            //   燒 CPU 的空轉,而部署可能跑好幾分鐘。回覆是由主執行緒的
+            //   通知中心送進 waiter 的(有鎖),這裡只要定時去看就好。
+            Thread.sleep(forTimeInterval: 0.1)
             lock.lock()
             let state = waiter.tick()
             lock.unlock()

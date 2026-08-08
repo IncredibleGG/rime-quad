@@ -76,16 +76,21 @@ final class RimeQuadInputController: IMKInputController {
         super.setValue(value, forTag: tag, client: sender)
     }
 
+    /// `kTextServiceInputModePropertyTag`(四字元碼 `'imim'`)。
+    ///
+    /// 刻意寫成字面值而不是引用 Carbon 的那個符號:它在不同 SDK 下的
+    /// Swift 匯入型別不穩定(有時是 Int、有時是 Int32、有時根本沒匯入),
+    /// 而**拿錯 tag 的後果只是問不到值**,不是壞掉 —— 那時仍然有
+    /// `setValue(_:forTag:client:)` 這條路。用字面值換掉一個編譯期的風險。
+    private static let inputModeTag = 0x696D_696D
+
     private func readInputMode(client sender: Any!) {
         // 啟動時 IMKit 不一定呼叫過 setValue,所以主動問一次。
-        for tag in [kTextServiceInputModePropertyTag] {
-            if let mode = self.value(forTag: Int(tag), client: sender) as? String {
-                let script = InputModeBinding.script(forInputSourceID: mode)
-                if script != .unspecified {
-                    AppContext.shared.inputModeScript = script
-                    return
-                }
-            }
+        guard let mode = self.value(forTag: RimeQuadInputController.inputModeTag,
+                                    client: sender) as? String else { return }
+        let script = InputModeBinding.script(forInputSourceID: mode)
+        if script != .unspecified {
+            AppContext.shared.inputModeScript = script
         }
     }
 

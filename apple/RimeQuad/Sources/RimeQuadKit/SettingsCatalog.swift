@@ -97,8 +97,25 @@ public struct SettingsPage: Equatable, Sendable {
 
 public enum SettingsCatalog {
 
+    /// 實際會出現在側欄的分頁。
+    ///
+    /// ⚠ **`dictionaryPage` 刻意不在這裡。**
+    ///
+    /// 「我的詞庫」的整條路徑都寫好了(UserPhrases 的解析/合併/掛載、
+    /// 那一頁的 UI、11 項單元測試),但 `apple/scripts/verify_user_dict.sh`
+    /// 用**真的 librime** 跑出來的結果是:加了詞之後,打它的編碼
+    /// **候選裡沒有那個詞**(rime_console 只給出 裝壯壯/壯壯/撞撞…)。
+    /// 也就是我們寫出的檔案格式正確,但 librime 沒有照我們以為的方式讀它。
+    ///
+    /// 這種東西**不可以上架**:一頁長得完全正常、按鈕按得下去、
+    /// 加完詞還會出現在清單裡,而使用者回去打字時什麼都不會發生。
+    /// 那正是這個專案抓到過四次的「看得到但摸不到」,
+    /// 而且是最難回報的一種 —— 使用者只會覺得自己做錯了。
+    ///
+    /// 要上架的條件只有一個:`verify_user_dict.sh` 變綠。
+    /// 程式碼與測試全部留著,把這一行的 `dictionaryPage` 加回去就好。
     public static let pages: [SettingsPage] = [
-        schemasPage, appearancePage, textPage, dictionaryPage,
+        schemasPage, appearancePage, textPage,
         storePage, networkPage, advancedPage,
     ]
 
