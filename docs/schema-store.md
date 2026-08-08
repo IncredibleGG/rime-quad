@@ -29,9 +29,38 @@
 
 ```jsonc
 {
-  "format_version": 1,
+  "format_version": 1,        // 破壞性變更才動，見 §1.1
+  "format_minor": 1,          // 加欄位動這個。舊讀取端看不到，行為不變
   "generated_at": "2026-08-07T15:30:00Z",
   "base_url": "https://pub-xxxx.r2.dev/rime/schemas/",
+
+  // 語言分組表（BCP 47）。顯示名放在索引裡而不是 app 裡，理由與 categories 相同：
+  // 新增一種語言不該要求使用者先更新 app。
+  "languages": [
+    { "tag": "zh-Hant-TW", "name": "中文（臺灣正體）", "order": 1 },
+    { "tag": "und",        "name": "其他（未標記語言）", "order": 99 }
+  ],
+
+  // 隨 APK 出貨的內建方案。它們不是從市集裝的，所以不在 packages 裡，
+  // 但選單一樣要分組。uid 用保留命名空間 @builtin（見 §1.2）。
+  "builtin_schemas": [
+    { "id": "luna_pinyin_tw", "uid": "@builtin/luna_pinyin_tw",
+      "name": "朙月拼音·臺灣正體", "language": "zh-Hant-TW",
+      "language_source": "curated" }
+  ],
+
+  // 同一個 schema id 由多個提供者給出。行動端據此在安裝前就講得出
+  // 「你已經有一個叫這個名字的方案了」。見 §1.2。
+  "schema_id_collisions": [
+    { "schema": "double_pinyin", "providers": ["double-pinyin", "ice"] }
+  ],
+
+  // 語言標記的涵蓋率。「還有幾個方案是未知」要能回答（§1.3）。
+  "language_coverage": {
+    "total": 101, "tagged": 96, "not_a_language": 5, "unknown": 0,
+    "coverage_pct": 100.0,
+    "by_source": { "upstream": 3, "curated": 19, "derived": 79 }
+  },
 
   "categories": [
     { "id": "mandarin",  "name": "華語",       "order": 1 },
@@ -61,12 +90,31 @@
 
       // 這個套件提供哪些可選用的方案（即 schema_list 可以列的東西）。
       // 只作為詞庫相依而不該出現在切換清單裡的套件，此陣列為空。
+      //
+      // ⚠ `id` **不是全域唯一的**（§1.2）。唯一鍵是 `uid`。
+      //   `id` 仍然保留，因為 librime 的 schema_list 用的就是裸 id。
       "schemas": [
-        { "id": "luna_pinyin",    "name": "朙月拼音" },
-        { "id": "luna_pinyin_tw", "name": "朙月拼音·臺灣正體" }
+        { "id": "luna_pinyin",
+          "uid": "luna-pinyin/luna_pinyin",   // 全域唯一，見 §1.2
+          "name": "朙月拼音",
+          "language": "zh-Hant",              // BCP 47；判不出來是 "und"，見 §1.3
+          "language_source": "derived" },     // upstream / curated / derived / unknown
+        { "id": "luna_pinyin_tw",
+          "uid": "luna-pinyin/luna_pinyin_tw",
+          "name": "朙月拼音·臺灣正體",
+          "language": "zh-Hant-TW",
+          "language_source": "curated" }
       ],
 
       "requires": ["prelude", "essay"],       // 其他 package 的 id
+
+      // 選填。裝了這個套件會覆蓋掉誰的哪些檔案（§1.2「攤平命名空間」）。
+      // 有這個欄位就代表安裝順序會改變使用者拿到的東西，UI 必須在安裝前說。
+      "conflicts": [
+        { "package": "ice",
+          "files": ["double_pinyin.schema.yaml"],
+          "schemas": ["double_pinyin"] }
+      ],
 
       // 打包時實際驗證過的證據。未通過驗證的套件不得進入索引。
       "verified": {
@@ -149,6 +197,169 @@
   不要抄上游 README。
   ❌「基於 Rime 的全拼輸入方案，支援模糊音與自定義短語」
   ✅「最通用的全拼，不會拼音以外的輸入法就選這個。詞庫是繁體，可切簡體。」
+
+---
+
+## 1.1 版本與相容性規則
+
+索引有**兩個**版本號，語義不同：
+
+| 欄位 | 什麼時候動 | 舊讀取端會怎樣 |
+|---|---|---|
+| `format_version` | **破壞性**變更：既有欄位的意義改了、必填欄位被拿掉 | **整份拒收**，市集變成空的 |
+| `format_minor` | 加欄位、加選填值 | 看不到新欄位，行為與以前**完全相同** |
+
+**讀取端的規則（規範性）：**
+
+1. `format_version` 不等於自己支援的版本 → 拒收整份索引，並告訴使用者更新 app。
+2. `format_minor` **不得**作為拒收依據。不認得就當作沒有。
+3. 不認得的鍵一律忽略，不得視為錯誤。
+4. 單一套件缺欄位或壞掉，只讓那一個套件出局，其餘照常顯示
+   （唯一例外是 `sha256`：沒有它就沒辦法驗完整性，那個套件必須出局）。
+
+**為什麼要把「加欄位」與「破壞相容」分成兩個號碼**，而不是「反正遞增就好」：
+現行已出貨的 Android 讀取端寫的是 `format_version != 1 → 整份拒收`
+（注意是 `!=` 不是 `>`）。也就是說**任何一次 major 遞增，都會讓所有已安裝
+的 app 同時失去整個市集** —— 使用者看到的不是「有新功能」，是「方案一個都沒有」。
+本輪加的 `uid` / `language_source` / `conflicts` 因此一律走加欄位，
+`format_version` 維持 1。`scripts/schema_store/test_store.py` 有一條測試
+（`test_MUTATION_bumping_major_breaks_every_shipped_app`）把這個後果釘住。
+
+真的必須做破壞性變更時，**不可以就地換掉 `index.json`**。做法是：
+
+- 新格式發到另一個檔名（例如 `index-v2.json`），舊的 `index.json` 繼續產生；
+- 等到舊 app 的存量降到可以接受，再停掉舊檔；
+- 停掉之前先讓舊 app 的錯誤訊息有意義（現在的訊息是「請更新 app」，可用）。
+
+隨 APK 出貨的 `core/schema-languages.json` 適用同一組規則，並且已經有一個
+必須遵守的事實：現行讀取端要求 `format_version == 1`，所以 `schemas_by_uid`
+是**加**上去的，原本以裸 id 為鍵的 `schemas` 原封不動。
+
+---
+
+## 1.2 方案的唯一識別碼（uid）
+
+**`schema id` 不是全域唯一的。** 這不是理論隱憂，是索引裡實際存在的事實。
+以目前收錄的 34 個套件實測，共有 **9 個**撞號的 schema id：
+
+| schema id | 提供者 | 性質 |
+|---|---|---|
+| `double_pinyin` | `double-pinyin` / `ice` | **內容相反**：前者繁體詞庫，後者簡體 |
+| `double_pinyin_abc` | `double-pinyin` / `ice` | 內容相反（繁／簡） |
+| `double_pinyin_flypy` | `double-pinyin` / `ice` | 內容相反（繁／簡） |
+| `double_pinyin_mspy` | `double-pinyin` / `ice` | 內容相反（繁／簡） |
+| `pinyin_simp` | `pinyin-simp` / `wubi86-jidian` | 都是簡體，但**詞庫不同** |
+| `radical_pinyin` | `ice` / `radical-pinyin` | schema 與 dict 兩個檔都不同 |
+| `bopomofo_tw` | `@builtin` / `bopomofo` | 同一份上游，來源不同 |
+| `luna_pinyin` | `@builtin` / `luna-pinyin` | 同一份上游，來源不同 |
+| `luna_pinyin_tw` | `@builtin` / `luna-pinyin` | 同一份上游，來源不同 |
+
+清單維護在 `scripts/schema_store/data/known_collisions.yaml`，
+`test_store.py` 拿真實語料雙向比對（多一個、少一個都會紅）。
+
+### 形狀
+
+```
+uid = <package id> "/" <schema id>
+
+    double-pinyin/double_pinyin      ← 繁體
+    ice/double_pinyin                ← 簡體
+```
+
+- 分隔符取 `/`：套件 id 是 kebab-case、schema id 是 librime 的檔名主幹
+  （`<id>.schema.yaml`），兩邊都不可能含 `/`，所以切**最後一個** `/` 就能
+  無歧義還原，不需要跳脫。
+- 套件 id 形狀：`^[a-z0-9][a-z0-9._-]*$`；schema id：`^[A-Za-z0-9][A-Za-z0-9._+-]*$`。
+- 兩個保留命名空間（以 `@` 開頭，撞不到合法的套件 id）：
+
+  | 命名空間 | 用於 | 例 |
+  |---|---|---|
+  | `@builtin/<schema id>` | 隨 APK 出貨的內建方案 | `@builtin/t9_pinyin` |
+  | `@local/<來源>/<schema id>` | 使用者自帶的 zip／yaml | `@local/mine_v2/mine` |
+
+  `<來源>` 由行動端決定（Android 目前是 `"local:" + 檔名主幹`），
+  非 `[A-Za-z0-9._-]` 的字元一律換成 `_`。同一份檔案重匯入得到同一個 uid，
+  那本來就是「重裝」。
+
+### ⚠ uid 識別的是「誰提供了這個方案」，不是「執行期哪個方案在跑」
+
+librime 執行期只看得到一個攤平的 `user_data_dir` 與一份 `schema_list`，
+兩者都用**裸的** schema id。所以 uid 解決帳本層的歧義，**不解決**底下這個
+更嚴重的問題：
+
+> 兩個套件提供同名的檔案，解壓到同一個目錄就是互相覆蓋，**誰後裝誰贏**。
+
+目前 34 個套件裡有 **14 個路徑**由多個套件提供，牽涉 7 個套件：
+
+| 路徑 | 提供者 | 被蓋掉會怎樣 |
+|---|---|---|
+| `default.yaml` | `ice` / `moran` / `prelude` | 預設方案清單與全域設定 |
+| `key_bindings.yaml` | `moran` / `prelude` | **所有**方案的按鍵綁定 |
+| `punctuation.yaml` | `moran` / `prelude` | **所有**方案的標點 |
+| `symbols.yaml` | `moran` / `prelude` | **所有**方案的符號表 |
+| `recipe.yaml` | `ice` / `moran` / `radical-pinyin` | 上游的配方描述（無執行期影響） |
+| `lua/search.lua` | `ice` / `radical-pinyin` | 兩者的反查腳本 |
+| `double_pinyin*.schema.yaml`（4 個） | `double-pinyin` / `ice` | **雙拼從繁體變簡體** |
+| `pinyin_simp.schema.yaml` / `.dict.yaml` | `pinyin-simp` / `wubi86-jidian` | 換掉詞庫 |
+| `radical_pinyin.schema.yaml` / `.dict.yaml` | `ice` / `radical-pinyin` | 換掉方案與詞庫 |
+
+注意 `key_bindings.yaml` / `punctuation.yaml` / `symbols.yaml` 這一組：
+它們被所有方案 `__include`，被蓋掉影響的是使用者裝的**每一個**方案，
+而不只是撞號的那一個。這一層 schema id 撞號完全看不到。
+
+索引的 `conflicts` 欄位就是為了讓這件事在**安裝前**講得出來。
+行動端最低限度要做到：安裝前告知、安裝後把「誰的檔案現在真的在磁碟上」
+記進帳本。徹底的解法（每個套件各自的子目錄）需要 librime 的
+`user_data_dir` 支援多來源，不在本輪範圍。
+
+---
+
+## 1.3 語言標記與來源分級
+
+每個方案帶一個 BCP 47 標記（`language`）與一個**來源分級**（`language_source`）。
+分級存在的理由是「這個標記可以信到什麼程度」要看得出來：
+
+| `language_source` | 意思 | 目前筆數 |
+|---|---|---|
+| `upstream` | 完全來自上游 metadata（rppi 的分類路徑） | 3 |
+| `curated` | 用到我們自己維護的判定資料，但沒有用到啟發式 | 19 |
+| `derived` | 用到啟發式（方案名的地區字樣、詞庫的繁簡字集探針） | 79 |
+| `unknown` | 判不出來，`language` 必為 `"und"` | 0 |
+
+有多個成分時取**最不可靠**的那一個（`unknown` > `derived` > `curated` > `upstream`）。
+例如「rppi 說這是 zh（upstream）＋ 字集探針判出 Hant（derived）」記成 `derived`。
+
+**規則：**
+
+- 判不出來一律 `"und"`，**不猜**。分錯類比沒分類更糟 ——
+  使用者會以為清單裡沒有他要的東西。
+- `"und"` 有兩種，報告裡分開算，因為處置方式不同：
+  - **本來就不是語言**（IPA 音標、`moran_charset` 這種工具方案）：
+    在判定資料裡明寫 `not_a_language: true`，這是正確答案，不是缺口；
+  - **查不到**：`language_source` 為 `unknown`，這是缺口，要補資料。
+- `language_coverage.unknown` 就是「還有幾個方案是未知」。目前是 **0**
+  （101 個方案：96 個有標記、5 個明確不是語言）。
+  `build_schema_store.sh` 以 `--max-unknown 0` 把它釘住，多一個就擋下建置。
+- 讀取端遇到不認得的標記或 `"und"`，**不得把方案藏起來** ——
+  歸入「其他」分組即可。分組沒那麼準是小事，方案從選單裡消失是大事。
+
+**判定資料在版控裡，不在程式的 if-else 裡**：
+`scripts/schema_store/data/languages.yaml`。每一筆人工判定都必須附 `why`，
+沒寫理由的會在載入時直接 die。逐條依據另外產生成 `languages.json`，
+與 `index.json` 一起發布，任何人都可以複查每一個標記的來歷。
+
+判定資料裡的方案層級鍵可以是 uid 或裸 id；但只要那個 id 出現在
+`known_collisions.yaml` 的 `content-differs` 清單裡，就**必須**用 uid ——
+否則等於對兩個內容相反的方案下同一個判斷。`test_store.py` 會擋。
+
+隨 APK 出貨的 `core/schema-languages.json` 有兩張表：`schemas_by_uid`（完整，
+新讀取端用）與 `schemas`（裸 id，舊讀取端用）。後者的收錄規則是
+**判定不同的撞號 id 不收**（目前是四個 `double_pinyin*`，繁 vs 簡）；
+判定相同的照收（`pinyin_simp`、`radical_pinyin` 兩邊都是 `zh-Hans`）——
+為了「內容不同」丟掉一個確定的正確答案，只會讓讀取端退回字面啟發式，
+那才是真的會分錯。撞號的其他後果（佈局、已安裝判斷、檔案覆蓋）由 uid 與
+`conflicts` 承接，不歸這張表管。這條規則是自我修正的：哪天其中一邊換了字集，
+判定就會不同，那個 id 自動從表裡消失。
 
 ---
 
@@ -248,6 +459,44 @@ librime 就是**照路徑**找檔案，攤平會直接讓部署失敗。實際�
 通過後流程與市集導入相同（解壓 → 加進 schema_list → 部署 → 失敗則回滾），
 差別只在沒有 sha256 可驗、也沒有相依資訊 —— 因此部署失敗的機率較高，
 錯誤訊息必須明確告訴使用者「缺少哪一個詞典」，而不是只說「部署失敗」。
+
+---
+
+## 4.1 安裝紀錄（`rimequad-store.json`）的 v1 → v2 遷移
+
+使用者手上**已經裝了東西**。加 uid 不能讓他們的方案消失。
+
+### 為什麼遷移是無損的、而且不需要連網
+
+v1 的帳本本來就是**以套件為單位**存的：頂層每一筆是一個套件，方案掛在它下面。
+「這個方案是哪個套件裝的」v1 已經有了，只是沒有寫成一個可以當鍵用的字串。
+所以遷移只是把它拼出來：
+
+```
+uid = <套件 id>/<方案 id>                      （source == "store"）
+uid = @local/<清理過的來源>/<方案 id>          （source == "local"）
+```
+
+不必問伺服器、不必有網路（本專案離線為預設，這一點是硬要求），
+也沒有猜錯的可能。參考實作與測試：`scripts/schema_store/registry.py`、
+`test_store.py` 的 `TestRegistryMigration`。
+
+### 規則
+
+1. `format_version` 由 1 改為 2，其餘欄位**原封不動**。
+2. 每個 `schemas[]` 元素加上 `uid`。已經有 `uid` 的不動 → 遷移**冪等**。
+3. uid 產不出來的（id 形狀不合法）**不得丟掉那筆紀錄** ——
+   磁碟上的檔案還在，抹掉帳本只會製造孤兒。標記它、讓 UI 有機會說話。
+4. 讀取端遇到沒有 `uid` 的舊帳本，要能就地遷移並寫回（寫回一樣走
+   「先寫暫存再改名」，寫到一半斷電不能讓使用者永久卡住）。
+
+### 遷移**修不好**的一件事
+
+如果使用者先裝 `double-pinyin` 再裝 `ice`，`double_pinyin.schema.yaml`
+早就被後者蓋掉了。帳本兩筆都在，磁碟上只剩一份，而帳本記不得是誰的。
+遷移只能**指出**（`registry.migrate()` 回傳 `file_conflicts`），不能還原；
+要還原只能重新解壓其中一個套件。這是 uid 出現得太晚的既成代價，
+寫出來比假裝已經修好要好。
 
 ---
 

@@ -1,0 +1,1766 @@
+{
+ "snapshot_format": 1,
+ "generated_at": "2026-08-08T14:35:37Z",
+ "source": "build/schema-store/_work/packages.json",
+ "package_count": 34,
+ "packages": [
+  {
+   "id": "array",
+   "rppi_path": "Chinese/Shape",
+   "requires": [
+    "luna-pinyin",
+    "prelude"
+   ],
+   "schemas": [
+    {
+     "id": "array30",
+     "name": "行列30"
+    },
+    {
+     "id": "array30_query",
+     "name": "行列30萬用字元"
+    },
+    {
+     "id": "array30_wsymbols",
+     "name": "行列30 W+數字符號組"
+    }
+   ],
+   "entries": [
+    "array30.dict.yaml",
+    "array30.schema.yaml",
+    "array30_emoji.dict.yaml",
+    "array30_main.dict.yaml",
+    "array30_phrases.dict.yaml",
+    "array30_query.dict.yaml",
+    "array30_query.schema.yaml",
+    "array30_wsymbols.dict.yaml",
+    "array30_wsymbols.schema.yaml"
+   ]
+  },
+  {
+   "id": "bopomofo",
+   "rppi_path": "Chinese/Mandarin",
+   "requires": [
+    "prelude",
+    "stroke",
+    "terra-pinyin"
+   ],
+   "schemas": [
+    {
+     "id": "bopomofo",
+     "name": "注音"
+    },
+    {
+     "id": "bopomofo_express",
+     "name": "注音·快打模式"
+    },
+    {
+     "id": "bopomofo_tw",
+     "name": "注音·臺灣正體"
+    },
+    {
+     "id": "detenele",
+     "name": "動態能力注音"
+    }
+   ],
+   "entries": [
+    "bopomofo.schema.yaml",
+    "bopomofo_express.schema.yaml",
+    "bopomofo_tw.schema.yaml",
+    "detenele.schema.yaml",
+    "zhuyin.yaml"
+   ]
+  },
+  {
+   "id": "c2h6-pinyin",
+   "rppi_path": "Chinese/Mandarin",
+   "requires": [
+    "essay-simp",
+    "prelude",
+    "stroke"
+   ],
+   "schemas": [
+    {
+     "id": "c2h6_pinyin",
+     "name": "乙烷拼音"
+    }
+   ],
+   "entries": [
+    "c2h6_pinyin.dict.yaml",
+    "c2h6_pinyin.schema.yaml"
+   ]
+  },
+  {
+   "id": "cangjie",
+   "rppi_path": "Chinese/Shape",
+   "requires": [
+    "essay",
+    "luna-pinyin",
+    "prelude"
+   ],
+   "schemas": [
+    {
+     "id": "cangjie5",
+     "name": "倉頡五代"
+    },
+    {
+     "id": "cangjie5_express",
+     "name": "倉頡五代·快打模式"
+    }
+   ],
+   "entries": [
+    "cangjie5.base.dict.yaml",
+    "cangjie5.dict.yaml",
+    "cangjie5.extended.dict.yaml",
+    "cangjie5.schema.yaml",
+    "cangjie5.stem.dict.yaml",
+    "cangjie5_char.dict.yaml",
+    "cangjie5_express.schema.yaml"
+   ]
+  },
+  {
+   "id": "cantonese",
+   "rppi_path": "Chinese/Cantonese",
+   "requires": [
+    "cangjie",
+    "essay",
+    "luna-pinyin",
+    "prelude",
+    "stroke"
+   ],
+   "schemas": [
+    {
+     "id": "jyut6ping3",
+     "name": "粵語拼音"
+    },
+    {
+     "id": "jyut6ping3_ipa",
+     "name": "粵語拼音（IPA版）"
+    }
+   ],
+   "entries": [
+    "essay-cantonese.txt",
+    "jyut6ping3.chars.dict.yaml",
+    "jyut6ping3.dict.yaml",
+    "jyut6ping3.lettered.dict.yaml",
+    "jyut6ping3.maps.dict.yaml",
+    "jyut6ping3.phrase.dict.yaml",
+    "jyut6ping3.schema.yaml",
+    "jyut6ping3.words.dict.yaml",
+    "jyut6ping3_ipa.schema.yaml",
+    "symbols_cantonese.yaml"
+   ]
+  },
+  {
+   "id": "combo-pinyin",
+   "rppi_path": "Chinese/Mandarin",
+   "requires": [
+    "luna-pinyin",
+    "prelude",
+    "terra-pinyin"
+   ],
+   "schemas": [
+    {
+     "id": "combo_pinyin",
+     "name": "宮保拼音"
+    },
+    {
+     "id": "combo_pinyin_split",
+     "name": "宮保拼音·八指禪"
+    },
+    {
+     "id": "combo_pinyin_tonal_chords",
+     "name": "宮保拼音（聲韻調並擊）"
+    },
+    {
+     "id": "combo_pinyin_with_tones",
+     "name": "宮保拼音（帶聲調輔碼）"
+    }
+   ],
+   "entries": [
+    "combo_pinyin.schema.yaml",
+    "combo_pinyin_layouts.yaml",
+    "combo_pinyin_split.schema.yaml",
+    "combo_pinyin_tonal_chords.schema.yaml",
+    "combo_pinyin_tonal_chords.yaml",
+    "combo_pinyin_with_tones.schema.yaml"
+   ]
+  },
+  {
+   "id": "dieghv",
+   "rppi_path": "Chinese/Hokkien",
+   "requires": [
+    "essay",
+    "luna-pinyin",
+    "prelude"
+   ],
+   "schemas": [
+    {
+     "id": "dieziu",
+     "name": "潮語拼音·潮州"
+    },
+    {
+     "id": "dioion",
+     "name": "潮語拼音·潮陽"
+    },
+    {
+     "id": "gekion",
+     "name": "潮語拼音·揭陽"
+    },
+    {
+     "id": "riaupeng",
+     "name": "潮語拼音·饒平"
+    },
+    {
+     "id": "suantau",
+     "name": "潮語拼音·汕頭"
+    },
+    {
+     "id": "tenghai",
+     "name": "潮語拼音·澄海"
+    }
+   ],
+   "entries": [
+    "dieziu.dict.yaml",
+    "dieziu.schema.yaml",
+    "dioion.dict.yaml",
+    "dioion.schema.yaml",
+    "gekion.dict.yaml",
+    "gekion.schema.yaml",
+    "riaupeng.dict.yaml",
+    "riaupeng.schema.yaml",
+    "suantau.dict.yaml",
+    "suantau.schema.yaml",
+    "tenghai.dict.yaml",
+    "tenghai.schema.yaml"
+   ]
+  },
+  {
+   "id": "double-pinyin",
+   "rppi_path": "Chinese/Mandarin",
+   "requires": [
+    "luna-pinyin",
+    "prelude",
+    "stroke"
+   ],
+   "schemas": [
+    {
+     "id": "double_pinyin",
+     "name": "自然碼雙拼"
+    },
+    {
+     "id": "double_pinyin_abc",
+     "name": "智能ABC雙拼"
+    },
+    {
+     "id": "double_pinyin_flypy",
+     "name": "小鶴雙拼"
+    },
+    {
+     "id": "double_pinyin_mspy",
+     "name": "微軟雙拼"
+    },
+    {
+     "id": "double_pinyin_pyjj",
+     "name": "拼音加加雙拼"
+    },
+    {
+     "id": "double_pinyin_st",
+     "name": "四通雙拼"
+    }
+   ],
+   "entries": [
+    "double_pinyin.schema.yaml",
+    "double_pinyin_abc.schema.yaml",
+    "double_pinyin_flypy.schema.yaml",
+    "double_pinyin_mspy.schema.yaml",
+    "double_pinyin_pyjj.schema.yaml",
+    "double_pinyin_st.schema.yaml"
+   ]
+  },
+  {
+   "id": "essay",
+   "rppi_path": null,
+   "requires": [
+    "prelude"
+   ],
+   "schemas": [],
+   "entries": [
+    "essay.txt"
+   ]
+  },
+  {
+   "id": "essay-simp",
+   "rppi_path": null,
+   "requires": [
+    "prelude"
+   ],
+   "schemas": [],
+   "entries": [
+    "essay-zh-hans.txt"
+   ]
+  },
+  {
+   "id": "ice",
+   "rppi_path": "Collection",
+   "requires": [
+    "prelude"
+   ],
+   "schemas": [
+    {
+     "id": "double_pinyin",
+     "name": "自然码双拼"
+    },
+    {
+     "id": "double_pinyin_abc",
+     "name": "智能 ABC 双拼"
+    },
+    {
+     "id": "double_pinyin_flypy",
+     "name": "小鹤双拼"
+    },
+    {
+     "id": "double_pinyin_jiajia",
+     "name": "拼音加加双拼"
+    },
+    {
+     "id": "double_pinyin_mspy",
+     "name": "微软双拼"
+    },
+    {
+     "id": "double_pinyin_sogou",
+     "name": "搜狗双拼"
+    },
+    {
+     "id": "double_pinyin_ziguang",
+     "name": "紫光双拼"
+    },
+    {
+     "id": "melt_eng",
+     "name": "Easy English Nano"
+    },
+    {
+     "id": "radical_pinyin",
+     "name": "部件拆字 | 全拼双拼"
+    },
+    {
+     "id": "rime_ice",
+     "name": "雾凇拼音"
+    },
+    {
+     "id": "t9",
+     "name": "中文九键"
+    }
+   ],
+   "entries": [
+    "cn_dicts/8105.dict.yaml",
+    "cn_dicts/base.dict.yaml",
+    "cn_dicts/ext.dict.yaml",
+    "cn_dicts/others.dict.yaml",
+    "cn_dicts/tencent.dict.yaml",
+    "custom_phrase.txt",
+    "default.yaml",
+    "double_pinyin.schema.yaml",
+    "double_pinyin_abc.schema.yaml",
+    "double_pinyin_flypy.schema.yaml",
+    "double_pinyin_jiajia.schema.yaml",
+    "double_pinyin_mspy.schema.yaml",
+    "double_pinyin_sogou.schema.yaml",
+    "double_pinyin_ziguang.schema.yaml",
+    "en_dicts/en.dict.yaml",
+    "en_dicts/en_ext.dict.yaml",
+    "lua/autocap_filter.lua",
+    "lua/calc_translator.lua",
+    "lua/cn_en_spacer.lua",
+    "lua/cold_word_drop/drop_words.lua",
+    "lua/cold_word_drop/filter.lua",
+    "lua/cold_word_drop/hide_words.lua",
+    "lua/cold_word_drop/logger.lua",
+    "lua/cold_word_drop/metatable.lua",
+    "lua/cold_word_drop/processor.lua",
+    "lua/cold_word_drop/reduce_freq_words.lua",
+    "lua/cold_word_drop/string.lua",
+    "lua/convert_ar_num_to_zh.lua",
+    "lua/corrector.lua",
+    "lua/date_translator.lua",
+    "lua/debuger.lua",
+    "lua/en_spacer.lua",
+    "lua/force_gc.lua",
+    "lua/is_in_user_dict.lua",
+    "lua/long_word_filter.lua",
+    "lua/lunar.lua",
+    "lua/number_translator.lua",
+    "lua/pin_cand_filter.lua",
+    "lua/reduce_english_filter.lua",
+    "lua/search.lua",
+    "lua/select_character.lua",
+    "lua/t9_preedit.lua",
+    "lua/unicode.lua",
+    "lua/uuid.lua",
+    "lua/v_filter.lua",
+    "melt_eng.dict.yaml",
+    "melt_eng.schema.yaml",
+    "radical_pinyin.dict.yaml",
+    "radical_pinyin.schema.yaml",
+    "recipe.yaml",
+    "rime_ice.dict.yaml",
+    "rime_ice.schema.yaml",
+    "symbols_caps_v.yaml",
+    "symbols_v.yaml",
+    "t9.schema.yaml"
+   ]
+  },
+  {
+   "id": "ipa",
+   "rppi_path": "Other",
+   "requires": [
+    "prelude"
+   ],
+   "schemas": [
+    {
+     "id": "ipa_xsampa",
+     "name": "X-SAMPA"
+    },
+    {
+     "id": "ipa_yunlong",
+     "name": "雲龍國際音標"
+    }
+   ],
+   "entries": [
+    "ipa_xsampa.dict.yaml",
+    "ipa_xsampa.schema.yaml",
+    "ipa_yunlong.dict.yaml",
+    "ipa_yunlong.schema.yaml"
+   ]
+  },
+  {
+   "id": "jyutping",
+   "rppi_path": null,
+   "requires": [
+    "cangjie",
+    "essay",
+    "luna-pinyin",
+    "prelude",
+    "stroke"
+   ],
+   "schemas": [
+    {
+     "id": "hkcantonese",
+     "name": "香港廣東話拼音"
+    },
+    {
+     "id": "jyutping",
+     "name": "粵語拼音（無聲調）"
+    },
+    {
+     "id": "yale",
+     "name": "耶魯粵語拼音"
+    }
+   ],
+   "entries": [
+    "hkcantonese.schema.yaml",
+    "jyutping.dict.yaml",
+    "jyutping.lettered.dict.yaml",
+    "jyutping.phrase.dict.yaml",
+    "jyutping.schema.yaml",
+    "yale.schema.yaml"
+   ]
+  },
+  {
+   "id": "kappajp",
+   "rppi_path": "Japanese",
+   "requires": [
+    "prelude"
+   ],
+   "schemas": [
+    {
+     "id": "KappaJP",
+     "name": "河童五筆"
+    },
+    {
+     "id": "KappaJP_express",
+     "name": "河童五筆·連打"
+    },
+    {
+     "id": "KappaJP_fluency",
+     "name": "河童五筆·語句流"
+    }
+   ],
+   "entries": [
+    "KappaJP.custom.yaml",
+    "KappaJP.dict.yaml",
+    "KappaJP.dict/KappaJP.jouyou.dict.yaml",
+    "KappaJP.dict/KappaJP.junhira.dict.yaml",
+    "KappaJP.dict/KappaJP.kanji.dict.yaml",
+    "KappaJP.dict/KappaJP.kaomoji.dict.yaml",
+    "KappaJP.dict/KappaJP.kata.dict.yaml",
+    "KappaJP.dict/KappaJP.kata_exp_flu.dict.yaml",
+    "KappaJP.dict/KappaJP.kiso.dict.yaml",
+    "KappaJP.dict/KappaJP.tango.dict.yaml",
+    "KappaJP.schema.yaml",
+    "KappaJP_exp_flu.dict.yaml",
+    "KappaJP_express.schema.yaml",
+    "KappaJP_fluency.schema.yaml"
+   ]
+  },
+  {
+   "id": "keydo",
+   "rppi_path": "Chinese/Shape",
+   "requires": [
+    "prelude"
+   ],
+   "schemas": [
+    {
+     "id": "keydo",
+     "name": "键道·我流"
+    }
+   ],
+   "entries": [
+    "dicts/keydo.chars.dict.yaml",
+    "dicts/keydo.dict.yaml",
+    "dicts/keydo.phrases.dict.yaml",
+    "dicts/keydo.shortcuts.dict.yaml",
+    "dicts/keydo.shorthand_l1.dict.yaml",
+    "dicts/keydo.shorthand_l2.dict.yaml",
+    "dicts/keydo.shorthand_lsp.dict.yaml",
+    "dicts/keydo.shorthand_sp.dict.yaml",
+    "logic/common/keydo_constants.lua",
+    "logic/common/keydo_helpers.lua",
+    "logic/common/keydo_utils.lua",
+    "logic/filters/keydo_cand.lua",
+    "logic/processors/for_topup.lua",
+    "logic/processors/keydo_select.lua",
+    "logic/processors/topup_migration.draft.lua",
+    "logic/rime.lua",
+    "logic/translators/date.draft.lua",
+    "logic/translators/keydo_date_time.lua",
+    "logic/translators/xnumber.lua",
+    "schema/keydo.punct.yaml",
+    "schema/keydo.schema.yaml"
+   ]
+  },
+  {
+   "id": "luna-pinyin",
+   "rppi_path": "Chinese/Mandarin",
+   "requires": [
+    "essay",
+    "prelude",
+    "stroke"
+   ],
+   "schemas": [
+    {
+     "id": "luna_pinyin",
+     "name": "朙月拼音"
+    },
+    {
+     "id": "luna_pinyin_fluency",
+     "name": "朙月拼音·語句流"
+    },
+    {
+     "id": "luna_pinyin_simp",
+     "name": "朙月拼音·简化字"
+    },
+    {
+     "id": "luna_pinyin_tw",
+     "name": "朙月拼音·臺灣正體"
+    },
+    {
+     "id": "luna_quanpin",
+     "name": "全拼"
+    }
+   ],
+   "entries": [
+    "luna_pinyin.dict.yaml",
+    "luna_pinyin.schema.yaml",
+    "luna_pinyin_fluency.schema.yaml",
+    "luna_pinyin_simp.schema.yaml",
+    "luna_pinyin_tw.schema.yaml",
+    "luna_quanpin.schema.yaml",
+    "pinyin.yaml"
+   ]
+  },
+  {
+   "id": "middle-chinese",
+   "rppi_path": "Chinese/Old",
+   "requires": [
+    "essay",
+    "luna-pinyin",
+    "prelude"
+   ],
+   "schemas": [
+    {
+     "id": "sampheng",
+     "name": "中古三拼"
+    },
+    {
+     "id": "zyenpheng",
+     "name": "中古全拼"
+    }
+   ],
+   "entries": [
+    "sampheng.schema.yaml",
+    "zyenpheng.dict.yaml",
+    "zyenpheng.schema.yaml"
+   ]
+  },
+  {
+   "id": "moran",
+   "rppi_path": "Chinese/Shape",
+   "requires": [
+    "bopomofo",
+    "cangjie",
+    "prelude",
+    "stroke",
+    "terra-pinyin"
+   ],
+   "schemas": [
+    {
+     "id": "moran",
+     "name": "魔然"
+    },
+    {
+     "id": "moran_aux",
+     "name": "輔篩·魔然"
+    },
+    {
+     "id": "moran_charset",
+     "name": "勿用·工具方案"
+    },
+    {
+     "id": "moran_english",
+     "name": "勿用·工具方案"
+    },
+    {
+     "id": "moran_fixed",
+     "name": "字詞·魔然"
+    },
+    {
+     "id": "moran_japanese",
+     "name": "簡易日語"
+    },
+    {
+     "id": "moran_reverse",
+     "name": "勿用·工具方案"
+    },
+    {
+     "id": "moran_sentence",
+     "name": "整句·魔然"
+    },
+    {
+     "id": "tiger",
+     "name": "虎码官方单字"
+    },
+    {
+     "id": "zrlf",
+     "name": "自然兩分"
+    }
+   ],
+   "entries": [
+    "default.yaml",
+    "key_bindings.yaml",
+    "lua/moran.lua",
+    "lua/moran_aux_translator.lua",
+    "lua/moran_charset_comment_filter.lua",
+    "lua/moran_charset_filter.lua",
+    "lua/moran_disable_phrase_memory.lua",
+    "lua/moran_english_filter.lua",
+    "lua/moran_express_translator.lua",
+    "lua/moran_fix_filter.lua",
+    "lua/moran_hint_filter.lua",
+    "lua/moran_ijrq_filter.lua",
+    "lua/moran_number.lua",
+    "lua/moran_pin.lua",
+    "lua/moran_processor.lua",
+    "lua/moran_reorder_filter.lua",
+    "lua/moran_shijian.lua",
+    "lua/moran_unicode.lua",
+    "lua/moran_unicode_display_filter.lua",
+    "lua/zrmdb.txt",
+    "moran.base.dict.yaml",
+    "moran.chars.dict.yaml",
+    "moran.computer.dict.yaml",
+    "moran.extended.dict.yaml",
+    "moran.moe.dict.yaml",
+    "moran.schema.yaml",
+    "moran.tencent.dict.yaml",
+    "moran.words.dict.yaml",
+    "moran.yaml",
+    "moran_aux.schema.yaml",
+    "moran_charset.dict.yaml",
+    "moran_charset.schema.yaml",
+    "moran_custom_phrases.txt",
+    "moran_defs.yaml",
+    "moran_english.dict.yaml",
+    "moran_english.schema.yaml",
+    "moran_fixed.dict.yaml",
+    "moran_fixed.schema.yaml",
+    "moran_fixed.symbols.dict.yaml",
+    "moran_fixed_simp.dict.yaml",
+    "moran_japanese.dict.yaml",
+    "moran_japanese.schema.yaml",
+    "moran_reverse.schema.yaml",
+    "moran_sentence.schema.yaml",
+    "punctuation.yaml",
+    "recipe.yaml",
+    "symbols.yaml",
+    "tiger.dict.yaml",
+    "tiger.schema.yaml",
+    "zrlf.dict.yaml",
+    "zrlf.schema.yaml"
+   ]
+  },
+  {
+   "id": "naamning-jyutping",
+   "rppi_path": "Chinese/Cantonese",
+   "requires": [
+    "cangjie",
+    "essay",
+    "luna-pinyin",
+    "prelude",
+    "stroke"
+   ],
+   "schemas": [
+    {
+     "id": "naamning_baakwaa",
+     "name": "南寧白話"
+    },
+    {
+     "id": "naamning_baakwaa_ipa",
+     "name": "南寧白話(IPA)"
+    },
+    {
+     "id": "naamning_bingwaa",
+     "name": "南寧(亭子)平話"
+    },
+    {
+     "id": "naamning_bingwaa_ipa",
+     "name": "南寧(亭子)平話(IPA)"
+    }
+   ],
+   "entries": [
+    "naamning_baakwaa.dict.yaml",
+    "naamning_baakwaa.infer.dict.yaml",
+    "naamning_baakwaa.schema.yaml",
+    "naamning_baakwaa_ipa.schema.yaml",
+    "naamning_bingwaa.dict.yaml",
+    "naamning_bingwaa.infer.dict.yaml",
+    "naamning_bingwaa.schema.yaml",
+    "naamning_bingwaa_ipa.schema.yaml",
+    "naamning_jyutping.city.dict.yaml",
+    "naamning_jyutping.phrase.dict.yaml"
+   ]
+  },
+  {
+   "id": "pinyin-simp",
+   "rppi_path": "Chinese/Mandarin",
+   "requires": [
+    "prelude",
+    "stroke"
+   ],
+   "schemas": [
+    {
+     "id": "pinyin_simp",
+     "name": "袖珍简化字拼音"
+    }
+   ],
+   "entries": [
+    "pinyin_simp.dict.yaml",
+    "pinyin_simp.schema.yaml"
+   ]
+  },
+  {
+   "id": "prelude",
+   "rppi_path": null,
+   "requires": [],
+   "schemas": [],
+   "entries": [
+    "default.yaml",
+    "key_bindings.yaml",
+    "punctuation.yaml",
+    "symbols.yaml"
+   ]
+  },
+  {
+   "id": "quick",
+   "rppi_path": "Chinese/Shape",
+   "requires": [
+    "cangjie",
+    "essay",
+    "luna-pinyin",
+    "prelude"
+   ],
+   "schemas": [
+    {
+     "id": "quick5",
+     "name": "速成"
+    }
+   ],
+   "entries": [
+    "quick5.dict.yaml",
+    "quick5.schema.yaml",
+    "quick5.supplement.dict.yaml"
+   ]
+  },
+  {
+   "id": "radical-pinyin",
+   "rppi_path": "Chinese/Shape",
+   "requires": [
+    "prelude"
+   ],
+   "schemas": [
+    {
+     "id": "radical",
+     "name": "部件拆字 | 双拼"
+    },
+    {
+     "id": "radical_pinyin",
+     "name": "部件拆字 | 全拼双拼"
+    }
+   ],
+   "entries": [
+    "lua/search.lua",
+    "radical.schema.yaml",
+    "radical_flypy.dict.yaml",
+    "radical_pinyin.dict.yaml",
+    "radical_pinyin.schema.yaml",
+    "recipe.yaml"
+   ]
+  },
+  {
+   "id": "sautungva",
+   "rppi_path": "Chinese/Xiang",
+   "requires": [
+    "essay",
+    "luna-pinyin",
+    "prelude"
+   ],
+   "schemas": [
+    {
+     "id": "saodongwa",
+     "name": "邵東話拼音方案"
+    },
+    {
+     "id": "sautungva_beta",
+     "name": "邵東話測試"
+    },
+    {
+     "id": "sautungva_cyrillic",
+     "name": "邵東話西里爾"
+    },
+    {
+     "id": "sautungva_phinin",
+     "name": "邵東話拼音"
+    },
+    {
+     "id": "sautungva_vuphin",
+     "name": "邵東話吴拼"
+    }
+   ],
+   "entries": [
+    "saodongwa.schema.yaml",
+    "sautungva.dict.yaml",
+    "sautungva.schema.yaml",
+    "sautungva_beta.custom.yaml",
+    "sautungva_beta.dict.yaml",
+    "sautungva_beta.schema.yaml",
+    "sautungva_cyrillic.schema.yaml",
+    "sautungva_phinin.dict.yaml",
+    "sautungva_phinin.schema.yaml",
+    "sautungva_vuphin.schema.yaml",
+    "stvdzjmow.dict.yaml",
+    "stvdztsu.dict.yaml",
+    "stvemoji.dict.yaml",
+    "stvieuci.dict.yaml",
+    "stvpendi.dict.yaml",
+    "stvtcyencie.dict.yaml",
+    "stvtcyin.dict.yaml",
+    "stvtoin.dict.yaml",
+    "stvuaikua.dict.yaml",
+    "stvxauuang.dict.yaml",
+    "tcyennie.dict.yaml",
+    "thezy.dict.yaml"
+   ]
+  },
+  {
+   "id": "scj",
+   "rppi_path": "Chinese/Shape",
+   "requires": [
+    "essay",
+    "luna-pinyin",
+    "prelude"
+   ],
+   "schemas": [
+    {
+     "id": "scj6",
+     "name": "快速倉頡"
+    }
+   ],
+   "entries": [
+    "scj6.dict.yaml",
+    "scj6.schema.yaml"
+   ]
+  },
+  {
+   "id": "soutzoe",
+   "rppi_path": "Chinese/Wu",
+   "requires": [
+    "essay",
+    "luna-pinyin",
+    "prelude"
+   ],
+   "schemas": [
+    {
+     "id": "soutzoe",
+     "name": "蘇州吳語"
+    }
+   ],
+   "entries": [
+    "soutzoe.dict.yaml",
+    "soutzoe.schema.yaml"
+   ]
+  },
+  {
+   "id": "stenotype",
+   "rppi_path": "Chinese/Mandarin",
+   "requires": [
+    "luna-pinyin",
+    "prelude"
+   ],
+   "schemas": [
+    {
+     "id": "stenotype",
+     "name": "打字速記法"
+    }
+   ],
+   "entries": [
+    "stenotype.schema.yaml"
+   ]
+  },
+  {
+   "id": "stroke",
+   "rppi_path": "Chinese/Shape",
+   "requires": [
+    "essay",
+    "luna-pinyin",
+    "prelude"
+   ],
+   "schemas": [
+    {
+     "id": "stroke",
+     "name": "五筆畫"
+    }
+   ],
+   "entries": [
+    "stroke.dict.yaml",
+    "stroke.schema.yaml"
+   ]
+  },
+  {
+   "id": "terra-pinyin",
+   "rppi_path": "Chinese/Mandarin",
+   "requires": [
+    "essay",
+    "prelude",
+    "stroke"
+   ],
+   "schemas": [
+    {
+     "id": "terra_pinyin",
+     "name": "地球拼音"
+    },
+    {
+     "id": "terra_pinyin_12345",
+     "name": "地球拼音（數字標調）"
+    }
+   ],
+   "entries": [
+    "terra_pinyin.dict.yaml",
+    "terra_pinyin.schema.yaml",
+    "terra_pinyin_12345.schema.yaml"
+   ]
+  },
+  {
+   "id": "wubi",
+   "rppi_path": "Chinese/Shape",
+   "requires": [
+    "pinyin-simp",
+    "prelude"
+   ],
+   "schemas": [
+    {
+     "id": "wubi86",
+     "name": "五笔86"
+    },
+    {
+     "id": "wubi_pinyin",
+     "name": "五笔·拼音"
+    },
+    {
+     "id": "wubi_trad",
+     "name": "五筆·簡入繁出"
+    }
+   ],
+   "entries": [
+    "wubi86.dict.yaml",
+    "wubi86.schema.yaml",
+    "wubi_pinyin.schema.yaml",
+    "wubi_trad.schema.yaml"
+   ]
+  },
+  {
+   "id": "wubi86-jidian",
+   "rppi_path": "Chinese/Shape",
+   "requires": [
+    "prelude",
+    "stroke"
+   ],
+   "schemas": [
+    {
+     "id": "numbers",
+     "name": "大写数字"
+    },
+    {
+     "id": "pinyin_simp",
+     "name": "简体拼音"
+    },
+    {
+     "id": "wubi86_jidian",
+     "name": "极点五笔86"
+    },
+    {
+     "id": "wubi86_jidian_pinyin",
+     "name": "拼音混输"
+    },
+    {
+     "id": "wubi86_jidian_trad",
+     "name": "简入繁出"
+    },
+    {
+     "id": "wubi86_jidian_trad_pinyin",
+     "name": "拼音混输繁体"
+    }
+   ],
+   "entries": [
+    "lua/wubi86_jidian_date_translator.lua",
+    "lua/wubi86_jidian_single_char_first_filter.lua",
+    "lua/wubi86_jidian_single_char_only.lua",
+    "numbers.schema.yaml",
+    "pinyin_simp.dict.yaml",
+    "pinyin_simp.schema.yaml",
+    "wubi86_jidian.dict.yaml",
+    "wubi86_jidian.schema.yaml",
+    "wubi86_jidian_extra.dict.yaml",
+    "wubi86_jidian_extra_district.dict.yaml",
+    "wubi86_jidian_pinyin.schema.yaml",
+    "wubi86_jidian_trad.schema.yaml",
+    "wubi86_jidian_trad_pinyin.schema.yaml",
+    "wubi86_jidian_user.dict.yaml",
+    "wubi86_jidian_user_hamster.dict.yaml"
+   ]
+  },
+  {
+   "id": "wugniu",
+   "rppi_path": "Chinese/Wu",
+   "requires": [
+    "essay",
+    "luna-pinyin",
+    "prelude"
+   ],
+   "schemas": [
+    {
+     "id": "wugniu",
+     "name": "上海新派"
+    },
+    {
+     "id": "wugniu_lopha",
+     "name": "上海吳語"
+    }
+   ],
+   "entries": [
+    "wugniu.schema.yaml",
+    "wugniu_lopha.dict.yaml",
+    "wugniu_lopha.schema.yaml"
+   ]
+  },
+  {
+   "id": "zhengma",
+   "rppi_path": "Chinese/Shape",
+   "requires": [
+    "pinyin-simp",
+    "prelude"
+   ],
+   "schemas": [
+    {
+     "id": "zhengma",
+     "name": "郑码"
+    }
+   ],
+   "entries": [
+    "zhengma.dict.yaml",
+    "zhengma.schema.yaml"
+   ]
+  },
+  {
+   "id": "zrm",
+   "rppi_path": "Chinese/Shape",
+   "requires": [
+    "essay",
+    "prelude",
+    "stroke"
+   ],
+   "schemas": [
+    {
+     "id": "zrm_pinyin",
+     "name": "自然码+辅助码"
+    }
+   ],
+   "entries": [
+    "lua/second_code_filter.lua",
+    "lua/w2c.lua",
+    "rime.lua",
+    "zrm_pinyin.cn_en.dict.yaml",
+    "zrm_pinyin.dict.yaml",
+    "zrm_pinyin.full.dict.yaml",
+    "zrm_pinyin.schema.yaml",
+    "zrm_pinyin.standard_unique.dict.yaml",
+    "zrm_pinyin.standard_utf8_lite.dict.yaml",
+    "zrm_pinyin.unique_fm.dict.yaml",
+    "zrm_pinyin.utf8-lite.dict.yaml"
+   ]
+  }
+ ],
+ "builtin": [
+  {
+   "uid": "@builtin/luna_pinyin_tw",
+   "id": "luna_pinyin_tw",
+   "name": "朙月拼音·臺灣正體",
+   "language": "zh-Hant-TW",
+   "source": "curated",
+   "rule": "curated-schema",
+   "not_a_language": false
+  },
+  {
+   "uid": "@builtin/bopomofo_tw",
+   "id": "bopomofo_tw",
+   "name": "注音·臺灣正體",
+   "language": "zh-Hant-TW",
+   "source": "curated",
+   "rule": "curated-schema",
+   "not_a_language": false
+  },
+  {
+   "uid": "@builtin/luna_pinyin",
+   "id": "luna_pinyin",
+   "name": "朙月拼音",
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  {
+   "uid": "@builtin/t9_pinyin",
+   "id": "t9_pinyin",
+   "name": "九宮格拼音",
+   "language": "zh-Hant",
+   "source": "curated",
+   "rule": "curated-schema",
+   "not_a_language": false
+  }
+ ],
+ "languages": {
+  "array/array30": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "array/array30_query": {
+   "language": "und",
+   "source": "curated",
+   "rule": "curated-schema",
+   "not_a_language": true
+  },
+  "array/array30_wsymbols": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "bopomofo/bopomofo": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "bopomofo/bopomofo_express": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "bopomofo/bopomofo_tw": {
+   "language": "zh-Hant-TW",
+   "source": "curated",
+   "rule": "curated-schema",
+   "not_a_language": false
+  },
+  "bopomofo/detenele": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "c2h6-pinyin/c2h6_pinyin": {
+   "language": "zh-Hans",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "cangjie/cangjie5": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "cangjie/cangjie5_express": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "cantonese/jyut6ping3": {
+   "language": "yue-Hant-HK",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe+curated-package-region",
+   "not_a_language": false
+  },
+  "cantonese/jyut6ping3_ipa": {
+   "language": "yue-Hant-HK",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe+curated-package-region",
+   "not_a_language": false
+  },
+  "combo-pinyin/combo_pinyin": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "combo-pinyin/combo_pinyin_split": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "combo-pinyin/combo_pinyin_tonal_chords": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "combo-pinyin/combo_pinyin_with_tones": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "dieghv/dieziu": {
+   "language": "nan-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "dieghv/dioion": {
+   "language": "nan-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "dieghv/gekion": {
+   "language": "nan-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "dieghv/riaupeng": {
+   "language": "nan-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "dieghv/suantau": {
+   "language": "nan-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "dieghv/tenghai": {
+   "language": "nan-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "double-pinyin/double_pinyin": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "double-pinyin/double_pinyin_abc": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "double-pinyin/double_pinyin_flypy": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "double-pinyin/double_pinyin_mspy": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "double-pinyin/double_pinyin_pyjj": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "double-pinyin/double_pinyin_st": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "ice/double_pinyin": {
+   "language": "zh-Hans",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "ice/double_pinyin_abc": {
+   "language": "zh-Hans",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "ice/double_pinyin_flypy": {
+   "language": "zh-Hans",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "ice/double_pinyin_jiajia": {
+   "language": "zh-Hans",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "ice/double_pinyin_mspy": {
+   "language": "zh-Hans",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "ice/double_pinyin_sogou": {
+   "language": "zh-Hans",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "ice/double_pinyin_ziguang": {
+   "language": "zh-Hans",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "ice/melt_eng": {
+   "language": "en",
+   "source": "curated",
+   "rule": "curated-schema-uid",
+   "not_a_language": false
+  },
+  "ice/radical_pinyin": {
+   "language": "zh-Hans",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "ice/rime_ice": {
+   "language": "zh-Hans",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "ice/t9": {
+   "language": "zh-Hans",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "ipa/ipa_xsampa": {
+   "language": "und",
+   "source": "curated",
+   "rule": "curated-schema",
+   "not_a_language": true
+  },
+  "ipa/ipa_yunlong": {
+   "language": "und",
+   "source": "curated",
+   "rule": "curated-schema",
+   "not_a_language": true
+  },
+  "jyutping/hkcantonese": {
+   "language": "yue-Hant-HK",
+   "source": "curated",
+   "rule": "curated-schema",
+   "not_a_language": false
+  },
+  "jyutping/jyutping": {
+   "language": "yue-Hant",
+   "source": "derived",
+   "rule": "curated-package+charset-probe",
+   "not_a_language": false
+  },
+  "jyutping/yale": {
+   "language": "yue-Hant",
+   "source": "derived",
+   "rule": "curated-package+charset-probe",
+   "not_a_language": false
+  },
+  "kappajp/KappaJP": {
+   "language": "ja",
+   "source": "upstream",
+   "rule": "rppi-path",
+   "not_a_language": false
+  },
+  "kappajp/KappaJP_express": {
+   "language": "ja",
+   "source": "upstream",
+   "rule": "rppi-path",
+   "not_a_language": false
+  },
+  "kappajp/KappaJP_fluency": {
+   "language": "ja",
+   "source": "upstream",
+   "rule": "rppi-path",
+   "not_a_language": false
+  },
+  "keydo/keydo": {
+   "language": "zh-Hans",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "luna-pinyin/luna_pinyin": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "luna-pinyin/luna_pinyin_fluency": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "luna-pinyin/luna_pinyin_simp": {
+   "language": "zh-Hans",
+   "source": "curated",
+   "rule": "curated-schema",
+   "not_a_language": false
+  },
+  "luna-pinyin/luna_pinyin_tw": {
+   "language": "zh-Hant-TW",
+   "source": "curated",
+   "rule": "curated-schema",
+   "not_a_language": false
+  },
+  "luna-pinyin/luna_quanpin": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "middle-chinese/sampheng": {
+   "language": "ltc-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "middle-chinese/zyenpheng": {
+   "language": "ltc-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "moran/moran": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "moran/moran_aux": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "moran/moran_charset": {
+   "language": "und",
+   "source": "curated",
+   "rule": "curated-schema",
+   "not_a_language": true
+  },
+  "moran/moran_english": {
+   "language": "en",
+   "source": "curated",
+   "rule": "curated-schema",
+   "not_a_language": false
+  },
+  "moran/moran_fixed": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "moran/moran_japanese": {
+   "language": "ja",
+   "source": "curated",
+   "rule": "curated-schema",
+   "not_a_language": false
+  },
+  "moran/moran_reverse": {
+   "language": "und",
+   "source": "curated",
+   "rule": "curated-schema",
+   "not_a_language": true
+  },
+  "moran/moran_sentence": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "moran/tiger": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "moran/zrlf": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "naamning-jyutping/naamning_baakwaa": {
+   "language": "yue-Hant-CN",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe+curated-package-region",
+   "not_a_language": false
+  },
+  "naamning-jyutping/naamning_baakwaa_ipa": {
+   "language": "yue-Hant-CN",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe+curated-package-region",
+   "not_a_language": false
+  },
+  "naamning-jyutping/naamning_bingwaa": {
+   "language": "yue-Hant-CN",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe+curated-package-region",
+   "not_a_language": false
+  },
+  "naamning-jyutping/naamning_bingwaa_ipa": {
+   "language": "yue-Hant-CN",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe+curated-package-region",
+   "not_a_language": false
+  },
+  "pinyin-simp/pinyin_simp": {
+   "language": "zh-Hans",
+   "source": "derived",
+   "rule": "rppi-path+schema-name-mark",
+   "not_a_language": false
+  },
+  "quick/quick5": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "radical-pinyin/radical": {
+   "language": "zh-Hans",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "radical-pinyin/radical_pinyin": {
+   "language": "zh-Hans",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "sautungva/saodongwa": {
+   "language": "hsn-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "sautungva/sautungva_beta": {
+   "language": "hsn-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "sautungva/sautungva_cyrillic": {
+   "language": "hsn-Cyrl",
+   "source": "curated",
+   "rule": "curated-schema",
+   "not_a_language": false
+  },
+  "sautungva/sautungva_phinin": {
+   "language": "hsn-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "sautungva/sautungva_vuphin": {
+   "language": "hsn-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "scj/scj6": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "soutzoe/soutzoe": {
+   "language": "wuu-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "stenotype/stenotype": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "stroke/stroke": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "terra-pinyin/terra_pinyin": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "terra-pinyin/terra_pinyin_12345": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "wubi/wubi86": {
+   "language": "zh-Hans",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "wubi/wubi_pinyin": {
+   "language": "zh-Hans",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "wubi/wubi_trad": {
+   "language": "zh-Hant",
+   "source": "curated",
+   "rule": "curated-schema",
+   "not_a_language": false
+  },
+  "wubi86-jidian/numbers": {
+   "language": "zh-Hans",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "wubi86-jidian/pinyin_simp": {
+   "language": "zh-Hans",
+   "source": "derived",
+   "rule": "rppi-path+schema-name-mark",
+   "not_a_language": false
+  },
+  "wubi86-jidian/wubi86_jidian": {
+   "language": "zh-Hans",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "wubi86-jidian/wubi86_jidian_pinyin": {
+   "language": "zh-Hans",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "wubi86-jidian/wubi86_jidian_trad": {
+   "language": "zh-Hant",
+   "source": "curated",
+   "rule": "curated-schema",
+   "not_a_language": false
+  },
+  "wubi86-jidian/wubi86_jidian_trad_pinyin": {
+   "language": "zh-Hant",
+   "source": "curated",
+   "rule": "curated-schema",
+   "not_a_language": false
+  },
+  "wugniu/wugniu": {
+   "language": "wuu-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "wugniu/wugniu_lopha": {
+   "language": "wuu-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "zhengma/zhengma": {
+   "language": "zh-Hans",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  },
+  "zrm/zrm_pinyin": {
+   "language": "zh-Hant",
+   "source": "derived",
+   "rule": "rppi-path+charset-probe",
+   "not_a_language": false
+  }
+ },
+ "coverage": {
+  "total": 101,
+  "tagged": 96,
+  "not_a_language": 5,
+  "unknown": 0,
+  "coverage_pct": 100.0,
+  "by_source": {
+   "curated": 19,
+   "derived": 79,
+   "upstream": 3
+  }
+ }
+}
