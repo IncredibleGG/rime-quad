@@ -25,6 +25,7 @@ Android / iOS / Windows / macOS。**Android 已經是可用的產品**,其餘三
 
 | 檔案 | 為什麼 |
 |---|---|
+| **`docs/coordination.md`** | **四個會話唯一的溝通管道。**會話之間看不見彼此,只看得見 repo。檔案所有權、共用紀律、待裁決事項都在那裡,**動工前讀,有跨端影響的決定寫回去** |
 | `core/include/rime_shell.h` | **你唯一該用的 API**。四端共用的 C ABI,檔頭有執行緒、記憶體、版本協商的完整約定 |
 | `docs/architecture.md` | 四端各自怎麼接、按鍵映射、效能紅線 |
 | `docs/theme-format.md` §8 | 主題規範。**你只需要 `candidates` 那部分**,`keyboard` 與佈局(§9)是行動端的 |
