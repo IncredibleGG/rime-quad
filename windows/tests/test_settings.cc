@@ -15,50 +15,90 @@ using namespace rimewin;
 TEST(Settings_absent_key_means_unset_not_default) {
   Settings s;
   CHECK(!s.Has(keys::kTextVariant));
-  CHECK(s.SchemaPref().forced_variant == Variant::kFollow);
-  // 設成「跟隨」必須是**刪掉那個鍵**,不是寫一個哨兵值。
-  s.SetForcedVariant(Variant::kHans);
+  CHECK(s.SchemaPref().variant == VariantPref::kFollowInputMode);
+  // 設回預設值必須是**刪掉那個鍵**,不是寫一個哨兵值。
+  s.SetVariantPref(VariantPref::kSimplified);
   CHECK(s.Has(keys::kTextVariant));
-  s.SetForcedVariant(Variant::kFollow);
+  s.SetVariantPref(VariantPref::kFollowInputMode);
   CHECK(!s.Has(keys::kTextVariant));
   // 方案同理。
-  s.SetForcedSchema("luna_pinyin");
-  CHECK(s.Has(keys::kSchemaForced));
-  s.SetForcedSchema("");
-  CHECK(!s.Has(keys::kSchemaForced));
+  s.SetPinnedGlobal("luna_pinyin");
+  CHECK(s.Has(keys::kSchemasPinnedGlobal));
+  s.SetPinnedGlobal("");
+  CHECK(!s.Has(keys::kSchemasPinnedGlobal));
+}
+
+TEST(Settings_follow_input_mode_defaults_to_true) {
+  // ⚠ 預設是 true(規範 §3),所以「沒有這個鍵」必須讀成 true。
+  //   寫成 GetTri() == kTrue 的話,全新安裝的機器上自動挑方案是關的,
+  //   而那正是這一輪要修的缺陷本身。
+  Settings s;
+  CHECK(s.SchemaPref().follow_input_mode);
+  s.SetFollowInputMode(false);
+  CHECK(!s.SchemaPref().follow_input_mode);
+  CHECK(s.Has(keys::kSchemasFollowInputMode));
+  // 設回 true = 刪掉那個鍵(不要把預設值寫進檔案)。
+  s.SetFollowInputMode(true);
+  CHECK(!s.Has(keys::kSchemasFollowInputMode));
+  CHECK(s.SchemaPref().follow_input_mode);
+  // 認不得的字面值也一律當成沒設過 = true。
+  CHECK(Settings::Parse("schemas.followInputMode = 亂寫\n")
+            .SchemaPref().follow_input_mode);
+}
+
+TEST(Settings_pinned_per_charset) {
+  Settings s;
+  s.SetPinnedForCharSet(CharSet::kHant, "bopomofo_tw");
+  s.SetPinnedForCharSet(CharSet::kHans, "luna_pinyin");
+  const SchemaPreference p = Settings::Parse(s.Serialize()).SchemaPref();
+  CHECK_STR(p.pinned_hant, "bopomofo_tw");
+  CHECK_STR(p.pinned_hans, "luna_pinyin");
+  // kUnspecified 沒有對應的桶。硬塞進繁體那一桶會讓「不知道是哪一種」
+  // 變成「他選了繁體」,而使用者從來沒說過那句話。
+  Settings t;
+  t.SetPinnedForCharSet(CharSet::kUnspecified, "t9_pinyin");
+  CHECK_INT(t.size(), 0);
+  // 空字串 = 取消釘,不是釘一個空的。
+  s.SetPinnedForCharSet(CharSet::kHant, "");
+  CHECK(!s.Has(keys::kSchemasPinnedHant));
 }
 
 TEST(Settings_enum_first_value_is_the_follow_slot_and_is_never_written) {
   Settings s;
-  s.SetEnumInt(keys::kCandCount, 7, kCandCountValues, kCandCountCount);
-  CHECK_STR(s.Raw(keys::kCandCount), "7");
-  // kCandCountValues[0] == 0 是「跟隨主題」。寫它 = 把「沒設過」變成「設過」。
-  s.SetEnumInt(keys::kCandCount, 0, kCandCountValues, kCandCountCount);
-  CHECK(!s.Has(keys::kCandCount));
+  const char* k = keys::kAppearanceCandidateScale;
+  s.SetEnumInt(k, 120, kCandScaleValues, kCandScaleCount);
+  CHECK_STR(s.Raw(k), "120");
+  // 第一格 0 是「不干預」。寫它 = 把「沒設過」變成「設過」。
+  s.SetEnumInt(k, 0, kCandScaleValues, kCandScaleCount);
+  CHECK(!s.Has(k));
   // 不在允許清單裡的值不可以偷偷存起來。
-  s.SetEnumInt(keys::kCandCount, 6, kCandCountValues, kCandCountCount);
-  CHECK(!s.Has(keys::kCandCount));
+  s.SetEnumInt(k, 111, kCandScaleValues, kCandScaleCount);
+  CHECK(!s.Has(k));
 }
 
 TEST(Settings_corrupt_value_reads_as_unset_not_as_garbage) {
-  Settings s = Settings::Parse("cand.count = 這不是數字\ntext.variant = 亂寫\n");
-  CHECK_INT(s.GetEnumInt(keys::kCandCount, kCandCountValues, kCandCountCount), 0);
-  CHECK(s.SchemaPref().forced_variant == Variant::kFollow);
+  Settings s = Settings::Parse(
+      "appearance.candidateScale = 這不是數字\ntext.variant = 亂寫\n");
+  CHECK_INT(s.GetEnumInt(keys::kAppearanceCandidateScale, kCandScaleValues,
+                         kCandScaleCount), 0);
+  CHECK(s.SchemaPref().variant == VariantPref::kFollowInputMode);
   // 越界的數字同理。
-  Settings t = Settings::Parse("cand.count = 999\n");
-  CHECK_INT(t.GetEnumInt(keys::kCandCount, kCandCountValues, kCandCountCount), 0);
+  Settings t = Settings::Parse("appearance.candidateScale = 999\n");
+  CHECK_INT(t.GetEnumInt(keys::kAppearanceCandidateScale, kCandScaleValues,
+                         kCandScaleCount), 0);
 }
 
 TEST(Settings_one_broken_line_does_not_kill_the_file) {
   Settings s = Settings::Parse(
       "# 註解\n"
       "沒有等號的一行\n"
-      "cand.count = 5\n"
-      "  text.variant   =   zh_hans  \n"
+      "appearance.candidateScale = 120\n"
+      "  text.variant   =   simplified  \n"
       "\n"
       "壞 鍵 名 = x\n");
-  CHECK_INT(s.GetEnumInt(keys::kCandCount, kCandCountValues, kCandCountCount), 5);
-  CHECK(s.SchemaPref().forced_variant == Variant::kHans);
+  CHECK_INT(s.GetEnumInt(keys::kAppearanceCandidateScale, kCandScaleValues,
+                         kCandScaleCount), 120);
+  CHECK(s.SchemaPref().variant == VariantPref::kSimplified);
   CHECK(!s.Has("壞 鍵 名"));
 }
 
@@ -66,21 +106,22 @@ TEST(Settings_unknown_keys_survive_a_roundtrip) {
   // 使用者可能同時裝著兩個版本。舊版寫回設定檔時不可以把新版的鍵吃掉 ——
   // 症狀是「升級之後設定莫名其妙回到預設」,而且只在兩個版本交替執行時發生。
   const std::string in =
-      "cand.count = 5\n"
+      "appearance.candidateScale = 120\n"
       "future.thing = 42\n"
-      "schema.last.0804 = luna_pinyin\n";
+      "dictionary.somethingNew = on\n";
   Settings s = Settings::Parse(in);
   const std::string out = s.Serialize();
   Settings again = Settings::Parse(out);
   CHECK_STR(again.Raw("future.thing"), "42");
-  CHECK_STR(again.Raw("schema.last.0804"), "luna_pinyin");
-  CHECK_INT(again.GetEnumInt(keys::kCandCount, kCandCountValues, kCandCountCount), 5);
+  CHECK_STR(again.Raw("dictionary.somethingNew"), "on");
+  CHECK_INT(again.GetEnumInt(keys::kAppearanceCandidateScale, kCandScaleValues,
+                             kCandScaleCount), 120);
   CHECK_INT(again.size(), 3);
 }
 
 TEST(Settings_serialize_is_stable) {
   // 每次寫出來都一樣,不然設定檔會在版本控制或備份裡無謂地變動。
-  Settings s = Settings::Parse("b.z = 1\na.y = 2\ncand.count = 9\n");
+  Settings s = Settings::Parse("b.z = 1\na.y = 2\ntext.variant = simplified\n");
   CHECK_STR(s.Serialize(), s.Serialize());
   CHECK_STR(Settings::Parse(s.Serialize()).Serialize(), s.Serialize());
 }
@@ -88,29 +129,29 @@ TEST(Settings_serialize_is_stable) {
 TEST(Settings_value_cannot_forge_an_extra_line) {
   // 值有一部分來自下載回來的市集索引,那是不可信輸入。
   Settings s;
-  s.SetRaw(keys::kNetIndexUrl, "https://a/\nnet.enabled = true");
-  CHECK(s.GetTri(keys::kNetEnabled) == Tri::kUnset);
+  s.SetRaw(keys::kStoreIndexUrl, "https://a/\nnetwork.enabled = true");
+  CHECK(s.GetTri(keys::kNetworkEnabled) == Tri::kUnset);
   const std::string text = s.Serialize();
-  CHECK(Settings::Parse(text).GetTri(keys::kNetEnabled) == Tri::kUnset);
+  CHECK(Settings::Parse(text).GetTri(keys::kNetworkEnabled) == Tri::kUnset);
 }
 
 TEST(Settings_network_switch_defaults_to_off) {
   // ⚠ 這一條是離線定位的地基。未設 == 關,而且只有一個地方知道答案。
   Settings s;
   CHECK(!s.NetworkEnabled());
-  CHECK(s.GetTri(keys::kNetEnabled) == Tri::kUnset);
-  s.SetTri(keys::kNetEnabled, Tri::kFalse);
+  CHECK(s.GetTri(keys::kNetworkEnabled) == Tri::kUnset);
+  s.SetTri(keys::kNetworkEnabled, Tri::kFalse);
   CHECK(!s.NetworkEnabled());
-  s.SetTri(keys::kNetEnabled, Tri::kTrue);
+  s.SetTri(keys::kNetworkEnabled, Tri::kTrue);
   CHECK(s.NetworkEnabled());
   // 「關」與「沒設過」在行為上一樣,但仍然分得出來 ——
   // 分不出來的話,哪天要問「有多少人主動關掉」就問不出來了。
-  s.SetTri(keys::kNetEnabled, Tri::kUnset);
-  CHECK(!s.Has(keys::kNetEnabled));
+  s.SetTri(keys::kNetworkEnabled, Tri::kUnset);
+  CHECK(!s.Has(keys::kNetworkEnabled));
   // 認不得的字面值也一律當成沒設過(= 關)。
-  CHECK(!Settings::Parse("net.enabled = yes\n").NetworkEnabled());
-  CHECK(!Settings::Parse("net.enabled = 1\n").NetworkEnabled());
-  CHECK(Settings::Parse("net.enabled = true\n").NetworkEnabled());
+  CHECK(!Settings::Parse("network.enabled = yes\n").NetworkEnabled());
+  CHECK(!Settings::Parse("network.enabled = 1\n").NetworkEnabled());
+  CHECK(Settings::Parse("network.enabled = true\n").NetworkEnabled());
 }
 
 TEST(Settings_dropdown_index_maps_both_ways) {
@@ -127,45 +168,9 @@ TEST(Settings_dropdown_index_maps_both_ways) {
   CHECK_INT(CandCountAtIndex(-1), 0);
   CHECK_INT(CandCountAtIndex(999), 0);
   CHECK_INT(IndexOfCandCount(4), 0);  // 不是清單上的值
-  // 候選數對應的是 librime 的 menu/page_size,所以每一格都必須是
-  // librime 收得下的正整數。負數或 0 送進去的話部署不會失敗,
-  // 但候選窗會變成空的 —— 又一個「看起來正常」的失效。
+  // 候選數是 A 層,對應 librime 的一頁候選數,所以每一格都必須是
+  // 它收得下的正整數。負數或 0 送進去的話部署不會失敗,
+  // 但選字視窗會變成空的 —— 又一個「看起來正常」的失效。
   for (int i = 1; i < kCandCountCount; ++i) CHECK(CandCountAtIndex(i) > 0);
 }
 
-TEST(Settings_last_used_is_per_language) {
-  Settings s;
-  s.RememberLastUsed(0x0404, "bopomofo_tw");
-  s.RememberLastUsed(0x0804, "luna_pinyin");
-  CHECK_STR(s.Raw("schema.last.0404"), "bopomofo_tw");
-  CHECK_STR(s.Raw("schema.last.0804"), "luna_pinyin");
-  const SchemaPreference p = Settings::Parse(s.Serialize()).SchemaPref();
-  bool tw = false, cn = false;
-  for (const auto& kv : p.last_used) {
-    if (kv.first == 0x0404 && kv.second == "bopomofo_tw") tw = true;
-    if (kv.first == 0x0804 && kv.second == "luna_pinyin") cn = true;
-  }
-  CHECK(tw);
-  CHECK(cn);
-  CHECK_INT(p.last_used.size(), 2);
-  // 空的 schema id 不記 —— 記了會在下次啟動時把使用者的方案清成「無」。
-  s.RememberLastUsed(0x0C04, "");
-  CHECK(!s.Has("schema.last.0C04"));
-}
-
-TEST(Settings_schema_order_roundtrip_and_comma_defence) {
-  Settings s;
-  s.SetSchemaOrder({"a", "b", "c"});
-  const std::vector<std::string> got = s.SchemaOrder();
-  CHECK_INT(got.size(), 3);
-  CHECK_STR(got[0], "a");
-  CHECK_STR(got[2], "c");
-  // 逗號是分隔符。含逗號的 id(來自市集索引 = 不可信)會把一項變兩項。
-  s.SetSchemaOrder({"a", "b,c", "d"});
-  const std::vector<std::string> got2 = s.SchemaOrder();
-  CHECK_INT(got2.size(), 2);
-  CHECK_STR(got2[0], "a");
-  CHECK_STR(got2[1], "d");
-  s.SetSchemaOrder({});
-  CHECK(!s.Has(keys::kSchemaOrder));
-}

@@ -1,42 +1,42 @@
-// windows/common/schema_choice.h — 「使用者從哪一個語言進來 → 該用哪個方案、哪種字形」
+// windows/common/schema_choice.h — 輸入模式 ↔ 方案 ↔ 簡繁
 //
-// ── 為什麼需要這一份 ──────────────────────────────────────────────
+// ⚠ **這一份實作的是 `docs/settings-model.md` §4,不是自己一套。**
+//   那份規範由 macOS 端寫,Windows 端照做。鍵名、優先順序、字集判定
+//   全部照它;實作上的差異(見下面「與 §4.5 的一處差異」)已回報到
+//   `docs/coordination.md` §5,等它裁決。
+//
+// ── 這裡在解什麼問題 ────────────────────────────────────────────
 //
 // Windows 的輸入法設定檔是**每個語言各註冊一份**的(見 tsf/guids.h):
 // 0x0404 zh-Hant-TW、0x0804 zh-Hans-CN、0x0C04 zh-Hant-HK。使用者在
 // 語言列上選的是其中一份,而**服務進程原本不知道是哪一份** —— 於是
-// 預設方案永遠是 schema_list 的第一項 `luna_pinyin_tw`,
-// **簡體使用者選了簡體那一份、打出來全是繁體字。**
-// 那是使用者實際回報過的缺陷,不是理論問題。
+// 預設方案永遠是 schema_list 的第一項,**簡體使用者選了簡體那一份、
+// 打出來全是繁體字。** 那是使用者實際回報過的缺陷。
 //
-// ── ⚠ 簡繁不是一個 bool,是一組互斥的 radio 開關 ──────────────────
+// `settings-model.md` §4 開頭記著四端各錯了一次:macOS 註冊了兩個輸入模式
+// 但兩個都載入繁體方案;Windows 只註冊了一個 langid,連選都沒得選。
+// 共同點是「畫面完全正常、自動化全過,錯的只有打出來是哪一種字」。
 //
-// 本專案打包的 luna_pinyin 家族**沒有 `simplification` 這個開關**。
-// 它用的是 luna_pinyin.schema.yaml 裡這一組:
+// ── ⚠ 與 §4.5 的一處差異(已回報,等裁決)────────────────────────
+//
+// §4.5 說「設 `simplification`」。**光設它在本專案打包的方案上沒有作用。**
+// luna_pinyin 家族沒有那個開關,它用的是一組互斥的 radio:
 //
 //     - options: [ zh_hant, zh_hans, zh_hant_hk, zh_hant_tw ]
 //       states:  [ 傳統漢字, 简化字,  香港字形,   臺灣字形 ]
 //
-// 而 `luna_pinyin_tw` / `bopomofo_tw` 只是同一份方案加上
-// `switches/@2/reset: 3`(預設落在 zh_hant_tw)。
+// Android 端在模擬器上實測過:只送 `simplification`,打 guojia 出來還是
+// 「國家」。而 `rs_set_option` **不會**替你維持 radio 的互斥 —— 那是
+// librime 的 switcher 在使用者從選單裡選的時候才做的。
 //
-// Android 端在模擬器上實測過:**只送 `simplification` 完全沒有作用** ——
-// 打 guojia 出來還是「國家」。所以兩件事都要做:
-//
-//   1. 送 `simplification`(給真的有這個開關的第三方方案,例如五筆·簡入繁出);
-//   2. 在那組 radio 裡選中對的那一個,**並把同組的其他三個關掉**。
-//
-// 第 2 點的「關掉其他三個」不是防禦性程式碼:`rs_set_option` 只是把某個
-// option 設成 true,radio group 的互斥是 librime 的 switcher **在使用者
-// 從選單裡選**的時候才做的。我們繞過選單直接設,就得自己維持互斥 ——
-// 否則 zh_hans 與 zh_hant_tw 同時為真,兩個 simplifier 會串起來
-// (t2s 之後再 t2tw),輸出變成沒有人要的東西。
+// 所以本檔的**決策**照 §4.5(要不要簡體、還是完全不碰),**套用的機制**
+// 照 Android 驗證過的做法(simplification + 整組 radio,同組其他的設 false)。
+// 這不是另一套模型,是同一個模型的正確接法。§4.5 的措辭要不要補,
+// 由規範的擁有者決定。
 //
 // ── 本檔刻意不 include windows.h ─────────────────────────────────
 //
-// langid 只是一個 uint16。整條「語言 → 方案」的判斷因此是純邏輯,
-// 在 Ubuntu 上就跑得完測試(windows/run_logic_tests.sh)。
-// TSF 那一層 CI 驗不了,但這一層驗得了 —— 而這一層正是缺陷所在。
+// langid 只是一個 uint16。整條判斷因此是純邏輯,在 Ubuntu 上就跑得完測試。
 //
 #ifndef RIMEWIN_SCHEMA_CHOICE_H_
 #define RIMEWIN_SCHEMA_CHOICE_H_
@@ -47,121 +47,94 @@
 
 namespace rimewin {
 
-// ── 字形變體 ────────────────────────────────────────────────────
+// §4.2 / §4.3 的字集。⚠ 認不出來一律 kUnspecified,**不要預設繁體** ——
+// 猜錯的代價是使用者打出他不要的字,而且完全不知道為什麼。
+enum class CharSet { kUnspecified = 0, kHant, kHans };
+
+// §4.2:Windows 的來源是 TSF language profile 的 langid。
+// 0 (不知道) 與非中文一律 kUnspecified。
+CharSet CharSetOfLangId(uint32_t langid);
+
+// §4.3 第 2 層:方案 id 的命名慣例。
+//   `*_tw` `*_hk` `*_trad` `bopomofo*` → hant
+//   `*_cn` `*_sc` `*_simp`             → hans
+//   其餘                                → unspecified
 //
-// 值刻意與 librime 的 option 名稱一一對應,而不是自己發明一套代號:
-// 這張表要跟 luna_pinyin.schema.yaml 對得上,多一層翻譯就多一個漂移點。
-enum class Variant {
-  kFollow = 0,  // 不表示意見(沿用方案自己的 reset 值)
-  kHant,        // zh_hant      傳統漢字
-  kHans,        // zh_hans      简化字
-  kHantHK,      // zh_hant_hk   香港字形
-  kHantTW,      // zh_hant_tw   臺灣字形
+// ⚠ **不要加「含 pinyin 就是簡體」這種規則**(規範明著寫的):
+//   `luna_pinyin` 的預設輸出是**繁體**,猜錯會讓 simplification 被設成
+//   相反的值,比不猜更糟。
+//
+// ⚠ 第 1 層(市集索引的 BCP 47 標籤)Windows 端還沒有 —— 方案市集這一輪
+//   沒做,所以沒有已安裝紀錄可以查。有了之後那一層優先於本函式。
+CharSet CharSetOfSchemaId(const std::string& schema_id);
+
+// `text.variant` 的三態(§3「文字」)。
+enum class VariantPref { kFollowInputMode = 0, kTraditional, kSimplified };
+
+const char* VariantPrefToken(VariantPref v);  // 設定檔字面值
+VariantPref VariantPrefFromToken(const std::string& s);
+
+// §3「輸入方案」的 B 層設定。鍵名見 settings.h。
+struct SchemaPreference {
+  bool follow_input_mode = true;   // schemas.followInputMode,預設 true
+  std::string pinned_global;       // schemas.pinnedGlobal
+  std::string pinned_hant;         // schemas.pinnedHant
+  std::string pinned_hans;         // schemas.pinnedHans
+  VariantPref variant = VariantPref::kFollowInputMode;  // text.variant
 };
-
-// radio group 的四個成員,順序固定。互斥要靠自己維持,所以呼叫端
-// 需要一份完整清單去關掉沒選中的那些。
-extern const char* const kVariantOptions[4];
-constexpr int kVariantOptionCount = 4;
-
-// kFollow 回傳 nullptr;其餘回傳 librime 的 option 名稱。
-const char* VariantOptionName(Variant v);
-
-// 由 option 名稱反查。認不得回傳 kFollow。
-Variant VariantFromOptionName(const std::string& name);
-
-// 設定檔裡的字面值(見 settings.cc)。kFollow → ""。
-const char* VariantToken(Variant v);
-Variant VariantFromToken(const std::string& token);
-
-// ── 要送給引擎的那一串 set_option ────────────────────────────────
-
-struct OptionAssign {
-  const char* option;
-  bool value;
-};
-
-// 把「我要這個變體」翻譯成一串 rs_set_option 呼叫。
-//
-// saved_variant:使用者切到簡體之前停在哪一個變體。切回繁體時要還原它,
-//   而**不是**硬設 zh_hant —— 本來停在「臺灣字形」的人繞一圈回來
-//   會安靜地落到「傳統漢字」,而那兩者的差別小到他不會馬上發現,
-//   只會覺得「有幾個字變了」。(Android 端踩過並修掉的同一個坑。)
-//
-// want == kFollow 時回傳**空的**清單:一個 set_option 都不送。
-//   「沒有意見」與「選繁體」不是同一件事 —— 新裝的機器上把每個人
-//   強制設成傳統漢字,等於替使用者做了他沒有做過的決定。
-std::vector<OptionAssign> PlanVariant(Variant want, Variant saved_variant);
-
-// ── 語言設定檔 → 預設方案 ───────────────────────────────────────
 
 struct SchemaChoice {
-  // 空字串 = 沒有意見,交給 schema_list 的第一項。
+  // 空 = 不換方案(沿用 librime 現在選的)。
   std::string schema_id;
-  Variant variant = Variant::kFollow;
-  // 這個決定是怎麼來的。只給日誌與 --print-choice 用,不參與判斷。
-  const char* source = "";
+  // 要不要碰 simplification 這一組。false = **完全不呼叫 rs_set_option**。
+  // ⚠ 「不碰」與「設成 false」不是同一件事(§3 的 followSchema 那一條):
+  //    很多方案根本沒有那個開關,而有些方案的預設是 true。
+  bool set_variant = false;
+  bool simplified = false;   // set_variant 為 true 時才有意義
+  const char* source = "";   // 只給日誌與 --print-choice,不參與判斷
 };
 
-// 使用者在設定介面裡的覆寫。
-struct SchemaPreference {
-  // 「所有語言都用這個方案」。空 = 跟隨語言設定檔(預設)。
-  std::string forced_schema;
-  // 「所有語言都用這種字形」。kFollow = 跟隨語言設定檔(預設)。
-  Variant forced_variant = Variant::kFollow;
-  // 上一次在這個 langid 底下實際用的方案(使用者按 Ctrl+` 換過的)。
-  // 空 = 沒有記錄。key 是 langid。
-  std::vector<std::pair<uint32_t, std::string>> last_used;
-};
+// §4.4 的四層,由高到低:
+//
+//   1. 使用者為「這個輸入模式」釘的方案(pinnedHant / pinnedHans)
+//   2. 使用者釘的單一方案(pinnedGlobal)
+//   3. 已啟用清單中第一個字集相符的方案
+//   4. 已啟用清單的第一個
+//
+// · 1 與 2 都是**使用者說的話**,即使字集不符也照做 —— 這時靠簡繁開關
+//   把字集補齊,**不要偷偷換掉他選的方案**。
+// · 釘的方案已經不在清單上 → 當作沒釘,往下走。不要選一個清單上沒有的東西。
+// · 清單是空的 → 什麼都不做(呼叫端要在畫面上說「還沒有任何方案」)。
+// · follow_input_mode 關掉時:方案只看 pinnedGlobal,而且**連簡繁都不碰**
+//   (§4.5 最後一條:半套比不做更難理解)。
+// 只做 §4.5 的那一格:要不要碰簡繁、以及要不要簡體。
+// 抽出來是因為兩個地方要用同一份:建 session 的時候(ChooseSchema),
+// 以及使用者在設定裡改了之後對**現有的**每一個 session 重套一次。
+// 兩份會漂移,而漂移的症狀是「改設定當下沒變、換個程式就變了」。
+bool DecideVariant(uint32_t langid, const SchemaPreference& pref,
+                   bool* simplified);
 
-// ⚠ 優先順序(這一段是規範,改了要同步改 windows/README.md 與
-//    docs/coordination.md §5 的回報):
-//
-//   方案:
-//     1. 設定介面的「所有語言都用這個方案」(forced_schema)
-//     2. 這個 langid 上一次實際用的方案(last_used[langid])
-//        —— 使用者按 Ctrl+` 換過就記下來,換到別的 app 不該被打回去
-//     3. langid 推導的預設(下表)
-//     4. 都不適用 → 空字串,交給 schema_list 第一項
-//
-//   字形:
-//     1. 設定介面的「所有語言都用這種字形」(forced_variant)
-//     2. langid 推導的預設(下表)
-//     3. 都不適用 → kFollow,不送任何 set_option
-//
-//   ⚠ 第 1 項一旦設了就**對每一個語言都成立**。理由:使用者會在設定裡
-//     選那一項,正是因為他不要我們替他猜。
-//
-// langid 推導表(只認中文;primary language 不是 0x04 一律沒有意見):
-//
-//   | LANGID | 語言        | 方案(依序取第一個裝得到的)      | 字形       |
-//   |--------|-------------|----------------------------------|------------|
-//   | 0x0404 | zh-Hant-TW  | luna_pinyin_tw → luna_pinyin     | zh_hant_tw |
-//   | 0x0804 | zh-Hans-CN  | luna_pinyin → luna_pinyin_tw     | zh_hans    |
-//   | 0x0C04 | zh-Hant-HK  | luna_pinyin → luna_pinyin_tw     | zh_hant_hk |
-//   | 0x1004 | zh-Hans-SG  | luna_pinyin → luna_pinyin_tw     | zh_hans    |
-//   | 0x1404 | zh-Hant-MO  | luna_pinyin → luna_pinyin_tw     | zh_hant_hk |
-//
-// SG 與 MO 目前**沒有註冊**(見 tsf/guids.h),表裡仍然列出來:哪天加了
-// profile,這一格已經是對的,而不是安靜地落到「沒有意見」。
-//
-// ⚠ 候選清單刻意**不含** bopomofo_tw 與 t9_pinyin。前者是注音(鍵位完全
-//   不同,拿它當拼音使用者的預設等於鍵盤壞了),後者是行動端的九宮格。
-//   兩者都是使用者可以自己選的,但不可以是我們替他選的。
-//
-// available:目前 rs_schema_list() 列得出來的方案 id。空的話視為「還沒
-//   部署完,不知道有什麼」,此時仍然回傳表上的第一順位 —— 選不到 librime
-//   會拒絕,而拒絕是可見的;安靜地不選才是查不出來的那一種。
 SchemaChoice ChooseSchema(uint32_t langid,
                           const std::vector<std::string>& available,
                           const SchemaPreference& pref);
 
-// 只做「langid → 預設」那一格,不套使用者覆寫。給測試與診斷用。
-SchemaChoice DefaultForLangId(uint32_t langid,
-                              const std::vector<std::string>& available);
+// ── 把決策翻成一串 rs_set_option ────────────────────────────────
+//
+// 見檔頭「與 §4.5 的一處差異」。simplified 之外還要維持 radio 的互斥,
+// 否則 zh_hans 與 zh_hant_tw 同時為真,t2s 之後會再串一次 t2tw。
+//
+// hint 是「要繁體的時候,選哪一種繁體」:0x0C04 的使用者該拿到香港字形。
+// 它只在 simplified == false 時有作用,而且**不是一個設定項** ——
+// 使用者選的是「繁體」,是哪一種繁體由他的語言設定檔決定。
+struct OptionAssign {
+  const char* option;
+  bool value;
+};
+std::vector<OptionAssign> PlanVariant(bool simplified, uint32_t langid_hint);
 
-// langid 是不是我們認得的中文語言。
-bool IsChineseLangId(uint32_t langid);
+// radio group 的四個成員(luna_pinyin.schema.yaml 的 `options:`)。
+extern const char* const kVariantOptions[4];
+constexpr int kVariantOptionCount = 4;
 
 // 給日誌用的短名,例如 0x0804 → "zh-Hans-CN"。認不得回傳 "?"。
 const char* LangIdName(uint32_t langid);

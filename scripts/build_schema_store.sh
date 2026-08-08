@@ -26,6 +26,7 @@
 #   pack     攤平成 zip（規範 §2）→ build/schema-store/*.zip
 #   verify   在模擬器上逐一部署（品質閘門）→ _work/verify/<id>.json
 #   index    產生 index.json，未通過驗證者一律排除
+#   test     撞號偵測與語言標記的測試（拿真實的 34 個套件跑）
 #   upload   上傳 R2 並用 curl 驗證對外網址真的取得到
 #
 # 實作說明：各階段的 Python 放在 scripts/schema_store/ 底下。這裡不用單一巨型
@@ -140,7 +141,30 @@ if run_phase index; then
   # 隨 APK 出貨的語言對照表。索引是下載來的、可能比 app 舊，而內建的四個方案
   # 根本不在索引的 packages 裡 —— 鍵盤類型選單在還沒下載過索引時也要分得了組。
   step "6b. 產生 core/schema-languages.json（隨 APK 出貨的語言對照）"
-  python3 "$LIB/languages.py" "$WORK" --asset "$ROOT/core/schema-languages.json"
+  # --max-unknown 0：語言標記判不出來的方案一個都不許有。目前確實是 0；
+  # 哪天上游加了新東西讓它變成 1，這裡就會擋下來，而不是讓一個 und 悄悄
+  # 混進選單的「其他」分組裡（使用者會以為清單裡沒有他要的東西）。
+  python3 "$LIB/languages.py" "$WORK" \
+      --asset "$ROOT/core/schema-languages.json" \
+      --report "$WORK/languages-report.json" \
+      --max-unknown 0
+
+  step "6c. 重新產生測試語料（data/corpus.json）"
+  # 語料是「真實的 34 個套件」脫水之後的版本，測試靠它才跑得動。
+  # 每次產索引都重抽一次，它就不會腐爛成「以前某個人跑過一次」。
+  python3 "$LIB/snapshot.py" "$WORK"
+fi
+
+# ──────────────────────────────────────────────────────────────── test ────
+if run_phase test; then
+  step "6d. 撞號與語言標記測試（真實語料 + 反向測試）"
+  # --require-live：現場資料在的時候，「語料與現場相符」那兩條**必須真的跑**。
+  # 沒有這個旗標，它們會 skip，而 skip 在總結裡長得跟通過很像。
+  if [ -f "$WORK/packages.json" ]; then
+    RIME_STORE_WORK="$WORK" python3 "$LIB/test_store.py" --require-live
+  else
+    python3 "$LIB/test_store.py"
+  fi
 fi
 
 # ────────────────────────────────────────────────────────────── upload ────
@@ -154,6 +178,14 @@ if [ "$UPLOAD" -eq 1 ] || [ "$PHASE" = upload ]; then
     echo "  → $n"
     rclone copyto "$f" "$R2_REMOTE/$n" --s3-no-check-bucket
   done
+  # languages.json 是語言標記的逐條依據（誰標的、依據什麼）。先傳它再傳索引：
+  # 索引裡的 language_source 只有一個字，要複查得靠這一份。
+  # ⚠ 寫成 if 而不是 `[ -f x ] && cmd`：後者在檔案不存在時整條回傳 1，
+  #    配上 set -e 會讓腳本在這裡無聲結束。
+  if [ -f "$DIST/languages.json" ]; then
+    echo "  → languages.json"
+    rclone copyto "$DIST/languages.json" "$R2_REMOTE/languages.json" --s3-no-check-bucket
+  fi
   rclone copyto "$DIST/index.json" "$R2_REMOTE/index.json" --s3-no-check-bucket
 
   step "8. 用 curl 驗證對外網址（不信 rclone 說成功）"
@@ -175,6 +207,9 @@ if [ "$UPLOAD" -eq 1 ] || [ "$PHASE" = upload ]; then
   }
   # BASE_URL 結尾已經有斜線，這裡不能再加一個（多一個 "/" R2 會回 404）
   check "${BASE_URL}index.json" "$(stat -c%s "$DIST/index.json")"
+  if [ -f "$DIST/languages.json" ]; then
+    check "${BASE_URL}languages.json" "$(stat -c%s "$DIST/languages.json")"
+  fi
   python3 - "$DIST/index.json" <<'PY' | while read -r f n; do
 import json, sys
 d = json.load(open(sys.argv[1]))

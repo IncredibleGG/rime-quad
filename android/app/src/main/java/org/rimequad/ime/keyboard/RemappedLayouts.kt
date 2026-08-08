@@ -2,9 +2,9 @@ package org.rimequad.ime.keyboard
 
 import android.util.Log
 import org.rimequad.ime.theme.Diagnostic
+import org.rimequad.ime.theme.DiagnosticCode
 import org.rimequad.ime.theme.KeyboardLayout
 import org.rimequad.ime.theme.LoadResult
-import org.rimequad.ime.theme.Severity
 import org.rimequad.ime.theme.Theme
 
 /**
@@ -47,11 +47,19 @@ class RemappingLayoutRepository(
         val outcome = applyKeyRemap(value, remap)
         if (outcome.layout != null) return LoadResult(outcome.layout, loaded.diagnostics)
 
-        val extra = outcome.problems.map {
+        // ⚠ 嚴重度**不再**由 strict 決定。規範 §6.5 規定 severity 是 code 上的
+        // 函式：同一件事在驗證路徑記成 ERROR、在正式路徑記成 WARNING，正是
+        // 「四端報一樣多則」失守的那個形狀，只是這裡失守在同一端的兩條路徑上。
+        // strict 要表達的是「這份佈局算不算載得起來」，那是 value 的事
+        // （下一行的 `if (strict) null else value`），不是診斷等級的事。
+        //
+        // path 帶序號：多個自訂各是一則診斷，共用一個 path 會讓它們的
+        // (severity, code, path) 撞在一起。
+        val extra = outcome.problems.mapIndexed { i, problem ->
             Diagnostic(
-                if (strict) Severity.ERROR else Severity.WARNING,
-                "user_key_remap",
-                it,
+                DiagnosticCode.USER_REMAP_UNAPPLICABLE,
+                listOf(problem),
+                "user_key_remap[$i]",
             )
         }
         return LoadResult(if (strict) null else value, loaded.diagnostics + extra)

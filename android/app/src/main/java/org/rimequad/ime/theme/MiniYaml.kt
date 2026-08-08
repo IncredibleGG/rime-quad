@@ -38,7 +38,11 @@ class YamlSyntaxException(
     val detail: String
 ) : RuntimeException("$source:$line: $detail")
 
-data class YamlWarning(val line: Int, val message: String)
+/**
+ * 讀取層產生的診斷。**帶的是 code + args，不是句子** —— 這一層看不到 YAML
+ * 路徑（它正在建那棵樹），所以 path 由 [DocumentLoader] 補成根層級。
+ */
+data class YamlWarning(val line: Int, val code: DiagnosticCode, val args: List<String>)
 
 class YamlDocument(val root: YamlNode, val warnings: List<YamlWarning>)
 
@@ -257,7 +261,7 @@ class MiniYaml private constructor(private val source: String, text: String) {
             parseScalarOrFlow(rest, l.no)
         }
         if (entries.containsKey(key)) {
-            warnings.add(YamlWarning(l.no, "duplicate key '$key'; the last occurrence wins"))
+            warnings.add(YamlWarning(l.no, DiagnosticCode.DUPLICATE_KEY, listOf(key)))
         }
         entries[key] = value
     }

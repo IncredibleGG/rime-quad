@@ -134,34 +134,57 @@ PatchResult WriteSchemaList(const std::string& yaml,
   std::vector<std::string> result;
   if (list_at != std::string::npos) {
     const size_t base = lines[list_at].indent;
-    // 項目的縮排:沿用原本第一個項目的,沒有項目就 base + 2。
-    size_t item_indent = base + 2;
+    // 規範 §2:新增項目的縮排統一為**四個空白**(兩端輪流寫時 diff
+    // 才不會整片變動)。已經有項目的話沿用它的,免得我們自己製造 diff。
+    size_t item_indent = base + 2 < 4 ? 4 : base + 2;
+    bool saw_item = false;
+    // 舊項目的**行尾註解**。規範 §2 要求保留:那個檔案是使用者資料,
+    // 而我們自己產生的那一份每一行後面都有「拼音(臺灣字形)」之類的說明。
+    // 使用者按一次「上移」就把它們清光,是很難解釋的行為。
+    std::vector<std::pair<std::string, std::string>> tails;
     size_t end = list_at + 1;
     for (size_t j = list_at + 1; j < lines.size(); ++j) {
       if (lines[j].blank || lines[j].comment) {
-        // 中間的空行與註解跟著這一段一起被換掉 —— 它們講的是舊的順序。
         end = j + 1;
         continue;
       }
       if (lines[j].indent <= base) break;
-      if (!SchemaIdOf(lines[j].text).empty()) item_indent = lines[j].indent;
+      const std::string id = SchemaIdOf(lines[j].text);
+      if (!id.empty()) {
+        if (!saw_item) {
+          item_indent = lines[j].indent;
+          saw_item = true;
+        }
+        const size_t hash = lines[j].text.find('#');
+        if (hash != std::string::npos)
+          tails.emplace_back(id, lines[j].text.substr(hash));
+      }
       end = j + 1;
     }
-    // end 可能把尾巴的空行也吃進去了,退回到最後一個真的屬於這一段的行。
     while (end > list_at + 1 &&
            (lines[end - 1].blank ||
             (lines[end - 1].comment && lines[end - 1].indent <= base)))
       --end;
 
     for (size_t i = 0; i < list_at + 1; ++i) result.push_back(lines[i].text);
-    for (const std::string& id : order)
-      result.push_back(std::string(item_indent, ' ') + "- schema: " + id);
+    for (const std::string& id : order) {
+      std::string line = std::string(item_indent, ' ') + "- schema: " + id;
+      for (const auto& kv : tails) {
+        if (kv.first != id) continue;
+        // 對齊到原本的欄位,對不上就補一個空白。純美觀,但那個檔案
+        // 是給人看的。
+        while (line.size() < item_indent + 30) line += ' ';
+        line += kv.second;
+        break;
+      }
+      result.push_back(line);
+    }
     for (size_t i = end; i < lines.size(); ++i) result.push_back(lines[i].text);
   } else if (patch_at != std::string::npos) {
     for (size_t i = 0; i < patch_at + 1; ++i) result.push_back(lines[i].text);
     result.push_back("  schema_list:");
     for (const std::string& id : order)
-      result.push_back("    - schema: " + id);
+      result.push_back("    - schema: " + id);  // 規範 §2:四個空白
     for (size_t i = patch_at + 1; i < lines.size(); ++i)
       result.push_back(lines[i].text);
   } else {

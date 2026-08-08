@@ -212,6 +212,7 @@ void Engine::EndSession(uint64_t id) {
     if (it == sessions_.end()) return;
     rs_session_destroy(it->second);
     sessions_.erase(it);
+    session_lang_.erase(id);
   });
 }
 
@@ -351,6 +352,25 @@ bool Engine::SetOption(uint64_t id, const char* option, bool value) {
 void Engine::SetOptionAll(const char* option, bool value) {
   Post([&] {
     for (const auto& kv : sessions_) rs_set_option(kv.second, option, value);
+  });
+}
+
+void Engine::SetSessionLangId(uint64_t id, uint32_t langid) {
+  Post([&] { session_lang_[id] = langid; });
+}
+
+void Engine::ApplyVariantAll(const SchemaPreference& pref) {
+  Post([&] {
+    for (const auto& kv : sessions_) {
+      auto it = session_lang_.find(kv.first);
+      const uint32_t lang = (it == session_lang_.end()) ? 0u : it->second;
+      bool simplified = false;
+      // ⚠ 與建 session 時走的是**同一支** DecideVariant。兩份會漂移,
+      //   而漂移的症狀是「改設定當下沒變、換個程式就變了」。
+      if (!DecideVariant(lang, pref, &simplified)) continue;
+      for (const OptionAssign& a : PlanVariant(simplified, lang))
+        rs_set_option(kv.second, a.option, a.value);
+    }
   });
 }
 

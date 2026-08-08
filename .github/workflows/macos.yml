@@ -1,15 +1,16 @@
-name: macOS (核心 + 輸入法)
+name: macOS (核心 + 輸入法 + 設定介面)
 
 # 這個 workflow 分兩層,對應 docs/handoff-macos.md §7:
 #
 #   (a) CI 驗得了的 —— 純邏輯單元測試、核心層打得出字、.app 編得起來、
-#       bundle 結構與 IMKit 宣告齊全、二進位真的連上 librime。
+#       bundle 結構與 IMKit 宣告齊全、二進位真的連上 librime、
+#       **.pkg 真的裝到正確的位置**、單一連網出口沒有破功。
 #   (b) 只有人做得到的 —— 在真的 Mac 上裝起來實際用。**這裡一項都驗不到。**
 #
 # ⚠ macos runner **沒有登入的圖形工作階段**,系統不會從 ~/Library/Input Methods
-#   載入輸入法。所以「候選窗有沒有出現」「在真的 app 裡打不打得出字」
-#   「按下去有沒有反應」在這裡全部驗不了。這個 workflow 全綠**不代表能用**。
-#   沒被驗到的完整清單見 apple/README.md。
+#   載入輸入法。所以「候選窗有沒有出現」「設定視窗長什麼樣」「按下去有沒有反應」
+#   在這裡全部驗不了。這個 workflow 全綠**不代表能用**。
+#   沒被驗到的完整清單見 apple/README.md §3。
 #
 # 步驟順序是刻意的:不需要 librime 的檢查排在前面。單元測試 40 秒就跑完,
 # 而從原始碼建 librime 要 4 分鐘 —— Kit 壞掉時不該讓人等那 4 分鐘。
@@ -28,7 +29,7 @@ concurrency:
 jobs:
   core-verify:
     runs-on: macos-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
 
     steps:
       - name: 取出原始碼
@@ -43,8 +44,15 @@ jobs:
           swift --version
           bash --version | head -1
 
+      # ── (a-0) 定位:一行 grep 就該看得完 ───────────────────────
+      - name: 單一連網出口的反向測試（證明它真的會紅）
+        run: ./apple/scripts/verify_single_egress.sh --expect-fail
+
+      - name: 整個 app 只有一個地方連得上網
+        run: ./apple/scripts/verify_single_egress.sh
+
       # ── (a-1) 純邏輯:不需要 librime,所以排最前面 ──────────────
-      - name: 單元測試（主題解析 / keysym 映射 / 候選窗排版 / 上屏狀態機）
+      - name: 單元測試（主題 / keysym / 排版 / 上屏 / 設定 / 市集 / 詞庫 / 輸入模式）
         run: ./apple/scripts/run_kit_tests.sh
 
       # ── (a-2) 核心層:與上一輪相同,不得回歸 ────────────────────
@@ -75,7 +83,6 @@ jobs:
             echo "!! rime_console 結束碼 $rc"
             exit 1
           fi
-          # 用 awk 以 TAB 切欄，避免在 YAML 裡塞字面 TAB
           printf '%s\n' "$OUT" \
             | awk -F'\t' '/^\[schema\] /{ sub(/^\[schema\] /, "", $1); print $1 }' \
             > /tmp/deployed_schemas.txt
@@ -93,9 +100,6 @@ jobs:
       - name: 斷言本體的反向測試（證明它真的會紅）
         run: |
           # 先證明斷言會失敗，再相信它的成功。
-          # docs/handoff-macos.md §7:「測試是綠的，因為它沒在測。」
-          # 這一步故意餵一個錯的預期值，斷言必須判定失敗；
-          # 若它通過了，代表斷言邏輯本身壞掉，後面兩步的綠沒有意義。
           ./apple/scripts/verify_console.sh --expect-fail nihao luna_pinyin_tw 這不可能是結果
 
       - name: 核心驗證 — 拼音 nihao → 你好
@@ -104,8 +108,21 @@ jobs:
       - name: 核心驗證 — 注音 su3cl3 → 你好
         run: ./apple/scripts/verify_console.sh su3cl3 bopomofo_tw 你好
 
-      # ── (a-3) 輸入法本體 ──────────────────────────────────────
-      - name: 建 RimeQuad.app（IMKServer + IMKInputController + 候選窗）
+      # ── (a-2b) 詞庫格式:證明那份 TSV 真的會影響輸出 ────────────
+      # 這一關驗的是 docs/settings-model.md §5 的格式。純邏輯測試只能證明
+      # 我們**寫出**了正確的檔案,證明不了 librime **讀得懂**它 ——
+      # 而「檔案格式其實沒生效」正是那種畫面完全正常的缺陷。
+      # ⚠ `continue-on-error` 在這裡**不是**為了讓紅的東西過關,而是因為
+      #   這一關已經給出答案了:**它是紅的,而且我們據此把那一頁下架了**
+      #   (見 SettingsCatalog.pages 的註解)。留著每次跑,是為了讓
+      #   「哪天它變綠了」被看見 —— 那一天就是把詞庫頁加回去的日子。
+      #   ⚠ 不要因為它是黃的就把它刪掉,也不要在它變綠之前把那一頁上架。
+      - name: 使用者詞庫是否生效（目前是紅的,詞庫頁因此未上架）
+        continue-on-error: true
+        run: ./apple/scripts/verify_user_dict.sh
+
+      # ── (a-3) 輸入法本體 + 設定介面 ────────────────────────────
+      - name: 建 RimeQuad.app（輸入法 + 內嵌的設定介面）
         run: ./apple/scripts/build_app.sh
 
       - name: 驗證 .app 的結構與 IMKit 宣告
@@ -113,9 +130,6 @@ jobs:
 
       - name: bundle 驗證的反向測試（證明它真的會紅）
         run: |
-          # 與核心斷言同一個紀律：先證明它會失敗。
-          # 這裡刻意破壞三件**各自獨立**的東西，因為 verify_app_bundle.sh
-          # 有二十幾條斷言，只壞一條證明不了其他條有在跑。
           set -e
           BROKEN=/tmp/Broken.app
           rm -rf "$BROKEN"
@@ -127,6 +141,13 @@ jobs:
           rm -rf "$BROKEN/Contents/Resources/themes"
           ./apple/scripts/verify_app_bundle.sh --expect-fail "$BROKEN"
           rm -rf "$BROKEN"
+
+      # ── (a-4) 安裝:這一輪新增,對應真機回報的兩個缺陷 ──────────
+      - name: 做出 .pkg 安裝檔
+        run: ./apple/scripts/build_pkg.sh
+
+      - name: 真的裝一次,並問系統認不認得這個輸入法
+        run: ./apple/scripts/verify_pkg.sh
 
       - name: 打包核心產物
         run: ./apple/scripts/package_core.sh
@@ -151,4 +172,13 @@ jobs:
         with:
           name: rime-macos-app
           path: apple/build/RimeQuad-app-*.tar.gz
+          if-no-files-found: error
+
+      # ⚠ 這是使用者實際會拿到的東西。上傳成獨立的 artifact,
+      #   免得他又要從一包 tar 裡自己找出 .app 並手動放進隱藏目錄。
+      - name: 上傳 .pkg（使用者雙擊安裝的那一份）
+        uses: actions/upload-artifact@v4
+        with:
+          name: rime-macos-installer
+          path: apple/build/dist/RimeQuad-*.pkg
           if-no-files-found: error

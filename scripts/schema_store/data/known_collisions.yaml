@@ -1,0 +1,87 @@
+# -----------------------------------------------------------------------------
+# known_collisions.yaml — 已知的 schema id 撞號與檔案撞名（**黃金清單**）
+#
+# 這份檔案的用途是「讓新的撞號被人看見」。test_store.py 會拿真實的 34 個套件
+# 重新算一次，和這裡逐項比對：
+#   · 多出沒列在這裡的 → 紅。上游新增了一個和別人同名的方案，要有人來決定。
+#   · 這裡列了但實際沒有 → 紅。上游改名了，這一列該刪。
+# 兩個方向都要紅，否則清單會安靜地腐爛成「以前有人看過一次」。
+#
+# severity
+#   content-differs  兩邊是**不同的東西**。使用者裝了兩個就會拿到其中一個，
+#                    而且看不出拿到哪一個。這是真正的缺陷。
+#   same-upstream    同一份上游檔案的兩個來源（例如內建方案與提供它的套件）。
+#                    互相覆蓋不改變內容，但「已安裝」判斷仍然需要 uid 才分得清
+#                    是誰提供的。
+#
+# ⚠ languages.yaml 的 `schemas:` 若用**裸的** schema id 當鍵，而那個 id 出現在
+#    下面的 content-differs 清單裡，test_store.py 會判紅 —— 那等於對兩個內容
+#    相反的方案下同一個語言判斷。
+# -----------------------------------------------------------------------------
+format_version: 1
+
+# ── schema id 撞號 ───────────────────────────────────────────────────────────
+schema_ids:
+  - schema: double_pinyin
+    providers: [double-pinyin, ice]
+    severity: content-differs
+    note: >-
+      字集相反。double-pinyin 的自然碼雙拼借朙月拼音的繁體詞庫（判為 zh-Hant），
+      ice（雾凇）的同名方案是簡體（zh-Hans）。這是本輪整條支線的起因。
+  - schema: double_pinyin_abc
+    providers: [double-pinyin, ice]
+    severity: content-differs
+    note: 智能 ABC 雙拼，繁／簡兩份。
+  - schema: double_pinyin_flypy
+    providers: [double-pinyin, ice]
+    severity: content-differs
+    note: 小鶴雙拼，繁／簡兩份。
+  - schema: double_pinyin_mspy
+    providers: [double-pinyin, ice]
+    severity: content-differs
+    note: 微軟雙拼，繁／簡兩份。
+  - schema: pinyin_simp
+    providers: [pinyin-simp, wubi86-jidian]
+    severity: content-differs
+    note: >-
+      兩邊都是簡體，所以語言標記剛好相同 —— 但**詞庫不同**
+      （pinyin_simp.dict.yaml 兩邊都有，內容不一樣），互相覆蓋會換掉候選字。
+      「語言標記一樣」不等於「可以互換」。
+  - schema: radical_pinyin
+    providers: [ice, radical-pinyin]
+    severity: content-differs
+    note: >-
+      部件拆字。ice 內附一份、radical-pinyin 是獨立套件，
+      schema 與 dict 兩個檔都撞名。
+  - schema: bopomofo_tw
+    providers: ["@builtin", bopomofo]
+    severity: same-upstream
+    note: 內建的注音·臺灣正體來自同一個上游 rime-bopomofo。
+  - schema: luna_pinyin
+    providers: ["@builtin", luna-pinyin]
+    severity: same-upstream
+    note: 內建的朙月拼音來自同一個上游 rime-luna-pinyin。
+  - schema: luna_pinyin_tw
+    providers: ["@builtin", luna-pinyin]
+    severity: same-upstream
+    note: 同上。
+
+# ── 檔案撞名：兩個套件解壓到 user_data_dir 的同一個路徑 ──────────────────────
+# 這一層比 schema id 撞號更廣，也更危險 —— 被蓋掉的若是共用檔
+# （punctuation.yaml、key_bindings.yaml、symbols.yaml），影響的是使用者
+# 裝的**每一個**方案，而不只是撞號的那一個。
+files:
+  - {entry: default.yaml,                 packages: [ice, moran, prelude]}
+  - {entry: key_bindings.yaml,            packages: [moran, prelude]}
+  - {entry: punctuation.yaml,             packages: [moran, prelude]}
+  - {entry: symbols.yaml,                 packages: [moran, prelude]}
+  - {entry: recipe.yaml,                  packages: [ice, moran, radical-pinyin]}
+  - {entry: "lua/search.lua",             packages: [ice, radical-pinyin]}
+  - {entry: double_pinyin.schema.yaml,       packages: [double-pinyin, ice]}
+  - {entry: double_pinyin_abc.schema.yaml,   packages: [double-pinyin, ice]}
+  - {entry: double_pinyin_flypy.schema.yaml, packages: [double-pinyin, ice]}
+  - {entry: double_pinyin_mspy.schema.yaml,  packages: [double-pinyin, ice]}
+  - {entry: pinyin_simp.schema.yaml,      packages: [pinyin-simp, wubi86-jidian]}
+  - {entry: pinyin_simp.dict.yaml,        packages: [pinyin-simp, wubi86-jidian]}
+  - {entry: radical_pinyin.schema.yaml,   packages: [ice, radical-pinyin]}
+  - {entry: radical_pinyin.dict.yaml,     packages: [ice, radical-pinyin]}

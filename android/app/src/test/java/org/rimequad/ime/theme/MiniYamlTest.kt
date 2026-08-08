@@ -175,7 +175,8 @@ class MiniYamlTest {
         val m = doc.root as YamlNode.Mapping
         assertEquals("2", scalar(m.entries["a"]))
         assertEquals(1, doc.warnings.size)
-        assertTrue(doc.warnings[0].message.contains("duplicate"))
+        assertEquals(DiagnosticCode.DUPLICATE_KEY, doc.warnings[0].code)
+        assertEquals(listOf("a"), doc.warnings[0].args)
     }
 
     @Test

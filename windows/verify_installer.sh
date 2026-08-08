@@ -363,55 +363,74 @@ case "${d_user}" in
   *) note_fail "user 是「${d_user}」,預期在 %APPDATA% 底下" ;;
 esac
 
-# ── 5b. 語言設定檔 → 方案(那個「簡體使用者打出繁體字」的缺陷)────
+# ── 5b. 輸入模式 → 方案 / 簡繁(docs/settings-model.md §4)────────
 #
 # ⚠ 這一段斷言的是**裝好的那份二進位**,不是單元測試裡的那一份。
 #   單元測試證明 ChooseSchema 這個函式是對的;這裡證明使用者真的裝到
 #   機器上的那支 rime_service.exe 也會給同一個答案 ——
 #   兩者之間隔著 CMake 的來源清單、連結器,以及「有沒有真的編進去」。
 #
+# 斷言的是**實際會送給引擎的那一組 option**,不是一個中間表示:
+# 決定簡繁的是那幾個 option,而不是我們心裡想的那個 enum。
+#
 # --print-choice 不啟動引擎、不碰管道、不需要詞庫,所以在這個 job 裡跑得動。
-log "5b. langid → 方案(簡體使用者必須拿到簡體方案)"
+log "5b. 輸入模式 → 方案 / 簡繁"
 
-choice_of() {  # $1 = langid, $2 = 欄位名
-  "${INSTALL_DIR}/rime_service.exe" --print-choice "$1" 2>&1 \
-    | tr -d '\r' | awk -F= -v k="$2" '$1==k { sub("^" k "=", ""); print; exit }'
-}
+choice_out() { "${INSTALL_DIR}/rime_service.exe" --print-choice "$1" 2>&1 | tr -d '\r'; }
+field_of() { echo "$1" | awk -F= -v k="$2" '$1==k { sub("^" k "=", ""); print; exit }'; }
 
-# ⚠ 這裡刻意用一個**乾淨的**使用者設定:--print-choice 會讀
-#   %APPDATA%\RimeQuad\rimequad.settings,而設定裡的覆寫優先於 langid。
-#   runner 上那個檔案不存在,所以讀到的就是「沒有覆寫」——
+# ⚠ --print-choice 會讀 %APPDATA%\RimeQuad\rimequad.settings,而設定裡釘的
+#   方案優先於輸入模式。runner 上那個檔案不存在,所以讀到的就是「沒釘」——
 #   但如果哪天有人在這支腳本前面寫了設定,這段斷言會安靜地變成在測別的東西。
 if [ -f "${USER_DIR}/rimequad.settings" ]; then
   note_fail "runner 上竟然已經有 rimequad.settings —— 下面的斷言測到的
-     會是那份設定的覆寫,而不是 langid 的推導。"
+     會是那份設定的覆寫,而不是輸入模式的推導。"
 fi
 
-for pair in "0x0804:luna_pinyin:zh_hans" \
-            "0x0404:luna_pinyin_tw:zh_hant_tw" \
-            "0x0C04:luna_pinyin:zh_hant_hk"; do
-  lang="${pair%%:*}"; rest="${pair#*:}"
-  want_schema="${rest%%:*}"; want_variant="${rest#*:}"
-  got_schema="$(choice_of "${lang}" schema)"
-  got_variant="$(choice_of "${lang}" variant)"
-  if [ "${got_schema}" = "${want_schema}" ] && \
-     [ "${got_variant}" = "${want_variant}" ]; then
-    ok "${lang} → ${got_schema} / ${got_variant}"
-  else
+check_choice() {  # langid 期望方案 期望簡繁 期望開啟的字形option
+  local lang="$1" want_schema="$2" want_variant="$3" want_opt="$4"
+  local out; out="$(choice_out "${lang}")"
+  local got_schema got_variant
+  got_schema="$(field_of "${out}" schema)"
+  got_variant="$(field_of "${out}" variant)"
+  if [ "${got_schema}" != "${want_schema}" ] || \
+     [ "${got_variant}" != "${want_variant}" ]; then
     note_fail "${lang} 給的是「${got_schema} / ${got_variant}」,
      預期「${want_schema} / ${want_variant}」。
      這正是使用者回報過的那個缺陷:選了簡體輸入法、打出來是繁體字。"
+    return
   fi
-done
+  if [ -n "${want_opt}" ] && \
+     ! echo "${out}" | grep -q "^option=${want_opt}=true$"; then
+    note_fail "${lang} 沒有把 ${want_opt} 設成 true。實際送出去的是:
+$(echo "${out}" | grep '^option=' | sed 's/^/       /')"
+    return
+  fi
+  # radio group 的互斥:同組**只能有一個** true。兩個都真的話
+  # t2s 之後會再串一次 t2tw,輸出變成沒有人要的東西。
+  local on
+  on="$(echo "${out}" | grep -cE '^option=zh_(hant|hans|hant_hk|hant_tw)=true$' || true)"
+  if [ "${on}" != "1" ]; then
+    note_fail "${lang} 的字形開關同時有 ${on} 個是 true(應該正好 1 個)。"
+    return
+  fi
+  ok "${lang} → ${got_schema} / ${got_variant} / ${want_opt}"
+}
 
-# 反向測試:不是中文的語言必須**沒有意見**(而不是隨便挑一個)。
-# 少了這一條,一個「永遠回傳 luna_pinyin」的實作也會讓上面三條全過。
-neg_schema="$(choice_of "0x0409" schema)"
-if [ -z "${neg_schema}" ]; then
-  ok "0x0409(en-US)沒有意見 —— 上面三條不是恆真的"
+check_choice 0x0804 luna_pinyin_tw simplified  zh_hans
+check_choice 0x0404 luna_pinyin_tw traditional zh_hant_tw
+check_choice 0x0C04 luna_pinyin_tw traditional zh_hant_hk
+
+# 反向測試:認不出來的語言必須**完全不碰**簡繁(規範 §4.2:不要預設繁體)。
+# 少了這一條,一個「永遠設成繁體」的實作也會讓上面兩條繁體的斷言通過。
+neg="$(choice_out 0x0409)"
+if [ "$(field_of "${neg}" variant)" = "(不干預)" ] && \
+   ! echo "${neg}" | grep -q '^option='; then
+  ok "0x0409(en-US)完全不碰簡繁 —— 上面幾條不是恆真的"
 else
-  note_fail "0x0409 竟然選了「${neg_schema}」。非中文的語言不該被我們
-     挑一個中文方案 —— 而且這代表上面那三條斷言是恆真的。"
+  note_fail "0x0409 竟然動了簡繁:
+$(echo "${neg}" | sed 's/^/       /')
+     規範 §4.2:認不出來的輸入模式一律不表示意見,不要預設繁體。"
 fi
 
 # ══════════════════════════════════════════════════════════════════

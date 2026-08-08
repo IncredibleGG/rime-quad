@@ -5,6 +5,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.rimequad.ime.theme.DiagnosticCode
 
 class LayoutParserTest {
     private fun assertF(expected: Float, actual: Float) =
@@ -286,14 +287,14 @@ class LayoutParserTest {
             "nolayers-missing" to "format: rime-layout/1\nid: nolayers-missing\n"
         )
         assertNull(r.value)
-        assertTrue(r.errors.any { it.message.contains("F8") })
+        assertEquals(listOf(DiagnosticCode.FATAL_LAYERS_MISSING), r.errors.map { it.code })
     }
 
     @Test
     fun emptyLayersIsFatalWithF8() {
         val r = loadInline("nolayers", "nolayers" to "format: rime-layout/1\nid: nolayers\nlayers: []\n")
         assertNull(r.value)
-        assertTrue(r.errors.any { it.message.contains("F8") })
+        assertEquals(listOf(DiagnosticCode.FATAL_LAYERS_MISSING), r.errors.map { it.code })
     }
 
     @Test
@@ -310,7 +311,7 @@ class LayoutParserTest {
         """.trimIndent()
         val r = loadInline("badlayer", "badlayer" to doc)
         assertNull(r.value)
-        assertTrue(r.errors.any { it.message.contains("F9") })
+        assertEquals(listOf(DiagnosticCode.FATAL_DEFAULT_LAYER_UNKNOWN), r.errors.map { it.code })
     }
 
     @Test

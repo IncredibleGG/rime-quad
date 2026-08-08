@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  診斷訊息的在地化樣板（docs/theme-format.md §6.5）。
+
+  ⚠ 這是**回落語系，必須是英文**。找不到使用者語系時 Android 落到這裡。
+
+  每一條的 name 是 DiagnosticCode.resourceName() 純函式推導出來的，
+  不是人手取的 —— 少一條、多一條、或名字對不上，DiagnosticStringsTest 都會紅。
+
+  位置參數（%1$s、%2$s…）的順序由規範 §6.5.1 的碼表逐碼釘死，翻譯可以調換
+  語序，但**出現的參數不能少**（少一個會在帶參數呼叫時丟
+  MissingFormatArgumentException）。
+
+  訊息裡不用直立引號，一律用 ‘ ’ —— Android 的 xml 會把 ' 當跳脫字元。
+-->
+<resources>
+
+    <!-- ── 致命（§6.2 F1–F10）────────────────────────────────────── -->
+    <string name="diag_fatal_yaml_syntax">This file is not valid YAML: %1$s</string>
+    <string name="diag_fatal_root_not_mapping">The top level of this file must be a list of settings.</string>
+    <string name="diag_fatal_format_missing">‘%1$s’ is missing the required ‘format’ line.</string>
+    <string name="diag_fatal_format_malformed">‘%1$s’ in ‘%2$s’ is not a valid format tag.</string>
+    <string name="diag_fatal_format_kind_mismatch">‘%3$s’ is a ‘%1$s’ file, but a ‘%2$s’ file was expected here.</string>
+    <string name="diag_fatal_format_major_unsupported">‘%1$s’ uses %2$s format v%3$s; this app understands up to v%4$s. Please update the app.</string>
+    <string name="diag_fatal_id_missing">‘%1$s’ is missing the required ‘id’ line.</string>
+    <string name="diag_fatal_id_invalid">‘%1$s’ is not a valid id. Use 1 to 64 characters from a-z, 0-9, dot, dash and underscore.</string>
+    <string name="diag_fatal_id_mismatch">The id ‘%1$s’ does not match the file name ‘%2$s’.</string>
+    <string name="diag_fatal_document_not_found">‘%1$s’ was not found in any of the search folders.</string>
+    <string name="diag_fatal_parent_not_found">This file inherits from ‘%1$s’, which was not found.</string>
+    <string name="diag_fatal_inherits_cycle">Inheritance goes in a circle: %1$s</string>
+    <string name="diag_fatal_inherits_too_deep">Inheritance is nested deeper than %1$s files.</string>
+    <string name="diag_fatal_min_client">This file needs app version %1$s or newer. This app is %2$s.</string>
+    <string name="diag_fatal_layers_missing">A keyboard layout must have at least one layer.</string>
+    <string name="diag_fatal_default_layer_unknown">‘%1$s’ is not one of the layers in this layout.</string>
+    <string name="diag_fatal_alpha_layer_unknown">‘%1$s’ is not one of the layers in this layout.</string>
+    <string name="diag_fatal_layer_empty">Layer ‘%1$s’ has no keys.</string>
+
+    <!-- ── 可回復（§6.3）─────────────────────────────────────────── -->
+    <string name="diag_unknown_field">‘%1$s’ is not a setting this app knows; it was ignored.</string>
+    <string name="diag_unknown_field_2">‘%1$s’ is not a setting this app knows; it was ignored. Did you mean ‘%2$s’?</string>
+    <string name="diag_duplicate_key">‘%1$s’ is set more than once here; the last one wins.</string>
+    <string name="diag_type_mismatch">Expected %1$s here but found %2$s; the built-in value is used.</string>
+    <string name="diag_bad_bool">‘%1$s’ is not yes or no; the built-in value is used.</string>
+    <string name="diag_bad_number">‘%1$s’ is not a number; the built-in value is used.</string>
+    <string name="diag_out_of_range">%1$s is outside the allowed range %2$s to %3$s; it was adjusted to %4$s.</string>
+    <string name="diag_bad_enum">‘%1$s’ is not one of %2$s; ‘%3$s’ is used instead.</string>
+    <string name="diag_bad_color">‘%1$s’ is not a color this app can read; the built-in color is used.</string>
+    <string name="diag_palette_not_scalar">The color ‘%1$s’ in the palette is not a plain value; it was dropped.</string>
+    <string name="diag_palette_bad_color">The color ‘%1$s’ in the palette is set to ‘%2$s’, which is not a valid color; it was dropped.</string>
+    <string name="diag_palette_unresolved_ref">The color ‘%1$s’ in the palette points at ‘%2$s’, which does not resolve; it was dropped.</string>
+    <string name="diag_palette_self_reference">The color ‘%1$s’ in the palette points at itself; it was dropped.</string>
+    <string name="diag_palette_cycle_or_too_deep">The color ‘%1$s’ in the palette goes in a circle or is nested too deeply; it was dropped.</string>
+    <string name="diag_entry_dropped">One entry in this list has the wrong shape; it was dropped.</string>
+    <string name="diag_asset_incomplete">A bundled font needs both ‘family’ and ‘file’; it was dropped.</string>
+    <string name="diag_asset_path_escape">The font file ‘%1$s’ is outside this theme folder; it was dropped.</string>
+    <string name="diag_unknown_script_tag">‘%1$s’ is not a writing system this app knows; it was ignored.</string>
+    <string name="diag_unknown_icon">‘%1$s’ is not an icon this app has; the label is shown instead.</string>
+    <string name="diag_unknown_action">‘%1$s’ is not something a key can do; this key does nothing.</string>
+    <string name="diag_bad_action_argument">‘%1$s’ is missing part of what it needs, or that part is not valid; this key does nothing.</string>
+    <string name="diag_toolbar_item_no_tap">This toolbar button has nothing to do when tapped; it was dropped.</string>
+    <string name="diag_status_item_no_source">This status bar item has no value to show; it was dropped.</string>
+    <string name="diag_nested_platform_overrides">‘platform_overrides’ cannot contain another ‘platform_overrides’; the inner one was ignored.</string>
+
+    <!-- ── INFO（§6.4）───────────────────────────────────────────── -->
+    <string name="diag_required_item_restored">The toolbar must keep ‘%1$s’, so it was added back.</string>
+    <string name="diag_deprecated_field">‘%1$s’ is no longer used and will be removed.</string>
+    <string name="diag_feature_unsupported">This device cannot do ‘%1$s: %2$s’, so it falls back to the plain version.</string>
+    <string name="diag_legacy_block_ignored">‘%1$s’ belongs to the old keyboard height model and is ignored.</string>
+
+    <!-- ── 暫定碼：規範正文要求發診斷，§6.5.1 的碼表還沒有這一格 ─── -->
+    <string name="diag_unknown_keysym">‘%1$s’ is not in the built-in key name table; the input engine will be asked for it instead.</string>
+    <string name="diag_unknown_modifier">‘%1$s’ is not a modifier key this app knows; it was ignored.</string>
+    <string name="diag_unknown_swipe_direction">‘%1$s’ is not a swipe direction; it was ignored.</string>
+    <string name="diag_mutually_exclusive">‘%1$s’ and ‘%2$s’ cannot both be set on one key; ‘%2$s’ wins.</string>
+    <string name="diag_send_incomplete">This key has to send either a key name or some text; it does nothing.</string>
+    <string name="diag_row_width_mismatch">This row adds up to %1$s, but layer ‘%3$s’ is %2$s wide.</string>
+    <string name="diag_key_patch_no_target">This layout has no key with the id ‘%1$s’, so that change was ignored.</string>
+    <string name="diag_action_target_missing">‘%1$s’ points at ‘%2$s’, which does not exist; this key does nothing.</string>
+    <string name="diag_auto_for_schema_wildcard">‘*’ means nothing under ‘auto_for_schema’, which only matches named input methods; it was dropped.</string>
+    <string name="diag_user_remap_unapplicable">Your custom key arrangement no longer fits this keyboard: %1$s</string>
+
+
+    <!-- ── type_mismatch 的兩個參數（DiagnosticTerm）──────────────── -->
+    <!-- 這裡不用「映射／序列／純量」這種解析器術語：使用者不是 RIME 老手。 -->
+    <string name="diag_kind_mapping">a group of settings</string>
+    <string name="diag_kind_sequence">a list</string>
+    <string name="diag_kind_scalar">a single value</string>
+    <string name="diag_kind_null">nothing</string>
+    <string name="diag_kind_string_list">a list of words</string>
+    <string name="diag_kind_localized_string">a piece of text, or one per language</string>
+
+</resources>

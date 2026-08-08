@@ -1,0 +1,81 @@
+name: Schema store
+
+# 方案市集**伺服器側**的測試：方案 id 撞號偵測與語言標記。
+#
+# 為什麼可以獨立成一條而且很快：測試跑的是版控裡的
+# `scripts/schema_store/data/corpus.json` —— 真實那 34 個套件的脫水版
+# （見 snapshot.py）。完整的流水線需要 891MB 的上游 clone 加一台模擬器，
+# 那是 build_schema_store.sh 的事；撞號與語言標記不需要那些東西就驗得了。
+#
+# ⚠ 這條**驗不到**「語料與上游是否同步」。那兩項測試會在這裡 skip，
+#   而 runner 會把 skip 印成一塊醒目的警告（不是綠燈）。要驗那一項得跑過
+#   完整流水線：`./scripts/build_schema_store.sh --phase index && --phase test`
+#   （後者會帶 --require-live，skip 直接算失敗）。
+
+on:
+  push:
+    branches: [main, storefix]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: schema-store-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  store-tests:
+    name: 撞號與語言標記
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 取出原始碼
+        uses: actions/checkout@v4
+
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 裝 PyYAML
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: 撞號與語言標記測試（真實語料 + 反向測試）
+        run: python3 scripts/schema_store/test_store.py
+
+      - name: 語言標記資料檔的健全性
+        # 資料檔壞掉時 load_data() 會直接 SystemExit，這一步就會紅。
+        run: |
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "scripts/schema_store")
+          import languages
+          d = languages.load_data()
+          errs = d.validate()
+          if errs:
+              raise SystemExit("語言資料檔有問題：\n  - " + "\n  - ".join(errs))
+          print("languages.yaml OK：%d 種語言、%d 筆人工方案判定、%d 筆套件判定"
+                % (len(d.languages), len(d.schemas), len(d.packages)))
+          PY
+
+      - name: 撞號清單摘要（給人看的）
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          sys.path.insert(0, "scripts/schema_store")
+          import uid as uidlib
+          c = json.load(open("scripts/schema_store/data/corpus.json", encoding="utf-8"))
+          sc = uidlib.schema_collisions(c["packages"], c.get("builtin"))
+          fc = uidlib.file_conflicts(c["packages"])
+          print("語料：%d 個套件" % c["package_count"])
+          print("schema id 撞號 %d 個：" % len(sc))
+          for sid, owners in sorted(sc.items()):
+              print("  %-24s %s" % (sid, " / ".join(owners)))
+          print("檔案撞名 %d 個路徑：" % len(fc))
+          for e, owners in sorted(fc.items()):
+              print("  %-34s %s" % (e, " / ".join(owners)))
+          cov = c["coverage"]
+          print("語言標記：有標記 %d / 不是語言 %d / **未知 %d**（涵蓋率 %.1f%%）"
+                % (cov["tagged"], cov["not_a_language"], cov["unknown"],
+                   cov["coverage_pct"]))
+          PY

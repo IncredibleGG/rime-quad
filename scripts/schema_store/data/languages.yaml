@@ -1,0 +1,196 @@
+# -----------------------------------------------------------------------------
+# languages.yaml — 語言標記的**資料**（scripts/schema_store/languages.py 讀它）
+#
+# 為什麼是資料檔而不是程式裡的 if-else：
+#   1. 「我們自己標的」與「上游說的」必須分得出來。分開存放才看得出比例，
+#      也才審計得動 —— 這個專案的定位是「經得起審計」，一份藏在 .py 裡的
+#      dict 沒有人會去讀。
+#   2. 每一筆人工判定都要附理由。理由寫在資料旁邊才不會腐爛。
+#   3. 補一個方案的標記不該需要改程式。
+#
+# ⚠ 沒有把握就不要寫。判不出來的方案會被標成 `und`，那是**正確答案**；
+#    猜錯比不猜糟得多 —— 使用者會以為清單裡沒有他要的東西。
+#
+# 來源分級（languages.py 會把它寫進索引的 language_source）：
+#   upstream  完全來自上游 metadata（rppi 的分類路徑）
+#   curated   用到本檔的人工判定，但沒有用到啟發式
+#   derived   用到啟發式（方案名的地區字樣、詞庫的繁簡字集探針）
+#   unknown   判不出來 → und
+# 有多個成分時取**最不可靠**的那一個：unknown > derived > curated > upstream。
+# -----------------------------------------------------------------------------
+format_version: 1
+
+# ── 語言分組表（BCP 47）──────────────────────────────────────────────────────
+# order 決定選單裡的分組順序。name 是 zh-Hant-TW 語系下的顯示名，
+# 與 Android 的 ConfigRepository.LOCALE 一致 —— 分組標題不該在 app 裡再寫死一份。
+# 這張表會原樣進索引與隨 APK 出貨的對照表，所以**新增一種語言不必更新 app**。
+languages:
+  - {tag: zh-Hant-TW,  name: 中文（臺灣正體）,     order: 1}
+  - {tag: zh-Hant-HK,  name: 中文（香港繁體）,     order: 2}
+  - {tag: zh-Hant,     name: 中文（繁體）,         order: 3}
+  - {tag: zh-Hans,     name: 中文（简体）,         order: 4}
+  - {tag: yue-Hant-HK, name: 粵語（香港）,         order: 10}
+  - {tag: yue-Hant-CN, name: 粵語（廣西）,         order: 11}
+  - {tag: yue-Hant,    name: 粵語,                 order: 12}
+  - {tag: nan-Hant,    name: 閩南語,               order: 20}
+  - {tag: wuu-Hant,    name: 吳語,                 order: 21}
+  - {tag: hsn-Hant,    name: 湘語,                 order: 22}
+  - {tag: hsn-Cyrl,    name: 湘語（西里爾轉寫）,   order: 23}
+  - {tag: ltc-Hant,    name: 中古漢語,             order: 30}
+  - {tag: ja,          name: 日本語,               order: 40}
+  - {tag: ko,          name: 한국어,                order: 41}
+  - {tag: en,          name: English,              order: 50}
+  - {tag: und,         name: 其他（未標記語言）,   order: 99}
+
+# ── 上游 metadata：rppi 的分類路徑 → 語言 subtag ─────────────────────────────
+# 依據：rime/rppi 的 index.json 把每個 recipe 掛在一條分類路徑下。那是**上游
+# 維護者**對「這是哪一種漢語」的判斷，比我們自己猜可靠，所以來源記成 upstream。
+# 這張表本身是我們寫的「路徑 → subtag」對照，但每一列都只是把上游那個字面
+# 換成標準 subtag，沒有增加任何我們自己的判斷。
+#
+# 注意 Chinese/Shape（形碼）與 Chinese/Mandarin（拼音）都對到 zh ——
+# 那條軸是**輸入方式**不是語言。
+rppi_paths:
+  Chinese/Mandarin:  {lang: zh,  why: rppi 分類路徑 Chinese/Mandarin}
+  Chinese/Shape:     {lang: zh,  why: rppi 分類路徑 Chinese/Shape（形碼仍是華語）}
+  Chinese/Cantonese: {lang: yue, why: rppi 分類路徑 Chinese/Cantonese}
+  Chinese/Wu:        {lang: wuu, why: rppi 分類路徑 Chinese/Wu}
+  Chinese/Hokkien:   {lang: nan, why: rppi 分類路徑 Chinese/Hokkien}
+  Chinese/Xiang:     {lang: hsn, why: rppi 分類路徑 Chinese/Xiang}
+  Chinese/Old:       {lang: ltc, why: rppi 分類路徑 Chinese/Old（中古漢語）}
+  Chinese/Hakka:     {lang: hak, why: rppi 分類路徑 Chinese/Hakka}
+  Collection:        {lang: zh,  why: rppi 分類路徑 Collection（整合包，主體為華語）}
+  Japanese:          {lang: ja,  why: rppi 分類路徑 Japanese}
+  Korean:            {lang: ko,  why: rppi 分類路徑 Korean}
+  English:           {lang: en,  why: rppi 分類路徑 English}
+
+# ── 我們自己標的：套件層級 ───────────────────────────────────────────────────
+# lang   rppi 沒收錄的套件才需要（只給語言 subtag，script/region 仍走探針）
+# region 地區只有人看得出來的（探針判出 Hant 之後才會套用）
+packages:
+  jyutping:
+    lang: yue
+    why: 上游 rime/rime-jyutping：粵拼／耶魯／香港廣東話拼音
+  hangul:
+    lang: ko
+    why: 上游 picado-tv/rime-hangul：韓文字母組字
+  handarin:
+    lang: zh
+    why: 上游 README：給韓語母語者的華語拼音方案
+  cantonese:
+    region: HK
+    why: 上游 rime/rime-cantonese README 以香港粵語為對象
+  naamning-jyutping:
+    region: CN
+    why: 方案名指名南寧（廣西），屬中國大陸
+
+# ── 我們自己標的：方案層級 ───────────────────────────────────────────────────
+# 鍵可以是 uid（`<套件>/<方案>`）或裸的方案 id。
+#   · 裸 id  = 「這個 id 不論由誰提供都是這個語言」。
+#   · uid    = 只套用在那一個套件提供的那一個方案。
+# ⚠ 驗證規則（test_store.py 會擋）：若某個裸 id 出現在 known_collisions.yaml
+#    的 `content-differs` 清單裡，這裡**必須改用 uid**，否則等於對兩個內容
+#    相反的方案下同一個判斷。
+#
+# 三類：(a) 不產出自然語言文字的工具／音標方案（標 und 是正確答案，不是缺口）
+#       (b) 套件裡的異語言子方案
+#       (c) 地區／字集只寫在方案名上
+schemas:
+  # (a) 不是語言
+  ipa_xsampa:
+    tag: und
+    not_a_language: true
+    why: X-SAMPA 音標轉寫，不對應任何特定語言
+  ipa_yunlong:
+    tag: und
+    not_a_language: true
+    why: 雲龍國際音標轉寫，不對應任何特定語言
+  moran_charset:
+    tag: und
+    not_a_language: true
+    why: 上游方案名標為「勿用·工具方案」，不供使用者輸入
+  moran_reverse:
+    tag: und
+    not_a_language: true
+    why: 上游方案名標為「勿用·工具方案」，反查用
+  array30_query:
+    tag: und
+    not_a_language: true
+    why: 行列30 萬用字元查詢，工具方案
+
+  # (b) 套件裡的異語言子方案
+  moran_english:
+    tag: en
+    why: 萬象整合包內的英文子方案
+  ice/melt_eng:
+    tag: en
+    why: 雾凇整合包內的 Easy English Nano 英文子方案
+  moran_japanese:
+    tag: ja
+    why: 萬象整合包內的「簡易日語」子方案
+
+  # (c) 地區／字集寫在方案名上
+  luna_pinyin_tw:
+    tag: zh-Hant-TW
+    why: 方案名「朙月拼音·臺灣正體」；schema 以 opencc 切臺灣字形
+  bopomofo_tw:
+    tag: zh-Hant-TW
+    why: 方案名「注音·臺灣正體」
+  luna_pinyin_simp:
+    tag: zh-Hans
+    why: 方案名「朙月拼音·简化字」
+  hkcantonese:
+    tag: yue-Hant-HK
+    why: 方案名「香港廣東話拼音」
+  sautungva_cyrillic:
+    tag: hsn-Cyrl
+    why: 方案名「邵東話西里爾」：輸出西里爾轉寫
+  wubi_trad:
+    tag: zh-Hant
+    why: 方案名「五筆·簡入繁出」：輸入簡碼、輸出繁體
+  wubi86_jidian_trad:
+    tag: zh-Hant
+    why: 方案名「简入繁出」：輸出繁體
+  wubi86_jidian_trad_pinyin:
+    tag: zh-Hant
+    why: 方案名「拼音混输繁体」：輸出繁體
+
+  # 內建方案（不在市集索引裡，見 core/data/shared/）
+  t9_pinyin:
+    tag: zh-Hant
+    why: 本專案自撰，共用 luna_pinyin 的繁體詞庫（core/data/shared/t9_pinyin.schema.yaml）
+
+# ── 隨 APK 出貨的內建方案 ────────────────────────────────────────────────────
+# 來源：core/data/user/default.custom.yaml 的 schema_list，
+# 由 Android 的 store/BuiltinMigration.kt 在升級時消費。
+# `package` 是「拿誰的詞庫做字集探針」，不代表它是從那個套件裝的。
+builtin:
+  - {id: luna_pinyin_tw, name: 朙月拼音·臺灣正體, package: luna-pinyin}
+  - {id: bopomofo_tw,    name: 注音·臺灣正體,     package: bopomofo}
+  - {id: luna_pinyin,    name: 朙月拼音,          package: luna-pinyin}
+  - {id: t9_pinyin,      name: 九宮格拼音,        package: null}
+
+# ── 啟發式：方案名裡的地區／字集字樣 ─────────────────────────────────────────
+# 這是 derived 那一級。順序有意義：先長後短（「臺灣正體」要在「臺灣」之前）。
+# 「简化字／简体」講的是**字集**不是地區，所以只給 script，不擅自補 -CN。
+name_marks:
+  - {mark: 臺灣正體, tag: zh-Hant-TW}
+  - {mark: 台灣正體, tag: zh-Hant-TW}
+  - {mark: 臺灣,     tag: zh-Hant-TW}
+  - {mark: 台灣,     tag: zh-Hant-TW}
+  - {mark: 香港,     tag: zh-Hant-HK}
+  - {mark: 简化字,   tag: zh-Hans}
+  - {mark: 簡化字,   tag: zh-Hans}
+  - {mark: 简体,     tag: zh-Hans}
+  - {mark: 簡體,     tag: zh-Hans}
+
+# ── 啟發式：繁簡字集探針的參數 ───────────────────────────────────────────────
+probe:
+  min_sample: 50      # 樣本太小的比例沒有意義
+  ratio: 2.0          # 一邊要是另一邊的兩倍以上才敢下判斷
+  read_bytes: 600000  # 詞庫動輒數 MB，取前段就夠分辨字集
+  # 成對且無歧義的繁／簡專用字。刻意用「對照組」而不是單邊清單：
+  # 兩邊同形的字（人、山、日）對判別毫無貢獻，只會稀釋樣本。
+  # 兩串必須等長且逐字對應 —— test_store.py 會檢查。
+  trad: "們這對將來時間國學說話點沒開關門問題經過為體實現發現當學習語言鄉黨屬醫藥親愛聽見覺得應該讓總會運動車輛買賣錢財書寫讀個處無與後從東西馬鳥魚龍鳳歲萬億業產權義務廣場園區樓層機構標準價格網絡電視聲響顯示齒輪飛機藝術傳統節慶禮儀衛生檢查驗證豐富華麗準備繼續斷絕舊識懷疑階級鬥爭觀樂園報紙製造義務"
+  simp: "们这对将来时间国学说话点没开关门问题经过为体实现发现当学习语言乡党属医药亲爱听见觉得应该让总会运动车辆买卖钱财书写读个处无与后从东西马鸟鱼龙凤岁万亿业产权义务广场园区楼层机构标准价格网络电视声响显示齿轮飞机艺术传统节庆礼仪卫生检查验证丰富华丽准备继续断绝旧识怀疑阶级斗争观乐园报纸制造义务"

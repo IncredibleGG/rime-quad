@@ -114,6 +114,11 @@ class SettingsWindow {
   uint32_t deploy_seq_ = 0;
   DWORD deploy_start_ = 0;
   std::wstring deploy_why_;
+  // 改 A 層之前的整份內容。⚠ 規範 §2:失敗時**整份還原**,
+  // 不是「套用反向的編輯」—— 反向編輯的前提是外科手術本身沒有 bug,
+  // 那正是出事當下最不該假設的事。
+  bool has_rollback_ = false;
+  std::string rollback_yaml_;
 
   bool tray_added_ = false;
   // explorer.exe 重啟之後系統匣會清空,而它會廣播這則訊息。

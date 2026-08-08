@@ -2,6 +2,7 @@ package org.rimequad.ime.keyboard
 
 import android.util.Log
 import org.rimequad.ime.theme.Appearance
+import org.rimequad.ime.theme.DiagnosticText
 import org.rimequad.ime.theme.KeyboardLayout
 import org.rimequad.ime.theme.LoadResult
 import org.rimequad.ime.theme.Theme
@@ -266,7 +267,7 @@ class LayoutHost(private val repo: LayoutRepository) {
         val v = r.value
         if (v == null) {
             // §6.1：致命錯誤時退回上一個成功的佈局，不得顯示空白鍵盤。
-            problem = "佈局 $id 載入失敗: ${r.errors.firstOrNull()?.message ?: "未知原因"}"
+            problem = "佈局 $id 載入失敗: ${r.errors.firstOrNull()?.let(DiagnosticText::render) ?: "未知原因"}"
             return null
         }
         if (problems.isNotEmpty()) problem = "佈局 $id: ${problems.first()}"
@@ -387,7 +388,7 @@ class LayoutHost(private val repo: LayoutRepository) {
         val problems = ConfigRepository.describe(r.diagnostics)
         if (problems.isNotEmpty()) Log.w(TAG, "主題 $id 的診斷: ${problems.joinToString(" | ")}")
         val v = r.value ?: run {
-            problem = "主題 $id 載入失敗: ${r.errors.firstOrNull()?.message ?: "未知原因"}"
+            problem = "主題 $id 載入失敗: ${r.errors.firstOrNull()?.let(DiagnosticText::render) ?: "未知原因"}"
             return null
         }
         if (problems.isNotEmpty()) problem = "主題 $id: ${problems.first()}"

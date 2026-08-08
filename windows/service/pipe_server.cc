@@ -178,12 +178,17 @@ void PipeServer::ServeClient(HANDLE pipe) {
   auto note_schema = [&](const Snapshot& snap) {
     if (snap.schema_id.empty() || snap.schema_id == last_schema) return;
     last_schema = snap.schema_id;
-    if (!settings_ || langid == 0) return;
+    if (!settings_) return;
+    const CharSet mode = CharSetOfLangId(langid);
+    if (mode == CharSet::kUnspecified) return;
     Settings st = settings_->Load();
-    // 使用者在設定裡明著指定了「所有語言都用這個」的話,不覆蓋他的選擇 ——
+    // 使用者在設定裡明著釘了一個全域方案的話,不覆蓋他的選擇 ——
     // 那是他要我們不要猜的意思。
-    if (!st.Raw(keys::kSchemaForced).empty()) return;
-    st.RememberLastUsed(langid, snap.schema_id);
+    if (!st.Raw(keys::kSchemasPinnedGlobal).empty()) return;
+    // 規範 §4.4 第 1 層:「使用者為這個輸入模式釘的方案」。
+    // 他按 Ctrl+` 換過就是釘過 —— 不記的話,換到別的程式就被打回去,
+    // 而那顆鍵在他眼裡等於沒有作用。
+    st.SetPinnedForCharSet(mode, snap.schema_id);
     settings_->Save(st);
   };
 
@@ -251,24 +256,27 @@ void PipeServer::ServeClient(HANDLE pipe) {
         ok.session = engine_->NewSession();
         session = ok.session;
         if (ok.session != 0) {
-          // ── 這裡就是那個缺陷的修法 ──────────────────────────
+          // ── 這裡就是那個缺陷的修法(docs/settings-model.md §4)──
           //
-          // 使用者從哪一份語言設定檔進來(langid),決定預設用哪個方案
-          // 與哪一種字形。設定介面裡的選擇優先於它 —— 完整的優先順序
-          // 寫在 common/schema_choice.h。
+          // 使用者從哪一份語言設定檔進來(langid = 輸入模式),決定預設
+          // 用哪個方案與要不要簡體。設定介面裡釘的方案優先於它 ——
+          // 完整的四層優先順序在 common/schema_choice.h。
           //
           // 套用的時機是 session 剛建立時,**不是**每一顆按鍵:
           // 每顆鍵都套的話,使用者用 Ctrl+` 換過的方案會被一直打回去。
+          engine_->SetSessionLangId(ok.session, langid);
           std::vector<std::string> ids;
           for (const auto& kv : engine_->SchemaList()) ids.push_back(kv.first);
-          const Settings st =
-              settings_ ? settings_->Load() : Settings();
-          const SchemaChoice choice =
-              ChooseSchema(langid, ids, st.SchemaPref());
-          std::vector<OptionAssign> opts =
-              PlanVariant(choice.variant, Variant::kFollow);
-          // 標點是獨立的一項(不屬於字形的 radio group)。
-          const Tri punct = st.GetTri(keys::kTextAsciiPunct);
+          const Settings st = settings_ ? settings_->Load() : Settings();
+          const SchemaPreference pref = st.SchemaPref();
+          const SchemaChoice choice = ChooseSchema(langid, ids, pref);
+          std::vector<OptionAssign> opts;
+          if (choice.set_variant) opts = PlanVariant(choice.simplified, langid);
+          // 標點是獨立的一項(不屬於簡繁那一組)。
+          // ⚠ kUnset = followSchema = **完全不呼叫 rs_set_option**。
+          //   設成 false 不是同一件事:很多方案根本沒有那個開關,
+          //   而有些方案的預設是 true。
+          const Tri punct = st.Punctuation();
           if (punct != Tri::kUnset)
             opts.push_back({"ascii_punct", punct == Tri::kTrue});
           engine_->ApplyChoice(ok.session, choice.schema_id, opts);

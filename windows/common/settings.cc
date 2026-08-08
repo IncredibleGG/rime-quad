@@ -16,14 +16,15 @@ struct KnownKey {
 
 // 序列化的順序。與檔頭的說明一致,分區只是給人看的。
 const KnownKey kKnownKeys[] = {
-    {keys::kSchemaForced, "方案"},
-    {keys::kSchemaOrder, nullptr},
+    {keys::kSchemasFollowInputMode, "輸入方案"},
+    {keys::kSchemasPinnedGlobal, nullptr},
+    {keys::kSchemasPinnedHant, nullptr},
+    {keys::kSchemasPinnedHans, nullptr},
+    {keys::kAppearanceCandidateScale, "外觀"},
     {keys::kTextVariant, "文字"},
-    {keys::kTextAsciiPunct, nullptr},
-    {keys::kCandCount, "候選窗"},
-    {keys::kCandScale, nullptr},
-    {keys::kNetEnabled, "連網"},
-    {keys::kNetIndexUrl, nullptr},
+    {keys::kTextPunctuation, nullptr},
+    {keys::kNetworkEnabled, "連網"},
+    {keys::kStoreIndexUrl, nullptr},
 };
 constexpr int kKnownKeyCount = static_cast<int>(sizeof(kKnownKeys) /
                                                 sizeof(kKnownKeys[0]));
@@ -101,12 +102,6 @@ int CandCountAtIndex(int i) {
 int CandScaleAtIndex(int i) {
   if (i < 0 || i >= kCandScaleCount) return kCandScaleValues[0];
   return kCandScaleValues[i];
-}
-
-std::string SchemaLastKey(uint32_t langid) {
-  char buf[8];
-  std::snprintf(buf, sizeof(buf), "%04X", static_cast<unsigned>(langid & 0xFFFFu));
-  return std::string(keys::kSchemaLastPrefix) + buf;
 }
 
 Settings Settings::Parse(const std::string& text) {
@@ -242,70 +237,50 @@ void Settings::SetEnumInt(const std::string& key, int value, const int* allowed,
 
 SchemaPreference Settings::SchemaPref() const {
   SchemaPreference p;
-  p.forced_schema = Raw(keys::kSchemaForced);
-  p.forced_variant = VariantFromToken(Raw(keys::kTextVariant));
-  const std::string prefix = keys::kSchemaLastPrefix;
-  for (const auto& kv : kv_) {
-    if (kv.first.size() != prefix.size() + 4) continue;
-    if (kv.first.compare(0, prefix.size(), prefix) != 0) continue;
-    const std::string hex = kv.first.substr(prefix.size());
-    unsigned long id = std::strtoul(hex.c_str(), nullptr, 16);
-    if (id == 0) continue;
-    p.last_used.emplace_back(static_cast<uint32_t>(id), kv.second);
-  }
+  // ⚠ 預設是 true。**「沒有這個鍵」= 沒設過 = 跟隨輸入模式**,
+  //   所以這裡是「只有明著寫了 false 才關」,不是 GetTri() == kTrue。
+  p.follow_input_mode = GetTri(keys::kSchemasFollowInputMode) != Tri::kFalse;
+  p.pinned_global = Raw(keys::kSchemasPinnedGlobal);
+  p.pinned_hant = Raw(keys::kSchemasPinnedHant);
+  p.pinned_hans = Raw(keys::kSchemasPinnedHans);
+  p.variant = VariantPrefFromToken(Raw(keys::kTextVariant));
   return p;
 }
 
-void Settings::SetForcedSchema(const std::string& schema_id) {
-  if (schema_id.empty())
-    kv_.erase(keys::kSchemaForced);
+void Settings::SetFollowInputMode(bool on) {
+  // 預設值是 true,所以 true = 刪掉那個鍵(見檔頭:不要把預設值寫進檔案)。
+  if (on)
+    kv_.erase(keys::kSchemasFollowInputMode);
   else
-    SetRaw(keys::kSchemaForced, schema_id);
+    SetTri(keys::kSchemasFollowInputMode, Tri::kFalse);
 }
 
-void Settings::SetForcedVariant(Variant v) {
-  if (v == Variant::kFollow)
+void Settings::SetPinnedGlobal(const std::string& schema_id) {
+  if (schema_id.empty())
+    kv_.erase(keys::kSchemasPinnedGlobal);
+  else
+    SetRaw(keys::kSchemasPinnedGlobal, schema_id);
+}
+
+void Settings::SetPinnedForCharSet(CharSet cs, const std::string& schema_id) {
+  const char* key = cs == CharSet::kHans ? keys::kSchemasPinnedHans
+                                         : keys::kSchemasPinnedHant;
+  // kUnspecified 沒有對應的桶。硬塞進繁體那一桶會讓「不知道是哪一種」
+  // 變成「他選了繁體」,而使用者從來沒說過那句話。
+  if (cs == CharSet::kUnspecified) return;
+  if (schema_id.empty())
+    kv_.erase(key);
+  else
+    SetRaw(key, schema_id);
+}
+
+void Settings::SetVariantPref(VariantPref v) {
+  if (v == VariantPref::kFollowInputMode)
     kv_.erase(keys::kTextVariant);
   else
-    SetRaw(keys::kTextVariant, VariantToken(v));
+    SetRaw(keys::kTextVariant, VariantPrefToken(v));
 }
 
-void Settings::RememberLastUsed(uint32_t langid, const std::string& schema_id) {
-  if (schema_id.empty()) return;
-  SetRaw(SchemaLastKey(langid), schema_id);
-}
-
-std::vector<std::string> Settings::SchemaOrder() const {
-  std::vector<std::string> out;
-  const std::string s = Raw(keys::kSchemaOrder);
-  size_t pos = 0;
-  while (pos <= s.size()) {
-    const size_t c = s.find(',', pos);
-    std::string part =
-        Trim(s.substr(pos, c == std::string::npos ? std::string::npos : c - pos));
-    pos = (c == std::string::npos) ? s.size() + 1 : c + 1;
-    if (!part.empty()) out.push_back(part);
-  }
-  return out;
-}
-
-void Settings::SetSchemaOrder(const std::vector<std::string>& ids) {
-  if (ids.empty()) {
-    kv_.erase(keys::kSchemaOrder);
-    return;
-  }
-  std::string joined;
-  for (size_t i = 0; i < ids.size(); ++i) {
-    // 逗號是分隔符,含逗號的 id 會把一項變成兩項。方案 id 本來就不含逗號,
-    // 但這裡的輸入有一部分來自下載回來的市集索引 —— 那是不可信輸入。
-    if (ids[i].find(',') != std::string::npos) continue;
-    if (!joined.empty()) joined += ",";
-    joined += ids[i];
-  }
-  if (joined.empty())
-    kv_.erase(keys::kSchemaOrder);
-  else
-    SetRaw(keys::kSchemaOrder, joined);
-}
+void Settings::SetPunctuation(Tri t) { SetTri(keys::kTextPunctuation, t); }
 
 }  // namespace rimewin

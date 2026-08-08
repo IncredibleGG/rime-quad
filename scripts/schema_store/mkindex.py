@@ -3,11 +3,19 @@
 """方案市集 — 產生 index.json（規範 docs/schema-store.md §1）。
 
 品質閘門：verified.deployed 不為 true 的套件**不進索引**。這裡不做例外。
+
+索引版本：`format_version` 只在**破壞性**變更時遞增（現行讀取端一律整份拒收，
+代價是所有已出貨的 app 同時失去市集）；加欄位走 `format_minor`。
+規則見 docs/schema-store.md §1.1。
 """
 import datetime, json, os, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import languages   # noqa: E402  —— 語言標記，見 languages.py 檔頭
+import uid as uidlib   # noqa: E402  —— 方案的全域唯一識別碼，見 uid.py 檔頭
+
+FORMAT_VERSION = 1
+FORMAT_MINOR = 1
 
 WORK = sys.argv[1]
 DIST = sys.argv[2]
@@ -162,14 +170,32 @@ while changed:
             changed = True
 
 # ── 語言標記（BCP 47）─────────────────────────────────────────────────────
-# 判定規則與依據見 languages.py。這裡只把結果掛上去。
-# 為什麼 key 是 (套件, 方案) 而不是方案：**方案 id 不是全域唯一的** ——
+# 判定規則與依據見 languages.py，人工判定的資料在 schema_store/data/languages.yaml。
+# 這裡只把結果掛上去。**key 是 uid（<套件>/<方案>）不是方案 id** ——
 # double_pinyin 同時存在於 double-pinyin（繁體詞庫）與 ice（簡體詞庫）。
 _schemas_ok = {p["id"]: set((verified.get(p["id"]) or {}).get("schemas_ok") or [])
                for p in pkgs}
 _lr, _rows, _builtin = languages.build(WORK, only_pkgs=kept_ids, schemas_of=_schemas_ok)
-lang_of = {(r["package"], r["schema"]): r["language"] for r in _rows}
-lang_src = {(r["package"], r["schema"]): r["source"] for r in _rows}
+_by_uid = {r["uid"]: r for r in _rows}
+_coverage = languages.coverage(_rows, _builtin)
+
+# ── 撞號：schema id 與檔案路徑 ─────────────────────────────────────────────
+# 進索引的那一批 + 內建方案，一起算 —— 內建方案也在同一個扁平命名空間裡
+# （`luna_pinyin` 既是內建方案，也是 luna-pinyin 套件提供的方案）。
+#
+# schemas 要先過濾成「真的會進索引的那些」，否則報出來的撞號和索引裡看得到的
+# 對不起來 —— 一份對不上的撞號清單比沒有更糟。
+# 檔案撞名則用**全部**檔案：沒通過部署的方案，它的檔案照樣會被解壓出來。
+_kept_pkgs = []
+for p in pkgs:
+    if p["id"] not in kept_ids:
+        continue
+    ok = _schemas_ok.get(p["id"]) or set()
+    q = dict(p)
+    q["schemas"] = [s for s in p["schemas"] if s["id"] in ok]
+    _kept_pkgs.append(q)
+_id_collisions = uidlib.schema_collisions(_kept_pkgs, _builtin)
+_pkg_conflicts = uidlib.conflicts_by_package(_kept_pkgs)
 
 for p in sorted(pkgs, key=lambda x: x["id"]):
     if p["id"] not in kept_ids:
@@ -189,9 +215,19 @@ for p in sorted(pkgs, key=lambda x: x["id"]):
         "file": p["zip"],
         "size": p["size"],
         "sha256": p["sha256"],
+        # 每個方案都帶 uid：**方案 id 不是全域唯一的**，讀取端一律以 uid 當鍵。
+        # `id` 保留給舊讀取端與 librime（schema_list 用的就是裸 id）。
+        # `language_source` 是來源分級：upstream（上游 metadata）/
+        # curated（我們自己標的）/ derived（啟發式推的）/ unknown。
+        # 完整依據在同目錄的 languages.json，不塞進索引以免每個方案多一段長文。
         "schemas": [
-            {"id": s["id"], "name": s["name"],
-             "language": lang_of.get((p["id"], s["id"]), "und")}
+            {"id": s["id"],
+             "uid": uidlib.make_uid(p["id"], s["id"]),
+             "name": s["name"],
+             "language": (_by_uid.get(uidlib.make_uid(p["id"], s["id"]))
+                          or {}).get("language", "und"),
+             "language_source": (_by_uid.get(uidlib.make_uid(p["id"], s["id"]))
+                                 or {}).get("source", "unknown")}
             for s in p["schemas"] if s["id"] in ok
         ],
         "requires": p["requires"],
@@ -204,33 +240,59 @@ for p in sorted(pkgs, key=lambda x: x["id"]):
         e["recommended"] = True
     if v.get("probe"):
         e["verified"]["probe"] = v["probe"]
+    # 「裝了我會蓋掉誰」。zip 解壓到同一個 user_data_dir，同名檔案就是互相覆蓋，
+    # 誰後裝誰贏 —— 而畫面上什麼都不會說。行動端要在**安裝前**講出來。
+    if _pkg_conflicts.get(p["id"]):
+        e["conflicts"] = _pkg_conflicts[p["id"]]
     entries.append(e)
 
+_langdata = languages.load_data()
 idx = {
-    "format_version": 1,
+    "format_version": FORMAT_VERSION,
+    # 加欄位遞增 minor，不動 major。舊讀取端看不到新欄位、行為不變；
+    # 新讀取端可以用它判斷「這份索引有沒有 uid」。見 docs/schema-store.md §1.1。
+    "format_minor": FORMAT_MINOR,
     "generated_at": datetime.datetime.now(datetime.timezone.utc)
                     .replace(microsecond=0).isoformat().replace("+00:00", "Z"),
     "base_url": BASE_URL,
     "categories": CATEGORIES,
     # 語言分組表。顯示名放在索引裡而不是 app 裡，理由與 categories 相同：
     # 新增一種語言不該要求使用者先更新 app。
-    "languages": languages.LANGUAGES,
+    "languages": _langdata.languages,
     # 隨 APK 出貨的內建方案不在 packages 裡（它們不是從市集裝的），
     # 但選單一樣要分組，所以在這裡補一份對照。
-    "builtin_schemas": [{"id": b["id"], "name": b["name"], "language": b["language"]}
+    "builtin_schemas": [{"id": b["id"], "uid": b["uid"], "name": b["name"],
+                         "language": b["language"],
+                         "language_source": b["source"]}
                         for b in _builtin],
+    # 撞號清單：同一個 schema id 由多個提供者給出。放進索引，行動端才有辦法
+    # 在使用者按下「安裝」之前說「你已經有一個叫這個名字的方案了」。
+    "schema_id_collisions": [{"schema": sid, "providers": owners}
+                             for sid, owners in sorted(_id_collisions.items())],
+    # 語言標記的涵蓋率。「還有幾個方案是未知」要能回答，而且要能被追蹤。
+    "language_coverage": {k: _coverage[k] for k in
+                          ("total", "tagged", "not_a_language", "unknown",
+                           "coverage_pct", "by_source")},
     "packages": entries,
 }
 out = os.path.join(DIST, "index.json")
 json.dump(idx, open(out, "w"), ensure_ascii=False, indent=1)
+
+# 逐條可複查的判定依據，跟索引一起上傳。索引裡只有一個字的來源分級，
+# 「為什麼判成這個」在這裡。離線定位的專案要經得起審計，這是其中一環。
+languages.write_report(os.path.join(DIST, "languages.json"),
+                       _rows, _builtin, _coverage,
+                       {sid: owners for sid, owners in sorted(_id_collisions.items())})
 
 data["excluded"] = excluded + dropped
 data["index_ids"] = sorted(kept_ids)
 json.dump(data, open(os.path.join(WORK, "packages.json"), "w"),
           ensure_ascii=False, indent=1)
 
-# 只留還在索引裡的 zip，避免上傳孤兒檔
-alive = {e["file"] for e in entries} | {"index.json"}
+# 只留還在索引裡的 zip，避免上傳孤兒檔。
+# ⚠ languages.json 必須列進 alive —— 這條掃描會刪掉「不在 alive 裡的 .json」，
+# 漏掉的話剛寫好的報告會在下一行被自己刪掉。
+alive = {e["file"] for e in entries} | {"index.json", "languages.json"}
 for fn in os.listdir(DIST):
     fp = os.path.join(DIST, fn)
     if fn not in alive and os.path.isfile(fp) and fn.endswith((".zip", ".json")):
@@ -243,13 +305,30 @@ for e in entries:
 for c in CATEGORIES:
     print(f"  {c['id']:10s} {len(by_cat.get(c['id'], []))}: "
           f"{' '.join(by_cat.get(c['id'], []))}")
-_tagged = [e for e in entries for s2 in e["schemas"]]
-_all = [(e["id"], s2) for e in entries for s2 in e["schemas"]]
-_und = [(pid, s2["id"]) for pid, s2 in _all if s2["language"] == "und"]
-print("\n語言標記：%d 個方案，und %d 個（%.1f%%）"
-      % (len(_all), len(_und), 100.0 * len(_und) / max(len(_all), 1)))
-for pid, sid in _und:
-    print("  und  %-24s %-16s %s" % (sid, pid, lang_src.get((pid, sid), "")))
+print("\n語言標記：%d 個方案（含內建 %d）；有標記 %d；本來就不是語言 %d；"
+      "**未知 %d**；涵蓋率 %.1f%%"
+      % (_coverage["total"], len(_builtin), _coverage["tagged"],
+         _coverage["not_a_language"], _coverage["unknown"],
+         _coverage["coverage_pct"]))
+print("  來源分佈：" + "、".join("%s %d" % kv
+                                for kv in _coverage["by_source"].items()))
+for i in _coverage["unknown_items"]:
+    print("  未知  %-40s %s" % (i["uid"], i["why"][:110]))
+
+print("\nschema id 撞號（%d 個 id）—— 這正是索引改用 uid 的理由：" % len(_id_collisions))
+for sid, owners in sorted(_id_collisions.items()):
+    print("  %-24s %s" % (sid, " / ".join(owners)))
+_file_conflicts = uidlib.file_conflicts(_kept_pkgs)
+print("檔案撞名：%d 個路徑由多個套件提供，牽涉 %d 個套件"
+      "（誰後裝誰贏，而畫面上不會說）"
+      % (len(_file_conflicts), len(_pkg_conflicts)))
+for a, cs in sorted(_pkg_conflicts.items()):
+    for c in cs:
+        if a < c["package"]:
+            print("  %-18s ↔ %-18s %d 個檔案：%s"
+                  % (a, c["package"], len(c["files"]),
+                     " ".join(c["files"][:4]) + (" …" if len(c["files"]) > 4 else "")))
+
 print("\n排除清單：")
 for d in dropped:
     print(f"  {d['id']:22s} [{d['stage']}] {d['reason'][:150]}")

@@ -1,5 +1,22 @@
 package org.rimequad.ime.theme
 
+import org.rimequad.ime.theme.DiagnosticCode.ACTION_TARGET_MISSING
+import org.rimequad.ime.theme.DiagnosticCode.AUTO_FOR_SCHEMA_WILDCARD
+import org.rimequad.ime.theme.DiagnosticCode.BAD_ACTION_ARGUMENT
+import org.rimequad.ime.theme.DiagnosticCode.ENTRY_DROPPED
+import org.rimequad.ime.theme.DiagnosticCode.FATAL_ALPHA_LAYER_UNKNOWN
+import org.rimequad.ime.theme.DiagnosticCode.FATAL_DEFAULT_LAYER_UNKNOWN
+import org.rimequad.ime.theme.DiagnosticCode.FATAL_LAYERS_MISSING
+import org.rimequad.ime.theme.DiagnosticCode.FATAL_LAYER_EMPTY
+import org.rimequad.ime.theme.DiagnosticCode.MUTUALLY_EXCLUSIVE
+import org.rimequad.ime.theme.DiagnosticCode.ROW_WIDTH_MISMATCH
+import org.rimequad.ime.theme.DiagnosticCode.SEND_INCOMPLETE
+import org.rimequad.ime.theme.DiagnosticCode.UNKNOWN_ACTION
+import org.rimequad.ime.theme.DiagnosticCode.UNKNOWN_ICON
+import org.rimequad.ime.theme.DiagnosticCode.UNKNOWN_KEYSYM
+import org.rimequad.ime.theme.DiagnosticCode.UNKNOWN_MODIFIER
+import org.rimequad.ime.theme.DiagnosticCode.UNKNOWN_SWIPE_DIRECTION
+
 /** action 字串的解析（§9.5）。未知 verb → null，呼叫端把該鍵降級為 noop。 */
 object Actions {
 
@@ -12,7 +29,7 @@ object Actions {
 
         fun need(n: Int): Boolean {
             if (rest.size < n || rest.take(n).any { it.isEmpty() }) {
-                diag.warn(path, "action '$t' is missing arguments; key becomes noop", line)
+                diag.add(BAD_ACTION_ARGUMENT, path, line, listOf(t))
                 return false
             }
             return true
@@ -33,7 +50,14 @@ object Actions {
                 when (rest[0]) {
                     "toggle" -> KeyAction(ActionVerb.INPUT_MODE_TOGGLE, emptyList(), t)
                     else -> {
-                        diag.error(path, "F10: unknown input_mode action '${rest[0]}'", line)
+                        // ⚠ 這裡原本是 diag.error(... "F10" ...)，也就是**致命錯誤**。
+                        // §6.2 的致命清單裡沒有這一條，而 §6.3 明寫「已知 verb、
+                        // 參數不合法 → 該鍵變 noop + WARNING」。錯誤的那一版會讓
+                        // 一顆鍵上的錯字整份佈局載不起來 —— 使用者看到的是鍵盤
+                        // 退回上一份，而不是那一顆鍵沒反應。
+                        // 嚴重度改由 code 決定之後，這種「產生點自己選一級」的
+                        // 分歧就沒有地方可以寫了。
+                        diag.add(BAD_ACTION_ARGUMENT, path, line, listOf(t))
                         null
                     }
                 }
@@ -42,7 +66,7 @@ object Actions {
                 if (!need(2)) return null
                 val v = rest[1].lowercase()
                 if (v != "on" && v != "off") {
-                    diag.warn(path, "action '$t' expects ':on' or ':off'; key becomes noop", line)
+                    diag.add(BAD_ACTION_ARGUMENT, path, line, listOf(t))
                     return null
                 }
                 KeyAction(ActionVerb.SET_OPTION, listOf(rest[0], v), t)
@@ -67,14 +91,16 @@ object Actions {
                         if (!need(2)) return null
                         val n = rest[1].toIntOrNull()
                         if (n == null || n < 0) {
-                            diag.warn(path, "action '$t' expects a non-negative index; key becomes noop", line)
+                            diag.add(BAD_ACTION_ARGUMENT, path, line, listOf(t))
                             return null
                         }
                         val v = if (rest[0] == "select") ActionVerb.CANDIDATE_SELECT else ActionVerb.CANDIDATE_DELETE
                         KeyAction(v, listOf(n.toString()), t)
                     }
                     else -> {
-                        diag.warn(path, "unknown action '$t'; key becomes noop", line)
+                        // verb 認得、參數不認得 → §6.5.1 是 bad_action_argument，
+                        // 不是 unknown_action（那一格留給整個 verb 都不認得）。
+                        diag.add(BAD_ACTION_ARGUMENT, path, line, listOf(t))
                         null
                     }
                 }
@@ -87,7 +113,7 @@ object Actions {
                     "home" -> KeyAction(ActionVerb.CURSOR_HOME, emptyList(), t)
                     "end" -> KeyAction(ActionVerb.CURSOR_END, emptyList(), t)
                     else -> {
-                        diag.warn(path, "unknown action '$t'; key becomes noop", line)
+                        diag.add(BAD_ACTION_ARGUMENT, path, line, listOf(t))
                         null
                     }
                 }
@@ -97,7 +123,7 @@ object Actions {
             "settings" -> KeyAction(ActionVerb.SETTINGS, emptyList(), t)
             "emoji" -> KeyAction(ActionVerb.EMOJI, emptyList(), t)
             else -> {
-                diag.warn(path, "unknown action '$t'; key becomes noop", line)
+                diag.add(UNKNOWN_ACTION, path, line, listOf(t))
                 null
             }
         }
@@ -148,7 +174,7 @@ object LayoutParser {
         val layersCursor = c.child("layers")
         val layerNodes = layersCursor.items()
         if (layerNodes.isEmpty()) {
-            diag.error("layers", "F8: a layout must declare at least one layer", root.line)
+            diag.add(FATAL_LAYERS_MISSING, "layers", root.line)
             return null
         }
 
@@ -161,13 +187,24 @@ object LayoutParser {
 
         val layers = ArrayList<LayoutLayer>()
         for (ln in layerNodes) {
-            val layer = parseLayer(ln.asMapping(), layerIds, ctx) ?: return null
+            // parseLayer 回 null 有兩種：致命（F10，診斷已寫入）與「這一層缺 id
+            // 所以被丟掉」。前者要立刻放棄整份文件，後者繼續 —— 見 parseLayer。
+            // ⚠ 致命的判斷要在 null 檢查**之前**：兩種都回 null，只看 null
+            // 分不出來，先 `?: continue` 就會把 F10 吞掉。
+            val layer = parseLayer(ln.asMapping(), layerIds, ctx)
+            if (diag.hasErrors) return null
+            if (layer == null) continue
             layers.add(layer)
+        }
+        // 每一層都被丟掉，等同 §6.2 F8 的「layers 為空」。
+        if (layers.isEmpty()) {
+            diag.add(FATAL_LAYERS_MISSING, "layers", root.line)
+            return null
         }
 
         val defaultLayer = c.child("default_layer").string(layers[0].id)
         if (!layerIds.contains(defaultLayer)) {
-            diag.error("default_layer", "F9: '$defaultLayer' is not a declared layer", root.line)
+            diag.add(FATAL_DEFAULT_LAYER_UNKNOWN, "default_layer", root.line, listOf(defaultLayer))
             return null
         }
 
@@ -175,7 +212,7 @@ object LayoutParser {
         // 因為那顆「中／En」鍵按下去會把使用者送進一個不存在的狀態。
         val alphaLayer = c.child("alpha_layer").stringOrNull()
         if (alphaLayer != null && !layerIds.contains(alphaLayer)) {
-            diag.error("alpha_layer", "F9: '$alphaLayer' is not a declared layer", root.line)
+            diag.add(FATAL_ALPHA_LAYER_UNKNOWN, "alpha_layer", root.line, listOf(alphaLayer))
             return null
         }
 
@@ -192,16 +229,14 @@ object LayoutParser {
         // 這個預設讓「只給某方案用、也是它的預設佈局」這個最常見的情形一行都不用寫，
         // 同時保證 `"*"` 的泛用佈局**永遠不會**搶自動命中（`"*"` 濾掉之後是空的）。
         val autoNode = c.child("auto_for_schema")
+        // ⚠ 只呼叫一次 stringList()。原本這裡呼叫了兩次（一次取值、一次檢查含不含
+        // "*"），節點型別錯的時候就是**兩則一模一樣的 WARNING** —— 而 §10 第 9 條
+        // 比對的正是診斷序列，多出來的那一則會讓四端無聲地對不上。
+        val autoDeclared = if (autoNode.exists) autoNode.stringList(emptyList()) else null
         val autoForSchema =
-            if (autoNode.exists) autoNode.stringList(emptyList()).filter { it != "*" }
-            else forSchema.filter { it != "*" }
-        if (autoNode.exists && autoNode.stringList(emptyList()).contains("*")) {
-            diag.warn(
-                "auto_for_schema",
-                "'*' is meaningless in auto_for_schema (§9.1.1 step 1 matches named " +
-                    "schemas only); it was dropped",
-                root.line
-            )
+            autoDeclared?.filter { it != "*" } ?: forSchema.filter { it != "*" }
+        if (autoDeclared != null && autoDeclared.contains("*")) {
+            diag.add(AUTO_FOR_SCHEMA_WILDCARD, "auto_for_schema", root.line)
         }
 
         return KeyboardLayout(
@@ -230,37 +265,45 @@ object LayoutParser {
         c.warnUnknownKeys(LAYER_KEYS)
         val id = c.child("id").stringOrNull()
         if (id == null) {
-            diag.error(c.path, "F8: layer is missing 'id'", c.node?.line)
+            // §6.2 的致命清單（F1–F10）沒有「layer 缺 id」這一條，而 §6.2 明寫
+            // 「超出此清單者一律為可回復錯誤」。所以丟掉這一層、繼續解析；
+            // 全部丟光時 bind() 會補上 F8。原本這裡是致命的，等於自己往致命清單
+            // 加了一條，四端會因此拒絕不同的檔案。
+            diag.add(ENTRY_DROPPED, c.path, c.node?.line)
             return null
         }
         val rowNodes = c.child("rows").items()
         if (rowNodes.isEmpty()) {
-            diag.error("${c.path}.rows", "F10: layer '$id' has no rows", c.node?.line)
+            diag.add(FATAL_LAYER_EMPTY, "${c.path}.rows", c.node?.line, listOf(id))
             return null
         }
         val rows = ArrayList<LayoutRow>()
+        val rowPaths = ArrayList<String>()
         for (rn in rowNodes) {
             val r = rn.asMapping()
             r.warnUnknownKeys(ROW_KEYS)
             val keyNodes = r.child("keys").items()
             if (keyNodes.isEmpty()) {
-                diag.error("${r.path}.keys", "F10: row has no keys", r.node?.line)
+                diag.add(FATAL_LAYER_EMPTY, "${r.path}.keys", r.node?.line, listOf(id))
                 return null
             }
             val keys = ArrayList<LayoutKey>(keyNodes.size)
             for (kn in keyNodes) keys.add(parseKey(kn.asMapping(), layerIds, ctx))
             rows.add(LayoutRow(weight = r.child("weight").number(1.0f, 0.1f, 4.0f), keys = keys))
+            rowPaths.add(r.path)
         }
 
         val declaredUnits = c.child("units")
         val maxSum = rows.fold(0f) { acc, r -> if (r.widthSum > acc) r.widthSum else acc }
         val units = if (declaredUnits.exists) declaredUnits.number(maxSum, 0.1f, 64f) else maxSum
-        for (r in rows) {
+        for ((i, r) in rows.withIndex()) {
             if (kotlin.math.abs(r.widthSum - units) > 0.01f) {
-                diag.warn(
-                    "${c.path}.rows",
-                    "row width sum ${r.widthSum} does not match layer units $units in layer '$id'",
-                    c.node?.line
+                // ⚠ 路徑要帶到「哪一列」。原本三列都掛在 `<layer>.rows` 上，
+                // 於是三則診斷的 (severity, code, path) 一模一樣 —— 去重之後
+                // 會只剩一則，而使用者其實有三列要修。
+                diag.add(
+                    ROW_WIDTH_MISMATCH, rowPaths[i], c.node?.line,
+                    listOf(r.widthSum.toString(), units.toString(), id)
                 )
             }
         }
@@ -292,20 +335,20 @@ object LayoutParser {
 
         val icon = c.child("icon").stringOrNull()
         if (icon != null && !KNOWN_ICONS.contains(icon)) {
-            diag.warn("${c.path}.icon", "unknown icon '$icon'; falling back to the label", c.node?.line)
+            diag.add(UNKNOWN_ICON, "${c.path}.icon", c.node?.line, listOf(icon))
         }
 
         var send = parseSend(c.mapping("send"), ctx)
         val tap = parseAction(c, "tap", layerIds, ctx)
         if (tap != null && send != null) {
-            diag.warn(c.path, "'send' and 'tap' are mutually exclusive; 'tap' wins", c.node?.line)
+            diag.add(MUTUALLY_EXCLUSIVE, c.path, c.node?.line, listOf("send", "tap"))
             send = null
         }
 
         val repeat = c.child("repeat").bool(false)
         var longPress = parseAction(c, "long_press", layerIds, ctx)
         if (repeat && longPress != null) {
-            diag.warn(c.path, "'repeat' and 'long_press' are mutually exclusive; 'repeat' wins", c.node?.line)
+            diag.add(MUTUALLY_EXCLUSIVE, c.path, c.node?.line, listOf("long_press", "repeat"))
             longPress = null
         }
 
@@ -317,7 +360,7 @@ object LayoutParser {
         for (dirName in swipeCursor.keys()) {
             val dir = SwipeDirection.values().firstOrNull { it.name.lowercase() == dirName.lowercase() }
             if (dir == null) {
-                diag.warn("${swipeCursor.path}.$dirName", "unknown swipe direction; ignored")
+                diag.add(UNKNOWN_SWIPE_DIRECTION, "${swipeCursor.path}.$dirName", args = listOf(dirName))
                 continue
             }
             swipe[dir] = parseSubKey(swipeCursor.mapping(dirName), layerIds, ctx)
@@ -350,10 +393,9 @@ object LayoutParser {
         if (a.verb == ActionVerb.LAYER || a.verb == ActionVerb.LAYER_ONCE || a.verb == ActionVerb.LAYER_LOCK) {
             val target = a.arg
             if (target == null || !layerIds.contains(target)) {
-                ctx.diagnostics.warn(
-                    node.path,
-                    "action '$raw' targets a layer that does not exist; key becomes noop",
-                    node.node?.line
+                ctx.diagnostics.add(
+                    ACTION_TARGET_MISSING, node.path, node.node?.line,
+                    listOf(raw, target ?: "")
                 )
                 return null
             }
@@ -369,7 +411,7 @@ object LayoutParser {
         val text = c.child("text").stringOrNull()
 
         if (keysymName != null && text != null) {
-            diag.warn(c.path, "'keysym' and 'text' are mutually exclusive; 'keysym' wins", c.node?.line)
+            diag.add(MUTUALLY_EXCLUSIVE, c.path, c.node?.line, listOf("text", "keysym"))
         }
         if (keysymName != null) {
             var mods = Modifiers.NONE
@@ -377,7 +419,7 @@ object LayoutParser {
                 val name = mc.stringOrNull() ?: continue
                 val bit = Modifiers.byName(name)
                 if (bit == null) {
-                    diag.warn(mc.path, "unknown modifier '$name'; ignored", mc.node?.line)
+                    diag.add(UNKNOWN_MODIFIER, mc.path, mc.node?.line, listOf(name))
                     continue
                 }
                 if (name.trim().equals("Release", ignoreCase = true)) continue
@@ -386,22 +428,18 @@ object LayoutParser {
             val code = Keysym.resolve(keysymName)
             if (code == Keysym.VOID_SYMBOL && !Keysym.isKnownName(keysymName)) {
                 // 不是致命錯誤：執行期仍會回落到 RimeGetKeycodeByName()。
-                diag.warn(
-                    "${c.path}.keysym",
-                    "'$keysymName' is not in the static keysym table; will be resolved by librime at runtime",
-                    c.node?.line
-                )
+                diag.add(UNKNOWN_KEYSYM, "${c.path}.keysym", c.node?.line, listOf(keysymName))
             }
             return SendSpec.Keysym(keysymName, code, mods)
         }
         if (text != null) {
             if (text.isEmpty()) {
-                diag.warn("${c.path}.text", "empty text; key becomes noop", c.node?.line)
+                diag.add(SEND_INCOMPLETE, "${c.path}.text", c.node?.line)
                 return null
             }
             return SendSpec.Text(text)
         }
-        diag.warn(c.path, "'send' needs either 'keysym' or 'text'; key becomes noop", c.node?.line)
+        diag.add(SEND_INCOMPLETE, c.path, c.node?.line)
         return null
     }
 

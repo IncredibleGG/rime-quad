@@ -75,6 +75,14 @@ class Engine {
   void SetOptionAll(const char* option, bool value);
   void SelectSchemaAll(const std::string& schema_id);
 
+  // 記住這個 session 是從哪一個語言設定檔來的。
+  // 設定介面改了簡繁之後要對**現有的**每一個 session 重套一次,
+  // 而每個 session 的語言不一樣(每個宿主進程各有一個)。
+  // 少了這一格,使用者改完設定要換一個程式才看得到效果 ——
+  // 而他當下看到的是「這個下拉沒有作用」。
+  void SetSessionLangId(uint64_t id, uint32_t langid);
+  void ApplyVariantAll(const SchemaPreference& pref);
+
   bool SetOption(uint64_t id, const char* option, bool value);
   std::string SchemaOfSession(uint64_t id);
 
@@ -121,6 +129,7 @@ class Engine {
   bool started_ = false;
 
   std::map<uint64_t, uintptr_t> sessions_;
+  std::map<uint64_t, uint32_t> session_lang_;
   uint64_t next_id_ = 1;
 
   // 0 = 還沒有結果, 1 = 成功, -1 = 失敗。只由部署回呼寫,別處只讀。

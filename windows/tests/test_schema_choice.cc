@@ -1,8 +1,10 @@
-// windows/tests/test_schema_choice.cc — 語言設定檔 → 方案/字形
+// windows/tests/test_schema_choice.cc — 輸入模式 ↔ 方案 ↔ 簡繁
 //
-// 這一組守的是一個**使用者實際回報過**的缺陷:簡體使用者在語言列上選了
-// 簡體那一份輸入法,打出來全是繁體字。修法是讓 DLL 把 langid 帶進 IPC,
-// 而「langid → 方案」這一格是純邏輯,所以在 Ubuntu 上就守得住。
+// 守的是 `docs/settings-model.md` §4,而 §4 開頭記著**四端已經各錯了一次**:
+// macOS 註冊了兩個輸入模式但兩個都載入繁體方案;Windows 只註冊了一個 langid。
+// 共同點是「畫面完全正常、自動化全過,錯的只有打出來是哪一種字」。
+//
+// Windows 端的版本是使用者實際回報過的:選了簡體輸入法,打出來全是繁體字。
 
 #include <string>
 #include <vector>
@@ -14,6 +16,7 @@ using namespace rimewin;
 
 namespace {
 
+// scripts/collect_data.sh 實際打包的四個,順序就是 schema_list 的順序。
 const std::vector<std::string> kShipped = {"luna_pinyin_tw", "bopomofo_tw",
                                            "luna_pinyin", "t9_pinyin"};
 
@@ -35,187 +38,217 @@ int CountOn(const std::vector<OptionAssign>& v) {
 
 }  // namespace
 
-// ── 核心:三個註冊在案的語言各自拿到什麼 ────────────────────────
+// ── §4.2 輸入模式的字集 ────────────────────────────────────────
 
-TEST(SchemaChoice_TW_gets_traditional) {
-  const SchemaChoice c = DefaultForLangId(0x0404, kShipped);
+TEST(CharSet_of_langid) {
+  CHECK(CharSetOfLangId(0x0404) == CharSet::kHant);  // zh-Hant-TW
+  CHECK(CharSetOfLangId(0x0C04) == CharSet::kHant);  // zh-Hant-HK
+  CHECK(CharSetOfLangId(0x1404) == CharSet::kHant);  // zh-Hant-MO
+  CHECK(CharSetOfLangId(0x0804) == CharSet::kHans);  // zh-Hans-CN
+  CHECK(CharSetOfLangId(0x1004) == CharSet::kHans);  // zh-Hans-SG
+}
+
+TEST(CharSet_unknown_is_never_guessed_as_traditional) {
+  // ⚠ 規範 §4.2 明著寫的:認不出來回 unspecified,**不要預設繁體**。
+  //    猜錯的代價是使用者打出他不要的字,而且完全不知道為什麼。
+  CHECK(CharSetOfLangId(0) == CharSet::kUnspecified);       // v1 的 DLL
+  CHECK(CharSetOfLangId(0x0409) == CharSet::kUnspecified);  // en-US
+  CHECK(CharSetOfLangId(0x0004) == CharSet::kUnspecified);  // 中性中文
+  CHECK(CharSetOfLangId(0x0411) == CharSet::kUnspecified);  // ja-JP
+}
+
+// ── §4.3 方案的字集 ────────────────────────────────────────────
+
+TEST(CharSet_of_schema_id_by_naming_convention) {
+  CHECK(CharSetOfSchemaId("luna_pinyin_tw") == CharSet::kHant);
+  CHECK(CharSetOfSchemaId("bopomofo_tw") == CharSet::kHant);
+  CHECK(CharSetOfSchemaId("bopomofo") == CharSet::kHant);
+  CHECK(CharSetOfSchemaId("jyutping_hk") == CharSet::kHant);
+  CHECK(CharSetOfSchemaId("wubi_trad") == CharSet::kHant);
+  CHECK(CharSetOfSchemaId("pinyin_simp") == CharSet::kHans);
+  CHECK(CharSetOfSchemaId("wubi_cn") == CharSet::kHans);
+  CHECK(CharSetOfSchemaId("x_sc") == CharSet::kHans);
+}
+
+TEST(CharSet_never_assumes_pinyin_means_simplified) {
+  // 規範明著禁止的一條:**不要加「含 pinyin 就是簡體」**。
+  // luna_pinyin 的預設輸出是繁體 —— 猜錯會讓 simplification 被設成
+  // 相反的值,比不猜更糟。
+  CHECK(CharSetOfSchemaId("luna_pinyin") == CharSet::kUnspecified);
+  CHECK(CharSetOfSchemaId("t9_pinyin") == CharSet::kUnspecified);
+  CHECK(CharSetOfSchemaId("double_pinyin") == CharSet::kUnspecified);
+  CHECK(CharSetOfSchemaId("") == CharSet::kUnspecified);
+}
+
+// ── §4.5 簡繁:那個被回報的缺陷 ────────────────────────────────
+
+TEST(Choice_hans_user_gets_simplified_output) {
+  // **這一條就是缺陷本身。** 修之前:簡體使用者拿到繁體輸出。
+  const SchemaChoice c = ChooseSchema(0x0804, kShipped, SchemaPreference());
+  CHECK(c.set_variant);
+  CHECK(c.simplified);
+}
+
+TEST(Choice_hant_user_gets_traditional_output) {
+  const SchemaChoice c = ChooseSchema(0x0404, kShipped, SchemaPreference());
+  CHECK(c.set_variant);
+  CHECK(!c.simplified);
+  // 已啟用清單第一個字集相符的就是 luna_pinyin_tw。
   CHECK_STR(c.schema_id, "luna_pinyin_tw");
-  CHECK(c.variant == Variant::kHantTW);
+  CHECK_STR(c.source, "charset-match");
 }
 
-TEST(SchemaChoice_Hans_gets_simplified) {
-  // 這一條就是那個缺陷本身。修之前它是 luna_pinyin_tw + 繁體。
-  const SchemaChoice c = DefaultForLangId(0x0804, kShipped);
-  CHECK_STR(c.schema_id, "luna_pinyin");
-  CHECK(c.variant == Variant::kHans);
-  // 明著寫出「不可以是那一個」,免得日後有人把候選順序改回去。
-  CHECK(c.schema_id != "luna_pinyin_tw");
+TEST(Choice_hk_user_gets_traditional_output) {
+  const SchemaChoice c = ChooseSchema(0x0C04, kShipped, SchemaPreference());
+  CHECK(c.set_variant);
+  CHECK(!c.simplified);
 }
 
-TEST(SchemaChoice_HK_gets_hk_glyphs) {
-  const SchemaChoice c = DefaultForLangId(0x0C04, kShipped);
-  CHECK_STR(c.schema_id, "luna_pinyin");
-  CHECK(c.variant == Variant::kHantHK);
-}
-
-TEST(SchemaChoice_SG_and_MO_are_mapped_even_though_unregistered) {
-  // 目前沒有註冊這兩份 profile,但表上先有 —— 哪天加了 profile,
-  // 這一格已經是對的,而不是安靜地落到「沒有意見」。
-  CHECK(DefaultForLangId(0x1004, kShipped).variant == Variant::kHans);
-  CHECK(DefaultForLangId(0x1404, kShipped).variant == Variant::kHantHK);
-}
-
-TEST(SchemaChoice_non_chinese_has_no_opinion) {
-  // 0x0409 = en-US。日後若有人把這個輸入法註冊到別的語言底下,
-  // 我們不可以替他挑一個中文方案。
-  const SchemaChoice c = DefaultForLangId(0x0409, kShipped);
-  CHECK(c.schema_id.empty());
-  CHECK(c.variant == Variant::kFollow);
-  CHECK(!IsChineseLangId(0x0409));
-  CHECK(IsChineseLangId(0x0804));
-  // 0x0004 是中性中文:是中文,但沒有 sublang 可以推。
-  const SchemaChoice n = DefaultForLangId(0x0004, kShipped);
-  CHECK(n.schema_id.empty());
-  CHECK(n.variant == Variant::kFollow);
-}
-
-TEST(SchemaChoice_langid_zero_means_unknown) {
-  // v1 的 DLL 連進來時 langid 是 0。0 必須等於「沒有意見」——
-  // 若它等於任何一個具體語言,舊 DLL 的使用者會拿到一個他沒選過的字形。
-  const SchemaChoice c = DefaultForLangId(0, kShipped);
-  CHECK(c.schema_id.empty());
-  CHECK(c.variant == Variant::kFollow);
-}
-
-TEST(SchemaChoice_never_picks_bopomofo_or_t9) {
-  // 注音的鍵位與拼音完全不同,九宮格是行動端的。這兩個可以由使用者自己選,
-  // 但不可以是我們替他選的 —— 那等於「裝完之後鍵盤是壞的」。
-  for (uint32_t id : {0x0404u, 0x0804u, 0x0C04u, 0x1004u, 0x1404u}) {
-    const SchemaChoice c = DefaultForLangId(id, kShipped);
-    CHECK(c.schema_id != "bopomofo_tw");
-    CHECK(c.schema_id != "t9_pinyin");
+TEST(Choice_unknown_mode_touches_nothing) {
+  // ⚠ 「不碰」與「設成 false」不是同一件事。v1 的 DLL 連進來時 langid 是 0,
+  //    那時我們對簡繁**沒有意見** —— 強制設成繁體等於替使用者做了
+  //    他沒有做過的決定。
+  for (uint32_t id : {0u, 0x0409u, 0x0004u}) {
+    const SchemaChoice c = ChooseSchema(id, kShipped, SchemaPreference());
+    CHECK(!c.set_variant);
   }
 }
 
-TEST(SchemaChoice_falls_back_when_preferred_missing) {
-  // 使用者從市集裝了東西、又把內建的移出 schema_list 的情形。
-  const std::vector<std::string> only_tw = {"luna_pinyin_tw"};
-  CHECK_STR(DefaultForLangId(0x0804, only_tw).schema_id, "luna_pinyin_tw");
-  const std::vector<std::string> only_plain = {"luna_pinyin"};
-  CHECK_STR(DefaultForLangId(0x0404, only_plain).schema_id, "luna_pinyin");
-  // 兩個都沒有 → 方案不表示意見(交給 schema_list 第一項),
-  // 但**字形照樣套用**:使用者裝的第三方簡體方案也吃同一組 radio 開關。
-  const std::vector<std::string> none = {"wubi86", "cangjie5"};
-  const SchemaChoice c = DefaultForLangId(0x0804, none);
-  CHECK(c.schema_id.empty());
-  CHECK(c.variant == Variant::kHans);
-}
-
-TEST(SchemaChoice_empty_list_still_gives_first_choice) {
-  // 還沒部署完就有人連進來。選不到 librime 會拒絕,而拒絕看得見;
-  // 安靜地不選才是查不出來的那一種。
-  const SchemaChoice c = DefaultForLangId(0x0804, {});
-  CHECK_STR(c.schema_id, "luna_pinyin");
-}
-
-// ── 優先順序:設定介面 vs langid ────────────────────────────────
-
-TEST(SchemaChoice_user_forced_schema_beats_langid) {
+TEST(Choice_explicit_variant_beats_input_mode) {
+  // 規範 §4.5:「文字」頁的明確選擇優先於輸入模式 ——
+  // 使用者在 app 裡明講過的話,比作業系統替他宣告的更重要。
   SchemaPreference p;
-  p.forced_schema = "bopomofo_tw";
-  for (uint32_t id : {0x0404u, 0x0804u, 0x0C04u}) {
-    const SchemaChoice c = ChooseSchema(id, kShipped, p);
-    CHECK_STR(c.schema_id, "bopomofo_tw");
-  }
-  // 但字形仍然跟著語言 —— 使用者只覆寫了方案。
-  CHECK(ChooseSchema(0x0804, kShipped, p).variant == Variant::kHans);
+  p.variant = VariantPref::kSimplified;
+  const SchemaChoice c = ChooseSchema(0x0404, kShipped, p);  // 繁體模式
+  CHECK(c.set_variant);
+  CHECK(c.simplified);
+
+  p.variant = VariantPref::kTraditional;
+  const SchemaChoice d = ChooseSchema(0x0804, kShipped, p);  // 簡體模式
+  CHECK(d.set_variant);
+  CHECK(!d.simplified);
 }
 
-TEST(SchemaChoice_user_forced_variant_beats_langid) {
+TEST(Choice_follow_off_touches_nothing_at_all) {
+  // 規範 §4.5 最後一條:關掉 followInputMode 時**連 simplification 都不碰**。
+  // 半套(方案不跟、簡繁還是跟)更難理解。
   SchemaPreference p;
-  p.forced_variant = Variant::kHans;
-  const SchemaChoice c = ChooseSchema(0x0404, kShipped, p);
-  CHECK(c.variant == Variant::kHans);
-  // 方案沒被覆寫。
-  CHECK_STR(c.schema_id, "luna_pinyin_tw");
+  p.follow_input_mode = false;
+  const SchemaChoice c = ChooseSchema(0x0804, kShipped, p);
+  CHECK(!c.set_variant);
+  // 而且方案也不看輸入模式,只看有沒有釘全域的。
+  CHECK_STR(c.source, "first-enabled");
+  // 但明確選過簡繁的話仍然照做 —— 那是他自己說的話。
+  p.variant = VariantPref::kSimplified;
+  const SchemaChoice d = ChooseSchema(0x0804, kShipped, p);
+  CHECK(d.set_variant);
+  CHECK(d.simplified);
 }
 
-TEST(SchemaChoice_last_used_beats_langid_but_not_forced) {
+// ── §4.4 挑方案的四層 ──────────────────────────────────────────
+
+TEST(Choice_pinned_for_mode_wins) {
   SchemaPreference p;
-  p.last_used.emplace_back(0x0404u, "bopomofo_tw");
-  // 使用者在繁體那一份底下按過 Ctrl+` 換成注音 → 換到別的 app 不該被打回去。
+  p.pinned_hans = "t9_pinyin";
+  p.pinned_hant = "bopomofo_tw";
+  CHECK_STR(ChooseSchema(0x0804, kShipped, p).schema_id, "t9_pinyin");
   CHECK_STR(ChooseSchema(0x0404, kShipped, p).schema_id, "bopomofo_tw");
-  // 另一個語言不受影響。
-  CHECK_STR(ChooseSchema(0x0804, kShipped, p).schema_id, "luna_pinyin");
-  // 設定裡明著指定的仍然贏。
-  p.forced_schema = "t9_pinyin";
-  CHECK_STR(ChooseSchema(0x0404, kShipped, p).schema_id, "t9_pinyin");
+  // 釘的字集不符也照做 —— 那是使用者說的話,靠簡繁開關把字集補齊,
+  // **不要偷偷換掉他選的方案**(規範 §4.4)。
+  CHECK(ChooseSchema(0x0804, kShipped, p).simplified);
 }
 
-TEST(SchemaChoice_empty_last_used_entry_is_ignored) {
+TEST(Choice_pinned_global_is_below_pinned_for_mode) {
   SchemaPreference p;
-  p.last_used.emplace_back(0x0804u, "");
-  CHECK_STR(ChooseSchema(0x0804, kShipped, p).schema_id, "luna_pinyin");
+  p.pinned_global = "luna_pinyin";
+  p.pinned_hans = "t9_pinyin";
+  CHECK_STR(ChooseSchema(0x0804, kShipped, p).schema_id, "t9_pinyin");
+  // 沒有為這個模式釘的話才輪到全域那一個。
+  CHECK_STR(ChooseSchema(0x0404, kShipped, p).schema_id, "luna_pinyin");
+  CHECK_STR(ChooseSchema(0x0404, kShipped, p).source, "pinnedGlobal");
 }
 
-// ── 字形:radio group 的互斥 ────────────────────────────────────
-
-TEST(Variant_follow_sends_nothing) {
-  // 「沒有意見」與「選繁體」不是同一件事。新裝的機器上把每個人
-  // 強制設成傳統漢字,等於替使用者做了他沒做過的決定。
-  CHECK_INT(PlanVariant(Variant::kFollow, Variant::kHantTW).size(), 0);
+TEST(Choice_pinned_but_disabled_falls_through) {
+  // 釘的方案已經被停用了 → 當作沒釘,往下一條走。
+  // 選一個清單上沒有的東西的話,librime 會拒絕,而使用者看到的是
+  // 「輸入法忽然沒有候選」。
+  SchemaPreference p;
+  p.pinned_hant = "cangjie5";   // 沒裝
+  p.pinned_global = "wubi86";   // 也沒裝
+  const SchemaChoice c = ChooseSchema(0x0404, kShipped, p);
+  CHECK_STR(c.schema_id, "luna_pinyin_tw");
+  CHECK_STR(c.source, "charset-match");
 }
 
-TEST(Variant_hans_turns_exactly_one_on_and_the_rest_off) {
-  const std::vector<OptionAssign> v = PlanVariant(Variant::kHans, Variant::kFollow);
-  // radio group 的互斥不是 rs_set_option 會替我們做的事:
-  // 兩個同時為真的話 t2s 之後再串一次 t2tw,輸出變成沒有人要的東西。
+TEST(Choice_charset_match_then_first) {
+  // 第 3 層:清單中第一個字集相符的。
+  const std::vector<std::string> list = {"luna_pinyin", "wubi_cn", "bopomofo_tw"};
+  CHECK_STR(ChooseSchema(0x0804, list, SchemaPreference()).schema_id, "wubi_cn");
+  CHECK_STR(ChooseSchema(0x0404, list, SchemaPreference()).schema_id,
+            "bopomofo_tw");
+  // 第 4 層:一個都不相符 → 清單的第一個,並靠簡繁開關補齊字集
+  // (規範 §4.6 明著承認這個情形)。
+  const std::vector<std::string> none = {"luna_pinyin", "t9_pinyin"};
+  const SchemaChoice c = ChooseSchema(0x0804, none, SchemaPreference());
+  CHECK_STR(c.schema_id, "luna_pinyin");
+  CHECK_STR(c.source, "first-enabled");
+  CHECK(c.simplified);
+}
+
+TEST(Choice_empty_list_does_nothing) {
+  // 清單是空的 → 什麼都不做。呼叫端要在畫面上說「還沒有任何方案」。
+  const SchemaChoice c = ChooseSchema(0x0804, {}, SchemaPreference());
+  CHECK(c.schema_id.empty());
+  CHECK_STR(c.source, "no-schemas");
+}
+
+// ── 套用:radio group 的互斥 ────────────────────────────────────
+
+TEST(PlanVariant_turns_exactly_one_on) {
+  // ⚠ rs_set_option 不會替我們維持 radio 的互斥(那是 librime 的 switcher
+  //    在使用者從選單裡選時才做的)。兩個同時為真的話,t2s 之後會再串
+  //    一次 t2tw,輸出變成沒有人要的東西。
+  const std::vector<OptionAssign> v = PlanVariant(true, 0x0804);
   CHECK_INT(CountOn(v), 1);
   CHECK_STR(OptOf(v, "zh_hans"), "true");
   CHECK_STR(OptOf(v, "zh_hant"), "false");
   CHECK_STR(OptOf(v, "zh_hant_hk"), "false");
   CHECK_STR(OptOf(v, "zh_hant_tw"), "false");
-  // 而且要一併送 simplification:本專案打包的方案沒有這個開關,
-  // 但第三方方案(五筆·簡入繁出之類)有,而**只送它是沒有作用的**
-  // —— Android 端在模擬器上實測過,打 guojia 出來還是「國家」。
-  CHECK_STR(OptOf(v, "simplification"), "true");
 }
 
-TEST(Variant_tw_is_specific_and_not_overridden_by_saved) {
-  // kHantTW 是明確的要求(來自 langid 或設定),拿 saved 蓋掉它
-  // 等於忽略使用者剛剛按的那一下。
-  const std::vector<OptionAssign> v = PlanVariant(Variant::kHantTW, Variant::kHant);
-  CHECK_STR(OptOf(v, "zh_hant_tw"), "true");
-  CHECK_STR(OptOf(v, "zh_hant"), "false");
-  CHECK_STR(OptOf(v, "simplification"), "false");
-  CHECK_INT(CountOn(v), 1);
+TEST(PlanVariant_always_sends_simplification_too) {
+  // 本專案打包的方案**沒有** simplification 這個開關,它們用 radio;
+  // 而第三方方案(五筆·簡入繁出之類)只有 simplification。兩個都要送。
+  // Android 端實測過:只送 simplification,打 guojia 出來還是「國家」。
+  CHECK_STR(OptOf(PlanVariant(true, 0x0804), "simplification"), "true");
+  CHECK_STR(OptOf(PlanVariant(false, 0x0404), "simplification"), "false");
 }
 
-TEST(Variant_generic_traditional_restores_saved) {
-  // 簡繁切換那顆鍵切回來時,只說「不要簡體」,沒說要哪一種繁體。
-  // 本來停在臺灣字形的人就該回到臺灣字形 —— 硬設 zh_hant 的話他會
-  // 安靜地落到傳統漢字,差別小到當下不會發現,只覺得「有幾個字變了」。
-  const std::vector<OptionAssign> v = PlanVariant(Variant::kHant, Variant::kHantTW);
-  CHECK_STR(OptOf(v, "zh_hant_tw"), "true");
-  CHECK_STR(OptOf(v, "zh_hant"), "false");
-  CHECK_INT(CountOn(v), 1);
-  // 沒有東西可以還原時才落到 zh_hant 本身。
-  const std::vector<OptionAssign> w = PlanVariant(Variant::kHant, Variant::kFollow);
-  CHECK_STR(OptOf(w, "zh_hant"), "true");
-  // saved 是簡體也不算「可以還原的繁體」。
-  const std::vector<OptionAssign> x = PlanVariant(Variant::kHant, Variant::kHans);
-  CHECK_STR(OptOf(x, "zh_hant"), "true");
+TEST(PlanVariant_picks_the_right_kind_of_traditional) {
+  // 使用者選的是「繁體」,是哪一種繁體由他的語言設定檔決定 ——
+  // 那不是一個設定項。香港的使用者不該拿到臺灣字形。
+  CHECK_STR(OptOf(PlanVariant(false, 0x0404), "zh_hant_tw"), "true");
+  CHECK_STR(OptOf(PlanVariant(false, 0x0C04), "zh_hant_hk"), "true");
+  CHECK_STR(OptOf(PlanVariant(false, 0x1404), "zh_hant_hk"), "true");
+  // 不知道是哪一種繁體 → 傳統漢字(不轉換),而不是隨便挑一個地區。
+  CHECK_STR(OptOf(PlanVariant(false, 0), "zh_hant"), "true");
+  CHECK_STR(OptOf(PlanVariant(false, 0x0409), "zh_hant"), "true");
+  for (uint32_t id : {0u, 0x0404u, 0x0C04u, 0x1404u, 0x0409u})
+    CHECK_INT(CountOn(PlanVariant(false, id)), 1);
 }
 
-TEST(Variant_token_roundtrip) {
-  const Variant all[] = {Variant::kFollow, Variant::kHant, Variant::kHans,
-                         Variant::kHantHK, Variant::kHantTW};
-  for (Variant v : all) CHECK(VariantFromToken(VariantToken(v)) == v);
-  // 認不得的字面值 = 跟隨,不是崩潰也不是預設繁體。
-  CHECK(VariantFromToken("zh_hant_xx") == Variant::kFollow);
-  CHECK(VariantFromToken("") == Variant::kFollow);
-  // 設定檔的字面值刻意就是 librime 的 option 名稱。
-  CHECK_STR(VariantToken(Variant::kHans), "zh_hans");
+TEST(VariantPref_token_roundtrip) {
+  const VariantPref all[] = {VariantPref::kFollowInputMode,
+                             VariantPref::kTraditional,
+                             VariantPref::kSimplified};
+  for (VariantPref v : all)
+    CHECK(VariantPrefFromToken(VariantPrefToken(v)) == v);
+  // 字面值照規範 §3 的 enum。
+  CHECK_STR(VariantPrefToken(VariantPref::kFollowInputMode), "followInputMode");
+  CHECK_STR(VariantPrefToken(VariantPref::kSimplified), "simplified");
+  // 認不得 = 預設值,不是崩潰也不是繁體。
+  CHECK(VariantPrefFromToken("zh_hans") == VariantPref::kFollowInputMode);
+  CHECK(VariantPrefFromToken("") == VariantPref::kFollowInputMode);
 }
 
 TEST(LangIdName_is_only_for_logs) {

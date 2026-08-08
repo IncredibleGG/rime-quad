@@ -49,20 +49,31 @@ enum class Tri { kUnset = 0, kFalse, kTrue };
 // 一層前綴是因為設定檔是使用者看得到的檔案,分區之後好讀。
 // 對應關係寫在 windows/README.md。
 namespace keys {
-// 方案
-constexpr const char* kSchemaForced = "schema.forced";      // "" = 跟隨語言
-constexpr const char* kSchemaOrder = "schema.order";        // 逗號分隔;空 = 不改
-constexpr const char* kSchemaLastPrefix = "schema.last.";   // + 4 位大寫十六進位 langid
+// ⚠ **鍵名照 `docs/settings-model.md` §3 的 id,不要自己取。**
+//   那份規範說「鍵名共用,值可同步,但檔案格式各端自訂」——
+//   所以檔案長什麼樣是我們的事,鍵叫什麼不是。
+//
+//   B 層(應用偏好,只有 UI 與渲染層讀)。
+//   A 層(librime 自己會讀的:schema_list、menu/page_size)**不在這裡**,
+//   它在 `<user>/default.custom.yaml`,見 schema_list_patch.h。
+//   C 層(session 選項)不落地,由 B 推導。
+
+// 輸入方案
+constexpr const char* kSchemasFollowInputMode = "schemas.followInputMode";
+constexpr const char* kSchemasPinnedGlobal = "schemas.pinnedGlobal";
+constexpr const char* kSchemasPinnedHant = "schemas.pinnedHant";
+constexpr const char* kSchemasPinnedHans = "schemas.pinnedHans";
+// 外觀
+// ⚠ appearance.candidateCount 是 **A 層**(librime 的 menu/page_size),
+//   規範 §3 明著標的。主題不得改變一頁有幾個候選,否則序號標籤會與
+//   使用者按的數字鍵對不上。所以這裡**沒有**那個鍵。
+constexpr const char* kAppearanceCandidateScale = "appearance.candidateScale";
 // 文字
-constexpr const char* kTextVariant = "text.variant";        // "" | zh_hant | zh_hans | …
-constexpr const char* kTextAsciiPunct = "text.ascii_punct";  // 三態
-// 候選窗
-constexpr const char* kCandCount = "cand.count";            // 0=跟隨;3/5/7/9
-                                                            // = librime 的 menu/page_size
-constexpr const char* kCandScale = "cand.scale";            // 0=跟隨;85/100/120/145
+constexpr const char* kTextVariant = "text.variant";
+constexpr const char* kTextPunctuation = "text.punctuation";
 // 連網
-constexpr const char* kNetEnabled = "net.enabled";          // 三態,未設 == 關
-constexpr const char* kNetIndexUrl = "net.index_url";       // "" = 用內建預設
+constexpr const char* kNetworkEnabled = "network.enabled";
+constexpr const char* kStoreIndexUrl = "store.indexUrl";
 }  // namespace keys
 
 // ── 候選窗的可選值 ──────────────────────────────────────────────
@@ -72,10 +83,11 @@ constexpr const char* kNetIndexUrl = "net.index_url";       // "" = 用內建預
 //   拿到「小」。所以索引↔數值的換算是純函式,而且有測試。
 //
 //   0 一律代表「跟隨主題預設」,固定排在第一格。
-// ⚠ 這一格對應的是 librime 的 `menu/page_size`,不是「畫幾個」。
-//   只截掉畫面上的候選而不動 page_size 的話,數字鍵仍然選得到
-//   看不見的那幾個 —— 那正是「看得到但摸不到」的鏡像版本。
-//   沒有「不限」:桌面的候選窗是一條橫列,而且選字靠數字鍵。
+// ⚠ 候選個數是 **A 層**:它就是 librime 的 `menu/page_size`(規範 §3)。
+//   只截掉畫面上的候選而不動它的話,數字鍵仍然選得到看不見的那幾個 ——
+//   那正是「看得到但摸不到」的鏡像版本。所以這張表的值直接寫進
+//   default.custom.yaml,B 層沒有對應的鍵。
+//   第一格 0 = 「跟著方案」。
 extern const int kCandCountValues[];   // {0, 3, 5, 7, 9}
 extern const int kCandCountCount;
 extern const int kCandScaleValues[];   // {0, 85, 100, 120, 145}
@@ -112,16 +124,23 @@ class Settings {
 
   // ── 語意層(設定介面與服務都只該用這一層)────────────────────
   SchemaPreference SchemaPref() const;
-  void SetForcedSchema(const std::string& schema_id);  // 空 = 跟隨語言
-  void SetForcedVariant(Variant v);                    // kFollow = 跟隨語言
-  void RememberLastUsed(uint32_t langid, const std::string& schema_id);
+  void SetFollowInputMode(bool on);
+  void SetPinnedGlobal(const std::string& schema_id);     // 空 = 不釘
+  void SetPinnedForCharSet(CharSet cs, const std::string& schema_id);
+  void SetVariantPref(VariantPref v);
 
-  std::vector<std::string> SchemaOrder() const;
-  void SetSchemaOrder(const std::vector<std::string>& ids);
+  // 標點。三態:kUnset = followSchema(**完全不呼叫 rs_set_option**)。
+  // ⚠ 「跟著方案」與「設成 false」不是同一件事:很多方案根本沒有那個
+  //    開關,而有些方案的預設是 true。無條件設 false 會讓「跟著方案」
+  //    變成「一律西文標點」,而使用者選的是不干預。
+  Tri Punctuation() const { return GetTri(keys::kTextPunctuation); }
+  void SetPunctuation(Tri t);
 
   // 連網總開關。⚠ 未設 == **關**。這一條不可以寫成「未設 == 開」,
   // 也不可以在別處各寫一次判斷 —— 只有這一個函式知道答案。
-  bool NetworkEnabled() const { return GetTri(keys::kNetEnabled) == Tri::kTrue; }
+  bool NetworkEnabled() const {
+    return GetTri(keys::kNetworkEnabled) == Tri::kTrue;
+  }
 
   const std::map<std::string, std::string>& all() const { return kv_; }
   size_t size() const { return kv_.size(); }
@@ -131,8 +150,6 @@ class Settings {
 };
 
 // langid → "schema.last.0804"。大寫十六進位、固定四位。
-std::string SchemaLastKey(uint32_t langid);
-
 }  // namespace rimewin
 
 #endif  // RIMEWIN_SETTINGS_H_

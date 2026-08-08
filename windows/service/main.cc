@@ -51,6 +51,7 @@
 #include <cstdlib>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "../winshared/winutil.h"
 #include "cand_window.h"
@@ -318,13 +319,27 @@ static int RunService(int argc, wchar_t** argv) {
     const rimewin::Settings st = store.Load();
     // 不問引擎(它還沒起來),所以 available 是空的 —— ChooseSchema 對
     // 空清單會回第一順位。這正是我們要斷言的那個「表上寫什麼」。
-    const rimewin::SchemaChoice c = rimewin::ChooseSchema(
-        static_cast<uint32_t>(print_choice), {}, st.SchemaPref());
-    Say("langid=0x%04X (%s)\n", static_cast<unsigned>(print_choice),
-        rimewin::LangIdName(static_cast<uint32_t>(print_choice)));
+    // 這裡刻意給一份**寫死的**已啟用清單,而不是空的:規範 §4.4 的
+    // 第 3 / 4 層要看清單才算得出來,而引擎這時還沒起來。用的是
+    // scripts/collect_data.sh 實際打包的那四個,順序也一樣。
+    const std::vector<std::string> shipped = {"luna_pinyin_tw", "bopomofo_tw",
+                                              "luna_pinyin", "t9_pinyin"};
+    const uint32_t lang = static_cast<uint32_t>(print_choice);
+    const rimewin::SchemaChoice c =
+        rimewin::ChooseSchema(lang, shipped, st.SchemaPref());
+    Say("langid=0x%04X (%s)\n", static_cast<unsigned>(lang),
+        rimewin::LangIdName(lang));
     Say("schema=%s\n", c.schema_id.c_str());
-    const char* v = rimewin::VariantOptionName(c.variant);
-    Say("variant=%s\n", v ? v : "");
+    Say("variant=%s\n", c.set_variant ? (c.simplified ? "simplified"
+                                                       : "traditional")
+                                       : "(不干預)");
+    // 實際會送出去的那一組 option,一字不差 —— 斷言的是真的會發生的事,
+    // 不是一個中間表示。
+    if (c.set_variant) {
+      for (const rimewin::OptionAssign& a :
+           rimewin::PlanVariant(c.simplified, lang))
+        Say("option=%s=%s\n", a.option, a.value ? "true" : "false");
+    }
     Say("source=%s\n", c.source);
     return 0;
   }
@@ -459,7 +474,7 @@ static int RunService(int argc, wchar_t** argv) {
       // 啟動時就把候選字級套上去。少了這一步,使用者要重開一次設定
       // 才會看到自己上次選的字級 —— 那看起來像「設定沒有被記住」。
       const rimewin::Settings st = settings_store.Load();
-      const int scale = st.GetEnumInt(rimewin::keys::kCandScale,
+      const int scale = st.GetEnumInt(rimewin::keys::kAppearanceCandidateScale,
                                       rimewin::kCandScaleValues,
                                       rimewin::kCandScaleCount);
       if (scale > 0) window.SetTextScale(scale / 100.0);

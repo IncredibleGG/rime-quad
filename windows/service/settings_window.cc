@@ -32,6 +32,7 @@ enum : int {
   IDC_LBL_ORDER,
   IDC_LBL_DEFAULT,
   IDC_LBL_PRIORITY,
+  IDC_FOLLOW_MODE,
   // 文字
   IDC_LBL_VARIANT = 300,
   IDC_VARIANT_COMBO,
@@ -42,6 +43,7 @@ enum : int {
   IDC_LBL_SCALE,
   IDC_SCALE_COMBO,
   IDC_LBL_TEXT_NOTE,
+  IDC_LBL_APPEAR_NOTE,
   // 進階
   IDC_REDEPLOY = 400,
   IDC_OPEN_USER_DIR,
@@ -59,10 +61,11 @@ enum : int {
 const int kTabPage0[] = {IDC_LBL_ORDER,   IDC_SCHEMA_LIST, IDC_UP,
                          IDC_DOWN,        IDC_APPLY_ORDER, IDC_LBL_DEFAULT,
                          IDC_DEFAULT_COMBO, IDC_LBL_PRIORITY};
-const int kTabPage1[] = {IDC_LBL_VARIANT, IDC_VARIANT_COMBO, IDC_LBL_PUNCT,
-                         IDC_PUNCT_COMBO, IDC_LBL_COUNT,     IDC_COUNT_COMBO,
-                         IDC_LBL_SCALE,   IDC_SCALE_COMBO,   IDC_LBL_TEXT_NOTE};
-const int kTabPage2[] = {IDC_REDEPLOY, IDC_OPEN_USER_DIR, IDC_OPEN_SETTINGS_FILE,
+const int kTabPage1[] = {IDC_LBL_COUNT, IDC_COUNT_COMBO, IDC_LBL_SCALE,
+                         IDC_SCALE_COMBO, IDC_LBL_APPEAR_NOTE};
+const int kTabPage2[] = {IDC_LBL_VARIANT, IDC_VARIANT_COMBO, IDC_LBL_PUNCT,
+                         IDC_PUNCT_COMBO, IDC_LBL_TEXT_NOTE};
+const int kTabPage3[] = {IDC_REDEPLOY, IDC_OPEN_USER_DIR, IDC_OPEN_SETTINGS_FILE,
                          IDC_LBL_PATHS, IDC_LBL_ABOUT};
 
 struct PageDef {
@@ -73,20 +76,26 @@ const PageDef kPages[] = {
     {kTabPage0, static_cast<int>(sizeof(kTabPage0) / sizeof(int))},
     {kTabPage1, static_cast<int>(sizeof(kTabPage1) / sizeof(int))},
     {kTabPage2, static_cast<int>(sizeof(kTabPage2) / sizeof(int))},
+    {kTabPage3, static_cast<int>(sizeof(kTabPage3) / sizeof(int))},
 };
+constexpr int kPageCount = 4;
 
 // 字形下拉的順序。索引 0 一律是「跟隨」——
 // 與 settings.h 的規則一致:第一格是「沒設過」。
-const Variant kVariantOrder[] = {Variant::kFollow, Variant::kHant, Variant::kHans,
-                                 Variant::kHantHK, Variant::kHantTW};
-const wchar_t* const kVariantLabels[] = {L"跟隨語言設定檔", L"傳統漢字",
-                                         L"简化字", L"香港字形", L"臺灣字形"};
-constexpr int kVariantCount = 5;
+// 規範 §3「文字」的三態。**不是四種字形** —— 是哪一種繁體由使用者的
+// 語言設定檔決定,那不是一個設定項(見 schema_choice.h 的 PlanVariant)。
+const VariantPref kVariantOrder[] = {VariantPref::kFollowInputMode,
+                                     VariantPref::kTraditional,
+                                     VariantPref::kSimplified};
+const wchar_t* const kVariantLabels[] = {L"跟著我選的輸入法語言", L"繁體字",
+                                         L"簡體字"};
+constexpr int kVariantCount = 3;
 
-const wchar_t* const kPunctLabels[] = {L"跟隨方案", L"全形(。,)", L"半形(. ,)"};
-const wchar_t* const kCountLabels[] = {L"跟隨方案", L"3 個", L"5 個", L"7 個",
+const wchar_t* const kPunctLabels[] = {L"不干預", L"中文標點(。,)",
+                                       L"英文標點(. ,)"};
+const wchar_t* const kCountLabels[] = {L"不干預", L"3 個", L"5 個", L"7 個",
                                        L"9 個"};
-const wchar_t* const kScaleLabels[] = {L"跟隨預設", L"小", L"標準", L"大",
+const wchar_t* const kScaleLabels[] = {L"不干預", L"小", L"標準", L"大",
                                        L"很大"};
 
 HWND Ctl(HWND parent, int id) { return ::GetDlgItem(parent, id); }
@@ -324,8 +333,9 @@ void SettingsWindow::OnTray(WPARAM /*w*/, LPARAM l) {
     //   而它結尾的 ReloadFromSettings 會把「正在整理字詞…」那行狀態擦掉。
     //   使用者按下去看到的是一片空白,直到 200ms 後計時器把它寫回來。
     ::SendMessageW(hwnd_, WM_RIME_OPEN, 0, 0);
-    ShowTab(2);
-    ::SendMessageW(Ctl(hwnd_, IDC_TAB), TCM_SETCURSEL, 2, 0);
+    // 「進階」現在是第 4 頁(輸入方案 / 外觀 / 文字 / 進階)。
+    ShowTab(kPageCount - 1);
+    ::SendMessageW(Ctl(hwnd_, IDC_TAB), TCM_SETCURSEL, kPageCount - 1, 0);
     StartRedeploy(L"重新整理字詞");
   } else if (cmd == IDM_TRAY_QUIT) {
     if (::MessageBoxW(hwnd_,
@@ -389,8 +399,11 @@ void SettingsWindow::CreateUi(HWND hwnd) {
                                inst, nullptr);
   if (tab && font_)
     ::SendMessageW(tab, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
-  const wchar_t* names[] = {L"方案", L"文字", L"進階"};
-  for (int i = 0; i < 3; ++i) {
+  // 規範 §1 的頁:輸入方案 / 外觀 / 文字 / 進階。
+  // 「手感」整頁拿掉(震動、按鍵音、長按延遲都是軟鍵盤專屬),
+  // 「方案市集」與「連網」這一輪沒做 —— 空的一頁比沒有那一頁更難理解。
+  const wchar_t* names[] = {L"輸入方案", L"外觀", L"文字", L"進階"};
+  for (int i = 0; i < kPageCount; ++i) {
     TCITEMW it{};
     it.mask = TCIF_TEXT;
     it.pszText = const_cast<wchar_t*>(names[i]);
@@ -399,40 +412,49 @@ void SettingsWindow::CreateUi(HWND hwnd) {
   }
 
   // ── 方案 ──
-  mk(L"STATIC", L"方案順序(第一項是預設;改完要按「套用順序」)", SS_LEFT,
-     IDC_LBL_ORDER);
+  mk(L"STATIC",
+     L"可以用的輸入方案。順序就是切換順序,排在最前面的是預設。\r\n"
+     L"改完要按「套用順序」,它會重新整理一次字詞(約十幾秒)。",
+     SS_LEFT, IDC_LBL_ORDER);
   mk(L"LISTBOX", L"", WS_BORDER | WS_VSCROLL | LBS_NOTIFY | WS_TABSTOP,
      IDC_SCHEMA_LIST);
   mk(L"BUTTON", L"上移", BS_PUSHBUTTON | WS_TABSTOP, IDC_UP);
   mk(L"BUTTON", L"下移", BS_PUSHBUTTON | WS_TABSTOP, IDC_DOWN);
   mk(L"BUTTON", L"套用順序", BS_PUSHBUTTON | WS_TABSTOP, IDC_APPLY_ORDER);
-  mk(L"STATIC", L"預設方案", SS_LEFT, IDC_LBL_DEFAULT);
+  mk(L"BUTTON", L"跟著我選的輸入法語言,自動挑方案",
+     BS_AUTOCHECKBOX | WS_TABSTOP, IDC_FOLLOW_MODE);
+  mk(L"STATIC", L"一律使用", SS_LEFT, IDC_LBL_DEFAULT);
   mk(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
      IDC_DEFAULT_COMBO);
   mk(L"STATIC",
-     L"「跟隨語言設定檔」的意思是:從繁體中文那一份進來就用繁體方案,\r\n"
-     L"從簡體中文那一份進來就用簡體方案。在這裡選了具體的方案之後,\r\n"
-     L"它對每一個語言都成立 —— 選它就是不要我們替你猜。\r\n"
-     L"用 Ctrl+` 或 F4 臨時換方案不會被這裡蓋掉,而且會被記住。",
+     L"打勾的話:你在系統裡選「繁體中文」就用繁體方案、選「簡體中文」\r\n"
+     L"就用簡體方案。不打勾的話,一律用你在上面指定的那一個。\r\n"
+     L"打字時按 Ctrl+` 或 F4 也可以隨時換,換過的會被記住。",
      SS_LEFT, IDC_LBL_PRIORITY);
 
   // ── 文字 ──
-  mk(L"STATIC", L"字形(簡繁)", SS_LEFT, IDC_LBL_VARIANT);
+  mk(L"STATIC", L"打出繁體字還是簡體字", SS_LEFT, IDC_LBL_VARIANT);
   mk(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
      IDC_VARIANT_COMBO);
-  mk(L"STATIC", L"標點", SS_LEFT, IDC_LBL_PUNCT);
+  mk(L"STATIC", L"逗號句號的樣子", SS_LEFT, IDC_LBL_PUNCT);
   mk(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
      IDC_PUNCT_COMBO);
-  mk(L"STATIC", L"一次顯示幾個候選", SS_LEFT, IDC_LBL_COUNT);
+  mk(L"STATIC", L"一次顯示幾個字", SS_LEFT, IDC_LBL_COUNT);
   mk(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
      IDC_COUNT_COMBO);
-  mk(L"STATIC", L"候選字大小", SS_LEFT, IDC_LBL_SCALE);
+  mk(L"STATIC", L"選字視窗的字大小", SS_LEFT, IDC_LBL_SCALE);
   mk(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
      IDC_SCALE_COMBO);
   mk(L"STATIC",
-     L"字形與標點改了立刻生效。候選個數改的是引擎的 menu/page_size,\r\n"
-     L"要重新整理字詞之後才會變 —— 按下去時會問你。",
+     L"這兩項改了立刻生效,不必重開任何程式。\r\n"
+     L"「不干預」的意思是照方案作者的設定走,不是「關掉」——\r\n"
+     L"有些方案本來就打簡體,那是它的設計。",
      SS_LEFT, IDC_LBL_TEXT_NOTE);
+  mk(L"STATIC",
+     L"「一次顯示幾個字」要重新整理字詞之後才會變(按下去時會問你)。\r\n"
+     L"它不能只改畫面 —— 只藏起來的話,你按數字鍵仍然會選到看不見的那幾個。\r\n"
+     L"字大小改了立刻生效,下一次跳出選字視窗就看得到。",
+     SS_LEFT, IDC_LBL_APPEAR_NOTE);
 
   // ── 進階 ──
   mk(L"BUTTON", L"重新整理字詞", BS_PUSHBUTTON | WS_TABSTOP, IDC_REDEPLOY);
@@ -449,7 +471,7 @@ void SettingsWindow::CreateUi(HWND hwnd) {
   ::ShowWindow(Ctl(hwnd, IDC_STATUS), SW_SHOW);
 
   const int w = static_cast<int>(660 * dpi_scale_);
-  const int h = static_cast<int>(470 * dpi_scale_);
+  const int h = static_cast<int>(500 * dpi_scale_);
   ::SetWindowPos(hwnd, nullptr, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER);
   LayoutUi();
   ShowTab(0);
@@ -489,9 +511,10 @@ void SettingsWindow::LayoutUi() {
   place(IDC_UP, x0 + cw - px(100), y0 + px(22), px(100), px(28));
   place(IDC_DOWN, x0 + cw - px(100), y0 + px(56), px(100), px(28));
   place(IDC_APPLY_ORDER, x0 + cw - px(100), y0 + px(144), px(100), px(28));
-  place(IDC_LBL_DEFAULT, x0, y0 + px(184), px(90), px(20));
-  place(IDC_DEFAULT_COMBO, x0 + px(96), y0 + px(180), cw - px(96), px(240));
-  place(IDC_LBL_PRIORITY, x0, y0 + px(216), cw, px(90));
+  place(IDC_FOLLOW_MODE, x0, y0 + px(182), cw, px(22));
+  place(IDC_LBL_DEFAULT, x0, y0 + px(214), px(80), px(20));
+  place(IDC_DEFAULT_COMBO, x0 + px(86), y0 + px(210), cw - px(86), px(240));
+  place(IDC_LBL_PRIORITY, x0, y0 + px(246), cw, px(80));
 
   // 文字
   const int rows[] = {0, 34, 68, 102};
@@ -503,7 +526,8 @@ void SettingsWindow::LayoutUi() {
   place(IDC_COUNT_COMBO, x0 + px(150), y0 + px(rows[2]), px(230), px(240));
   place(IDC_LBL_SCALE, x0, y0 + px(rows[3] + 4), px(140), px(20));
   place(IDC_SCALE_COMBO, x0 + px(150), y0 + px(rows[3]), px(230), px(240));
-  place(IDC_LBL_TEXT_NOTE, x0, y0 + px(150), cw, px(60));
+  place(IDC_LBL_TEXT_NOTE, x0, y0 + px(90), cw, px(70));
+  place(IDC_LBL_APPEAR_NOTE, x0, y0 + px(90), cw, px(80));
 
   // 進階
   place(IDC_REDEPLOY, x0, y0, px(180), px(30));
@@ -518,9 +542,9 @@ void SettingsWindow::LayoutUi() {
 }
 
 void SettingsWindow::ShowTab(int index) {
-  if (index < 0 || index > 2) index = 0;
+  if (index < 0 || index >= kPageCount) index = 0;
   tab_ = index;
-  for (int p = 0; p < 3; ++p)
+  for (int p = 0; p < kPageCount; ++p)
     for (int i = 0; i < kPages[p].count; ++i)
       ::ShowWindow(Ctl(hwnd_, kPages[p].ids[i]), p == index ? SW_SHOW : SW_HIDE);
 }
@@ -548,13 +572,13 @@ void SettingsWindow::ReloadSchemaList() {
   if (cb) {
     ::SendMessageW(cb, CB_RESETCONTENT, 0, 0);
     ::SendMessageW(cb, CB_ADDSTRING, 0,
-                   reinterpret_cast<LPARAM>(L"跟隨語言設定檔(建議)"));
+                   reinterpret_cast<LPARAM>(L"(自動挑)"));
     for (const auto& kv : schemas_) {
       const std::wstring name = Utf8ToWide(kv.second.empty() ? kv.first : kv.second);
       ::SendMessageW(cb, CB_ADDSTRING, 0,
                      reinterpret_cast<LPARAM>(name.c_str()));
     }
-    const std::string forced = settings_.Raw(keys::kSchemaForced);
+    const std::string forced = settings_.Raw(keys::kSchemasPinnedGlobal);
     int sel = 0;
     for (size_t i = 0; i < schemas_.size(); ++i)
       if (schemas_[i].first == forced) sel = static_cast<int>(i) + 1;
@@ -567,24 +591,37 @@ void SettingsWindow::ReloadFromSettings() {
   settings_ = store_->Load();
   ReloadSchemaList();
 
+  const SchemaPreference pref = settings_.SchemaPref();
   int vsel = 0;
-  const Variant cur = settings_.SchemaPref().forced_variant;
   for (int i = 0; i < kVariantCount; ++i)
-    if (kVariantOrder[i] == cur) vsel = i;
+    if (kVariantOrder[i] == pref.variant) vsel = i;
   FillCombo(Ctl(hwnd_, IDC_VARIANT_COMBO), kVariantLabels, kVariantCount, vsel);
+  ::SendMessageW(Ctl(hwnd_, IDC_FOLLOW_MODE), BM_SETCHECK,
+                 pref.follow_input_mode ? BST_CHECKED : BST_UNCHECKED, 0);
+  ::EnableWindow(Ctl(hwnd_, IDC_DEFAULT_COMBO), !pref.follow_input_mode);
 
-  const Tri punct = settings_.GetTri(keys::kTextAsciiPunct);
+  const Tri punct = settings_.Punctuation();
   FillCombo(Ctl(hwnd_, IDC_PUNCT_COMBO), kPunctLabels, 3,
             punct == Tri::kUnset ? 0 : (punct == Tri::kFalse ? 1 : 2));
 
-  FillCombo(Ctl(hwnd_, IDC_COUNT_COMBO), kCountLabels, kCandCountCount,
-            IndexOfCandCount(settings_.GetEnumInt(keys::kCandCount,
-                                                  kCandCountValues,
-                                                  kCandCountCount)));
+  // ⚠ 候選個數是 **A 層**(librime 的 menu/page_size),不在設定檔裡 ——
+  //   規範 §3 明著標的。所以它從 default.custom.yaml 讀。
+  {
+    int n = 0;
+    const std::string raw =
+        ReadPatchScalar(store_->ReadDefaultCustom(), "menu/page_size");
+    for (char c : raw) {
+      if (c < '0' || c > '9') { n = 0; break; }
+      n = n * 10 + (c - '0');
+      if (n > 100) { n = 0; break; }
+    }
+    FillCombo(Ctl(hwnd_, IDC_COUNT_COMBO), kCountLabels, kCandCountCount,
+              IndexOfCandCount(n));
+  }
   FillCombo(Ctl(hwnd_, IDC_SCALE_COMBO), kScaleLabels, kCandScaleCount,
-            IndexOfCandScale(settings_.GetEnumInt(keys::kCandScale,
-                                                  kCandScaleValues,
-                                                  kCandScaleCount)));
+            IndexOfCandScale(settings_.GetEnumInt(
+                keys::kAppearanceCandidateScale, kCandScaleValues,
+                kCandScaleCount)));
 
   {
     std::wstring paths = L"使用者資料(詞典、設定):\r\n  " +
@@ -617,31 +654,34 @@ void SettingsWindow::SetStatus(const std::wstring& text) {
 
 void SettingsWindow::ApplyVariantNow() {
   const int sel = ComboSel(hwnd_, IDC_VARIANT_COMBO);
-  const Variant want = kVariantOrder[(sel >= 0 && sel < kVariantCount) ? sel : 0];
-  settings_.SetForcedVariant(want);
+  settings_.SetVariantPref(
+      kVariantOrder[(sel >= 0 && sel < kVariantCount) ? sel : 0]);
   if (!store_->Save(settings_)) {
-    SetStatus(L"設定寫不進去 —— 改了但不會留到下次啟動。");
+    SetStatus(L"設定存不起來 —— 改了但不會留到下次開機。");
     return;
   }
-  // 立刻對現有的每一個 session 套用。少了這一步,使用者改了字形之後
-  // 要換一個程式才會生效 —— 而他當下看到的是「這個下拉沒有作用」。
-  const std::vector<OptionAssign> plan = PlanVariant(want, Variant::kFollow);
-  for (const OptionAssign& a : plan) engine_->SetOptionAll(a.option, a.value);
-  SetStatus(want == Variant::kFollow ? L"字形改為跟隨語言設定檔。"
-                                     : L"字形已套用。");
+  // 立刻對現有的每一個輸入視窗套用。少了這一步,使用者改了之後要換一個
+  // 程式才會生效 —— 而他當下看到的是「這個選項沒有作用」。
+  // ⚠ 每個 session 的語言不一樣,所以交給 Engine 按各自的 langid 算,
+  //   而它走的是與建 session 時**同一支** DecideVariant。
+  engine_->ApplyVariantAll(settings_.SchemaPref());
+  SetStatus(L"已套用。");
 }
 
 void SettingsWindow::ApplyPunctNow() {
   const int sel = ComboSel(hwnd_, IDC_PUNCT_COMBO);
   const Tri t = sel == 0 ? Tri::kUnset : (sel == 1 ? Tri::kFalse : Tri::kTrue);
-  settings_.SetTri(keys::kTextAsciiPunct, t);
+  settings_.SetPunctuation(t);
   if (!store_->Save(settings_)) {
-    SetStatus(L"設定寫不進去。");
+    SetStatus(L"設定存不起來。");
     return;
   }
+  // ⚠ kUnset(不干預)= **完全不呼叫 rs_set_option**。設成 false 不是
+  //   同一件事:很多方案根本沒有這個開關,而有些方案的預設是 true。
+  //   所以「不干預」要等下一次開輸入視窗才回到方案自己的設定。
   if (t != Tri::kUnset) engine_->SetOptionAll("ascii_punct", t == Tri::kTrue);
-  SetStatus(t == Tri::kUnset ? L"標點改為跟隨方案(下次啟動生效)。"
-                             : L"標點已套用。");
+  SetStatus(t == Tri::kUnset ? L"改回不干預,下次開新的視窗時生效。"
+                             : L"已套用。");
 }
 
 void SettingsWindow::ApplyDefaultSchemaNow() {
@@ -649,18 +689,18 @@ void SettingsWindow::ApplyDefaultSchemaNow() {
   std::string id;
   if (sel > 0 && static_cast<size_t>(sel - 1) < schemas_.size())
     id = schemas_[sel - 1].first;
-  settings_.SetForcedSchema(id);
+  settings_.SetPinnedGlobal(id);
   if (!store_->Save(settings_)) {
-    SetStatus(L"設定寫不進去。");
+    SetStatus(L"設定存不起來。");
     return;
   }
   if (!id.empty()) {
     engine_->SelectSchemaAll(id);
-    SetStatus(L"預設方案已套用到目前所有的輸入視窗。");
+    SetStatus(L"已套用到目前所有的輸入視窗。");
   } else {
-    // 「跟隨語言設定檔」不立刻改現有 session:那會把使用者剛剛用
-    // Ctrl+` 選的方案打回去。下一個 session 才套用。
-    SetStatus(L"預設方案改為跟隨語言設定檔,切換到下一個程式時生效。");
+    // 取消指定時不立刻改現有的:那會把使用者剛剛用 Ctrl+` 選的方案
+    // 打回去。下一次開新的輸入視窗才重新挑。
+    SetStatus(L"取消指定,下次開新的視窗時重新挑。");
   }
 }
 
@@ -672,6 +712,9 @@ bool SettingsWindow::ApplyOrderAndPageSize(std::string* error) {
         "會從安裝目錄複製一份過去。";
     return false;
   }
+  // 快照。失敗時整份寫回去(規範 §2)。
+  rollback_yaml_ = yaml;
+  has_rollback_ = true;
   std::string next;
   PatchResult r = WriteSchemaList(yaml, order_, &next);
   if (r != PatchResult::kOk) {
@@ -682,8 +725,7 @@ bool SettingsWindow::ApplyOrderAndPageSize(std::string* error) {
                  : "方案清單裡有不合法的項目,這次什麼都沒動。";
     return false;
   }
-  const int count =
-      settings_.GetEnumInt(keys::kCandCount, kCandCountValues, kCandCountCount);
+  const int count = CandCountAtIndex(ComboSel(hwnd_, IDC_COUNT_COMBO));
   std::string next2;
   char num[16] = {0};
   if (count > 0) std::snprintf(num, sizeof(num), "%d", count);
@@ -740,6 +782,7 @@ void SettingsWindow::OnDeployTick() {
     ::swprintf(buf, 128, L"%s完成(耗時 %.1f 秒)。", deploy_why_.c_str(),
                elapsed / 1000.0);
     SetStatus(buf);
+    has_rollback_ = false;
     ReloadSchemaList();
   } else {
     // 部署失敗時 rs_last_error() 常常是空字串 —— librime 的 C API 不給原因
@@ -749,8 +792,20 @@ void SettingsWindow::OnDeployTick() {
     msg += err.empty() ? L"引擎沒有給原因(librime 的 C API 不提供)。\r\n"
                          L"常見成因是某個方案的詞庫檔案缺席。"
                        : Utf8ToWide(err);
+    // ⚠ 失敗時把 default.custom.yaml 整份還原。不還原的話,使用者會卡在
+    //   「每次啟動都部署失敗」的狀態,而且沒有自救途徑 ——
+    //   設定介面的方案清單也會是空的。
+    if (has_rollback_) {
+      if (store_->WriteDefaultCustom(rollback_yaml_)) {
+        msg += L"\r\n\r\n方案設定已經還原成改之前的樣子。";
+      } else {
+        msg += L"\r\n\r\n⚠ 而且還原也失敗了。請手動檢查使用者資料夾裡的"
+               L" default.custom.yaml。";
+      }
+      has_rollback_ = false;
+    }
     ::MessageBoxW(hwnd_, msg.c_str(), L"重新整理字詞", MB_OK | MB_ICONERROR);
-    SetStatus(L"整理字詞失敗。");
+    SetStatus(L"整理字詞失敗,設定已還原。");
   }
 }
 
@@ -805,6 +860,22 @@ void SettingsWindow::OnCommand(int id, int code) {
       StartRedeploy(L"套用順序");
       return;
     }
+    case IDC_FOLLOW_MODE: {
+      const bool on = ::SendMessageW(Ctl(hwnd_, IDC_FOLLOW_MODE), BM_GETCHECK,
+                                     0, 0) == BST_CHECKED;
+      settings_.SetFollowInputMode(on);
+      if (!store_->Save(settings_)) {
+        SetStatus(L"設定存不起來。");
+        return;
+      }
+      ::EnableWindow(Ctl(hwnd_, IDC_DEFAULT_COMBO), !on);
+      // ⚠ 關掉「自動挑」時**連簡繁都不碰**(規範 §4.5 最後一條):
+      //   使用者要的是「我自己管」,半套更難理解。
+      engine_->ApplyVariantAll(settings_.SchemaPref());
+      SetStatus(on ? L"會跟著你選的輸入法語言自動挑。"
+                   : L"改成一律用你指定的那一個,下次開新的視窗時生效。");
+      return;
+    }
     case IDC_DEFAULT_COMBO:
       if (code == CBN_SELCHANGE) ApplyDefaultSchemaNow();
       return;
@@ -816,43 +887,37 @@ void SettingsWindow::OnCommand(int id, int code) {
       return;
     case IDC_COUNT_COMBO: {
       if (code != CBN_SELCHANGE) return;
-      const int v = CandCountAtIndex(ComboSel(hwnd_, IDC_COUNT_COMBO));
-      settings_.SetEnumInt(keys::kCandCount, v, kCandCountValues,
-                           kCandCountCount);
-      if (!store_->Save(settings_)) {
-        SetStatus(L"設定寫不進去。");
-        return;
-      }
-      // ⚠ 這一項改的是引擎的 menu/page_size,要重新部署才會變。
-      //   只截掉畫面上的候選是不行的:數字鍵仍然選得到看不見的那幾個。
+      // ⚠ 這一項是 **A 層**:它就是 librime 的一頁候選數,要重新整理
+      //   字詞才會變。只截掉畫面上的候選是不行的 —— 數字鍵仍然選得到
+      //   看不見的那幾個。
       if (::MessageBoxW(hwnd_,
-                        L"候選個數要重新整理字詞之後才會變(約十幾秒)。\r\n"
+                        L"這一項要重新整理字詞之後才會變(約十幾秒)。\r\n"
                         L"現在就做嗎?",
-                        L"一次顯示幾個候選", MB_YESNO | MB_ICONQUESTION) ==
+                        L"一次顯示幾個字", MB_YESNO | MB_ICONQUESTION) ==
           IDYES) {
         std::string err;
         if (!ApplyOrderAndPageSize(&err)) {
-          ::MessageBoxW(hwnd_, Utf8ToWide(err).c_str(), L"候選個數",
+          ::MessageBoxW(hwnd_, Utf8ToWide(err).c_str(), L"一次顯示幾個字",
                         MB_OK | MB_ICONERROR);
           return;
         }
-        StartRedeploy(L"套用候選個數");
+        StartRedeploy(L"套用「一次顯示幾個字」");
       } else {
-        SetStatus(L"已記住,下次「重新整理字詞」時生效。");
+        SetStatus(L"還沒生效 —— 到「進階」按「重新整理字詞」就會套用。");
       }
       return;
     }
     case IDC_SCALE_COMBO: {
       if (code != CBN_SELCHANGE) return;
       const int v = CandScaleAtIndex(ComboSel(hwnd_, IDC_SCALE_COMBO));
-      settings_.SetEnumInt(keys::kCandScale, v, kCandScaleValues,
-                           kCandScaleCount);
+      settings_.SetEnumInt(keys::kAppearanceCandidateScale, v,
+                           kCandScaleValues, kCandScaleCount);
       if (!store_->Save(settings_)) {
-        SetStatus(L"設定寫不進去。");
+        SetStatus(L"設定存不起來。");
         return;
       }
       if (cand_) cand_->SetTextScale(v <= 0 ? 1.0 : v / 100.0);
-      SetStatus(L"候選字大小已套用(下一次出現候選時看得到)。");
+      SetStatus(L"已套用,下一次跳出選字視窗就看得到。");
       return;
     }
     case IDC_REDEPLOY:

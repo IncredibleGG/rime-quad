@@ -197,3 +197,28 @@ TEST(PatchScalar_does_not_read_keys_outside_patch) {
   const std::string in = "menu/page_size: 5\npatch:\n  x: 1\n";
   CHECK_STR(ReadPatchScalar(in, "menu/page_size"), "");
 }
+
+TEST(SchemaListPatch_keeps_trailing_comments_on_surviving_items) {
+  // 規範 §2:A 層一律「文字外科手術」,**保留行尾註解**。
+  // 我們自己產生的那一份每一行後面都有「拼音(臺灣字形)」之類的說明,
+  // 使用者按一次「上移」就把它們清光,是很難解釋的行為。
+  std::string out;
+  CHECK(WriteSchemaList(kShipped, {"luna_pinyin", "luna_pinyin_tw"}, &out) ==
+        PatchResult::kOk);
+  CHECK(out.find("拼音(原版)") != std::string::npos);
+  CHECK(out.find("拼音(臺灣字形)") != std::string::npos);
+  // 被拿掉的項目連同它的註解一起消失(註解講的是那一項)。
+  CHECK(out.find("注音(臺灣字形)") == std::string::npos);
+  // 而且順序真的換了。
+  bool found = false;
+  const std::vector<std::string> got = ReadSchemaList(out, &found);
+  CHECK_STR(got[0], "luna_pinyin");
+}
+
+TEST(SchemaListPatch_new_items_use_four_space_indent) {
+  // 規範 §2:新增項目的縮排統一為四個空白 —— 兩端輪流寫時 diff 才不會整片變動。
+  std::string out;
+  CHECK(WriteSchemaList("patch:\n  menu/page_size: 9\n", {"luna_pinyin"}, &out) ==
+        PatchResult::kOk);
+  CHECK(out.find("\n    - schema: luna_pinyin") != std::string::npos);
+}
