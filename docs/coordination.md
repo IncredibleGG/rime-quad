@@ -56,6 +56,23 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
 
 **跨這條線之前先寫進 §5**,不要先做再說。
 
+### 2026-08-08 起的併行支線(桌面 UI 之外)
+
+桌面兩端各只有一個擁有者,不要再往 `apple/` 或 `windows/` 加人。其餘工作拆成
+五條支線,各有自己的 worktree 與檔案範圍:
+
+| 分支 | worktree | 只能動 |
+|---|---|---|
+| `diag` | `/home/lc/rime-diag` | Android 診斷層、`res/values*/strings_diag.xml` |
+| `dict` | `/home/lc/rime-dict` | `android/.../store/` 的詞庫匯出匯入、`strings_dict.xml` |
+| `sec` | `/home/lc/rime-sec` | `patches/`、`scripts/audit_offline.sh`、`android/.../net/` |
+| `storefix` | `/home/lc/rime-storefix` | `scripts/schema_store/`、`scripts/build_schema_store.sh` |
+| `insets` | `/home/lc/rime-insets` | `RimeInputMethodService.kt`、鍵盤繪製、`core/layouts/`、`core/themes/` |
+
+⚠ **字串資源一律開新檔**(`strings_diag.xml`、`strings_dict.xml` …),不要動
+`res/values/strings.xml`。Android 會把 `values/` 底下所有 xml 併起來,所以分檔
+不影響行為,但省掉同一個檔案被五條線同時改的必然衝突。
+
 ---
 
 ## 3. 對所有端都成立的紀律
