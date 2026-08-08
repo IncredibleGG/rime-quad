@@ -146,6 +146,16 @@ bool rs_deploy(void) {
   return true;
 }
 
+bool rs_sync_user_data(void) {
+  // stub 不帶 librime,所以這裡不可能真的 flush 任何東西。
+  // 刻意**不**回報成功:備份功能若在 stub 上拿到 SUCCESS,就會以為詞庫已經
+  // 落地並繼續往下打包 —— 那正是這支 API 存在的理由要防的那種靜默失敗。
+  g_last_error = "rs_sync_user_data: stub 沒有 librime,無法同步";
+  return false;
+}
+
+const char* rs_sync_dir(void) { return ""; }
+
 const char* rs_last_error(void) { return g_last_error.c_str(); }
 
 rs_session rs_session_create(void) {

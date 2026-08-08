@@ -57,7 +57,7 @@ extern "C" {
 /* 任何破壞相容性的變更都必須遞增此值。前端啟動時應以 rs_abi_version()
  * 比對自身編譯期的常數，不符即拒絕載入 —— 行動端熱更新資料檔時，
  * 這是唯一能擋下 so/dylib 與上層不同步的關卡。 */
-#define RIME_SHELL_ABI_VERSION 1
+#define RIME_SHELL_ABI_VERSION 2
 
 typedef uintptr_t rs_session;
 #define RS_INVALID_SESSION ((rs_session)0)
@@ -103,6 +103,34 @@ bool rs_deploy(void);
 
 /* 回傳最近一次失敗的原因，永不為 NULL。指標在下一次 API 呼叫前有效。 */
 const char* rs_last_error(void);
+
+/* 把使用者詞典的未落地變更寫進磁碟，並輸出可攜的文字快照。
+ *
+ * ⚠ **為什麼需要這支，而不是直接複製 *.userdb/ 目錄：**
+ *   librime 在使用者上屏之後，是把剛學到的詞放進一個記憶體裡的 leveldb
+ *   WriteBatch，要等 FinishSession() 或 ~UserDictionary 才落地。也就是說
+ *   **「使用者剛剛打的那些字」通常只存在於記憶體**。這時候複製目錄，拿到的是
+ *   上一輪的詞庫 —— 能開、能用、大小差不多，只是少了最近的學習成果，
+ *   **而且沒有任何錯誤訊息**。備份功能最不該有的就是這種失敗。
+ *
+ * ⚠ **本函式會銷毀所有 session。** librime 的 sync 以 cleanup_all_sessions()
+ *   開頭。呼叫後既有的 rs_session 一律失效，前端必須重建 —— 與部署之後一樣。
+ *   rs_session_alive() 會回報 false。
+ *
+ * ⚠ **非同步。** 與 rs_deploy() 共用 librime 的維護執行緒與同一組通知，
+ *   結果經由 rs_setup.on_deploy 回報（RS_DEPLOY_SUCCESS / RS_DEPLOY_FAILURE）。
+ *   同一時間只能有一個維護工作：部署進行中時本函式回傳 false。
+ *   回傳 true 只代表「排程成功」，不代表已經寫完。
+ *
+ * 完成後，rs_sync_dir() 底下會有各詞典的 *.userdb.txt —— 那是 RIME 的正式
+ * 可攜格式：純文字、可合併、跨版本，是四端交換詞庫時唯一該用的東西。 */
+bool rs_sync_user_data(void);
+
+/* 同步目錄的絕對路徑，永不為 NULL（未初始化時為空字串）。
+ * 指標在下一次 API 呼叫前有效，需要保留請自行複製。
+ *
+ * 沒有這支的話 rs_sync_user_data() 是不可用的：同步得動，但找不到產物。 */
+const char* rs_sync_dir(void);
 
 /* ───────────────────────── Session ───────────────────────── */
 

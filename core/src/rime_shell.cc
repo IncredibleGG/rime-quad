@@ -22,6 +22,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <cstdio>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -376,6 +377,65 @@ bool rs_deploy(void) {
   }).detach();
 
   return true;
+}
+
+bool rs_sync_user_data(void) {
+  // 與 rs_deploy() 共用同一支維護執行緒與同一組通知，所以也共用那個旗標。
+  // 兩者同時跑的話，librime 會把後來的那次工作直接丟掉而**不報錯**，
+  // 上層永遠等不到終態。
+  {
+    std::lock_guard<std::mutex> lock(g_global_mutex);
+    if (!g_initialized) {
+      set_error("尚未初始化");
+      return false;
+    }
+    if (g_deploy_in_flight) {
+      set_error("已有部署或同步進行中");
+      return false;
+    }
+    g_deploy_in_flight = true;
+  }
+
+  std::thread([] {
+    RimeApi* api = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(g_global_mutex);
+      api = g_api;
+    }
+    if (!api)
+      return;
+    // sync_user_data() 內部以 cleanup_all_sessions() 開頭，所以所有 session
+    // 在這一刻失效。契約寫在 rime_shell.h，前端必須重建。
+    bool ok = api->sync_user_data() != False;
+    std::lock_guard<std::mutex> lock(g_global_mutex);
+    if (g_deploy_in_flight) {
+      g_deploy_in_flight = false;
+      if (g_deploy_cb)
+        g_deploy_cb(ok ? RS_DEPLOY_SUCCESS : RS_DEPLOY_FAILURE,
+                    g_deploy_userdata);
+    }
+  }).detach();
+
+  return true;
+}
+
+const char* rs_sync_dir(void) {
+  // 用 get_sync_dir_s()（帶長度的那支）而不是 get_sync_dir()：後者在
+  // librime 1.17 已標記 deprecated，回傳的是內部靜態緩衝區。
+  static thread_local char buf[1024];
+  buf[0] = '\0';
+  std::lock_guard<std::mutex> lock(g_global_mutex);
+  if (!g_initialized || !g_api)
+    return buf;
+  if (g_api->get_sync_dir_s)
+    g_api->get_sync_dir_s(buf, sizeof(buf));
+  else if (g_api->get_sync_dir) {
+    const char* d = g_api->get_sync_dir();
+    if (d) {
+      std::snprintf(buf, sizeof(buf), "%s", d);
+    }
+  }
+  return buf;
 }
 
 // ─────────────────────────────────────────────────────────────

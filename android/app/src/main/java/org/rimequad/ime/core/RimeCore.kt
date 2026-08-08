@@ -24,7 +24,7 @@ object RimeCore {
     private const val TAG = "RimeCore"
 
     /** 上層編譯期認定的 ABI 版本，必須與 `RIME_SHELL_ABI_VERSION` 一致。 */
-    const val EXPECTED_ABI_VERSION: Int = 1
+    const val EXPECTED_ABI_VERSION: Int = 2
 
     /** so 載入結果。載入失敗時整個 IME 應該降級而不是崩潰。 */
     @Volatile
