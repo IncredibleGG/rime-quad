@@ -183,11 +183,7 @@ class DeadKeyTest {
      */
     @Test
     fun `每一個已實作的動詞在分派表裡都有一支`() {
-        val src = serviceSource()
-        val body = src.substringAfter("private fun handleAction(action: KeyAction) {")
-            .substringBefore("\n    private fun sendHostKey(")
-        assertTrue("找不到 handleAction 的內容,這條測試已經失效", body.length > 500)
-
+        val body = handleActionBody()
         val missing = ActionVerb.values()
             .filter { it !in VerbSupport.UNIMPLEMENTED }
             .filterNot { Regex("""ActionVerb\.${it.name}\b""").containsMatchIn(body) }
@@ -196,6 +192,47 @@ class DeadKeyTest {
                 "寫得出這個動作的佈局會得到一顆按了沒反應的鍵",
             emptyList<ActionVerb>(),
             missing,
+        )
+    }
+
+    /**
+     * 「有一支分支」還不夠 —— 那一支不可以只是 `Unit`。
+     *
+     * ── 這條是實測補上的,不是想出來的 ──────────────────────────────────
+     * 上面那條只問「`when` 裡出不出現這個動詞的名字」。把 `EMOJI` 從
+     * [VerbSupport.UNIMPLEMENTED] 拿掉之後實測:
+     *
+     *   · 工具列的過濾條件消失 → 12 份主題裡的表情鍵**全部長回來**
+     *     (default-* 明寫、其餘 8 份繼承),模擬器上看得到那顆 ☺;
+     *   · 分派落到 `ActionVerb.EMOJI -> Unit`,按下去什麼都不會發生;
+     *   · **367 項單元測試全過。**
+     *
+     * 也就是說,這套機制原本可以被一行刪除安靜地繞過,而症狀正是它當初要防的
+     * 那一個。`when` 需要窮盡,所以未實作的動詞必須留一支空分支 —— 那就讓
+     * 「空分支」與「未實作清單」互相釘住:**只要不在清單裡,就不准是空的。**
+     *
+     * `NOOP` 是唯一的例外,它的語義本來就是什麼都不做(§9.5:未知 verb 會被
+     * 降級成 noop)。
+     */
+    @Test
+    fun `已實作的動詞沒有一個落在空的分派分支上`() {
+        val body = handleActionBody()
+        val silent = ActionVerb.values()
+            .filter { it !in VerbSupport.UNIMPLEMENTED }
+            .filter { it != ActionVerb.NOOP }
+            .filter { v ->
+                Regex(
+                    """ActionVerb\.${v.name}\b[^\n]*->\s*Unit\s*$""",
+                    RegexOption.MULTILINE,
+                ).containsMatchIn(body)
+            }
+        assertEquals(
+            "這幾個動詞宣稱已實作,但 handleAction 的分支是空的 `-> Unit` —— " +
+                "鍵畫得出來、按下去有回饋色,就是什麼都不會發生。\n" +
+                "要嘛把它實作出來,要嘛把它加回 VerbSupport.UNIMPLEMENTED " +
+                "(工具列會據此不渲染它)。",
+            emptyList<ActionVerb>(),
+            silent,
         )
     }
 
@@ -251,6 +288,25 @@ class DeadKeyTest {
             .filter { it.isFile && it.name.endsWith(".yaml") }
             .map { it.name.removeSuffix(".yaml") }
             .sorted()
+
+    /**
+     * `handleAction` 的 `when` 本體。
+     *
+     * 長度下限不是防禦性程式設計,是這一檔的命脈:方法改名或搬家時
+     * `substringAfter` 會安靜地回傳整份檔案或空字串,兩條分派測試就會
+     * **在該紅的時候變綠**。寧可讓它直接紅在這裡。
+     */
+    private fun handleActionBody(): String {
+        val src = serviceSource()
+        val body = src.substringAfter("private fun handleAction(action: KeyAction) {")
+            .substringBefore("\n    private fun sendHostKey(")
+        assertTrue(
+            "找不到 handleAction 的內容(長度 ${body.length})—— " +
+                "方法改名或搬家了就要改這裡,不能讓這兩條測試靜靜地不跑",
+            body.length in 501..20000 && body.contains("when (action.verb) {"),
+        )
+        return body
+    }
 
     private fun serviceSource(): String {
         val f = File(

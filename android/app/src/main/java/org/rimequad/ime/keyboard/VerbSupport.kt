@@ -45,9 +45,18 @@ object VerbSupport {
         // 這個動詞頂替(見該檔註解),那顆鍵因此從來沒有作用過。
         ActionVerb.EMOJI,
 
-        // rime_shell 只給了換頁(`rs_change_page`),沒有「把高亮移到上／下一個
-        // 候選」。這是 ABI 缺口不是本端偷懶,已向協調端回報;補上之前任何
-        // `candidate:next` / `candidate:prev` 都只會是一顆沒反應的鍵。
+        // ⚠ 這一項的理由**換過一次**,原本寫的是「rime_shell 沒有移動高亮的
+        // 函式,是 ABI 缺口」。那已經不成立了:`rs_highlight_candidate` 現在
+        // 在 core/include/rime_shell.h(§9.5 也把規範改成以它為準)。
+        //
+        // 現在的真正理由是:**Android 這一端還沒接 JNI 綁定。** 門面層有函式,
+        // 但 android/app/src/main/cpp/jni_bridge.cc 與 core/RimeCore.kt 都沒有
+        // 對應的 nativeHighlightCandidate,而那兩個檔案不屬於本支線,
+        // 已照 coordination.md §2 寫進 §5 回報,不自行跨界修改。
+        //
+        // 接上之後把這兩項刪掉並補分派;⚠ 分派要用 `rs_highlight_candidate`,
+        // 不是 `rs_select_candidate(i+1)` —— 後者會**選定**候選(依方案可能
+        // 直接上屏),規範 §9.5 明文點名這個寫法是錯的。
         ActionVerb.CANDIDATE_NEXT,
         ActionVerb.CANDIDATE_PREV,
     )
