@@ -95,3 +95,16 @@ jobs:
 
       - name: 核心驗證 — 注音 su3cl3 → 你好
         run: ./apple/scripts/verify_console.sh su3cl3 bopomofo_tw 你好
+
+      # 這一輪沒有 .app（IMKit/候選窗是下一輪）。打包的是核心層：
+      # 驗證過的靜態庫、標頭、rime_console。Ubuntu 建置機編不了 macOS，
+      # CI 是唯一的建置管道，所以這包要留下來給下一輪的 Swift 綁定用。
+      - name: 打包核心產物
+        run: ./apple/scripts/package_core.sh
+
+      - name: 上傳核心產物
+        uses: actions/upload-artifact@v4
+        with:
+          name: rime-macos-core
+          path: apple/build/dist/*.tar.gz
+          if-no-files-found: error
