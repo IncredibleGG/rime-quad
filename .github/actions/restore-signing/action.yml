@@ -1,0 +1,104 @@
+name: 還原簽章環境
+description: >
+  從 GitHub Secrets 重建 `~/rime-signing` 的等價物,讓 CI 建出來的 APK 與那台
+  Ubuntu 建的是**同一把金鑰、同一條輪替鏈**。
+
+  為什麼這件事非做不可:Android 規定升級一個已安裝的 app,新 APK 必須由
+  同一把金鑰簽。CI 原本零個 secret,build.gradle.kts 於是落入「找不到
+  signing.properties」的退路,用 runner 每次隨機新生的 debug 金鑰簽 ——
+  那種 APK 看起來完全正常(aapt2 讀得出 versionCode、檔頭是 PK\x03\x04),
+  但發出去之後**所有既有使用者都裝不上來**,只能移除重裝、失去自訂詞庫。
+
+  秘密不會被印出來:這裡只寫檔案,不 echo 任何值。GitHub 也會遮罩,
+  但不主動印才是真的安全 —— 遮罩對 base64 重新編碼過的片段是無效的。
+
+inputs:
+  keystore-base64:       { required: true }
+  keystore-password:     { required: true }
+  key-alias:             { required: true }
+  key-password:          { required: true }
+  lineage-base64:        { required: true }
+  old-keystore-base64:   { required: true }
+  old-key-alias:         { required: true }
+  old-keystore-password: { required: true }
+  old-key-password:      { required: true }
+
+runs:
+  using: composite
+  steps:
+    - name: 寫出金鑰與 signing.properties
+      shell: bash
+      env:
+        KS_B64:        ${{ inputs.keystore-base64 }}
+        KS_PASS:       ${{ inputs.keystore-password }}
+        KEY_ALIAS:     ${{ inputs.key-alias }}
+        KEY_PASS:      ${{ inputs.key-password }}
+        LINEAGE_B64:   ${{ inputs.lineage-base64 }}
+        OLD_KS_B64:    ${{ inputs.old-keystore-base64 }}
+        OLD_KEY_ALIAS: ${{ inputs.old-key-alias }}
+        OLD_KS_PASS:   ${{ inputs.old-keystore-password }}
+        OLD_KEY_PASS:  ${{ inputs.old-key-password }}
+      run: |
+        set -euo pipefail
+        # secret 沒設好時**中止**,不是退回 debug 金鑰。這個專案已經被
+        # 「安靜地退回一個看起來正常的替代品」咬過好幾次。
+        # (副作用:fork 送來的 PR 拿不到 secret,所以 fork PR 跑不了這條線。
+        #  那是刻意的 —— 讓外人的 PR 拿到正式簽章金鑰才是真正的問題。)
+        for v in KS_B64 KS_PASS KEY_ALIAS KEY_PASS LINEAGE_B64 OLD_KS_B64 \
+                 OLD_KEY_ALIAS OLD_KS_PASS OLD_KEY_PASS; do
+          if [ -z "${!v}" ]; then
+            echo "簽章 secret 沒設(對應 $v)。CI 會退回 runner 隨機產生的 debug 金鑰," >&2
+            echo "建出來的 APK 所有既有使用者都裝不上來。拒絕繼續。" >&2
+            echo "設定方式:在有金鑰的機器上跑 scripts/gh_set_secrets.py" >&2
+            exit 1
+          fi
+        done
+
+        umask 077
+        DIR="$RUNNER_TEMP/rime-signing"
+        rm -rf "$DIR"; mkdir -p "$DIR"; chmod 700 "$DIR"
+
+        printf '%s' "$KS_B64"     | base64 -d > "$DIR/rime-release.jks"
+        printf '%s' "$LINEAGE_B64"| base64 -d > "$DIR/signing-lineage.bin"
+        printf '%s' "$OLD_KS_B64" | base64 -d > "$DIR/old-debug.keystore"
+
+        # apksigner 的 `file:` 取值是**依序讀行**,兩個參數不能共用同一個檔
+        # (共用會在第二次讀取時撞到檔尾)。所以是兩個檔,與本機的佈局一致。
+        printf '%s\n' "$KS_PASS"  > "$DIR/ks-pass.txt"
+        printf '%s\n' "$KEY_PASS" > "$DIR/key-pass.txt"
+
+        {
+          echo "storeFile=$DIR/rime-release.jks"
+          echo "storePassword=$KS_PASS"
+          echo "keyAlias=$KEY_ALIAS"
+          echo "keyPassword=$KEY_PASS"
+          echo "lineageFile=$DIR/signing-lineage.bin"
+          echo "oldStoreFile=$DIR/old-debug.keystore"
+          echo "oldStorePassword=$OLD_KS_PASS"
+          echo "oldKeyAlias=$OLD_KEY_ALIAS"
+          echo "oldKeyPassword=$OLD_KEY_PASS"
+          echo "storePassFile=$DIR/ks-pass.txt"
+          echo "keyPassFile=$DIR/key-pass.txt"
+        } > "$DIR/signing.properties"
+        chmod 600 "$DIR"/*
+
+        echo "RIME_SIGNING_DIR=$DIR" >> "$GITHUB_ENV"
+
+    - name: 確認還原出來的東西是完整的
+      shell: bash
+      run: |
+        set -euo pipefail
+        DIR="$RUNNER_TEMP/rime-signing"
+        for f in rime-release.jks signing-lineage.bin old-debug.keystore \
+                 signing.properties ks-pass.txt key-pass.txt; do
+          [ -s "$DIR/$f" ] || { echo "簽章檔 $f 空的或不存在 —— secret 內容不對" >&2; exit 1; }
+        done
+        # 「檔案存在」不等於「是對的東西」。base64 解錯、或上傳時貼到別的檔,
+        # 產出的仍然是一個非空檔案,而失敗會拖到 apksigner 那一步才出現。
+        # 這裡直接要 apksigner 把輪替鏈讀出來:讀得出來且長度 >= 2 才算數。
+        BT="$(ls -d "$ANDROID_SDK_ROOT"/build-tools/*/ | sort -Vr | head -1)"
+        N="$("$BT/apksigner" lineage --in "$DIR/signing-lineage.bin" --print-certs \
+             | grep -c 'in lineage certificate SHA-256' || true)"
+        [ "${N:-0}" -ge 2 ] \
+          || { echo "signing-lineage.bin 讀出 $N 把金鑰,不是有效的輪替鏈" >&2; exit 1; }
+        echo "簽章環境就緒:輪替鏈 $N 把金鑰(內容不列印)"

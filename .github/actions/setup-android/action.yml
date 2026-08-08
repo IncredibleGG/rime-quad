@@ -1,0 +1,41 @@
+name: 設定 Android 建置環境
+description: >
+  JDK 17 + Android SDK,版本一律釘死。三個 job 都要這一段,抄三份遲早會漂移
+  —— 而漂移的徵狀是「同一份程式碼在 fast 是綠的、在 emulator 是紅的」,
+  那種問題最難查。所以抽成一個 composite action。
+
+inputs:
+  ndk:
+    description: 是否安裝 NDK 與 CMake(交叉編譯、以及 rime_console 的 host 端編譯需要)
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '17'
+
+    - uses: android-actions/setup-android@v3
+
+    - name: 安裝 build-tools 與 platform
+      shell: bash
+      run: |
+        set -euo pipefail
+        # build-tools 是 aapt2 / apksigner / d8 的來源,platform 是 android.jar
+        # (scripts/build_testapp.sh 要用)。
+        # scripts/ 底下的腳本自己找版本最高的一份,所以這裡保證的是「至少有這一份」。
+        sdkmanager --install "platform-tools" "platforms;android-35" "build-tools;35.0.0" > /dev/null
+        echo "$ANDROID_SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
+
+    - name: 安裝 NDK 與 CMake
+      if: inputs.ndk == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        # 版本必須與 third_party/prebuilt/manifest.json 記錄的一致 ——
+        # 那些 .a 就是用這個 NDK 編出來的,混用會出現難查的 ABI 問題。
+        sdkmanager --install "ndk;27.2.12479018" "cmake;3.22.1" > /dev/null
+        echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
