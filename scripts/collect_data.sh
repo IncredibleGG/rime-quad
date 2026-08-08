@@ -114,19 +114,41 @@ done
 note "schema_list 的四個方案都有對應檔案"
 
 # 每個 schema 引用的 dictionary 都必須有對應的 .dict.yaml
+#
+# ⚠ 抽取器不可以用 grep -oP。-P 與 \K 是 GNU/PCRE 專屬,BSD grep(macOS)
+#   根本沒有 -P,會直接以 exit 2 拒絕。原本這行寫成
+#       < <(grep -oP '...\K...' "$f" 2>/dev/null || true)
+#   三層消音之後(2>/dev/null 吃掉錯誤訊息、|| true 吃掉結束碼、
+#   process substitution 裡的失敗又不觸發 set -e),在 macOS 上迴圈跑零次、
+#   missing 恆為 0,於是它**每一次都印「所有 schema 引用的詞庫都齊全」**,
+#   不管詞庫在不在 —— 一個永遠不會發現問題的檢查。
+#   (在真的 macOS 上以兩本刻意缺席的詞庫重現過。)
+#   改用 awk:BSD 與 GNU 的行為一致,且不需要 PCRE。
 missing=0
+refs=0
 for f in "$OUT_SHARED"/*.schema.yaml; do
   while read -r d; do
     [ -z "$d" ] && continue
     [ "$d" = '""' ] && continue
     d="${d//\"/}"
+    [ -z "$d" ] && continue
+    refs=$((refs + 1))
     if [ ! -f "$OUT_SHARED/$d.dict.yaml" ]; then
       echo "  [警告] $(basename "$f") 引用 dictionary: $d，但沒有 $d.dict.yaml"
       missing=$((missing + 1))
     fi
-  done < <(grep -oP '^\s*dictionary:\s*\K\S+' "$f" 2>/dev/null || true)
+  done < <(awk '/^[[:space:]]*dictionary:[[:space:]]/ { print $2 }' "$f")
 done
-[ "$missing" -eq 0 ] && note "所有 schema 引用的詞庫都齊全" \
+
+# 「一個引用都沒抽到」本身就不可能(隨附的 schema 必定引用詞庫)。
+# 少了這一條,抽取器將來若再被改壞,這個檢查會再一次靜靜地全綠 ——
+# 那正是上面那個 bug 之所以能存在這麼久的原因。
+[ "$refs" -gt 0 ] || die "在所有 .schema.yaml 裡一個 dictionary: 都沒抽到 —— 抽取器壞了,不是資料乾淨"
+
+# 注意:這裡刻意維持「只警告、不中斷」。未列入 schema_list 的方案
+# (例如隨附但不啟用的 bopomofo/stroke)引用缺檔是容許的,見下方訊息。
+# 真正該擋的是 schema_list 那四個方案,那由上面的 die 與各端的驗證負責。
+[ "$missing" -eq 0 ] && note "所有 schema 引用的詞庫都齊全（檢查了 $refs 個引用）" \
                      || echo "  共 $missing 個引用缺檔（若屬於未列入 schema_list 的方案則可忽略）"
 
 echo
