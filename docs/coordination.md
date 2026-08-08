@@ -185,6 +185,110 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
 - `[2026-08-08] [Windows] ⚠ 給其餘三端(尤其是 macOS/iOS 會做常駐進程的):**進入點若是寬字元版本,glog 會在初始化時空指標解參考。** glog 的 ProgramInvocationShortName() 在 Windows/MSVC 上走 const_basename(__argv[0])(deps/glog/src/utilities.cc 的 HAVE___ARGV 分支),而 __argv 只有在 CRT 以窄字元進入點啟動時才會被填 —— 用 wmain 的話 CRT 只填 __wargv,__argv 是 NULL。症狀是「一啟動就 0xC0000005,堆疊在 glog 深處」,與進入點看起來毫無關聯,花了五輪 CI 才查到(run #16–#20)。tools/rime_console.cc 用的是 main,所以它一直是綠的。Apple 端不走這條路徑,但**任何新的、會連結 librime 的執行檔都要注意進入點**,而且不要相信「rime_console 過了所以引擎沒問題」——引擎沒問題,是宿主的進入點有問題。`
 - `[2026-08-08] [Windows] 驗證用的使用者目錄要明確指定方案。librime 把「上次選的方案」記在 <user>/user.yaml。Windows 的 verify_ime.sh 沿用 verify_console.sh 編好的使用者目錄以省下詞庫編譯時間,結果拿到的是上一支腳本最後選的注音,nihao 被打成「所噢草莓」。四端的驗證腳本若有共用使用者目錄的,同樣要明著選方案 ——「不指定」不是中性的。`
 
+- `[2026-08-08] [storefix] 動了原屬協調端的 scripts/schema_store/、scripts/build_schema_store.sh、docs/schema-store.md，以及重新產生 core/schema-languages.json —— 經使用者指示。沒有動 android/、apple/、windows/、docs/theme-format.md，也沒有動 core/ 的其他檔案。`
+
+- **[2026-08-08] [storefix] 方案 id 不是全域唯一 —— 掃過索引裡真實的 34 個套件，撞號共 9 個 id，不是原先以為的一個。**
+
+  | schema id | 提供者 | 性質 |
+  |---|---|---|
+  | `double_pinyin` | `double-pinyin` / `ice` | **內容相反**：繁體詞庫 vs 簡體 |
+  | `double_pinyin_abc` | `double-pinyin` / `ice` | 內容相反（繁／簡） |
+  | `double_pinyin_flypy` | `double-pinyin` / `ice` | 內容相反（繁／簡） |
+  | `double_pinyin_mspy` | `double-pinyin` / `ice` | 內容相反（繁／簡） |
+  | `pinyin_simp` | `pinyin-simp` / `wubi86-jidian` | 都是簡體，但**詞庫不同** |
+  | `radical_pinyin` | `ice` / `radical-pinyin` | schema 與 dict 兩個檔都不同 |
+  | `bopomofo_tw` | `@builtin` / `bopomofo` | 同一份上游，來源不同 |
+  | `luna_pinyin` | `@builtin` / `luna-pinyin` | 同一份上游，來源不同 |
+  | `luna_pinyin_tw` | `@builtin` / `luna-pinyin` | 同一份上游，來源不同 |
+
+  唯一鍵定為 `uid = <套件 id>/<方案 id>`，保留命名空間 `@builtin/…`（內建方案）與
+  `@local/<來源>/…`（使用者自帶）。規範見 docs/schema-store.md §1.2。
+  清單維護在 `scripts/schema_store/data/known_collisions.yaml`，測試拿真實語料
+  **雙向**比對 —— 上游多一個撞號會紅，少一個也會紅（清單不會腐爛成「以前有人看過一次」）。
+
+- **[2026-08-08] [storefix] ⚠ 比 id 撞號更嚴重的一層：檔案撞名。**
+  套件 zip 解壓到同一個 `user_data_dir`，同名檔案就是互相覆蓋，**誰後裝誰贏，
+  而畫面上什麼都不會說**。真實資料裡有 **14 個路徑**由多個套件提供，牽涉 7 個套件。
+  最不明顯的是 `key_bindings.yaml` / `punctuation.yaml` / `symbols.yaml`
+  （`moran` vs `prelude`）與 `default.yaml`（`ice` / `moran` / `prelude`）——
+  這幾個被所有方案 `__include`，被蓋掉影響的是使用者裝的**每一個**方案，
+  不只是撞號的那一個。使用者可見的症狀：裝了雾凇之後，原本的繁體雙拼靜靜變成簡體。
+  索引因此新增選填的 package 層級 `conflicts` 欄位（誰會蓋掉誰的哪些檔案），
+  讓行動端在**安裝前**就講得出來。徹底解法（每個套件各自的子目錄）需要 librime
+  支援多來源的 user_data_dir，不在本輪範圍。
+
+- **[2026-08-08] [storefix] 索引格式加了欄位，`format_version` 維持 1，新增 `format_minor`。四端都請照這條規則。**
+  理由：現行 Android 讀取端寫的是 `format_version != 1 → 整份拒收`（是 `!=` 不是 `>`），
+  所以**任何一次 major 遞增都會讓所有已出貨的 app 同時失去整個市集**——
+  使用者看到的不是「有新功能」，是「一個方案都沒有」。規則寫進 docs/schema-store.md §1.1：
+  major 只在破壞性變更時動，且必須併發雙檔過渡；加欄位走 minor；
+  讀取端**不得**拿 minor 當拒收依據、不認得的鍵一律忽略。
+  `test_store.py` 的 `test_MUTATION_bumping_major_breaks_every_shipped_app` 把這個後果釘住。
+
+- **[2026-08-08] [storefix→Android] 交接：store 的消費端要怎麼改。⚠ 我沒有動 `android/` 底下任何檔案（那是 dict 支線的檔案），以下是「要做什麼」。**
+  索引與隨 APK 出貨的對照表都已經帶著新欄位，Android 不改也不會壞（欄位是加上去的），
+  但下列每一條在撞號的 9 個 id 上都會給出錯誤答案：
+
+  1. **`StoreSchemaRef` 加 `uid: String?`**（`store/SchemaIndex.kt`）。索引的
+     `packages[].schemas[]` 與 `builtin_schemas[]` 都有了。舊索引沒有 → `null`，
+     就地以 `pkg.id + "/" + schema.id` 補上（那正是伺服器側的算法）。
+     同時新增的 `schemas[].language_source`（`upstream` / `curated` / `derived` /
+     `unknown`）可以拿來決定要不要在 UI 上說「這個分類是推測的」。
+  2. **`InstalledRegistry` 帳本升到 `FORMAT_VERSION = 2`。** 遷移**無損且不需連網**
+     （離線為預設是硬約束）：v1 本來就以套件為單位存，
+     `uid = pkg.id + "/" + schema.id`；`source == "local"` 走
+     `@local/<清理過的來源>/<schema>`。規則與**冪等性**要求見 docs/schema-store.md §4.1，
+     參考實作 `scripts/schema_store/registry.py`，測試
+     `test_store.py::TestRegistryMigration`（7 條，含「跑第二次不可弄壞資料」與
+     「壞紀錄不可丟掉，否則磁碟上的檔案變孤兒」）。Kotlin 端照著寫，兩邊行為要一致。
+  3. **`InstalledRegistry.layoutForSchema(schemaId)` / `noteForSchema(schemaId)`
+     目前是 `firstOrNull { 任何套件有這個 id }`** —— 使用者同時裝了 `double-pinyin`
+     與 `ice` 時，它回的是「帳本裡先出現的那個套件」的佈局，不是使用者正在用的那個。
+     改成以 uid 查。只拿得到裸 id 時（librime 的 `schema_list` 用的就是裸 id），
+     若該 id 有多個提供者要有**明確的決勝規則** —— 建議「最後一次安裝的優先」，
+     因為磁碟上贏的就是它 —— 不要靠 `firstOrNull` 的偶然順序。
+  4. **`SchemaIndex.languageTags()` / `InstalledRegistry.languageTags()` 回傳
+     `Map<裸 id, tag>`** —— 撞號的 id 在這裡會被後者覆蓋前者。改讀 uid 表。
+     隨 APK 出貨的 `core/schema-languages.json` 已經加了 `schemas_by_uid`（96 筆，完整）；
+     原本以裸 id 為鍵的 `schemas`（83 筆）**一個字都沒動** —— 這次的 diff 是純新增，
+     不改 app 也不會有任何行為變化。裸 id 表的收錄規則仍是「判定不同的撞號 id 不收」
+     （目前 4 個 double_pinyin*），`pinyin_simp` / `radical_pinyin` 兩邊判定相同照收：
+     為了「內容不同」丟掉一個確定的正確答案，只會讓讀取端退回字面啟發式，那才是真的會分錯。
+     `SchemaLanguages.parse` 的 `format_version == 1` 檢查不必改。
+  5. **`SchemaIndex.packageProviding(schemaId)`** 同樣是「第一個提供者」，撞號時挑錯。
+  6. **新的 `conflicts` 欄位要上 UI**：安裝前告知「這個套件會覆蓋掉 X 的這幾個檔案」。
+  7. **自帶檔案匯入的 id**（`SchemaStore.kt` 的
+     `"local:" + displayName.substringBeforeLast('.')`）是使用者輸入衍生的，
+     可能含 `/` 或空白。走 `@local` 命名空間前要把非 `[A-Za-z0-9._-]` 的字元換成 `_`
+     （見 `scripts/schema_store/uid.py` 的 `local_uid()`）。
+
+- **[2026-08-08] [storefix] 語言標記（BCP 47）的判定資料全部搬進版控**：
+  `scripts/schema_store/data/languages.yaml`（原本散在 `languages.py` 的 dict 裡）。
+  每一筆人工判定都必須附 `why`，沒寫理由的在載入時直接 die。
+  索引新增 `language_source` 分級：`upstream`（上游 metadata，即 rppi 的分類路徑）/
+  `curated`（我們自己標的）/ `derived`（啟發式：方案名字樣、詞庫繁簡探針）/ `unknown`；
+  多成分時取最不可靠的那一個。逐條依據另外產生 `languages.json`，與 `index.json`
+  一起發布，任何人都可以複查每一個標記的來歷。
+  目前 101 個方案（市集 97 + 內建 4）：有標記 96、明確「本來就不是語言」5
+  （IPA 兩套與三個工具方案）、**未知 0**；來源分佈 upstream 3 / curated 19 / derived 79。
+  `build_schema_store.sh` 以 `--max-unknown 0` 釘住 —— 上游哪天加了判不出來的東西，
+  建置會擋下來，而不是讓一個 `und` 悄悄混進選單的「其他」分組
+  （使用者會以為清單裡沒有他要的東西）。
+
+- **[2026-08-08] [storefix] 共用腳本介面變動，其他端請知悉。**
+  `scripts/build_schema_store.sh` 新增 `--phase test`（撞號與語言標記測試，39 項，
+  含 8 條植入違規的反向測試），並在 `index` 階段之後自動重新產生測試語料
+  `scripts/schema_store/data/corpus.json`（真實 34 個套件的脫水版，22KB，進版控，
+  讓測試在沒有 891MB 上游 clone 的環境也跑得動）。
+  `index` 階段現在同時寫 `core/schema-languages.json`（多了 `schemas_by_uid`）與該語料；
+  `upload` 階段多傳一個 `languages.json` 並一樣用 curl 驗對外網址與 Content-Length。
+  測試在缺少現場資料時會 skip，但收尾一定印出醒目的「以下 N 項沒有跑」，
+  且 `--require-live` 會讓 skip 直接算失敗 —— 這個專案有過「測試安靜地跳過自己
+  卻報一片全綠」的前科。
+  CI 另開一條 `.github/workflows/schema-store.yml`（`on.push.branches: [main, storefix]`），
+  只跑那 41 項測試 —— 它靠版控裡的語料，不需要上游 clone 也不需要模擬器，約 1 分鐘。
+  **沒有動 build.yml**（那是 Android 那條，避免撞在同一個檔案上）。
+
 ---
 
 ## 6. 各端狀態
