@@ -130,6 +130,31 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
 - `[2026-08-08] [macOS] 新增的欄位全部有預設值、不寫等同 v1 既有行為,所以**不遞增 major**(§5.3)。lines 預設 1 就是 v1 的單行,§10 第 19 條把那組數字釘死了。`
 
 
+- `[2026-08-08] [Windows] 候選窗規範的缺口,實作桌面候選窗時撞到的。我沒有改 docs/theme-format.md（規範所有權在 macOS 端），以下照 §2 回報：`
+  1. **`§8.6.7 max_width` 的溢出行為寫的是「換行／截斷,由實作決定」。**
+     那正好是最需要一致的地方。Windows 目前的行為是**橫排時截斷**(並記錄
+     被丟掉幾個候選)、**直排時不截字讓窗變寬**;而且第一個候選一定放進去,
+     就算它自己就超過 max_width —— 給一個空的候選窗比太寬更難理解。
+     兩端各自決定的話,同一份主題在 macOS 與 Windows 上會看到不同數量的候選。
+  2. **標籤↔候選文字↔註解之間的間距沒有欄位。** `§8.6.4` 只有 item 之間的
+     `spacing`,item **內部**三段之間沒有。Windows 暫用 `metrics.spacing`。
+  3. **`§8.6.7 follow_caret: false` 說「固定在螢幕角落」,沒說哪一個角。**
+     Windows 暫取右下。
+  4. **桌面候選窗的字型家族沒有欄位。** `§8.6.1–8.6.3` 只有 `size` 與 `color`。
+     Windows 暫用系統 UI 字型(`SPI_GETNONCLIENTMETRICS`),只套規範裡有的字級。
+  5. **`§8.6.7` 的 `backdrop` / `opacity` / `shadow.*` 在 Windows 上要用
+     分層視窗才做得到,而規範沒有說不支援時該怎麼退化**(只有 `backdrop`
+     那一列寫了「必須靜默退化為 none」)。Windows 目前這三項都還沒實作。
+  6. `§11` 已列的多欄/表格排版與狀態列外觀,Windows 端確認同樣撞到:
+     中/英、簡/繁的狀態指示目前**完全沒有畫**,因為沒有規範可依。
+  `→ 待 macOS 端動規範時一併裁決。在那之前 Windows 端刻意只用規範已寫下的欄位、
+     取規範預設值、不讀主題檔 —— 做滿等於自己發明一套。`
+- `[2026-08-08] [Windows] 產品決定待確認:TSF 的輸入法設定檔目前註冊在 langid 0x0404(zh-Hant-TW)底下,因為內建方案是 luna_pinyin_tw / bopomofo_tw。要不要另外註冊一份 0x0804(zh-Hans)是產品決定,不是技術限制 —— 多一份 profile 就多一個 GUID。→ 待裁決`
+- `[2026-08-08] [Windows] 只動了 windows/ 與 .github/workflows/windows.yml。workflow 的 on.push.branches 加了 windows 分支(原本只有 main,推到自己的分支不會跑 CI)。沒有動 core/、docs/theme-format.md、android/、apple/。`
+- `[2026-08-08] [Windows] 給其餘三端參考:core/include/rime_shell.h 的 rs_modifier 與 librime 的遮罩是兩套東西(kSuperMask 1<<26 是後者,由 core/src/rime_shell.cc 的 to_rime_mask 轉換)。Windows 端在 windows/tests/test_keymap.cc 放了一條斷言把自己那份重寫的 Mod 位元與 rime_shell.h 的 RS_MOD_* 逐位釘在一起,順便釘住 RIME_SHELL_ABI_VERSION == 1。core/ 那邊若要動 ABI,這條會紅。`
+- `[2026-08-08] [Windows] ⚠ 給其餘三端(尤其是 macOS/iOS 會做常駐進程的):**進入點若是寬字元版本,glog 會在初始化時空指標解參考。** glog 的 ProgramInvocationShortName() 在 Windows/MSVC 上走 const_basename(__argv[0])(deps/glog/src/utilities.cc 的 HAVE___ARGV 分支),而 __argv 只有在 CRT 以窄字元進入點啟動時才會被填 —— 用 wmain 的話 CRT 只填 __wargv,__argv 是 NULL。症狀是「一啟動就 0xC0000005,堆疊在 glog 深處」,與進入點看起來毫無關聯,花了五輪 CI 才查到(run #16–#20)。tools/rime_console.cc 用的是 main,所以它一直是綠的。Apple 端不走這條路徑,但**任何新的、會連結 librime 的執行檔都要注意進入點**,而且不要相信「rime_console 過了所以引擎沒問題」——引擎沒問題,是宿主的進入點有問題。`
+- `[2026-08-08] [Windows] 驗證用的使用者目錄要明確指定方案。librime 把「上次選的方案」記在 <user>/user.yaml。Windows 的 verify_ime.sh 沿用 verify_console.sh 編好的使用者目錄以省下詞庫編譯時間,結果拿到的是上一支腳本最後選的注音,nihao 被打成「所噢草莓」。四端的驗證腳本若有共用使用者目錄的,同樣要明著選方案 ——「不指定」不是中性的。`
+
 ---
 
 ## 6. 各端狀態
@@ -153,8 +178,11 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
   ⚠ **runner 沒有登入的圖形工作階段,所以候選窗、實際打字、修飾鍵、VoiceOver、
   各宿主 app 的相容性一項都沒驗到。完整清單見 apple/README.md §3。**
   規範 `docs/theme-format.md` 由本端擴充(見 §5),Windows 端可直接繼承。
-- **Windows** — 核心層已綠。`windows-latest`(windows-2025-vs2026 / MSVC 14.51)上以
-  MSVC 從原始碼建 librime 1.17.0 + 5 個依賴,`tools/rime_console.cc` 斷言
+- **Windows** — 核心層已綠,**TSF 輸入法已寫出但沒有人在真 Windows 上用過**。
+
+  第一個里程碑(核心層,協調端整理的那一段,保留):
+  `windows-latest`(windows-2025-vs2026 / MSVC 14.51)上以 MSVC 從原始碼建
+  librime 1.17.0 + 5 個依賴,`tools/rime_console.cc` 斷言
   `nihao → 你好`(luna_pinyin_tw)與 `su3cl3 → 你好`(bopomofo_tw)兩組;
   比對錨定 `^>>> COMMIT: ` 的最後一行且完全相等(只 grep「你好」會放過「你好嗎」),
   並先 `tr -d '\r'` —— MSVC 的 CRT 寫的是 CRLF,留著 CR 會讓比對失敗成
@@ -163,8 +191,26 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
   重宣告的那兩個私有符號靠 C++ mangling 對上,連得起來不等於接到對的函式。
   **產生器用 Ninja + vcvars,不要換回 Visual Studio 產生器**:VS 產生器的名字帶著
   VS 版本號,會把 CMake 版本與 runner 的 VS 版本綁死,第一版就是這樣掛掉的。
-  **尚未開始:TSF、COM、候選窗、按鍵映射 —— 下一輪。** 另外 Windows 端目前
-  **沒有編 librime-lua**,倚賴 lua_translator/lua_filter 的第三方方案會部署成功
-  卻沒有候選;`windows/build.sh` 有一道守門,日後掛上 lua 而沒帶 sandbox patch 會擋下建置。
-  只做 x64,arm64 未做。
+
+  第二個里程碑(TSF,本輪):瘦 DLL(`rime_tsf.dll`,只做 TSF 協議 + 按鍵映射
+  + IPC,**不含 librime**)加獨立服務進程(`rime_service.exe`,rime_shell +
+  librime + 候選窗),兩者以具名管道通訊(DACL 只授權目前使用者的 SID)。
+  按鍵映射不用常數表 —— 會產生字元的鍵一律問 `ToUnicodeEx(..., hkl)`,
+  並以**真實**的德文/法文佈局在 CI 上驗證(`LoadKeyboardLayout`)。
+  CI 分成兩個 job:`logic-x64`(不需 librime,約 3 分鐘)與 `core-x64`。
+  新驗到的:四個 COM 匯出正好那四個、`rime_tsf.dll` 的相依正好是
+  kernel32/user32/advapi32/ole32(守 `/MT`,沒有任何 CRT DLL)、
+  58 個單元測試 815 個斷言 + 反向測試、以及**經由真的具名管道**驅動服務
+  以 luna_pinyin_tw 打出「你好」。既有的 `rime_console` 核心驗證不回歸。
+
+  **驗不到的(完整清單見 `windows/README.md`「沒有被驗證的部分」):**
+  regsvr32 註冊、TSF 的 Activate 與組字、候選窗的樣子與位置、
+  在記事本/瀏覽器/Office 裡真的打得出字、每一顆鍵是不是都做了它宣稱的事。
+  **CI 綠不等於能用 —— 需要有人在真 Windows 上跑一遍。**
+
+  已知缺口:只有 x64(arm64 未做)、TSF 不給純修飾鍵事件(所以按 Shift 切中英
+  做不到)、沒有顯示屬性(組字底線)、沒有系統匣與安裝程式、
+  **沒有編 librime-lua**(倚賴 lua_translator/lua_filter 的第三方方案會部署成功
+  卻沒有候選;`windows/build.sh` 有一道守門,日後掛上 lua 而沒帶 sandbox patch
+  會擋下建置)。
 - **iOS** — 未開始。

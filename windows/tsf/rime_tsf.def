@@ -1,0 +1,13 @@
+; windows/tsf/rime_tsf.def — 匯出清單
+;
+; 這四個就是 COM in-proc server 的全部進入點。多匯出任何東西都沒有好處:
+; 這支 DLL 住在別人的進程裡,匯出表是它對外的全部表面積。
+;
+; CI 有一道 dumpbin /exports 對帳這份清單。少一個的話 regsvr32 會失敗,
+; 而失敗訊息不會告訴你少了哪一個。
+LIBRARY rime_tsf
+EXPORTS
+    DllGetClassObject   PRIVATE
+    DllCanUnloadNow     PRIVATE
+    DllRegisterServer   PRIVATE
+    DllUnregisterServer PRIVATE
