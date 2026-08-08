@@ -223,7 +223,12 @@ reg_key_exists "${HKLM_CTF}" && ok "${HKLM_CTF}" \
 #   在裡面設的 fail=1 傳不回來 —— 斷言會照常印出紅字然後整支腳本以 0 結束。
 #   那正是這個專案抓過最多次的失敗模式的一種變形。
 profile_langkey() { printf '0x%08x' "$((16#${1#0x}))"; }
-for line in ${PROFILES}; do
+# 用 here-string 餵 while,不用 `for line in ${PROFILES}` 靠 IFS 斷詞:
+# 後者的正確性取決於 IFS 沒被動過,而且在別的 shell 裡行為不同(zsh 預設
+# 根本不斷詞)。here-string **不是**管道,所以迴圈裡設的 fail=1 傳得回來 ——
+# 這一點比可讀性重要:管道右邊是子 shell,斷言會照常印紅字然後腳本以 0 結束。
+while IFS= read -r line; do
+  [ -z "${line}" ] && continue
   lang="${line%%=*}"          # 0x0404
   guid="${line#*=}"           # {07FB3057-…}
   key="${HKLM_CTF}\\LanguageProfile\\$(profile_langkey "${lang}")\\${guid}"
@@ -233,11 +238,25 @@ for line in ${PROFILES}; do
     note_fail "缺少 ${key}
      使用 ${lang} 這個語言的人在自己的語言底下找不到這個輸入法"
   fi
-done
+done <<< "${PROFILES}"
 
-n_cat="$(reg query "${HKLM_CTF_CAT}" //reg:64 2>/dev/null | tr -d '\r' | grep -c "^HKEY_" || true)"
-# reg query 會把被查的鍵自己也列出來,所以子鍵數要減一。
-n_cat="$((n_cat > 0 ? n_cat - 1 : 0))"
+# ⚠ 不要用「數 ^HKEY_ 的行數再減一」。
+#
+# reg.exe 只有在被查的鍵**有值**時才會印出鍵自己那一行標頭;沒有值(只有子鍵)
+# 時就直接列子鍵。Category\Category 正好是後者,所以「減一」會少算一個 ——
+# 而症狀是「註冊完全正確,CI 卻說能力類別不齊」,看起來像產品壞了。
+#
+# 改成只數「以這個鍵的完整路徑加一個反斜線開頭」的行。用 awk 的 index()
+# 而不是 grep 的正規式:登錄檔路徑裡全是反斜線與大括號,escape 到正規式裡
+# 是另一種會安靜出錯的東西。
+#
+# ⚠ 前綴走**環境變數**(ENVIRON)而不是 awk -v:awk 會對 -v 的值做跳脫序列
+#   處理,而這個值裡全是反斜線 —— \M \C \T \{ 這些會被當成未定義的跳脫,
+#   結果比對字串悄悄變形,計數永遠是 0。環境變數的值不會被處理。
+#   (rime-runs.sh 把 SHA 餵給 python 也是走環境變數,同一個理由。)
+n_cat="$(reg query "${HKLM_CTF_CAT}" //reg:64 2>/dev/null | tr -d '\r' \
+         | CATPREFIX="HKEY_LOCAL_MACHINE\\$(get_path HKLM_CTF_CATEGORY)\\" \
+           awk 'index($0, ENVIRON["CATPREFIX"]) == 1 { n++ } END { print n + 0 }')"
 [ "${n_cat}" -eq "${CATEGORY_COUNT}" ] \
   && ok "能力類別 ${n_cat} 類(GUID_TFCAT_TIP_KEYBOARD + 5 個能力類別)" \
   || note_fail "Category\\Category 底下 ${n_cat} 個,預期 ${CATEGORY_COUNT} 個
@@ -462,7 +481,8 @@ reg_key_exists "${HKLM_CTF}" \
   || ok "CTF\\TIP 已清乾淨"
 
 # 每一個語言都要消失,不是只消失一個。
-for line in ${PROFILES}; do
+while IFS= read -r line; do
+  [ -z "${line}" ] && continue
   lang="${line%%=*}"; guid="${line#*=}"
   key="${HKLM_CTF}\\LanguageProfile\\$(profile_langkey "${lang}")\\${guid}"
   if reg_key_exists "${key}"; then
@@ -470,7 +490,7 @@ for line in ${PROFILES}; do
   else
     ok "${lang} 的語言設定檔已清除"
   fi
-done
+done <<< "${PROFILES}"
 
 # ── 反向測試:解除安裝之後 check 必須紅 ──────────────────────────
 if "${TOOL}" check > "${WORK}/check-uninstalled.log" 2>&1; then
