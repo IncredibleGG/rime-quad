@@ -371,6 +371,10 @@ build_host_opencc() {
   fi
   log "建置 host opencc（產生 .ocd2 詞典）"
   local bdir="${THIRD_PARTY}/build/host-opencc"
+  # 這個路徑由 collect_data.sh 寫死，位於 third_party/build/ 底下。
+  # Android 端的 build_native.sh 會建立該目錄，macOS 這條路徑不經過它，
+  # 所以必須自己建 —— 否則底下的 > "${bdir}.configure.log" 會直接失敗。
+  mkdir -p "$(dirname "${bdir}")"
   "${CMAKE_BIN}" -S "${DEPS_SRC}/opencc" -B "${bdir}" \
     -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
     -DENABLE_GTEST=OFF -DENABLE_BENCHMARK=OFF -DBUILD_PYTHON=OFF \

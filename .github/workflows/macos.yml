@@ -7,6 +7,10 @@ name: macOS (核心驗證)
 # 與 Android 的 build.yml 的關係：
 #   Android 的 .a 是預先編好入版控的，日常只組裝 APK + 跑 JUnit。
 #   macOS 沒有預編的 .a（CI 是唯一的建置環境），所以這裡從原始碼全編。
+#
+# ⚠ 這裡刻意**不**驗證 UI。macos runner 沒有登入的圖形工作階段，
+#   系統不會從 ~/Library/Input Methods 載入輸入法，候選窗與實際打字
+#   在 CI 上驗不了（見 docs/handoff-macos.md §7）。這一層只保證核心。
 
 on:
   push:
@@ -28,6 +32,14 @@ jobs:
       - name: 取出原始碼
         uses: actions/checkout@v4
 
+      - name: 記錄工具鏈版本（失敗時要能重建現場）
+        run: |
+          sw_vers
+          echo "arch: $(uname -m)"
+          cmake --version | head -1
+          clang++ --version | head -1
+          bash --version | head -1
+
       - name: 取得方案原始資料（版本已釘死）
         run: ./scripts/fetch_rime_data.sh
 
@@ -37,22 +49,34 @@ jobs:
       - name: 組裝執行期資料
         run: ./scripts/collect_data.sh
 
-      - name: 核心驗證 — 拼音 nihao → 你好
+      - name: 確認執行期資料真的齊全
         run: |
-          OUT=$(./apple/build/rime_console \
-                core/data/shared core/data/user nihao 1 luna_pinyin_tw 2>&1) || true
-          echo "$OUT" | grep -vE '^[WIE][0-9]{8} ' || true
-          echo "$OUT" | grep -q '>>> COMMIT: "你好"' \
-            || { echo "=== 完整輸出 ==="; echo "$OUT"; \
-                 echo "斷言失敗：nihao 沒有產出「你好」"; exit 1; }
-          echo "✓ nihao → 你好"
+          # 少了這些檔案，後面每一步都會「成功」，但輸入法一個字都打不出來。
+          # 這是 Android 端 build.yml 檢查 APK assets 的同一個理由。
+          fail=0
+          for f in core/data/shared/essay.txt \
+                   core/data/shared/luna_pinyin.dict.yaml \
+                   core/data/shared/luna_pinyin_tw.schema.yaml \
+                   core/data/shared/bopomofo_tw.schema.yaml \
+                   core/data/shared/terra_pinyin.dict.yaml \
+                   core/data/user/default.custom.yaml; do
+            if [ -s "$f" ]; then echo "  ✓ $f"; else echo "  !! 缺少或空檔: $f"; fail=1; fi
+          done
+          n=$(ls core/data/shared/opencc/*.ocd2 2>/dev/null | wc -l | tr -d ' ')
+          echo "  opencc 詞典: $n 個 .ocd2"
+          [ "$n" -gt 0 ] || { echo "  !! 沒有任何 .ocd2，簡繁轉換會壞"; fail=1; }
+          exit $fail
+
+      - name: 斷言本體的反向測試（證明它真的會紅）
+        run: |
+          # 先證明斷言會失敗，再相信它的成功。
+          # docs/handoff-macos.md §7:「測試是綠的，因為它沒在測。」
+          # 這一步故意餵一個錯的預期值，斷言必須判定失敗；
+          # 若它通過了，代表斷言邏輯本身壞掉，後面兩步的綠沒有意義。
+          ./apple/scripts/verify_console.sh --expect-fail nihao luna_pinyin_tw 這不可能是結果
+
+      - name: 核心驗證 — 拼音 nihao → 你好
+        run: ./apple/scripts/verify_console.sh nihao luna_pinyin_tw 你好
 
       - name: 核心驗證 — 注音 su3cl3 → 你好
-        run: |
-          OUT=$(./apple/build/rime_console \
-                core/data/shared core/data/user su3cl3 1 bopomofo_tw 2>&1) || true
-          echo "$OUT" | grep -vE '^[WIE][0-9]{8} ' || true
-          echo "$OUT" | grep -q '>>> COMMIT: "你好"' \
-            || { echo "=== 完整輸出 ==="; echo "$OUT"; \
-                 echo "斷言失敗：su3cl3（注音）沒有產出「你好」"; exit 1; }
-          echo "✓ su3cl3 → 你好（注音）"
+        run: ./apple/scripts/verify_console.sh su3cl3 bopomofo_tw 你好
