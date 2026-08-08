@@ -1,0 +1,58 @@
+name: macOS (核心驗證)
+
+# 這個 workflow 驗證的是：librime + 資料 + rime_shell 門面在 macOS 上
+# 編得出來、跑得起來、而且真的打得出字。它是桌面端的品質基線 ——
+# 這裡是綠的，之後 IMKit 或候選窗出問題就必在 UI 那一側。
+#
+# 與 Android 的 build.yml 的關係：
+#   Android 的 .a 是預先編好入版控的，日常只組裝 APK + 跑 JUnit。
+#   macOS 沒有預編的 .a（CI 是唯一的建置環境），所以這裡從原始碼全編。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core-verify:
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: 取出原始碼
+        uses: actions/checkout@v4
+
+      - name: 取得方案原始資料（版本已釘死）
+        run: ./scripts/fetch_rime_data.sh
+
+      - name: 編譯原生層（librime + 5 個依賴 + librime-lua + rime_console）
+        run: ./apple/scripts/build_macos.sh
+
+      - name: 組裝執行期資料
+        run: ./scripts/collect_data.sh
+
+      - name: 核心驗證 — 拼音 nihao → 你好
+        run: |
+          OUT=$(./apple/build/rime_console \
+                core/data/shared core/data/user nihao 1 luna_pinyin_tw 2>&1) || true
+          echo "$OUT" | grep -vE '^[WIE][0-9]{8} ' || true
+          echo "$OUT" | grep -q '>>> COMMIT: "你好"' \
+            || { echo "=== 完整輸出 ==="; echo "$OUT"; \
+                 echo "斷言失敗：nihao 沒有產出「你好」"; exit 1; }
+          echo "✓ nihao → 你好"
+
+      - name: 核心驗證 — 注音 su3cl3 → 你好
+        run: |
+          OUT=$(./apple/build/rime_console \
+                core/data/shared core/data/user su3cl3 1 bopomofo_tw 2>&1) || true
+          echo "$OUT" | grep -vE '^[WIE][0-9]{8} ' || true
+          echo "$OUT" | grep -q '>>> COMMIT: "你好"' \
+            || { echo "=== 完整輸出 ==="; echo "$OUT"; \
+                 echo "斷言失敗：su3cl3（注音）沒有產出「你好」"; exit 1; }
+          echo "✓ su3cl3 → 你好（注音）"
