@@ -18,7 +18,21 @@ object RepoFixtures {
 
     val layouts: DocumentSource by lazy { dirSource(File(coreDir, "layouts")) }
 
-    val themeIds = listOf("default-light", "default-dark", "sakura-light", "sakura-dark")
+    /**
+     * `core/themes` 底下**每一份**主題，理由與 [layoutIds] 完全相同。
+     *
+     * 這裡一度也是手寫的四個 id，於是十二份主題有八份從來沒有被
+     * [org.rimequad.ime.theme.ThemeParserTest] 或 [MiniYamlTest] 載入過 ——
+     * 佈局那一份清單踩過的坑，主題這一份原封不動地留著。
+     * [org.rimequad.ime.keyboard.DeadKeyTest] 當時只好自己再掃一次目錄，
+     * 那正是「同一件事有兩份實作」的開端。
+     */
+    val themeIds: List<String> by lazy {
+        File(coreDir, "themes").listFiles().orEmpty()
+            .filter { it.isFile && it.name.endsWith(".yaml") }
+            .map { it.name.removeSuffix(".yaml") }
+            .sorted()
+    }
 
     /**
      * `core/layouts` 底下**每一份**佈局，不是手寫的白名單。

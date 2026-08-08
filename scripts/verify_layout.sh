@@ -36,7 +36,13 @@
 #       --keys n,i,h,a,o --expect 'n,ni,ni h,ni ha,ni hao'
 #
 #   ./scripts/verify_layout.sh --layout cn-t9-pinyin --schema t9_pinyin \
-#       --keys k_mno,k_ghi --expect '-,你好'
+#       --theme cn-compact-light --keys k_mno,k_ghi,space --expect '-,-,你'
+#
+#   ⚠ 上面這個例子原本寫的是 `--keys k_mno,k_ghi --expect '-,你好'`，那是錯的：
+#     兩顆鍵之後畫面上是**組字中**的 `MG` 加一排候選（你 米 迷 擬 尼），
+#     還沒有上屏，所以編輯框裡不可能是「你好」。要有字上屏就得再選一次候選
+#     （九宮格上是空白鍵）。照著錯的例子跑會得到一個 DIFF，
+#     然後開始懷疑佈局 —— 但佈局是對的。
 #
 # 選項
 #   --layout <id>     要驗的佈局（core/layouts/<id>.yaml）
@@ -320,6 +326,10 @@ printf '%s\n' "-----------------------------------------------------------------
 
 STEP=0
 LAST_CS="-1"
+# 「這一輪裡 librime 到底有沒有參與」要看**任何一步**有沒有組字區,不是最後一步。
+# 見底下那段檢查的註解 —— 只看最後一步會把正常的中文輸入判成失敗。
+SAW_COMPOSING=0
+COMPOSING_AT=""
 for KID in "${KEY_ARR[@]}"; do
   XY="$(geom --key "$KID" --grid-top "$GRID_TOP" 2>"$OUT_DIR/keyerr.txt")"
   if [ -z "$XY" ]; then
@@ -334,6 +344,10 @@ for KID in "${KEY_ARR[@]}"; do
   RAW="$(last_state)"
   ACTUAL="$(state_text "$RAW")"
   LAST_CS="$(state_cs "$RAW")"
+  if [ "${LAST_CS:-"-1"}" != "-1" ] && [ "$SAW_COMPOSING" -eq 0 ]; then
+    SAW_COMPOSING=1
+    COMPOSING_AT="$STEP（$KID）"
+  fi
   EXP="${EXP_ARR[$STEP]:-}"
   [ "$EXP" = "<empty>" ] && EXP=""
 
@@ -357,12 +371,21 @@ adbs exec-out screencap -p > "$OUT_DIR/final.png" 2>/dev/null
 
 # 組字區的確認。session 失效時 fallbackKey() 也會把字面字元 commit 進去，
 # 內容看起來一模一樣 —— 唯一可靠的分水嶺是「有沒有組字範圍」。
+#
+# ⚠ 判準是「**有沒有任何一步**出現過組字區」，不是「最後一步還在組字」。
+#    原本寫的是後者，於是**正常的中文輸入會被判成失敗**：
+#      k_mno, k_ghi, space → 你     ← 選了字就上屏，組字區當然消失
+#    腳本卻報「走的是 fallback 直接上屏，librime 沒真的參與」——
+#    一個看起來像重大缺陷、實際上是這支腳本自己按出來的假失敗，
+#    而且它指控的正好是相反的事實（librime 參與得最完整的那一種序列）。
+#    fallback 那條路**任何一步都不會**產生組字區，所以改成看整輪，
+#    要擋的東西一樣擋得住，而且不再冤枉正常的序列。
 if [ "$CHECK_COMPOSING" -eq 1 ]; then
-  if [ "${LAST_CS:-"-1"}" = "-1" ]; then
-    fail "最後一步沒有組字區（cs=-1）：字雖然進去了，走的卻是 fallback 直接上屏，librime 沒真的參與。"
+  if [ "$SAW_COMPOSING" -eq 0 ]; then
+    fail "整輪沒有任何一步出現組字區（cs 一直是 -1）：字雖然進去了，走的卻是 fallback 直接上屏，librime 沒真的參與。"
     FAILURES=$((FAILURES + 1))
   else
-    info "組字區確認：cs=$LAST_CS（librime 真的有參與）"
+    info "組字區確認：第 $COMPOSING_AT 步起有組字區（librime 真的有參與），最後一步 cs=$LAST_CS"
   fi
 fi
 
