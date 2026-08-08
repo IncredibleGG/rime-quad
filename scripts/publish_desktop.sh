@@ -89,6 +89,25 @@ macos)
   upload "$WORK/$NAME" "macos/$NAME"
   upload "$WORK/$NAME" "macos/RimeQuad-latest.tar.gz"
 
+  # .pkg 是主要下載。手動裝那條路徑(解壓→xattr→搬到隱藏目錄→登出)四步
+  # 任何一步錯都是**靜默失敗** —— 使用者第一次就把 .app 放進了 /Applications,
+  # 系統照樣登錄它、行程也起得來,但永遠不會出現在輸入來源清單裡。
+  fetch_artifact rime-macos-installer "$WORK/pkg"
+  PKG=$(ls "$WORK"/pkg/RimeQuad-*.pkg)
+  # 這裡只驗「它是不是一個真的 .pkg」—— Ubuntu 上沒有 xar / pkgutil,拆不開它。
+  # **內容由 CI 驗**:apple/scripts/verify_pkg.sh 在 macOS runner 上真的裝一次,
+  # 斷言檔案落在 ~/Library/Input Methods,並斷言 PackageInfo 的 install-location。
+  # 那一關才擋得住「少了 enable_currentUserHome → 裝到磁碟根目錄,而 Installer
+  # 仍然報成功」這種靜默失敗。這裡再驗一次只是防手滑傳錯檔案。
+  head -c4 "$PKG" | grep -q "xar!" \
+    || { echo "$PKG 不是 xar 封存(.pkg 應該是)" >&2; exit 1; }
+  [ "$(stat -c%s "$PKG")" -gt 3000000 ] \
+    || { echo ".pkg 只有 $(stat -c%s "$PKG") bytes —— 不可能帶著方案資料" >&2; exit 1; }
+  PNAME="RimeQuad-macos-$ARCH-$STAMP-$SHORT.pkg"
+  cp "$PKG" "$WORK/$PNAME"
+  upload "$WORK/$PNAME" "macos/$PNAME"
+  upload "$WORK/$PNAME" "macos/RimeQuad-latest.pkg"
+
   cat > "$WORK/README.txt" <<TXT
 RimeQuad macOS  $STAMP  ($SHORT, $ARCH)
 
@@ -96,7 +115,12 @@ RimeQuad macOS  $STAMP  ($SHORT, $ARCH)
    CI 驗過的是「編得起來、結構正確、105 項單元測試綠、核心層打得出你好」。
    候選窗會不會出現、在你的 app 裡打不打得出字——都還沒有被驗證過。
 
-安裝
+安裝(建議)
+
+  雙擊 RimeQuad-latest.pkg,下一步到底。它會裝到正確位置並處理隔離屬性。
+  裝完登出再登入,然後:系統設定 → 鍵盤 → 輸入來源 → + → 繁體中文/簡體中文 → RimeQuad
+
+手動安裝(進階,四步任何一步錯都是靜默失敗)
 
   tar xzf RimeQuad-latest.tar.gz
   xattr -dr com.apple.quarantine RimeQuad.app      # ← 不做這步，系統會靜默地不載入它
@@ -222,7 +246,12 @@ RimeQuad Windows x64  $STAMP  ($SHORT)
    DLL 沒有簽章。TSF 的 DLL 會被載入到每一個接受文字輸入的程式裡，
    請先在你不介意重開的機器上試。
 
-安裝
+安裝(建議)
+
+  雙擊 RimeQuad-Setup-x64-latest.exe,它會自己要求管理員權限。
+  裝完:設定 → 時間與語言 → 語言與地區 → 中文 → 選項 → 新增鍵盤 → RimeQuad
+
+手動安裝(進階,用 zip 那一份)
 
   1. 把整個資料夾解壓到一個固定位置（例如 C:\\RimeQuad）。
      ⚠ 之後不要搬動——註冊表記的是這個路徑。
@@ -261,6 +290,20 @@ TXT
     || { echo "包裡沒有方案資料——裝得起來但一個字都打不出來" >&2; exit 1; }
   upload "$WORK/$NAME" "windows/$NAME"
   upload "$WORK/$NAME" "windows/RimeQuad-windows-x64-latest.zip"
+
+  # Setup.exe 是主要下載:雙擊、自己跳 UAC、裝到 Program Files、
+  # 詞典放 %APPDATA%(裝在 Program Files 底下的 data\user 會因權限寫不進去)、
+  # 「新增或移除程式」裡有解除安裝項目。zip 那份留給想手動放的人。
+  fetch_artifact RimeQuad-Setup-x64 "$WORK/setup"
+  SETUP=$(ls "$WORK"/setup/RimeQuad-Setup-x64.exe)
+  [ -s "$SETUP" ] || { echo "Setup.exe 是空的" >&2; exit 1; }
+  # 反向確認:它是 PE 執行檔,不是誰放錯的文字檔
+  head -c2 "$SETUP" | grep -q "MZ" \
+    || { echo "Setup.exe 不是 PE 執行檔" >&2; exit 1; }
+  SNAME="RimeQuad-Setup-x64-$STAMP-$SHORT.exe"
+  cp "$SETUP" "$WORK/$SNAME"
+  upload "$WORK/$SNAME" "windows/$SNAME"
+  upload "$WORK/$SNAME" "windows/RimeQuad-Setup-x64-latest.exe"
   upload "$PKG/README.txt" "windows/README-latest.txt"
   ;;
 *)

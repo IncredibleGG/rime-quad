@@ -95,8 +95,11 @@ def snapshot():
     files = _rclone_list()
     data = {
         "android": _pick(files, "rime-android-", ".apk"),
-        "macos": _pick(files, "macos/RimeQuad-macos-", ".tar.gz"),
-        "windows": _pick(files, "windows/RimeQuad-windows-", ".zip"),
+        # 安裝程式是主要下載;壓縮包留給想手動放的人。
+        "macos": _pick(files, "macos/RimeQuad-macos-", ".pkg"),
+        "macos_archive": _pick(files, "macos/RimeQuad-macos-", ".tar.gz"),
+        "windows": _pick(files, "windows/RimeQuad-Setup-x64-", ".exe"),
+        "windows_archive": _pick(files, "windows/RimeQuad-windows-", ".zip"),
         "android_version": _android_version(),
         "at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
@@ -158,7 +161,7 @@ open ~/Library/Input\\ Methods/RimeQuad.app""",
 }
 
 
-def card(title, tag, tag_cls, items, extra_meta="", note="", install=""):
+def card(title, tag, tag_cls, items, extra_meta="", note="", install="", alt=None):
     if not items:
         return (f'<div class="card"><div class="head"><span class="name">{title}</span>'
                 f'<span class="tag warn">還沒有發布</span></div></div>')
@@ -179,6 +182,13 @@ def card(title, tag, tag_cls, items, extra_meta="", note="", install=""):
         body.append(f'<div class="note">{note}</div>')
     if install:
         body.append(f"<pre>{html.escape(install.format(file=fname))}</pre>")
+    if alt and alt[1]:
+        a = alt[1][0]
+        body.append(
+            f'<div class="meta" style="margin-top:14px">{html.escape(alt[0])}:'
+            f'<a href="{html.escape(PUBLIC + "/" + a["path"])}">'
+            f'{html.escape(a["path"].split("/")[-1])}</a> · {mb(a["size"])}</div>'
+        )
     if len(items) > 1:
         old = "".join(
             f'<div><a href="{html.escape(PUBLIC + "/" + i["path"])}">'
@@ -206,17 +216,20 @@ def page():
         "<h1>RimeQuad 下載</h1>",
         f'<div class="sub">四端 RIME 輸入法 · 清單直接讀自 R2,{d["at"]} 更新</div>',
         card("Android", "可用的產品", "", d["android"], extra_meta=a_meta),
-        card("macOS (Apple Silicon)", "第一次可安裝", "warn", d["macos"],
-             note="還沒有安裝程式,要照下面的步驟裝。"
-                  "<b>一定要放進 ~/Library/Input Methods</b> —— 放到 /Applications "
-                  "會靜默失敗:系統照樣登錄它,但永遠不會出現在輸入來源清單裡。"
-                  "裝完登出再登入。",
-             install=INSTALL["macos"]),
-        card("Windows x64", "第一次可安裝", "warn", d["windows"],
-             note="解壓到一個固定位置(之後不要搬,註冊表記的是路徑),"
-                  "雙擊 <code>install.bat</code>,它會自己要求管理員權限。"
-                  "DLL 沒有簽章,而 TSF 的 DLL 會被載入到每一個接受文字輸入的程式裡。"),
-        '<div class="foot">桌面兩端目前沒有設定介面,只能用預設方案。iOS 還沒開始。</div>',
+        card("macOS (Apple Silicon)", "帶設定介面", "warn", d["macos"],
+             note="雙擊 .pkg,下一步到底,<b>裝完登出再登入</b>。"
+                  "然後系統設定 → 鍵盤 → 輸入來源 → + → 繁體中文/簡體中文 → RimeQuad。"
+                  "設定從選單列上的輸入法圖示打開。"
+                  "ad-hoc 簽章,不是可散布的正式版本。",
+             alt=("手動安裝(進階)", d["macos_archive"])),
+        card("Windows x64", "帶設定介面", "warn", d["windows"],
+             note="雙擊 Setup.exe,它會自己要求管理員權限。"
+                  "裝完:設定 → 時間與語言 → 語言與地區 → 中文 → 選項 → 新增鍵盤 → RimeQuad。"
+                  "設定從語言列按鈕或系統匣圖示打開。"
+                  "<b>沒有程式碼簽章</b>,SmartScreen 會攔;而 TSF 的 DLL 會被載入到"
+                  "每一個接受文字輸入的程式裡。",
+             alt=("手動安裝(進階)", d["windows_archive"])),
+        '<div class="foot">桌面兩端的設定介面是第一版,沒有人按過每一顆按鈕。iOS 還沒開始。</div>',
         "</div>",
     ]
     return "".join(parts)
