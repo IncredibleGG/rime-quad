@@ -193,11 +193,11 @@ layers:
             width: 1.34
             tap: "layer:sym1"
           - id: "lang"
-            label_from: input_mode
+            label_from: input_mode_pair
             icon: globe
             style: modifier
             width: 0.93
-            tap: "toggle:ascii_mode"
+            tap: "input_mode:toggle"
             long_press: "schema:picker"
           - id: "comma"
             label: "，"
@@ -311,7 +311,7 @@ layers:
       - weight: 1.0
         keys:
           - { id: "to_sym", label: "!#1", style: modifier, width: 1.34, tap: "layer:sym1" }
-          - { id: "lang", label_from: input_mode, icon: globe, style: modifier, width: 0.93, tap: "toggle:ascii_mode", long_press: "schema:picker" }
+          - { id: "lang", label_from: input_mode_pair, icon: globe, style: modifier, width: 0.93, tap: "input_mode:toggle", long_press: "schema:picker" }
           - { id: "comma", label: "，", width: 0.93, send: { keysym: "comma" } }
           - id: "space"
             icon: space
@@ -387,7 +387,7 @@ layers:
       - weight: 1.0
         keys:
           - { id: "to_abc", label: "ABC", style: modifier, width: 0.95, tap: "layer:lower" }
-          - { id: "lang", label_from: input_mode, icon: globe, style: modifier, width: 0.95, tap: "toggle:ascii_mode", long_press: "schema:picker" }
+          - { id: "lang", label_from: input_mode_pair, icon: globe, style: modifier, width: 0.95, tap: "input_mode:toggle", long_press: "schema:picker" }
           - id: "space"
             icon: space
             style: space
@@ -455,7 +455,7 @@ layers:
       - weight: 1.0
         keys:
           - { id: "to_abc", label: "ABC", style: modifier, width: 0.95, tap: "layer:lower" }
-          - { id: "lang", label_from: input_mode, icon: globe, style: modifier, width: 0.95, tap: "toggle:ascii_mode", long_press: "schema:picker" }
+          - { id: "lang", label_from: input_mode_pair, icon: globe, style: modifier, width: 0.95, tap: "input_mode:toggle", long_press: "schema:picker" }
           - id: "space"
             icon: space
             style: space

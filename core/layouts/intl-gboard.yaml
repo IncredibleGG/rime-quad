@@ -187,10 +187,10 @@ layers:
                 - { label: "！", send: { keysym: "exclam" } }
                 - { label: "…", send: { text: "…" } }
           - id: "lang"
-            label_from: input_mode
+            label_from: input_mode_pair
             icon: globe
             width: 0.94
-            tap: "toggle:ascii_mode"
+            tap: "input_mode:toggle"
             long_press: "schema:picker"
           - id: "space"
             icon: space
@@ -283,7 +283,7 @@ layers:
         keys:
           - { id: "to_sym", label: "?123", style: pill, width: 1.48, tap: "layer:sym1" }
           - { id: "comma", label: "，", style: modifier, width: 0.94, send: { keysym: "comma" }, long_press: "emoji" }
-          - { id: "lang", label_from: input_mode, icon: globe, width: 0.94, tap: "toggle:ascii_mode", long_press: "schema:picker" }
+          - { id: "lang", label_from: input_mode_pair, icon: globe, width: 0.94, tap: "input_mode:toggle", long_press: "schema:picker" }
           - id: "space"
             icon: space
             style: space
@@ -358,7 +358,7 @@ layers:
         keys:
           - { id: "to_abc", label: "ABC", style: pill, width: 1.48, tap: "layer:lower" }
           - { id: "comma", label: "，", style: modifier, width: 0.94, send: { keysym: "comma" }, long_press: "emoji" }
-          - { id: "lang", label_from: input_mode, icon: globe, width: 0.94, tap: "toggle:ascii_mode", long_press: "schema:picker" }
+          - { id: "lang", label_from: input_mode_pair, icon: globe, width: 0.94, tap: "input_mode:toggle", long_press: "schema:picker" }
           - id: "space"
             icon: space
             style: space
@@ -425,7 +425,7 @@ layers:
         keys:
           - { id: "to_abc", label: "ABC", style: pill, width: 1.48, tap: "layer:lower" }
           - { id: "comma", label: "，", style: modifier, width: 0.94, send: { keysym: "comma" }, long_press: "emoji" }
-          - { id: "lang", label_from: input_mode, icon: globe, width: 0.94, tap: "toggle:ascii_mode", long_press: "schema:picker" }
+          - { id: "lang", label_from: input_mode_pair, icon: globe, width: 0.94, tap: "input_mode:toggle", long_press: "schema:picker" }
           - id: "space"
             icon: space
             style: space

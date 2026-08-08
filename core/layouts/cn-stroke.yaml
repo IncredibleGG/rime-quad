@@ -70,6 +70,8 @@ targets: [android, ios]
 for_schema: ["stroke"]
 direction: ltr
 default_layer: stroke
+# 「中／En」進英文模式時換上的層 —— 就是「全鍵」那顆鍵進的同一層。
+alpha_layer: alpha
 primary: false
 
 metrics:
@@ -155,11 +157,11 @@ layers:
             style: modifier
             tap: "layer:alpha"
           - id: "lang"
-            label_from: input_mode
-            label: "中"
+            label_from: input_mode_pair
+            label: "中/En"
             width: 2.2
             style: modifier
-            tap: "toggle:ascii_mode"
+            tap: "input_mode:toggle"
           - { id: "d0", label: "0", width: 1.7, style: modifier, send: { keysym: "0" } }
 
       - weight: 1.0

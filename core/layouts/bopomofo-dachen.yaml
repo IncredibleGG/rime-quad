@@ -42,6 +42,8 @@ targets: [android, ios]
 for_schema: ["bopomofo", "bopomofo_tw", "bopomofo_express", "bopomofo_hsu"]
 direction: ltr
 default_layer: bopomofo
+# 「中／En」進英文模式時換上的層（見 alpha 層的檔頭）。
+alpha_layer: alpha
 primary: false
 
 author: "rime-quad"
@@ -187,10 +189,10 @@ layers:
             tap: "layer:punct"
             long_press: "switch_layout:numeric-symbol"
           - id: "lang"
-            label_from: input_mode
+            label_from: input_mode_pair
             style: modifier
             width: 1.6
-            tap: "toggle:ascii_mode"
+            tap: "input_mode:toggle"
             long_press: "schema:picker"
           # 一聲（ˉ）與「選字確認」共用空白鍵，交由 librime 判定。
           - id: "space"
@@ -294,3 +296,194 @@ layers:
             style: action
             width: 1.6
             send: { keysym: "Return" }
+
+  # ── 英數層（alpha_layer）────────────────────────────────────
+  #
+  #  這一層是本佈局的 `alpha_layer`：「中／En」鍵進英文模式時自動換上。
+  #
+  #  為什麼非得在本檔裡不可，而不是 `switch_layout:@primary` 跳到 qwerty：
+  #  跳過去是單程票。qwerty 是 primary，它的鍵面上沒有、也不該有一顆
+  #  「回九宮格」的鍵。層切換永遠在同一份佈局檔內，回程**結構上**存在：
+  #  切回中文一定落在 `default_layer`，不靠這一層自己記得放一顆回程鍵。
+  #
+  #  排列與 qwerty 同款，好讓肌肉記憶通用；底列與主層對齊，
+  #  「中／En」永遠在同一格 —— 同一個位置進、同一個位置出。
+  - id: "alpha"
+    label: "abc"
+    units: 10
+    rows:
+
+      - weight: 1.0
+        keys:
+          - { id: "e_q", label: "q", hint: "1", send: { keysym: "q" } }
+          - { id: "e_w", label: "w", hint: "2", send: { keysym: "w" } }
+          - { id: "e_e", label: "e", hint: "3", send: { keysym: "e" } }
+          - { id: "e_r", label: "r", hint: "4", send: { keysym: "r" } }
+          - { id: "e_t", label: "t", hint: "5", send: { keysym: "t" } }
+          - { id: "e_y", label: "y", hint: "6", send: { keysym: "y" } }
+          - { id: "e_u", label: "u", hint: "7", send: { keysym: "u" } }
+          - { id: "e_i", label: "i", hint: "8", send: { keysym: "i" } }
+          - { id: "e_o", label: "o", hint: "9", send: { keysym: "o" } }
+          - { id: "e_p", label: "p", hint: "0", send: { keysym: "p" } }
+
+      - weight: 1.0
+        keys:
+          - { spacer: true, width: 0.5 }
+          - { id: "e_a", label: "a", send: { keysym: "a" } }
+          - { id: "e_s", label: "s", send: { keysym: "s" } }
+          - { id: "e_d", label: "d", send: { keysym: "d" } }
+          - { id: "e_f", label: "f", send: { keysym: "f" } }
+          - { id: "e_g", label: "g", send: { keysym: "g" } }
+          - { id: "e_h", label: "h", send: { keysym: "h" } }
+          - { id: "e_j", label: "j", send: { keysym: "j" } }
+          - { id: "e_k", label: "k", send: { keysym: "k" } }
+          - { id: "e_l", label: "l", send: { keysym: "l" } }
+          - { spacer: true, width: 0.5 }
+
+      - weight: 1.0
+        keys:
+          - id: "shift"
+            icon: shift
+            style: modifier
+            width: 1.5
+            tap: "layer_once:alpha_upper"
+            double_tap: "layer_lock:alpha_upper"
+          - { id: "e_z", label: "z", send: { keysym: "z" } }
+          - { id: "e_x", label: "x", send: { keysym: "x" } }
+          - { id: "e_c", label: "c", send: { keysym: "c" } }
+          - { id: "e_v", label: "v", send: { keysym: "v" } }
+          - { id: "e_b", label: "b", send: { keysym: "b" } }
+          - { id: "e_n", label: "n", send: { keysym: "n" } }
+          - { id: "e_m", label: "m", send: { keysym: "m" } }
+          - id: "backspace"
+            icon: backspace
+            style: modifier
+            width: 1.5
+            send: { keysym: "BackSpace" }
+            repeat: true
+            swipe:
+              left: { tap: "clear" }
+
+      # 底列與注音層對齊：「中／En」永遠在左起第二格。
+      - weight: 1.0
+        keys:
+          - id: "to_punct"
+            label: "，。"
+            width: 1.5
+            style: modifier
+            tap: "layer:punct"
+          - id: "lang"
+            label_from: input_mode_pair
+            label: "中/En"
+            width: 1.5
+            style: modifier
+            tap: "input_mode:toggle"
+            long_press: "schema:picker"
+          - id: "space"
+            icon: space
+            style: space
+            width: 4.0
+            send: { keysym: "space" }
+            swipe:
+              left:  { tap: "cursor:left" }
+              right: { tap: "cursor:right" }
+            long_press: "switch_layout:@primary"
+          - id: "period"
+            label: "."
+            width: 1.5
+            send: { keysym: "period" }
+          - id: "hide"
+            icon: keyboard_hide
+            width: 1.5
+            style: modifier
+            tap: "hide_keyboard"
+
+  - id: "alpha_upper"
+    label: "ABC"
+    units: 10
+    rows:
+
+      - weight: 1.0
+        keys:
+          - { id: "e_q", label: "Q", hint: "1", send: { keysym: "Q", modifiers: [Shift] } }
+          - { id: "e_w", label: "W", hint: "2", send: { keysym: "W", modifiers: [Shift] } }
+          - { id: "e_e", label: "E", hint: "3", send: { keysym: "E", modifiers: [Shift] } }
+          - { id: "e_r", label: "R", hint: "4", send: { keysym: "R", modifiers: [Shift] } }
+          - { id: "e_t", label: "T", hint: "5", send: { keysym: "T", modifiers: [Shift] } }
+          - { id: "e_y", label: "Y", hint: "6", send: { keysym: "Y", modifiers: [Shift] } }
+          - { id: "e_u", label: "U", hint: "7", send: { keysym: "U", modifiers: [Shift] } }
+          - { id: "e_i", label: "I", hint: "8", send: { keysym: "I", modifiers: [Shift] } }
+          - { id: "e_o", label: "O", hint: "9", send: { keysym: "O", modifiers: [Shift] } }
+          - { id: "e_p", label: "P", hint: "0", send: { keysym: "P", modifiers: [Shift] } }
+
+      - weight: 1.0
+        keys:
+          - { spacer: true, width: 0.5 }
+          - { id: "e_a", label: "A", send: { keysym: "A", modifiers: [Shift] } }
+          - { id: "e_s", label: "S", send: { keysym: "S", modifiers: [Shift] } }
+          - { id: "e_d", label: "D", send: { keysym: "D", modifiers: [Shift] } }
+          - { id: "e_f", label: "F", send: { keysym: "F", modifiers: [Shift] } }
+          - { id: "e_g", label: "G", send: { keysym: "G", modifiers: [Shift] } }
+          - { id: "e_h", label: "H", send: { keysym: "H", modifiers: [Shift] } }
+          - { id: "e_j", label: "J", send: { keysym: "J", modifiers: [Shift] } }
+          - { id: "e_k", label: "K", send: { keysym: "K", modifiers: [Shift] } }
+          - { id: "e_l", label: "L", send: { keysym: "L", modifiers: [Shift] } }
+          - { spacer: true, width: 0.5 }
+
+      - weight: 1.0
+        keys:
+          - id: "shift"
+            icon: shift_lock
+            style: modifier
+            active: true
+            width: 1.5
+            tap: "layer:alpha"
+          - { id: "e_z", label: "Z", send: { keysym: "Z", modifiers: [Shift] } }
+          - { id: "e_x", label: "X", send: { keysym: "X", modifiers: [Shift] } }
+          - { id: "e_c", label: "C", send: { keysym: "C", modifiers: [Shift] } }
+          - { id: "e_v", label: "V", send: { keysym: "V", modifiers: [Shift] } }
+          - { id: "e_b", label: "B", send: { keysym: "B", modifiers: [Shift] } }
+          - { id: "e_n", label: "N", send: { keysym: "N", modifiers: [Shift] } }
+          - { id: "e_m", label: "M", send: { keysym: "M", modifiers: [Shift] } }
+          - id: "backspace"
+            icon: backspace
+            style: modifier
+            width: 1.5
+            send: { keysym: "BackSpace" }
+            repeat: true
+            swipe:
+              left: { tap: "clear" }
+
+      # 底列與注音層對齊：「中／En」永遠在左起第二格。
+      - weight: 1.0
+        keys:
+          - id: "to_punct"
+            label: "，。"
+            width: 1.5
+            style: modifier
+            tap: "layer:punct"
+          - id: "lang"
+            label_from: input_mode_pair
+            label: "中/En"
+            width: 1.5
+            style: modifier
+            tap: "input_mode:toggle"
+            long_press: "schema:picker"
+          - id: "space"
+            icon: space
+            style: space
+            width: 4.0
+            send: { keysym: "space" }
+            swipe:
+              left:  { tap: "cursor:left" }
+              right: { tap: "cursor:right" }
+            long_press: "switch_layout:@primary"
+          - id: "period"
+            label: "."
+            width: 1.5
+            send: { keysym: "period" }
+          - id: "hide"
+            icon: keyboard_hide
+            width: 1.5
+            style: modifier
+            tap: "hide_keyboard"

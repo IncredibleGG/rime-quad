@@ -23,7 +23,12 @@ object ThemeDefaults {
     /** §8.6.6.1 的規範性預設工具列。`items` 缺席時必須產生這一份。 */
     val TOOLBAR_ITEMS: List<ToolbarItem> = listOf(
         item("globe", LabelSource.NONE, ActionVerb.SCHEMA_PICKER, "schema:picker"),
-        item(null, LabelSource.INPUT_MODE, ActionVerb.TOGGLE_OPTION, "toggle:ascii_mode", "ascii_mode"),
+        // 中／英切換：§8.6.6.1 的規範性預設。用 input_mode_pair 而不是
+        // input_mode —— 只寫一個「中」的鍵有兩種讀法（「現在是中文」與
+        // 「按了會變中文」），真機回報過。也用 input_mode:toggle 而不是
+        // toggle:ascii_mode，好讓工具列這顆與鍵盤上那顆是**同一件事**：
+        // 切模式並且切到本佈局的字母層。
+        item(null, LabelSource.INPUT_MODE_PAIR, ActionVerb.INPUT_MODE_TOGGLE, "input_mode:toggle"),
         item(null, LabelSource.VARIANT, ActionVerb.TOGGLE_OPTION, "toggle:simplification", "simplification"),
         item("emoji", LabelSource.NONE, ActionVerb.EMOJI, "emoji"),
         item("settings", LabelSource.NONE, ActionVerb.SETTINGS, "settings"),

@@ -87,6 +87,8 @@ for_schema: ["t9_pinyin"]
 auto_for_schema: []
 direction: ltr
 default_layer: t9
+# 「中／En」進英文模式時換上的層（見 en 層的檔頭）。
+alpha_layer: en
 primary: false
 
 author: "rime-quad"
@@ -148,9 +150,9 @@ layers:
           - { id: "k8", label: "TUV",  hint: "8", send: { keysym: "T" } }
           - { id: "k9", label: "WXYZ", hint: "9", send: { keysym: "W" } }
           - id: "lang"
-            label_from: input_mode
+            label_from: input_mode_pair
             style: modifier
-            tap: "toggle:ascii_mode"
+            tap: "input_mode:toggle"
             long_press: "schema:picker"
 
       - weight: 1.0
@@ -252,10 +254,10 @@ layers:
             width: 1.5
             tap: "layer:t9"
           - id: "lang"
-            label_from: input_mode
+            label_from: input_mode_pair
             style: modifier
             width: 1.25
-            tap: "toggle:ascii_mode"
+            tap: "input_mode:toggle"
             long_press: "schema:picker"
           - id: "space"
             icon: space
@@ -347,10 +349,10 @@ layers:
             width: 1.5
             tap: "layer:t9"
           - id: "lang"
-            label_from: input_mode
+            label_from: input_mode_pair
             style: modifier
             width: 1.25
-            tap: "toggle:ascii_mode"
+            tap: "input_mode:toggle"
             long_press: "schema:picker"
           - id: "space"
             icon: space

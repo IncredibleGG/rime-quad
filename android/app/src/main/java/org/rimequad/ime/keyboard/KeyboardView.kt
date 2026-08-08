@@ -47,11 +47,14 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.TextUnit
@@ -593,7 +596,15 @@ private fun Toolbar(
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    text = face,
+                    text = if (item.labelFrom == LabelSource.INPUT_MODE_PAIR) {
+                        inputModeFace(
+                            asciiMode = state.status.isAsciiMode,
+                            activeColor = style.text.color,
+                            idleColor = style.label.color,
+                        )
+                    } else {
+                        AnnotatedString(face)
+                    },
                     fontSize = scaler.sp(style.text.size),
                     color = Color(
                         if (active) style.text.highlightColor else style.text.color
@@ -1077,7 +1088,11 @@ private fun KeyView(
             style.labelSize
         }
         Text(
-            text = face,
+            text = if (key.labelFrom == LabelSource.INPUT_MODE_PAIR) {
+                inputModeFace(status.isAsciiMode, foreground, style.hintColor)
+            } else {
+                AnnotatedString(face)
+            },
             fontSize = fittedLabelSize(face, base, constraints.maxWidth, scaler),
             color = Color(foreground),
             maxLines = 1,
@@ -1124,7 +1139,8 @@ internal fun faceOf(
 ): String {
     val fromStatus = when (labelFrom) {
         LabelSource.NONE -> null
-        LabelSource.INPUT_MODE -> if (status.isAsciiMode) "英" else "中"
+        LabelSource.INPUT_MODE -> if (status.isAsciiMode) INPUT_MODE_LATIN else INPUT_MODE_CJK
+        LabelSource.INPUT_MODE_PAIR -> INPUT_MODE_PAIR_TEXT
         LabelSource.SHAPE -> if (status.isFullShape) "全" else "半"
         LabelSource.VARIANT -> if (status.isSimplified) "简" else "繁"
         LabelSource.SCHEMA_NAME -> status.schemaName.ifEmpty { null }
@@ -1175,9 +1191,52 @@ internal suspend fun trackPressed(
     }
 }
 
-/** §8.8.1 的 active：佈局宣告的鎖定，或執行期狀態（英數模式的中／英鍵）。 */
+/**
+ * §8.8.1 的 active：佈局宣告的鎖定，或執行期狀態（英數模式的中／英鍵）。
+ *
+ * [LabelSource.INPUT_MODE_PAIR] **刻意不**列入：那顆鍵已經在鍵面上同時畫出
+ * 兩態並強調了當前那一態，再把整顆鍵染成 accent 色只是重複同一個訊息，
+ * 而且會讓「英文模式」看起來像「這顆鍵被鎖住了」。
+ */
 internal fun isActiveFace(declared: Boolean, labelFrom: LabelSource, status: RimeStatus): Boolean =
     declared || (labelFrom == LabelSource.INPUT_MODE && status.isAsciiMode)
+
+/* ─────────────────── 中／En：同時畫出兩態 ─────────────────── */
+
+/** 中文那一段。 */
+internal const val INPUT_MODE_CJK = "中"
+
+/** 英數那一段。用 `En` 而不是 `英`：一邊漢字一邊拉丁，兩態一眼就分得開。 */
+internal const val INPUT_MODE_LATIN = "En"
+
+internal const val INPUT_MODE_SEPARATOR = "/"
+
+/** 量測與無樣式回落用的純文字形態。 */
+internal const val INPUT_MODE_PAIR_TEXT =
+    INPUT_MODE_CJK + INPUT_MODE_SEPARATOR + INPUT_MODE_LATIN
+
+/**
+ * 把「中/En」畫成兩段：當前那一態用鍵面前景色 + 粗體，另一態退到 hint 色。
+ *
+ * ── 為什麼非得兩段不可 ──────────────────────────────────────────────────
+ * 使用者回報：「這裡的『中』要修改成『中/en』，這樣別人才知道你現在的語言
+ * 是啥。」只寫一個字的切換鍵有兩種讀法 —— 「現在是中文」與「按了會變中文」
+ * —— 而它們指向相反的操作。同時畫出兩態、強調其中一態，這個歧義**在結構上
+ * 就不存在**，不必靠使用者猜。三星實機是同一個作法（中/En，斜線分隔）。
+ */
+internal fun inputModeFace(
+    asciiMode: Boolean,
+    activeColor: Int,
+    idleColor: Int,
+): AnnotatedString {
+    val on = SpanStyle(color = Color(activeColor), fontWeight = FontWeight.Bold)
+    val off = SpanStyle(color = Color(idleColor))
+    return buildAnnotatedString {
+        withStyle(if (asciiMode) off else on) { append(INPUT_MODE_CJK) }
+        withStyle(off) { append(INPUT_MODE_SEPARATOR) }
+        withStyle(if (asciiMode) on else off) { append(INPUT_MODE_LATIN) }
+    }
+}
 
 /**
  * §9.6「鍵面文字放不下時」的下限：`label_size × 0.5`。

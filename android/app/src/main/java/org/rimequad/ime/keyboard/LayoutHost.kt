@@ -131,6 +131,9 @@ class LayoutHost(private val repo: LayoutRepository) {
         layout = next
         layerId = next.defaultLayer
         layerOnceReturn = null
+        // 換佈局＝換鍵盤，中英模式跟著回到預設。留著上一份佈局的模式，
+        // 會讓新佈局一上來就停在它自己的字母層上，而使用者沒按過任何鍵。
+        asciiMode = false
         Log.i(TAG, "佈局 → ${next.id}（層 $layerId）")
         return true
     }
@@ -296,6 +299,45 @@ class LayoutHost(private val repo: LayoutRepository) {
 
     /** `layer_lock`：切過去並停留（渲染為 active 由佈局的 `active: true` 負責）。 */
     fun lockLayer(id: String) = setLayer(id)
+
+    /* ─────────────────── 中英模式與字母層 ─────────────────── */
+
+    /**
+     * 中英模式。真正的權威是 librime 的 `ascii_mode` 開關 —— 這裡存一份，
+     * 是因為**佈局層**也要跟著動，而 LayoutHost 才知道本佈局有沒有字母層。
+     *
+     * 寫入端：IME 收到 `input_mode:toggle` 之後回寫；以及方案／佈局切換時歸零。
+     */
+    var asciiMode: Boolean = false
+        private set
+
+    /**
+     * 「切中英」的完整語義（見 [ActionVerb.INPUT_MODE_TOGGLE]）。
+     *
+     * 宣告了 `alpha_layer` 的佈局（九宮格、筆畫、注音大千）：
+     * 進英文 → 跳到字母層；回中文 → 回 `default_layer`。
+     * 沒宣告的（qwerty、intl-*）：佈局原地不動，只有模式變。
+     *
+     * ⚠ 回程是**結構性**存在的：字母層是本佈局的一層，而回中文永遠落在
+     * `default_layer` 上，不需要那一層自己記得放一顆回程鍵。這正是先前
+     * 「從九宮格切英語就再也切不回來」的成因（那時走的是
+     * `switch_layout:@primary`，跳到 qwerty 就沒有回頭路了）。
+     */
+    fun setInputMode(ascii: Boolean) {
+        asciiMode = ascii
+        val l = layout ?: return
+        val alpha = l.alphaLayer ?: return
+        val want = if (ascii) alpha else l.defaultLayer
+        if (l.layer(want) == null) return
+        layerId = want
+        layerOnceReturn = null
+    }
+
+    /** 只給不知道引擎現值的呼叫端用（佈局驗證的走訪）。回傳切換後的模式。 */
+    fun toggleInputMode(): Boolean {
+        setInputMode(!asciiMode)
+        return asciiMode
+    }
 
     /** 每送出一個鍵之後呼叫；負責 `layer_once` 的回彈。 */
     fun afterKeySent() {

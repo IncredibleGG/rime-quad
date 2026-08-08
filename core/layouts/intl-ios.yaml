@@ -193,11 +193,11 @@ layers:
             width: 1.25
             tap: "layer:num"
           - id: "lang"
-            label_from: input_mode
+            label_from: input_mode_pair
             icon: globe
             style: modifier
             width: 1.25
-            tap: "toggle:ascii_mode"
+            tap: "input_mode:toggle"
             long_press: "schema:picker"
           - id: "aux"
             icon: emoji
@@ -285,7 +285,7 @@ layers:
       - weight: 1.0
         keys:
           - { id: "to_num", label: "123", style: modifier, width: 1.25, tap: "layer:num" }
-          - { id: "lang", label_from: input_mode, icon: globe, style: modifier, width: 1.25, tap: "toggle:ascii_mode", long_press: "schema:picker" }
+          - { id: "lang", label_from: input_mode_pair, icon: globe, style: modifier, width: 1.25, tap: "input_mode:toggle", long_press: "schema:picker" }
           - { id: "aux", icon: emoji, style: modifier, width: 1.00, tap: "emoji" }
           - id: "space"
             icon: space
@@ -355,7 +355,7 @@ layers:
       - weight: 1.0
         keys:
           - { id: "to_abc", label: "ABC", style: modifier, width: 1.25, tap: "layer:lower" }
-          - { id: "lang", label_from: input_mode, icon: globe, style: modifier, width: 1.25, tap: "toggle:ascii_mode", long_press: "schema:picker" }
+          - { id: "lang", label_from: input_mode_pair, icon: globe, style: modifier, width: 1.25, tap: "input_mode:toggle", long_press: "schema:picker" }
           - { id: "aux", icon: emoji, style: modifier, width: 1.00, tap: "emoji" }
           - id: "space"
             icon: space
@@ -421,7 +421,7 @@ layers:
       - weight: 1.0
         keys:
           - { id: "to_abc", label: "ABC", style: modifier, width: 1.25, tap: "layer:lower" }
-          - { id: "lang", label_from: input_mode, icon: globe, style: modifier, width: 1.25, tap: "toggle:ascii_mode", long_press: "schema:picker" }
+          - { id: "lang", label_from: input_mode_pair, icon: globe, style: modifier, width: 1.25, tap: "input_mode:toggle", long_press: "schema:picker" }
           - { id: "aux", icon: emoji, style: modifier, width: 1.00, tap: "emoji" }
           - id: "space"
             icon: space

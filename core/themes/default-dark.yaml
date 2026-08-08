@@ -183,7 +183,7 @@ candidates:
       show: true
       items:
         - { icon: "globe",          tap: "schema:picker" }
-        - { label_from: input_mode, tap: "toggle:ascii_mode" }
+        - { label_from: input_mode_pair, tap: "input_mode:toggle" }
         - { label_from: variant,    tap: "toggle:simplification" }
         - { icon: "emoji",          tap: "emoji" }
         - { icon: "settings",       tap: "settings" }

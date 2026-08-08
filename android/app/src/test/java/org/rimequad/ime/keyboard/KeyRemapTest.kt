@@ -218,7 +218,7 @@ class KeyRemapTest {
                 val r = repo.loadLayout(id)
                 val v = r.value ?: return r
                 if (id != "t9-pinyin") return r
-                return LoadResult(removeKey(removeKey(v, "en", "to_t9"), "en_upper", "to_t9"), r.diagnostics)
+                return LoadResult(trapInsideAlphaLayers(v), r.diagnostics)
             }
         }
         val problems = LayoutEscape.check("t9-pinyin") { LayoutHost(CachingLayoutRepository(trapped)) }
@@ -244,7 +244,7 @@ class KeyRemapTest {
                 val r = repo.loadLayout(id)
                 val v = r.value ?: return r
                 if (id != "t9-pinyin") return r
-                return LoadResult(removeKey(removeKey(v, "en", "to_t9"), "en_upper", "to_t9"), r.diagnostics)
+                return LoadResult(trapInsideAlphaLayers(v), r.diagnostics)
             }
         }
         // 先確認這個夾具真的是壞的，否則這條測試會變成永遠通過的裝飾。
@@ -257,6 +257,26 @@ class KeyRemapTest {
             LayoutRemap("qwerty", listOf(RemapOp.Swap("lower", "a", "s"))),
         )
         assertTrue("不得被別份佈局既有的死路擋下：$problems", problems.isEmpty())
+    }
+
+    /**
+     * 把 t9-pinyin 的英數層做成真正的死路。
+     *
+     * 抽「九宮」（`layer:t9`）之外還要抽「中／En」：那顆鍵現在是
+     * `input_mode:toggle`，而本佈局宣告了 `alpha_layer: en`，所以它切回中文時
+     * 會落回 `default_layer` —— 它本身就是一條**結構性**的回程。
+     * 只抽「九宮」的話這份夾具根本不壞，靠它證明的兩條測試會變成裝飾品。
+     *
+     * 這件事本身正是那個格式擴充要的效果：字母層的回程不再倚賴作者記得
+     * 放一顆回程鍵。
+     */
+    private fun trapInsideAlphaLayers(v: KeyboardLayout): KeyboardLayout {
+        var out = v
+        for (layer in listOf("en", "en_upper")) {
+            out = removeKey(out, layer, "to_t9")
+            out = removeKey(out, layer, "lang")
+        }
+        return out
     }
 
     /* ══════════════════ 4. 儲存與重置 ══════════════════ */

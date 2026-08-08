@@ -105,10 +105,10 @@ layers:
             width: 1.5
             tap: "switch_layout:numeric-symbol"
           - id: "lang"
-            label_from: input_mode
+            label_from: input_mode_pair
             style: modifier
             width: 1.25
-            tap: "toggle:ascii_mode"
+            tap: "input_mode:toggle"
             long_press: "schema:picker"
           - id: "space"
             icon: space
@@ -206,10 +206,10 @@ layers:
             width: 1.5
             tap: "switch_layout:numeric-symbol"
           - id: "lang"
-            label_from: input_mode
+            label_from: input_mode_pair
             style: modifier
             width: 1.25
-            tap: "toggle:ascii_mode"
+            tap: "input_mode:toggle"
             long_press: "schema:picker"
           - id: "space"
             icon: space

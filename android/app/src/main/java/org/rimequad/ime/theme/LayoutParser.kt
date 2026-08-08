@@ -25,6 +25,19 @@ object Actions {
             "layer_lock" -> if (need(1)) KeyAction(ActionVerb.LAYER_LOCK, listOf(rest[0]), t) else null
             "switch_layout" -> if (need(1)) KeyAction(ActionVerb.SWITCH_LAYOUT, listOf(rest[0]), t) else null
             "toggle" -> if (need(1)) KeyAction(ActionVerb.TOGGLE_OPTION, listOf(rest[0]), t) else null
+
+            // `input_mode:toggle` —— 見 ActionVerb.INPUT_MODE_TOGGLE 的說明。
+            // 刻意不寫成 `toggle:ascii_mode` 的別名：兩者語義不同，
+            // 舊動詞仍然合法（只切模式），佈局作者要哪一種是他的決定。
+            "input_mode" -> if (need(1)) {
+                when (rest[0]) {
+                    "toggle" -> KeyAction(ActionVerb.INPUT_MODE_TOGGLE, emptyList(), t)
+                    else -> {
+                        diag.error(path, "F10: unknown input_mode action '${rest[0]}'", line)
+                        null
+                    }
+                }
+            } else null
             "set" -> {
                 if (!need(2)) return null
                 val v = rest[1].lowercase()
@@ -100,7 +113,8 @@ object LayoutParser {
     private val DOC_KEYS = setOf(
         "format", "id", "revision", "name", "description", "author", "license",
         "inherits", "min_client", "kind", "targets", "for_schema", "auto_for_schema",
-        "direction", "default_layer", "primary", "metrics", "layers", "key_patches"
+        "direction", "default_layer", "alpha_layer", "primary", "metrics", "layers",
+        "key_patches"
     )
     private val METRICS_KEYS = setOf("row_spacing", "key_spacing", "height_scale")
     private val LAYER_KEYS = setOf("id", "label", "units", "rows")
@@ -157,6 +171,14 @@ object LayoutParser {
             return null
         }
 
+        // `alpha_layer` 與 `default_layer` 同級：指到不存在的層是致命的，
+        // 因為那顆「中／En」鍵按下去會把使用者送進一個不存在的狀態。
+        val alphaLayer = c.child("alpha_layer").stringOrNull()
+        if (alphaLayer != null && !layerIds.contains(alphaLayer)) {
+            diag.error("alpha_layer", "F9: '$alphaLayer' is not a declared layer", root.line)
+            return null
+        }
+
         val m = c.mapping("metrics")
         m.warnUnknownKeys(METRICS_KEYS)
         val metrics = LayoutMetrics(
@@ -195,6 +217,7 @@ object LayoutParser {
             autoForSchema = autoForSchema,
             direction = c.child("direction").enumValue(Direction.LTR),
             defaultLayer = defaultLayer,
+            alphaLayer = alphaLayer,
             primary = c.child("primary").bool(false),
             metrics = metrics,
             layers = layers,

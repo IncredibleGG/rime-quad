@@ -28,8 +28,12 @@ object LayoutEscape {
     /** 走幾步。隨附佈局裡最長的一條合法路徑是 3 步，留一點餘裕。 */
     const val DEPTH = 4
 
+    // `input_mode:toggle` 也算導覽鍵：宣告了 alpha_layer 的佈局按下去會換層，
+    // 而「換得過去、換不回來」正是這支要擋的事。不把它列進來，九宮格的
+    // 中／En 鍵就會是這張圖上的一個盲點 —— 而那顆鍵正是上一次死路的現場。
     private val NAV_VERBS = setOf(
         ActionVerb.LAYER, ActionVerb.LAYER_ONCE, ActionVerb.LAYER_LOCK, ActionVerb.SWITCH_LAYOUT,
+        ActionVerb.INPUT_MODE_TOGGLE,
     )
 
     /**
@@ -67,6 +71,11 @@ object LayoutEscape {
         val known = layout.layers.map { it.id }.toSet()
         for (layer in layout.layers) {
             for (action in navActionsIn(layer.rows.flatMap { it.keys })) {
+                if (action.verb == ActionVerb.INPUT_MODE_TOGGLE) {
+                    // 目標不是寫在鍵上，而是佈局的 alpha_layer；
+                    // 那個欄位在解析時就驗過了（F9），這裡沒有第二種寫錯的方式。
+                    continue
+                }
                 val arg = action.arg ?: continue
                 if (action.verb == ActionVerb.SWITCH_LAYOUT) {
                     val ok = arg == "@primary" || arg == "@previous" || knownLayoutIds.contains(arg)
@@ -109,6 +118,11 @@ object LayoutEscape {
     }
 
     private fun apply(h: LayoutHost, a: KeyAction) {
+        // input_mode:toggle 沒有參數，所以不能像其他導覽動詞那樣先取 arg。
+        if (a.verb == ActionVerb.INPUT_MODE_TOGGLE) {
+            h.toggleInputMode()
+            return
+        }
         val arg = a.arg ?: return
         when (a.verb) {
             ActionVerb.LAYER -> h.setLayer(arg)

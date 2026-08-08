@@ -933,6 +933,9 @@ class RimeInputMethodService : InputMethodService() {
         currentInputConnection?.finishComposingText()
     }
 
+    /** librime 的中英模式開關名。`input_mode:toggle` 與工具列走的是同一個。 */
+    private val ASCII_MODE_OPTION = "ascii_mode"
+
     /** §9.5 的 action 分派。 */
     private fun handleAction(action: KeyAction) {
         val ic = currentInputConnection
@@ -951,6 +954,21 @@ class RimeInputMethodService : InputMethodService() {
                 // 不回寫的話,使用者在鍵盤上切成簡體、回設定畫面卻看到「繁體」,
                 // 而且下一次 session 重建又會被偏好切回去。
                 rememberOptionChoice(opt, next)
+                refreshFromRime()
+            }
+
+            // 「切中英」= 切模式 **並且** 切到本佈局的字母層。
+            //
+            // 拆成兩顆鍵（`toggle:ascii_mode` + `layer:en`）是使用者回報的那個
+            // 缺陷：他在九宮格上按了「中」，進了英文模式，眼前卻還是
+            // abc/def/ghi 八顆鍵 —— 26 個字母一個都打不出來，等於按了沒用。
+            // 一個動作要嘛完整、要嘛不該存在。
+            ActionVerb.INPUT_MODE_TOGGLE -> {
+                val next = !RimeCore.getOption(session, ASCII_MODE_OPTION)
+                RimeCore.setOption(session, ASCII_MODE_OPTION, next)
+                rememberOptionChoice(ASCII_MODE_OPTION, next)
+                // 佈局那一半。沒宣告 alpha_layer 的佈局（qwerty）什麼都不會發生。
+                layoutHost.setInputMode(next)
                 refreshFromRime()
             }
 
@@ -1155,6 +1173,15 @@ class RimeInputMethodService : InputMethodService() {
             // 狀態。這裡單向廣播一次,是整條線唯一的寫入點。
             CurrentKeyboard.publish(this, schemaId, layoutHost.layout?.id)
             Log.i(TAG, "方案 $schemaId → 佈局 ${layoutHost.layout?.id}")
+        }
+
+        // 引擎才是中英模式的權威。`input_mode:toggle` 之外還有別的路徑會動它
+        // ——換方案會重置 session 的選項、方案自己的 switcher 也可能切 ——
+        // 那些路徑不經過我們那顆鍵。不同步的話使用者會看到「鍵面亮著 En、
+        // 眼前卻還是九宮格」，也就是回報過的那個歧義原封不動地回來。
+        // 一般情形下這裡是 no-op（那顆鍵已經先設好了）。
+        if (snapshot.status.isAsciiMode != layoutHost.asciiMode) {
+            layoutHost.setInputMode(snapshot.status.isAsciiMode)
         }
 
         // §8.6.6 的 max_visible(可被使用者偏好覆寫):0 = 有多少畫多少。

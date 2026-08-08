@@ -429,9 +429,13 @@ class ThemeParserTest {
     fun toolbarItemsReuseTheLayoutActionAndLabelVocabulary() {
         // 工具列項目就是「沒有 send 的鍵」——不該有第二套詞彙。
         val defaults = ThemeDefaults.TOOLBAR_ITEMS
-        val lang = defaults.first { it.labelFrom == LabelSource.INPUT_MODE }
-        assertEquals(ActionVerb.TOGGLE_OPTION, lang.tap.verb)
-        assertEquals("ascii_mode", lang.tap.arg)
+        // 中／英切換用的是 input_mode_pair + input_mode:toggle：鍵面同時畫出
+        // 兩態（只寫一個「中」有兩種讀法），動作也是完整的那一個
+        // （切模式**並且**切到本佈局的字母層）。工具列這顆與鍵盤底列那顆
+        // 是同一件事，不該是兩套詞彙。
+        val lang = defaults.first { it.labelFrom == LabelSource.INPUT_MODE_PAIR }
+        assertEquals(ActionVerb.INPUT_MODE_TOGGLE, lang.tap.verb)
+        assertEquals("input_mode:toggle", lang.tap.raw)
         assertNull(lang.icon)
         val picker = defaults.first { it.tap.verb == ActionVerb.SCHEMA_PICKER }
         assertEquals("globe", picker.icon)

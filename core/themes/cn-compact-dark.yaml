@@ -106,7 +106,7 @@ candidates:
         - { icon: "globe",          tap: "schema:picker" }
         - { label: "九鍵",           tap: "schema:t9_pinyin" }
         - { label: "全鍵",           tap: "switch_layout:cn-qwerty-numrow" }
-        - { label_from: input_mode, tap: "toggle:ascii_mode" }
+        - { label_from: input_mode_pair, tap: "input_mode:toggle" }
         - { label_from: variant,    tap: "toggle:simplification" }
         - { icon: "settings",       tap: "settings" }
         - { icon: "keyboard_hide",  tap: "hide_keyboard" }

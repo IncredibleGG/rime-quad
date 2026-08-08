@@ -199,11 +199,11 @@ layers:
             width: 1.5
             tap: "switch_layout:cn-symbols"
           - id: "lang"
-            label_from: input_mode
-            label: "中"
+            label_from: input_mode_pair
+            label: "中/En"
             style: modifier
             width: 1.0
-            tap: "toggle:ascii_mode"
+            tap: "input_mode:toggle"
             long_press: "schema:picker"
           - id: "comma"
             label: "，"
@@ -323,11 +323,11 @@ layers:
             width: 1.5
             tap: "switch_layout:cn-symbols"
           - id: "lang"
-            label_from: input_mode
-            label: "中"
+            label_from: input_mode_pair
+            label: "中/En"
             style: modifier
             width: 1.0
-            tap: "toggle:ascii_mode"
+            tap: "input_mode:toggle"
             long_press: "schema:picker"
           - { id: "comma", label: "，", width: 1.0, send: { keysym: "comma" } }
           - id: "space"
