@@ -64,8 +64,10 @@ void Usage() {
       "  unregister                 全機反註冊\n"
       "  enable-user                把輸入法加進**目前使用者**的清單\n"
       "  disable-user               反之\n"
-      "  check [--dll <路徑>] [--user]\n"
+      "  check [--dll <路徑>] [--user] [--no-enum]\n"
       "                             斷言註冊狀態;不通過就以非零結束\n"
+      "                             --no-enum:只驗登錄檔,不問 TSF 的列舉 API\n"
+      "                             (剛註冊完的當下 CTF 還看不到,見標頭說明)\n"
       "  paths                      印出所有會被寫到的登錄檔路徑與 GUID\n"
       "  stop-service [--dir <目錄>]  停掉 rime_service.exe\n"
       "  dump                       印出登錄檔實況(診斷用)\n");
@@ -199,12 +201,14 @@ static int Run(int argc, wchar_t** argv) {
   std::wstring dll = DefaultDllPath();
   std::wstring dir = ModuleDirectory(nullptr);
   bool want_user = false;
+  bool want_enum = true;
 
   for (int i = 2; i < argc; ++i) {
     const std::wstring a = argv[i];
     if (a == L"--dll" && i + 1 < argc) dll = argv[++i];
     else if (a == L"--dir" && i + 1 < argc) dir = argv[++i];
     else if (a == L"--user") want_user = true;
+    else if (a == L"--no-enum") want_enum = false;
     else {
       Say("未知參數: %s\n", WideToUtf8(a).c_str());
       Usage();
@@ -279,6 +283,7 @@ static int Run(int argc, wchar_t** argv) {
     if (::GetFileAttributesW(dll.c_str()) != INVALID_FILE_ATTRIBUTES)
       opt.expect_dll_path = dll;
     opt.check_user = want_user;
+    opt.check_enum = want_enum;
     return CheckRegistration(opt) ? 0 : 1;
   }
 

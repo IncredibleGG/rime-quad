@@ -39,6 +39,16 @@ struct CheckOptions {
   std::wstring expect_dll_path;
   // 同時檢查 HKCU 的啟用狀態(安裝程式以使用者身分跑 enable-user 之後)。
   bool check_user = false;
+
+  // 要不要問 TSF 的列舉 API。
+  //
+  // ⚠ 預設要問 —— 那是這整個檢查最有價值的一項(「系統接受了嗎」)。
+  //   但**安裝程式剛註冊完的那一瞬間不可以問**:實測在 register 回傳成功之後
+  //   0.12 秒,EnumLanguageProfiles 還看不到我們;22 秒後同一支程式跑同一段
+  //   就全部看得到。CTF 那一側的可見性不是同步的,而登錄檔是。
+  //   安裝程式因此改用 --no-enum(只驗登錄檔,那部分是確定的),
+  //   「系統接受了嗎」交給 CI 的 verify_installer.sh 事後問。
+  bool check_enum = true;
 };
 
 // 全部通過才回傳 true。過程與失敗原因一律印到 stdout(窄字元 UTF-8)。

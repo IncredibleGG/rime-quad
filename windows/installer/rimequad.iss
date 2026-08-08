@@ -237,10 +237,6 @@ begin
   // 寧可中止並留下訊息。
   RunSetupVerbOrFail('register');
 
-  // 註冊完立刻自我檢查一次。register 回傳成功只代表那幾個 API 沒有報錯;
-  // check 才會去確認登錄檔真的長出東西、而且 TSF 的列舉 API 看得到我們。
-  RunSetupVerbOrFail('check');
-
   // ── 使用者那一側 ────────────────────────────────────────────────
   //
   // **兩種身分都跑**,而且都 best-effort。
@@ -272,6 +268,26 @@ begin
     Log('RimeQuad: enable-user(目前身分)rc=' + IntToStr(Rc))
   else
     Log('RimeQuad: enable-user(目前身分)啟動失敗');
+
+  // ── 最後才自我檢查 ──────────────────────────────────────────────
+  //
+  // ⚠ 順序是踩出來的,不是隨便排的。原本 check 排在 enable-user **之前**,
+  //   而 check 失敗時 RaiseException 會讓整個 CurStepChanged 中止 ——
+  //   於是 enable-user 從來沒被執行過。症狀:全機註冊全綠、
+  //   使用者清單一片空白,而錯誤訊息講的是「註冊失敗」。
+  //   一個判斷失誤造成兩個看起來無關的症狀。
+  //
+  // ⚠ --no-enum:剛註冊完的當下 CTF 還看不到新的設定檔(實測 register 回傳
+  //   成功之後 0.12 秒時 EnumLanguageProfiles 看不到,22 秒後同一支程式跑
+  //   同一段就全部看得到)。登錄檔是同步的,CTF 的可見性不是。
+  //   所以這裡只驗登錄檔;「系統接受了嗎」由 CI 事後不帶 --no-enum 再問一次。
+  //
+  // ⚠ 而且要誠實說一件事:在 /SUPPRESSMSGBOXES 之下,RaiseException 只會被
+  //   記進安裝記錄、對話框自動按掉,**Setup 仍然以 0 結束**。
+  //   所以這一步對「靜默安裝」不是真正的閘門 —— 真正的閘門是 CI 的
+  //   windows/verify_installer.sh(它會斷言安裝記錄裡沒有 raised an exception)。
+  //   互動安裝時使用者會看到錯誤訊息,那一條是成立的。
+  RunSetupVerbOrFail('check --no-enum');
 end;
 
 // 解除安裝時的收尾。

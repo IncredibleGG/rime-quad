@@ -180,6 +180,32 @@ ok "安裝程式以 0 結束"
 if [ -f "${WORK}/install.log" ]; then
   echo "  --- 安裝程式的記錄 ---"
   tr -d '\r' < "${WORK}/install.log" | grep -a 'RimeQuad:' | sed 's/^/    /' || true
+
+  # ⚠⚠ 這一條是本輪最重要的斷言之一。
+  #
+  # /SUPPRESSMSGBOXES 之下,[Code] 裡的 RaiseException **不會**讓 Setup
+  # 以非零結束:對話框被自動按掉、例外只留在安裝記錄裡,而 Setup 照樣
+  # 回報成功。實測就是這樣 —— 安裝程式以 0 結束、CI 一路綠燈,
+  # 而 CurStepChanged 其實在中途就炸了,後面的 enable-user 一次都沒跑到。
+  #
+  # 也就是說「安裝程式以 0 結束」根本不足以證明安裝做完了。
+  # 這一條把那個被吞掉的例外變回一個會紅的東西。
+  if tr -d '\r' < "${WORK}/install.log" | grep -aq 'raised an exception'; then
+    echo "  --- 安裝記錄裡的例外 ---"
+    tr -d '\r' < "${WORK}/install.log" | grep -a -A 12 'raised an exception' | sed 's/^/    /'
+    note_fail "安裝程式的 [Code] 丟出了例外(但 /SUPPRESSMSGBOXES 把它吞掉,Setup 仍以 0 結束)。
+     安裝其實沒有做完 —— 例外之後的步驟一個都沒跑到。"
+  else
+    ok "安裝程式的 [Code] 沒有丟出例外"
+  fi
+
+  # enable-user 有沒有真的被執行過。沒有這一條的話,「那一步被跳過」
+  # 與「跑了但沒生效」在報表上長得一模一樣。
+  if tr -d '\r' < "${WORK}/install.log" | grep -aq 'RimeQuad: enable-user'; then
+    ok "安裝程式執行過 enable-user"
+  else
+    note_fail "安裝記錄裡沒有 enable-user —— 那一步根本沒被執行"
+  fi
 fi
 
 # ── 檔案真的在嗎 ──────────────────────────────────────────────────
