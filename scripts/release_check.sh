@@ -238,6 +238,23 @@ if [ "$SKIP_EMU" -eq 0 ]; then
     skip "未指定 RIME_SERIAL，沒有清空 app 資料 —— 驗的不是全新安裝的體驗"
   fi
 
+  step "5c. 輸入測試靶（dev.rime.imetest）"
+  # 第 6 關與第 6b 關都往 dev.rime.imetest 的輸入框打字。在本機它早就裝著了，
+  # 所以這件事一直沒有人管；CI 上每一輪都是全新的模擬器，少了它第 6 關會以
+  # 「無法啟動 dev.rime.imetest」失敗——而那個訊息看起來像輸入法壞了。
+  # 這支腳本不該假設裝置上殘留著什麼，該自己把前置條件備齊。
+  TESTAPP="$ROOT/build/imetest/rime-imetest.apk"
+  if "$ADB" -s "$SER" shell pm list packages 2>/dev/null | grep -q "dev.rime.imetest"; then
+    ok "測試靶已在裝置上"
+  else
+    [ -f "$TESTAPP" ] || "$ROOT/scripts/build_testapp.sh" > "$OUT/testapp.log" 2>&1 || true
+    if [ -f "$TESTAPP" ] && "$ADB" -s "$SER" install -r "$TESTAPP" >/dev/null 2>&1; then
+      ok "已安裝測試靶 $(basename "$TESTAPP")"
+    else
+      bad "裝不上輸入測試靶，第 6 關無處打字。見 $OUT/testapp.log"
+    fi
+  fi
+
   step "6. 真正的輸入驗證（走實體按鍵路徑）"
   # 注意：verify_ime.sh 用的 input text 走 commitText，會繞過組字，
   # 即使 librime 沒載入也會通過。這裡一定要用 verify_rime_compose.sh。

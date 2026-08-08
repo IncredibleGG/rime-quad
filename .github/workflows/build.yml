@@ -239,14 +239,19 @@ jobs:
             -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
             -no-snapshot -camera-back none
           disable-animations: true
+          # ⚠ 這個 script 是被 /bin/sh(在 runner 上是 dash)執行的,不是 bash。
+          #   `set -o pipefail` 在 dash 不存在,寫了會直接
+          #   `set: Illegal option -o pipefail` 然後退出 2 —— 而那個失敗看起來
+          #   像模擬器有問題。所以這裡只用 POSIX 的 set -eu,真正的邏輯交給
+          #   release_check.sh(它自己的 shebang 是 bash)。
           script: |
-            set -euo pipefail
-            export RIME_SERIAL=emulator-5554
-            export ANDROID_SERIAL=emulator-5554
+            set -eu
+            RIME_SERIAL=emulator-5554; export RIME_SERIAL
+            ANDROID_SERIAL=emulator-5554; export ANDROID_SERIAL
             adb wait-for-device
             # release_check 的第 5–7 關。--strict:略過一律算失敗。
             # 這一條的綠燈不是「發布關卡通過」,只是它的一半 —— 腳本自己會說。
-            ./scripts/release_check.sh --emu-only --strict
+            bash ./scripts/release_check.sh --emu-only --strict
 
       - name: 上傳模擬器 artifact(截圖、logcat、升級紀錄)
         if: always()
