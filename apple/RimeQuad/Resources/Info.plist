@@ -36,6 +36,23 @@
   <string>__BUILD__</string>
   <key>CFBundleSignature</key>
   <string>rimq</string>
+  <!-- ⚠ 沒有 CFBundleIconFile 時,「系統設定 › 鍵盤 › 輸入來源」那一格是**空白方框**。
+       真機回報過。tsInputModeMenuIconFileKey 只管選單列上那顆小圖示,
+       清單裡顯示的是 app 圖示,兩者是兩回事,要各給一份。 -->
+  <key>CFBundleIconFile</key>
+  <string>RimeQuad</string>
+
+  <!-- ⚠ 沒有 .lproj 時,輸入來源清單顯示的是 TISInputSourceID 原文
+       (org.rimequad.inputmethod.RimeQuad.Hans)。真機回報過。
+       實際的字面在 Resources/<lang>.lproj/InfoPlist.strings,
+       鍵就是下面 tsInputModeListKey 的那兩個 id。 -->
+  <key>CFBundleLocalizations</key>
+  <array>
+    <string>en</string>
+    <string>zh-Hant</string>
+    <string>zh-Hans</string>
+  </array>
+
   <key>LSMinimumSystemVersion</key>
   <string>__MIN_OS__</string>
   <key>NSHumanReadableCopyright</key>
