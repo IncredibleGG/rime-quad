@@ -279,7 +279,23 @@ step "5. 等待鍵盤出現(上限 ${DEPLOY_TIMEOUT}s,含首次 schema 部署)"
 SHOWN=0
 for i in $(seq 1 "$DEPLOY_TIMEOUT"); do
   adbs shell dumpsys input_method > "$OUT_DIR/input_method.txt" 2>/dev/null || true
-  if grep -q "mIsInputViewShown=true" "$OUT_DIR/input_method.txt"; then SHOWN=1; break; fi
+  # ⚠ 「有鍵盤彈出來」不等於「彈出來的是我們的鍵盤」。
+  #
+  #   實際發生過:設定裡的預設輸入法確實已經是我們的(讀回確認過),但那個
+  #   時間點宿主 app 綁定的還是前一個輸入法,於是 **Gboard 的鍵盤**彈了出來。
+  #   舊寫法只等 mIsInputViewShown=true 就往下走,然後在下一行才發現
+  #   mCurId 是 Gboard —— 等於用 Gboard 當作「鍵盤已顯示」的證據。
+  #
+  #   兩個條件要一起成立才算數。差別在於:分開檢查會把一個時序問題報成
+  #   「綁定錯誤」,而人會去查 manifest;合起來檢查則會誠實地等到逾時,
+  #   訊息也才指得對地方。
+  if grep -q "mIsInputViewShown=true" "$OUT_DIR/input_method.txt"; then
+    CUR_BOUND="$(grep -o "mCurId=[^ ]*" "$OUT_DIR/input_method.txt" | head -1 | cut -d= -f2)"
+    if [ "$CUR_BOUND" = "$IME_ID" ]; then SHOWN=1; break; fi
+    if [ $((i % 15)) -eq 0 ]; then
+      echo "  ...鍵盤出現了但綁定的是 $CUR_BOUND,繼續等我們的"
+    fi
+  fi
   # 每 10 秒補點一次輸入框。只點一次不夠:視窗剛開時點下去可能還沒 layout 完,
   # 而那一次錯過就再也沒有人去叫鍵盤了。
   [ $((i % 10)) -eq 5 ] && adbs shell input tap 540 300 >/dev/null 2>&1 || true
@@ -322,10 +338,15 @@ if [ "$SHOWN" -ne 1 ]; then
   if [ "$REQ" -gt 0 ] && [ "$BAD" -ge "$REQ" ] && [ "$IMEUP" -eq 0 ]; then
     echo "  [INFO] 每一次請求都失敗、而且輸入法進程從沒被啟動 —— 指向宿主/測試靶沒把鍵盤叫起來,不是輸入法本身"
   fi
-  fail "鍵盤在 ${DEPLOY_TIMEOUT}s 內沒有出現。若是首次部署卡住,查 $OUT_DIR/logcat.txt 中 rime 的部署訊息"
+  LAST_BOUND="$(grep -o "mCurId=[^ ]*" "$OUT_DIR/input_method.txt" | head -1 | cut -d= -f2)"
+  if grep -q "mIsInputViewShown=true" "$OUT_DIR/input_method.txt"; then
+    fail "有鍵盤,但綁定的一直是 $LAST_BOUND,不是待測的 $IME_ID —— 系統沒有切換到我們的輸入法"
+  fi
+  fail "鍵盤在 ${DEPLOY_TIMEOUT}s 內沒有出現(最後綁定:$LAST_BOUND)。若是首次部署卡住,查 $OUT_DIR/logcat.txt 中 rime 的部署訊息"
 fi
 pass "鍵盤已顯示"
 
+# 迴圈的跳出條件已經包含綁定正確,這裡是再確認一次(dumpsys 是同一份快照)。
 CUR_ID="$(grep -o 'mCurId=[^ ]*' "$OUT_DIR/input_method.txt" | head -1 | cut -d= -f2)"
 [ "$CUR_ID" = "$IME_ID" ] || fail "目前綁定的是 $CUR_ID,不是待測的 $IME_ID"
 pass "綁定的 IME 正確"

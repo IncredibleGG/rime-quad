@@ -194,7 +194,13 @@ sleep 2
 SHOWN=0
 for i in $(seq 1 "$DEPLOY_TIMEOUT"); do
   adbs shell dumpsys input_method > "$OUT_DIR/input_method.txt" 2>/dev/null || true
-  grep -q "mIsInputViewShown=true" "$OUT_DIR/input_method.txt" && { SHOWN=1; break; }
+  # 「有鍵盤」不等於「是我們的鍵盤」—— 兩個條件要一起成立。
+  # 見 verify_rime_compose.sh 裡同一段的註解:曾經拿 Gboard 彈出來當成
+  # 「鍵盤已顯示」的證據,然後在下一行才發現綁定的不是我們。
+  if grep -q "mIsInputViewShown=true" "$OUT_DIR/input_method.txt"; then
+    CUR_BOUND="$(grep -o "mCurId=[^ ]*" "$OUT_DIR/input_method.txt" | head -1 | cut -d= -f2)"
+    [ "$CUR_BOUND" = "$IME_ID" ] && { SHOWN=1; break; }
+  fi
   # 每 10 秒補點一次:只點一次的話,錯過那一下就再也沒有人去叫鍵盤了。
   # 見 verify_rime_compose.sh 裡同一段的註解。
   [ $((i % 10)) -eq 5 ] && adbs shell input tap 540 300 >/dev/null 2>&1 || true
