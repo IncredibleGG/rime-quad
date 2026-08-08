@@ -1,0 +1,36 @@
+# 只為了驗證「延後執行 rime.lua」而存在的方案：它跟 luna_pinyin 用同一本
+# 詞典，唯一的差別是 filters 裡多了一個 lua_filter。
+schema:
+  schema_id: luaprobe
+  name: LuaProbe
+  version: "1"
+switches:
+  - name: ascii_mode
+    reset: 0
+    states: [ 中文, 西文 ]
+engine:
+  processors:
+    - ascii_composer
+    - recognizer
+    - key_binder
+    - speller
+    - punctuator
+    - selector
+    - navigator
+    - express_editor
+  segmentors:
+    - ascii_segmentor
+    - matcher
+    - abc_segmentor
+    - punct_segmentor
+    - fallback_segmentor
+  translators:
+    - punct_translator
+    - script_translator
+  filters:
+    - lua_filter@*probe_filter
+    - uniquifier
+speller:
+  alphabet: zyxwvutsrqponmlkjihgfedcba
+translator:
+  dictionary: luna_pinyin

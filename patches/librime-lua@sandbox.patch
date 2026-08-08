@@ -1,19 +1,20 @@
 diff --git a/src/lib/lua.cc b/src/lib/lua.cc
-index 72f1682..786e987 100644
+index 72f1682..8831c0f 100644
 --- a/src/lib/lua.cc
 +++ b/src/lib/lua.cc
-@@ -197,9 +197,101 @@ namespace LuaImpl {
+@@ -197,9 +197,129 @@ namespace LuaImpl {
    static const char makeclosurekey = 'k';
    static const char luakey = 'k';
  
 +  // ═══════════════════════════════════════════════════════════════════════
-+  //  RimeQuad 沙盒 —— 由 patches/librime-lua@sandbox.patch 加入,不是上游程式碼
++  //  RimeQuad 沙盒 第一層 —— 由 patches/librime-lua@sandbox.patch 加入,
++  //  不是上游程式碼。第二層在 src/modules.cc(要知道資料目錄才裝得起來)。
 +  // ═══════════════════════════════════════════════════════════════════════
 +  //
-+  // 為什麼需要:這個 app 的方案市集會從 GitHub 下載第三方方案,使用者也能
-+  // 自行匯入 zip。方案裡的 .lua 由 librime-lua 直接執行 —— 而且 modules.cc
-+  // 是在**模組初始化**時就 dofile 使用者資料目錄下的 rime.lua,不必等使用者
-+  // 選到那個方案。等於「下載即執行任意程式碼」。
++  // 為什麼需要:這個 app 的方案市集會從網路下載第三方方案,使用者也能自行
++  // 匯入 zip。方案裡的 .lua 由 librime-lua 直接執行 —— 而且 modules.cc 是在
++  // **模組初始化**時就 dofile 使用者資料目錄下的 rime.lua,不必等使用者選到
++  // 那個方案。等於「下載即執行任意程式碼」。
 +  //
 +  // 原本 luaL_openlibs() 開的是**完整**標準函式庫。實測(rime_console 上跑
 +  // 探針)確認在沙盒之前:
@@ -24,40 +25,63 @@ index 72f1682..786e987 100644
 +  // 自己 socket() 是通的 —— 那條路完全繞過 net/NetworkGate.kt,
 +  // 「全 app 只有一個連網出口」對匯入的方案就不成立。
 +  //
-+  // 移除清單是**看實際用量**決定的,不是憑感覺:把方案市集裡的雾凇(rime-ice)
-+  // 與萬象(rime-moran)全部 .lua 掃過一遍,用到的是
-+  //   os.date(73) os.time(22) os.getenv(1) os.clock(1)
-+  //   io.open(6) io.write io.output io.close
-+  //   require(21) package.config(1) load(3,且都明確傳 't') debug.getinfo(2)
-+  // 底下移除的每一項在這兩套方案裡都是**零使用**。
++  // ── 為什麼改成允許清單(v2) ───────────────────────────────────────────
++  // 第一版是**移除清單**。移除清單有兩個沉默的失敗方式,兩個都真的存在:
++  //   1. 漏掉一個。`debug.getupvalue` 就是漏掉的那一個 —— 它沒有在移除清單
++  //      裡,而有了它,第二層沙盒包起來的 io.open 可以被一行
++  //      `debug.getupvalue(io.open, 1)` 原樣挖回來,整層形同虛設。
++  //   2. Lua 升級時多出來的新函式**預設是開的**。
++  // 改成允許清單之後,兩者都變成「預設關閉」。
 +  //
-+  // 沒有做的事(要說清楚,才不會被當成比實際更強的保證):
-+  //   · io 仍然開著。方案確實要讀自己的資料檔,而檔案讀寫受 Android
-+  //     app sandbox 限制,開不了 socket。這是取捨,不是疏漏。
-+  //   · 這不是防惡意程式的完整隔離,是把「能直接跳出行程 / 載入原生碼」
-+  //     這條最短的路關掉。真正的隔離要另一個行程與 seccomp,不在這一層。
++  // 允許清單是**看實際用量**決定的,不是憑感覺:把方案市集裡全部 38 個套件
++  // 的 202 個 .lua 掃過一遍(含雾凇 rime-ice 29 個與萬象 rime-moran 17 個),
++  // 用到的標準庫只有:
++  //   os.date(102) os.time(22) os.getenv(1) os.clock(1)
++  //   io.open(6,其中 4 處在註解區塊裡) require(21) package.config(1)
++  //   load(6,都明確傳 't') debug.getinfo(2) collectgarbage(15)
++  // 底下沒有列進允許清單的每一項,在這 202 個檔案裡都是**零使用**。
++  //
++  // ── 這一層**沒有**做的事(要說清楚,才不會被當成比實際更強的保證) ────
++  //   · io.open 本身還在。它由第二層(modules.cc)收斂到 RIME 的資料目錄:
++  //     使用者目錄可讀寫、共用目錄唯讀、其餘一律拒絕。
++  //   · 這不是防惡意程式的完整隔離。方案 lua 仍然拿得到 librime 的繫結
++  //     (rime_api、Config、UserDb…),仍然讀寫得到 app 私有目錄裡的資料。
++  //     真正的隔離要另一個行程與 seccomp,不在這一層。
 +  static const char kRimeQuadSandbox[] = R"SANDBOX(
-+local removed_os = { "execute", "exit", "remove", "rename", "tmpname", "setlocale" }
-+for _, k in ipairs(removed_os) do os[k] = nil end
++-- ── 1. 允許清單。for k in pairs(t) do t[k] = nil end 是合法的:
++--       Lua 手冊允許在走訪中把**既有**欄位設成 nil。
++local keep_os = { date = true, time = true, clock = true,
++                  difftime = true, getenv = true }
++for k in pairs(os) do if not keep_os[k] then os[k] = nil end end
 +
-+io.popen = nil
++-- io.popen / io.tmpfile 不在清單裡,所以被拿掉。剩下的在第二層被收斂路徑。
++local keep_io = { open = true, lines = true, read = true, write = true,
++                  close = true, input = true, output = true,
++                  type = true, flush = true,
++                  stdin = true, stdout = true, stderr = true }
++for k in pairs(io) do if not keep_io[k] then io[k] = nil end end
 +
-+-- 原生 .so 的載入路徑:loadlib 本身,加上 package.searchers 裡的 C 載入器
-+-- (3 = C 模組, 4 = all-in-one)。留下 1 = preload 與 2 = .lua 檔,
-+-- require 對純 Lua 模組仍然照常運作。
++-- getupvalue/getlocal 會把第二層沙盒的 upvalue(未包裝的 io.open)挖出來,
++-- setmetatable 能改掉字串等基本型別的 metatable。全部不在清單裡。
++local keep_debug = { getinfo = true, traceback = true }
++for k in pairs(debug) do if not keep_debug[k] then debug[k] = nil end end
++
++-- ── 2. 原生 .so 的載入路徑:loadlib 本身,加上 package.searchers 裡的
++--       C 載入器(3 = C 模組, 4 = all-in-one)。這兩格設成 nil 之後,
++--       原本那兩個 C 函式在 Lua 這一側再也拿不回來。
 +package.loadlib = nil
 +package.cpath = ""
 +package.searchers[4] = nil
 +package.searchers[3] = nil
 +
-+local removed_debug = { "getregistry", "sethook", "gethook", "setupvalue",
-+                        "setlocal", "upvaluejoin", "upvalueid",
-+                        "setcstacklimit", "debug" }
-+for _, k in ipairs(removed_debug) do debug[k] = nil end
++-- ── 3. 在第二層把搜尋路徑接手之前,require 一律找不到任何東西。
++--       (上游是把兩個資料目錄「串接」在直譯器預設值前面,那會讓
++--        /usr/local/share/lua/5.4/?.lua 與 ./?.lua 仍然有效。)
++package.path = ""
 +
-+-- 只收文字 chunk。精心構造的 Lua bytecode 可以破壞 VM 的記憶體安全,
-+-- 那等於繞過上面所有限制直接跑原生碼。保留 load 的其餘語義:
-+-- env 參數「有沒有傳」必須原樣轉發 —— 補一個 nil 進去會把 _ENV 設成 nil。
++-- ── 4. 只收文字 chunk。精心構造的 Lua bytecode 可以破壞 VM 的記憶體安全,
++--       那等於繞過上面所有限制直接跑原生碼。保留 load 的其餘語義:
++--       env 參數「有沒有傳」必須原樣轉發 —— 補一個 nil 進去會把 _ENV 設成 nil。
 +local _load, _loadfile = load, loadfile
 +
 +load = function(chunk, chunkname, mode, ...)
@@ -75,6 +99,10 @@ index 72f1682..786e987 100644
 +  if not f then error(err, 2) end
 +  return f()
 +end
++
++-- ── 5. 給探針與方案作者看的標記。第二層會把 stage 改成 2 並補上目錄。
++--       這只是資訊,不是安全邊界(方案 lua 當然改得掉它)。
++rawset(_G, "__rimequad_sandbox", { stage = 1 })
 +)SANDBOX";
 +
    static int pmain(lua_State *L) {
@@ -104,3 +132,380 @@ index 72f1682..786e987 100644
      lua_register(L, "yield", yield);
      export_set(L);
  
+diff --git a/src/lua_gears.h b/src/lua_gears.h
+index 8c44c6f..20f99f6 100644
+--- a/src/lua_gears.h
++++ b/src/lua_gears.h
+@@ -9,6 +9,10 @@
+ #include <rime/gear/filter_commons.h>
+ #include "lib/lua.h"
+ 
++// RimeQuad(patches/librime-lua@sandbox.patch):rime.lua 從「模組初始化」
++// 延到「第一個 lua 元件被建立」。定義在 src/modules.cc,理由寫在那裡。
++void rimequad_lua_ensure_init();
++
+ namespace rime {
+ 
+ class LuaTranslation : public Translation {
+@@ -114,6 +118,8 @@ private:
+ public:
+   LuaComponent(an<Lua> lua) : lua_(lua) {};
+   T* Create(const Ticket &a) {
++    // RimeQuad:到這裡才代表「真的有 schema 要用 lua」。
++    ::rimequad_lua_ensure_init();
+     Ticket t(a.engine, a.name_space, a.name_space);
+     return new T(t, lua_.get());
+   }
+diff --git a/src/modules.cc b/src/modules.cc
+index 6ca704e..1205f4b 100644
+--- a/src/modules.cc
++++ b/src/modules.cc
+@@ -1,4 +1,7 @@
+ #include <cstdio>
++#include <cstring>
++#include <memory>
++#include <mutex>
+ #include <rime/common.h>
+ #include <rime/registry.h>
+ #include <rime_api.h>
+@@ -46,26 +49,271 @@ struct COMPAT<T, void_t<decltype(std::declval<T>().user_data_dir.string())>> {
+ };
+ }
+ 
++// ═══════════════════════════════════════════════════════════════════════════
++//  RimeQuad 沙盒 第二層 —— 由 patches/librime-lua@sandbox.patch 加入,
++//  不是上游程式碼。第一層在 src/lib/lua.cc(pmain)。
++// ═══════════════════════════════════════════════════════════════════════════
++//
++// 第一層拿掉了「直接跳出行程 / 載入原生碼」那條路,但 io.open 還在,而且
++// 開的是**整個檔案系統**。第二層把它收斂到 RIME 的兩個資料目錄:
++//
++//     使用者資料目錄  可讀、可寫   (方案自己的詞庫、cold_word_drop 的紀錄…)
++//     共用資料目錄    只可讀       (隨 app 出貨的內建資料,方案不該改它)
++//     其餘任何路徑    一律拒絕
++//
++// 為什麼不是「整個 io 拿掉」:掃過市集裡全部 38 個套件的 202 個 .lua,
++// io.open 有 4 處是真的會執行到的(另外 4 處在 --[[ ]] 註解區塊裡):
++//   moran/lua/moran.lua                 讀 <user>/lua/zrmdb.txt(輔助碼字典)
++//   ice/lua/cold_word_drop/logger.lua   寫 <user>/lua/cold_word_drop/runLog.txt
++//   ice/lua/cold_word_drop/processor.lua 寫 <user>/lua/cold_word_drop/*_words.lua
++// 拿掉 io 會讓萬象少一本字典、雾凇的「降頻/隱藏詞」整組壞掉。
++// 而這 4 處**全部落在使用者資料目錄裡** —— 所以收斂的邊界是量出來的,
++// 不是猜的。(moran 另有 /usr/share/rime-data 的桌面回退路徑,在這裡會被
++// 擋下,但它本來就對每個非 Linux 桌面回傳 nil,呼叫端有處理。)
++//
++// 為什麼要放在 modules.cc 而不是和第一層一起:路徑邊界要有真正的目錄字串,
++// 而那兩個目錄只有 lua_init 拿得到(rime_api 在 pmain 當下還沒註冊)。
++//
++// ── 沒有做的事 ─────────────────────────────────────────────────────────
++//   · 不解 symlink。正規化是**字面**的(解掉 . 與 ..),所以資料目錄裡若有
++//     一條指向外面的 symlink,這一層攔不住。目前那個目錄只有 app 自己寫,
++//     而 store/ArchiveGuard 與打包端都拒絕 zip 裡的 symlink 與穿越路徑。
++//   · 方案 lua 仍然拿得到 librime 的繫結(Config / UserDb / rime_api),
++//     那條路能改設定、能讀寫詞庫。這一層管的是**檔案系統**。
++static const char kRimeQuadPathSandbox[] = R"SANDBOX(
++local user_dir, shared_dir = ...
++
++-- 第一層沒跑成功就直接失敗,交給 C++ 那側 fail-closed。
++local marker = rawget(_G, "__rimequad_sandbox")
++if type(marker) ~= "table" or marker.stage ~= 1 then
++  error("rimequad: 第一層沙盒不在,拒絕繼續")
++end
++
++local sep = "/"
++if type(package.config) == "string" then sep = package.config:sub(1, 1) end
++local windows = (sep == "\\")
++
++-- 字面正規化:統一成 /、解掉 . 與 ..、Windows 上大小寫不敏感。
++-- 相對路徑以使用者資料目錄為基準(市集裡沒有任何一處這樣用,但要有定義,
++-- 否則行為取決於行程的 cwd,而那不是我們控制得了的東西)。
++local function normalize(p, base)
++  if type(p) ~= "string" or p == "" then return nil end
++  if p:find("\0", 1, true) then return nil end
++  p = p:gsub("\\", "/")
++  local prefix, rest
++  local drive = p:match("^(%a:)/")
++  if drive then
++    prefix, rest = drive, p:sub(#drive + 1)
++  elseif p:sub(1, 1) == "/" then
++    prefix, rest = "", p
++  else
++    if not base then return nil end
++    return normalize(base .. "/" .. p, nil)
++  end
++  local out = {}
++  for seg in rest:gmatch("[^/]+") do
++    if seg == "." then
++      -- 略過
++    elseif seg == ".." then
++      if #out == 0 then return nil end   -- 想爬到根的上面,直接拒絕
++      table.remove(out)
++    else
++      out[#out + 1] = seg
++    end
++  end
++  local s = prefix .. "/" .. table.concat(out, "/")
++  if windows then s = s:lower() end
++  return s
++end
++
++local ROOT_USER = normalize(user_dir, nil)
++local ROOT_SHARED = normalize(shared_dir, nil)
++if not ROOT_USER then
++  error("rimequad: 使用者資料目錄不是絕對路徑: " .. tostring(user_dir))
++end
++
++local function under(p, root)
++  if not root or root == "" then return false end
++  if p == root then return true end
++  if root == "/" then return p:sub(1, 1) == "/" end
++  return p:sub(1, #root + 1) == root .. "/"
++end
++
++-- Lua 的檔案模式:r / w / a / r+ / w+ / a+,可加 b。
++-- 帶 w、a 或 + 的都會改到檔案。看不懂的模式一律當成寫(保守)。
++local function is_write(mode)
++  if mode == nil then return false end
++  if type(mode) ~= "string" then return true end
++  return mode:find("[waWA+]") ~= nil
++end
++
++local function check(path, write)
++  local n = normalize(path, ROOT_USER)
++  if not n then
++    return false, "rimequad 沙盒:路徑無效 (" .. tostring(path) .. ")"
++  end
++  if under(n, ROOT_USER) then return true end
++  if under(n, ROOT_SHARED) then
++    if write then
++      return false, "rimequad 沙盒:共用資料目錄是唯讀的 (" .. tostring(path) .. ")"
++    end
++    return true
++  end
++  return false, "rimequad 沙盒:只能存取 RIME 的資料目錄 (" .. tostring(path) .. ")"
++end
++
++local _open, _lines, _input, _output = io.open, io.lines, io.input, io.output
++local _loadfile = loadfile   -- 這是第一層包好的「只收文字」版本
++
++-- 13 = EACCES。真的 io.open 失敗時回的是 (nil, 訊息, errno),照同一個形狀回,
++-- 呼叫端(例如 moran 的 open_rime_file)才不必為沙盒寫特例。
++io.open = function(path, mode, ...)
++  local ok, err = check(path, is_write(mode))
++  if not ok then return nil, err, 13 end
++  return _open(path, mode, ...)
++end
++
++-- io.lines 失敗時是 raise 而不是回 nil,所以這裡也 error。
++io.lines = function(filename, ...)
++  if filename == nil then return _lines() end
++  local ok, err = check(filename, false)
++  if not ok then error(err, 2) end
++  return _lines(filename, ...)
++end
++
++io.input = function(x)
++  if type(x) == "string" then
++    local ok, err = check(x, false)
++    if not ok then error(err, 2) end
++  end
++  return _input(x)
++end
++
++io.output = function(x)
++  if type(x) == "string" then
++    local ok, err = check(x, true)
++    if not ok then error(err, 2) end
++  end
++  return _output(x)
++end
++
++-- loadfile/dofile 讀進來的東西會被當成程式碼跑,邊界跟讀檔一樣。
++-- (第一層的 dofile 是呼叫**全域** loadfile,所以它自動吃到這一層。)
++loadfile = function(filename, ...)
++  if filename == nil then
++    return nil, "rimequad 沙盒:loadfile 不接受標準輸入"
++  end
++  local ok, err = check(filename, false)
++  if not ok then return nil, err end
++  return _loadfile(filename, ...)
++end
++
++-- require 的搜尋器:不看 package.path。方案改得掉 package.path,
++-- 改不掉這個 closure 裡的兩個根目錄。
++local roots = {}
++if user_dir and user_dir ~= "" then roots[#roots + 1] = user_dir end
++if shared_dir and shared_dir ~= "" then roots[#roots + 1] = shared_dir end
++
++package.searchers[2] = function(name)
++  if type(name) ~= "string" or name == "" then
++    return "\n\trimequad 沙盒:模組名無效"
++  end
++  -- 只允許英數、底線、減號與點。'/' 與 '\' 不在裡面,所以組不出穿越路徑。
++  if name:find("[^%w_%.%-]") then
++    return "\n\trimequad 沙盒:模組名含不允許的字元 '" .. name .. "'"
++  end
++  local rel = name:gsub("%.", "/")
++  local tried = {}
++  for _, root in ipairs(roots) do
++    for _, suffix in ipairs({ "/lua/" .. rel .. ".lua",
++                              "/lua/" .. rel .. "/init.lua" }) do
++      local path = root .. suffix
++      local chunk, err = _loadfile(path)
++      if chunk then return chunk, path end
++      local f = _open(path, "r")
++      if f then
++        f:close()
++        return "\n\trimequad 沙盒:" .. tostring(err)
++      end
++      tried[#tried + 1] = "\n\tno file '" .. path .. "'"
++    end
++  end
++  return table.concat(tried)
++end
++
++package.path = table.concat({
++  (roots[1] or "") .. "/lua/?.lua",
++  (roots[1] or "") .. "/lua/?/init.lua",
++  (roots[2] or roots[1] or "") .. "/lua/?.lua",
++  (roots[2] or roots[1] or "") .. "/lua/?/init.lua",
++}, ";")
++
++marker.stage = 2
++marker.user_dir = user_dir
++marker.shared_dir = shared_dir
++marker.io_confined = true
++)SANDBOX";
++
++// 沙盒(任何一層)裝不上時的處置。**不能**就這樣繼續 —— 那等於悄悄退回
++// 完整標準函式庫,是這個專案最不能接受的失敗方式(fail-open)。
++// 也不適合直接 lua_error:這裡是由非保護呼叫進來的,丟例外會走到
++// panic -> abort(),使用者看到的是輸入法整個掛掉。所以把危險的函式庫整組
++// 拔掉:lua 方案會壞,而且會壞得很明顯,但不會有任何東西從這裡漏出去。
++static void rimequad_lua_nuke(lua_State *L) {
++  static const char *const kNuke[] = {
++    "os", "io", "package", "debug", "require", "dofile", "loadfile", "load",
++  };
++  for (size_t i = 0; i < sizeof(kNuke) / sizeof(kNuke[0]); i++) {
++    lua_pushnil(L);
++    lua_setglobal(L, kNuke[i]);
++  }
++}
++
+ static void lua_init(lua_State *L) {
+ 
+   const auto user_dir = COMPAT<rime::Deployer>::get_user_data_dir();
+   const auto shared_dir = COMPAT<rime::Deployer>::get_shared_data_dir();
+ 
+   types_init(L);
++
++  // RimeQuad:package.path **取代**直譯器預設值,不是串在它前面。
++  // 上游的寫法(concat 舊值)會留下 /usr/local/share/lua/5.4/?.lua 與 ./?.lua,
++  // 那是兩條「從資料目錄外面載入程式碼」的路。第二層沙盒另外接管了
++  // searchers[2],所以就算方案把 package.path 改回去也沒有用;這裡設對的值
++  // 只是為了讓讀 package.path 的程式看到與實際搜尋一致的東西。
+   lua_getglobal(L, "package");
+   lua_pushfstring(L, "%s%slua%s?.lua;"
+                   "%s%slua%s?%sinit.lua;"
+                   "%s%slua%s?.lua;"
+-                  "%s%slua%s?%sinit.lua;",
++                  "%s%slua%s?%sinit.lua",
+                   user_dir.c_str(), LUA_DIRSEP, LUA_DIRSEP,
+                   user_dir.c_str(), LUA_DIRSEP, LUA_DIRSEP, LUA_DIRSEP,
+                   shared_dir.c_str(), LUA_DIRSEP, LUA_DIRSEP,
+                   shared_dir.c_str(), LUA_DIRSEP, LUA_DIRSEP, LUA_DIRSEP);
+-  lua_getfield(L, -2, "path");
+-  lua_concat(L, 2);
+   lua_setfield(L, -2, "path");
+   lua_pop(L, 1);
+ 
++  // RimeQuad:第二層沙盒。**一定要在 rime.lua 之前** —— rime.lua 是第三方
++  // 內容,它一跑起來就已經是「被沙盒的程式」了。
++  if (luaL_loadbuffer(L, kRimeQuadPathSandbox,
++                      strlen(kRimeQuadPathSandbox),
++                      "=rimequad-path-sandbox") != LUA_OK) {
++    LOG(ERROR) << "rimequad sandbox: load failed: " << lua_tostring(L, -1);
++    lua_pop(L, 1);
++    rimequad_lua_nuke(L);
++  } else {
++    lua_pushstring(L, user_dir.c_str());
++    lua_pushstring(L, shared_dir.c_str());
++    if (lua_pcall(L, 2, 0, 0) != LUA_OK) {
++      LOG(ERROR) << "rimequad sandbox: install failed: " << lua_tostring(L, -1);
++      lua_pop(L, 1);
++      rimequad_lua_nuke(L);
++    } else {
++      LOG(INFO) << "rimequad sandbox: io confined to user=" << user_dir
++                << " (rw), shared=" << shared_dir << " (ro)";
++    }
++  }
++
+   const auto user_file = user_dir + LUA_DIRSEP "rime.lua";
+   const auto shared_file = shared_dir + LUA_DIRSEP "rime.lua";
+ 
+@@ -90,6 +338,42 @@ static void lua_init(lua_State *L) {
+   }
+ }
+ 
++// ═══════════════════════════════════════════════════════════════════════════
++//  RimeQuad:把 rime.lua 的執行延到「真的有方案要用 lua」的那一刻
++// ═══════════════════════════════════════════════════════════════════════════
++//
++// 上游是在模組初始化(RimeSetup 期間)就跑 lua_init,而 lua_init 會
++// luaL_dofile 使用者資料目錄下的 rime.lua。使用者資料目錄裡的東西是市集
++// 下載或自行匯入來的,所以那等於:**裝好一個方案 = 它的程式碼開始執行**,
++// 使用者根本還沒選到它,甚至可能只是「下載回來看看」。
++//
++// 改成第一個 lua 元件(lua_translator / lua_filter / lua_segmentor /
++// lua_processor)被建立時才初始化。元件是引擎載入某個 schema、而該 schema
++// 自己宣告了 lua 元件時才會建立,所以:
++//
++//   下載 / 安裝 / 部署  → rime.lua **不會**跑
++//   選到一個用 lua 的方案 → 這時才跑
++//
++// 不改「rime.lua 會被執行」這件事本身(那是 librime-lua 的設計,方案靠它
++// 掛 processor),改的是「什麼時候」,把觸發條件從「檔案存在」變成
++// 「使用者選了它」。
++//
++// 執行緒:元件由部署/會話執行緒建立,librime 開了 ENABLE_THREADING,
++// 所以要鎖。旗標在 rime_lua_initialize 重設 —— RimeSetup 可能被呼叫多次,
++// 用 std::call_once 的話第二次的新 lua_State 會永遠不被初始化(方案沉默地
++// 全部失效),那正是這個專案最怕的那種失敗。
++static std::mutex g_lua_mutex;
++static std::shared_ptr<Lua> g_lua;
++static bool g_lua_inited = false;
++
++void rimequad_lua_ensure_init() {
++  std::lock_guard<std::mutex> lock(g_lua_mutex);
++  if (!g_lua || g_lua_inited) return;
++  g_lua_inited = true;
++  LOG(INFO) << "rimequad: initialising lua (first lua component requested)";
++  g_lua->to_state(lua_init);
++}
++
+ static void rime_lua_initialize() {
+   using namespace rime;
+ 
+@@ -97,7 +381,11 @@ static void rime_lua_initialize() {
+   Registry& r = Registry::instance();
+ 
+   an<Lua> lua(new Lua);
+-  lua->to_state(lua_init);
++  {
++    std::lock_guard<std::mutex> lock(g_lua_mutex);
++    g_lua = lua;
++    g_lua_inited = false;
++  }
+ 
+   r.Register("lua_translator", new LuaComponent<LuaTranslator>(lua));
+   r.Register("lua_filter", new LuaComponent<LuaFilter>(lua));
+@@ -106,6 +394,9 @@ static void rime_lua_initialize() {
+ }
+ 
+ static void rime_lua_finalize() {
++  std::lock_guard<std::mutex> lock(g_lua_mutex);
++  g_lua.reset();
++  g_lua_inited = false;
+ }
+ 
+ RIME_REGISTER_MODULE(lua)

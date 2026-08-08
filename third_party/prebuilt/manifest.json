@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-07T19:17:16Z",
+  "generated_at": "2026-08-08T14:35:03Z",
   "generated_by": "scripts/build_native.sh",
   "librime": {
     "version": "1.17.0",
@@ -98,7 +98,7 @@
     "version": "1.89.0",
     "header_only": true,
     "include_dir": "third_party/boost",
-    "abs_include_dir": "/home/lc/rime/third_party/boost",
+    "abs_include_dir": "/home/lc/rime-sec/third_party/boost",
     "note": "CMAKE_SYSTEM_NAME=Android 時 librime 走 find_package(Boost 1.77.0) 不帶 COMPONENTS,只需要 headers,不需要編譯任何 Boost 二進位。下游若要編譯 librime 的私有標頭,需要把這個路徑加進 include path。"
   },
   "link_order": [
@@ -160,21 +160,21 @@
       "libs": [
         {
           "file": "librime.a",
-          "size_bytes": 19151864,
-          "size_human": "18.26 MiB",
-          "sha256": "53d1ba550f12cea791ab7e0d99fae4cb622bd3b0e5794fff7e943e6753fac3d2"
+          "size_bytes": 19166162,
+          "size_human": "18.28 MiB",
+          "sha256": "38963150e1e059d818ac5f51e4fabc1297e8940c1c5a86b4b425f03af7f6796b"
         },
         {
           "file": "libopencc.a",
-          "size_bytes": 2376660,
+          "size_bytes": 2376820,
           "size_human": "2.27 MiB",
-          "sha256": "aed49ebd7c0ec5752a7b7a86daae263e5af4de1bcd6474b02a4012d9e0216d5a"
+          "sha256": "1bae794d27245b6bc20ed9d8b79abdbf022fdcba7437323e087255c097652187"
         },
         {
           "file": "libmarisa.a",
-          "size_bytes": 361958,
+          "size_bytes": 362366,
           "size_human": "0.35 MiB",
-          "sha256": "c6ce09ac3400d803053ce5468848807ec8dc6b99a14020c21eed58577345a34f"
+          "sha256": "7143de4256e9da96d6e0c1ad01dd3d9a3dc9f628e58df35d8c714c9ac454b253"
         },
         {
           "file": "libleveldb.a",
@@ -190,12 +190,12 @@
         },
         {
           "file": "libglog.a",
-          "size_bytes": 626602,
+          "size_bytes": 626618,
           "size_human": "0.60 MiB",
-          "sha256": "6a63aa496536d83a80ba877969869cd987192f3cc54fae6799bd97129e9f34fd"
+          "sha256": "06a05b1a61783f9c3cb6a09c94f5e447ef0a4401e3561eb50c4f321295795d57"
         }
       ],
-      "total_size_bytes": 24322076
+      "total_size_bytes": 24336958
     },
     "x86_64": {
       "api_level": 21,
@@ -207,21 +207,21 @@
       "libs": [
         {
           "file": "librime.a",
-          "size_bytes": 17846034,
-          "size_human": "17.02 MiB",
-          "sha256": "672b566bd3f80fe97e9ee5a4c5319b51a8515e2351870b773786c96eb89d3b47"
+          "size_bytes": 17860092,
+          "size_human": "17.03 MiB",
+          "sha256": "f62f297ea14f1cc3890a3f6f0cae15e0d18104d57e08565671ba15b7b9e5a543"
         },
         {
           "file": "libopencc.a",
-          "size_bytes": 2278762,
+          "size_bytes": 2279202,
           "size_human": "2.17 MiB",
-          "sha256": "1c62d8492054122312abe7a596682ccf365bca9ed16d8e207ca5973fd14f52e6"
+          "sha256": "24f8434f62b6a9c4a076e521311718c8b77b9641f98c65c622b19411ea50f452"
         },
         {
           "file": "libmarisa.a",
-          "size_bytes": 352702,
+          "size_bytes": 353110,
           "size_human": "0.34 MiB",
-          "sha256": "780d79549adeaaa454495c5987abdb6d74361332ea8283d0407c4890e6098c40"
+          "sha256": "6c01ed75012f553c0e0b90b47ab8762ca04e49a421d3969f01d7e9c89a474c26"
         },
         {
           "file": "libleveldb.a",
@@ -237,12 +237,12 @@
         },
         {
           "file": "libglog.a",
-          "size_bytes": 609028,
+          "size_bytes": 609036,
           "size_human": "0.58 MiB",
-          "sha256": "5ed22b46a409ba5acb0fad235ac47be3bcaffea63e70b4d814fceb9cc273df90"
+          "sha256": "9c34ed854473b5283b8ab68458e6e06236e5e7a26673815ef4426b188f293941"
         }
       ],
-      "total_size_bytes": 22851704
+      "total_size_bytes": 22866618
     }
   }
 }

@@ -139,6 +139,22 @@ jobs:
       - name: 發布關卡(不需要模擬器的部分)
         run: ./scripts/release_check.sh --skip-emu --strict
 
+      # ── 底下兩支是「守門腳本自己有沒有在守」的驗證 ──────────────────
+      # release_check.sh 第 0 關會跑 audit_offline.sh,但那只證明它「沒有紅」。
+      # 一支全綠的 grep 腳本有兩種可能:真的沒有違規,或它其實什麼都沒在看。
+      # 這個專案已經被同一件事咬過三次(升級測試被判略過、LayoutEscapeTest
+      # 漏掉 8 份佈局、grep -oP 在 BSD 上永遠印「都齊全」)。
+      - name: Lua 沙盒探針(真的 Lua 直譯器,39 條 x 3 階段 + 4 個變異測試)
+        # 不驗「patch 檔還在」——那是 audit_offline.sh 第 8 項的事。
+        # 這裡把兩段沙盒從 patch 套用後的原始碼抽出來,裝進 librime-lua 出貨
+        # 的那一份 Lua 5.4.8,真的去 os.execute / io.popen / 讀資料目錄外面的檔案。
+        run: ./scripts/verify_lua_sandbox.sh
+
+      - name: 守門腳本的反向測試(植入 16 條真違規,確認它會紅)
+        # 放在發布關卡**之後**:其中一條要用已建置的 APK
+        # (產物層的「只有 NetworkGate 碰得到 HttpURLConnection」)。
+        run: ./scripts/verify_audit_offline.sh
+
       - name: 簽章與單調性關卡(沿用 publish_apk.sh 的檢查)
         run: |
           # 不另寫一套簽章檢查。publish_apk.sh 裡那三項(輪替鏈逐一相符、
