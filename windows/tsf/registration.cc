@@ -224,8 +224,8 @@ HRESULT UnregisterTextService() {
   return S_OK;
 }
 
-namespace {
-HRESULT SetEnabledForCurrentUser(BOOL enable) {
+HRESULT SetProfileEnabledForCurrentUser(int index, bool enable) {
+  if (index < 0 || index >= kRimeProfileCount) return E_INVALIDARG;
   ComScope com;
   if (!com.ok()) return E_FAIL;
   ITfInputProcessorProfiles* profiles = nullptr;
@@ -234,22 +234,12 @@ HRESULT SetEnabledForCurrentUser(BOOL enable) {
                                   IID_ITfInputProcessorProfiles,
                                   (void**)&profiles);
   if (FAILED(hr)) return hr;
-  // 每一份都做。**不因為其中一個語言失敗就放棄其餘的** —— 使用者的
-  // 語言清單裡通常只有其中一種中文,那一份成功就夠了,而哪一份會成功
-  // 取決於使用者的系統,不是我們決定得了的。
-  HRESULT first_err = S_OK;
-  for (int i = 0; i < kRimeProfileCount; ++i) {
-    const HRESULT r = profiles->EnableLanguageProfile(
-        CLSID_RimeTextService, kRimeProfiles[i].langid, *kRimeProfiles[i].guid,
-        enable);
-    if (FAILED(r) && SUCCEEDED(first_err)) first_err = r;
-  }
+  hr = profiles->EnableLanguageProfile(CLSID_RimeTextService,
+                                       kRimeProfiles[index].langid,
+                                       *kRimeProfiles[index].guid,
+                                       enable ? TRUE : FALSE);
   profiles->Release();
-  return first_err;
+  return hr;
 }
-}  // namespace
-
-HRESULT EnableForCurrentUser() { return SetEnabledForCurrentUser(TRUE); }
-HRESULT DisableForCurrentUser() { return SetEnabledForCurrentUser(FALSE); }
 
 }  // namespace rimewin

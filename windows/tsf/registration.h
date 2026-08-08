@@ -75,8 +75,13 @@ HRESULT UnregisterTextService();
 //   使用者用系統管理員帳號提權安裝時,提權後的 HKCU 是**那個管理員的**,
 //   把輸入法加到他的清單裡,而真正在用電腦的人什麼都沒拿到。
 //   安裝程式那邊靠 Inno 的 runasoriginaluser / ExecAsOriginalUser 處理。
-HRESULT EnableForCurrentUser();
-HRESULT DisableForCurrentUser();
+//
+// 一次做一份(index 是 kRimeProfiles 的索引)。刻意**不**包成「全做完」的
+// 一支:使用者的語言清單裡通常只有其中一種中文,哪幾份會成功取決於他的系統,
+// 不是我們決定得了的。呼叫端要能逐一看到每一份的 HRESULT ——
+// 包成一支只回傳第一個錯誤的話,「三份都失敗」與「兩份成功一份失敗」
+// 在報表上長得一模一樣,而要分辨得再等一輪 CI。
+HRESULT SetProfileEnabledForCurrentUser(int index, bool enable);
 
 }  // namespace rimewin
 

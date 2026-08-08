@@ -245,17 +245,34 @@ static int Run(int argc, wchar_t** argv) {
 
   if (verb == L"unregister") return Report("全機反註冊", UnregisterTextService());
 
-  if (verb == L"enable-user") {
+  if (verb == L"enable-user" || verb == L"disable-user") {
+    const bool enable = (verb == L"enable-user");
     // 提權時的 HKCU 是**提權那個帳號的**。安裝程式必須以 ExecAsOriginalUser
     // 呼叫這一支,否則「用系統管理員帳號提權裝完,登入的那個人清單裡什麼都沒有」。
     if (IsProcessElevated())
       Say("  ⚠ 這支目前是提權的 —— 寫進去的會是提權帳號的 HKCU,不是登入者的。\n");
     Say("  SID = %s\n", WideToUtf8(CurrentUserSidString()).c_str());
-    return Report("啟用(目前使用者)", EnableForCurrentUser());
-  }
 
-  if (verb == L"disable-user")
-    return Report("停用(目前使用者)", DisableForCurrentUser());
+    // 逐一做,逐一印出 HRESULT。
+    //
+    // **不因為其中一個語言失敗就放棄其餘的**:使用者的語言清單裡通常只有
+    // 其中一種中文,哪幾份會成功取決於他的系統。全部失敗才算失敗。
+    int okc = 0;
+    for (int i = 0; i < ProfileCount(); ++i) {
+      const HRESULT hr = SetProfileEnabledForCurrentUser(i, enable);
+      Say("  0x%04X %s -> %s (hr=0x%08lX)\n",
+          static_cast<unsigned>(ProfileLangId(i)),
+          WideToUtf8(ProfileGuidString(i)).c_str(),
+          SUCCEEDED(hr) ? "OK" : "失敗", static_cast<unsigned long>(hr));
+      if (SUCCEEDED(hr)) ++okc;
+    }
+    Say("%s:%d / %d 份成功\n", enable ? "啟用" : "停用", okc, ProfileCount());
+    if (okc == 0) {
+      Say("!! 一份都沒成功 —— 這個使用者的清單上不會出現這個輸入法\n");
+      return 1;
+    }
+    return 0;
+  }
 
   if (verb == L"check") {
     CheckOptions opt;

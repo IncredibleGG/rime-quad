@@ -173,7 +173,6 @@ UninstallStatusLabel=請稍候,正在從您的電腦移除 %1…
 StatusUninstalling=正在移除 %1…
 UninstalledAll=%1 已從您的電腦順利移除。
 UninstalledMost=%1 移除完成。%n%n有部分項目無法移除,重新啟動電腦後會自動清除。
-SetupIsAlreadyRunning=安裝程式已經在執行中。
 WindowsVersionNotSupported=本輸入法需要 Windows 10 1607 或更新的版本。
 OnlyOnTheseArchitectures=本輸入法只提供 64 位元版本,無法安裝在這台電腦上。
 
