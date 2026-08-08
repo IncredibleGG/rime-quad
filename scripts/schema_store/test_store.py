@@ -270,6 +270,12 @@ class TestCollisions(unittest.TestCase):
                          "檔案撞名清單對不上。多出：%s；少掉：%s；擁有者不符：%s"
                          % (extra, missing, mismatch))
 
+    def test_load_dangerous_ids_agrees_with_the_golden_list(self):
+        self.assertEqual(
+            languages.load_dangerous_ids(KNOWN),
+            {c["schema"] for c in self.known["schema_ids"]
+             if c["severity"] == "content-differs"})
+
     def test_the_six_dangerous_ones_are_all_there(self):
         """`double_pinyin` 那一組必須在清單裡，而且標成 content-differs。"""
         by_id = {c["schema"]: c for c in self.known["schema_ids"]}
@@ -351,8 +357,9 @@ class TestLanguages(unittest.TestCase):
 
         `double_pinyin` 那六個是 content-differs，人工判定必須寫成 uid。
         """
-        dangerous = {c["schema"] for c in self.known["schema_ids"]
-                     if c["severity"] == "content-differs"}
+        # 「哪些是危險的」只有一個定義處：languages.load_dangerous_ids()。
+        # 測試自己再解析一次黃金清單的話，兩邊的判準會慢慢走鐘。
+        dangerous = languages.load_dangerous_ids(KNOWN)
         offenders = [k for k in self.data.schemas
                      if "/" not in k and k in dangerous]
         self.assertEqual(offenders, [],
@@ -360,8 +367,7 @@ class TestLanguages(unittest.TestCase):
                          "（請改成 <套件>/<方案>）" % offenders)
 
     def test_MUTATION_dangerous_bare_key_is_caught(self):
-        dangerous = {c["schema"] for c in self.known["schema_ids"]
-                     if c["severity"] == "content-differs"}
+        dangerous = languages.load_dangerous_ids(KNOWN)
         fake = dict(self.data.schemas)
         fake["double_pinyin"] = {"tag": "zh-Hant", "why": "偷懶"}
         offenders = [k for k in fake if "/" not in k and k in dangerous]
