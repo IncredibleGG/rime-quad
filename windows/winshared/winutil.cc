@@ -65,6 +65,16 @@ std::wstring RimeServiceQuitEventName() {
   return L"Local\\RimeQuadServiceQuit." + sid;
 }
 
+std::wstring RimeSettingsEventName() {
+  return L"Local\\RimeQuadSettings." + CurrentUserSidString();
+}
+
+std::string GuidToUtf8(const GUID& g) {
+  wchar_t buf[64] = {0};
+  if (::StringFromGUID2(g, buf, 64) == 0) return std::string();
+  return WideToUtf8(buf);
+}
+
 bool IsProcessElevated() {
   HANDLE token = nullptr;
   if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &token))

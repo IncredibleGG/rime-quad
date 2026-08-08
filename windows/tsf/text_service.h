@@ -25,10 +25,13 @@
 
 namespace rimewin {
 
+class LangBarButton;
+
 class TextService : public ITfTextInputProcessorEx,
                     public ITfThreadMgrEventSink,
                     public ITfKeyEventSink,
-                    public ITfCompositionSink {
+                    public ITfCompositionSink,
+                    public ITfInputProcessorProfileActivationSink {
  public:
   TextService();
   virtual ~TextService();
@@ -65,6 +68,17 @@ class TextService : public ITfTextInputProcessorEx,
   STDMETHODIMP OnCompositionTerminated(TfEditCookie ec,
                                        ITfComposition* composition) override;
 
+  // ITfInputProcessorProfileActivationSink
+  //
+  // ⚠ 這個 sink 不是可有可無的。三份語言設定檔(zh-Hant-TW / zh-Hans-CN /
+  //   zh-Hant-HK)**共用同一個 CLSID**,所以使用者在它們之間切換時,
+  //   TSF 不會 Deactivate 再 Activate 這個文字服務 —— 它只發這一則通知。
+  //   少了它,使用者從繁體切到簡體之後打出來仍然是繁體字,
+  //   而那正是這一輪要修的缺陷本身。
+  STDMETHODIMP OnActivated(DWORD profile_type, LANGID langid, REFCLSID clsid,
+                           REFGUID catid, REFGUID guid_profile, HKL hkl,
+                           DWORD flags) override;
+
  private:
   // 一顆按鍵的完整處理。回傳「宿主要不要吃掉它」。
   bool HandleKey(ITfContext* ctx, WPARAM w, LPARAM l, bool key_up);
@@ -77,11 +91,17 @@ class TextService : public ITfTextInputProcessorEx,
   void EndComposition(TfEditCookie ec);
   void ReportCaretRect(TfEditCookie ec, ITfContext* ctx);
   const KeyboardOracle& Oracle();
+  // 問系統「使用者現在用的是我們的哪一份語言設定檔」,結果交給 ipc_。
+  void RefreshProfile();
+  // 語言列按鈕按下去時做的事。單向,不等回覆。
+  void OpenSettings();
 
   LONG ref_ = 1;
   ITfThreadMgr* thread_mgr_ = nullptr;
   TfClientId client_id_ = TF_CLIENTID_NULL;
   DWORD thread_mgr_cookie_ = TF_INVALID_COOKIE;
+  DWORD profile_sink_cookie_ = TF_INVALID_COOKIE;
+  LangBarButton* lang_bar_ = nullptr;
   ITfComposition* composition_ = nullptr;
   ITfContext* composition_ctx_ = nullptr;
 

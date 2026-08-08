@@ -26,6 +26,10 @@ extern const GUID GUID_RimeDisplayAttributeInput;
 // {5C43BAAB-FD30-4D57-AEC3-0D8E2404D67A}
 extern const GUID GUID_RimePreservedKeyToggle;
 
+// 語言列(與工作列輸入指示器)上的那一顆「設定」按鈕。
+// {9E2D5B41-0C7A-4E6E-9E52-5F2B8B1C6A44}
+extern const GUID GUID_RimeLangBarButton;
+
 // COM 類別本身的描述(HKCR\CLSID\{…} 的預設值)。使用者看不到這一個。
 #define RIME_TEXT_SERVICE_DESC L"RIME 四端輸入法"
 

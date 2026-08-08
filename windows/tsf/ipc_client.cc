@@ -62,6 +62,19 @@ void IpcClient::Fail(LinkFailure kind) {
   link_.OnFailure(kind, NowMs());
 }
 
+void IpcClient::SetProfile(uint32_t langid, const std::string& profile_guid) {
+  if (langid == langid_ && profile_guid == profile_guid_) return;
+  langid_ = langid;
+  profile_guid_ = profile_guid;
+  // 重新握手。見標頭的說明:服務是在 HELLO 當下決定預設方案的。
+  //
+  // 不呼叫 Fail():這不是失敗,不該進退避。單純把連線收掉,
+  // 下一顆按鍵會照常重連 —— 而重連在退避歸零的狀態下是立刻的。
+  Close();
+  link_ = LinkState();
+  negotiated_proto_ = 0;
+}
+
 bool IpcClient::EnsureReady() {
   if (link_.MayEatKey() && pipe_ != INVALID_HANDLE_VALUE && session_ != 0)
     return true;
@@ -69,10 +82,37 @@ bool IpcClient::EnsureReady() {
   if (!link_.ShouldAttemptConnect(now)) return false;
   link_.OnAttempt(now);
 
-  if (!Connect()) return false;
-  if (!Handshake()) return false;
+  // ── 降級重試 ────────────────────────────────────────────────
+  //
+  // DLL 與服務可能來自不同的建置:使用者更新到一半,或某個長壽的宿主
+  // 進程(瀏覽器可以開好幾天)還握著舊的 DLL。舊服務看到 v2 的 HELLO
+  // 會整則丟掉並關掉連線,所以新 DLL 要**自己退一步**再試一次 v1。
+  //
+  // 退到 v1 的代價只有「服務不知道 langid」——預設方案退回 schema_list
+  // 第一項,輸入法照常能用。不退的話,使用者看到的是「更新到一半之後
+  // 中文輸入在某些程式裡整個消失」,而且他分不出是哪一半。
+  //
+  // 最多退到 kMinProtocolVersion。每一輪都要重新開管道:握手失敗時
+  // 連線已經被收掉了。
+  bool ok = false;
+  for (uint32_t p = kProtocolVersion; p >= kMinProtocolVersion; --p) {
+    if (ConnectAndHandshake(p)) {
+      ok = true;
+      break;
+    }
+    if (p == kMinProtocolVersion) break;  // uint32_t 不能減到負的
+  }
+  if (!ok) return false;
   if (!OpenSession()) return false;
   link_.OnConnected();
+  return true;
+}
+
+bool IpcClient::ConnectAndHandshake(uint32_t proto) {
+  if (pipe_ != INVALID_HANDLE_VALUE) Close();
+  if (!Connect()) return false;
+  if (!Handshake(proto)) return false;
+  negotiated_proto_ = proto;
   return true;
 }
 
@@ -222,11 +262,15 @@ bool IpcClient::Exchange(const std::string& payload, uint32_t seq,
   return true;
 }
 
-bool IpcClient::Handshake() {
+bool IpcClient::Handshake(uint32_t proto) {
   Hello h;
-  h.proto = kProtocolVersion;
+  h.proto = proto;
   h.shell_abi = static_cast<uint32_t>(RIME_SHELL_ABI_VERSION);
   h.host_pid = ::GetCurrentProcessId();
+  // EncodeHello 依 h.proto 決定要不要寫尾巴。proto < 2 時這兩個欄位
+  // 一個位元組都不會上線路,舊服務因此解得開。
+  h.input_langid = langid_;
+  h.profile_guid = profile_guid_;
   {
     wchar_t path[MAX_PATH] = {0};
     ::GetModuleFileNameW(nullptr, path, MAX_PATH);
@@ -244,7 +288,7 @@ bool IpcClient::Handshake() {
   }
   // 版本協商。rime_shell.h 檔頭要求「不符即拒絕載入」,只是這裡跨了進程。
   // 拒絕的方式是永遠不吃按鍵 —— 使用者打得出英文,只是中文輸入沒作用。
-  if (ok.proto != kProtocolVersion ||
+  if (ok.proto != proto ||
       ok.shell_abi != static_cast<uint32_t>(RIME_SHELL_ABI_VERSION)) {
     Fail(LinkFailure::kHandshake);
     return false;
@@ -343,6 +387,15 @@ void IpcClient::SendCaretRect(int32_t l, int32_t t, int32_t r, int32_t b) {
   c.right = r;
   c.bottom = b;
   SendOneWay(EncodeCaretRect(++seq_, c));
+}
+
+bool IpcClient::SendOpenSettings() {
+  // ⚠ 只有協商到 v2 之後才准送。v1 的服務收到不認得的 op 會回錯誤
+  //   並關掉連線 —— 那會讓「按了設定按鈕之後輸入法忽然沒反應」變成
+  //   一個沒有人猜得到成因的症狀。
+  if (!MayEatKey() || negotiated_proto_ < 2) return false;
+  SendOneWay(EncodeSimple(++seq_, Op::kOpenSettings, session_));
+  return true;
 }
 
 void IpcClient::SendFocus(bool focused) {

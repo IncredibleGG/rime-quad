@@ -2,10 +2,12 @@
 
 #include <functional>
 #include <new>
+#include <vector>
 
 #include "../common/ime_policy.h"
 #include "../winshared/winutil.h"
 #include "guids.h"
+#include "lang_bar.h"
 
 // DllMain 存下來的模組控制代碼。用來找到與 DLL 同目錄的 rime_service.exe。
 extern HMODULE g_rime_module;
@@ -127,6 +129,8 @@ STDMETHODIMP TextService::QueryInterface(REFIID riid, void** ppv) {
     *ppv = static_cast<ITfKeyEventSink*>(this);
   else if (IsEqualIID(riid, IID_ITfCompositionSink))
     *ppv = static_cast<ITfCompositionSink*>(this);
+  else if (IsEqualIID(riid, IID_ITfInputProcessorProfileActivationSink))
+    *ppv = static_cast<ITfInputProcessorProfileActivationSink*>(this);
   if (!*ppv) return E_NOINTERFACE;
   AddRef();
   return S_OK;
@@ -172,6 +176,31 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* mgr, TfClientId id,
     keystroke->Release();
   }
 
+  // 語言設定檔變更的通知。見 text_service.h 的說明:三份設定檔共用一個
+  // CLSID,所以切換語言時**只有**這一則通知會來。
+  {
+    ITfSource* psrc = nullptr;
+    if (SUCCEEDED(thread_mgr_->QueryInterface(IID_ITfSource, (void**)&psrc))) {
+      psrc->AdviseSink(IID_ITfInputProcessorProfileActivationSink,
+                       static_cast<ITfInputProcessorProfileActivationSink*>(this),
+                       &profile_sink_cookie_);
+      psrc->Release();
+    }
+  }
+
+  // 現在這一刻是哪一份。sink 只在**之後**的切換時才觸發,
+  // 所以第一次一定要自己問一次 —— 少了這一次,使用者開機後
+  // 第一個 app 裡的預設方案永遠是「不知道語言」的那一種。
+  RefreshProfile();
+
+  // 語言列上的設定按鈕。加不上去不是錯誤(某些宿主沒有語言列),
+  // 系統匣那條路是獨立的。
+  lang_bar_ = new (std::nothrow) LangBarButton([this]() { OpenSettings(); });
+  if (lang_bar_ && !LangBarButton::AddTo(thread_mgr_, lang_bar_)) {
+    lang_bar_->Release();
+    lang_bar_ = nullptr;
+  }
+
   // 刻意**不**在這裡連線服務。Activate 發生在使用者切到這個輸入法的當下,
   // 在宿主的 UI 執行緒上;那時去開管道(甚至啟動服務)會讓切換卡住。
   // 連線是第一次真的有按鍵時才做,而且有逾時與退避。
@@ -180,6 +209,19 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* mgr, TfClientId id,
 }
 
 STDMETHODIMP TextService::Deactivate() {
+  if (lang_bar_) {
+    LangBarButton::RemoveFrom(thread_mgr_, lang_bar_);
+    lang_bar_->Release();
+    lang_bar_ = nullptr;
+  }
+  if (profile_sink_cookie_ != TF_INVALID_COOKIE && thread_mgr_) {
+    ITfSource* psrc = nullptr;
+    if (SUCCEEDED(thread_mgr_->QueryInterface(IID_ITfSource, (void**)&psrc))) {
+      psrc->UnadviseSink(profile_sink_cookie_);
+      psrc->Release();
+    }
+    profile_sink_cookie_ = TF_INVALID_COOKIE;
+  }
   RIME_GUARD_BEGIN
   if (composition_ && composition_ctx_) {
     ITfContext* ctx = composition_ctx_;
@@ -524,6 +566,107 @@ void TextService::ReportCaretRect(TfEditCookie ec, ITfContext* ctx) {
   }
   if (range) range->Release();
   view->Release();
+}
+
+// ── 語言設定檔 ────────────────────────────────────────────────────
+
+STDMETHODIMP TextService::OnActivated(DWORD /*profile_type*/, LANGID langid,
+                                      REFCLSID clsid, REFGUID /*catid*/,
+                                      REFGUID guid_profile, HKL /*hkl*/,
+                                      DWORD flags) {
+  RIME_GUARD_BEGIN
+  // 只理會**我們自己**被啟用的那一則。別的輸入法被啟用時我們什麼都不做:
+  // 那時使用者根本沒在用這個輸入法,改自己的狀態沒有意義,
+  // 而且會讓「他上次用哪個方案」被別人的切換覆蓋掉。
+  if (!IsEqualCLSID(clsid, CLSID_RimeTextService)) return S_OK;
+  if (!(flags & TF_IPSINK_FLAG_ACTIVE)) return S_OK;
+  ipc_.SetProfile(static_cast<uint32_t>(langid), GuidToUtf8(guid_profile));
+  return S_OK;
+  RIME_GUARD_END_HR
+}
+
+void TextService::RefreshProfile() {
+  // 首選:ITfInputProcessorProfileMgr::GetActiveProfile —— 它同時給
+  // langid 與 profile GUID,而且問的是「現在真的啟用的是哪一份」。
+  ITfInputProcessorProfiles* profiles = nullptr;
+  if (FAILED(::CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr,
+                                CLSCTX_INPROC_SERVER,
+                                IID_ITfInputProcessorProfiles,
+                                (void**)&profiles)) ||
+      !profiles) {
+    // ⚠ 退路:HKL 的低 16 位就是目前輸入語言的 langid。
+    //   拿不到 profile GUID,但 langid 已經足夠決定方案 ——
+    //   而「拿不到就什麼都不做」等於讓簡體使用者繼續看到繁體字。
+    const HKL hkl = ::GetKeyboardLayout(0);
+    const uint32_t lang =
+        static_cast<uint32_t>(reinterpret_cast<UINT_PTR>(hkl) & 0xFFFFu);
+    ipc_.SetProfile(lang, std::string());
+    return;
+  }
+
+  uint32_t langid = 0;
+  std::string guid;
+  ITfInputProcessorProfileMgr* mgr = nullptr;
+  if (SUCCEEDED(profiles->QueryInterface(IID_ITfInputProcessorProfileMgr,
+                                         (void**)&mgr)) &&
+      mgr) {
+    TF_INPUTPROCESSORPROFILE prof{};
+    if (SUCCEEDED(mgr->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &prof)) &&
+        IsEqualCLSID(prof.clsid, CLSID_RimeTextService)) {
+      langid = static_cast<uint32_t>(prof.langid);
+      guid = GuidToUtf8(prof.guidProfile);
+    }
+    mgr->Release();
+  }
+  if (langid == 0) {
+    // 沒有 ProfileMgr(較舊的系統),或啟用的不是我們 —— 後者在
+    // Activate 的當下是可能的,系統的快取還沒更新(見 README:
+    // 註冊完 0.12 秒時列舉不到自己,22 秒後才看得到)。
+    LANGID cur = 0;
+    if (SUCCEEDED(profiles->GetCurrentLanguage(&cur)))
+      langid = static_cast<uint32_t>(cur);
+  }
+  profiles->Release();
+  if (langid == 0) {
+    const HKL hkl = ::GetKeyboardLayout(0);
+    langid = static_cast<uint32_t>(reinterpret_cast<UINT_PTR>(hkl) & 0xFFFFu);
+  }
+  ipc_.SetProfile(langid, guid);
+}
+
+void TextService::OpenSettings() {
+  // 路 1:管道已經連上 → 走 IPC。UWP / 市集 App 的宿主跑在 AppContainer 裡,
+  // 開不了 Local\ 底下別人建立的具名物件,那時只有這一條走得通。
+  if (ipc_.SendOpenSettings()) return;
+
+  // 路 2:具名事件。使用者還沒打過任何一個字時管道沒連,只有這一條走得通。
+  HANDLE ev = ::OpenEventW(EVENT_MODIFY_STATE, FALSE,
+                           RimeSettingsEventName().c_str());
+  if (ev) {
+    ::SetEvent(ev);
+    ::CloseHandle(ev);
+    return;
+  }
+
+  // 路 3:服務根本沒在跑 → 把它叫起來,直接開設定視窗。
+  // ⚠ 提權的宿主不可以啟動服務(見 ipc_client.cc 的說明:那會產生一支
+  //   提權的服務,把使用者詞庫檔案的擁有者換掉)。所以這裡什麼都不做 ——
+  //   使用者在提權視窗裡本來就沒有輸入法。
+  if (IsProcessElevated()) return;
+  std::wstring exe = ModuleDirectory(g_rime_module);
+  if (exe.empty()) return;
+  exe += L"\\rime_service.exe";
+  std::wstring cmd = L"\"" + exe + L"\" --settings";
+  STARTUPINFOW si{};
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi{};
+  std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+  buf.push_back(L'\0');
+  if (::CreateProcessW(exe.c_str(), buf.data(), nullptr, nullptr, FALSE,
+                       CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+    ::CloseHandle(pi.hThread);
+    ::CloseHandle(pi.hProcess);
+  }
 }
 
 }  // namespace rimewin

@@ -37,6 +37,18 @@ std::wstring RimePipeName();
 // 名字裡帶 SID 的理由同管道名 —— 同一台機器上的兩個人不可以互相關掉對方的服務。
 std::wstring RimeServiceQuitEventName();
 
+// 「把設定視窗叫出來」的具名事件。服務進程建立並等待它;語言列按鈕與
+// 系統匣圖示在管道還沒連上時走這一條。
+//
+// ⚠ 名稱裡帶使用者 SID,與管道同理:同一台機器上的另一個使用者不該
+//   有辦法對我們的服務發號施令。
+std::wstring RimeSettingsEventName();
+
+// GUID → "{XXXXXXXX-…}"(大寫)。只作診斷與線路上的識別用;
+// **比較 GUID 一律用 IsEqualGUID,不要比字串** —— 大小寫與括號的差異
+// 會讓「看起來一樣」的兩個值比不相等。
+std::string GuidToUtf8(const GUID& g);
+
 // 目前的進程是不是被提權的。TSF 的 DLL 會被載入到提權的進程裡,
 // 而從那裡 CreateProcess 起來的服務也會是提權的 —— 那支服務接著會用
 // 提權的身分去讀寫使用者的設定檔與詞庫。不可以。
