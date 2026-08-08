@@ -128,5 +128,18 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
   中途 commit 騙過去;另有一個**反向測試**步驟故意餵錯的預期值,斷言不判失敗就讓 CI 紅。
   另驗四個方案都部署成功、執行期資料齊全。核心產物打包上傳(apple/scripts/package_core.sh)。
   **尚未開始:IMKit、候選窗、Swift 綁定 —— 下一輪。CI 沒有圖形工作階段,驗不了 UI。**
-- **Windows** — 未開始。第一個里程碑:核心驗證在 `windows-latest` 上打出「你好」。
+- **Windows** — 核心層已綠。`windows-latest`(windows-2025-vs2026 / MSVC 14.51)上以
+  MSVC 從原始碼建 librime 1.17.0 + 5 個依賴,`tools/rime_console.cc` 斷言
+  `nihao → 你好`(luna_pinyin_tw)與 `su3cl3 → 你好`(bopomofo_tw)兩組;
+  比對錨定 `^>>> COMMIT: ` 的最後一行且完全相等(只 grep「你好」會放過「你好嗎」),
+  並先 `tr -d '\r'` —— MSVC 的 CRT 寫的是 CRLF,留著 CR 會讓比對失敗成
+  「你好 != 你好」。斷言以竄改過的日誌反向測過五種失敗都會紅。
+  另斷言 keysym 正反查(`BackSpace → 0x00FF08`、未知鍵名 → 0)—— `rime_shell.cc`
+  重宣告的那兩個私有符號靠 C++ mangling 對上,連得起來不等於接到對的函式。
+  **產生器用 Ninja + vcvars,不要換回 Visual Studio 產生器**:VS 產生器的名字帶著
+  VS 版本號,會把 CMake 版本與 runner 的 VS 版本綁死,第一版就是這樣掛掉的。
+  **尚未開始:TSF、COM、候選窗、按鍵映射 —— 下一輪。** 另外 Windows 端目前
+  **沒有編 librime-lua**,倚賴 lua_translator/lua_filter 的第三方方案會部署成功
+  卻沒有候選;`windows/build.sh` 有一道守門,日後掛上 lua 而沒帶 sandbox patch 會擋下建置。
+  只做 x64,arm64 未做。
 - **iOS** — 未開始。
