@@ -284,6 +284,33 @@ DLL 回報 `pfEaten = TRUE` 卻拿不到結果 —— 那顆鍵既沒進文件�
 - 裝好之後**故意刪掉** `InprocServer32`,`check` 必須紅;重新註冊後必須又綠
 - 解除安裝**之後** `check` 必須再度紅
 - `make_installer.sh --self-check`:空的 payload 紅、只少 `default.custom.yaml` 紅、補齊後綠
+- `make_installer.sh --lint`:用假的 payload 把 `.iss` 完整編一次(掛在快速 job)
+
+### ⚠ 三件在 CI 上實際踩到、值得記住的事
+
+**1. 「安裝程式以 0 結束」不足以證明安裝做完了。**
+`/SUPPRESSMSGBOXES` 之下,`[Code]` 裡的 `RaiseException` **不會**讓 Setup
+以非零結束:對話框被自動按掉,例外只留在安裝記錄裡,Setup 照樣回報成功。
+實測就是這樣 —— 一路綠燈,而 `CurStepChanged` 其實在中途就炸了。
+所以 `verify_installer.sh` 斷言安裝記錄裡**沒有** `raised an exception`,
+並斷言記錄裡確實有 `enable-user`。互動安裝時使用者看得到錯誤訊息,
+那一條仍然成立;靜默安裝的真正閘門是 CI。
+
+**2. 例外會中止 `CurStepChanged` 剩下的每一步。**
+原本 `check` 排在 `enable-user` 之前,`check` 一炸,`enable-user` 一次都沒跑到。
+症狀是「全機註冊全綠、使用者清單一片空白」,而錯誤訊息講的是「註冊失敗」——
+**一個判斷失誤造成兩個看起來無關的症狀**。順序現在是
+`register` → `enable-user` → `check`。
+
+**3. 剛註冊完的當下,CTF 還看不到新的設定檔。**
+實測 `register` 回傳成功之後 **0.12 秒**時 `EnumLanguageProfiles` 看不到我們,
+**22 秒後**同一支程式跑同一段就三個語言全部看得到。
+登錄檔是同步的,CTF 的可見性不是。所以安裝程式用 `check --no-enum`
+(只驗登錄檔),而「系統接受了嗎」由 CI 事後不帶 `--no-enum` 再問一次。
+`--no-enum` 會**明著印出「跳過」**——安靜地少驗一項與驗過了長得一樣。
+
+另外:解除安裝後 `unins000.exe` 還留著是**正常的**,Inno 沒辦法在執行中刪掉
+自己,它排到下次開機。斷言的是「**我們的**檔案都不在了」,不是「目錄全空」。
 
 ### 只有人在真 Windows 上跑才驗得到的
 
