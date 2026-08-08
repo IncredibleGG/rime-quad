@@ -317,7 +317,13 @@ void SettingsWindow::OnTray(WPARAM /*w*/, LPARAM l) {
   } else if (cmd == IDM_TRAY_REDEPLOY) {
     // 先把視窗叫出來:進度與結果都顯示在它上面,不然按下去真的會
     // 「什麼都沒發生」——而部署要十幾秒。
-    Open();
+    //
+    // ⚠ 這裡用 SendMessage 而不是 Open()。Open() 是 PostMessage(給別的
+    //   執行緒用的),而我們**已經在** UI 執行緒上 —— 用它的話
+    //   WM_RIME_OPEN 會排在 StartRedeploy **之後**才處理,
+    //   而它結尾的 ReloadFromSettings 會把「正在整理字詞…」那行狀態擦掉。
+    //   使用者按下去看到的是一片空白,直到 200ms 後計時器把它寫回來。
+    ::SendMessageW(hwnd_, WM_RIME_OPEN, 0, 0);
     ShowTab(2);
     ::SendMessageW(Ctl(hwnd_, IDC_TAB), TCM_SETCURSEL, 2, 0);
     StartRedeploy(L"重新整理字詞");
