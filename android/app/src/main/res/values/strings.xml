@@ -1,6 +1,448 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  介面文字的**預設語言是英文**，不是中文。
+
+  這件事看起來像小決定，其實是產品定位：這個專案面向全世界，而 Android 的
+  資源系統在找不到使用者語系時一律回落到 `values/`。若預設留中文，一個法國或
+  日本使用者裝上去會看到滿畫面的中文，而他連「這是什麼」都問不出口。
+  英文當回落，中文各自作為地區覆寫（values-b+zh+Hant / values-b+zh+Hans）。
+
+  ── 加一個語言 = 加一個 values-xx/，不必動程式碼 ──────────────────────────
+  程式碼裡不留任何使用者看得見的字面字串。帶參數的一律用 %1$s 這種
+  placeholder，**不用字串相接** —— 「需要連網才能下載鍵盤」在英文裡的語序是
+  「To download keyboards, …」，相接會把語序寫死在 Kotlin 裡。
+
+  ── 方案名不翻譯 ────────────────────────────────────────────────────────
+  「朙月拼音」「注音·臺灣正體」是輸入方案的專有名稱，來自 librime 的
+  schema.yaml，這裡一個字都沒有。翻的是它們**周圍**的介面文字。
+
+  ── 技術術語不進使用者介面 ──────────────────────────────────────────────
+  schema / deploy / ABI 這些字不出現在使用者看得到的地方（診斷區塊除外 ——
+  那一段本來就是要複製給我們看的）。「方案」在英文裡是 input method，
+  「部署」是 sorting out words。
+-->
 <resources>
-    <string name="app_name">RIME 輸入法</string>
-    <string name="ime_label">RIME 四端輸入法</string>
-    <string name="subtype_label_zh">RIME 中文</string>
+
+    <!-- ─────────────────────────── 應用身分 ─────────────────────────── -->
+
+    <string name="app_name">RIME Keyboard</string>
+    <!-- 系統「語言與輸入」的鍵盤清單裡看到的那一行。 -->
+    <string name="ime_label">RIME Keyboard</string>
+    <string name="subtype_label_zh">RIME Chinese</string>
+
+    <!-- ─────────────────────────── 共用零件 ─────────────────────────── -->
+
+    <string name="back">‹  Back</string>
+    <!-- 有方向的字元。RTL 語系請換成 ‹ 。 -->
+    <string name="nav_chevron">›</string>
+    <string name="try_field_placeholder">Type something here</string>
+    <string name="got_it">Got it</string>
+    <string name="cancel">Cancel</string>
+    <string name="close">Close</string>
+    <string name="reset_to_default">Reset to default</string>
+
+    <!-- ────────────────────── 第一幕：第一次打開 ────────────────────── -->
+
+    <string name="onboarding_two_steps_title">Two things to do before you can type</string>
+    <string name="onboarding_last_step_title">One last step</string>
+    <string name="onboarding_two_steps_body">Android makes you do these two by hand — all we can do is point the way.\nDo them once and this screen never comes back.</string>
+    <!-- %1$s = 目前那個輸入法的顯示名，例如 Gboard。 -->
+    <string name="onboarding_last_step_body_current">You are still typing with “%1$s”.\nTap Switch and Android will put up its keyboard list — pick us from it.</string>
+    <string name="onboarding_last_step_body">Tap Switch and Android will put up its keyboard list — pick us from it.</string>
+
+    <string name="step_1_title">Turn it on in system settings</string>
+    <string name="step_1_title_done">Turned on in system settings</string>
+    <string name="step_1_state_off">Not on yet</string>
+    <string name="step_1_action">Open</string>
+    <string name="step_2_title">Make it the keyboard you type with</string>
+    <string name="step_2_state_pending">Not set yet</string>
+    <string name="step_2_state_waiting">Waiting for the step above</string>
+    <string name="step_2_action">Switch</string>
+
+    <string name="deploy_line_title">Sorting out words</string>
+    <string name="deploy_line_once">Only ever happens once</string>
+    <string name="deploy_hint_one_step">No need to wait for this — go do that one step above.</string>
+    <string name="deploy_hint_two_steps">No need to wait for this — go do those two steps above.</string>
+
+    <string name="preparing_title">Still sorting out words</string>
+    <string name="preparing_failed_title">Sorting the words did not work</string>
+    <string name="preparing_body">Only ever happens once, and takes about ten seconds.\nPick one you like while you wait — or pick nothing, and you get the first one.</string>
+    <!-- %1$s = 引擎給的原因。刻意放在最後，前面先講他能做什麼。 -->
+    <string name="preparing_failed_body">The keyboard still opens, but it may not produce any characters. Go to “More &amp; reporting a problem” and tap “Sort the words again” — that usually fixes it.\n\n%1$s</string>
+    <string name="preparing_no_keyboards">The list of keyboards is not readable yet. Once the words are sorted you can also pick one under Settings › Keyboard.</string>
+    <string name="preparing_pick">Pick a keyboard</string>
+    <string name="preparing_more_hint">There are more keyboards than these. Later you can change without coming back here: while typing, tap the ⚙ at the right end of the candidate row.</string>
+
+    <string name="ready_title">That is it — try typing</string>
+    <string name="ready_body">Type whatever you like in the box below. You cannot break anything.</string>
+    <string name="ready_hint">Another keyboard, a different height, dark colours: while typing, tap the ⚙ at the right end of the candidate row.</string>
+    <string name="ready_more_settings">Other settings ›</string>
+
+    <!-- ────────────────────── 第二幕：設定首頁 ────────────────────── -->
+
+    <string name="home_title">Settings</string>
+
+    <string name="not_ready_not_enabled">Not usable yet</string>
+    <string name="not_ready_not_default">You are typing with a different keyboard</string>
+    <string name="not_ready_preparing">Sorting out words</string>
+    <string name="not_ready_not_enabled_body">Turn it on in system settings first.</string>
+    <!-- %1$s = 目前那個輸入法的顯示名。 -->
+    <string name="not_ready_not_default_body_current">Right now you are using “%1$s”.</string>
+    <string name="not_ready_not_default_body">Pick it from your phone\'s keyboard list.</string>
+    <string name="not_ready_preparing_body">Only ever happens once, and takes about ten seconds. Typing may not respond until it is done.</string>
+    <string name="not_ready_open_settings">Open system settings</string>
+    <string name="not_ready_switch">Switch to this keyboard</string>
+
+    <string name="home_network_log">Connection log</string>
+    <string name="home_network_log_sub">Every time it really did go online</string>
+    <string name="home_keyboard">Keyboard</string>
+    <string name="home_appearance">Look</string>
+    <string name="home_feel">Feel</string>
+    <string name="home_text">Text</string>
+    <string name="home_try_it">Have a quick go</string>
+    <string name="home_advanced">More &amp; reporting a problem</string>
+
+    <!-- 首頁那四行灰字。 -->
+    <string name="summary_follow_phone">Follows your phone</string>
+    <string name="summary_always_light">Always light</string>
+    <string name="summary_always_dark">Always dark</string>
+    <string name="summary_separator">" · "</string>
+    <string name="summary_silent">Silent</string>
+    <!-- %1$s = 「小」「中」「大」之一。 -->
+    <string name="summary_sound">Sound: %1$s</string>
+    <string name="summary_no_vibration">No vibration</string>
+    <string name="summary_vibration">Vibration: %1$s</string>
+    <string name="summary_text_all_default">Both follow the keyboard</string>
+    <string name="summary_chars_follow">Characters follow the keyboard</string>
+    <string name="summary_punct_follow">Punctuation follows the keyboard</string>
+    <string name="summary_traditional">Traditional</string>
+    <string name="summary_simplified">Simplified</string>
+    <string name="summary_punct_full">Fullwidth punctuation</string>
+    <string name="summary_punct_half">Halfwidth punctuation</string>
+    <string name="summary_no_keyboard_yet">Not chosen yet</string>
+    <!-- %1$s = 鍵盤排列名，%2$s = 方案名。兩者都不翻譯。 -->
+    <string name="summary_keyboard">%1$s · %2$s</string>
+
+    <!-- ────────────────────────── 鍵盤那一頁 ────────────────────────── -->
+
+    <string name="page_keyboard">Keyboard</string>
+    <string name="keyboard_page_hint">Tap one to switch. Tap another any time to switch back.</string>
+    <string name="keyboard_page_empty">No keyboards yet. They appear once the words have been sorted.</string>
+    <string name="keyboard_get_more">Get more keyboards</string>
+    <string name="keyboard_get_more_value">Cantonese · Wubi · Cangjie…</string>
+    <string name="keyboard_page_footnote">While typing, tap the ⚙ at the right end of the candidate row to change keyboard without leaving what you are doing.</string>
+    <string name="keyboard_auto_label">Pick a keyboard for me</string>
+
+    <!-- 語言分組小標的回落值。有 BCP 47 標記的分組由系統依你的語言算出名字。 -->
+    <string name="lang_group_zh_tw">Chinese (Taiwan)</string>
+    <string name="lang_group_zh_hk">Chinese (Hong Kong)</string>
+    <string name="lang_group_yue">Cantonese</string>
+    <string name="lang_group_zh">Chinese</string>
+    <string name="lang_group_other">Other</string>
+
+    <!-- ────────────────────────── 外觀那一頁 ────────────────────────── -->
+
+    <string name="page_appearance">Look</string>
+    <string name="appearance_colours">Colours</string>
+    <string name="appearance_light_dark">Light or dark</string>
+    <string name="appearance_follow_phone">Follow phone</string>
+    <string name="appearance_always_light">Always light</string>
+    <string name="appearance_always_dark">Always dark</string>
+    <string name="appearance_default_theme">Default</string>
+    <string name="appearance_height">Keyboard height</string>
+    <string name="appearance_height_title">Drag it on the keyboard itself</string>
+    <string name="appearance_height_body">Judging it with the keyboard in front of you beats guessing at a slider. This brings the keyboard up and grows a handle along its top edge.</string>
+    <string name="appearance_height_action">Start adjusting</string>
+    <string name="appearance_height_after">Once the keyboard is up, drag its top edge to make it taller or shorter. Tap “Done” when it looks right.</string>
+    <string name="appearance_candidate_size">Candidate size</string>
+    <string name="appearance_candidate_count">How many at a time</string>
+    <string name="appearance_hints">Small hints on the keys</string>
+    <string name="appearance_hints_sub">The little digits in the corner of pinyin keys</string>
+    <string name="appearance_preview">See how it looks</string>
+
+    <!-- ────────────────────────── 手感那一頁 ────────────────────────── -->
+
+    <string name="page_feel">Feel</string>
+    <string name="feel_intro">These three can only be judged by actually pressing, so there is a box below to press into.</string>
+    <string name="feel_sound">Key sound</string>
+    <string name="feel_vibration">Vibration</string>
+    <string name="feel_long_press">How long counts as a long press</string>
+    <string name="feel_try">Give it a press</string>
+    <string name="feel_try_placeholder">Press the keys below and see</string>
+
+    <!-- ────────────────────────── 文字那一頁 ────────────────────────── -->
+
+    <string name="page_text">Text</string>
+    <string name="text_characters">Characters</string>
+    <string name="text_punctuation">Punctuation</string>
+    <string name="text_space_key">Space key</string>
+    <string name="text_follow_keyboard">Follow the keyboard</string>
+    <string name="text_traditional">Traditional</string>
+    <string name="text_simplified">Simplified</string>
+    <string name="text_punct_full">Fullwidth</string>
+    <string name="text_punct_half">Halfwidth</string>
+    <string name="text_space_commits">Accepts the candidate</string>
+    <string name="text_space_always">Always types a space</string>
+    <string name="text_try">Try it</string>
+
+    <!-- ─────────────────── 檔位標籤（分段控制上的字）─────────────────── -->
+
+    <string-array name="levels_sound">
+        <item>Off</item>
+        <item>Quiet</item>
+        <item>Medium</item>
+        <item>Loud</item>
+    </string-array>
+    <string-array name="levels_haptic">
+        <item>Off</item>
+        <item>Light</item>
+        <item>Medium</item>
+        <item>Strong</item>
+    </string-array>
+    <string-array name="levels_long_press">
+        <item>Fast</item>
+        <item>Standard</item>
+        <item>Slow</item>
+        <item>Slower</item>
+    </string-array>
+    <string-array name="levels_candidate_count">
+        <item>3</item>
+        <item>5</item>
+        <item>7</item>
+        <item>9</item>
+        <item>No limit</item>
+    </string-array>
+    <string-array name="levels_candidate_size">
+        <item>Small</item>
+        <item>Standard</item>
+        <item>Large</item>
+        <item>Larger</item>
+    </string-array>
+
+    <!-- ─────────────────────────── 連網 ─────────────────────────── -->
+
+    <string name="page_network">Network</string>
+    <string name="network_switch_title">Network</string>
+    <string name="network_on_summary">On: it can go online. Only when you tap “Install” or “Check for updates”, and what you type never leaves this device.</string>
+    <string name="network_off_summary">Off (the default): fully offline. Neither the store nor the update check runs.</string>
+    <string name="network_on_detail">Every connection that really happens is written into the log on the Network page, so you can check for yourself. One more thing worth knowing: while this is on, the moment a connection really happens, your network can see which domain this device reached — DNS lookups and TLS connection targets travel in the clear and we cannot change that. Our requests do not carry this app\'s name, but “did it connect at all” cannot be hidden.</string>
+
+    <!-- %1$s = 「download keyboards」這類動詞片語，見下面的 network_what_*。 -->
+    <string name="network_required_title">To %1$s, this needs to go online</string>
+    <string name="network_required_body">This keyboard is fully offline out of the box, so it has not asked any server for anything yet. To %1$s it has to fetch files from the internet. Turn on the switch below and it starts; turn it off when you are done and you are back to fully offline.</string>
+    <string name="network_required_cost">The honest cost: once a connection happens, your network — your carrier, whoever owns the Wi-Fi, anyone in between — learns that this device reached a domain like github.com. The requests we send do not carry this app\'s name, but DNS lookups and TLS connection targets are in the clear by design. We cannot hide that, and we are not going to pretend otherwise. If you are somewhere that even “which keyboard is installed” is awkward to reveal, leave this switch alone — everything that works offline is already complete.</string>
+    <string name="network_required_action">Turn on network</string>
+
+    <string name="network_what_download_keyboards">download keyboards</string>
+    <string name="network_what_browse">browse keyboards</string>
+    <string name="network_what_check_updates">check for updates</string>
+
+    <!-- ⚠ 誠實說明卡。這一段是產品定位的核心，要讀起來像一個坦率的工程師寫的。 -->
+    <string name="first_run_title">This keyboard does not go online by default</string>
+    <string name="first_run_body_1">We do not connect on our own. Typing, picking characters, changing input method, changing layout — all of it happens on your device.</string>
+    <string name="first_run_body_2">If you want more input methods, or want to hear about updates, you can turn the switch on whenever you like; turn it off and you are back to fully offline. It ships off.</string>
+    <string name="first_run_body_3">One thing we should say plainly: on Android, network permission is granted at install time and cannot be taken back while the app is running. So you will see it in your phone\'s permission list whether the switch is on or off. Since “no permission” is not something we can honestly offer, we made it checkable instead — the whole app has exactly one way out to the network, and while the switch is off that one way refuses outright. Every connection that really happens goes into the log on the Network page: when, to whom, what for, and how it went.</string>
+    <string name="first_run_confirm">Got it — stay offline</string>
+
+    <string name="honesty_title">Why “network access” is still in the permission list</string>
+    <string name="honesty_body">Because on Android that permission is granted at install time and cannot be taken back while the app is running. As long as this app carries a keyboard store and in-app updates, it will be in the list — switch off or not. We are not going to claim we have no network permission; that claim falls apart the moment anybody checks.</string>
+    <string name="honesty_checkable_title">So we made it checkable instead</string>
+    <!-- 檔案路徑刻意留原文：它是要拿去 grep 的，翻譯了就找不到。 -->
+    <string name="honesty_checkable_body">· The whole app has exactly one way out to the network: android/app/src/main/java/org/rimequad/ime/net/NetworkGate.kt in the source.\n· While the switch is off, that one way out refuses and throws. Not a single connection is opened.\n· Every connection that really got made is listed below, and each hop of a redirect gets its own line.\n· The log holds nothing you typed, and no URL paths — only host names and the reason.</string>
+    <!-- %1$s = 紀錄檔的絕對路徑。 -->
+    <string name="honesty_log_file">Log file: %1$s</string>
+
+    <plurals name="network_log_heading">
+        <item quantity="one">Connection log (%d)</item>
+        <item quantity="other">Connection log (%d)</item>
+    </plurals>
+    <string name="network_log_clear">Clear</string>
+    <string name="network_log_empty_title">Nothing has connected yet</string>
+    <string name="network_log_empty_body">If the switch has never been on, this is supposed to be empty — that is exactly the result you came here to see.</string>
+
+    <string name="network_purpose_store_index">Browsing the keyboard store</string>
+    <string name="network_purpose_store_package">Downloading a keyboard</string>
+    <string name="network_purpose_update_manifest">Checking for updates</string>
+    <string name="network_purpose_update_apk">Downloading an update</string>
+    <!-- %1$s = 上面那四句之一，%2$s = 套件名之類的補充。 -->
+    <string name="network_reason_with_label">%1$s: %2$s</string>
+    <string name="network_outcome_ok">succeeded</string>
+    <string name="network_outcome_failed">failed</string>
+    <string name="network_outcome_redirected">redirected</string>
+
+    <!-- ─────────────────────────── 市集 ─────────────────────────── -->
+
+    <string name="page_store">Get more keyboards</string>
+    <string name="store_index_error_title">Could not load the list</string>
+    <string name="store_index_error_detail">Could not fetch the list: %1$s\nSource: %2$s</string>
+    <plurals name="store_index_warnings">
+        <item quantity="one">%d note about the list</item>
+        <item quantity="other">%d notes about the list</item>
+    </plurals>
+    <string name="store_source_title">Where the list comes from</string>
+    <string name="store_source_field_label">Address of index.json</string>
+    <string name="store_source_apply">Apply and reload</string>
+    <string name="store_source_reload">Reload</string>
+    <string name="store_source_loading">Loading…</string>
+    <string name="store_source_change">Change source</string>
+    <string name="store_import_title">Import your own</string>
+    <string name="store_import_body">Takes a .zip or a single .yaml. The safety checks are exactly the ones the store gets: path traversal, symlinks, zip bombs, an extension allow-list. Fail any one and the whole thing is refused.</string>
+    <string name="store_import_pick">Choose a file…</string>
+    <string name="store_local_section">Imported by you</string>
+
+    <string name="store_badge_recommended">Recommended</string>
+    <string name="store_badge_not_installed">Not installed</string>
+    <string name="store_badge_installed_off">Installed · off</string>
+    <string name="store_badge_on">On</string>
+    <string name="store_action_install">Install</string>
+    <string name="store_action_enable">Turn on</string>
+    <string name="store_action_disable">Turn off</string>
+    <string name="store_action_uninstall">Remove</string>
+    <!-- %1$s = 檔案大小。後面幾段由 store_meta_* 接上。 -->
+    <string name="store_meta_separator">"　·　"</string>
+    <string name="store_meta_schemas">Input methods: %1$s</string>
+    <string name="store_meta_requires">Needs: %1$s</string>
+    <string name="store_meta_list_separator">, </string>
+    <string name="store_unverified">⚠ The list does not mark this one as tested. It has not been through the packager\'s check, so there is a higher chance the words fail to sort afterwards (if they do, it rolls itself back).</string>
+    <!-- %1$s = 這個套件建議搭配的鍵盤排列。 -->
+    <string name="store_layout_note">Keyboard: %1$s</string>
+    <plurals name="store_local_files">
+        <item quantity="one">%d file</item>
+        <item quantity="other">%d files</item>
+    </plurals>
+    <string name="store_local_no_schema">(no input method inside)</string>
+
+    <!-- %1$d = 套件數，%2$s = 總大小。 -->
+    <plurals name="store_confirm_title">
+        <item quantity="one">Will download %1$d item, %2$s in total</item>
+        <item quantity="other">Will download %1$d items, %2$s in total</item>
+    </plurals>
+    <!-- %1$s = 名稱，%2$s = 大小。 -->
+    <string name="store_confirm_line">· %1$s　%2$s</string>
+    <!-- %1$s = 安裝後的概估佔用。 -->
+    <string name="store_confirm_installed_size">Expect it to take up about %1$s once installed (a rough figure) — sorting the words turns the dictionaries into index files that are far bigger than the download.</string>
+    <!-- %1$s = 「A ↔ B；C ↔ D」這種互相相依的清單。 -->
+    <string name="store_confirm_cycles">Note: %1$s depend on each other (they provide each other\'s reverse lookup), so they were always going to be installed together.</string>
+    <plurals name="store_confirm_already">
+        <item quantity="one">%1$d dependency is already installed and will not be downloaded again: %2$s</item>
+        <item quantity="other">%1$d dependencies are already installed and will not be downloaded again: %2$s</item>
+    </plurals>
+    <string name="store_confirm_footnote">Each download is checked against its sha256 before anything is unpacked; then the words are sorted again, which can take a few seconds to a minute. If that fails it rolls itself back.</string>
+    <string name="store_confirm_install_enable">Download and turn on</string>
+    <string name="store_confirm_download_only">Download only</string>
+
+    <string name="store_result_ok">Done</string>
+    <string name="store_result_failed">That did not work</string>
+
+    <!-- 進行中的覆蓋層。 -->
+    <string name="job_preparing">Getting ready</string>
+    <string name="job_preparing_detail">Working out what else is needed…</string>
+    <!-- %1$d = 第幾個，%2$d = 共幾個。 -->
+    <string name="job_downloading">Downloading (%1$d of %2$d)</string>
+    <!-- %1$s = 名稱，%2$s = 已下載，%3$s = 總量。 -->
+    <string name="job_downloading_detail">%1$s　%2$s / %3$s</string>
+    <string name="job_downloading_detail_unknown">%1$s　%2$s</string>
+    <string name="job_verifying">Checking the download</string>
+    <string name="job_extracting">Safety check and unpacking</string>
+    <string name="job_preflight">Checking what it needs</string>
+    <string name="job_preflight_detail">Making sure the dictionaries and settings files are all there</string>
+    <string name="job_deploying">Sorting out words</string>
+    <!-- %1$d = 已耗時秒數。 -->
+    <string name="job_deploying_detail">%1$d seconds so far. Three input methods took about 7 seconds when we measured; bigger ones take longer.</string>
+    <string name="job_rolling_back">Putting it back</string>
+    <string name="job_rolling_back_detail">Sorting the words failed, so the change is being undone: %1$s</string>
+    <string name="job_enable">Turning it on</string>
+    <string name="job_disable">Turning it off</string>
+    <string name="job_enable_detail">Checking what it needs…</string>
+    <string name="job_uninstall">Removing</string>
+    <string name="job_uninstall_detail">Deleting the files…</string>
+    <string name="job_import">Importing</string>
+
+    <!-- 市集與部署的結果訊息。 -->
+    <string name="store_msg_data_dir_not_ready">The keyboard\'s data folder is not ready yet. Try again in a moment.</string>
+    <!-- %1$s = 套件名。 -->
+    <string name="store_msg_already_installed">“%1$s” and everything it needs are already installed — just turn it on.</string>
+    <string name="store_msg_missing_dep_title">“%1$s” needs something that is not in the list</string>
+    <!-- %1$s = 誰需要，%2$s = 缺什麼。 -->
+    <string name="store_msg_missing_dep_detail">%1$s needs “%2$s”, and the list does not have it.</string>
+    <string name="store_msg_unknown_package">The list has no item called “%1$s”</string>
+    <string name="store_msg_installed_not_enabled">Installed, but not turned on yet — find it under “Installed” and tap “Turn on”.</string>
+    <string name="store_msg_installed_components">Installed. These are building blocks, so there is nothing new to switch to.</string>
+    <!-- %1$s = 套件名，%2$s = 方案名。 -->
+    <string name="store_msg_installed_enabled">“%1$s” is installed and on. The keyboard will switch to “%2$s”.</string>
+    <string name="store_msg_installed_enabled_layout">“%1$s” is installed and on. The keyboard will switch to “%2$s” (%3$s).</string>
+    <!-- %1$s = 秒數，例如 7.2。 -->
+    <string name="store_msg_deploy_done">Words sorted (took %1$s seconds)</string>
+    <string name="store_msg_deploy_failed">Sorting the words failed (%1$d ms)</string>
+    <string name="store_msg_deploy_timeout">Sorting the words timed out (%1$d ms)</string>
+    <string name="store_msg_deploy_not_started">Sorting the words never started</string>
+    <string name="store_msg_deploy_error_detail">Reason from the engine: %1$s</string>
+    <string name="store_msg_deploy_no_reason">the engine gave no reason</string>
+    <string name="store_msg_read_failed">Could not read the file you chose</string>
+    <string name="store_msg_too_big">That file is over %1$s</string>
+    <string name="store_msg_import_failed">Import failed: %1$s</string>
+    <string name="store_msg_imported_enabled">Imported and turned on: %1$s</string>
+
+    <!-- ─────────────────────────── 進階 ─────────────────────────── -->
+
+    <string name="page_advanced">More &amp; reporting a problem</string>
+    <string name="advanced_import">Import from a file</string>
+    <string name="advanced_import_sub">A keyboard package you prepared yourself (.zip)</string>
+    <string name="advanced_redeploy">Sort the words again</string>
+    <string name="advanced_redeploy_busy">Sorting…</string>
+    <string name="advanced_redeploy_sub">For when typing goes strange. Takes about ten seconds.</string>
+    <string name="advanced_reset">Reset everything</string>
+    <string name="advanced_reset_pristine">Everything is already at its default</string>
+    <string name="advanced_reset_sub">Throw away every setting and go back to the values it shipped with</string>
+    <string name="advanced_updates">Updates</string>
+    <string name="advanced_report">When reporting a problem, attach this</string>
+    <string name="advanced_report_sub">These numbers are for us. You do not need to understand them.</string>
+    <string name="advanced_copy">Copy this</string>
+    <string name="advanced_copied">Copied</string>
+
+    <!-- ─────────────────────────── 更新 ─────────────────────────── -->
+
+    <string name="update_title">Updates</string>
+    <!-- %1$s = 版本名，%2$d = versionCode。這一行是給回報用的，刻意保留代號。 -->
+    <string name="update_installed_version">Installed: %1$s (build %2$d)</string>
+    <string name="update_network_off">The network switch is off, so nothing is checked and nothing is downloaded. To hear about new versions, turn the switch on under Network.</string>
+    <string name="update_available">A new version is available: %1$s</string>
+    <string name="update_size">Size %1$s</string>
+    <string name="update_size_commit">Size %1$s・commit %2$s</string>
+    <string name="update_check">Check for updates</string>
+    <string name="update_checking">Checking…</string>
+    <string name="update_download">Download and install</string>
+    <string name="update_downloading">Downloading…</string>
+    <string name="update_verifying">Checking…</string>
+    <string name="update_install">Install</string>
+    <string name="update_installing">Installing…</string>
+    <string name="update_unknown_sources_body">Your phone has not yet allowed this app to install apps. Sideloading always needs that switch first; turn it on, press Back, and carry on here.</string>
+    <string name="update_unknown_sources_action">Allow installing unknown apps</string>
+    <string name="update_auto_check">Check for updates at startup</string>
+    <string name="update_auto_check_default">Default: on. It fetches a few hundred bytes of version information in the background. It never downloads an APK on its own and never puts up a dialog.</string>
+    <string name="update_auto_check_set_on">Set to: on</string>
+    <string name="update_auto_check_set_off">Set to: off</string>
+    <string name="update_auto_check_blocked">" (the network switch is off, so this has no effect right now)"</string>
+    <string name="update_security_note">Downloads are checked against a sha256. Worth being clear about what that does: the digest and the APK come from the same server, so it catches a broken download, not a broken server. What actually stops a malicious swap is Android insisting that an upgrade be signed with the same key — an APK signed by anyone else is refused outright.</string>
+
+    <!-- ─────────────────────── 自訂鍵位（引擎層）─────────────────────── -->
+
+    <string name="remap_title">Move keys around</string>
+    <string name="remap_intro">Pick two keys on the same layer and they swap places. Only the *place* swaps — the key marked a keeps typing a after it moves into s\'s slot. Changing what a key types would break the input method outright, so this does not offer that.</string>
+    <string name="remap_layout">Layout</string>
+    <string name="remap_layer">Layer</string>
+    <string name="remap_first_key">First key</string>
+    <string name="remap_second_key">Second key</string>
+    <string name="remap_swap">Swap these two</string>
+    <string name="remap_checking">Checking…</string>
+    <!-- %1$s / %2$s = 兩顆鍵的代號。 -->
+    <string name="remap_swapped">“%1$s” and “%2$s” swapped. Go back to a text box and you will see the new keyboard.</string>
+    <string name="remap_layout_unloadable">Layout “%1$s” will not load, so there is nothing to customise.</string>
+    <string name="remap_none">“%1$s” has no changes.</string>
+    <string name="remap_current">Changes to “%1$s”:\n%2$s</string>
+    <string name="remap_reset_one">Reset this layout</string>
+    <string name="remap_reset_all">Reset all</string>
+    <string name="remap_reset_one_done">“%1$s” is back to how the layout shipped.</string>
+    <string name="remap_reset_all_done">Every key change has been cleared.</string>
+
 </resources>

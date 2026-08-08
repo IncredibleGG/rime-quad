@@ -35,10 +35,12 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
+import org.rimequad.ime.R
 import org.rimequad.ime.core.RimeCore
 import org.rimequad.ime.core.RimeRuntime
 import org.rimequad.ime.keyboard.ConfigRepository
@@ -49,6 +51,7 @@ import org.rimequad.ime.net.rememberNetworkEnabled
 import org.rimequad.ime.prefs.AppearanceMode
 import org.rimequad.ime.prefs.HintVisibility
 import org.rimequad.ime.prefs.KeyRemapSection
+import org.rimequad.ime.prefs.PrefLabels
 import org.rimequad.ime.prefs.PrefLevels
 import org.rimequad.ime.prefs.PrefsStore
 import org.rimequad.ime.prefs.SpaceBehavior
@@ -85,45 +88,61 @@ fun rememberHomeSummary(prefs: UserPrefs): HomeSummary {
     }
     val current = remember(prefs) { currentKeyboardOf(context, availableKeyboards(context)) }
 
+    val sep = stringResource(R.string.summary_separator)
+    val soundLabels = PrefLabels.sound
+    val hapticLabels = PrefLabels.haptic
+
     val appearance = buildString {
         append(
-            when (prefs.appearanceMode) {
-                AppearanceMode.LIGHT -> "一直淺"
-                AppearanceMode.DARK -> "一直深"
-                else -> "跟著手機"
-            }
+            stringResource(
+                when (prefs.appearanceMode) {
+                    AppearanceMode.LIGHT -> R.string.summary_always_light
+                    AppearanceMode.DARK -> R.string.summary_always_dark
+                    else -> R.string.summary_follow_phone
+                }
+            )
         )
-        append(" · ")
+        append(sep)
         append(familyNameOf(base.name.get(ConfigRepository.LOCALE), base.id))
     }
     val feel = buildString {
         val s = PrefLevels.indexOfSound(prefs, base.feedback.sound, base.feedback.soundVolume)
         val h = PrefLevels.indexOfHaptic(prefs, base.feedback.haptic, base.feedback.hapticStrength)
-        append(if (s == 0) "靜音" else "按鍵音：${PrefLevels.SOUND_LABELS[s]}")
-        append(" · ")
+        append(
+            if (s == 0) stringResource(R.string.summary_silent)
+            else stringResource(R.string.summary_sound, soundLabels[s])
+        )
+        append(sep)
         // 「震動中」會被讀成「正在震動」，所以這裡一律加冒號。
-        append(if (h == 0) "不震動" else "震動：${PrefLevels.HAPTIC_LABELS[h]}")
+        append(
+            if (h == 0) stringResource(R.string.summary_no_vibration)
+            else stringResource(R.string.summary_vibration, hapticLabels[h])
+        )
     }
     // 兩項都沒設過時不要寫兩次「跟著鍵盤」—— 那看起來像重複，也讓人以為
     // 有兩個地方可以設同一件事。
     val text = if (prefs.simplification == null && prefs.asciiPunct == null) {
-        "字體與標點都跟著鍵盤"
+        stringResource(R.string.summary_text_all_default)
     } else {
         buildString {
             append(
-                when (prefs.simplification) {
-                    true -> "簡體"
-                    false -> "繁體"
-                    null -> "字體跟著鍵盤"
-                }
+                stringResource(
+                    when (prefs.simplification) {
+                        true -> R.string.summary_simplified
+                        false -> R.string.summary_traditional
+                        null -> R.string.summary_chars_follow
+                    }
+                )
             )
-            append(" · ")
+            append(sep)
             append(
-                when (prefs.asciiPunct) {
-                    true -> "半形標點"
-                    false -> "全形標點"
-                    null -> "標點跟著鍵盤"
-                }
+                stringResource(
+                    when (prefs.asciiPunct) {
+                        true -> R.string.summary_punct_half
+                        false -> R.string.summary_punct_full
+                        null -> R.string.summary_punct_follow
+                    }
+                )
             )
         }
     }
@@ -143,11 +162,22 @@ fun rememberHomeSummary(prefs: UserPrefs): HomeSummary {
  */
 internal fun familyNameOf(name: String, fallbackId: String): String {
     var s = name.ifBlank { fallbackId }
-    for (suffix in listOf("淺色", "深色", "Light", "Dark")) {
-        if (s.endsWith(suffix)) s = s.dropLast(suffix.length)
+    // 三種語言各有自己的寫法，而且英文的深淺常常寫成括號：
+    //   「預設淺色」「默认浅色」「Default Light」「Android style (light)」
+    // 全部要剝掉，因為深淺已經是**另一個**控制項了。
+    for (suffix in DEPTH_SUFFIXES) {
+        if (s.endsWith(suffix, ignoreCase = true)) {
+            s = s.dropLast(suffix.length)
+            break
+        }
     }
     return s.trimEnd(' ', '・', '·', '-').ifBlank { familyIdOf(fallbackId) }
 }
+
+private val DEPTH_SUFFIXES = listOf(
+    "(light)", "(dark)", "（淺色）", "（深色）", "（浅色）",
+    "淺色", "深色", "浅色", "Light", "Dark",
+)
 
 internal const val DEFAULT_THEME_FAMILY = "default"
 
@@ -186,15 +216,15 @@ fun KeyboardPage(onBack: () -> Unit, onOpenStore: () -> Unit) {
     val all = remember(groups) { groups.flatMap { it.second } }
     var picked by remember { mutableStateOf(currentKeyboardOf(context, all)) }
 
-    Page(title = "鍵盤", onBack = onBack) {
+    Page(title = stringResource(R.string.page_keyboard), onBack = onBack) {
         Text(
-            text = "點一下就換。想換回來隨時再點。",
+            text = stringResource(R.string.keyboard_page_hint),
             fontSize = 13.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(16.dp))
         if (all.isEmpty()) {
-            Text("尚無可用的鍵盤。字詞整理完成之後就會出現。", fontSize = 14.sp)
+            Text(stringResource(R.string.keyboard_page_empty), fontSize = 14.sp)
         } else {
             for ((schemaName, types) in groups) {
                 SectionLabel(schemaName)
@@ -214,8 +244,8 @@ fun KeyboardPage(onBack: () -> Unit, onOpenStore: () -> Unit) {
         PlainCard {
             // 想換鍵盤的人本來就在這一屏，所以市集放這裡而不是「進階」。
             NavRow(
-                title = "下載更多鍵盤",
-                value = "粵拼 · 五筆 · 倉頡…",
+                title = stringResource(R.string.keyboard_get_more),
+                value = stringResource(R.string.keyboard_get_more_value),
                 onClick = onOpenStore,
             )
         }
@@ -227,7 +257,7 @@ fun KeyboardPage(onBack: () -> Unit, onOpenStore: () -> Unit) {
         KeyRemapSection()
         Spacer(Modifier.height(14.dp))
         Text(
-            text = "打字的時候點候選字那一列右邊的 ⚙，也能直接在鍵盤上換。",
+            text = stringResource(R.string.keyboard_page_footnote),
             fontSize = 12.5.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -256,8 +286,8 @@ fun AppearancePage(onBack: () -> Unit) {
         scope.launch { store.update(block) }
     }
 
-    Page(title = "外觀", onBack = onBack) {
-        SectionLabel("配色")
+    Page(title = stringResource(R.string.page_appearance), onBack = onBack) {
+        SectionLabel(stringResource(R.string.appearance_colours))
         // 「預設」那一組的 pinId 是空字串 = 不指定主題（見 themeFamilies）。
         // 所以這裡不另外放一顆「未設定」晶片 —— 兩顆都叫「預設」只會讓人以為
         // 有兩個地方可以決定同一件事。
@@ -284,25 +314,25 @@ fun AppearancePage(onBack: () -> Unit) {
         }
 
         SettingGroup(
-            label = "深淺",
+            label = stringResource(R.string.appearance_light_dark),
             options = listOf(
-                null to "跟著手機",
-                AppearanceMode.LIGHT to "一直淺",
-                AppearanceMode.DARK to "一直深",
+                null to stringResource(R.string.appearance_follow_phone),
+                AppearanceMode.LIGHT to stringResource(R.string.appearance_always_light),
+                AppearanceMode.DARK to stringResource(R.string.appearance_always_dark),
             ),
             selected = prefs.appearanceMode.takeIf { it != AppearanceMode.FOLLOW_SYSTEM },
             onSelect = { v -> edit { p -> p.copy(appearanceMode = v) } },
         )
 
         Spacer(Modifier.height(10.dp))
-        SectionLabel("鍵盤高度")
+        SectionLabel(stringResource(R.string.appearance_height))
         PlainCard {
             Column(Modifier.padding(16.dp)) {
-                Text("在鍵盤上直接拖", fontSize = 16.sp)
+                Text(stringResource(R.string.appearance_height_title), fontSize = 16.sp)
                 Text(
                     // 這一項刻意**不給滑桿**：滑桿要在數值與預覽之間來回猜，
                     // 拖曳不用 —— 拖到哪裡就是哪裡，拖完就是最終樣子。
-                    text = "看著鍵盤調，比拉滑桿準。按下去會叫出鍵盤，上緣會長出一根把手。",
+                    text = stringResource(R.string.appearance_height_body),
                     fontSize = 12.5.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 2.dp),
@@ -316,10 +346,10 @@ fun AppearancePage(onBack: () -> Unit) {
                         keyboardController?.show()
                     },
                     modifier = Modifier.fillMaxWidth(),
-                ) { Text("開始調") }
+                ) { Text(stringResource(R.string.appearance_height_action)) }
                 if (askedHeight) {
                     Text(
-                        text = "鍵盤升起來之後，拖它的上緣就會變高變矮；調好按「好了」。",
+                        text = stringResource(R.string.appearance_height_after),
                         fontSize = 12.5.sp,
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.padding(top = 8.dp),
@@ -329,8 +359,8 @@ fun AppearancePage(onBack: () -> Unit) {
         }
 
         SettingGroup(
-            label = "候選字大小",
-            options = PrefLevels.CANDIDATE_SIZE_LABELS.mapIndexed { i, s -> i to s },
+            label = stringResource(R.string.appearance_candidate_size),
+            options = PrefLabels.candidateSize.mapIndexed { i, s -> i to s },
             selected = PrefLevels.indexOfCandidateSize(prefs),
             onSelect = { i -> edit { p -> PrefLevels.withCandidateSize(p, i) } },
         )
@@ -339,8 +369,8 @@ fun AppearancePage(onBack: () -> Unit) {
             resolveBaseTheme(repo, prefs, systemDark).candidates.bar.maxVisible
         }
         SettingGroup(
-            label = "一次顯示幾個",
-            options = PrefLevels.CANDIDATE_COUNT_LABELS.mapIndexed { i, s -> i to s },
+            label = stringResource(R.string.appearance_candidate_count),
+            options = PrefLabels.candidateCount.mapIndexed { i, s -> i to s },
             selected = PrefLevels.indexOfCandidateCount(prefs, baseCount),
             onSelect = { i -> edit { p -> PrefLevels.withCandidateCount(p, i) } },
         )
@@ -348,8 +378,8 @@ fun AppearancePage(onBack: () -> Unit) {
         Spacer(Modifier.height(10.dp))
         PlainCard {
             SwitchRow(
-                title = "鍵上顯示小提示",
-                subtitle = "拼音佈局鍵面角落的數字",
+                title = stringResource(R.string.appearance_hints),
+                subtitle = stringResource(R.string.appearance_hints_sub),
                 checked = prefs.hints != HintVisibility.HIDDEN,
                 onCheckedChange = { on ->
                     edit { p ->
@@ -360,8 +390,8 @@ fun AppearancePage(onBack: () -> Unit) {
         }
 
         Spacer(Modifier.height(18.dp))
-        SectionLabel("調完在這裡看看")
-        TryField(placeholder = "在這裡打字看看", focusRequester = focus)
+        SectionLabel(stringResource(R.string.appearance_preview))
+        TryField(focusRequester = focus)
     }
 }
 
@@ -410,23 +440,23 @@ fun FeelPage(onBack: () -> Unit) {
         scope.launch { store.update(block) }
     }
 
-    Page(title = "手感", onBack = onBack) {
+    Page(title = stringResource(R.string.page_feel), onBack = onBack) {
         Text(
             // 三項合成一頁是因為它們是同一個問題的三個面向：「這個鍵盤按起來
             // 的感覺」。分成三個設定項就是把一件事拆成三次操作。
-            text = "這三項只有真的按下去才判斷得出來，所以下面留了一格給你按。",
+            text = stringResource(R.string.feel_intro),
             fontSize = 13.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         SettingGroup(
-            label = "按鍵音",
-            options = PrefLevels.SOUND_LABELS.mapIndexed { i, s -> i to s },
+            label = stringResource(R.string.feel_sound),
+            options = PrefLabels.sound.mapIndexed { i, s -> i to s },
             selected = PrefLevels.indexOfSound(prefs, base.feedback.sound, base.feedback.soundVolume),
             onSelect = { i -> edit { p -> PrefLevels.withSound(p, i) } },
         )
         SettingGroup(
-            label = "震動",
-            options = PrefLevels.HAPTIC_LABELS.mapIndexed { i, s -> i to s },
+            label = stringResource(R.string.feel_vibration),
+            options = PrefLabels.haptic.mapIndexed { i, s -> i to s },
             selected = PrefLevels.indexOfHaptic(
                 prefs,
                 base.feedback.haptic,
@@ -435,14 +465,14 @@ fun FeelPage(onBack: () -> Unit) {
             onSelect = { i -> edit { p -> PrefLevels.withHaptic(p, i) } },
         )
         SettingGroup(
-            label = "長按多久算長按",
-            options = PrefLevels.LONG_PRESS_LABELS.mapIndexed { i, s -> i to s },
+            label = stringResource(R.string.feel_long_press),
+            options = PrefLabels.longPress.mapIndexed { i, s -> i to s },
             selected = PrefLevels.indexOfLongPress(prefs),
             onSelect = { i -> edit { p -> PrefLevels.withLongPress(p, i) } },
         )
         Spacer(Modifier.height(14.dp))
-        SectionLabel("按按看")
-        TryField(placeholder = "按下面的鍵試試看")
+        SectionLabel(stringResource(R.string.feel_try))
+        TryField(placeholder = stringResource(R.string.feel_try_placeholder))
     }
 }
 
@@ -459,32 +489,42 @@ fun TextPage(onBack: () -> Unit) {
         scope.launch { store.update(block) }
     }
 
-    Page(title = "文字", onBack = onBack) {
+    val followKeyboard = stringResource(R.string.text_follow_keyboard)
+
+    Page(title = stringResource(R.string.page_text), onBack = onBack) {
         SettingGroup(
-            label = "字體",
+            label = stringResource(R.string.text_characters),
             // 「跟著鍵盤」= 不干預，讓方案自己的預設生效。它與 false 不是同一件事，
             // 所以不能做成兩態開關 —— 那樣就回不去不干預了。
-            options = listOf(null to "跟著鍵盤", false to "繁體", true to "簡體"),
+            options = listOf(
+                null to followKeyboard,
+                false to stringResource(R.string.text_traditional),
+                true to stringResource(R.string.text_simplified),
+            ),
             selected = prefs.simplification,
             onSelect = { v -> edit { p -> p.copy(simplification = v) } },
         )
         SettingGroup(
-            label = "標點",
-            options = listOf(null to "跟著鍵盤", false to "全形", true to "半形"),
+            label = stringResource(R.string.text_punctuation),
+            options = listOf(
+                null to followKeyboard,
+                false to stringResource(R.string.text_punct_full),
+                true to stringResource(R.string.text_punct_half),
+            ),
             selected = prefs.asciiPunct,
             onSelect = { v -> edit { p -> p.copy(asciiPunct = v) } },
         )
         SettingGroup(
-            label = "空白鍵",
+            label = stringResource(R.string.text_space_key),
             options = listOf(
-                null to "送出候選字",
-                SpaceBehavior.ALWAYS_SPACE to "一律打空格",
+                null to stringResource(R.string.text_space_commits),
+                SpaceBehavior.ALWAYS_SPACE to stringResource(R.string.text_space_always),
             ),
             selected = prefs.spaceBehavior.takeIf { it == SpaceBehavior.ALWAYS_SPACE },
             onSelect = { v -> edit { p -> p.copy(spaceBehavior = v) } },
         )
         Spacer(Modifier.height(14.dp))
-        SectionLabel("試試看")
+        SectionLabel(stringResource(R.string.text_try))
         TryField()
     }
 }
@@ -501,7 +541,7 @@ fun NetworkPage(onBack: () -> Unit) {
         modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp),
     ) {
         Spacer(Modifier.height(24.dp))
-        PageHeader(title = "連網", onBack = onBack)
+        PageHeader(title = stringResource(R.string.page_network), onBack = onBack)
         Spacer(Modifier.height(8.dp))
         NetworkSwitchCard()
         Spacer(Modifier.height(14.dp))
@@ -518,9 +558,9 @@ fun StorePage(controller: StoreController, onBack: () -> Unit) {
         modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp),
     ) {
         Spacer(Modifier.height(24.dp))
-        PageHeader(title = "下載更多鍵盤", onBack = onBack)
+        PageHeader(title = stringResource(R.string.page_store), onBack = onBack)
         if (!online) {
-            NetworkRequiredCard(what = "下載鍵盤")
+            NetworkRequiredCard(what = stringResource(R.string.network_what_download_keyboards))
             Spacer(Modifier.height(12.dp))
         }
         StoreScreen(controller = controller, modifier = Modifier.fillMaxSize())
@@ -543,18 +583,21 @@ fun AdvancedPage(controller: StoreController, onBack: () -> Unit) {
         ActivityResultContracts.OpenDocument()
     ) { uri -> if (uri != null) controller.importLocal(uri) }
 
-    Page(title = "進階與問題回報", onBack = onBack) {
+    Page(title = stringResource(R.string.page_advanced), onBack = onBack) {
 
         PlainCard {
             NavRow(
-                title = "從檔案匯入",
-                subtitle = "自己準備的鍵盤方案包（.zip）",
+                title = stringResource(R.string.advanced_import),
+                subtitle = stringResource(R.string.advanced_import_sub),
                 onClick = { importer.launch(arrayOf("application/zip", "*/*")) },
             )
             RowDivider()
             NavRow(
-                title = "重新整理字詞",
-                subtitle = if (controller.busy) "整理中…" else "打字怪怪的時候用，約十幾秒",
+                title = stringResource(R.string.advanced_redeploy),
+                subtitle = stringResource(
+                    if (controller.busy) R.string.advanced_redeploy_busy
+                    else R.string.advanced_redeploy_sub
+                ),
                 onClick = { if (!controller.busy) controller.redeploy() },
             )
             RowDivider()
@@ -563,9 +606,11 @@ fun AdvancedPage(controller: StoreController, onBack: () -> Unit) {
             // 會被丟回引導頁，而他明明早就設好了，只是想把設定歸零。
             val settingsPristine = prefs.copy(onboardingDone = null) == UserPrefs()
             NavRow(
-                title = "全部回復預設",
-                subtitle = if (settingsPristine) "目前全部都是預設值"
-                else "把所有設定刪掉，回到隨附的值",
+                title = stringResource(R.string.advanced_reset),
+                subtitle = stringResource(
+                    if (settingsPristine) R.string.advanced_reset_pristine
+                    else R.string.advanced_reset_sub
+                ),
                 onClick = {
                     if (!settingsPristine) {
                         scope.launch { store.update { UserPrefs(onboardingDone = it.onboardingDone) } }
@@ -575,9 +620,9 @@ fun AdvancedPage(controller: StoreController, onBack: () -> Unit) {
         }
 
         Spacer(Modifier.height(22.dp))
-        SectionLabel("更新")
+        SectionLabel(stringResource(R.string.advanced_updates))
         if (!online) {
-            NetworkRequiredCard(what = "檢查更新")
+            NetworkRequiredCard(what = stringResource(R.string.network_what_check_updates))
             Spacer(Modifier.height(10.dp))
         }
         UpdateSection(
@@ -587,9 +632,9 @@ fun AdvancedPage(controller: StoreController, onBack: () -> Unit) {
         )
 
         Spacer(Modifier.height(26.dp))
-        SectionLabel("回報問題時，把這段一起附上")
+        SectionLabel(stringResource(R.string.advanced_report))
         Text(
-            text = "這些數字是給我們看的，你不用懂。",
+            text = stringResource(R.string.advanced_report_sub),
             fontSize = 12.5.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(bottom = 10.dp),
@@ -611,7 +656,9 @@ fun AdvancedPage(controller: StoreController, onBack: () -> Unit) {
                 copied = true
             },
             modifier = Modifier.fillMaxWidth(),
-        ) { Text(if (copied) "已複製" else "複製這段") }
+        ) {
+            Text(stringResource(if (copied) R.string.advanced_copied else R.string.advanced_copy))
+        }
     }
 }
 
@@ -623,6 +670,15 @@ fun AdvancedPage(controller: StoreController, onBack: () -> Unit) {
  * **之後**才填進去。若 app 進來時 phase 已經是 READY，memo 起來的空清單就會
  * 一路卡住，畫面上永遠顯示「已啟用 0」，要按下「重新整理字詞」才會對。
  * 這個 bug 修過一次，搬家時語義必須跟著走。
+ *
+ * ⚠ **這一段刻意不在地化，永遠是英文。** 它不是介面文字，是一份要被複製、
+ * 貼到 issue 裡的回報載荷；上面那行小灰字已經先說了「這些數字是給我們看的，
+ * 你不用懂」。翻譯它會產生兩個具體的壞處：
+ *   · 收到的 issue 會有三種語言的欄位名，grep 不到、也對不起來；
+ *   · `schema` / `ABI` / `deploy` 這些字沒有不失真的譯法，硬翻只會讓回報者
+ *     以為自己看懂了，然後在描述問題時用錯詞。
+ * 使用者看得見的每一個字仍然跟著系統語言走 —— 這一塊是那條規則的唯一例外，
+ * 而且是刻意的。
  */
 @Composable
 private fun diagnosticsText(context: Context, controller: StoreController): String {
@@ -633,39 +689,46 @@ private fun diagnosticsText(context: Context, controller: StoreController): Stri
     val enabled = controller.enabledSchemas
     val themeIds = remember { repo.themeIds() }
 
+    // 使用者的語系也記一筆：在地化之後，「他看到的是哪一份 strings.xml」
+    // 本身就是一條會影響重現的線索。
+    val locale = ConfigRepository.LOCALE
+
     return buildString {
-        appendLine("版本: ${updates.installedVersionName}（${updates.installedVersionCode}）")
-        appendLine("實作: ${if (RimeCore.isStub()) "stub 假實作" else "真 librime"}")
-        appendLine("so 載入: ${if (RimeCore.libraryLoaded) "成功" else "失敗 — ${RimeCore.libraryLoadError}"}")
+        appendLine("version: ${updates.installedVersionName} (${updates.installedVersionCode})")
+        appendLine("locale: $locale")
+        appendLine("impl: ${if (RimeCore.isStub()) "stub" else "real librime"}")
+        appendLine(".so load: ${if (RimeCore.libraryLoaded) "ok" else "failed — ${RimeCore.libraryLoadError}"}")
         appendLine(
-            "ABI 執行期/編譯期/要求: ${RimeCore.abiVersion()} / " +
+            "ABI runtime/compiled/expected: ${RimeCore.abiVersion()} / " +
                 "${RimeCore.compiledAbiVersion()} / ${RimeCore.EXPECTED_ABI_VERSION}" +
-                "（相容: ${if (RimeCore.abiCompatible()) "是" else "否"}）"
+                " (compatible: ${if (RimeCore.abiCompatible()) "yes" else "no"})"
         )
-        appendLine("初始化階段: $phase")
-        RimeRuntime.initError?.let { appendLine("錯誤: $it") }
-        RimeRuntime.migrationNote?.let { appendLine("內建方案遷移: $it") }
+        appendLine("init phase: $phase")
+        RimeRuntime.initError?.let { appendLine("error: $it") }
+        RimeRuntime.migrationNote?.let { appendLine("builtin schema migration: $it") }
         appendLine(
-            "解壓耗時: " +
-                if (RimeRuntime.extractMillis >= 0) "${RimeRuntime.extractMillis} ms" else "本次未解壓"
+            "extract: " +
+                if (RimeRuntime.extractMillis >= 0) "${RimeRuntime.extractMillis} ms"
+                else "not extracted this run"
         )
         appendLine(
-            "首次部署耗時: " +
-                if (RimeRuntime.deployMillis >= 0) "${RimeRuntime.deployMillis} ms" else "進行中／未完成"
+            "first deploy: " +
+                if (RimeRuntime.deployMillis >= 0) "${RimeRuntime.deployMillis} ms"
+                else "in progress / never finished"
         )
-        appendLine("部署狀態: ${RimeCore.lastDeployStatus}")
+        appendLine("deploy status: ${RimeCore.lastDeployStatus}")
         appendLine()
         appendLine(RimeRuntime.describeDataDirs())
         appendLine()
-        appendLine("Schema（${schemas.size}）")
-        if (schemas.isEmpty()) appendLine("  尚無可用 schema")
+        appendLine("schemas (${schemas.size})")
+        if (schemas.isEmpty()) appendLine("  none available")
         else schemas.forEach { appendLine("  ${it.id}  —  ${it.name}") }
         appendLine()
-        appendLine("schema_list patch（已啟用 ${enabled.size}）")
-        if (enabled.isEmpty()) appendLine("  default.custom.yaml 沒有 schema_list patch")
+        appendLine("schema_list patch (enabled ${enabled.size})")
+        if (enabled.isEmpty()) appendLine("  no schema_list patch in default.custom.yaml")
         else enabled.forEach { appendLine("  $it") }
         appendLine()
-        appendLine("可選配色: ${themeIds.joinToString(", ")}")
-        append("連網紀錄檔: ${org.rimequad.ime.net.NetworkAudit.logFilePath}")
+        appendLine("themes: ${themeIds.joinToString(", ")}")
+        append("network log file: ${org.rimequad.ime.net.NetworkAudit.logFilePath}")
     }
 }

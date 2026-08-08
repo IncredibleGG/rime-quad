@@ -1,0 +1,375 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  简体中文（zh-Hans）。
+
+  ⚠ 这一份**不是**繁体版的字形转换。用词习惯不一样：
+     介面→界面、預設→默认、網路→网络、檔案→文件、資料→数据、
+     螢幕→屏幕、程式→程序、佈局→布局、匯入→导入、解除安裝→卸载、
+     相依→依赖、逾時→超时、電信商→运营商、網域→域名、側載→侧载。
+     照着繁体逐字转出来的句子，简体用户一眼就看得出是转的。
+
+  命中范围（实测）：zh-CN / zh-SG / zh-Hans-* ，以及只设定「中文」
+  而没有地区的设备（ICU 的 likely-subtags 会把 zh 补完成 zh-Hans）。
+-->
+<resources>
+
+    <string name="app_name">RIME 输入法</string>
+    <string name="ime_label">RIME 四端输入法</string>
+    <string name="subtype_label_zh">RIME 中文</string>
+
+    <string name="back">‹  返回</string>
+    <!-- 有方向的字元。RTL 語系請換成 ‹ 。 -->
+    <string name="nav_chevron">›</string>
+    <string name="try_field_placeholder">在这里打字试试</string>
+    <string name="got_it">知道了</string>
+    <string name="cancel">取消</string>
+    <string name="close">关闭</string>
+    <string name="reset_to_default">恢复默认</string>
+
+    <string name="onboarding_two_steps_title">打字前，还差两步</string>
+    <string name="onboarding_last_step_title">只剩最后一步</string>
+    <string name="onboarding_two_steps_body">这两步 Android 规定要你亲手做，我们只能带路。\n做完就不会再出现。</string>
+    <string name="onboarding_last_step_body_current">现在打字用的还是「%1$s」。\n按「切换」会弹出系统的键盘列表，在里面点一下我们就好。</string>
+    <string name="onboarding_last_step_body">按「切换」会弹出系统的键盘列表，在里面点一下我们就好。</string>
+
+    <string name="step_1_title">在系统设置里打开</string>
+    <string name="step_1_title_done">已在系统设置里打开</string>
+    <string name="step_1_state_off">还没打开</string>
+    <string name="step_1_action">前往</string>
+    <string name="step_2_title">设成你平时用的键盘</string>
+    <string name="step_2_state_pending">还没设置</string>
+    <string name="step_2_state_waiting">等上一步完成</string>
+    <string name="step_2_action">切换</string>
+
+    <string name="deploy_line_title">正在整理词条</string>
+    <string name="deploy_line_once">只有第一次要做</string>
+    <string name="deploy_hint_one_step">不用等它，先去做上面那一步就好。</string>
+    <string name="deploy_hint_two_steps">不用等它，先去做上面那两步就好。</string>
+
+    <string name="preparing_title">还在整理词条</string>
+    <string name="preparing_failed_title">词条整理没成功</string>
+    <string name="preparing_body">只有第一次要做，大概十几秒。\n趁现在挑一个顺手的就行，不挑也可以，会用第一个。</string>
+    <string name="preparing_failed_body">键盘还是打得开，但可能打不出字。到「高级与问题反馈」按一次「重新整理词条」通常就好了。\n\n%1$s</string>
+    <string name="preparing_no_keyboards">还读不到可用的键盘列表。等词条整理完，到「设置 › 键盘」也能挑。</string>
+    <string name="preparing_pick">挑一个键盘</string>
+    <string name="preparing_more_hint">还有更多键盘可以选。以后在键盘上点候选字那一行右边的 ⚙ 就能换，不用回到这里。</string>
+
+    <string name="ready_title">好了，打字试试</string>
+    <string name="ready_body">下面这格随便打，打坏也没关系。</string>
+    <string name="ready_hint">换键盘、调高度、换深色：打字时点候选字那一行右边的 ⚙。</string>
+    <string name="ready_more_settings">其他设置 ›</string>
+
+    <string name="home_title">设置</string>
+
+    <string name="not_ready_not_enabled">还没法用</string>
+    <string name="not_ready_not_default">现在打字用的不是这个键盘</string>
+    <string name="not_ready_preparing">正在整理词条</string>
+    <string name="not_ready_not_enabled_body">要先在系统设置里把它打开。</string>
+    <string name="not_ready_not_default_body_current">现在用的是「%1$s」。</string>
+    <string name="not_ready_not_default_body">去系统的键盘列表里选它。</string>
+    <string name="not_ready_preparing_body">只有第一次要做，大概十几秒。这段时间打字可能没反应。</string>
+    <string name="not_ready_open_settings">去系统设置打开</string>
+    <string name="not_ready_switch">切换成这个键盘</string>
+
+    <string name="home_network_log">联网记录</string>
+    <string name="home_network_log_sub">每一次真的联过网都在里面</string>
+    <string name="home_keyboard">键盘</string>
+    <string name="home_appearance">外观</string>
+    <string name="home_feel">手感</string>
+    <string name="home_text">文字</string>
+    <string name="home_try_it">随手试一下</string>
+    <string name="home_advanced">高级与问题反馈</string>
+
+    <string name="summary_follow_phone">跟随手机</string>
+    <string name="summary_always_light">一直浅</string>
+    <string name="summary_always_dark">一直深</string>
+    <string name="summary_separator">" · "</string>
+    <string name="summary_silent">静音</string>
+    <string name="summary_sound">按键音：%1$s</string>
+    <string name="summary_no_vibration">不振动</string>
+    <string name="summary_vibration">振动：%1$s</string>
+    <string name="summary_text_all_default">字形与标点都跟随键盘</string>
+    <string name="summary_chars_follow">字形跟随键盘</string>
+    <string name="summary_punct_follow">标点跟随键盘</string>
+    <string name="summary_traditional">繁体</string>
+    <string name="summary_simplified">简体</string>
+    <string name="summary_punct_full">全角标点</string>
+    <string name="summary_punct_half">半角标点</string>
+    <string name="summary_no_keyboard_yet">尚未选择</string>
+    <string name="summary_keyboard">%1$s · %2$s</string>
+
+    <string name="page_keyboard">键盘</string>
+    <string name="keyboard_page_hint">点一下就换。想换回来随时再点。</string>
+    <string name="keyboard_page_empty">暂无可用的键盘。词条整理完成之后就会出现。</string>
+    <string name="keyboard_get_more">下载更多键盘</string>
+    <string name="keyboard_get_more_value">粤拼 · 五笔 · 仓颉…</string>
+    <string name="keyboard_page_footnote">打字的时候点候选字那一行右边的 ⚙，也能直接在键盘上换。</string>
+    <string name="keyboard_auto_label">自动选择键盘</string>
+
+    <string name="lang_group_zh_tw">中文（台湾繁体）</string>
+    <string name="lang_group_zh_hk">中文（香港）</string>
+    <string name="lang_group_yue">粤语</string>
+    <string name="lang_group_zh">中文</string>
+    <string name="lang_group_other">其他</string>
+
+    <string name="page_appearance">外观</string>
+    <string name="appearance_colours">配色</string>
+    <string name="appearance_light_dark">深浅</string>
+    <string name="appearance_follow_phone">跟随手机</string>
+    <string name="appearance_always_light">一直浅</string>
+    <string name="appearance_always_dark">一直深</string>
+    <string name="appearance_default_theme">默认</string>
+    <string name="appearance_height">键盘高度</string>
+    <string name="appearance_height_title">在键盘上直接拖</string>
+    <string name="appearance_height_body">看着键盘调，比拉滑块准。按下去会调出键盘，上沿会长出一根把手。</string>
+    <string name="appearance_height_action">开始调</string>
+    <string name="appearance_height_after">键盘升起来之后，拖它的上沿就会变高变矮；调好按「好了」。</string>
+    <string name="appearance_candidate_size">候选字大小</string>
+    <string name="appearance_candidate_count">一次显示几个</string>
+    <string name="appearance_hints">键上显示小提示</string>
+    <string name="appearance_hints_sub">拼音布局键面角落的数字</string>
+    <string name="appearance_preview">调完在这里看看</string>
+
+    <string name="page_feel">手感</string>
+    <string name="feel_intro">这三项只有真的按下去才判断得出来，所以下面留了一格给你按。</string>
+    <string name="feel_sound">按键音</string>
+    <string name="feel_vibration">振动</string>
+    <string name="feel_long_press">长按多久算长按</string>
+    <string name="feel_try">按按看</string>
+    <string name="feel_try_placeholder">按下面的键试试</string>
+
+    <string name="page_text">文字</string>
+    <string name="text_characters">字形</string>
+    <string name="text_punctuation">标点</string>
+    <string name="text_space_key">空格键</string>
+    <string name="text_follow_keyboard">跟随键盘</string>
+    <string name="text_traditional">繁体</string>
+    <string name="text_simplified">简体</string>
+    <string name="text_punct_full">全角</string>
+    <string name="text_punct_half">半角</string>
+    <string name="text_space_commits">上屏候选字</string>
+    <string name="text_space_always">一律打空格</string>
+    <string name="text_try">试试看</string>
+
+    <string-array name="levels_sound">
+        <item>关</item>
+        <item>小</item>
+        <item>中</item>
+        <item>大</item>
+    </string-array>
+    <string-array name="levels_haptic">
+        <item>关</item>
+        <item>弱</item>
+        <item>中</item>
+        <item>强</item>
+    </string-array>
+    <string-array name="levels_long_press">
+        <item>快</item>
+        <item>标准</item>
+        <item>慢</item>
+        <item>更慢</item>
+    </string-array>
+    <string-array name="levels_candidate_count">
+        <item>3 个</item>
+        <item>5 个</item>
+        <item>7 个</item>
+        <item>9 个</item>
+        <item>不限</item>
+    </string-array>
+    <string-array name="levels_candidate_size">
+        <item>小</item>
+        <item>标准</item>
+        <item>大</item>
+        <item>很大</item>
+    </string-array>
+
+    <string name="page_network">联网</string>
+    <string name="network_switch_title">联网</string>
+    <string name="network_on_summary">已开启：现在会联网。只有你按下「安装方案」或「检查更新」时才会，打字内容永远不会离开这台设备。</string>
+    <string name="network_off_summary">已关闭（默认）：完全离线。方案市场与更新检查都不会执行。</string>
+    <string name="network_on_detail">每一次实际发生的联网都会记在「联网」页的记录里，你可以自己核对。另外要知道：开着的时候一旦真的连上，你的网络就会看得到这台设备连了哪个域名（DNS 与 TLS 的连接目标是明文，改不掉）。我们的请求本身不含这个 app 的名字，但「有没有连」瞒不了。</string>
+
+    <string name="network_required_title">需要联网才能%1$s</string>
+    <string name="network_required_body">这个输入法默认完全离线，所以现在还没有向任何服务器要过东西。要%1$s，得从网上取文件；打开下面的开关就会开始，用完随时关掉，关掉就回到完全离线。</string>
+    <string name="network_required_cost">要老实说的代价：连接一旦发生，你的网络（运营商、Wi-Fi 的主人、中间的任何一方）就会知道这台设备连了 github.com 之类的域名。我们发出的请求里不含这个 app 的名字，但 DNS 查询与 TLS 的连接目标本来就是明文，这一点我们瞒不了，也不打算装作瞒得了。如果你所在的环境连「装了哪个输入法」都不方便被知道，那就别开这个开关 —— 离线的功能已经是完整的。</string>
+    <string name="network_required_action">开启联网</string>
+
+    <string name="network_what_download_keyboards">下载键盘</string>
+    <string name="network_what_browse">浏览方案</string>
+    <string name="network_what_check_updates">检查更新</string>
+
+    <string name="first_run_title">这个输入法默认不联网</string>
+    <string name="first_run_body_1">我们不会自己联网。打字、选字、换方案、换布局，全部在你的设备上完成。</string>
+    <string name="first_run_body_2">要装更多方案或收到更新，可以随时打开开关；关掉就回到完全离线。开关默认是关的。</string>
+    <string name="first_run_body_3">有一件事要老实说：Android 的网络权限是安装时给的，运行期取消不了，所以你在系统的权限列表上一定看得到它，就算开关关着也一样。既然做不到「没有权限」，我们改成让你查得到 —— 整个 app 只有一个联网出口，开关关闭时它直接拒绝；每一次真的发生的联网都记在「联网」页里，时间、对象、原因、结果都在。</string>
+    <string name="first_run_confirm">知道了，保持离线</string>
+
+    <string name="honesty_title">为什么权限列表上还是有「网络访问」</string>
+    <string name="honesty_body">因为 Android 的网络权限是「安装时」给的，运行期取消不了。只要这个 app 带着方案市场与应用内更新，权限列表上就一定看得到它 —— 开关关掉也一样看得到。我们不会宣称自己没有网络权限，那句话一查就穿帮。</string>
+    <string name="honesty_checkable_title">我们改成让你查得到</string>
+    <string name="honesty_checkable_body">· 整个 app 只有一个联网出口：源码里的 android/app/src/main/java/org/rimequad/ime/net/NetworkGate.kt。\n· 开关关闭时，那个出口直接拒绝并抛出异常，一个连接都不会开。\n· 每一次真的建立的连接都记在下面，跳转的每一跳也各记一条。\n· 记录里没有你输入的任何内容，也没有网址的路径，只有主机名与原因。</string>
+    <string name="honesty_log_file">记录文件：%1$s</string>
+
+    <plurals name="network_log_heading">
+        <item quantity="other">联网记录（%d）</item>
+    </plurals>
+    <string name="network_log_clear">清除</string>
+    <string name="network_log_empty_title">目前没有任何联网记录</string>
+    <string name="network_log_empty_body">开关从来没开过的话，这里本来就会是空的 —— 这正是你要看到的结果。</string>
+
+    <string name="network_purpose_store_index">浏览方案市场（取索引）</string>
+    <string name="network_purpose_store_package">下载方案包</string>
+    <string name="network_purpose_update_manifest">检查更新（取版本信息）</string>
+    <string name="network_purpose_update_apk">下载更新（APK）</string>
+    <string name="network_reason_with_label">%1$s：%2$s</string>
+    <string name="network_outcome_ok">成功</string>
+    <string name="network_outcome_failed">失败</string>
+    <string name="network_outcome_redirected">跳转</string>
+
+    <string name="page_store">下载更多键盘</string>
+    <string name="store_index_error_title">索引加载失败</string>
+    <string name="store_index_error_detail">索引获取失败：%1$s\n来源：%2$s</string>
+    <plurals name="store_index_warnings">
+        <item quantity="other">索引警告（%d）</item>
+    </plurals>
+    <string name="store_source_title">索引来源</string>
+    <string name="store_source_field_label">index.json 的网址</string>
+    <string name="store_source_apply">应用并重新加载</string>
+    <string name="store_source_reload">重新加载</string>
+    <string name="store_source_loading">加载中…</string>
+    <string name="store_source_change">更改来源</string>
+    <string name="store_import_title">导入自己的方案</string>
+    <string name="store_import_body">接受 .zip 与单个 .yaml。安全检查与方案市场完全相同：路径穿越、符号链接、解压炸弹、扩展名白名单，任一不过就整包拒绝。</string>
+    <string name="store_import_pick">选择文件…</string>
+    <string name="store_local_section">自行导入</string>
+
+    <string name="store_badge_recommended">推荐</string>
+    <string name="store_badge_not_installed">未安装</string>
+    <string name="store_badge_installed_off">已安装·停用</string>
+    <string name="store_badge_on">已启用</string>
+    <string name="store_action_install">安装</string>
+    <string name="store_action_enable">启用</string>
+    <string name="store_action_disable">停用</string>
+    <string name="store_action_uninstall">卸载</string>
+    <string name="store_meta_separator">"　·　"</string>
+    <string name="store_meta_schemas">方案：%1$s</string>
+    <string name="store_meta_requires">依赖：%1$s</string>
+    <string name="store_meta_list_separator">、</string>
+    <string name="store_unverified">⚠ 索引没有把这一个标成已验证 —— 它没有经过打包端的验证，装进来之后整理词条失败的概率较高（失败会自动回滚）。</string>
+    <string name="store_layout_note">键盘：%1$s</string>
+    <plurals name="store_local_files">
+        <item quantity="other">%d 个文件</item>
+    </plurals>
+    <string name="store_local_no_schema">（里面没有方案）</string>
+
+    <plurals name="store_confirm_title">
+        <item quantity="other">将下载 %1$d 个包，共 %2$s</item>
+    </plurals>
+    <string name="store_confirm_line">· %1$s　%2$s</string>
+    <string name="store_confirm_installed_size">安装后预计占用约 %1$s（估算）—— 整理词条会把词库编成索引文件，体积远大于下载的压缩包。</string>
+    <string name="store_confirm_cycles">注：%1$s 互为依赖（互相提供反查词库），本来就要一起安装。</string>
+    <plurals name="store_confirm_already">
+        <item quantity="other">另有 %1$d 个依赖已安装，不重复下载：%2$s</item>
+    </plurals>
+    <string name="store_confirm_footnote">下载后会逐个验证 sha256，通过才解压；接着重新整理一次词条（可能要数秒到数十秒）。失败会自动回滚。</string>
+    <string name="store_confirm_install_enable">下载并启用</string>
+    <string name="store_confirm_download_only">只下载</string>
+
+    <string name="store_result_ok">完成</string>
+    <string name="store_result_failed">没有成功</string>
+
+    <string name="job_preparing">准备中</string>
+    <string name="job_preparing_detail">正在展开依赖…</string>
+    <string name="job_downloading">下载中（%1$d/%2$d）</string>
+    <string name="job_downloading_detail">%1$s　%2$s / %3$s</string>
+    <string name="job_downloading_detail_unknown">%1$s　%2$s</string>
+    <string name="job_verifying">验证 sha256</string>
+    <string name="job_extracting">安全检查与解压</string>
+    <string name="job_preflight">检查依赖</string>
+    <string name="job_preflight_detail">确认词典与配置文件都在</string>
+    <string name="job_deploying">正在整理词条</string>
+    <string name="job_deploying_detail">已用时 %1$d 秒。实测 3 个方案约 7 秒，大方案更久。</string>
+    <string name="job_rolling_back">回滚中</string>
+    <string name="job_rolling_back_detail">整理词条失败，正在还原：%1$s</string>
+    <string name="job_enable">启用方案</string>
+    <string name="job_disable">停用方案</string>
+    <string name="job_enable_detail">正在检查依赖…</string>
+    <string name="job_uninstall">卸载</string>
+    <string name="job_uninstall_detail">正在移除文件…</string>
+    <string name="job_import">导入文件</string>
+
+    <string name="store_msg_data_dir_not_ready">输入法数据目录尚未就绪，请稍后再试</string>
+    <string name="store_msg_already_installed">「%1$s」和它的依赖都已安装，直接启用即可</string>
+    <string name="store_msg_missing_dep_title">「%1$s」需要的依赖包不在索引里</string>
+    <string name="store_msg_missing_dep_detail">%1$s 需要「%2$s」，但索引里没有这个包</string>
+    <string name="store_msg_unknown_package">索引里没有包「%1$s」</string>
+    <string name="store_msg_installed_not_enabled">已安装（尚未启用）—— 到「已安装」区块按「启用」才会生效</string>
+    <string name="store_msg_installed_components">已安装（这些是基础组件，没有可切换的方案）</string>
+    <string name="store_msg_installed_enabled">「%1$s」已安装并启用，键盘会切到「%2$s」</string>
+    <string name="store_msg_installed_enabled_layout">「%1$s」已安装并启用，键盘会切到「%2$s」（%3$s）</string>
+    <string name="store_msg_deploy_done">词条整理完成（用时 %1$s 秒）</string>
+    <string name="store_msg_deploy_failed">词条整理失败（%1$d ms）</string>
+    <string name="store_msg_deploy_timeout">词条整理超时（%1$d ms）</string>
+    <string name="store_msg_deploy_not_started">词条整理没有启动</string>
+    <string name="store_msg_deploy_error_detail">引擎给的原因：%1$s</string>
+    <string name="store_msg_deploy_no_reason">引擎未提供原因</string>
+    <string name="store_msg_read_failed">无法读取所选文件</string>
+    <string name="store_msg_too_big">文件超过 %1$s</string>
+    <string name="store_msg_import_failed">导入失败：%1$s</string>
+    <string name="store_msg_imported_enabled">已导入并启用：%1$s</string>
+
+    <string name="page_advanced">高级与问题反馈</string>
+    <string name="advanced_import">从文件导入</string>
+    <string name="advanced_import_sub">自己准备的键盘方案包（.zip）</string>
+    <string name="advanced_redeploy">重新整理词条</string>
+    <string name="advanced_redeploy_busy">整理中…</string>
+    <string name="advanced_redeploy_sub">打字不对劲的时候用，约十几秒</string>
+    <string name="advanced_reset">全部恢复默认</string>
+    <string name="advanced_reset_pristine">目前全部都是默认值</string>
+    <string name="advanced_reset_sub">把所有设置删掉，回到随附的值</string>
+    <string name="advanced_updates">更新</string>
+    <string name="advanced_report">反馈问题时，把这段一起附上</string>
+    <string name="advanced_report_sub">这些数字是给我们看的，你不用懂。</string>
+    <string name="advanced_copy">复制这段</string>
+    <string name="advanced_copied">已复制</string>
+
+    <string name="update_title">更新</string>
+    <string name="update_installed_version">当前版本：%1$s（versionCode %2$d）</string>
+    <string name="update_network_off">联网开关目前是关闭的，所以不会检查更新，也不会下载任何东西。要收到新版本，先到「联网」页把开关打开。</string>
+    <string name="update_available">有新版本可用：%1$s</string>
+    <string name="update_size">大小 %1$s</string>
+    <string name="update_size_commit">大小 %1$s・commit %2$s</string>
+    <string name="update_check">检查更新</string>
+    <string name="update_checking">检查中…</string>
+    <string name="update_download">下载并安装</string>
+    <string name="update_downloading">下载中…</string>
+    <string name="update_verifying">验证中…</string>
+    <string name="update_install">安装</string>
+    <string name="update_installing">安装中…</string>
+    <string name="update_unknown_sources_body">系统还没允许本 app 安装应用。侧载安装一定要先开这个开关，开完按返回键回来就能继续。</string>
+    <string name="update_unknown_sources_action">去开启「安装未知应用」</string>
+    <string name="update_auto_check">启动时自动检查更新</string>
+    <string name="update_auto_check_default">默认：开。只在后台抓一份几百 bytes 的版本信息，不会自动下载 APK，也不会弹窗。</string>
+    <string name="update_auto_check_set_on">已设置：开</string>
+    <string name="update_auto_check_set_off">已设置：关</string>
+    <string name="update_auto_check_blocked">（联网开关关闭中，这一项目前不生效）</string>
+    <string name="update_security_note">下载完成后会核对 sha256。要提醒的是：摘要和 APK 来自同一台服务器，所以它防的是传输过程坏掉，不是服务器被入侵。真正挡住恶意替换的是 Android 强制「升级必须是同一把密钥签的」——别人签的 APK 系统会直接拒绝。</string>
+
+    <string name="remap_title">自定义键位（引擎层）</string>
+    <string name="remap_intro">选同一层里的两个键交换位置。交换的只有「位置」—— 标着 a 的键搬到 s 的格子之后，按下去上屏的仍然是 a。改变一个键「上什么」会直接打坏方案，所以引擎层不提供那件事。</string>
+    <string name="remap_layout">布局</string>
+    <string name="remap_layer">层</string>
+    <string name="remap_first_key">第一个键</string>
+    <string name="remap_second_key">第二个键</string>
+    <string name="remap_swap">交换这两个键</string>
+    <string name="remap_checking">验证中…</string>
+    <string name="remap_swapped">已交换「%1$s」与「%2$s」。回到输入框就会看到新键盘。</string>
+    <string name="remap_layout_unloadable">布局「%1$s」加载不了，没有可以自定义的基础。</string>
+    <string name="remap_none">「%1$s」目前没有自定义。</string>
+    <string name="remap_current">「%1$s」目前的自定义：\n%2$s</string>
+    <string name="remap_reset_one">重置这份布局</string>
+    <string name="remap_reset_all">全部重置</string>
+    <string name="remap_reset_one_done">「%1$s」已回到基础布局的原样。</string>
+    <string name="remap_reset_all_done">全部自定义键位已清除。</string>
+
+</resources>

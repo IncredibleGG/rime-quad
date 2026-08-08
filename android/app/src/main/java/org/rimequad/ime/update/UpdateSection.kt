@@ -23,10 +23,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import org.rimequad.ime.R
 import org.rimequad.ime.net.rememberNetworkEnabled
 
 /**
@@ -58,7 +60,7 @@ fun UpdateSection(
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = "更新",
+                    text = stringResource(R.string.update_title),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
@@ -69,8 +71,11 @@ fun UpdateSection(
             }
 
             Text(
-                text = "目前版本：${controller.installedVersionName}" +
-                    "（versionCode ${controller.installedVersionCode}）",
+                text = stringResource(
+                    R.string.update_installed_version,
+                    controller.installedVersionName,
+                    controller.installedVersionCode,
+                ),
                 fontSize = 12.sp,
                 fontFamily = FontFamily.Monospace,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -81,8 +86,7 @@ fun UpdateSection(
             if (!networkOn) {
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    text = "連網開關目前是關閉的，所以不會檢查更新，也不會下載任何東西。" +
-                        "要收到新版本，先到「連網」分頁把開關打開。",
+                    text = stringResource(R.string.update_network_off),
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -96,13 +100,14 @@ fun UpdateSection(
                     RedDot()
                     Spacer(Modifier.size(6.dp))
                     Text(
-                        text = "有新版本可用：${latest.versionName}",
+                        text = stringResource(R.string.update_available, latest.versionName),
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
                 Text(
-                    text = "大小 ${fmtBytes(latest.size)}" +
-                        (latest.commit?.let { "・commit $it" } ?: ""),
+                    text = latest.commit?.let {
+                        stringResource(R.string.update_size_commit, fmtBytes(latest.size), it)
+                    } ?: stringResource(R.string.update_size, fmtBytes(latest.size)),
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -152,7 +157,9 @@ fun UpdateSection(
                             fontSize = 13.sp,
                             color = MaterialTheme.colorScheme.onErrorContainer,
                         )
-                        TextButton(onClick = { controller.dismissError() }) { Text("知道了") }
+                        TextButton(onClick = { controller.dismissError() }) {
+                            Text(stringResource(R.string.got_it))
+                        }
                     }
                 }
             }
@@ -161,15 +168,14 @@ fun UpdateSection(
             if (controller.verifiedApk != null && !controller.installPermitted) {
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    text = "系統還沒允許本 app 安裝應用程式。側載安裝一定要先開這個開關，" +
-                        "開完按返回鍵回來就能繼續。",
+                    text = stringResource(R.string.update_unknown_sources_body),
                     fontSize = 13.sp,
                 )
                 OutlinedButton(
                     onClick = { controller.openUnknownSourcesSettings() },
                     modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
                 ) {
-                    Text("去開啟「安裝未知的應用程式」")
+                    Text(stringResource(R.string.update_unknown_sources_action))
                 }
             }
 
@@ -182,8 +188,11 @@ fun UpdateSection(
                     modifier = Modifier.weight(1f),
                 ) {
                     Text(
-                        if (controller.phase == UpdateController.Phase.CHECKING) "檢查中…"
-                        else "檢查更新"
+                        stringResource(
+                            if (controller.phase == UpdateController.Phase.CHECKING)
+                                R.string.update_checking
+                            else R.string.update_check
+                        )
                     )
                 }
                 when {
@@ -194,8 +203,11 @@ fun UpdateSection(
                         modifier = Modifier.weight(1f),
                     ) {
                         Text(
-                            if (controller.phase == UpdateController.Phase.INSTALLING) "安裝中…"
-                            else "安裝"
+                            stringResource(
+                                if (controller.phase == UpdateController.Phase.INSTALLING)
+                                    R.string.update_installing
+                                else R.string.update_install
+                            )
                         )
                     }
 
@@ -205,11 +217,13 @@ fun UpdateSection(
                         modifier = Modifier.weight(1f),
                     ) {
                         Text(
-                            when (controller.phase) {
-                                UpdateController.Phase.DOWNLOADING -> "下載中…"
-                                UpdateController.Phase.VERIFYING -> "驗證中…"
-                                else -> "下載並安裝"
-                            }
+                            stringResource(
+                                when (controller.phase) {
+                                    UpdateController.Phase.DOWNLOADING -> R.string.update_downloading
+                                    UpdateController.Phase.VERIFYING -> R.string.update_verifying
+                                    else -> R.string.update_download
+                                }
+                            )
                         )
                     }
                 }
@@ -222,23 +236,29 @@ fun UpdateSection(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text(text = "啟動時自動檢查更新", fontWeight = FontWeight.Medium)
+                    Text(
+                        text = stringResource(R.string.update_auto_check),
+                        fontWeight = FontWeight.Medium,
+                    )
                     Text(
                         // 「未設定」與「開」在行為上相同，但顯示要分得出來 ——
                         // 使用者才知道自己有沒有動過這一項。
                         // 這一項是**連網開關底下的**子設定：開關關著時它一律不生效，
                         // 說明必須寫清楚，否則使用者會以為自己被偷偷檢查了。
-                        text = (if (autoCheck == null) "預設：開。只在背景抓一份幾百 bytes 的" +
-                            "版本資訊，不會自動下載 APK，也不會彈窗。"
-                        else "已設定：${if (autoCheck) "開" else "關"}") +
-                            if (networkOn) "" else "（連網開關關閉中，這一項目前不生效）",
+                        text = stringResource(
+                            when (autoCheck) {
+                                null -> R.string.update_auto_check_default
+                                true -> R.string.update_auto_check_set_on
+                                false -> R.string.update_auto_check_set_off
+                            }
+                        ) + if (networkOn) "" else stringResource(R.string.update_auto_check_blocked),
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 if (autoCheck != null) {
                     TextButton(onClick = { onAutoCheckChange(null) }) {
-                        Text("回復預設", fontSize = 12.sp)
+                        Text(stringResource(R.string.reset_to_default), fontSize = 12.sp)
                     }
                 }
                 Switch(
@@ -249,9 +269,7 @@ fun UpdateSection(
 
             /* ── 安全性說明 ── */
             Text(
-                text = "下載完成後會核對 sha256。要提醒的是：摘要和 APK 來自同一台伺服器，" +
-                    "所以它防的是傳輸過程壞掉，不是伺服器被入侵。真正擋住惡意替換的是 " +
-                    "Android 強制「升級必須是同一把金鑰簽的」——別人簽的 APK 系統會直接拒絕。",
+                text = stringResource(R.string.update_security_note),
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 10.dp),

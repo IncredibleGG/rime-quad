@@ -11,6 +11,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import org.rimequad.ime.BuildConfig
+import org.rimequad.ime.R
 import org.rimequad.ime.core.RimeCore
 import org.rimequad.ime.core.RimeRuntime
 import org.rimequad.ime.net.NetworkGate
@@ -82,6 +83,15 @@ class StoreController(context: Context) {
 
     private val appContext = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
+
+    /**
+     * 這一層的字串為什麼不走 `stringResource`：這些訊息是在**背景執行緒**上
+     * 組出來的（下載、解壓、部署都在 [worker] 上跑），那裡沒有 composition，
+     * 也不該有。`appContext.getString()` 讀的是同一份資源、同一個語系，
+     * 只是不需要 Compose 在場。
+     */
+    private fun str(id: Int, vararg args: Any): String =
+        if (args.isEmpty()) appContext.getString(id) else appContext.getString(id, *args)
     private val worker = Executors.newSingleThreadExecutor { r -> Thread(r, "rime-store") }
 
     val settings = StoreSettings(appContext)
@@ -236,7 +246,7 @@ class StoreController(context: Context) {
                         index = null
                         // 被開關擋下來的不是錯誤，畫面上有專門的說明卡。
                         indexError = if (fetched.blocked) null
-                        else "取得索引失敗：${fetched.message}\n來源：$url"
+                        else str(R.string.store_index_error_detail, fetched.message, url)
                     }
 
                     is NetworkGate.Result.Ok -> when (val parsed = IndexParser.parse(fetched.value)) {
@@ -261,25 +271,25 @@ class StoreController(context: Context) {
     fun prepareInstall(pkg: StorePackage) {
         val idx = index ?: return
         val s = storeOrNull ?: run {
-            result = ResultUi(false, "輸入法資料目錄尚未就緒，請稍候再試", emptyList())
+            result = ResultUi(false, str(R.string.store_msg_data_dir_not_ready), emptyList())
             return
         }
         when (val r = DependencyResolver.resolve(idx, listOf(pkg.id), s.registry.ids)) {
             is DependencyResolver.Result.Ok -> {
                 if (r.plan.count == 0) {
-                    showToast("「${pkg.name}」與它的相依都已安裝，直接啟用即可")
+                    showToast(str(R.string.store_msg_already_installed, pkg.name))
                 } else {
                     confirm = ConfirmPlan(pkg, r.plan)
                 }
             }
 
             is DependencyResolver.Result.MissingDependency -> result = ResultUi(
-                false, "「${pkg.name}」需要的相依套件不在索引裡",
-                listOf("${r.requiredBy} 需要「${r.missing}」，但索引裡沒有這個套件"),
+                false, str(R.string.store_msg_missing_dep_title, pkg.name),
+                listOf(str(R.string.store_msg_missing_dep_detail, r.requiredBy, r.missing)),
             )
 
             is DependencyResolver.Result.UnknownPackage -> result = ResultUi(
-                false, "索引裡沒有套件「${r.id}」", emptyList(),
+                false, str(R.string.store_msg_unknown_package, r.id), emptyList(),
             )
         }
     }
@@ -291,7 +301,7 @@ class StoreController(context: Context) {
         val s = storeOrNull ?: return
         confirm = null
         result = null
-        job = JobUi("準備中", "正在展開相依…", -1f)
+        job = JobUi(str(R.string.job_preparing), str(R.string.job_preparing_detail), -1f)
 
         val url = indexUrl
         worker.execute {
@@ -302,13 +312,13 @@ class StoreController(context: Context) {
             }
 
             if (!alsoEnable) {
-                finish(true, "已安裝（尚未啟用）—— 到「已安裝」區塊按「啟用」才會部署", emptyList())
+                finish(true, str(R.string.store_msg_installed_not_enabled), emptyList())
                 return@execute
             }
 
             val schemaIds = plan.plan.toDownload.flatMap { it.schemaIds }
             if (schemaIds.isEmpty()) {
-                finish(true, "已安裝（這些是基礎元件，沒有可切換的方案）", emptyList())
+                finish(true, str(R.string.store_msg_installed_components), emptyList())
                 return@execute
             }
             when (val en = s.setEnabled(schemaIds, enabled = true) { p -> postProgress(p) }) {
@@ -316,8 +326,15 @@ class StoreController(context: Context) {
                 // 佈局說明照樣塞得進去，因為它是他下一步真的會用到的資訊。
                 is SchemaStore.Outcome.Ok -> finish(
                     true,
-                    "「${plan.rootPackage.name}」已安裝並啟用，鍵盤會切到「${schemaIds.first()}」" +
-                        (plan.rootPackage.layoutNote?.let { "（$it）" } ?: ""),
+                    plan.rootPackage.layoutNote?.let {
+                        str(
+                            R.string.store_msg_installed_enabled_layout,
+                            plan.rootPackage.name, schemaIds.first(), it,
+                        )
+                    } ?: str(
+                        R.string.store_msg_installed_enabled,
+                        plan.rootPackage.name, schemaIds.first(),
+                    ),
                     pendingSchema = schemaIds.first(),
                     details = emptyList(),
                 )
@@ -332,7 +349,11 @@ class StoreController(context: Context) {
         val s = storeOrNull ?: return
         if (busy) return
         result = null
-        job = JobUi(if (enabled) "啟用方案" else "停用方案", "正在檢查相依…", -1f)
+        job = JobUi(
+            str(if (enabled) R.string.job_enable else R.string.job_disable),
+            str(R.string.job_enable_detail),
+            -1f,
+        )
         worker.execute {
             when (val r = s.setEnabled(schemaIds, enabled) { p -> postProgress(p) }) {
                 is SchemaStore.Outcome.Ok -> finish(
@@ -360,7 +381,7 @@ class StoreController(context: Context) {
     fun redeploy() {
         if (busy) return
         result = null
-        job = JobUi("部署中（librime 正在編譯詞庫）", "已耗時 0 秒", -1f)
+        job = JobUi(str(R.string.job_deploying), str(R.string.job_deploying_detail, 0), -1f)
         worker.execute {
             when (val r = DeployGate.deployAndWait { ms ->
                 postProgress(SchemaStore.Progress.Deploying(ms))
@@ -368,19 +389,27 @@ class StoreController(context: Context) {
                 // 成功 → snackbar 一行，畫面自己退掉（見 ResultUi 的註解）。
                 // 「舊 session 已失效，鍵盤會自動重建」是實作細節，使用者
                 // 不需要知道，也不需要為了它按一次「知道了」。
-                is DeployGate.Outcome.Success ->
-                    finish(true, "部署完成（耗時 ${formatSeconds(r.elapsedMs)} 秒）", emptyList())
+                is DeployGate.Outcome.Success -> finish(
+                    true,
+                    str(R.string.store_msg_deploy_done, formatSeconds(r.elapsedMs)),
+                    emptyList(),
+                )
 
                 is DeployGate.Outcome.Failure -> finish(
-                    false, "部署失敗（${r.elapsedMs} ms）",
-                    listOf("rs_last_error(): ${r.lastError.ifEmpty { "librime 未提供原因" }}"),
+                    false, str(R.string.store_msg_deploy_failed, r.elapsedMs),
+                    listOf(
+                        str(
+                            R.string.store_msg_deploy_error_detail,
+                            r.lastError.ifEmpty { str(R.string.store_msg_deploy_no_reason) },
+                        )
+                    ),
                 )
 
                 is DeployGate.Outcome.Timeout ->
-                    finish(false, "部署逾時（${r.elapsedMs} ms）", emptyList())
+                    finish(false, str(R.string.store_msg_deploy_timeout, r.elapsedMs), emptyList())
 
                 is DeployGate.Outcome.NotStarted ->
-                    finish(false, "部署沒有啟動", listOf(r.reason))
+                    finish(false, str(R.string.store_msg_deploy_not_started), listOf(r.reason))
             }
         }
     }
@@ -389,7 +418,7 @@ class StoreController(context: Context) {
         val s = storeOrNull ?: return
         if (busy) return
         result = null
-        job = JobUi("解除安裝", "正在移除檔案…", -1f)
+        job = JobUi(str(R.string.job_uninstall), str(R.string.job_uninstall_detail), -1f)
         worker.execute {
             when (val r = s.uninstall(packageId) { p -> postProgress(p) }) {
                 is SchemaStore.Outcome.Ok -> finish(true, r.message, emptyList())
@@ -430,14 +459,14 @@ class StoreController(context: Context) {
         if (busy) return
         val displayName = nameHint?.takeIf { it.isNotBlank() } ?: displayNameOf(uri)
         result = null
-        job = JobUi("匯入檔案", displayName, -1f)
+        job = JobUi(str(R.string.job_import), displayName, -1f)
         worker.execute {
             val work = File(appContext.cacheDir, "store").apply { mkdirs() }
             val tmp = File(work, "import-${System.nanoTime()}")
             try {
                 appContext.contentResolver.openInputStream(uri).use { input ->
                     if (input == null) {
-                        finish(false, "無法讀取所選檔案", emptyList())
+                        finish(false, str(R.string.store_msg_read_failed), emptyList())
                         return@execute
                     }
                     tmp.outputStream().use { out ->
@@ -448,7 +477,14 @@ class StoreController(context: Context) {
                             if (n < 0) break
                             total += n
                             if (total > SchemaStore.MAX_PACKAGE_BYTES) {
-                                finish(false, "檔案超過 ${formatBytes(SchemaStore.MAX_PACKAGE_BYTES)}", emptyList())
+                                finish(
+                                    false,
+                                    str(
+                                        R.string.store_msg_too_big,
+                                        formatBytes(SchemaStore.MAX_PACKAGE_BYTES),
+                                    ),
+                                    emptyList(),
+                                )
                                 return@execute
                             }
                             out.write(buf, 0, n)
@@ -469,14 +505,20 @@ class StoreController(context: Context) {
                     return@execute
                 }
                 when (val en = s.setEnabled(schemaIds, enabled = true) { p -> postProgress(p) }) {
-                    is SchemaStore.Outcome.Ok ->
-                        finish(true, "已匯入並啟用：${schemaIds.joinToString("、")}", listOf(en.message))
+                    is SchemaStore.Outcome.Ok -> finish(
+                        true,
+                        str(
+                            R.string.store_msg_imported_enabled,
+                            schemaIds.joinToString(str(R.string.store_meta_list_separator)),
+                        ),
+                        listOf(en.message),
+                    )
 
                     is SchemaStore.Outcome.Failed -> finish(false, en.message, en.details)
                 }
             } catch (e: Exception) {
                 Log.e("StoreController", "匯入失敗", e)
-                finish(false, "匯入失敗：${e.message}", emptyList())
+                finish(false, str(R.string.store_msg_import_failed, e.message.orEmpty()), emptyList())
             } finally {
                 tmp.delete()
             }
@@ -497,23 +539,37 @@ class StoreController(context: Context) {
     private fun postProgress(p: SchemaStore.Progress) {
         val ui = when (p) {
             is SchemaStore.Progress.Downloading -> JobUi(
-                "下載中（${p.ordinal}/${p.total}）",
-                "${p.packageName}　${formatBytes(p.read)}" +
-                    if (p.bytes > 0) " / ${formatBytes(p.bytes)}" else "",
+                str(R.string.job_downloading, p.ordinal, p.total),
+                if (p.bytes > 0) {
+                    str(
+                        R.string.job_downloading_detail,
+                        p.packageName, formatBytes(p.read), formatBytes(p.bytes),
+                    )
+                } else {
+                    str(R.string.job_downloading_detail_unknown, p.packageName, formatBytes(p.read))
+                },
                 if (p.bytes > 0) (p.read.toFloat() / p.bytes).coerceIn(0f, 1f) else -1f,
             )
 
-            is SchemaStore.Progress.Verifying -> JobUi("驗證 sha256", p.packageName, -1f)
-            is SchemaStore.Progress.Extracting -> JobUi("安全檢查與解壓", p.packageName, -1f)
-            SchemaStore.Progress.Preflight -> JobUi("檢查相依", "確認詞典與配置檔都在", -1f)
+            is SchemaStore.Progress.Verifying ->
+                JobUi(str(R.string.job_verifying), p.packageName, -1f)
+
+            is SchemaStore.Progress.Extracting ->
+                JobUi(str(R.string.job_extracting), p.packageName, -1f)
+
+            SchemaStore.Progress.Preflight ->
+                JobUi(str(R.string.job_preflight), str(R.string.job_preflight_detail), -1f)
+
             is SchemaStore.Progress.Deploying -> JobUi(
-                "部署中（librime 正在編譯詞庫）",
-                "已耗時 ${p.elapsedMs / 1000} 秒。實測 3 個方案約 7 秒，大方案更久。",
+                str(R.string.job_deploying),
+                str(R.string.job_deploying_detail, p.elapsedMs / 1000),
                 -1f,
             )
 
             is SchemaStore.Progress.RollingBack -> JobUi(
-                "回滾中", "部署失敗，正在還原 schema_list：${p.reason}", -1f,
+                str(R.string.job_rolling_back),
+                str(R.string.job_rolling_back_detail, p.reason),
+                -1f,
             )
         }
         main.post { job = ui }

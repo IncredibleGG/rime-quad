@@ -37,11 +37,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import org.rimequad.ime.R
 import org.rimequad.ime.core.RimeRuntime
 import org.rimequad.ime.keyboard.KeyboardType
 import org.rimequad.ime.prefs.PrefsStore
@@ -127,7 +129,10 @@ private fun ColumnScope.TwoStepBody(stage: SetupStage, system: ImeSystemState) {
     val enabled = stage != SetupStage.NOT_ENABLED
 
     Text(
-        text = if (enabled) "剩最後一步" else "打字前，還差兩步",
+        text = stringResource(
+            if (enabled) R.string.onboarding_last_step_title
+            else R.string.onboarding_two_steps_title
+        ),
         fontSize = 27.sp,
         fontWeight = FontWeight.SemiBold,
         lineHeight = 34.sp,
@@ -136,10 +141,10 @@ private fun ColumnScope.TwoStepBody(stage: SetupStage, system: ImeSystemState) {
     Text(
         text = if (enabled) {
             val now = system.currentImeLabel
-            if (now != null) "現在打字用的還是「$now」。\n按「切換」會跳出系統的鍵盤清單，在裡面點一下我們就好。"
-            else "按「切換」會跳出系統的鍵盤清單，在裡面點一下我們就好。"
+            if (now != null) stringResource(R.string.onboarding_last_step_body_current, now)
+            else stringResource(R.string.onboarding_last_step_body)
         } else {
-            "這兩步 Android 規定要你親手做，我們只能帶路。\n做完就不會再出現。"
+            stringResource(R.string.onboarding_two_steps_body)
         },
         fontSize = 15.5.sp,
         lineHeight = 23.sp,
@@ -152,10 +157,12 @@ private fun ColumnScope.TwoStepBody(stage: SetupStage, system: ImeSystemState) {
         StepRow(
             index = 1,
             done = enabled,
-            title = if (enabled) "已在系統設定裡打開" else "在系統設定裡打開",
-            state = if (enabled) null else "還沒打開",
+            title = stringResource(
+                if (enabled) R.string.step_1_title_done else R.string.step_1_title
+            ),
+            state = if (enabled) null else stringResource(R.string.step_1_state_off),
             // 畫面上任何時候**只有一顆實心按鈕** —— 不必讀字也知道該點哪裡。
-            action = if (enabled) null else "前往",
+            action = if (enabled) null else stringResource(R.string.step_1_action),
             primary = !enabled,
             onClick = { openImeSettings(context) },
         )
@@ -163,9 +170,11 @@ private fun ColumnScope.TwoStepBody(stage: SetupStage, system: ImeSystemState) {
         StepRow(
             index = 2,
             done = false,
-            title = "設成你平常用的鍵盤",
-            state = if (enabled) "還沒設定" else "等上一步完成",
-            action = "切換",
+            title = stringResource(R.string.step_2_title),
+            state = stringResource(
+                if (enabled) R.string.step_2_state_pending else R.string.step_2_state_waiting
+            ),
+            action = stringResource(R.string.step_2_action),
             primary = enabled,
             // 第 2 步在第 1 步完成之前是停用的 —— 那個順序是 Android 強制的，
             // 提早給一顆按得動的按鈕，只會讓人按了沒反應。
@@ -177,7 +186,11 @@ private fun ColumnScope.TwoStepBody(stage: SetupStage, system: ImeSystemState) {
     // 剩下的空間刻意留白：第一屏的內容只佔約一半，剩下是空的。
     // 塞滿是為了顯得功能多，不是為了好用。
     Spacer(Modifier.weight(1f))
-    DeployLine(hint = if (enabled) "不用等它，先去做上面那一步就好。" else "不用等它，先去做上面那兩步就好。")
+    DeployLine(
+        hint = stringResource(
+            if (enabled) R.string.deploy_hint_one_step else R.string.deploy_hint_two_steps
+        )
+    )
     Spacer(Modifier.height(28.dp))
 }
 
@@ -261,17 +274,18 @@ private fun PreparingBody() {
     val error = RimeRuntime.initError
 
     Text(
-        text = if (failed) "字詞整理沒成功" else "還在整理字詞",
+        text = stringResource(
+            if (failed) R.string.preparing_failed_title else R.string.preparing_title
+        ),
         fontSize = 27.sp,
         fontWeight = FontWeight.SemiBold,
     )
     Spacer(Modifier.height(10.dp))
     Text(
         text = if (failed) {
-            "鍵盤還是打得開，但可能打不出字。到「進階與問題回報」按一次" +
-                "「重新整理字詞」通常就好了。\n\n$error"
+            stringResource(R.string.preparing_failed_body, error.orEmpty())
         } else {
-            "只有第一次要做，大概十幾秒。\n趁現在挑一個順手的就好，不挑也可以，會用第一個。"
+            stringResource(R.string.preparing_body)
         },
         fontSize = 15.5.sp,
         lineHeight = 23.sp,
@@ -291,12 +305,12 @@ private fun PreparingBody() {
     val selectedKey = picked?.key ?: all.firstOrNull()?.key
     if (all.isEmpty()) {
         Text(
-            text = "還讀不到可用的鍵盤清單。等字詞整理完，到「設定 › 鍵盤」也能挑。",
+            text = stringResource(R.string.preparing_no_keyboards),
             fontSize = 13.5.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     } else {
-        SectionLabel("挑一個鍵盤")
+        SectionLabel(stringResource(R.string.preparing_pick))
         KeyboardGrid(
             types = all,
             selectedKey = selectedKey,
@@ -307,7 +321,7 @@ private fun PreparingBody() {
         )
         Spacer(Modifier.height(16.dp))
         Text(
-            text = "還有更多鍵盤可以選。之後在鍵盤上點候選字那一列右邊的 ⚙ 就能換，不用回到這裡。",
+            text = stringResource(R.string.preparing_more_hint),
             fontSize = 12.5.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -319,27 +333,27 @@ private fun PreparingBody() {
 @Composable
 private fun ReadyBody(onFinished: () -> Unit) {
     Text(
-        text = "好了，打字看看",
+        text = stringResource(R.string.ready_title),
         fontSize = 27.sp,
         fontWeight = FontWeight.SemiBold,
         color = MaterialTheme.colorScheme.primary,
     )
     Spacer(Modifier.height(10.dp))
     Text(
-        text = "下面這格可以隨便打，打壞也沒關係。",
+        text = stringResource(R.string.ready_body),
         fontSize = 15.5.sp,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
     Spacer(Modifier.height(22.dp))
-    TryField(placeholder = "在這裡打字看看")
+    TryField()
     Spacer(Modifier.height(22.dp))
     Text(
-        text = "換鍵盤、調高度、換深色：打字時點候選字那一列右邊的 ⚙。",
+        text = stringResource(R.string.ready_hint),
         fontSize = 13.sp,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
     Spacer(Modifier.height(14.dp))
-    TextButton(onClick = onFinished) { Text("其他設定 ›") }
+    TextButton(onClick = onFinished) { Text(stringResource(R.string.ready_more_settings)) }
 }
 
 /* ─────────────────────── 進度 ─────────────────────── */
@@ -353,13 +367,13 @@ private fun DeployLine(hint: String) {
     Column {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = "正在整理字詞",
+                text = stringResource(R.string.deploy_line_title),
                 fontSize = 12.5.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.weight(1f),
             )
             Text(
-                text = "只有第一次要做",
+                text = stringResource(R.string.deploy_line_once),
                 fontSize = 12.5.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

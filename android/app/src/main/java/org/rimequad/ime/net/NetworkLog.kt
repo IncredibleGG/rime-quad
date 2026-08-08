@@ -1,5 +1,7 @@
 package org.rimequad.ime.net
 
+import androidx.annotation.StringRes
+import org.rimequad.ime.R
 import java.io.File
 
 /**
@@ -20,12 +22,23 @@ import java.io.File
  *     這句話不成立。
  */
 
-/** 這一次連網是為了什麼。全部由呼叫端在編譯期指定，沒有自由字串。 */
-enum class NetworkPurpose(val zh: String) {
-    STORE_INDEX("瀏覽方案市集（取索引）"),
-    STORE_PACKAGE("下載方案套件"),
-    UPDATE_MANIFEST("檢查更新（取版本資訊）"),
-    UPDATE_APK("下載更新（APK）"),
+/**
+ * 這一次連網是為了什麼。全部由呼叫端在編譯期指定，沒有自由字串。
+ *
+ * ── 為什麼同時帶 [zh] 與 [labelRes] ─────────────────────────────────────
+ * 兩個消費端，語言需求相反：
+ *   · [labelRes] 給**畫面**（「連網」頁的每一筆紀錄）。跟著系統語言走。
+ *   · [zh] 給 [NetworkGate] 擋下連線時丟出的**例外訊息**。那句話會進 logcat
+ *     與問題回報，讀者是我們，不是使用者；而且它必須在沒有 Context 的地方
+ *     組得出來 —— NetworkGate 是純邏輯，拿不到資源。
+ * 兩者不會漂移，因為它們描述的是同一組編譯期常數，加一個列舉值時編譯器會
+ * 逼你兩個都填。
+ */
+enum class NetworkPurpose(val zh: String, @get:StringRes val labelRes: Int) {
+    STORE_INDEX("瀏覽方案市集（取索引）", R.string.network_purpose_store_index),
+    STORE_PACKAGE("下載方案套件", R.string.network_purpose_store_package),
+    UPDATE_MANIFEST("檢查更新（取版本資訊）", R.string.network_purpose_update_manifest),
+    UPDATE_APK("下載更新（APK）", R.string.network_purpose_update_apk),
     ;
 
     companion object {
@@ -34,10 +47,10 @@ enum class NetworkPurpose(val zh: String) {
 }
 
 /** 結果。轉址單獨一種：它既不是成功也不是失敗，但它是一次真的連線。 */
-enum class NetworkOutcome(val zh: String) {
-    OK("成功"),
-    FAILED("失敗"),
-    REDIRECTED("轉址"),
+enum class NetworkOutcome(val zh: String, @get:StringRes val labelRes: Int) {
+    OK("成功", R.string.network_outcome_ok),
+    FAILED("失敗", R.string.network_outcome_failed),
+    REDIRECTED("轉址", R.string.network_outcome_redirected),
     ;
 
     companion object {
@@ -65,7 +78,12 @@ data class NetworkLogEntry(
     val bytes: Long,
     val detail: String,
 ) {
-    /** 「下載方案套件：萬象」 */
+    /**
+     * 「下載方案套件：萬象」。
+     *
+     * ⚠ 這一版**只給診斷與測試用**，畫面上那一行由
+     * `NetworkScreen` 用 [NetworkPurpose.labelRes] 現組（見上面的說明）。
+     */
     val reasonText: String
         get() = purpose.zh + if (label.isEmpty()) "" else "：$label"
 }

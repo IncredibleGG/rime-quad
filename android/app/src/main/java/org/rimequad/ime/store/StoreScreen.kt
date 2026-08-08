@@ -34,10 +34,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import org.rimequad.ime.R
 import org.rimequad.ime.net.NetworkRequiredCard
 import org.rimequad.ime.net.rememberNetworkEnabled
 
@@ -78,7 +81,7 @@ fun StoreScreen(controller: StoreController, modifier: Modifier = Modifier) {
         ) {
             item {
                 if (networkOn) SourceCard(controller)
-                else NetworkRequiredCard("瀏覽方案")
+                else NetworkRequiredCard(stringResource(R.string.network_what_browse))
             }
 
             controller.indexError?.let { err ->
@@ -90,7 +93,10 @@ fun StoreScreen(controller: StoreController, modifier: Modifier = Modifier) {
                         ),
                     ) {
                         Column(Modifier.padding(14.dp)) {
-                            Text("索引載入失敗", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                stringResource(R.string.store_index_error_title),
+                                fontWeight = FontWeight.SemiBold,
+                            )
                             Text(err, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
                         }
                     }
@@ -101,7 +107,14 @@ fun StoreScreen(controller: StoreController, modifier: Modifier = Modifier) {
                 item {
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(14.dp)) {
-                            Text("索引警告（${controller.indexWarnings.size}）", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                pluralStringResource(
+                                    R.plurals.store_index_warnings,
+                                    controller.indexWarnings.size,
+                                    controller.indexWarnings.size,
+                                ),
+                                fontWeight = FontWeight.SemiBold,
+                            )
                             controller.indexWarnings.take(8).forEach {
                                 Text("· $it", fontSize = 12.sp)
                             }
@@ -136,7 +149,7 @@ fun StoreScreen(controller: StoreController, modifier: Modifier = Modifier) {
             if (localOnly.isNotEmpty()) {
                 item {
                     Text(
-                        "自行匯入",
+                        stringResource(R.string.store_local_section),
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.padding(top = 8.dp),
                     )
@@ -173,12 +186,12 @@ private fun SourceCard(controller: StoreController) {
 
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp)) {
-            Text("索引來源", fontWeight = FontWeight.SemiBold)
+            Text(stringResource(R.string.store_source_title), fontWeight = FontWeight.SemiBold)
             if (editing) {
                 OutlinedTextField(
                     value = draft,
                     onValueChange = { draft = it },
-                    label = { Text("index.json 的網址") },
+                    label = { Text(stringResource(R.string.store_source_field_label)) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
                 )
@@ -187,12 +200,12 @@ private fun SourceCard(controller: StoreController) {
                         controller.applyIndexUrl(draft)
                         editing = false
                         controller.loadIndex()
-                    }) { Text("套用並重新載入") }
+                    }) { Text(stringResource(R.string.store_source_apply)) }
                     TextButton(onClick = {
                         controller.resetIndexUrl()
                         draft = controller.indexUrl
                         editing = false
-                    }) { Text("回復預設") }
+                    }) { Text(stringResource(R.string.reset_to_default)) }
                 }
             } else {
                 Text(
@@ -203,9 +216,16 @@ private fun SourceCard(controller: StoreController) {
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextButton(onClick = { controller.loadIndex() }, enabled = !controller.loading) {
-                        Text(if (controller.loading) "載入中…" else "重新整理")
+                        Text(
+                            stringResource(
+                                if (controller.loading) R.string.store_source_loading
+                                else R.string.store_source_reload
+                            )
+                        )
                     }
-                    TextButton(onClick = { editing = true }) { Text("更改來源") }
+                    TextButton(onClick = { editing = true }) {
+                        Text(stringResource(R.string.store_source_change))
+                    }
                 }
             }
         }
@@ -216,15 +236,14 @@ private fun SourceCard(controller: StoreController) {
 private fun LocalImportCard(onPick: () -> Unit) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp)) {
-            Text("匯入自己的方案", fontWeight = FontWeight.SemiBold)
+            Text(stringResource(R.string.store_import_title), fontWeight = FontWeight.SemiBold)
             Text(
-                "接受 .zip 與單一 .yaml。安全檢查與市集完全相同：路徑穿越、符號連結、" +
-                    "解壓炸彈、副檔名白名單，任一不過就整包拒絕。",
+                stringResource(R.string.store_import_body),
                 fontSize = 12.sp,
                 modifier = Modifier.padding(vertical = 4.dp),
             )
             OutlinedButton(onClick = onPick, modifier = Modifier.fillMaxWidth()) {
-                Text("選擇檔案…")
+                Text(stringResource(R.string.store_import_pick))
             }
         }
     }
@@ -239,37 +258,60 @@ private fun PackageCard(controller: StoreController, pkg: StorePackage) {
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(pkg.name, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                if (pkg.recommended) Badge("推薦", MaterialTheme.colorScheme.tertiaryContainer)
+                if (pkg.recommended) {
+                    Badge(
+                        stringResource(R.string.store_badge_recommended),
+                        MaterialTheme.colorScheme.tertiaryContainer,
+                    )
+                }
                 Box(Modifier.width(6.dp))
                 StateBadge(state)
             }
             if (pkg.description.isNotEmpty()) {
                 Text(pkg.description, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
             }
+            val sep = stringResource(R.string.store_meta_separator)
+            val listSep = stringResource(R.string.store_meta_list_separator)
             Text(
                 buildString {
                     append(formatBytes(pkg.size))
-                    pkg.license?.let { append("　·　$it") }
+                    pkg.license?.let { append(sep); append(it) }
                     if (pkg.schemas.isNotEmpty()) {
-                        append("　·　方案：")
-                        append(pkg.schemas.joinToString("、") { it.name })
+                        append(sep)
+                        append(
+                            stringResource(
+                                R.string.store_meta_schemas,
+                                pkg.schemas.joinToString(listSep) { it.name },
+                            )
+                        )
                     }
-                    if (pkg.requires.isNotEmpty()) append("　·　相依：${pkg.requires.joinToString("、")}")
+                    if (pkg.requires.isNotEmpty()) {
+                        append(sep)
+                        append(
+                            stringResource(
+                                R.string.store_meta_requires,
+                                pkg.requires.joinToString(listSep),
+                            )
+                        )
+                    }
                 },
                 fontSize = 11.sp,
                 modifier = Modifier.padding(top = 4.dp),
             )
             if (!pkg.verifiedDeployed) {
                 Text(
-                    "⚠ 索引未標示 verified.deployed —— 這個套件沒有經過打包端的部署驗證，" +
-                        "導入後有較高機率部署失敗（失敗會自動回滾）。",
+                    stringResource(R.string.store_unverified),
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.padding(top = 4.dp),
                 )
             }
             pkg.layoutNote?.let {
-                Text("鍵盤：$it", fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
+                Text(
+                    stringResource(R.string.store_layout_note, it),
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
             }
 
             Row(
@@ -281,30 +323,30 @@ private fun PackageCard(controller: StoreController, pkg: StorePackage) {
                         Button(
                             onClick = { controller.prepareInstall(pkg) },
                             enabled = !controller.busy,
-                        ) { Text("安裝") }
+                        ) { Text(stringResource(R.string.store_action_install)) }
 
                     StoreController.PackageState.INSTALLED_DISABLED -> {
                         if (pkg.schemaIds.isNotEmpty()) {
                             Button(
                                 onClick = { controller.setEnabled(pkg.schemaIds, true) },
                                 enabled = !controller.busy,
-                            ) { Text("啟用") }
+                            ) { Text(stringResource(R.string.store_action_enable)) }
                         }
                         OutlinedButton(
                             onClick = { controller.uninstall(pkg.id) },
                             enabled = !controller.busy,
-                        ) { Text("解除安裝") }
+                        ) { Text(stringResource(R.string.store_action_uninstall)) }
                     }
 
                     StoreController.PackageState.ENABLED -> {
                         OutlinedButton(
                             onClick = { controller.setEnabled(pkg.schemaIds, false) },
                             enabled = !controller.busy,
-                        ) { Text("停用") }
+                        ) { Text(stringResource(R.string.store_action_disable)) }
                         OutlinedButton(
                             onClick = { controller.uninstall(pkg.id) },
                             enabled = !controller.busy,
-                        ) { Text("解除安裝") }
+                        ) { Text(stringResource(R.string.store_action_uninstall)) }
                     }
                 }
             }
@@ -325,9 +367,14 @@ private fun LocalPackageCard(controller: StoreController, pkg: InstalledPackage)
                 )
             }
             Text(
-                "${pkg.files.size} 個檔案" +
-                    if (pkg.schemaIds.isEmpty()) "（沒有 *.schema.yaml）"
-                    else "　·　方案：${pkg.schemaIds.joinToString("、")}",
+                pluralStringResource(R.plurals.store_local_files, pkg.files.size, pkg.files.size) +
+                    if (pkg.schemaIds.isEmpty()) stringResource(R.string.store_local_no_schema)
+                    else stringResource(R.string.store_meta_separator) + stringResource(
+                        R.string.store_meta_schemas,
+                        pkg.schemaIds.joinToString(
+                            stringResource(R.string.store_meta_list_separator)
+                        ),
+                    ),
                 fontSize = 11.sp,
             )
             Row(
@@ -339,18 +386,18 @@ private fun LocalPackageCard(controller: StoreController, pkg: InstalledPackage)
                         OutlinedButton(
                             onClick = { controller.setEnabled(pkg.schemaIds, false) },
                             enabled = !controller.busy,
-                        ) { Text("停用") }
+                        ) { Text(stringResource(R.string.store_action_disable)) }
                     } else {
                         Button(
                             onClick = { controller.setEnabled(pkg.schemaIds, true) },
                             enabled = !controller.busy,
-                        ) { Text("啟用") }
+                        ) { Text(stringResource(R.string.store_action_enable)) }
                     }
                 }
                 OutlinedButton(
                     onClick = { controller.uninstall(pkg.id) },
                     enabled = !controller.busy,
-                ) { Text("解除安裝") }
+                ) { Text(stringResource(R.string.store_action_uninstall)) }
             }
         }
     }
@@ -359,13 +406,22 @@ private fun LocalPackageCard(controller: StoreController, pkg: InstalledPackage)
 @Composable
 private fun StateBadge(state: StoreController.PackageState) = when (state) {
     StoreController.PackageState.NOT_INSTALLED ->
-        Badge("未安裝", MaterialTheme.colorScheme.surfaceVariant)
+        Badge(
+            stringResource(R.string.store_badge_not_installed),
+            MaterialTheme.colorScheme.surfaceVariant,
+        )
 
     StoreController.PackageState.INSTALLED_DISABLED ->
-        Badge("已安裝·停用", MaterialTheme.colorScheme.secondaryContainer)
+        Badge(
+            stringResource(R.string.store_badge_installed_off),
+            MaterialTheme.colorScheme.secondaryContainer,
+        )
 
     StoreController.PackageState.ENABLED ->
-        Badge("已啟用", MaterialTheme.colorScheme.primaryContainer)
+        Badge(
+            stringResource(R.string.store_badge_on),
+            MaterialTheme.colorScheme.primaryContainer,
+        )
 }
 
 @Composable
@@ -383,41 +439,64 @@ private fun Badge(text: String, bg: Color) {
 private fun ConfirmDialog(controller: StoreController, plan: StoreController.ConfirmPlan) {
     AlertDialog(
         onDismissRequest = { controller.dismissConfirm() },
-        title = { Text("將下載 ${plan.plan.count} 個套件，共 ${formatBytes(plan.plan.totalBytes)}") },
+        title = {
+            Text(
+                pluralStringResource(
+                    R.plurals.store_confirm_title,
+                    plan.plan.count,
+                    plan.plan.count,
+                    formatBytes(plan.plan.totalBytes),
+                )
+            )
+        },
         text = {
             Column {
                 plan.plan.toDownload.forEach {
-                    Text("· ${it.name}　${formatBytes(it.size)}", fontSize = 13.sp)
+                    Text(
+                        stringResource(
+                            R.string.store_confirm_line, it.name, formatBytes(it.size)
+                        ),
+                        fontSize = 13.sp,
+                    )
                 }
                 // 索引的 size 是 **zip** 大小。實測 luna-pinyin：zip 0.4MB →
                 // 解壓 0.9MB → librime 部署產生的 build 產物 13MB。只講下載量
                 // 會讓使用者以為只花幾百 KB。這裡把兩個數字分開講，
                 // 並明講後者是概估（索引還沒有對應欄位）。
                 Text(
-                    "安裝後預計佔用約 ${formatBytes(plan.plan.estimatedInstalledBytes)}（概估）—— " +
-                        "librime 部署會把詞庫編成索引檔，體積遠大於下載的壓縮檔。",
+                    stringResource(
+                        R.string.store_confirm_installed_size,
+                        formatBytes(plan.plan.estimatedInstalledBytes),
+                    ),
                     fontSize = 12.sp,
                     modifier = Modifier.padding(top = 8.dp),
                 )
                 if (plan.plan.cycles.isNotEmpty()) {
                     Text(
-                        "註：" + plan.plan.cycles.joinToString("；") { it.joinToString(" ↔ ") } +
-                            " 互為相依（互相提供反查詞庫），本來就要一起安裝。",
+                        stringResource(
+                            R.string.store_confirm_cycles,
+                            plan.plan.cycles.joinToString("；") { it.joinToString(" ↔ ") },
+                        ),
                         fontSize = 12.sp,
                         modifier = Modifier.padding(top = 6.dp),
                     )
                 }
                 if (plan.plan.alreadyInstalled.isNotEmpty()) {
                     Text(
-                        "另有 ${plan.plan.alreadyInstalled.size} 個相依已安裝，不重複下載：" +
-                            plan.plan.alreadyInstalled.joinToString("、"),
+                        pluralStringResource(
+                            R.plurals.store_confirm_already,
+                            plan.plan.alreadyInstalled.size,
+                            plan.plan.alreadyInstalled.size,
+                            plan.plan.alreadyInstalled.joinToString(
+                                stringResource(R.string.store_meta_list_separator)
+                            ),
+                        ),
                         fontSize = 12.sp,
                         modifier = Modifier.padding(top = 6.dp),
                     )
                 }
                 Text(
-                    "下載後會逐一驗證 sha256，通過才解壓；接著加入 schema_list 並由 librime " +
-                        "重新編譯詞庫（可能要數秒到數十秒）。部署失敗會自動回滾。",
+                    stringResource(R.string.store_confirm_footnote),
                     fontSize = 12.sp,
                     modifier = Modifier.padding(top = 8.dp),
                 )
@@ -425,15 +504,17 @@ private fun ConfirmDialog(controller: StoreController, plan: StoreController.Con
         },
         confirmButton = {
             TextButton(onClick = { controller.confirmInstall(alsoEnable = true) }) {
-                Text("下載並啟用")
+                Text(stringResource(R.string.store_confirm_install_enable))
             }
         },
         dismissButton = {
             Row {
                 TextButton(onClick = { controller.confirmInstall(alsoEnable = false) }) {
-                    Text("只下載")
+                    Text(stringResource(R.string.store_confirm_download_only))
                 }
-                TextButton(onClick = { controller.dismissConfirm() }) { Text("取消") }
+                TextButton(onClick = { controller.dismissConfirm() }) {
+                    Text(stringResource(R.string.cancel))
+                }
             }
         },
     )
@@ -459,7 +540,9 @@ private fun ToastBar(text: String, onDismiss: () -> Unit) {
         contentAlignment = Alignment.BottomCenter,
     ) {
         Snackbar(
-            action = { TextButton(onClick = onDismiss) { Text("關閉") } },
+            action = {
+                TextButton(onClick = onDismiss) { Text(stringResource(R.string.close)) }
+            },
         ) { Text(text, fontSize = 13.sp) }
     }
 }
@@ -468,7 +551,13 @@ private fun ToastBar(text: String, onDismiss: () -> Unit) {
 private fun ResultDialog(controller: StoreController, r: StoreController.ResultUi) {
     AlertDialog(
         onDismissRequest = { controller.dismissResult() },
-        title = { Text(if (r.ok) "完成" else "沒有成功") },
+        title = {
+            Text(
+                stringResource(
+                    if (r.ok) R.string.store_result_ok else R.string.store_result_failed
+                )
+            )
+        },
         text = {
             Column {
                 Text(r.message, fontSize = 14.sp)
@@ -477,7 +566,11 @@ private fun ResultDialog(controller: StoreController, r: StoreController.ResultU
                 }
             }
         },
-        confirmButton = { TextButton(onClick = { controller.dismissResult() }) { Text("知道了") } },
+        confirmButton = {
+            TextButton(onClick = { controller.dismissResult() }) {
+                Text(stringResource(R.string.got_it))
+            }
+        },
     )
 }
 

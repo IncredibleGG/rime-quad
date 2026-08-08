@@ -27,12 +27,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.rimequad.ime.R
 import org.rimequad.ime.core.RimeRuntime
 import org.rimequad.ime.keyboard.ConfigRepository
 import org.rimequad.ime.keyboard.LayoutRemap
@@ -104,6 +106,13 @@ fun KeyRemapSection(modifier: Modifier = Modifier) {
 
     val current = remember(layoutId, revision) { store.remapFor(layoutId) }
 
+    // ⚠ 這三則訊息是在 onClick / coroutine 裡組出來的，那裡沒有 composition，
+    //   `stringResource` 用不了（它是 @Composable）。走 Context 讀的是同一份
+    //   資源、同一個語系，只是不需要 Compose 在場。
+    fun swapped(a: String, b: String) = context.getString(R.string.remap_swapped, a, b)
+    fun resetOne(id: String) = context.getString(R.string.remap_reset_one_done, id)
+    val resetAll = context.getString(R.string.remap_reset_all_done)
+
     fun finish(problems: List<String>, okText: String) {
         busy = false
         if (problems.isEmpty()) {
@@ -118,17 +127,14 @@ fun KeyRemapSection(modifier: Modifier = Modifier) {
         }
     }
 
-    Section("自訂鍵位（引擎層）", modifier) {
+    Section(stringResource(R.string.remap_title), modifier) {
         Text(
-            text = "選同一層裡的兩顆鍵交換位置。交換的只有「位置」—— 標著 a 的鍵搬到 " +
-                "s 的格子之後，按下去送出的仍然是 a。改變一顆鍵「送出什麼」會直接打壞方案" +
-                "（九宮格那八顆鍵送的 A/D/G/J/M/P/T/W 是 t9_pinyin 的 speller 契約），" +
-                "所以引擎層不提供那件事。",
+            text = stringResource(R.string.remap_intro),
             fontSize = 12.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
-        Label("佈局")
+        Label(stringResource(R.string.remap_layout))
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             layoutIds.forEach { id ->
                 FilterChip(
@@ -141,14 +147,14 @@ fun KeyRemapSection(modifier: Modifier = Modifier) {
 
         if (layout == null) {
             Text(
-                text = "佈局「$layoutId」載不起來，沒有可以自訂的基礎。",
+                text = stringResource(R.string.remap_layout_unloadable, layoutId),
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.error,
             )
             return@Section
         }
 
-        Label("層")
+        Label(stringResource(R.string.remap_layer))
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             layerIds.forEach { id ->
                 FilterChip(
@@ -159,10 +165,10 @@ fun KeyRemapSection(modifier: Modifier = Modifier) {
             }
         }
 
-        Label("第一顆鍵")
+        Label(stringResource(R.string.remap_first_key))
         KeyChips(keys, first) { first = it; message = null }
 
-        Label("第二顆鍵")
+        Label(stringResource(R.string.remap_second_key))
         KeyChips(keys, second) { second = it; message = null }
 
         Spacer(Modifier.height(8.dp))
@@ -179,13 +185,13 @@ fun KeyRemapSection(modifier: Modifier = Modifier) {
                         LayoutRemapValidator.validate(repo, next)
                     }
                     if (problems.isEmpty()) store.put(next)
-                    finish(problems, "已交換「$a」與「$b」。回到輸入框就會看到新鍵盤。")
+                    finish(problems, swapped(a, b))
                 }
             },
             enabled = !busy && first != null && second != null && first != second,
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Text(if (busy) "驗證中…" else "交換這兩顆鍵")
+            Text(stringResource(if (busy) R.string.remap_checking else R.string.remap_swap))
         }
 
         message?.let {
@@ -200,8 +206,12 @@ fun KeyRemapSection(modifier: Modifier = Modifier) {
 
         Spacer(Modifier.height(10.dp))
         Text(
-            text = if (current == null) "「$layoutId」目前沒有自訂。"
-            else "「$layoutId」目前的自訂：\n" + current.ops.joinToString("\n") { "· " + it.describe() },
+            text = if (current == null) stringResource(R.string.remap_none, layoutId)
+            else stringResource(
+                R.string.remap_current,
+                layoutId,
+                current.ops.joinToString("\n") { "· " + it.describe() },
+            ),
             fontSize = 12.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -214,23 +224,23 @@ fun KeyRemapSection(modifier: Modifier = Modifier) {
                     failed = false
                     // 重置回到的是**當前**基礎佈局的原樣，不是某個快照 ——
                     // 這正是儲存層存「操作」而不是存「改完的佈局」的兌現處。
-                    message = "「$layoutId」已回到基礎佈局的原樣。"
+                    message = resetOne(layoutId)
                     revision++
                 },
                 enabled = current != null,
                 modifier = Modifier.weight(1f),
-            ) { Text("重置這份佈局", fontSize = 12.sp) }
+            ) { Text(stringResource(R.string.remap_reset_one), fontSize = 12.sp) }
 
             OutlinedButton(
                 onClick = {
                     store.resetAll()
                     failed = false
-                    message = "全部自訂鍵位已清除。"
+                    message = resetAll
                     revision++
                 },
                 enabled = store.hasAny(),
                 modifier = Modifier.weight(1f),
-            ) { Text("全部重置", fontSize = 12.sp) }
+            ) { Text(stringResource(R.string.remap_reset_all), fontSize = 12.sp) }
         }
     }
 }

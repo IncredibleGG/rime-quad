@@ -24,9 +24,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import org.rimequad.ime.R
 import org.rimequad.ime.net.FirstRunNoticeHost
 import org.rimequad.ime.net.NetworkSwitchCard
 import org.rimequad.ime.prefs.PrefsStore
@@ -151,7 +153,11 @@ fun HomeScreen(
             .padding(horizontal = 20.dp),
     ) {
         Spacer(Modifier.height(20.dp))
-        Text(text = "設定", fontSize = 27.sp, fontWeight = FontWeight.SemiBold)
+        Text(
+            text = stringResource(R.string.home_title),
+            fontSize = 27.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
         Spacer(Modifier.height(18.dp))
 
         // ⚠ 誠實條。持久化的那個布林只決定「開在哪一頁」，**不是**「輸入法
@@ -168,9 +174,9 @@ fun HomeScreen(
         Spacer(Modifier.height(6.dp))
         PlainCard {
             NavRow(
-                title = "連網紀錄",
+                title = stringResource(R.string.home_network_log),
                 value = null,
-                subtitle = "每一次真的連過網都在裡面",
+                subtitle = stringResource(R.string.home_network_log_sub),
                 onClick = { onNavigate(Route.NETWORK) },
             )
         }
@@ -178,22 +184,26 @@ fun HomeScreen(
         Spacer(Modifier.height(20.dp))
 
         PlainCard {
-            NavRow("鍵盤", summary.keyboard) { onNavigate(Route.KEYBOARD) }
+            NavRow(stringResource(R.string.home_keyboard), summary.keyboard) {
+                onNavigate(Route.KEYBOARD)
+            }
             RowDivider()
-            NavRow("外觀", summary.appearance) { onNavigate(Route.APPEARANCE) }
+            NavRow(stringResource(R.string.home_appearance), summary.appearance) {
+                onNavigate(Route.APPEARANCE)
+            }
             RowDivider()
-            NavRow("手感", summary.feel) { onNavigate(Route.FEEL) }
+            NavRow(stringResource(R.string.home_feel), summary.feel) { onNavigate(Route.FEEL) }
             RowDivider()
-            NavRow("文字", summary.text) { onNavigate(Route.TEXT) }
+            NavRow(stringResource(R.string.home_text), summary.text) { onNavigate(Route.TEXT) }
         }
 
         Spacer(Modifier.height(26.dp))
-        SectionLabel("隨手試一下")
+        SectionLabel(stringResource(R.string.home_try_it))
         TryField()
 
         Spacer(Modifier.height(26.dp))
         Hairline()
-        QuietRow("進階與問題回報") { onNavigate(Route.ADVANCED) }
+        QuietRow(stringResource(R.string.home_advanced)) { onNavigate(Route.ADVANCED) }
         Spacer(Modifier.height(24.dp))
     }
 }
@@ -205,9 +215,9 @@ private fun NotReadyStrip(stage: SetupStage, system: ImeSystemState) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
             Text(
                 text = when (stage) {
-                    SetupStage.NOT_ENABLED -> "還沒辦法用"
-                    SetupStage.ENABLED_NOT_DEFAULT -> "現在打字用的不是這個鍵盤"
-                    SetupStage.PREPARING -> "正在整理字詞"
+                    SetupStage.NOT_ENABLED -> stringResource(R.string.not_ready_not_enabled)
+                    SetupStage.ENABLED_NOT_DEFAULT -> stringResource(R.string.not_ready_not_default)
+                    SetupStage.PREPARING -> stringResource(R.string.not_ready_preparing)
                     SetupStage.READY -> ""
                 },
                 fontSize = 16.sp,
@@ -215,11 +225,13 @@ private fun NotReadyStrip(stage: SetupStage, system: ImeSystemState) {
             )
             Text(
                 text = when (stage) {
-                    SetupStage.NOT_ENABLED -> "要先在系統設定裡把它打開。"
+                    SetupStage.NOT_ENABLED -> stringResource(R.string.not_ready_not_enabled_body)
                     SetupStage.ENABLED_NOT_DEFAULT ->
-                        system.currentImeLabel?.let { "現在用的是「$it」。" } ?: "去系統的鍵盤清單裡選它。"
+                        system.currentImeLabel
+                            ?.let { stringResource(R.string.not_ready_not_default_body_current, it) }
+                            ?: stringResource(R.string.not_ready_not_default_body)
 
-                    SetupStage.PREPARING -> "只有第一次要做，大概十幾秒。這段時間打字可能沒反應。"
+                    SetupStage.PREPARING -> stringResource(R.string.not_ready_preparing_body)
                     SetupStage.READY -> ""
                 },
                 fontSize = 13.sp,
@@ -228,8 +240,16 @@ private fun NotReadyStrip(stage: SetupStage, system: ImeSystemState) {
             )
             Spacer(Modifier.height(10.dp))
             when (stage) {
-                SetupStage.NOT_ENABLED -> PrimaryWide("去系統設定打開") { openImeSettings(context) }
-                SetupStage.ENABLED_NOT_DEFAULT -> PrimaryWide("切換成這個鍵盤") { showImePicker(context) }
+                SetupStage.NOT_ENABLED ->
+                    PrimaryWide(stringResource(R.string.not_ready_open_settings)) {
+                        openImeSettings(context)
+                    }
+
+                SetupStage.ENABLED_NOT_DEFAULT ->
+                    PrimaryWide(stringResource(R.string.not_ready_switch)) {
+                        showImePicker(context)
+                    }
+
                 else -> Unit
             }
         }

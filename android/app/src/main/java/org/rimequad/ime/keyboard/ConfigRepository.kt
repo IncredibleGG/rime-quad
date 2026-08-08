@@ -98,8 +98,34 @@ class ConfigRepository(context: Context) : LayoutRepository {
         /**
          * §4.9 的在地化查詢語系。公開是因為 UI 側（鍵盤類型選單）也要用同一個
          * 值解析佈局名 —— 兩處各寫一份字面常數，遲早會變成兩種語言。
+         *
+         * ⚠ 這裡**不是常數**，是每次讀取都問一次系統。原本寫死 `"zh-Hant-TW"`，
+         * 於是一個英文使用者在「挑一個鍵盤」那一屏上會看到「九宮格拼音」——
+         * 介面其他每個字都翻了，只有這幾個從 yaml 讀出來的名字沒翻。
+         *
+         * 佈局／主題 yaml 的 `name` 本來就是 §4.9 的在地化字串（`en` / `zh-Hant`
+         * / `zh-Hans` 各一份），[org.rimequad.ime.theme.LocalizedString.get] 也
+         * 早就實作了 BCP 47 的回落鏈。缺的只是「拿使用者的語系去查」這一步。
+         *
+         * ⚠ 中間那一步 `addLikelySubtags` 不能省。使用者的語系常常是
+         * `zh-TW`（沒有書寫系統那一段），而 yaml 裡的鍵是 `zh-Hant` / `zh-Hans`。
+         * 直接拿 `zh-TW` 去查，回落鏈會一路退到「語言相同就算數」那一條，
+         * 然後看 map 的順序決定回繁體還是簡體 —— 一個臺灣使用者會不會看到簡體
+         * 取決於 yaml 裡哪一行寫在前面。ICU 的 likely-subtags 把 `zh-TW` 補成
+         * `zh-Hant-TW`、`zh-CN` 補成 `zh-Hans-CN`，那條回落鏈才問得對。
+         *
+         * 補完之後給的是 `en-Latn-US` / `zh-Hant-TW` 這種完整標記，正好是回落鏈
+         * 吃的格式。任何一步失敗就退回英文 —— 與 `values/strings.xml` 是英文
+         * 同一個理由。
          */
-        const val LOCALE = "zh-Hant-TW"
+        val LOCALE: String
+            get() = runCatching {
+                val l = java.util.Locale.getDefault()
+                runCatching {
+                    android.icu.util.ULocale.addLikelySubtags(android.icu.util.ULocale.forLocale(l))
+                        .toLanguageTag()
+                }.getOrNull()?.takeIf { it.isNotBlank() } ?: l.toLanguageTag()
+            }.getOrNull()?.takeIf { it.isNotBlank() && it != "und" } ?: "en"
 
         private const val BUILTIN_ID = "builtin-fallback"
         private val BUILTIN_THEME = """

@@ -39,6 +39,17 @@ import java.util.concurrent.CopyOnWriteArrayList
  */
 object RimeRuntime {
 
+    /*
+     * ⚠ [initError] / [migrationNote] 這兩個字串**刻意是英文**，不跟系統語言走。
+     *
+     * 它們不是介面文字，是**故障載荷**：畫面上那一段（「鍵盤還是打得開，但可能
+     * 打不出字。到⋯⋯按一次⋯⋯」）已經用使用者的語言把「發生什麼事、他該做什麼」
+     * 講完了，這一行接在後面，讀者是收到問題回報的我們。`rs_init` / `ABI` /
+     * `.so` 這些字沒有不失真的譯法，翻了只會讓回報者以為自己看懂了，然後用錯詞
+     * 描述問題；而三種語言的錯誤訊息也讓 issue 裡的同一個故障 grep 不到一起。
+     * 同樣的理由見 home/SettingsPages.kt 的 diagnosticsText()。
+     */
+
     private const val TAG = "RimeRuntime"
     private const val APP_NAME = "rime.android"
 
@@ -198,13 +209,13 @@ object RimeRuntime {
         logDir = File(root, "log")
 
         if (!RimeCore.libraryLoaded) {
-            initError = "librime_jni.so 載入失敗: ${RimeCore.libraryLoadError}"
+            initError = "librime_jni.so failed to load: ${RimeCore.libraryLoadError}"
             setPhase(Phase.FAILED)
             return
         }
         if (!RimeCore.abiCompatible()) {
-            initError = "ABI 版本不符：so 回報 ${RimeCore.abiVersion()}，" +
-                "上層要求 ${RimeCore.EXPECTED_ABI_VERSION}"
+            initError = "ABI mismatch: the .so reports ${RimeCore.abiVersion()}, " +
+                "this build expects ${RimeCore.EXPECTED_ABI_VERSION}"
             setPhase(Phase.FAILED)
             return
         }
@@ -223,7 +234,7 @@ object RimeRuntime {
             mainHandler.post {
                 result.onFailure {
                     Log.e(TAG, "準備資料目錄失敗", it)
-                    initError = "解壓隨附資料失敗: ${it.message}"
+                    initError = "could not unpack the bundled data: ${it.message}"
                     setPhase(Phase.FAILED)
                     return@post
                 }
@@ -244,7 +255,7 @@ object RimeRuntime {
             appName = APP_NAME,
         )
         if (!ok) {
-            initError = "rs_init 失敗: ${RimeCore.lastError()}"
+            initError = "rs_init failed: ${RimeCore.lastError()}"
             setPhase(Phase.FAILED)
             return
         }
@@ -283,7 +294,7 @@ object RimeRuntime {
             }
 
             RimeDeployStatus.FAILURE -> {
-                initError = "部署失敗: ${RimeCore.lastError()}"
+                initError = "deploy failed: ${RimeCore.lastError()}"
                 setPhase(Phase.FAILED)
                 rollbackMigrationIfNeeded()
             }
@@ -314,7 +325,7 @@ object RimeRuntime {
         Thread({
             runCatching { SchemaListPatch.restore(userDataDir, snapshot) }
                 .onFailure { Log.e(TAG, "還原 default.custom.yaml 失敗", it) }
-            migrationNote = "新增的內建方案讓部署失敗，已還原設定（$note）"
+            migrationNote = "a newly bundled schema broke the deploy; settings restored ($note)"
             RimeCore.deploy()
         }, "rime-migration-rollback").start()
     }
@@ -392,7 +403,7 @@ object RimeRuntime {
         }
         if (result.changed) {
             migrationSnapshot = snapshot
-            migrationNote = "已補上本版新增的內建方案：${result.added.joinToString("、")}"
+            migrationNote = "added schemas new in this build: ${result.added.joinToString(", ")}"
             Log.i(
                 TAG,
                 "內建方案遷移：隨附 ${result.shipped}，帳本 ${result.ledgerBefore} → " +

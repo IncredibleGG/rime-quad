@@ -17,10 +17,13 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import org.rimequad.ime.R
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -51,13 +54,17 @@ fun NetworkScreen(modifier: Modifier = Modifier) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = "連網紀錄（${entries.size}）",
+                    text = pluralStringResource(
+                        R.plurals.network_log_heading, entries.size, entries.size
+                    ),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f),
                 )
                 if (entries.isNotEmpty()) {
-                    OutlinedButton(onClick = { NetworkAudit.clear() }) { Text("清除") }
+                    OutlinedButton(onClick = { NetworkAudit.clear() }) {
+                        Text(stringResource(R.string.network_log_clear))
+                    }
                 }
             }
         }
@@ -78,27 +85,24 @@ fun NetworkScreen(modifier: Modifier = Modifier) {
 private fun HonestyCard() {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp)) {
-            Text("為什麼權限清單上還是有「網路存取」", fontWeight = FontWeight.SemiBold)
+            Text(stringResource(R.string.honesty_title), fontWeight = FontWeight.SemiBold)
             Text(
-                text = "因為 Android 的網路權限是「安裝時」給的，執行期取消不了。" +
-                    "只要這個 app 帶著方案市集與應用內更新，權限清單上就一定看得到它 —— " +
-                    "開關關掉也一樣看得到。我們不會宣稱自己沒有網路權限，那句話一查就穿幫。",
+                text = stringResource(R.string.honesty_body),
                 fontSize = 13.sp,
                 modifier = Modifier.padding(top = 6.dp),
             )
             Spacer(Modifier.height(8.dp))
-            Text("我們改成讓你查得到", fontWeight = FontWeight.SemiBold)
             Text(
-                text = "· 整個 app 只有一個連網出口：原始碼的 " +
-                    "android/app/src/main/java/org/rimequad/ime/net/NetworkGate.kt。\n" +
-                    "· 開關關閉時，那個出口直接拒絕並拋出例外，一個連線都不會開。\n" +
-                    "· 每一次真的建立的連線都記在下面，轉址的每一跳也各記一筆。\n" +
-                    "· 紀錄裡沒有你輸入的任何內容，也沒有網址的路徑，只有主機名與原因。",
+                stringResource(R.string.honesty_checkable_title),
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = stringResource(R.string.honesty_checkable_body),
                 fontSize = 13.sp,
                 modifier = Modifier.padding(top = 6.dp),
             )
             Text(
-                text = "紀錄檔：${NetworkAudit.logFilePath}",
+                text = stringResource(R.string.honesty_log_file, NetworkAudit.logFilePath),
                 fontSize = 11.sp,
                 fontFamily = FontFamily.Monospace,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -112,9 +116,12 @@ private fun HonestyCard() {
 private fun EmptyLogCard() {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp)) {
-            Text("目前沒有任何連網紀錄", fontWeight = FontWeight.SemiBold)
             Text(
-                text = "開關從來沒開過的話，這裡本來就會是空的 —— 這正是你要看到的結果。",
+                stringResource(R.string.network_log_empty_title),
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = stringResource(R.string.network_log_empty_body),
                 fontSize = 13.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 6.dp),
@@ -138,7 +145,7 @@ private fun LogRow(e: NetworkLogEntry) {
                     modifier = Modifier.weight(1f),
                 )
                 Text(
-                    text = e.outcome.zh,
+                    text = stringResource(e.outcome.labelRes),
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium,
                     color = when (e.outcome) {
@@ -149,7 +156,12 @@ private fun LogRow(e: NetworkLogEntry) {
                 )
             }
             Text(
-                text = e.reasonText,
+                text = if (e.label.isEmpty()) stringResource(e.purpose.labelRes)
+                else stringResource(
+                    R.string.network_reason_with_label,
+                    stringResource(e.purpose.labelRes),
+                    e.label,
+                ),
                 fontSize = 13.sp,
                 modifier = Modifier.padding(top = 2.dp),
             )

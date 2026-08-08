@@ -22,10 +22,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
+import org.rimequad.ime.R
 import org.rimequad.ime.prefs.PrefsStore
 
 /**
@@ -72,14 +74,14 @@ fun NetworkSwitchCard(modifier: Modifier = Modifier) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(
-                        text = "連網",
+                        text = stringResource(R.string.network_switch_title),
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        text = if (on) "已開啟：現在會連網。只有你按下「安裝方案」或「檢查更新」時才會，"
-                            + "打字內容永遠不會離開這台裝置。"
-                        else "已關閉（預設）：完全離線。市集與更新檢查都不會執行。",
+                        text = stringResource(
+                            if (on) R.string.network_on_summary else R.string.network_off_summary
+                        ),
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 4.dp),
@@ -95,10 +97,7 @@ fun NetworkSwitchCard(modifier: Modifier = Modifier) {
                 // 這顆開關在設定頁也按得到，使用者不一定看過 NetworkRequiredCard，
                 // 所以「開著等於向你的網路告知」這句話在這裡也要講一次。
                 Text(
-                    text = "每一次實際發生的連網都會記在「連網」分頁的紀錄裡，你可以自己核對。" +
-                        "另外要知道：開著的時候一旦真的連線，你的網路就會看得到這台裝置" +
-                        "連了哪個網域（DNS 與 TLS 的連線目標是明文，改不掉）。" +
-                        "我們的請求本身不含這個 app 的名字，但「有沒有連」瞞不了。",
+                    text = stringResource(R.string.network_on_detail),
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -124,23 +123,22 @@ fun NetworkRequiredCard(what: String, modifier: Modifier = Modifier) {
         ),
     ) {
         Column(Modifier.padding(14.dp)) {
-            Text("需要連網才能$what", fontWeight = FontWeight.SemiBold)
+            // ⚠ 用 placeholder 而不是字串相接。中文是「需要連網才能下載鍵盤」，
+            //   英文是 “To download keyboards, this needs to go online” ——
+            //   那一段插在句子的**開頭**。相接會把中文的語序寫死在 Kotlin 裡。
             Text(
-                text = "這個輸入法預設完全離線，所以現在還沒有向任何伺服器要過東西。" +
-                    "要$what，得從網路上取檔案；打開下面的開關就會開始，" +
-                    "用完隨時關掉，關掉就回到完全離線。",
+                stringResource(R.string.network_required_title, what),
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = stringResource(R.string.network_required_body, what),
                 fontSize = 13.sp,
                 modifier = Modifier.padding(top = 6.dp),
             )
             // ⚠ 這一段是刻意放在「開啟連網」按鈕**上面**的，不是放在說明的最後。
             //   使用者按下按鈕之前就該知道代價，按完才告訴他等於沒說。
             Text(
-                text = "要老實說的代價：連線一旦發生，你的網路（電信商、Wi-Fi 的主人、" +
-                    "中間的任何一方）就會知道這台裝置連了 github.com 之類的網域。" +
-                    "我們送出的請求裡不含這個 app 的名字，但 DNS 查詢與 TLS 的" +
-                    "連線目標本來就是明文，這一點我們瞞不了，也不打算假裝瞞得了。" +
-                    "如果你所在的環境連「裝了哪個輸入法」都不方便被知道，" +
-                    "那就別開這個開關 —— 離線的功能已經是完整的。",
+                text = stringResource(R.string.network_required_cost),
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 8.dp),
@@ -150,7 +148,7 @@ fun NetworkRequiredCard(what: String, modifier: Modifier = Modifier) {
                 onClick = { scope.launch { NetworkAudit.setEnabled(context, true) } },
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text("開啟連網")
+                Text(stringResource(R.string.network_required_action))
             }
         }
     }
@@ -174,24 +172,13 @@ fun FirstRunNoticeHost() {
 
     AlertDialog(
         onDismissRequest = { /* 刻意不可點外面關掉：這一段只講一次，要確定他看過。 */ },
-        title = { Text("這個輸入法預設不連網") },
+        title = { Text(stringResource(R.string.first_run_title)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(stringResource(R.string.first_run_body_1), fontSize = 14.sp)
+                Text(stringResource(R.string.first_run_body_2), fontSize = 14.sp)
                 Text(
-                    "我們不會自己連網。打字、選字、換方案、換佈局，全部在你的裝置上完成。",
-                    fontSize = 14.sp,
-                )
-                Text(
-                    "要裝更多方案或收到更新，可以隨時打開開關；關掉就回到完全離線。" +
-                        "開關預設是關的。",
-                    fontSize = 14.sp,
-                )
-                Text(
-                    "有一件事要老實說：Android 的網路權限是安裝時給的，執行期取消不了，" +
-                        "所以你在系統的權限清單上一定看得到它，就算開關關著也一樣。" +
-                        "既然做不到「沒有權限」，我們改成讓你查得到 —— " +
-                        "整個 app 只有一個連網出口，開關關閉時它直接拒絕；" +
-                        "每一次真的發生的連網都記在「連網」分頁裡，時間、對象、原因、結果都在。",
+                    stringResource(R.string.first_run_body_3),
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -199,7 +186,7 @@ fun FirstRunNoticeHost() {
         },
         confirmButton = {
             TextButton(onClick = { scope.launch { NetworkAudit.markNoticeSeen(context) } }) {
-                Text("知道了，維持離線")
+                Text(stringResource(R.string.first_run_confirm))
             }
         },
     )

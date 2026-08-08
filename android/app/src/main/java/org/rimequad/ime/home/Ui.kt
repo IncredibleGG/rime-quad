@@ -30,9 +30,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import org.rimequad.ime.R
 
 /*
  * App 這一側的共用零件。
@@ -115,7 +119,18 @@ fun NavRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text(text = title, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+            Text(
+                text = title,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Medium,
+                // ⚠ 這兩行是在地化之後補的，而且是實測撞出來的。
+                //   右邊那行現值以前沒有寬度上限，中文短所以看不出來；換成英文
+                //   （“Characters and punctuation follow the keyboard”）之後它把
+                //   整列吃光，左邊的「Text」被擠成兩行的「Te / xt」—— 一個標題
+                //   從中間斷開，看起來像畫面壞了。名字永遠一行，長了就截。
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
             if (subtitle != null) {
                 Text(
                     text = subtitle,
@@ -129,10 +144,22 @@ fun NavRow(
                 text = value,
                 fontSize = 13.5.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(end = 8.dp),
+                // 現值可以折行，但不能超過一半的寬度 —— 它是補充，名字才是主體。
+                textAlign = TextAlign.End,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .padding(start = 12.dp, end = 8.dp),
             )
         }
-        Text(text = "›", fontSize = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        // 這個箭頭走資源，不寫在程式裡：它是**有方向的**字元，RTL 語系要換成
+        // 反向的那一個。留在 Kotlin 裡就等於把「往前是往右」寫死。
+        Text(
+            text = stringResource(R.string.nav_chevron),
+            fontSize = 18.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -236,7 +263,7 @@ fun <T> SettingGroup(
  */
 @Composable
 fun TryField(
-    placeholder: String = "在這裡打字看看",
+    placeholder: String = stringResource(R.string.try_field_placeholder),
     modifier: Modifier = Modifier,
     focusRequester: FocusRequester? = null,
 ) {
@@ -303,7 +330,11 @@ fun QuietRow(text: String, onClick: () -> Unit) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.weight(1f),
         )
-        Text(text = "›", fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            text = stringResource(R.string.nav_chevron),
+            fontSize = 16.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -316,7 +347,7 @@ fun PageHeader(title: String, onBack: () -> Unit) {
             .heightIn(min = 52.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        TextButton(onClick = onBack) { Text("‹  返回", fontSize = 15.sp) }
+        TextButton(onClick = onBack) { Text(stringResource(R.string.back), fontSize = 15.sp) }
         Spacer(Modifier.padding(horizontal = 2.dp))
         Text(text = title, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
     }

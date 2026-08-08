@@ -20,17 +20,21 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import org.rimequad.ime.R
 import org.rimequad.ime.core.RimeCore
 import org.rimequad.ime.core.RimeRuntime
 import org.rimequad.ime.core.RimeSchema
 import org.rimequad.ime.keyboard.ConfigRepository
 import org.rimequad.ime.keyboard.KeyboardType
 import org.rimequad.ime.keyboard.KeyboardTypes
+import org.rimequad.ime.keyboard.LanguageTable
 import org.rimequad.ime.keyboard.LayoutHost
+import org.rimequad.ime.keyboard.SchemaLanguages
 import org.rimequad.ime.prefs.PrefsStore
 import org.rimequad.ime.prefs.UserPrefs
 import org.rimequad.ime.store.SchemaListPatch
@@ -136,8 +140,71 @@ fun availableKeyboards(context: Context): List<KeyboardType> {
     if (schemas.isEmpty()) return emptyList()
     val host = LayoutHost(ConfigRepository(context))
     val briefs = runCatching { host.layoutBriefs(ConfigRepository.LOCALE) }.getOrDefault(emptyList())
-    return KeyboardTypes.build(schemas, briefs).flatMap { it.types }
+    return KeyboardTypes.build(schemas, briefs, localizedLanguages())
+        .flatMap { it.types }
+        .map { it.localized(context) }
 }
+
+/**
+ * 分組小標的在地化。
+ *
+ * ── 為什麼不是加一份 strings.xml 就好 ──────────────────────────────────
+ * 這些標題不是寫在程式裡的字面常數，是**資料**：`core/schema-languages.json`
+ * 的 `languages[].name`，由打包端 `scripts/schema_store/languages.py` 產生，
+ * 而且是四端共用的一份，只有一種語言（zh-Hant）。把它翻成三份等於要求
+ * 打包端也懂在地化，然後每加一個語言就要重跑一次打包。
+ *
+ * 但那一份資料裡有比顯示名更有用的東西：**BCP 47 標記**（`zh-Hant-TW`、
+ * `yue-Hant-HK`、`ja`…）。標記是機器可解的，平台自己就會把它渲染成使用者
+ * 語言的說法 —— 這正是 ICU 存在的理由。所以：
+ *
+ *   · UI 是繁體中文 → 直接用打包端那份精心寫過的名字（「中文（臺灣正體）」
+ *     比 ICU 的「中文（繁體，台灣）」好，那是人挑過的字）。
+ *   · 其他語言 → 把標記交給平台渲染（en 得到 “Chinese (Traditional, Taiwan)”，
+ *     zh-Hans 得到「中文（繁体，台湾）」）。渲染不出來就退回原本那份。
+ *
+ * 查不到標記的方案走 [KeyboardTypes.groupTitleOf] 的字面啟發式，回的是那五個
+ * 常數，由 [localizedGroupTitle] 對到 strings.xml。
+ */
+private fun localizedLanguages(): LanguageTable {
+    val table = SchemaLanguages.table
+    if (table.names.isEmpty()) return table
+    val ui = java.util.Locale.getDefault()
+    if (ui.language == "zh" && !looksSimplified(ui)) return table
+    return table.copy(
+        names = table.names.mapValues { (tag, curated) ->
+            runCatching { java.util.Locale.forLanguageTag(tag).getDisplayName(ui) }
+                .getOrNull()
+                ?.takeIf { it.isNotBlank() && !it.equals(tag, ignoreCase = true) }
+                ?: curated
+        }
+    )
+}
+
+/** zh 底下只有簡體要走 ICU；繁體用打包端那份人寫的名字。 */
+private fun looksSimplified(l: java.util.Locale): Boolean =
+    l.script == "Hans" || (l.script.isEmpty() && l.country in setOf("CN", "SG"))
+
+internal fun localizedGroupTitle(context: Context, raw: String): String = when (raw) {
+    KeyboardTypes.ZH_TW -> context.getString(R.string.lang_group_zh_tw)
+    KeyboardTypes.ZH_HK -> context.getString(R.string.lang_group_zh_hk)
+    KeyboardTypes.YUE -> context.getString(R.string.lang_group_yue)
+    KeyboardTypes.ZH -> context.getString(R.string.lang_group_zh)
+    KeyboardTypes.OTHER -> context.getString(R.string.lang_group_other)
+    else -> raw
+}
+
+/**
+ * 「這個方案一份佈局都配不上」時 [KeyboardTypes] 會放一張寫著
+ * [KeyboardType.AUTO_LABEL] 的卡。那個常數是純函式裡的字面值（它要能在
+ * JVM 單元測試裡被斷言），所以在地化在這裡做，不在那裡做。
+ */
+private fun KeyboardType.localized(context: Context): KeyboardType =
+    if (layoutName == KeyboardType.AUTO_LABEL) {
+        copy(layoutName = context.getString(R.string.keyboard_auto_label))
+    } else {
+        this
+    }
 
 /**
  * 引導頁上要問的那個問題，只放得下**幾張卡**。
@@ -185,7 +252,7 @@ fun availableKeyboardGroups(context: Context): List<Pair<String, List<KeyboardTy
     val all = availableKeyboards(context)
     val out = LinkedHashMap<String, MutableList<KeyboardType>>()
     for (t in all) out.getOrPut(t.subtitle) { ArrayList() } += t
-    return out.entries.map { it.key to it.value.toList() }
+    return out.entries.map { localizedGroupTitle(context, it.key) to it.value.toList() }
 }
 
 /** 目前這一種鍵盤在清單裡的那一項；找不到就回 null（顯示成「—」）。 */
@@ -195,9 +262,16 @@ fun currentKeyboardOf(context: Context, all: List<KeyboardType>): KeyboardType? 
         ?: all.firstOrNull { it.schemaId == schemaId }
 }
 
-/** 首頁那一行灰字：「注音 · 大千排列」。 */
+/**
+ * 首頁那一行灰字：「注音 · 大千排列」。
+ *
+ * 兩個名字都不翻譯 —— 方案名（「朙月拼音」）是專有名稱，佈局名由 yaml 的
+ * §4.9 在地化欄位自己解析。這裡在地化的只有「兩者之間怎麼接」與「還沒選」。
+ */
+@Composable
 fun describeKeyboard(type: KeyboardType?): String =
-    if (type == null) "尚未選擇" else "${type.title} · ${type.subtitle}"
+    if (type == null) stringResource(R.string.summary_no_keyboard_yet)
+    else stringResource(R.string.summary_keyboard, type.title, type.subtitle)
 
 /**
  * 使用者挑了一種鍵盤。
