@@ -41,6 +41,7 @@ guard let raw = TISCreateInputSourceList(nil, true)?.takeRetainedValue() else {
 let sources = raw as! [TISInputSource]
 
 var matched = false
+var badName = false
 var total = 0
 for source in sources {
     guard let id = stringProperty(source, kTISPropertyInputSourceID) else { continue }
@@ -50,8 +51,15 @@ for source in sources {
         if id == wanted { matched = true; print("FOUND \(id)") }
     } else if isRimeQuad {
         matched = true
-        let name = stringProperty(source, kTISPropertyLocalizedName) ?? "(沒有在地化名稱)"
-        print("FOUND \(id)  —  \(name)")
+        let name = stringProperty(source, kTISPropertyLocalizedName) ?? ""
+        // ⚠ 這一行就是真機回報的那個缺陷:沒有 .lproj 時系統拿不到
+        //   在地化名稱,清單裡顯示的就是這串 id 本身。
+        if name.isEmpty || name == id {
+            print("BAD-NAME \(id)  —  在地化名稱等於 id(清單裡會顯示 bundle id)")
+            badName = true
+        } else {
+            print("FOUND \(id)  —  \(name)")
+        }
     }
 }
 
@@ -59,6 +67,10 @@ print("TIS 一共列出 \(total) 個輸入來源")
 if !matched {
     print("清單裡沒有 org.rimequad.*")
 }
-// ⚠ 結束碼一律 0:這支程式的工作是**回報**,不是判定成敗。
-// 判定寫在 verify_pkg.sh 裡,而且它刻意不把「查不到」當失敗。
-exit(0)
+// 結束碼:0 = 找到而且名字正常;3 = 找到但名字就是 id;4 = 完全找不到。
+// ⚠ 之前這支程式一律回 0,因為我們**以為** runner 上查不到。
+//   實測結果相反:TIS 在 GitHub runner 上看得到 ~/Library/Input Methods
+//   裡的輸入法,連在地化名稱都解得出來。既然查得到,就該把它當關卡,
+//   而不是當成一份「參考資訊」。
+if badName { exit(3) }
+exit(matched ? 0 : 4)

@@ -12,9 +12,12 @@
 #   1. **payload 驗證**(一定驗得到):pkgutil --expand 之後檢查安裝路徑與內容。
 #   2. **真的裝一次**(一定驗得到):installer -target CurrentUserHomeDirectory,
 #      然後斷言檔案落在 ~/Library/Input Methods。
-#   3. **系統認不認得這個輸入來源**(試試看):lsregister 與 TISCreateInputSourceList。
-#      runner 沒有登入的圖形工作階段,登錄這一層有沒有效是我們要問出來的事。
-#      第 3 層失敗**不算失敗**,但會把原因印出來 —— 那也是結論。
+#   3. **系統認不認得這個輸入來源**:lsregister 與 TISCreateInputSourceList。
+#      ⚠ 原本以為 runner 沒有登入的圖形工作階段所以查不到,所以寫成「不算失敗」。
+#      **實測結果相反**:TIS 在 GitHub runner 上看得到 ~/Library/Input Methods
+#      裡的輸入法,連在地化名稱都解得出來(FOUND …Hans — RimeQuad (Simplified))。
+#      既然查得到,這一層就**是關卡**:它直接驗到真機回報的兩個缺陷
+#      ——「輸入法沒出現在清單裡」與「清單顯示的是 bundle id」。
 #
 set -uo pipefail
 
@@ -155,13 +158,23 @@ if [ -f "${PROBE}" ] && command -v swiftc >/dev/null 2>&1; then
     OUT="$(/tmp/tis_probe 2>&1)"
     RC=$?
     printf '%s\n' "${OUT}" | sed 's/^/      /'
-    if printf '%s\n' "${OUT}" | grep -q "org.rimequad.inputmethod.RimeQuad"; then
-      ok "TISCreateInputSourceList 看得到 RimeQuad —— 系統真的接受了這個輸入法"
-    else
-      note "TIS 查詢跑得起來(結束碼 ${RC}),但清單裡沒有 RimeQuad。"
-      note "這是預期內的:TIS 只掃描**有登入的圖形工作階段**的 ~/Library/Input Methods,"
-      note "而 GitHub runner 是 SSH/背景工作階段。這一層只有人在真 Mac 上驗得到。"
-    fi
+    case "${RC}" in
+      0)
+        ok "TIS 看得到 RimeQuad,而且兩個輸入模式都有在地化名稱"
+        ;;
+      3)
+        bad "TIS 看得到 RimeQuad,但**在地化名稱就是 bundle id** —— "
+        bad "清單裡會顯示 org.rimequad.inputmethod.RimeQuad.Hans 而不是「RimeQuad 簡體」。"
+        bad "檢查 Resources/<lang>.lproj/InfoPlist.strings 的鍵是不是就是輸入模式 id。"
+        ;;
+      4)
+        bad "TIS 查得到別的輸入來源,但**看不到 RimeQuad** —— 系統沒有接受這份 .app。"
+        bad "這正是「裝在錯的地方」會有的樣子。"
+        ;;
+      *)
+        bad "tis_probe 結束碼 ${RC}(預期 0/3/4)"
+        ;;
+    esac
   else
     note "tis_probe 編不起來:"
     tail -5 /tmp/rimequad-probe-build.log | sed 's/^/      /'
@@ -172,7 +185,7 @@ fi
 
 echo
 if [ "${FAIL}" -eq 0 ]; then
-  echo "pkg 驗證通過 ✓(第 3 層的結果見上面,它不影響成敗)"
+  echo "pkg 驗證通過 ✓(含「系統真的認得這個輸入法」)"
 else
   echo "!! pkg 驗證失敗" >&2
 fi
