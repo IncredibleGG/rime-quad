@@ -70,6 +70,10 @@ while IFS= read -r f; do SWIFT_SOURCES+=("$f"); done < <(
 [[ ${#SWIFT_SOURCES[@]} -gt 0 ]] || die "找不到任何 Swift 原始碼"
 log "Swift 原始碼 ${#SWIFT_SOURCES[@]} 份"
 
+# ⚠ Compression **不是** framework(ld: framework 'Compression' not found)——
+#   import Compression 用的 compression_stream_* 在 libSystem 裡,不必明著連。
+#   CryptoKit 與 UniformTypeIdentifiers 才是真的 framework。
+# ⚠ 註解**不可以**寫在底下那串反斜線接續的參數中間 —— shell 會直接語法錯誤。
 log "連結 RimeQuad(${ARCH}, macos${MIN_OS})"
 swiftc \
   -swift-version 5 \
@@ -79,7 +83,7 @@ swiftc \
   -import-objc-header "${PKG}/AppSources/RimeQuad-Bridging-Header.h" \
   -Xcc -I"${ROOT}/core/include" \
   -framework AppKit -framework InputMethodKit -framework Carbon \
-  -framework Compression -framework CryptoKit -framework UniformTypeIdentifiers \
+  -framework CryptoKit -framework UniformTypeIdentifiers \
   "${SWIFT_SOURCES[@]}" \
   "${BUILD}/rime_shell.o" \
   "${LIBS[@]}" \
