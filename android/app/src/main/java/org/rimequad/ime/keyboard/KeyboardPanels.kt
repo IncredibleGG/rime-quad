@@ -33,6 +33,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -41,12 +44,14 @@ import org.rimequad.ime.prefs.AppearanceMode
 import org.rimequad.ime.prefs.HEIGHT_SCALE_MAX
 import org.rimequad.ime.prefs.HEIGHT_SCALE_MIN
 import org.rimequad.ime.prefs.HintVisibility
+import org.rimequad.ime.prefs.PrefLabels
 import org.rimequad.ime.prefs.PrefLevels
 import org.rimequad.ime.prefs.SpaceBehavior
 import org.rimequad.ime.theme.ActionVerb
 import org.rimequad.ime.theme.KeyAction
 import org.rimequad.ime.theme.KeyStyle
 import org.rimequad.ime.theme.Theme
+import org.rimequad.ime.R
 
 /*
  * 鍵盤上的面板。
@@ -261,14 +266,35 @@ internal fun Tile(
     ) {
         val fg = Color(if (active) style.activeForeground else style.foreground)
         val dim = if (active) fg.copy(alpha = 0.8f) else Color(style.hintColor)
-        if (maxHeight >= TWO_LINE_TILE_MIN) {
+
+        val nameSize = scaler.sp(style.labelSize * 0.6f)
+        val valueSize = scaler.sp(style.hintSize * 1.05f)
+        // 兩行放不放得下是**算出來的**,不是猜的。這裡兩件事必須綁在一起:
+        // 給每一行明確的 lineHeight,然後拿同一組數字去比高度。少了前者,
+        // 行框高度由字體的 ascent/descent 加上 font padding 決定,那是一個
+        // 這裡看不到的值 —— 而原本的門檻(34dp)正是照那個看不到的值猜的,
+        // 猜低了:實測格子有 41dp、判定走兩行,第二行卻被切掉一半。
+        //
+        // 被切掉的偏偏是**目前的值**,也就是這一格存在的理由(見上面的檔頭)。
+        // 名字還在、格子還在、看起來只是有點擠 —— 又是一個「畫面正常但功能
+        // 沒了」的樣子,所以寧可退成一行。
+        val needed = with(LocalDensity.current) {
+            (nameSize * TILE_LINE_HEIGHT).toDp() +
+                (valueSize * TILE_LINE_HEIGHT).toDp() +
+                TILE_VERTICAL_PADDING * 2
+        }
+        if (maxHeight >= needed) {
             Column(
-                modifier = Modifier.fillMaxSize().padding(horizontal = 9.dp, vertical = 4.dp),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 9.dp, vertical = TILE_VERTICAL_PADDING),
                 verticalArrangement = Arrangement.Center,
             ) {
                 Text(
                     text = name,
-                    fontSize = scaler.sp(style.labelSize * 0.6f),
+                    fontSize = nameSize,
+                    lineHeight = nameSize * TILE_LINE_HEIGHT,
+                    style = FLAT_LINE_BOX,
                     fontWeight = FontWeight.Medium,
                     color = fg,
                     maxLines = 1,
@@ -276,7 +302,9 @@ internal fun Tile(
                 )
                 Text(
                     text = value,
-                    fontSize = scaler.sp(style.hintSize * 1.05f),
+                    fontSize = valueSize,
+                    lineHeight = valueSize * TILE_LINE_HEIGHT,
+                    style = FLAT_LINE_BOX,
                     color = dim,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -306,8 +334,27 @@ internal fun Tile(
     }
 }
 
-/** 兩行排版的最低高度。低於它就收成一行，寧可擠也不要把值截掉。 */
-private val TWO_LINE_TILE_MIN = 34.dp
+/**
+ * 一行的行框是字級的幾倍。
+ *
+ * 這個數字**同時**餵給 `lineHeight` 與「放不放得下」的計算,所以它不是估計值,
+ * 是約定:宣告成 1.25 倍,行框就真的是 1.25 倍。1.25 對拉丁字母與漢字都放得下
+ * (漢字是方的,拉丁有 ascender/descender),再小會開始擦到 g、y 的下伸部。
+ */
+private const val TILE_LINE_HEIGHT = 1.25f
+
+/** 格子上下各留這麼多。同樣同時用於排版與計算。 */
+private val TILE_VERTICAL_PADDING = 4.dp
+
+/**
+ * 關掉 font padding。
+ *
+ * 開著的話,行框會額外加上字體自己的 ascent/descent 留白 —— 那個值隨字體
+ * 而異、在程式裡看不到,也算不出來,於是 `lineHeight` 的宣告就不作數了。
+ * 關掉之後 lineHeight 說多少就是多少,上面那個計算才成立。
+ */
+private val FLAT_LINE_BOX =
+    TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false))
 
 /** 面板裡的分段控制。四個明確的檔位，不給滑桿 —— 理由見 PrefLevels。 */
 @Composable
@@ -370,9 +417,10 @@ internal fun QuickPanelContent(
 ) {
     val p = state.prefs
     val heightLabel = when {
-        p.keyboardHeightScale == null || p.keyboardHeightScale == 1f -> "標準"
-        p.keyboardHeightScale > 1f -> "高一點"
-        else -> "矮一點"
+        p.keyboardHeightScale == null || p.keyboardHeightScale == 1f ->
+            stringResource(R.string.panel_height_standard)
+        p.keyboardHeightScale > 1f -> stringResource(R.string.panel_height_taller)
+        else -> stringResource(R.string.panel_height_shorter)
     }
     val sound = PrefLevels.indexOfSound(p, baseTheme.feedback.sound, baseTheme.feedback.soundVolume)
     val haptic =
@@ -396,49 +444,66 @@ internal fun QuickPanelContent(
         //   · 鍵上小字 → 「外觀」（它就是一個純視覺的二選一）
         //   · 標點、空白鍵 → 「文字」（跟繁簡是同一個問題的三個面向）
         // 一項都沒有掉，只是不再各佔一格。
-        PanelGroupLabel("鍵盤的樣子", style, scaler)
+        PanelGroupLabel(stringResource(R.string.panel_group_look), style, scaler)
         Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Tile("高度", heightLabel, style, scaler, modifier = Modifier.weight(1f).fillMaxHeight()) {
+            Tile(stringResource(R.string.panel_height), heightLabel, style, scaler, modifier = Modifier.weight(1f).fillMaxHeight()) {
                 onEvent(KeyboardEvent.OpenPanel(PanelRoute.HEIGHT))
             }
             Tile(
-                name = "外觀",
+                name = stringResource(R.string.panel_appearance),
                 value = shortThemeName(state),
                 style = style,
                 scaler = scaler,
                 modifier = Modifier.weight(1f).fillMaxHeight(),
             ) { onEvent(KeyboardEvent.OpenPanel(PanelRoute.APPEARANCE)) }
             Tile(
-                name = "手感",
-                value = "音${PrefLevels.SOUND_LABELS[sound]}·震${PrefLevels.HAPTIC_LABELS[haptic]}",
+                name = stringResource(R.string.panel_feel),
+                value = stringResource(
+                    R.string.panel_summary_pair,
+                    PrefLabels.sound[sound],
+                    PrefLabels.haptic[haptic],
+                ),
                 style = style,
                 scaler = scaler,
                 modifier = Modifier.weight(1f).fillMaxHeight(),
             ) { onEvent(KeyboardEvent.OpenPanel(PanelRoute.FEEL)) }
         }
 
-        PanelGroupLabel("打出來的字", style, scaler)
+        PanelGroupLabel(stringResource(R.string.panel_group_output), style, scaler)
         Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Tile(
-                name = "鍵盤類型",
+                name = stringResource(R.string.panel_keyboard_type),
                 value = state.layout?.name?.get(ConfigRepository.LOCALE)?.ifEmpty { null }
-                    ?: state.status.schemaName.ifEmpty { "自動" },
+                    ?: state.status.schemaName
+                        .ifEmpty { stringResource(R.string.panel_keyboard_type_auto) },
                 style = style,
                 scaler = scaler,
                 modifier = Modifier.weight(1f).fillMaxHeight(),
             ) { onEvent(KeyboardEvent.OpenPanel(PanelRoute.TYPES)) }
             Tile(
-                name = "候選字",
-                value = "${PrefLevels.CANDIDATE_COUNT_LABELS[countIdx]}·" +
-                    PrefLevels.CANDIDATE_SIZE_LABELS[sizeIdx],
+                name = stringResource(R.string.panel_candidates),
+                value = stringResource(
+                    R.string.panel_summary_pair,
+                    PrefLabels.candidateCount[countIdx],
+                    PrefLabels.candidateSize[sizeIdx],
+                ),
                 style = style,
                 scaler = scaler,
                 modifier = Modifier.weight(1f).fillMaxHeight(),
             ) { onEvent(KeyboardEvent.OpenPanel(PanelRoute.CANDIDATES)) }
             Tile(
-                name = "文字",
-                value = (if (state.status.isSimplified) "簡" else "繁") +
-                    "·" + (if (state.status.isAsciiPunct) "半形" else "全形"),
+                name = stringResource(R.string.panel_text),
+                value = stringResource(
+                    R.string.panel_summary_pair,
+                    stringResource(
+                        if (state.status.isSimplified) R.string.panel_variant_simplified_short
+                        else R.string.panel_variant_traditional_short
+                    ),
+                    stringResource(
+                        if (state.status.isAsciiPunct) R.string.panel_punct_half_short
+                        else R.string.panel_punct_full_short
+                    ),
+                ),
                 style = style,
                 scaler = scaler,
                 modifier = Modifier.weight(1f).fillMaxHeight(),
@@ -447,8 +512,9 @@ internal fun QuickPanelContent(
     }
 }
 
+@Composable
 private fun shortThemeName(state: KeyboardUiState): String {
-    val t = state.theme ?: return "預設"
+    val t = state.theme ?: return stringResource(R.string.appearance_default_theme)
     return t.name.get(ConfigRepository.LOCALE).ifEmpty { t.id }
 }
 
@@ -467,7 +533,12 @@ internal fun AppearancePanelContent(
     // 五十幾 dp，等於三排控制項各矮十幾 dp。左標籤把那些高度還回來。
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         PanelSegmentedLabelled(
-            "深淺", listOf("跟著手機", "一直淺", "一直深"),
+            stringResource(R.string.appearance_light_dark),
+            listOf(
+                stringResource(R.string.appearance_follow_phone),
+                stringResource(R.string.appearance_always_light),
+                stringResource(R.string.appearance_always_dark),
+            ),
             when (p.appearanceMode) {
                 AppearanceMode.LIGHT -> 1
                 AppearanceMode.DARK -> 2
@@ -488,7 +559,14 @@ internal fun AppearancePanelContent(
             )
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            PanelText("配色", style, scaler, 0.55f, dim = true, modifier = Modifier.width(64.dp))
+            PanelText(
+                text = stringResource(R.string.appearance_colours),
+                style = style,
+                scaler = scaler,
+                size = 0.55f,
+                dim = true,
+                modifier = Modifier.width(64.dp),
+            )
             // 這一列是整個面板唯一允許橫向捲動的地方：配色數量會隨主題市集
             // 成長，而它是**同一種東西的並列**，不是一個分層清單 —— 橫捲不會迷路。
             LazyRow(
@@ -521,7 +599,11 @@ internal fun AppearancePanelContent(
             }
         }
         PanelSegmentedLabelled(
-            "鍵上小字", listOf("顯示", "不顯示"),
+            stringResource(R.string.panel_hints),
+            listOf(
+                stringResource(R.string.panel_hints_show),
+                stringResource(R.string.panel_hints_hide),
+            ),
             if (p.hints == HintVisibility.HIDDEN) 1 else 0, style, scaler,
         ) { i ->
             onEvent(
@@ -546,20 +628,21 @@ internal fun FeelStripContent(
     val p = state.prefs
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         PanelSegmentedLabelled(
-            "按鍵音", PrefLevels.SOUND_LABELS,
+            stringResource(R.string.feel_sound), PrefLabels.sound,
             PrefLevels.indexOfSound(p, baseTheme.feedback.sound, baseTheme.feedback.soundVolume),
             style, scaler,
         ) { i -> onEvent(KeyboardEvent.EditPrefs { pref -> PrefLevels.withSound(pref, i) }) }
         PanelSegmentedLabelled(
-            "震動", PrefLevels.HAPTIC_LABELS,
+            stringResource(R.string.feel_vibration), PrefLabels.haptic,
             PrefLevels.indexOfHaptic(p, baseTheme.feedback.haptic, baseTheme.feedback.hapticStrength),
             style, scaler,
         ) { i -> onEvent(KeyboardEvent.EditPrefs { pref -> PrefLevels.withHaptic(pref, i) }) }
         PanelSegmentedLabelled(
-            "長按", PrefLevels.LONG_PRESS_LABELS, PrefLevels.indexOfLongPress(p), style, scaler,
+            stringResource(R.string.panel_long_press), PrefLabels.longPress,
+            PrefLevels.indexOfLongPress(p), style, scaler,
         ) { i -> onEvent(KeyboardEvent.EditPrefs { pref -> PrefLevels.withLongPress(pref, i) }) }
         PanelText(
-            text = "↓ 直接按下面的鍵試試看",
+            text = stringResource(R.string.panel_feel_try),
             style = style,
             scaler = scaler,
             size = 0.5f,
@@ -604,17 +687,18 @@ internal fun CandidatesStripContent(
     val p = state.prefs
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         PanelSegmentedLabelled(
-            "一次幾個", PrefLevels.CANDIDATE_COUNT_LABELS,
+            stringResource(R.string.panel_candidate_count), PrefLabels.candidateCount,
             PrefLevels.indexOfCandidateCount(p, baseTheme.candidates.bar.maxVisible),
             style, scaler,
         ) { i -> onEvent(KeyboardEvent.EditPrefs { pref -> PrefLevels.withCandidateCount(pref, i) }) }
         PanelSegmentedLabelled(
-            "字多大", PrefLevels.CANDIDATE_SIZE_LABELS, PrefLevels.indexOfCandidateSize(p),
+            stringResource(R.string.panel_candidate_size), PrefLabels.candidateSize,
+            PrefLevels.indexOfCandidateSize(p),
             style, scaler,
         ) { i -> onEvent(KeyboardEvent.EditPrefs { pref -> PrefLevels.withCandidateSize(pref, i) }) }
         PanelText(
             // 上面那條候選列**就是**預覽：它此刻填的是真的字，跟著這兩排一起變。
-            text = "↑ 上面那條就是實際的樣子",
+            text = stringResource(R.string.panel_candidates_preview),
             style = style,
             scaler = scaler,
             size = 0.5f,
@@ -641,7 +725,11 @@ internal fun TextPanelContent(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         PanelSegmentedLabelled(
-            "字體", listOf("繁體", "簡體"),
+            stringResource(R.string.text_characters),
+            listOf(
+                stringResource(R.string.text_traditional),
+                stringResource(R.string.text_simplified),
+            ),
             if (state.status.isSimplified) 1 else 0, style, scaler,
         ) { i ->
             // 走 toggle:simplification 而不是直接寫偏好：隨附的 luna_pinyin 系列
@@ -652,7 +740,11 @@ internal fun TextPanelContent(
             }
         }
         PanelSegmentedLabelled(
-            "標點", listOf("全形", "半形"),
+            stringResource(R.string.text_punctuation),
+            listOf(
+                stringResource(R.string.text_punct_full),
+                stringResource(R.string.text_punct_half),
+            ),
             if (state.status.isAsciiPunct) 1 else 0, style, scaler,
         ) { i ->
             if ((i == 1) != state.status.isAsciiPunct) {
@@ -660,7 +752,11 @@ internal fun TextPanelContent(
             }
         }
         PanelSegmentedLabelled(
-            "空白鍵", listOf("送出候選字", "一律打空格"),
+            stringResource(R.string.text_space_key),
+            listOf(
+                stringResource(R.string.panel_space_commits),
+                stringResource(R.string.panel_space_always),
+            ),
             if (state.prefs.spaceBehavior == SpaceBehavior.ALWAYS_SPACE) 1 else 0, style, scaler,
         ) { i ->
             onEvent(
@@ -751,13 +847,13 @@ internal fun BoxScope.HeightEditor(
             )
         }
         Spacer(Modifier.height(6.dp))
-        PanelText("上下拖動上緣調整", style, scaler, 0.55f)
+        PanelText(stringResource(R.string.panel_height_drag), style, scaler, 0.55f)
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            PillButton("回原本", style, scaler, filled = false) {
+            PillButton(stringResource(R.string.panel_height_reset), style, scaler, filled = false) {
                 onEvent(KeyboardEvent.ResetHeight)
             }
-            PillButton("好了", style, scaler, filled = true) {
+            PillButton(stringResource(R.string.panel_height_done), style, scaler, filled = true) {
                 onEvent(KeyboardEvent.CommitHeight)
             }
         }
@@ -806,7 +902,7 @@ internal fun AllSettingsLink(
     onOpenApp: () -> Unit,
 ) {
     PanelText(
-        text = "全部設定 ›",
+        text = stringResource(R.string.panel_all_settings),
         style = style,
         scaler = scaler,
         size = 0.5f,
@@ -817,5 +913,11 @@ internal fun AllSettingsLink(
     )
 }
 
-/** 「候選字」面板的預覽用字。它們走的是**真的候選列**，不是另畫一條假的。 */
+/**
+ * 「候選字」面板的預覽用字。它們走的是**真的候選列**，不是另畫一條假的。
+ *
+ * 不進 strings.xml:這是一組中文候選字的樣本,用來讓使用者看清楚字級與筆畫,
+ * 換成英文單字就示範不出「候選字看不看得清楚」這件事。介面語言是英文的
+ * 使用者,打的仍然是中文。
+ */
 internal val SAMPLE_CANDIDATES = listOf("你好", "妳好", "擬好", "泥壕", "你毫", "尼號", "妮豪", "泥號", "擬耗")

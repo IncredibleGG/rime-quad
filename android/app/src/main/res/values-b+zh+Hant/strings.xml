@@ -372,4 +372,122 @@
     <string name="remap_reset_one_done">「%1$s」已回到基礎佈局的原樣。</string>
     <string name="remap_reset_all_done">全部自訂鍵位已清除。</string>
 
+
+    <!-- ─────────────── 鍵盤上的設定面板（keyboard/KeyboardPanels.kt）─────────────── -->
+    <!--
+      ⚠ 這一區的字**每一條都很窄**。標籤欄固定 64dp，格子只有面板寬的三分之一，
+        分段控制一格約 90dp，而且全部 maxLines=1 —— 太長不會換行，會直接被截掉，
+        而截掉在畫面上看起來只是「這個詞比較短」，不會有任何錯誤。
+        譯文請優先選短詞，寧可縮寫也不要湊完整句子。長度由 PanelStringsTest 守著。
+
+      ⚠ 與 App 設定頁重複的概念（繁體／簡體、全形／半形…）**刻意共用同一個 key**，
+        不另外寫一份。兩份對照表遲早會漂移成兩套不同的說法，而使用者會在同一個
+        設定的兩個入口看到兩種講法。只有 App 那份太長塞不進面板時才另立 panel_*。
+    -->
+    <string name="panel_title_quick">調整</string>
+    <string name="panel_subtitle_quick">底下這排隨時能繼續打字</string>
+    <string name="panel_subtitle_types">選了立刻換</string>
+    <string name="panel_group_look">鍵盤的樣子</string>
+    <string name="panel_group_output">打出來的字</string>
+    <string name="panel_height">高度</string>
+    <string name="panel_appearance">外觀</string>
+    <string name="panel_feel">手感</string>
+    <string name="panel_keyboard_type">鍵盤類型</string>
+    <string name="panel_candidates">候選字</string>
+    <string name="panel_text">文字</string>
+    <string name="panel_height_standard">標準</string>
+    <string name="panel_height_taller">高一點</string>
+    <string name="panel_height_shorter">矮一點</string>
+    <string name="panel_keyboard_type_auto">自動</string>
+    <string name="panel_hints">鍵上小字</string>
+    <string name="panel_hints_show">顯示</string>
+    <string name="panel_hints_hide">不顯示</string>
+    <string name="panel_long_press">長按</string>
+    <string name="panel_candidate_count">一次幾個</string>
+    <string name="panel_candidate_size">字多大</string>
+    <string name="panel_space_commits">送出候選字</string>
+    <string name="panel_space_always">一律打空格</string>
+    <string name="panel_variant_traditional_short">繁</string>
+    <string name="panel_variant_simplified_short">簡</string>
+    <string name="panel_punct_full_short">全形</string>
+    <string name="panel_punct_half_short">半形</string>
+    <string name="panel_feel_try">↓ 直接按下面的鍵試試看</string>
+    <string name="panel_candidates_preview">↑ 上面那條就是實際的樣子</string>
+    <string name="panel_height_drag">上下拖動上緣調整</string>
+    <string name="panel_height_reset">回原本</string>
+    <string name="panel_height_done">好了</string>
+    <string name="panel_all_settings">全部設定 ›</string>
+
+    <!-- %1$s = 名字，%2$s = 目前的值。 -->
+    <string name="panel_summary_pair">%1$s·%2$s</string>
+
+    <!-- ─────────── 鍵盤本體上的狀態訊息（keyboard/KeyboardView.kt）─────────── -->
+
+    <string name="keyboard_loading_theme">正在載入主題…</string>
+    <string name="keyboard_stub_notice">⟦STUB⟧ 未接 librime，候選字為假資料</string>
+    <string name="keyboard_no_schema">尚無可用方案（rs_schema_list 回傳空）</string>
+    <string name="keyboard_layout_not_loaded">佈局尚未載入</string>
+
+
+    <!-- ─────────────────────── 無障礙朗讀名稱 ─────────────────────── -->
+    <!--
+      這一區的字**畫面上一個都看不到**,只有 TalkBack 會念出來。
+
+      ⚠ 兩件事跟一般文案不同:
+        1. 它可以比畫面上的長。鍵面受寬度限制,朗讀名不受 —— 鍵面印「⌫」,
+           念出來要是「退格」。
+        2. 它描述的是**這顆鍵會做什麼**,不是它長什麼樣。地球鍵不要念成
+           「地球」,要念「選擇鍵盤」。
+
+      鍵面本身(字母、標點、漢字)不在這裡:那些直接念鍵面就對了。
+    -->
+    <string name="a11y_backspace">退格</string>
+    <string name="a11y_enter">換行</string>
+    <string name="a11y_shift">上檔</string>
+    <string name="a11y_shift_lock">大寫鎖定</string>
+    <string name="a11y_space">空白鍵</string>
+    <string name="a11y_globe">選擇鍵盤</string>
+    <string name="a11y_keyboard_hide">收起鍵盤</string>
+    <string name="a11y_settings">鍵盤設定</string>
+    <string name="a11y_emoji">表情符號</string>
+    <string name="a11y_search">搜尋</string>
+    <string name="a11y_go">前往</string>
+    <string name="a11y_done">完成</string>
+    <string name="a11y_next">下一個</string>
+    <string name="a11y_clipboard">剪貼簿</string>
+    <string name="a11y_undo">復原</string>
+    <string name="a11y_mic">語音輸入</string>
+    <string name="a11y_arrow_left">向左</string>
+    <string name="a11y_arrow_right">向右</string>
+    <string name="a11y_arrow_up">向上</string>
+    <string name="a11y_arrow_down">向下</string>
+    <string name="a11y_clear">清掉正在打的字</string>
+    <string name="a11y_cursor_left">游標左移</string>
+    <string name="a11y_cursor_right">游標右移</string>
+    <string name="a11y_cursor_home">游標移到開頭</string>
+    <string name="a11y_cursor_end">游標移到結尾</string>
+    <string name="a11y_candidate_next_page">下一頁候選字</string>
+    <string name="a11y_candidate_prev_page">上一頁候選字</string>
+    <string name="a11y_schema_picker">選擇鍵盤</string>
+    <string name="a11y_schema_next">下一個輸入方案</string>
+    <string name="a11y_schema_prev">上一個輸入方案</string>
+    <string name="a11y_input_mode">中英切換</string>
+    <string name="a11y_input_mode_cjk">中文</string>
+    <string name="a11y_input_mode_latin">英數</string>
+    <string name="a11y_variant">繁簡切換</string>
+    <string name="a11y_variant_trad">繁體</string>
+    <string name="a11y_variant_simp">簡體</string>
+    <string name="a11y_shape">全形半形切換</string>
+    <string name="a11y_shape_full">全形</string>
+    <string name="a11y_shape_half">半形</string>
+    <string name="a11y_layout_primary">回到主鍵盤</string>
+    <string name="a11y_layout_previous">回上一個鍵盤</string>
+    <string name="a11y_layout_switch">換一個鍵盤</string>
+    <string name="a11y_action_type">輸入</string>
+    <string name="a11y_action_more">看更多符號</string>
+    <string name="a11y_candidate_current">目前選取</string>
+
+    <string name="a11y_layer_switch">切換到 %1$s</string>
+    <string name="a11y_candidate">候選字第 %1$d 個:%2$s</string>
+
 </resources>

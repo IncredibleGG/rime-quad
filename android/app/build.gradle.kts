@@ -285,6 +285,45 @@ tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }
 tasks.named("preBuild") { dependsOn(syncRimeData) }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 單元測試也吃 core/layouts 與 core/themes
+//
+// 那幾份 YAML 不是測試資源，是**四端真的會載入的檔案** —— RepoFixtures 刻意
+// 直接讀 repo，不複製一份（複製品會腐爛）。但 Gradle 只認得模組裡的檔案，
+// 於是「只改 YAML」的那一次，`:app:testDebugUnitTest` 會判 UP-TO-DATE：
+//
+//     > Task :app:testDebugUnitTest UP-TO-DATE
+//     BUILD SUCCESSFUL
+//
+// 一整組守著佈局與主題的測試（LayoutEscapeTest、ThemeParserTest、MiniYamlTest、
+// DeadKeyTest…）一個都沒跑，而畫面上是一片綠。實測過：把 qwerty 的一顆鍵指向
+// 未實作的動詞，測試沒有變紅；補上 --rerun-tasks 才紅。
+//
+// 這正是本專案再三提防的「該紅的時候安靜地不跑」，而且它發生在建置工具層，
+// 比測試自己寫錯更難發現。宣告成輸入之後，改 YAML 就會重跑。
+// ─────────────────────────────────────────────────────────────────────────────
+tasks.withType<Test>().configureEach {
+    inputs.dir(rimeLayouts)
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+        .withPropertyName("rimeLayouts")
+    inputs.dir(rimeThemes)
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+        .withPropertyName("rimeThemes")
+    // res/ 同理,而且更隱蔽。StringCatalogTest 與 PanelStringsTest 直接讀
+    // src/main/res/values*/strings.xml 的**原始檔**(讀 R 沒有用:aapt 早就
+    // 把「這個語系缺這個 key」回落成預設值了)。但 testDebugUnitTest 的輸入
+    // 只有編譯產物與 R.jar,而 R.jar 只在**新增或刪除 key** 時才變 ——
+    // 改一句翻譯的文字,什麼都不會失效:
+    //
+    //     > Task :app:testDebugUnitTest UP-TO-DATE
+    //
+    // 也就是說,這個專案的在地化防線在「只改翻譯」的那一次從來沒跑過,
+    // 而那正是它唯一該跑的時候。
+    inputs.dir(layout.projectDirectory.dir("src/main/res"))
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+        .withPropertyName("appResources")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 帶 lineage 重簽（金鑰輪替）
 //
 // AGP 的 `signingConfigs` 截至 8.x **沒有**暴露 lineage 參數，所以 Gradle 簽完
