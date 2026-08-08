@@ -29,7 +29,8 @@ name: Android
 
 on:
   push:
-    branches: [main]
+    # diag 支線(診斷 code + args 與其在地化)也要跑,否則推到自己的分支不會跑 CI。
+    branches: [main, diag]
   pull_request:
     branches: [main]
   workflow_dispatch:

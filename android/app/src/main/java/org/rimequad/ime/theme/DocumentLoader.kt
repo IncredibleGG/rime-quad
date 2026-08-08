@@ -1,5 +1,22 @@
 package org.rimequad.ime.theme
 
+import org.rimequad.ime.theme.DiagnosticCode.FATAL_DOCUMENT_NOT_FOUND
+import org.rimequad.ime.theme.DiagnosticCode.FATAL_FORMAT_KIND_MISMATCH
+import org.rimequad.ime.theme.DiagnosticCode.FATAL_FORMAT_MAJOR_UNSUPPORTED
+import org.rimequad.ime.theme.DiagnosticCode.FATAL_FORMAT_MALFORMED
+import org.rimequad.ime.theme.DiagnosticCode.FATAL_FORMAT_MISSING
+import org.rimequad.ime.theme.DiagnosticCode.FATAL_ID_INVALID
+import org.rimequad.ime.theme.DiagnosticCode.FATAL_ID_MISMATCH
+import org.rimequad.ime.theme.DiagnosticCode.FATAL_ID_MISSING
+import org.rimequad.ime.theme.DiagnosticCode.FATAL_INHERITS_CYCLE
+import org.rimequad.ime.theme.DiagnosticCode.FATAL_INHERITS_TOO_DEEP
+import org.rimequad.ime.theme.DiagnosticCode.FATAL_MIN_CLIENT
+import org.rimequad.ime.theme.DiagnosticCode.FATAL_PARENT_NOT_FOUND
+import org.rimequad.ime.theme.DiagnosticCode.FATAL_ROOT_NOT_MAPPING
+import org.rimequad.ime.theme.DiagnosticCode.FATAL_YAML_SYNTAX
+import org.rimequad.ime.theme.DiagnosticCode.KEY_PATCH_NO_TARGET
+import org.rimequad.ime.theme.DiagnosticCode.NESTED_PLATFORM_OVERRIDES
+
 /**
  * 依 id 取得 YAML 原文。搜尋路徑順序（使用者目錄 → 隨附目錄 → 內建）由實作負責，
  * 見 docs/theme-format.md §2.3。找不到回傳 null。
@@ -73,35 +90,39 @@ object DocumentLoader {
 
         while (true) {
             if (!seen.add(currentId)) {
-                diag.error(
-                    "inherits",
-                    "F6: inheritance cycle: ${seen.joinToString(" -> ")} -> $currentId"
+                diag.add(
+                    FATAL_INHERITS_CYCLE, "inherits",
+                    args = listOf(seen.joinToString(" -> ") + " -> " + currentId)
                 )
                 return null
             }
             if (docs.size >= MAX_CHAIN) {
-                diag.error("inherits", "F6: inheritance chain is deeper than $MAX_CHAIN documents")
+                diag.add(FATAL_INHERITS_TOO_DEEP, "inherits", args = listOf(MAX_CHAIN.toString()))
                 return null
             }
 
             val text = source.read(currentId)
             if (text == null) {
-                if (docs.isEmpty()) diag.error("", "document '$currentId' was not found in any search path")
-                else diag.error("inherits", "F5: parent document '$currentId' was not found")
+                if (docs.isEmpty()) {
+                    diag.add(FATAL_DOCUMENT_NOT_FOUND, "", args = listOf(currentId))
+                } else {
+                    diag.add(FATAL_PARENT_NOT_FOUND, "inherits", args = listOf(currentId))
+                }
                 return null
             }
 
             val parsed = try {
                 MiniYaml.parse("$currentId.yaml", text)
             } catch (e: YamlSyntaxException) {
-                diag.error("", "F1: ${e.detail}", e.line)
+                diag.add(FATAL_YAML_SYNTAX, "", e.line, listOf(e.detail))
                 return null
             }
-            for (w in parsed.warnings) diag.warn("", w.message, w.line)
+            // 讀取層的診斷沒有 YAML 路徑（那棵樹還沒建好），一律掛在根層級。
+            for (w in parsed.warnings) diag.add(w.code, "", w.line, w.args)
 
             val root = parsed.root as? YamlNode.Mapping
             if (root == null) {
-                diag.error("", "F2: the document root must be a mapping")
+                diag.add(FATAL_ROOT_NOT_MAPPING, "")
                 return null
             }
             if (!checkHeader(root, kind, supportedMajor, currentId, diag)) return null
@@ -132,45 +153,43 @@ object DocumentLoader {
     ): Boolean {
         val fmt = (root.entries["format"] as? YamlNode.Scalar)?.value
         if (fmt == null) {
-            diag.error("format", "F3: '$id' is missing the required 'format' field", root.line)
+            diag.add(FATAL_FORMAT_MISSING, "format", root.line, listOf(id))
             return false
         }
         val idx = fmt.lastIndexOf('/')
         if (idx <= 0 || idx == fmt.length - 1) {
-            diag.error("format", "F3: malformed format tag '$fmt' in '$id'", root.line)
+            diag.add(FATAL_FORMAT_MALFORMED, "format", root.line, listOf(fmt, id))
             return false
         }
         val docKind = fmt.substring(0, idx)
         val major = fmt.substring(idx + 1).toIntOrNull()
         if (docKind != kind) {
-            diag.error("format", "F3: '$id' is a '$docKind' document but a '$kind' was expected", root.line)
+            diag.add(FATAL_FORMAT_KIND_MISMATCH, "format", root.line, listOf(docKind, kind, id))
             return false
         }
         if (major == null || major < 1) {
-            diag.error("format", "F3: malformed major version in '$fmt'", root.line)
+            diag.add(FATAL_FORMAT_MALFORMED, "format", root.line, listOf(fmt, id))
             return false
         }
         if (major > supportedMajor) {
-            diag.error(
-                "format",
-                "F3: '$id' uses $kind format v$major; this client supports up to v$supportedMajor. " +
-                    "Please update the app.",
-                root.line
+            diag.add(
+                FATAL_FORMAT_MAJOR_UNSUPPORTED, "format", root.line,
+                listOf(id, kind, major.toString(), supportedMajor.toString())
             )
             return false
         }
 
         val docId = (root.entries["id"] as? YamlNode.Scalar)?.value
         if (docId == null) {
-            diag.error("id", "F4: '$id' is missing the required 'id' field", root.line)
+            diag.add(FATAL_ID_MISSING, "id", root.line, listOf(id))
             return false
         }
         if (!ID_PATTERN.matches(docId)) {
-            diag.error("id", "F4: '$docId' is not a valid id (lowercase [a-z0-9._-], 1-64 chars)", root.line)
+            diag.add(FATAL_ID_INVALID, "id", root.line, listOf(docId))
             return false
         }
         if (docId != id) {
-            diag.error("id", "F4: id '$docId' does not match the document name '$id'", root.line)
+            diag.add(FATAL_ID_MISMATCH, "id", root.line, listOf(docId, id))
             return false
         }
         return true
@@ -179,11 +198,7 @@ object DocumentLoader {
     private fun checkMinClient(root: YamlNode.Mapping, clientVersion: String, diag: Diagnostics): Boolean {
         val min = (root.entries["min_client"] as? YamlNode.Scalar)?.value ?: return true
         if (compareVersions(clientVersion, min) < 0) {
-            diag.error(
-                "min_client",
-                "F7: this document requires client $min or newer (running $clientVersion)",
-                root.line
-            )
+            diag.add(FATAL_MIN_CLIENT, "min_client", root.line, listOf(min, clientVersion))
             return false
         }
         return true
@@ -221,9 +236,9 @@ object DocumentLoader {
         val cleaned = LinkedHashMap<String, YamlNode>()
         for ((k, v) in branch.entries) {
             if (k == "platform_overrides") {
-                diag.warn(
+                diag.add(
+                    NESTED_PLATFORM_OVERRIDES,
                     "platform_overrides.${platform.key}.platform_overrides",
-                    "platform overrides must not be nested; ignored",
                     v.line
                 )
                 continue
@@ -296,7 +311,7 @@ object LayoutLoader {
 
         for (k in patches.entries.keys) {
             if (!applied.contains(k)) {
-                diag.warn("key_patches.$k", "no key with id '$k' exists in this layout; patch ignored")
+                diag.add(KEY_PATCH_NO_TARGET, "key_patches.$k", args = listOf(k))
             }
         }
 

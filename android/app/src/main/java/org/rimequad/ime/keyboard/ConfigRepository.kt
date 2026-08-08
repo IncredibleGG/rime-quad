@@ -3,16 +3,17 @@ package org.rimequad.ime.keyboard
 import android.content.Context
 import android.content.res.AssetManager
 import android.util.Log
+import org.rimequad.ime.DiagnosticStrings
 import org.rimequad.ime.core.RimeRuntime
 import org.rimequad.ime.theme.ChainedDocumentSource
 import org.rimequad.ime.theme.Diagnostic
+import org.rimequad.ime.theme.DiagnosticText
 import org.rimequad.ime.theme.DocumentSource
 import org.rimequad.ime.theme.KeyboardLayout
 import org.rimequad.ime.theme.LayoutLoader
 import org.rimequad.ime.theme.LoadResult
 import org.rimequad.ime.theme.MapDocumentSource
 import org.rimequad.ime.theme.Platform
-import org.rimequad.ime.theme.Severity
 import org.rimequad.ime.theme.Theme
 import org.rimequad.ime.theme.ThemeLoader
 import java.io.File
@@ -42,6 +43,11 @@ class ConfigRepository(context: Context) : LayoutRepository {
         // 這裡是唯一同時握有 AssetManager 又負責「讀隨附設定」的地方 ——
         // 鍵盤類型選單的分組要用它（見 [SchemaLanguages]）。
         SchemaLanguages.loadShipped(assets)
+
+        // 診斷的在地化樣板。解析層（theme/）刻意一行 android.* 都沒有 —— iOS 端
+        // 要照抄的就是它 —— 所以「code → 當地語言的字」這條線在這裡接上。
+        // App 與輸入法各自都會建一個 ConfigRepository，兩邊都會走到。
+        DiagnosticStrings.install(context)
     }
 
     val layouts: DocumentSource by lazy { sourcesFor(LAYOUT_DIR) }
@@ -135,8 +141,12 @@ class ConfigRepository(context: Context) : LayoutRepository {
             name: "Fallback"
         """.trimIndent()
 
+        /**
+         * 給人看的診斷。**不要用 [Diagnostic.toString]** —— 那是開發者回退
+         * （`[WARNING] path bad_color(#ZZZ)`），不是使用者該看到的東西。
+         */
         fun describe(diagnostics: List<Diagnostic>): List<String> =
-            diagnostics.filter { it.severity != Severity.INFO }.map { it.toString() }
+            DiagnosticText.renderAll(diagnostics)
     }
 }
 

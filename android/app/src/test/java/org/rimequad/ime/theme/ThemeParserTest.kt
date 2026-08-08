@@ -6,6 +6,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.rimequad.ime.theme.DiagnosticCode
 
 /**
  * 對照 docs/theme-format.md §10「一致性檢核清單」。
@@ -119,21 +120,21 @@ class ThemeParserTest {
             "cyc-b" to "format: rime-theme/1\nid: cyc-b\ninherits: cyc-a\n"
         )
         assertNull(r.value)
-        assertTrue(r.errors.any { it.message.contains("F6") })
+        assertEquals(listOf(DiagnosticCode.FATAL_INHERITS_CYCLE), r.errors.map { it.code })
     }
 
     @Test
     fun selfInheritanceIsFatalAndDoesNotRecurse() {
         val r = loadInline("selfie", "selfie" to "format: rime-theme/1\nid: selfie\ninherits: selfie\n")
         assertNull(r.value)
-        assertTrue(r.errors.any { it.message.contains("F6") })
+        assertEquals(listOf(DiagnosticCode.FATAL_INHERITS_CYCLE), r.errors.map { it.code })
     }
 
     @Test
     fun missingParentIsFatal() {
         val r = loadInline("orphan", "orphan" to "format: rime-theme/1\nid: orphan\ninherits: nowhere\n")
         assertNull(r.value)
-        assertTrue(r.errors.any { it.message.contains("F5") })
+        assertEquals(listOf(DiagnosticCode.FATAL_PARENT_NOT_FOUND), r.errors.map { it.code })
     }
 
     // ── 檢核 3–5：錯誤處理 ─────────────────────────────────────────────────
@@ -142,28 +143,32 @@ class ThemeParserTest {
     fun missingFormatIsFatal() {
         val r = loadInline("empty", "empty" to "{}\n")
         assertNull(r.value)
-        assertTrue(r.errors.any { it.message.contains("F3") })
+        assertEquals(listOf(DiagnosticCode.FATAL_FORMAT_MISSING), r.errors.map { it.code })
     }
 
     @Test
     fun wrongDocumentKindIsFatal() {
         val r = loadInline("wrong", "wrong" to "format: rime-layout/1\nid: wrong\n")
         assertNull(r.value)
-        assertTrue(r.errors.any { it.message.contains("F3") })
+        assertEquals(listOf(DiagnosticCode.FATAL_FORMAT_KIND_MISMATCH), r.errors.map { it.code })
     }
 
     @Test
-    fun futureMajorVersionIsFatalWithAReadableMessage() {
+    fun futureMajorVersionIsFatalWithTheVersionsAsArguments() {
         val r = loadInline("future", "future" to "format: rime-theme/9\nid: future\n")
         assertNull(r.value)
-        assertTrue(r.errors.any { it.message.contains("update the app") })
+        val e = r.errors.single()
+        assertEquals(DiagnosticCode.FATAL_FORMAT_MAJOR_UNSUPPORTED, e.code)
+        // 「請更新 app」那句話現在在 strings_diag.xml 裡，不在診斷本體。
+        // 這裡改成驗參數：樣板要填的正是這四個。
+        assertEquals(listOf("future", "rime-theme", "9", "1"), e.args)
     }
 
     @Test
     fun idMustMatchTheDocumentName() {
         val r = loadInline("named", "named" to "format: rime-theme/1\nid: other\n")
         assertNull(r.value)
-        assertTrue(r.errors.any { it.message.contains("F4") })
+        assertEquals(listOf(DiagnosticCode.FATAL_ID_MISMATCH), r.errors.map { it.code })
     }
 
     @Test
@@ -176,7 +181,7 @@ class ThemeParserTest {
             "0.1.0"
         )
         assertNull(r.value)
-        assertTrue(r.errors.any { it.message.contains("F7") })
+        assertEquals(listOf(DiagnosticCode.FATAL_MIN_CLIENT), r.errors.map { it.code })
     }
 
     @Test
@@ -238,7 +243,8 @@ class ThemeParserTest {
         assertNotNull(r.value)
         assertEquals(RepoFixtures.describe(r.diagnostics), 1, r.diagnostics.size)
         assertEquals("keyboard.blahblah", r.diagnostics[0].path)
-        assertTrue(r.diagnostics[0].message.contains("unknown field"))
+        assertEquals(DiagnosticCode.UNKNOWN_FIELD, r.diagnostics[0].code)
+        assertEquals(listOf("blahblah"), r.diagnostics[0].args)
     }
 
     @Test
@@ -255,7 +261,8 @@ class ThemeParserTest {
         )
         assertNotNull(r.value)
         assertEquals(1, r.diagnostics.size)
-        assertTrue(r.diagnostics[0].message.contains("key_spacing"))
+        // 猜得出來時用兩個參數的那份樣板，第二個參數就是猜測。
+        assertEquals(listOf("key_spaceing", "key_spacing"), r.diagnostics[0].args)
     }
 
     @Test
@@ -276,7 +283,8 @@ class ThemeParserTest {
         assertEquals(RepoFixtures.describe(r.diagnostics), 1, r.diagnostics.size)
         assertEquals(Severity.WARNING, r.diagnostics[0].severity)
         assertEquals("keyboard.key_aspect", r.diagnostics[0].path)
-        assertTrue(r.diagnostics[0].message.contains("clamped"))
+        assertEquals(DiagnosticCode.OUT_OF_RANGE, r.diagnostics[0].code)
+        assertEquals(listOf("9.0", "0.6", "2.5", "2.5"), r.diagnostics[0].args)
     }
 
     @Test
@@ -301,7 +309,7 @@ class ThemeParserTest {
         assertEquals(5000, t.motion.candidateChangeMs)  // duration 上界
         assertEquals(RepoFixtures.describe(r.diagnostics), 3, r.diagnostics.size)
         assertTrue(r.diagnostics.all { it.severity == Severity.WARNING })
-        assertTrue(r.diagnostics.all { it.message.contains("clamped") })
+        assertTrue(r.diagnostics.all { it.code == DiagnosticCode.OUT_OF_RANGE })
     }
 
     @Test

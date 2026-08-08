@@ -1,5 +1,14 @@
 package org.rimequad.ime.theme
 
+import org.rimequad.ime.theme.DiagnosticCode.BAD_BOOL
+import org.rimequad.ime.theme.DiagnosticCode.BAD_COLOR
+import org.rimequad.ime.theme.DiagnosticCode.BAD_ENUM
+import org.rimequad.ime.theme.DiagnosticCode.BAD_NUMBER
+import org.rimequad.ime.theme.DiagnosticCode.ENTRY_DROPPED
+import org.rimequad.ime.theme.DiagnosticCode.OUT_OF_RANGE
+import org.rimequad.ime.theme.DiagnosticCode.TYPE_MISMATCH
+import org.rimequad.ime.theme.DiagnosticCode.UNKNOWN_FIELD
+
 /**
  * 解析情境。palette 在管線第 7 步填入，之後所有 color 欄位才解析（§7.4）。
  */
@@ -44,7 +53,7 @@ class Cursor internal constructor(
         val n = node ?: return this
         if (n is YamlNode.Mapping) return this
         if (n is YamlNode.Scalar && n.value == null) return Cursor(null, path, ctx)
-        diag.warn(path, "expected a mapping, found ${kindOf(n)}; using defaults", n.line)
+        diag.add(TYPE_MISMATCH, path, n.line, listOf(DiagnosticTerm.MAPPING.id, kindOf(n)))
         return Cursor(null, path, ctx)
     }
 
@@ -56,7 +65,7 @@ class Cursor internal constructor(
         val n = node ?: return emptyList()
         if (n is YamlNode.Scalar && n.value == null) return emptyList()
         if (n !is YamlNode.Sequence) {
-            diag.warn(path, "expected a sequence, found ${kindOf(n)}; using defaults", n.line)
+            diag.add(TYPE_MISMATCH, path, n.line, listOf(DiagnosticTerm.SEQUENCE.id, kindOf(n)))
             return emptyList()
         }
         return n.items.mapIndexed { i, item -> Cursor(item, "$path[$i]", ctx) }
@@ -67,7 +76,7 @@ class Cursor internal constructor(
     private fun scalarText(): String? {
         val n = node ?: return null
         if (n is YamlNode.Scalar) return n.value
-        diag.warn(path, "expected a scalar, found ${kindOf(n)}; using default", n.line)
+        diag.add(TYPE_MISMATCH, path, n.line, listOf(DiagnosticTerm.SCALAR.id, kindOf(n)))
         return null
     }
 
@@ -81,7 +90,7 @@ class Cursor internal constructor(
             "true", "yes", "on", "1" -> true
             "false", "no", "off", "0" -> false
             else -> {
-                diag.warn(path, "'$s' is not a boolean; using default $default", node?.line)
+                diag.add(BAD_BOOL, path, node?.line, listOf(s))
                 default
             }
         }
@@ -96,14 +105,14 @@ class Cursor internal constructor(
      * 執行期計算（如 HeightSpec.resolve），那裡沒有「使用者寫錯」的語義。
      */
     private fun reportClamp(value: String, bound: String, min: String, max: String) {
-        diag.warn(path, "$value is outside [$min, $max]; clamped to $bound", node?.line)
+        diag.add(OUT_OF_RANGE, path, node?.line, listOf(value, min, max, bound))
     }
 
     fun int(default: Int, min: Int = Int.MIN_VALUE, max: Int = Int.MAX_VALUE): Int {
         val s = scalarText() ?: return default
         val v = s.trim().toIntOrNull() ?: s.trim().toDoubleOrNull()?.toInt()
         if (v == null) {
-            diag.warn(path, "'$s' is not an integer; using default $default", node?.line)
+            diag.add(BAD_NUMBER, path, node?.line, listOf(s))
             return default
         }
         if (v < min) {
@@ -121,7 +130,7 @@ class Cursor internal constructor(
         val s = scalarText() ?: return default
         val v = s.trim().toFloatOrNull()
         if (v == null || v.isNaN() || v.isInfinite()) {
-            diag.warn(path, "'$s' is not a number; using default $default", node?.line)
+            diag.add(BAD_NUMBER, path, node?.line, listOf(s))
             return default
         }
         if (v < min) {
@@ -151,11 +160,7 @@ class Cursor internal constructor(
         val s = scalarText() ?: return default
         val t = s.trim()
         for (a in allowed) if (a.equals(t, ignoreCase = true)) return a
-        diag.warn(
-            path,
-            "'$t' is not one of ${allowed.joinToString("/")}; using default '$default'",
-            node?.line
-        )
+        diag.add(BAD_ENUM, path, node?.line, listOf(t, allowed.joinToString("/"), default))
         return default
     }
 
@@ -167,14 +172,14 @@ class Cursor internal constructor(
             return listOf(v)
         }
         if (n !is YamlNode.Sequence) {
-            diag.warn(path, "expected a string list; using default", n.line)
+            diag.add(TYPE_MISMATCH, path, n.line, listOf(DiagnosticTerm.STRING_LIST.id, kindOf(n)))
             return default
         }
         val out = ArrayList<String>(n.items.size)
         for ((i, item) in n.items.withIndex()) {
             val s = (item as? YamlNode.Scalar)?.value
             if (s == null) {
-                diag.warn("$path[$i]", "expected a string; entry dropped", item.line)
+                diag.add(ENTRY_DROPPED, "$path[$i]", item.line)
                 continue
             }
             out.add(s)
@@ -187,7 +192,7 @@ class Cursor internal constructor(
         val s = scalarText() ?: return default
         val v = ColorSpec.resolve(s, ctx.palette)
         if (v == null) {
-            diag.warn(path, "'$s' is not a valid color; using default", node?.line)
+            diag.add(BAD_COLOR, path, node?.line, listOf(s))
             return default
         }
         return v
@@ -200,14 +205,17 @@ class Cursor internal constructor(
             return LocalizedString(linkedMapOf("und" to v))
         }
         if (n !is YamlNode.Mapping) {
-            diag.warn(path, "expected a string or a locale map; ignored", n.line)
+            diag.add(
+                TYPE_MISMATCH, path, n.line,
+                listOf(DiagnosticTerm.LOCALIZED_STRING.id, kindOf(n))
+            )
             return LocalizedString.EMPTY
         }
         val map = LinkedHashMap<String, String>()
         for ((k, v) in n.entries) {
             val s = (v as? YamlNode.Scalar)?.value
             if (s == null) {
-                diag.warn("$path.$k", "expected a string; entry dropped", v.line)
+                diag.add(ENTRY_DROPPED, "$path.$k", v.line)
                 continue
             }
             map[k] = s
@@ -217,21 +225,33 @@ class Cursor internal constructor(
 
     // ───────────────────────── 未知欄位 ─────────────────────────
 
-    /** §6.3：未知欄位 → 忽略 + WARNING，附上最接近的已知欄位名。 */
+    /**
+     * §6.3：未知欄位 → 忽略 + WARNING，附上最接近的已知欄位名。
+     *
+     * 規範 §6.5.1 的 `unknown_field` 允許 `[field]` 與 `[field, suggestion]`
+     * 兩種參數，各對應一份樣板 —— 猜不出來時不要硬塞一個空字串進去，
+     * 那會在畫面上變成「你要寫的是「」嗎？」。
+     */
     fun warnUnknownKeys(known: Set<String>) {
         val m = node as? YamlNode.Mapping ?: return
         for ((k, v) in m.entries) {
             if (known.contains(k)) continue
             val hint = closestKey(k, known)
-            val suffix = if (hint != null) " (did you mean '$hint'?)" else ""
-            diag.warn(childPath(k), "unknown field$suffix", v.line)
+            val args = if (hint != null) listOf(k, hint) else listOf(k)
+            diag.add(UNKNOWN_FIELD, childPath(k), v.line, args)
         }
     }
 
+    /**
+     * `type_mismatch` 的 `found` 參數。**回傳的是 [DiagnosticTerm] 的穩定代號，
+     * 不是給人看的字** —— 客戶端各自把它翻成當地語言（§6.5：args 是填進樣板的
+     * 參數，不是訊息本身）。
+     */
     private fun kindOf(n: YamlNode): String = when (n) {
-        is YamlNode.Scalar -> if (n.value == null) "null" else "a scalar"
-        is YamlNode.Mapping -> "a mapping"
-        is YamlNode.Sequence -> "a sequence"
+        is YamlNode.Scalar ->
+            if (n.value == null) DiagnosticTerm.NOTHING.id else DiagnosticTerm.SCALAR.id
+        is YamlNode.Mapping -> DiagnosticTerm.MAPPING.id
+        is YamlNode.Sequence -> DiagnosticTerm.SEQUENCE.id
     }
 }
 

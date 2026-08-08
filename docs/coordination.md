@@ -293,6 +293,34 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
 - `[2026-08-08] [insets→協調/Android] **請幫忙接一個 JNI 綁定:`rs_highlight_candidate`。** `core/include/rime_shell.h:147` 已經有它,規範 §9.5 也改成以它為準,但 `android/app/src/main/cpp/jni_bridge.cc` 與 `android/.../core/RimeCore.kt` 都沒有對應的 `nativeHighlightCandidate`(`rime_shell_stub.cc` 也要補一份),所以 `candidate:next` / `candidate:prev` 在 Android 仍列在 `VerbSupport.UNIMPLEMENTED` 裡。那三個檔案不屬於本支線,照 §2 回報不自行跨界。⚠ 接的時候用 `rs_highlight_candidate`,**不要**寫成 `rs_select_candidate(i+1)` —— 後者會選定候選(依方案可能直接上屏),規範 §9.5 明文點名這個寫法是錯的。目前沒有任何佈局或主題用到這兩個動詞,所以不是使用者可見的缺陷,只是一個到期沒關的洞`
 - `[2026-08-08] [insets→協調] **CI 沒有接我的東西,請在合併時一併處理。** `.github/workflows/build.yml` 的 `on.push.branches` 只有 main,而且 `emulator` job 只在 main 或手動時跑 —— `scripts/verify_insets.sh` 需要模擬器,所以就算把 `insets` 加進 branches 也只會跑 `fast`。六條支線同時往那兩行加分支是必然衝突,所以本支線刻意不動 build.yml。建議合併後把這一行加進 emulator job(在 verify_longpress 之後,兩者都要模擬器與已安裝的 IME):`bash scripts/verify_insets.sh --ime org.rimequad.ime/.RimeInputMethodService --apk <apk>`。它自帶反向對照,不會報一個沒驗到的綠`
 - `[2026-08-08] [insets] 給四端參考的兩個「驗證層自己在說謊」的樣本,形狀都會重演:(1) `verify_layout.sh` 的組字區判準原本只看**最後一步**的 `cs`,於是選字上屏之後組字區消失,**最正常的中文輸入序列被判成「librime 沒真的參與」** —— 指控的正好是相反的事實。判準要看「整輪有沒有任何一步出現過組字區」。桌面端日後驗候選窗/上屏時同一個坑成立:**終態不等於全程**。(2) `RepoFixtures.themeIds` 還是手寫的四個 id(`layoutIds` 早就改成掃目錄了),十二份主題有八份從未被 ThemeParserTest / MiniYamlTest 載入過。已用同一個植入兩邊對測證實:改成掃目錄後紅,換回四個 id 後 **BUILD SUCCESSFUL**`
+- `[2026-08-08] [Android/diag] **Android 的診斷已改成 code + args,照 §6.5 / §6.5.1 實作完成。** 診斷的身分是 `(severity, code, path)`,`Diagnostic.developerMessage` 只是英文回退(不上畫面、不參與比對)。`DiagnosticCode` 與 macOS 的 `Diagnostics.swift` 逐項對照過,45 個規範碼一個不少。三件桌面端可能會撞到的事:`
+  1. `**severity 是 code 上的函式,產生點不能選。** `Diagnostics.add()` 沒有 severity 參數,而且有一條測試**掃原始碼**確認 `diag.warn(...)` / `Diagnostic(Severity.X, ...)` 這種形狀一個都不剩。這條規則當場抓到一個真的缺陷:`input_mode:<未知>` 被記成 `diag.error(... "F10" ...)`,也就是致命錯誤 —— 一顆鍵上的一個錯字讓**整份佈局載不起來**,使用者看到的是鍵盤整個換掉。§6.2 的致命清單沒有這一條,§6.3 明寫那是 WARNING。已修。`
+  2. `**同一個 `(severity, code, path)` 只留一則。** 重複的那一則沒帶新資訊給使用者,卻會讓 §10 第 9 條的序列比對無聲失守。也當場抓到一個:`LayoutParser` 為了先取 `auto_for_schema` 再檢查它含不含 `"*"`,對同一個節點呼叫了兩次 `stringList()`,型別錯時就是兩則一模一樣的 WARNING。已修。**桌面端請自查同一個形狀**:任何「先取值、再拿同一個 cursor 取一次來判斷」的地方都會產生它。`
+  3. `**去重之後,path 必須夠細。** 同一層三列寬度都不對、兩個必備工具列項都被刪掉,原本都共用一個 path,去重會把它們併掉。Android 改成 `layers[i].rows[j]` 與 `...toolbar.items[k]`。四端要一致,否則診斷數還是對不上。`
+
+- `[2026-08-08] [Android/diag] ⚠ **給 macOS(規範所有權):§6.5.1 的碼表漏了 9 種規範正文要求發診斷的情況。** §6.3 與 §9.7 明寫「產生 WARNING」,但碼表裡沒有對應的一格,於是實作只能二選一:硬塞進最接近的既有 code(語義走樣),或自己取名(四端各取一個名字,§10 第 9 條的比對就永遠對不上)。Android 選第三條路:照下表實作並標成 `provisional`,一條測試盯著「程式碼裡多出來的 code 恰好等於登記過的暫定碼」——**macOS 把哪一條寫進規範,那條測試就會紅**,提醒把旗標拿掉。請直接採用或改名,改名也請在這裡回一聲,Android 會跟著改:`
+  | 提議的 code | 規範依據 | args |
+  |---|---|---|
+  | `unknown_keysym` | §6.3「佈局:無法解析的 `keysym` 名」 | `[name]` |
+  | `unknown_modifier` | §9.6 `send.modifiers` 的未知修飾鍵名 | `[name]` |
+  | `unknown_swipe_direction` | §9.6 `swipe` 底下的未知方向 | `[direction]` |
+  | `mutually_exclusive` | §6.3 的三條互斥規則(send/tap、repeat/long_press、keysym/text) | `[ignored, winner]` |
+  | `send_incomplete` | `send` 既沒有 `keysym` 也沒有可用的 `text` | `[]` |
+  | `row_width_mismatch` | §6.3「某 row 的 `width` 總和 ≠ `units`,差距 > 0.01」 | `[sum, units, layer-id]` |
+  | `key_patch_no_target` | §9.7「patch 的 id 找不到 → 忽略 + WARNING」 | `[key-id]` |
+  | `action_target_missing` | `layer:` / `layer_once:` / `layer_lock:` 指向不存在的層 | `[raw, target]` |
+  | `auto_for_schema_wildcard` | §9.1.1:`auto_for_schema` 只比對具名方案 | `[]` |
+  `另外還有一個 `user_remap_unapplicable`(使用者自訂鍵位套不上)是 **Android 專屬**,桌面端沒有自訂鍵位,不必進規範;列出來只是因為它也在同一個 enum 裡。`
+  `⚠ §6.3 還有一列「`style` 指向主題沒有的 key style → 改用 `default` + WARNING」,Android 目前**根本沒有產生這則診斷**(style 是在繪製期才解析的)。這一格四端現在都空著,一併請規範裁決。`
+
+- `[2026-08-08] [Android/diag] ⚠ **`type_mismatch` 的 args 本身是要翻譯的東西,規範沒有講。** §6.5.1 說它的參數是 `[expected, found]`,而這兩個位置放的是「映射／序列／純量」這類術語。產生端若直接塞 `"a mapping"`,中文使用者看到的就是「這裡應該是 a mapping」—— 訊息翻好了,洞開在參數上,而且外面看起來一切正常。Android 的做法是產生端只放**穩定代號**(`mapping` / `sequence` / `scalar` / `null` / `string-list` / `localized-string`),字面由各端自己的資源提供。建議規範把這組代號寫成規範性的詞彙表,否則 macOS 塞的是英文句子、Android 塞的是代號,args 雖然不參與比對,畫面上會是兩種東西。順帶一提:對使用者不要說「純量」,這個 app 的使用者是麻瓜 —— Android 的英文寫的是 “a single value”。`
+
+- `[2026-08-08] [Android/diag] **§6.2「超出致命清單者一律為可回復」被當真了,有一個行為變更。** 「layer 缺 `id`」原本是致命的(記成 F8),但 F1–F10 裡沒有這一條。改成:丟掉那一層 + `entry_dropped` WARNING;全部丟光時才補 F8。這讓一份佈局裡的一個壞層不會拖垮整份文件。桌面端不讀佈局文件,所以不影響四端比對;但**「往致命清單裡自己加一條」這個動作本身四端都要避免** —— 那會讓四端拒絕不同的檔案,而 §10 第 9 條明寫致命錯誤一律屬於共用作用域。`
+
+- `[2026-08-08] [Android/diag] ⚠ **給所有在 Android 端開字串檔的支線(dict / sec / insets):`StringCatalogTest` 不會檢查你的檔案。** 它的路徑寫死 `values*/strings.xml`,所以任何 `strings_<支線>.xml` 的「三份語系形狀一致」完全沒有人守 —— 少一條翻譯就是那一句在該語言下靜靜顯示英文。diag 這條線自己補了一份 `DiagnosticStringsTest`(key 集合、位置參數集合、每一份樣板都填得起來、英文那份不得出現漢字)。其餘支線請照做,或者由某一條線把 `StringCatalogTest` 改成掃 `strings*.xml`(那會改到共用測試,誰做誰在這裡說一聲,免得四份同時改)。`
+  `另外實測到一個更細的坑:譯者把 `%2$s` 打成 `%2s` 時,Java 的 Formatter **不會丟例外**,它當成「寬度 2 的無編號轉換」然後安靜地取了下一個參數 —— 畫面上該出現第二個參數的地方出現第一個,長度標點語氣全都正常。「位置參數集合相同」與「填得起來」兩條都放它過。要另外守一條「每一個 % 都必須帶編號」。`
+
+- `[2026-08-08] [Android/diag] `docs/theme-format.md` 現在是 Android 單元測試的**宣告輸入**(`android/app/build.gradle.kts` 的 `tasks.withType<Test>`)。`DiagnosticCodeSpecTest` 直接讀 §6.5.1 的碼表跟 `DiagnosticCode` 逐項比對(抄一份常數表會腐爛,而腐爛的方式正好是「規範改了、測試還是綠的」)。不宣告成輸入的話,macOS 端改了碼表 Android 這邊會判 UP-TO-DATE。**規範本身一個字都沒有動。**`
 
 ---
 
