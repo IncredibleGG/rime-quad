@@ -17,6 +17,13 @@
 #   ./publish_apk.sh --notes "更新說明"   # 寫進 version.json 的 notes
 #   ./publish_apk.sh --dir rime/test      # 發到測試路徑(驗證升級流程用)
 #   ./publish_apk.sh --allow-downgrade    # 明知 versionCode 較低仍要發
+#   ./publish_apk.sh --check-only --apk X # 只跑簽章與單調性關卡,不上傳、不需要 rclone
+#
+# --check-only 存在的理由:
+#   CI 每次 push 都該回答「這份 APK 的簽章對不對」,但**不該**每次 push 都發布
+#   (使用者手上的 rime-latest.apk 被無意間覆蓋是災難)。那道簽章檢查已經寫在
+#   這支腳本裡了,再寫第二份遲早會與這一份漂移 —— 兩份檢查不一致時,
+#   會過的那一份說了算,於是嚴格的那一份等於不存在。所以是同一支腳本加旗標。
 #
 set -euo pipefail
 
@@ -27,6 +34,7 @@ REMOTE_SUBDIR="rime"                # 只動 rime/ 底下,bucket 內其他路徑
 UPDATE_LATEST=1
 ALLOW_DIRTY=0
 ALLOW_DOWNGRADE=0
+CHECK_ONLY=0
 NOTES=""
 NOTES_SET=0
 
@@ -36,9 +44,10 @@ while [ $# -gt 0 ]; do
     --no-latest)   UPDATE_LATEST=0; shift ;;
     --allow-dirty) ALLOW_DIRTY=1; shift ;;
     --allow-downgrade) ALLOW_DOWNGRADE=1; shift ;;
+    --check-only)  CHECK_ONLY=1; shift ;;
     --notes)       NOTES="$2"; NOTES_SET=1; shift 2 ;;
     --dir)         REMOTE_SUBDIR="$2"; shift 2 ;;
-    -h|--help)     sed -n '2,22p' "$0"; exit 0 ;;
+    -h|--help)     sed -n '2,29p' "$0"; exit 0 ;;
     *) echo "未知參數: $1" >&2; exit 2 ;;
   esac
 done
@@ -54,7 +63,11 @@ esac
 REMOTE_DIR="r2:tgapk/$REMOTE_SUBDIR"
 
 [ -f "$APK" ] || die "找不到 APK: $APK"
-command -v rclone >/dev/null || die "沒有 rclone。設定見 /home/lc/R2-ACCESS.md"
+# --check-only 不上傳,所以不需要 rclone。CI 的快車道 job 沒有 R2 憑證也該能
+# 回答「簽章對不對」—— 把 rclone 當成硬性前提會逼人另寫一份寬鬆的檢查。
+if [ "$CHECK_ONLY" -eq 0 ]; then
+  command -v rclone >/dev/null || die "沒有 rclone。設定見 /home/lc/R2-ACCESS.md"
+fi
 
 cd "$ROOT"
 SHA="$(git rev-parse --short HEAD)"
@@ -86,8 +99,27 @@ SHA256="$(sha256sum "$ROOT/release/$NAME" | cut -d' ' -f1)"
 # versionCode / versionName **從 APK 本身讀**,不從 build.gradle.kts 猜。
 # 那份檔案裡的推導邏輯改了、或有人用 -Prime.versionCode 覆寫了,唯一可信的
 # 來源就只剩 APK 自己。version.json 說的必須是使用者裝下去真正會拿到的東西。
-AAPT="$HOME/Android/Sdk/build-tools/35.0.0/aapt2"
-[ -x "$AAPT" ] || die "找不到 aapt2($AAPT),無法讀出 APK 的 versionCode"
+
+# build-tools 的位置不能寫死成 `$HOME/Android/Sdk/build-tools/35.0.0`。
+# 那條路徑只在那一台 Ubuntu 上成立,而「只有那一台機器發得了版」正是
+# 這支腳本現在要拆掉的單點。CI runner 的 SDK 在 $ANDROID_SDK_ROOT,
+# 版本也不保證是 35.0.0。找不到就中止,不猜。
+find_build_tool() {
+  local tool="$1" sdk d
+  for sdk in "${ANDROID_SDK_ROOT:-}" "${ANDROID_HOME:-}" "$HOME/Android/Sdk"; do
+    [ -n "$sdk" ] && [ -d "$sdk/build-tools" ] || continue
+    for d in $(ls -1 "$sdk/build-tools" 2>/dev/null | sort -Vr); do
+      if [ -x "$sdk/build-tools/$d/$tool" ]; then
+        printf '%s' "$sdk/build-tools/$d/$tool"; return 0
+      fi
+    done
+  done
+  return 1
+}
+AAPT="${RIME_AAPT2:-$(find_build_tool aapt2 || true)}"
+[ -n "$AAPT" ] && [ -x "$AAPT" ] \
+  || die "找不到 aapt2(找過 \$ANDROID_SDK_ROOT、\$ANDROID_HOME、~/Android/Sdk 底下的
+build-tools)。沒有它讀不出 APK 的 versionCode,也驗不了簽章 —— 拒絕繼續。"
 BADGING="$("$AAPT" dump badging "$ROOT/release/$NAME" 2>/dev/null)" \
   || die "aapt2 讀不了這個 APK,多半是壞檔"
 VERSION_CODE="$(printf '%s' "$BADGING" | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p" | head -1)"
@@ -146,14 +178,59 @@ lineage_chain() {
 }
 
 # 取出某個 SDK 區間下實際生效的簽章者
+#
+# ⚠ apksigner 的輸出格式跟 build-tools 版本走,而**本機與 CI 的 build-tools
+#   不會永遠一樣**。實測到的兩種:
+#
+#     舊(build-tools 35 / 36.1):
+#       Signer #1 certificate SHA-256 digest: 444b…
+#     新(GitHub runner 上的那一版):
+#       V3.0 Signer: certificate SHA-256 digest: 444b…
+#       V2 Signer: certificate SHA-256 digest: 6aaa…
+#
+#   原本只認舊格式,於是 CI 建的 APK 明明**簽得完全正確**(digest 一字不差)
+#   卻被判成「沒有簽章者」。一個把好的建置擋下來的檢查,下場通常是被人
+#   整個關掉 —— 那才是真正的損失。
+#
+#   兩種格式的語意不同,要分開處理:
+#     · 舊格式的 `Signer #1` 已經是 apksigner 幫你算好的「這個區間實際生效
+#       的簽章者」,直接取。
+#     · 新格式是把**每一個簽章方案**各印一行。Android 會挑它支援的最高
+#       版本,所以有效簽章者是印出來的方案裡版本號最大的那一個
+#       (28+ 看到 V2=舊金鑰 與 V3.0=新金鑰,實際生效的是 V3.0)。
+#
+#   而且抓不到時要把 apksigner 說了什麼原封不動印出來:「讀不出來」與
+#   「簽錯了」是完全不同的兩件事,不能都報成同一句 —— 上一版就是這樣,
+#   於是排查時完全看不出來問題其實出在解析器。
 signer_in_range() {
   local out digest
   out="$("$APKSIGNER" verify --min-sdk-version "$2" --max-sdk-version "$3" \
-          --print-certs "$1" 2>/dev/null || true)"
-  digest="$(printf '%s\n' "$out" \
-            | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')"
-  # 只取第一行。不用 head,避免 SIGPIPE 配上 pipefail 變成間歇性失敗。
-  printf '%s' "${digest%%$'\n'*}"
+          --print-certs "$1" 2>&1 || true)"
+  digest="$(printf '%s\n' "$out" | python3 -c '
+import re, sys
+plain, schemes = [], []
+for line in sys.stdin:
+    m = re.match(r"^Signer (?:\([^)]*\) )?#\d+ certificate SHA-256 digest: (\S+)", line)
+    if m:
+        plain.append(m.group(1))
+        continue
+    m = re.match(r"^V(\d+(?:\.\d+)?) Signer: certificate SHA-256 digest: (\S+)", line)
+    if m:
+        schemes.append((float(m.group(1)), m.group(2)))
+if plain:
+    print(plain[0])
+elif schemes:
+    print(max(schemes)[1])
+')"
+  digest="${digest%%$'\n'*}"
+  if [ -z "$digest" ]; then
+    {
+      echo "  ── apksigner verify --min-sdk-version $2 --max-sdk-version $3 的完整輸出 ──"
+      printf '%s\n' "$out" | sed 's/^/    /'
+      echo "  ──────────────────────────────────────────────────────────────"
+    } >&2
+  fi
+  printf '%s' "$digest"
 }
 
 REF_CHAIN="$(lineage_chain "$LINEAGE_REF")"
@@ -232,6 +309,17 @@ else
   echo "  線上版本    : 讀不到(第一次發布,或線上還是舊格式的 version.json)"
 fi
 
+# --check-only 到這裡就結束:簽章鏈、API 28+ 與 26–27 的簽章者、
+# 以及 versionCode 單調性都已經查過了,而這四項就是「發出去會不會害既有
+# 使用者裝不上來」的全部。剩下的是上傳,那需要 R2 憑證,而且必須是人主動要的。
+if [ "$CHECK_ONLY" -eq 1 ]; then
+  echo
+  echo "=== --check-only:關卡通過,沒有上傳任何東西 ==="
+  echo "  這份 APK 的簽章與正式金鑰同鏈,versionCode $VERSION_CODE 可以覆蓋線上版本。"
+  echo "  要真的發布請手動觸發 publish(不帶 --check-only)。"
+  exit 0
+fi
+
 # ---------------------------------------------------------------- 上傳 ---
 upload() {
   local src="$1" dst="$2"
@@ -297,7 +385,14 @@ fi
 verify "$BASE_URL/$REMOTE_SUBDIR/version.json" "" || FAIL=1
 
 # 確認拿到的真的是 APK 而不是錯誤頁面
-MAGIC="$(curl -sS -r 0-3 "$BASE_URL/$REMOTE_SUBDIR/$NAME" | xxd -p 2>/dev/null || true)"
+# xxd 來自 vim-common,不是每台機器都有(CI runner 就不保證)。
+# 缺了它時 MAGIC 會是空字串,而空字串 != 504b0304 → 這一關會報一個
+# 看起來像「R2 傳回壞檔」的假失敗。所以退回 od(coreutils,一定有)。
+if command -v xxd >/dev/null 2>&1; then
+  MAGIC="$(curl -sS -r 0-3 "$BASE_URL/$REMOTE_SUBDIR/$NAME" | xxd -p 2>/dev/null || true)"
+else
+  MAGIC="$(curl -sS -r 0-3 "$BASE_URL/$REMOTE_SUBDIR/$NAME" | od -An -tx1 -v 2>/dev/null | tr -d ' \n' || true)"
+fi
 if [ "$MAGIC" = "504b0304" ]; then
   echo "  [OK] 檔頭是 PK\\x03\\x04,確實是 zip/APK"
 else

@@ -111,6 +111,13 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
 - `[2026-08-08] [macOS] 改了共用的 scripts/collect_data.sh(原屬協調端)→ 已完成,經使用者指示。詞庫檢查的抽取器 grep -oP '...\K...' 是 GNU/PCRE 專屬,BSD grep(macOS)直接 exit 2 拒絕,而 2>/dev/null + || true + process substitution 三層消音把證據抹掉,於是它在 macOS/BSD 上**每次都印「所有 schema 引用的詞庫都齊全」而完全沒有檢查**(已在真 macOS 上以兩本刻意缺席的詞庫重現)。改用 awk,並加上「抽到 0 個引用就 die」。⚠ Windows 端也跑這支,行為改變請知悉:產出資料不變,只是檢查真的會檢查了。注意 \K 是 PCRE 專屬,只拿掉 -P 不能修。`
 - `[2026-08-08] [macOS] Android 的 CI 目前是紅的,且與 macOS 無關:build.yml 的「建 host 版 opencc」步驟需要 third_party/librime/deps/opencc 的**原始碼**,但 third_party/librime/ 是 gitignore 的,該 workflow 又沒有任何步驟去取得它 → CMake Error: source directory does not exist。在我第一個 commit 之前就已經是紅的(run #4)。Android 端請自行確認,我沒有動 android/。`
 - `[2026-08-08] [macOS] CMake 4 的已知問題只中了一半:Android 的 build_native.sh 註記「CMake 4 移除 FindBoost **且** 對舊的 cmake_minimum_required 下限更嚴」。macOS runner 是 cmake 4.4.0,實測只有前者成立 —— 補一份 25 行的 header-only FindBoost 墊片(apple/scripts/build_macos.sh 的 create_findboost_shim)就過了,下限問題在這組釘死的依賴版本上沒有重現。Windows 端不必為此釘 CMake 3.x。`
+- `[2026-08-08] [Android] 未實作的動詞不該出現在畫面上。emoji 是這一類:ActionVerb.EMOJI 在 Android 只有一行 log,而 §8.6.6.1 的規範性預設工具列把 emoji 列為預設項,於是 12 份主題全部長出一顆按了沒反應的鍵 → Android 的做法是不刪規範也不刪 YAML,改由渲染端宣告「本端不支援哪些 verb」:工具列項目不渲染,佈局按鍵改由建置期測試擋下。桌面端哪天實作了表情面板,它自己會回來。請 macOS 動 §9.5 時把這條寫進規範`
+- `[2026-08-08] [Android] Diagnostic.message 目前是自由文字,要上畫面就得在地化,但 §6.2 要求「同一份壞檔案四端報一樣多則」,翻譯過的字面沒辦法拿來比對 → Android 提議改成穩定的 code + args(message 降級為開發者用的英文回退),UI 端才查表成當地語言。這會動到 §6.2 的診斷模型,桌面端還沒開始實作,現在改代價最低`
+- `[2026-08-08] [Android] 無障礙朗讀名稱目前只能由 icon／verb／keysym 反推,CJK 佈局上「々」這種鍵反推不出合理讀法 → Android 先做本端對照表、不動格式；但格式長期可能需要一個選用的 per-key 朗讀名欄位,留給 macOS 撞到候選窗無障礙時一起定`
+- `[2026-08-08] [協調] 發布流程整條搬上 GitHub Actions,那台 Ubuntu 不再是發版的必要條件。簽章金鑰與 R2 憑證都進了 GitHub Secrets(要重設時跑 scripts/gh_set_secrets.py,它只印名稱不印值;GitHub 的 secrets API 不收明文,要用 repo 公鑰做 libsodium sealed box 加密)。.github/workflows/build.yml 拆成 fast(每次 push)/ emulator(推 main 或手動)/ publish(**只有手動觸發且勾了 publish 才跑**)。**其他端請知悉共用腳本的介面變動**:release_check.sh 多了 --emu-only、--strict(略過一律算失敗)、--apk <path>;publish_apk.sh 多了 --check-only(只驗簽章與版本單調性,不上傳、不需要 rclone);兩支腳本的 build-tools 路徑不再寫死 ~/Android/Sdk/build-tools/35.0.0,改成在 $ANDROID_SDK_ROOT / $ANDROID_HOME / ~/Android/Sdk 底下找版本最高的一份`
+- `[2026-08-08] [協調] **工具的輸出格式不是穩定介面**,這一輪被咬了一次:apksigner verify --print-certs 在本機(build-tools 35 與 36.1)印的是「Signer #1 certificate SHA-256 digest:」,在 GitHub runner 上印的卻是每個簽章方案各一行的「V3.0 Signer: certificate SHA-256 digest:」。digest 一字不差,但解析器認不出來,於是**簽得完全正確的 APK 被判成「沒有簽章者」而擋下發布**。新格式要取版本號最大的那一個:Android 挑它支援的最高方案,輪替後新金鑰在 v3、舊金鑰同時還留在 v1/v2,取錯就是驗錯一把。桌面端日後驗 codesign 或憑證鏈時會踩到同一類問題 —— **別台機器上的同一支工具不保證印一樣的字**,而且失敗的樣子會像「東西壞了」而不是「我讀錯了」`
+- `[2026-08-08] [協調] versionCode 撞號已修,**Android 端不必改任何檔案**。build.gradle.kts 由 HEAD commit 時間推導 yyMMddHH,精確到小時 —— 同一小時內的兩個 commit 同號,而 publish_apk.sh 的單調性護欄會因此擋下發布(手動側載的節奏撞不到,CI 一定撞得到,而且已經撞到了)。解法走的是 build.gradle.kts 早就留好的 -Prime.versionCode 覆寫入口:scripts/ci_version_code.sh 取 max(commit 推導值, 線上已發布的 version_code + 1),保證單調而且自我修復。CI 把它寫進 $HOME/.gradle/gradle.properties 而不是 android/gradle.properties —— 後者在版控裡,寫進去會讓工作區變髒,而那正是發布關卡第 1 關要擋的東西`
+- `[2026-08-08] [協調] 「按住」那一類缺陷 CI 現在驗得到了:scripts/verify_longpress.sh。adb shell input tap 的 down/up 幾乎沒有間隔,「按下之後按鍵永久變灰」用 tap 一次都重現不出來,要用 input swipe(起訖同點)按住 100ms 以上。判定不能靠 uiautomator dump:鍵盤是 TYPE_INPUT_METHOD 的另一個視窗,dump 不出它的節點(見 docs/accessibility.md),所以改成比對鍵盤矩形的像素,而矩形從 dumpsys input_method 的 touchableRegion 讀、不寫死座標。比對器本身每次都被植入一塊一顆鍵大小的灰塊,抓不到就判自己失敗。**桌面端的滑鼠事件同理**:按住與點一下走的是不同的程式路徑,只驗點一下等於沒驗`
 
 - `[2026-08-08] [Windows] 候選窗規範的缺口,實作桌面候選窗時撞到的。我沒有改 docs/theme-format.md（規範所有權在 macOS 端），以下照 §2 回報：`
   1. **`§8.6.7 max_width` 的溢出行為寫的是「換行／截斷,由實作決定」。**
@@ -153,20 +160,39 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
   中途 commit 騙過去;另有一個**反向測試**步驟故意餵錯的預期值,斷言不判失敗就讓 CI 紅。
   另驗四個方案都部署成功、執行期資料齊全。核心產物打包上傳(apple/scripts/package_core.sh)。
   **尚未開始:IMKit、候選窗、Swift 綁定 —— 下一輪。CI 沒有圖形工作階段,驗不了 UI。**
-- **Windows** — 核心層已綠,TSF 輸入法已寫出但**沒有人在真 Windows 上用過**。
-  瘦 DLL(`rime_tsf.dll`,只做 TSF 協議 + 按鍵映射 + IPC,不含 librime)
-  加獨立服務進程(`rime_service.exe`,rime_shell + librime + 候選窗),
-  兩者以具名管道通訊(DACL 只授權目前使用者的 SID)。
+- **Windows** — 核心層已綠,**TSF 輸入法已寫出但沒有人在真 Windows 上用過**。
+
+  第一個里程碑(核心層,協調端整理的那一段,保留):
+  `windows-latest`(windows-2025-vs2026 / MSVC 14.51)上以 MSVC 從原始碼建
+  librime 1.17.0 + 5 個依賴,`tools/rime_console.cc` 斷言
+  `nihao → 你好`(luna_pinyin_tw)與 `su3cl3 → 你好`(bopomofo_tw)兩組;
+  比對錨定 `^>>> COMMIT: ` 的最後一行且完全相等(只 grep「你好」會放過「你好嗎」),
+  並先 `tr -d '\r'` —— MSVC 的 CRT 寫的是 CRLF,留著 CR 會讓比對失敗成
+  「你好 != 你好」。斷言以竄改過的日誌反向測過五種失敗都會紅。
+  另斷言 keysym 正反查(`BackSpace → 0x00FF08`、未知鍵名 → 0)—— `rime_shell.cc`
+  重宣告的那兩個私有符號靠 C++ mangling 對上,連得起來不等於接到對的函式。
+  **產生器用 Ninja + vcvars,不要換回 Visual Studio 產生器**:VS 產生器的名字帶著
+  VS 版本號,會把 CMake 版本與 runner 的 VS 版本綁死,第一版就是這樣掛掉的。
+
+  第二個里程碑(TSF,本輪):瘦 DLL(`rime_tsf.dll`,只做 TSF 協議 + 按鍵映射
+  + IPC,**不含 librime**)加獨立服務進程(`rime_service.exe`,rime_shell +
+  librime + 候選窗),兩者以具名管道通訊(DACL 只授權目前使用者的 SID)。
   按鍵映射不用常數表 —— 會產生字元的鍵一律問 `ToUnicodeEx(..., hkl)`,
   並以**真實**的德文/法文佈局在 CI 上驗證(`LoadKeyboardLayout`)。
-  CI 兩個 job:`logic-x64`(不需 librime,約 3 分鐘)與 `core-x64`,run #21 全綠。
-  驗到的:編得起來、四個 COM 匯出正好那四個、`rime_tsf.dll` 的相依正好是
+  CI 分成兩個 job:`logic-x64`(不需 librime,約 3 分鐘)與 `core-x64`。
+  新驗到的:四個 COM 匯出正好那四個、`rime_tsf.dll` 的相依正好是
   kernel32/user32/advapi32/ole32(守 `/MT`,沒有任何 CRT DLL)、
-  58 個單元測試 815 個斷言 + 反向測試、既有的 `rime_console` 核心驗證不回歸、
-  以及**經由真的具名管道**驅動服務以 luna_pinyin_tw 打出「你好」。
-  **驗不到的(清單見 `windows/README.md`「沒有被驗證的部分」):**
-  regsvr32 註冊、TSF 組字、候選窗的樣子、在記事本/瀏覽器裡真的打得出字。
+  58 個單元測試 815 個斷言 + 反向測試、以及**經由真的具名管道**驅動服務
+  以 luna_pinyin_tw 打出「你好」。既有的 `rime_console` 核心驗證不回歸。
+
+  **驗不到的(完整清單見 `windows/README.md`「沒有被驗證的部分」):**
+  regsvr32 註冊、TSF 的 Activate 與組字、候選窗的樣子與位置、
+  在記事本/瀏覽器/Office 裡真的打得出字、每一顆鍵是不是都做了它宣稱的事。
   **CI 綠不等於能用 —— 需要有人在真 Windows 上跑一遍。**
-  已知缺口:只有 x64、沒有修飾鍵事件(TSF 不給)、沒有顯示屬性、
-  沒有系統匣與安裝程式、沒有 librime-lua。
+
+  已知缺口:只有 x64(arm64 未做)、TSF 不給純修飾鍵事件(所以按 Shift 切中英
+  做不到)、沒有顯示屬性(組字底線)、沒有系統匣與安裝程式、
+  **沒有編 librime-lua**(倚賴 lua_translator/lua_filter 的第三方方案會部署成功
+  卻沒有候選;`windows/build.sh` 有一道守門,日後掛上 lua 而沒帶 sandbox patch
+  會擋下建置)。
 - **iOS** — 未開始。

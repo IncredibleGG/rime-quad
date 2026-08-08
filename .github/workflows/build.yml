@@ -1,18 +1,31 @@
 name: Android
 
-# 為什麼這個 workflow 看起來比一般 Android 專案複雜:
+# 這個 workflow 是整條發布流程,不只是「編得起來嗎」。
 #
-#   這個 App 的 assets 裡有 13MB 的輸入方案資料（詞庫、語言模型、opencc 詞典），
-#   而那些資料是**產生出來的**，不在版控裡（見 .gitignore）。少了它們，建置照樣
-#   會成功，但產出的是一個「裝得起來、鍵盤畫得出來、一個字都打不出來」的輸入法
-#   —— 而且沒有任何建置錯誤會提醒你。
+# ── 為什麼要這樣拆 ──────────────────────────────────────────────────────
+# 原本正式發布只能在一台 Ubuntu 上做,因為簽章金鑰與 rclone 設定只在那裡。
+# 那台機器是單點:它掛掉,使用者就再也收不到更新。現在金鑰與 R2 憑證都在
+# GitHub Secrets(見 scripts/gh_set_secrets.py),所以建置、驗證、發布都在這裡。
 #
-#   所以下面第 3、4 步不是可選的:先取得上游方案原始資料（版本已釘死），再用
-#   host 版 opencc 產生 .ocd2 詞典（交叉編譯出來的 opencc 是 Android 執行檔，
-#   在 CI 上跑不了，這一步必須用 host 編一份）。
+#   fast      每次 push 都跑。單元測試、建置、APK 內容、離線稽核、簽章關卡。
+#             ~8 分鐘。
+#   emulator  推上 main 或手動觸發才跑。模擬器上的核心層、實體按鍵輸入、
+#             **按住**回歸、以及升級路徑。~25 分鐘。
+#   publish   **只有手動觸發**才跑,而且要勾 publish=true。
+#             使用者手上的 rime-latest.apk 被無意間覆蓋是災難,所以不做成
+#             push 就發。
 #
-#   librime 與其依賴的靜態庫（third_party/prebuilt/）**有進版控**，所以這裡不必
-#   重新交叉編譯 —— 那是 native.yml 的工作。
+# 拆成快慢兩條不是為了少驗東西:scripts/release_check.sh 的 16 項被
+# `--skip-emu` 與 `--emu-only` 切成兩半,兩條加起來仍是原本那 16 項,
+# 而且兩條都帶 `--strict`(略過一律算失敗)。publish 的 needs: 同時掛著兩條,
+# 所以「沒驗到就發出去」在結構上做不到。
+#
+# ── 這個 workflow 為什麼看起來比一般 Android 專案複雜 ────────────────────
+# 這個 App 的 assets 裡有 13MB 的輸入方案資料(詞庫、語言模型、opencc 詞典),
+# 而那些資料是**產生出來的**,不在版控裡(見 .gitignore)。少了它們,建置照樣
+# 會成功,但產出的是一個「裝得起來、鍵盤畫得出來、一個字都打不出來」的輸入法
+# —— 而且沒有任何建置錯誤會提醒你。所以下面取上游資料與建 host 版 opencc
+# 那兩步不是可選的。
 
 on:
   push:
@@ -20,54 +33,60 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: '發布到 R2(會覆蓋使用者手上的 rime-latest.apk)'
+        type: boolean
+        default: false
+      remote_dir:
+        description: '發布路徑。只接受 rime 或 rime/ 底下(bucket 內其他路徑屬於別的專案)'
+        type: string
+        default: 'rime'
+      notes:
+        description: 'version.json 的更新說明。留空 = 取 HEAD commit 的標題行'
+        type: string
+        default: ''
 
 concurrency:
   group: android-${{ github.ref }}
-  cancel-in-progress: true
+  # 手動觸發的那一輪可能正在發布。被後來的 push 取消掉會留下一個傳到一半的
+  # R2:rime-latest.apk 換了、version.json 還沒換,而使用者的 app 讀的是後者。
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+env:
+  R2_BASE_URL: https://pub-d6a54d2e5f5947e2b0b23fb8e27ce0a5.r2.dev
+  APK_PATH: android/app/build/outputs/apk/debug/app-debug.apk
 
 jobs:
-  build:
+  # ══════════════════════════════════════════════════════════════ 快車道 ══
+  fast:
+    name: 快車道(每次 push)
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    outputs:
+      version_code: ${{ steps.vc.outputs.code }}
 
     steps:
       - name: 取出原始碼
         uses: actions/checkout@v4
 
-      - name: 設定 JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
+      - name: 設定 Android 建置環境
+        uses: ./.github/actions/setup-android
 
-      - name: 設定 Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: 安裝 NDK 與 CMake
-        run: |
-          # 版本必須與 third_party/prebuilt/manifest.json 記錄的一致 ——
-          # 那些 .a 就是用這個 NDK 編出來的，混用會出現難查的 ABI 問題。
-          sdkmanager --install "ndk;27.2.12479018" "cmake;3.22.1" > /dev/null
-          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
-
-      - name: 取得方案原始資料（版本已釘死）
+      - name: 取得方案原始資料(版本已釘死)
         run: ./scripts/fetch_rime_data.sh
 
-      - name: 取得 librime 原始碼（版本已釘死）
+      - name: 取得 librime 原始碼(版本已釘死)
         run: |
-          # third_party/librime/ 在 .gitignore 裡（那是上游的原始碼，不進本倉庫），
-          # 所以 CI 上必須自己取。少了這一步，下一步的 cmake 會直接說
-          # 「The source directory ... does not exist」——這個 workflow 從來沒有
-          # 在乾淨的機器上成功過，只是以前沒有人看紅燈。
-          #
-          # 只取 opencc:APK 建置本身用的是 third_party/prebuilt/ 底下已進版控的 .a，
-          # 不需要重編 librime；這裡要 opencc 只是為了產生 .ocd2 詞典。
+          # third_party/librime/ 在 .gitignore 裡(那是上游的原始碼,不進本倉庫),
+          # 所以 CI 上必須自己取。只取 opencc:APK 建置本身用的是
+          # third_party/prebuilt/ 底下已進版控的 .a,這裡要 opencc 只是為了產 .ocd2。
           ./scripts/fetch_librime.sh opencc
 
       - name: 建 host 版 opencc 以產生詞典
         run: |
           # 交叉編譯時 opencc 的 Dictionaries target 會執行剛編出來的 Android 版
-          # opencc_dict，在交叉環境必炸，所以那一步被繞開了。.ocd2 只能用 host 版產生。
+          # opencc_dict,在交叉環境必炸,所以那一步被繞開了。.ocd2 只能用 host 版產生。
           cmake -S third_party/librime/deps/opencc -B third_party/build/host-opencc \
                 -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
                 -DENABLE_GTEST=OFF -DENABLE_BENCHMARK=OFF -DBUILD_PYTHON=OFF \
@@ -79,44 +98,244 @@ jobs:
       - name: 組裝執行期資料
         run: ./scripts/collect_data.sh
 
-      - name: 離線稽核（確認沒有第二個連網出口）
-        run: ./scripts/audit_offline.sh
+      - name: 還原簽章環境(正式金鑰 + 輪替鏈)
+        uses: ./.github/actions/restore-signing
+        with:
+          keystore-base64:       ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          keystore-password:     ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          key-alias:             ${{ secrets.ANDROID_KEY_ALIAS }}
+          key-password:          ${{ secrets.ANDROID_KEY_PASSWORD }}
+          lineage-base64:        ${{ secrets.ANDROID_LINEAGE_BASE64 }}
+          old-keystore-base64:   ${{ secrets.ANDROID_OLD_KEYSTORE_BASE64 }}
+          old-key-alias:         ${{ secrets.ANDROID_OLD_KEY_ALIAS }}
+          # old-keystore-password / old-key-password 刻意不從 Secrets 來:
+          # 那是 Android 工具的公開常數 "android",設成 secret 只會讓
+          # GitHub 把日誌裡每一個 "android" 遮成 ***。見 restore-signing 的註解。
 
-      - name: 單元測試
-        run: ./gradlew --console=plain :app:testDebugUnitTest
-        working-directory: android
-
-      - name: 建置 APK
-        run: ./gradlew --console=plain :app:assembleDebug
-        working-directory: android
-
-      - name: 確認 APK 真的含有方案資料
+      - name: 決定 versionCode
+        id: vc
         run: |
-          # 這一步存在的理由見檔頭:少了 assets，前面每一步都會成功。
-          APK=android/app/build/outputs/apk/debug/app-debug.apk
-          LIST="$(unzip -l "$APK")"
-          fail=0
-          for want in 'assets/rime/shared/essay.txt' 'lib/arm64-v8a/' 'lib/x86_64/'; do
-            case "$LIST" in *"$want"*) echo "  ✓ $want" ;;
-              *) echo "  !! 缺少 $want" >&2; fail=1 ;;
-            esac
-          done
-          n="$(printf '%s\n' "$LIST" | grep -c 'assets/rime/.*\.yaml' || true)"
-          echo "  隨附 yaml: $n"
-          [ "$n" -gt 0 ] || { echo "  !! assets 裡沒有任何 yaml" >&2; fail=1; }
-          exit $fail
+          set -euo pipefail
+          # 版本號要以**這次要發到哪裡**的線上版本為基準。手動觸發若指定了
+          # rime/test,基準就該是 rime/test/version.json ——
+          # 拿正式路徑的號碼去比,測試路徑上那個刻意調高的版號會把發布擋下,
+          # 而那個失敗跟「這份建置有問題」一點關係都沒有。
+          TARGET_DIR="${{ inputs.remote_dir || 'rime' }}"
+          CODE="$(./scripts/ci_version_code.sh --dir "$TARGET_DIR")"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          # 為什麼寫進 $HOME/.gradle 而不是 android/gradle.properties:
+          # 後者在版控裡,寫進去會讓工作區變髒,而 release_check.sh 第 1 關
+          # 正是「工作區乾淨,APK 對得上 commit」—— 為了設一個版本號而把那一關
+          # 弄紅,或更糟、為此把那一關拿掉,都不划算。
+          # Gradle 會把 $GRADLE_USER_HOME/gradle.properties 當成 project property。
+          mkdir -p "$HOME/.gradle"
+          echo "rime.versionCode=$CODE" >> "$HOME/.gradle/gradle.properties"
+          echo "本次 versionCode = $CODE"
+
+      - name: 發布關卡(不需要模擬器的部分)
+        run: ./scripts/release_check.sh --skip-emu --strict
+
+      - name: 簽章與單調性關卡(沿用 publish_apk.sh 的檢查)
+        run: |
+          # 不另寫一套簽章檢查。publish_apk.sh 裡那三項(輪替鏈逐一相符、
+          # API 28+ 的簽章者是鏈上最後一把、API 26–27 的簽章者是鏈的根)
+          # 就是「發出去會不會害既有使用者裝不上來」的全部。
+          # 寫第二份遲早會與這一份漂移,而漂移時會過的那一份說了算。
+          ./scripts/publish_apk.sh --check-only --apk "$APK_PATH"
 
       - name: 上傳 APK
+        # 關卡紅了的時候更需要拿到那份 APK —— 「簽章不對」這種判定,
+        # 不把檔案撈下來親自驗一次是查不出原因的。
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug-${{ github.sha }}
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: rime-apk
+          path: ${{ env.APK_PATH }}
+          if-no-files-found: error
+
+      - name: 上傳執行期資料(給模擬器那條車道用)
+        uses: actions/upload-artifact@v4
+        with:
+          # 模擬器 job 的核心層測試要把這 13MB 推到裝置上。重跑一次
+          # fetch + opencc 也可以,但那樣驗到的就不是這份 APK 裡的那批資料了。
+          name: rime-runtime-data
+          path: core/data
           if-no-files-found: error
 
       - name: 上傳測試報告
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results-${{ github.sha }}
-          path: android/app/build/reports/tests/
+          name: test-results
+          path: |
+            android/app/build/reports/tests/
+            build/release-check/
+          if-no-files-found: ignore
+
+  # ════════════════════════════════════════════════════════════ 慢車道 ══
+  emulator:
+    name: 慢車道(模擬器驗證)
+    needs: fast
+    # 每次 push 都開模擬器太慢,會逼人繞過 CI。推上 main 與手動觸發時跑,
+    # 而 publish 掛在它後面 —— 所以「發布前沒驗過」做不到。
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: 取出原始碼
+        uses: actions/checkout@v4
+
+      - name: 設定 Android 建置環境
+        uses: ./.github/actions/setup-android
+
+      - name: 取回快車道建好的 APK
+        uses: actions/download-artifact@v4
+        with:
+          name: rime-apk
+          path: android/app/build/outputs/apk/debug
+
+      - name: 取回執行期資料
+        uses: actions/download-artifact@v4
+        with:
+          name: rime-runtime-data
+          path: core/data
+
+      - name: 取回線上正在服役的 APK(當作升級測試的「舊版」)
+        run: |
+          set -euo pipefail
+          # 這一步是整條流程的決定性驗收所需:release/ 底下這一份是**在那台
+          # Ubuntu 上、用同一把金鑰簽的**、而且正是使用者手機上裝著的那一份。
+          # release_check.sh 第 6c 關會先把它裝上去、讓它種下資料,再用 CI 建的
+          # APK 覆蓋安裝。裝得上去 = CI 的簽章確實與本機同一條鏈。
+          mkdir -p release
+          curl -fsSL --retry 3 -o release/rime-online-latest.apk \
+            "$R2_BASE_URL/rime/rime-latest.apk"
+          ls -l release/
+          "$(ls -d "$ANDROID_SDK_ROOT"/build-tools/*/ | sort -Vr | head -1)aapt2" \
+            dump badging release/rime-online-latest.apk | grep -E "^package:"
+
+      - name: 建輸入測試靶 APK
+        run: ./scripts/build_testapp.sh
+
+      - name: 啟用 KVM(沒有它模擬器會慢到超時)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: 模擬器上的發布關卡
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          ram-size: 4096M
+          disk-size: 8192M
+          force-avd-creation: false
+          # -no-snapshot:每一輪都要是全新的機器。帶著上一輪殘留的狀態驗證
+          # 會同時製造假失敗(別條線改過預設方案)與假通過(舊資料掩蓋了
+          # 首次部署的問題),而使用者拿到的是全新安裝。
+          emulator-options: >-
+            -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+            -no-snapshot -camera-back none
+          disable-animations: true
+          # ⚠ 這個 script 是被 /bin/sh(在 runner 上是 dash)執行的,不是 bash。
+          #   `set -o pipefail` 在 dash 不存在,寫了會直接
+          #   `set: Illegal option -o pipefail` 然後退出 2 —— 而那個失敗看起來
+          #   像模擬器有問題。所以這裡只用 POSIX 的 set -eu,真正的邏輯交給
+          #   release_check.sh(它自己的 shebang 是 bash)。
+          script: |
+            set -eu
+            RIME_SERIAL=emulator-5554; export RIME_SERIAL
+            ANDROID_SERIAL=emulator-5554; export ANDROID_SERIAL
+            adb wait-for-device
+            # release_check 的第 5–7 關。--strict:略過一律算失敗。
+            # 這一條的綠燈不是「發布關卡通過」,只是它的一半 —— 腳本自己會說。
+            bash ./scripts/release_check.sh --emu-only --strict
+
+      - name: 上傳模擬器 artifact(截圖、logcat、升級紀錄)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emulator-artifacts
+          path: build/release-check/
+          if-no-files-found: ignore
+
+  # ══════════════════════════════════════════════════════════════ 發布 ══
+  publish:
+    name: 發布到 R2(手動觸發)
+    needs: [fast, emulator]
+    # 兩個條件缺一不可:必須是人按下去的,而且必須明確勾了 publish。
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 取出原始碼
+        uses: actions/checkout@v4
+
+      - name: 設定 Android 建置環境(不需要 NDK,只要 aapt2 與 apksigner)
+        uses: ./.github/actions/setup-android
+        with:
+          ndk: 'false'
+
+      - name: 還原簽章環境(這裡只拿 lineage 當比對基準,不重簽)
+        uses: ./.github/actions/restore-signing
+        with:
+          keystore-base64:       ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          keystore-password:     ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          key-alias:             ${{ secrets.ANDROID_KEY_ALIAS }}
+          key-password:          ${{ secrets.ANDROID_KEY_PASSWORD }}
+          lineage-base64:        ${{ secrets.ANDROID_LINEAGE_BASE64 }}
+          old-keystore-base64:   ${{ secrets.ANDROID_OLD_KEYSTORE_BASE64 }}
+          old-key-alias:         ${{ secrets.ANDROID_OLD_KEY_ALIAS }}
+          # old-keystore-password / old-key-password 刻意不從 Secrets 來:
+          # 那是 Android 工具的公開常數 "android",設成 secret 只會讓
+          # GitHub 把日誌裡每一個 "android" 遮成 ***。見 restore-signing 的註解。
+
+      - name: 取回快車道建好的 APK
+        uses: actions/download-artifact@v4
+        with:
+          name: rime-apk
+          path: android/app/build/outputs/apk/debug
+
+      - name: 還原 rclone 的 [r2] 設定
+        env:
+          RCLONE_CONF_B64: ${{ secrets.R2_RCLONE_CONF_BASE64 }}
+        run: |
+          set -euo pipefail
+          [ -n "$RCLONE_CONF_B64" ] || { echo "R2_RCLONE_CONF_BASE64 沒設,發不了" >&2; exit 1; }
+          sudo apt-get update -qq && sudo apt-get install -y -qq rclone
+          umask 077
+          printf '%s' "$RCLONE_CONF_B64" | base64 -d > "$RUNNER_TEMP/rclone.conf"
+          # 只有 [r2] 這一段(gh_set_secrets.py 只抽這一段)。bucket 內其他路徑
+          # 屬於別的專案,publish_apk.sh 另有一道「只准寫 rime/ 底下」的硬性護欄。
+          grep -q '^\[r2\]' "$RUNNER_TEMP/rclone.conf" || { echo "設定裡沒有 [r2] 段" >&2; exit 1; }
+          echo "RCLONE_CONFIG=$RUNNER_TEMP/rclone.conf" >> "$GITHUB_ENV"
+
+      - name: 發布
+        env:
+          NOTES: ${{ inputs.notes }}
+          REMOTE_DIR: ${{ inputs.remote_dir }}
+        run: |
+          set -euo pipefail
+          # publish_apk.sh 自己會做:發布前驗簽章(輪替鏈 + API 28+ + API 26–27)、
+          # versionCode 不得降級、上傳後用 curl 驗證對外網址真的取得到
+          # (HTTP 200 + 大小相符 + 檔頭是 PK\x03\x04 + version.json 讀得到 version_code)。
+          # 這裡不重複那些檢查,也不繞過它們。
+          ARGS=(--apk "$APK_PATH" --dir "$REMOTE_DIR")
+          if [ -n "$NOTES" ]; then ARGS+=(--notes "$NOTES"); fi
+          ./scripts/publish_apk.sh "${ARGS[@]}"
+
+      - name: 上傳這次發布的 version.json
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: published-version
+          path: release/version.json
           if-no-files-found: ignore
