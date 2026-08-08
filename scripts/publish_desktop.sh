@@ -142,35 +142,69 @@ windows)
   cp -R "$ROOT/core/data/shared" "$PKG/data/shared"
   mkdir -p "$PKG/data/user"
 
-  cat > "$PKG/安裝.bat" <<'BAT'
+  # ⚠ 這兩個 .bat 有兩個非寫不可的細節,漏了會「雙擊完全沒反應」:
+  #
+  #   1. **行尾必須是 CRLF。** 用 Linux 的 heredoc 寫出來是 LF,而 cmd.exe 對
+  #      LF-only 的批次檔在 `if errorlevel 1 (` 這種括號區塊上會直接壞掉 ——
+  #      而且是安靜地壞掉,沒有錯誤訊息。
+  #   2. **檔名只能用 ASCII。** Linux 的 zip 不設 UTF-8 檔名旗標,Windows 檔案
+  #      總管解出來的中文檔名是亂碼,雙擊等於在點一個不存在的東西。
+  #
+  # 另外加了自我提權:沒有管理員權限時自己用 PowerShell 重新叫起來,
+  # 而不是印一行「請以系統管理員身分執行」然後關掉 —— 使用者看不到那行字。
+  crlf() { sed -e 's/$/\r/' > "$1"; }
+
+  crlf "$PKG/install.bat" <<'BAT'
 @echo off
+setlocal
 chcp 65001 >nul
-echo.
-echo   RimeQuad 註冊（需要系統管理員權限）
-echo.
+cd /d "%~dp0"
+
 net session >nul 2>&1
 if errorlevel 1 (
-  echo   [x] 請在「以系統管理員身分執行」的命令提示字元裡跑這個檔案。
-  pause & exit /b 1
+  echo 需要系統管理員權限，正在重新啟動...
+  powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+  exit /b
 )
+
+echo.
+echo   RimeQuad 註冊中...
+echo.
+
+if not exist "%~dp0rime_tsf.dll" (
+  echo   [x] 找不到 rime_tsf.dll。請確認整個資料夾都解壓出來了。
+  pause
+  exit /b 1
+)
+
 regsvr32 /s "%~dp0rime_tsf.dll"
 if errorlevel 1 (
-  echo   [x] 註冊失敗。
-  pause & exit /b 1
+  echo   [x] 註冊失敗（regsvr32 回傳錯誤）。
+  pause
+  exit /b 1
 )
-echo   [v] 已註冊。到「設定 - 時間與語言 - 語言與地區」把 RimeQuad 加為輸入法，
-echo       然後用 Win+空白鍵切換。
+
+echo   [v] 已註冊。
+echo.
+echo   接下來：設定 - 時間與語言 - 語言與地區 - 中文 - 選項 - 新增鍵盤
+echo           選 RimeQuad，然後用 Win+空白鍵切換。
+echo.
 pause
 BAT
 
-  cat > "$PKG/移除.bat" <<'BAT'
+  crlf "$PKG/uninstall.bat" <<'BAT'
 @echo off
+setlocal
 chcp 65001 >nul
+cd /d "%~dp0"
+
 net session >nul 2>&1
 if errorlevel 1 (
-  echo   請以系統管理員身分執行。
-  pause & exit /b 1
+  echo 需要系統管理員權限，正在重新啟動...
+  powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+  exit /b
 )
+
 regsvr32 /s /u "%~dp0rime_tsf.dll"
 taskkill /IM rime_service.exe /F >nul 2>&1
 echo   [v] 已移除註冊。使用者詞典在 data\user，要一起刪請自行刪除。
@@ -192,13 +226,13 @@ RimeQuad Windows x64  $STAMP  ($SHORT)
 
   1. 把整個資料夾解壓到一個固定位置（例如 C:\\RimeQuad）。
      ⚠ 之後不要搬動——註冊表記的是這個路徑。
-  2. 右鍵「安裝.bat」→ 以系統管理員身分執行。
+  2. 雙擊 install.bat（它會自己要求管理員權限）。
   3. 設定 → 時間與語言 → 語言與地區 → 中文 → 選項 → 新增鍵盤 → RimeQuad
   4. Win+空白鍵切換輸入法。
 
 移除
 
-  右鍵「移除.bat」→ 以系統管理員身分執行。
+  雙擊 uninstall.bat。
 
 資料夾內容
 
