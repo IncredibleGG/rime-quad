@@ -51,6 +51,13 @@ Android 端釘 cmake 3.22.1 是同一個原因。
 leveldb(宣告 3.9)、opencc(3.12)這些舊 `cmake_minimum_required` 的專案上
 因為 CMP0091=OLD 而無效,得靠後者。
 
+**產生器是 Ninja,不是 Visual Studio 產生器。** VS 產生器的名字裡帶著 VS 的版本號
+(`Visual Studio 17 2022`),等於把 **CMake 版本**和 **runner 上的 VS 版本**綁在
+一起。第一版就是這樣掛掉的:CMake 釘 3.31,而 `windows-latest` 已經換成
+`windows-2025-vs2026` 的映像,3.31 不認得 VS 2026。Ninja 把兩件事解耦 ——
+編譯器由 `vcvars64.bat` 設好的環境決定(`build.sh` 用 `vswhere` 自己找,不寫死
+VS 路徑),CMake 只負責產生規則。上游 librime 自己的 Windows CI 也是 Ninja + MSVC。
+
 **`/utf-8` 不是可選的。** MSVC 預設用系統 ANSI 代碼頁解讀無 BOM 的原始碼,
 也用它當執行字元集。`rime_console.cc` 與 `rime_shell.cc` 都有中文字面值,
 少了這個旗標,字串在編譯階段就已經被解錯 —— 印出來是亂碼,看起來像引擎壞了。
@@ -63,7 +70,7 @@ leveldb(宣告 3.9)、opencc(3.12)這些舊 `cmake_minimum_required` 的專案�
 `marisa.lib` 裝進同一個 prefix,覆蓋掉 `deps/marisa-trie` 的那一份。兩份剛好都是
 0.3.1 所以出不了事,但「誰覆蓋誰」取決於安裝順序 —— 那是會靜默漂移的東西。
 代價是上游在這個模式下沒把 include / lib 路徑接到 target 上(它假設 marisa 在
-系統目錄),要手動以 `/I` 與 `/LIBPATH` 注入,所以**倉庫路徑不得含空白**,
+系統目錄),要手動以 `CMAKE_CXX_STANDARD_INCLUDE_DIRECTORIES` 與 `/LIBPATH` 注入,所以**倉庫路徑不得含空白**,
 `build.sh` 開頭會擋。
 
 **`rime_shell.cc` 重宣告的兩個私有符號真的有被驗到。**
@@ -98,10 +105,6 @@ leveldb(宣告 3.9)、opencc(3.12)這些舊 `cmake_minimum_required` 的專案�
 `scripts/audit_offline.sh` 守著。Windows 端目前不連網,所以還沒有東西要守;
 但一旦加入方案市集或升級檢查,就必須先做出等價的閘門與連網紀錄,
 而且**先確認做得到再寫進文案**(`docs/handoff-windows.md` §6)。
-
-**建置用的是 Visual Studio 產生器,不是 Ninja。** 慢一些(librime 有數百個
-編譯單元),換成 Ninja 需要在 CI 上準備 MSVC 環境變數。可以之後再換,
-但要換得有意識,別為了快而讓建置環境變得難重現。
 
 **主題規範的候選窗缺口還在。** `docs/theme-format.md` §11 列的多欄/表格排版與
 狀態列外觀仍未定義。那份規範由 macOS 端擴充、Windows 端繼承 —— 發現不足要回報,

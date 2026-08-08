@@ -55,9 +55,16 @@ case "${ARCH}" in
   *) die "本輪只支援 x64(收到 ${ARCH})。arm64 是下一個里程碑。" ;;
 esac
 
-# runner 上是 VS 2022。寫死而不讓 CMake 自己挑,是為了讓「runner 換了 VS 版本」
-# 變成一個明確的錯誤,而不是靜默地換一套編譯器。
-CMAKE_GENERATOR_NAME="${CMAKE_GENERATOR_NAME:-Visual Studio 17 2022}"
+# 產生器用 Ninja,不用 Visual Studio 產生器。
+#
+# 這不是為了快(雖然對 librime 那幾百個編譯單元差很多)。VS 產生器的名字裡帶著
+# VS 的版本號("Visual Studio 17 2022"),於是 **CMake 版本** 與 **runner 上的 VS
+# 版本** 被綁在一起:CMake 3.31 不認得 VS 2026,而 GitHub 的 windows-latest 已經
+# 是 windows-2025-vs2026 的映像。第一版就是這樣掛掉的。
+#
+# Ninja 把這兩件事解耦:編譯器由 vcvars 設好的環境決定,CMake 只管產生規則。
+# 上游 librime 自己的 Windows CI 也正是 Ninja + MSVC(見其 windows-build.yml
+# 的 `set CMAKE_GENERATOR=Ninja`),所以這是已知會綠的組合。
 
 BUILD_ROOT="${TP}/build/windows-${ARCH}"
 PREFIX="${BUILD_ROOT}/prefix"
@@ -119,10 +126,92 @@ esac
 
 NPROC="$(nproc 2>/dev/null || echo 4)"
 
+# ---------------------------------------------------------------- MSVC 環境
+# Ninja 需要 cl.exe / link.exe / rc.exe 與 INCLUDE、LIB 都在環境裡 —— 那正是
+# vcvars64.bat 做的事。已經在 Developer Command Prompt 裡的話這一段直接跳過。
+#
+# 不寫死 VS 路徑:用 vswhere 問。runner 的映像換 VS 版本時(這已經發生過一次,
+# 見上面產生器那段),這裡不需要改。
+setup_msvc_env() {
+  if command -v cl.exe >/dev/null 2>&1; then
+    log "MSVC 環境已就緒: $(command -v cl.exe)"
+    return
+  fi
+  local vswhere="/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
+  [ -x "${vswhere}" ] || die "找不到 vswhere:${vswhere}
+  這台機器上沒有 Visual Studio Installer,無法定位 MSVC。"
+  local vsdir
+  vsdir="$("${vswhere}" -latest -products '*' \
+             -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 \
+             -property installationPath | tr -d '\r')"
+  [ -n "${vsdir}" ] || die "vswhere 找不到含 C++ 工具集(VC.Tools.x86.x64)的 Visual Studio"
+  local vcvars="$(cygpath -u "${vsdir}")/VC/Auxiliary/Build/vcvars64.bat"
+  [ -f "${vcvars}" ] || die "找不到 ${vcvars}"
+  log "載入 MSVC 環境: ${vcvars}"
+
+  # 透過暫存 .bat 取環境,而不是 `cmd //c "call ... && set"`:
+  # cmd 對 /c 後面那一整串的引號處理很難預測,而這裡錯了只會得到一堆
+  # 「找不到標頭」的謎樣錯誤。落成檔案就沒有引號問題。
+  mkdir -p "${BUILD_ROOT}"
+  local bat="${BUILD_ROOT}/_vcvars_dump.bat"
+  {
+    printf '@echo off\r\n'
+    printf 'call "%s" >nul\r\n' "$(cygpath -w "${vcvars}")"
+    printf 'set\r\n'
+  } > "${bat}"
+
+  local dump
+  dump="$(cmd //c "$(cygpath -w "${bat}")")" || die "vcvars64.bat 執行失敗"
+
+  local line
+  while IFS= read -r line; do
+    line="${line%$'\r'}"
+    case "${line}" in
+      # cl.exe 直接讀 INCLUDE / LIB / LIBPATH,而且要的是 Windows 形式的路徑,
+      # 所以原樣輸出,不可以經過 cygpath。
+      INCLUDE=*|LIB=*|LIBPATH=*|VSINSTALLDIR=*|VCINSTALLDIR=*|VCToolsInstallDir=*|\
+      WindowsSdkDir=*|WindowsSDKVersion=*|WindowsSdkVerBinPath=*|UCRTVersion=*)
+        export "${line}" ;;
+      # PATH 反過來:bash 這一側要 POSIX 形式,否則 command -v 找不到東西。
+      PATH=*|Path=*)
+        export PATH="$(cygpath -p "${line#*=}")" ;;
+    esac
+  done <<< "${dump}"
+
+  command -v cl.exe >/dev/null 2>&1 \
+    || die "載入 vcvars 之後仍然找不到 cl.exe;環境沒有正確帶進來。"
+  log "cl.exe = $(command -v cl.exe)"
+}
+
+# 上游 librime 的 Windows CI 用 `pip install ninja`。這裡先看 PATH,再看 VS 自帶的
+# 那一份,都沒有才停 —— 不自動安裝,免得建置腳本偷偷改動機器狀態。
+resolve_ninja() {
+  if [ -n "${NINJA:-}" ]; then return; fi
+  if command -v ninja >/dev/null 2>&1; then
+    NINJA="$(command -v ninja)"
+    return
+  fi
+  local vs_ninja
+  vs_ninja="$(cygpath -u "${VSINSTALLDIR:-}")Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe"
+  if [ -n "${VSINSTALLDIR:-}" ] && [ -f "${vs_ninja}" ]; then
+    NINJA="${vs_ninja}"
+    return
+  fi
+  die "找不到 ninja。CI 上由 workflow 以 pip 安裝;本機請自行安裝或設 NINJA=<路徑>。"
+}
+
+setup_msvc_env
+resolve_ninja
+
+# CMake 靠 CC / CXX 選編譯器。不設的話,Git Bash 的 PATH 裡常有 mingw 的 gcc,
+# CMake 會挑到它,然後在連結 MSVC 編出來的靜態庫時以難懂的方式失敗。
+export CC=cl
+export CXX=cl
+
 log "ROOT       = ${ROOT}"
 log "ARCH       = ${ARCH}"
-log "generator  = ${CMAKE_GENERATOR_NAME}"
 log "cmake      = ${CMAKE} (${CMAKE_VER})"
+log "ninja      = ${NINJA}"
 log "librime    = ${LIBRIME_COMMIT:0:8}"
 log "Boost      = ${BOOST_VERSION}"
 log "prefix     = ${PREFIX}"
@@ -275,8 +364,8 @@ ensure_boost() {
 # 上游的 build.bat 也是兩者都傳,照抄。
 common_args() {
   COMMON=(
-    -G "${CMAKE_GENERATOR_NAME}" -A "${ARCH}"
-    "-DCMAKE_CONFIGURATION_TYPES=Release"
+    -G Ninja
+    "-DCMAKE_MAKE_PROGRAM=$(w "${NINJA}")"
     "-DCMAKE_BUILD_TYPE=Release"
     "-DCMAKE_USER_MAKE_RULES_OVERRIDE=$(w "${LIBRIME_SRC}/cmake/c_flag_overrides.cmake")"
     "-DCMAKE_USER_MAKE_RULES_OVERRIDE_CXX=$(w "${LIBRIME_SRC}/cmake/cxx_flag_overrides.cmake")"
@@ -298,11 +387,12 @@ build_one() {
     > "${bdir}.configure.log" 2>&1 \
     || { tail -80 "${bdir}.configure.log"; die "${name} configure 失敗"; }
   log "[${name}] build"
-  "${CMAKE}" --build "$(w "${bdir}")" --config Release --parallel "${NPROC}" \
+  # Ninja 是單組態產生器,組態由 CMAKE_BUILD_TYPE 決定,不傳 --config。
+  "${CMAKE}" --build "$(w "${bdir}")" --parallel "${NPROC}" \
     > "${bdir}.build.log" 2>&1 \
     || { tail -120 "${bdir}.build.log"; die "${name} build 失敗"; }
   log "[${name}] install"
-  "${CMAKE}" --install "$(w "${bdir}")" --config Release \
+  "${CMAKE}" --install "$(w "${bdir}")" \
     > "${bdir}.install.log" 2>&1 \
     || { tail -80 "${bdir}.install.log"; die "${name} install 失敗"; }
 }
@@ -357,7 +447,7 @@ build_deps() {
     -DBUILD_OPENCC_JIEBA_PLUGIN=OFF \
     -DOPENCC_ENABLE_INSTALL=ON \
     "-DCMAKE_CXX_STANDARD_INCLUDE_DIRECTORIES=$(w "${PREFIX}")/include" \
-    "-DCMAKE_EXE_LINKER_FLAGS=/LIBPATH:$(w "${PREFIX}")/lib"
+    "-DCMAKE_EXE_LINKER_FLAGS=/machine:x64 /LIBPATH:$(w "${PREFIX}")/lib"
 
   # librime。與 scripts/build_native.sh 給 Android 的選項逐項對齊,差別只有:
   #   · 沒有 NDK toolchain / ANDROID_* ;
@@ -441,14 +531,14 @@ build_console() {
   local bdir="${BUILD_ROOT}/console"
   log "[console] configure"
   "${CMAKE}" -S "$(w "${SCRIPT_DIR}")" -B "$(w "${bdir}")" \
-    -G "${CMAKE_GENERATOR_NAME}" -A "${ARCH}" \
-    "-DCMAKE_CONFIGURATION_TYPES=Release" \
+    -G Ninja \
+    "-DCMAKE_MAKE_PROGRAM=$(w "${NINJA}")" \
     "-DCMAKE_BUILD_TYPE=Release" \
     "-DRIME_PREFIX=$(w "${PREFIX}")" \
     > "${bdir}.configure.log" 2>&1 \
     || { tail -80 "${bdir}.configure.log"; die "console configure 失敗"; }
   log "[console] build"
-  "${CMAKE}" --build "$(w "${bdir}")" --config Release --parallel "${NPROC}" \
+  "${CMAKE}" --build "$(w "${bdir}")" --parallel "${NPROC}" \
     > "${bdir}.build.log" 2>&1 \
     || { tail -120 "${bdir}.build.log"; die "console build 失敗"; }
 
