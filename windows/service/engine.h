@@ -10,6 +10,11 @@
 //
 //   rs_deploy_callback 是唯一的例外:它來自 librime 的維護執行緒,
 //   而且可能在 rs_deploy() 早就返回之後才觸發。所以它只碰一個 atomic。
+//
+// ⚠ rs_init / rs_finalize **不在**引擎執行緒上,在呼叫端(main)那一條。
+//   它們是行程層級的一次性初始化,不屬於任何 session,那條執行緒約定管不到。
+//   而且這是實測的結果:丟給次要執行緒的版本每一次都在 glog 的初始化裡崩潰
+//   (CI run #16–#18),詳見 engine.cc 裡 Start() 的說明。
 #ifndef RIMEWIN_SERVICE_ENGINE_H_
 #define RIMEWIN_SERVICE_ENGINE_H_
 
@@ -32,8 +37,9 @@ class Engine {
   Engine();
   ~Engine();
 
-  // 啟動引擎執行緒並做 rs_init。部署是非同步的,本函式不等它完成 ——
-  // 首次部署要編譯詞庫,可能好幾分鐘,而那段時間裡使用者已經在打字了。
+  // 先在呼叫端執行緒上做 rs_init,成功後再啟動引擎執行緒。
+  // 部署是非同步的,本函式不等它完成 —— 首次部署要編譯詞庫,可能好幾分鐘,
+  // 而那段時間裡使用者已經在打字了(服務會對每一顆按鍵立刻回「沒處理」)。
   bool Start(const std::string& shared_dir, const std::string& user_dir,
              const std::string& log_dir);
   void Stop();

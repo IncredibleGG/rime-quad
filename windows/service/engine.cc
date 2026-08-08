@@ -79,33 +79,49 @@ Engine::~Engine() { Stop(); }
 bool Engine::Start(const std::string& shared_dir, const std::string& user_dir,
                    const std::string& log_dir) {
   g_deploy_slot = &deploy_state_;
-  bool ok = false;
+
+  // ⚠ rs_init 在**呼叫端的執行緒**上做,不丟給引擎執行緒。
+  //
+  // rime_shell.h 要求的是「同一 session 的所有呼叫必須在同一執行緒上序列化」。
+  // rs_init / rs_finalize 是行程層級的一次性初始化,不屬於任何 session,
+  // 所以這條規則管不到它們。
+  //
+  // 而這裡有一個實測的理由:CI run #16–#18 上,把 rs_init 丟到次要執行緒的
+  // 版本每一次都在 **glog 的初始化裡**以 0xC0000005 崩潰
+  // (RVA 對到 glog utilities.cc 的 ProgramInvocationShortName 附近),
+  // 而同一個 job 裡的 tools/rime_console.cc —— 同一份 rime_shell.cc、
+  // 同一批靜態庫、同一份資料 —— 在主執行緒上做同一件事完全正常。
+  // 唯一的差別就是那條執行緒。librime 的 SetupLogging 在
+  // google::InitGoogleLogging 之前還會呼叫 LogToStderr / SetLogSymlink,
+  // 那一段在未初始化狀態下的執行緒安全性沒有保證。
+  //
+  // 所以:與已經驗證過的那條路走同一條。不在服務進程上開新路。
+  Mark("rs_init(呼叫端執行緒)");
+  {
+    rs_setup setup{};
+    setup.shared_data_dir = shared_dir.c_str();
+    setup.user_data_dir = user_dir.c_str();
+    // 空字串與 NULL 語意不同(rime_shell.h 檔頭):"" = 只寫 stderr,
+    // NULL = 交給 librime 決定暫存目錄。rime_console 走的是 "" 那一條。
+    setup.log_dir = log_dir.c_str();
+    setup.app_name = "rime.windows";
+    setup.on_deploy = &OnDeploy;
+    if (!rs_init(&setup)) {
+      init_error_ = rs_last_error();
+      Mark("rs_init 失敗");
+      return false;
+    }
+  }
+  Mark("rs_init OK,啟動引擎執行緒");
+
+  // 引擎執行緒:從這裡開始,**所有** session 相關的呼叫都在它身上,
+  // 那條執行緒約定因此變成結構上不可能違反,不必靠人記得。
   thread_ = std::thread(&Engine::ThreadMain, this);
   {
     std::unique_lock<std::mutex> lock(mu_);
     started_ = true;
   }
-  Mark("Post 之前(主執行緒)");
-  Post([&] {
-    Mark("進入引擎執行緒");
-    rs_setup setup{};
-    setup.shared_data_dir = shared_dir.c_str();
-    setup.user_data_dir = user_dir.c_str();
-    // ⚠ 空字串與 NULL 語意不同(rime_shell.h 檔頭):"" = 只寫 stderr,
-    //   NULL = 交給 librime 決定暫存目錄。這裡一律傳字串,空的就是 ""。
-    //   tools/rime_console.cc 走的正是 "" 那一條,而那條在這個 runner 上
-    //   已經驗證過很多次;NULL 那條沒有人走過。不要在服務進程上開新路。
-    setup.log_dir = log_dir.c_str();
-    setup.app_name = "rime.windows";
-    setup.on_deploy = &OnDeploy;
-    Mark("呼叫 rs_init");
-    ok = rs_init(&setup);
-    Mark(ok ? "rs_init 回傳 true" : "rs_init 回傳 false");
-    if (!ok) init_error_ = rs_last_error();
-    Mark("rs_last_error 讀取完畢");
-  });
-  Mark("Post 返回");
-  return ok;
+  return true;
 }
 
 void Engine::Stop() {
@@ -118,6 +134,9 @@ void Engine::Stop() {
   if (thread_.joinable()) thread_.join();
   started_ = false;
   g_deploy_slot = nullptr;
+  // rs_finalize 與 rs_init 在同一條執行緒上。引擎執行緒已經 join,
+  // 所以它先前建立的 session 都已經在它身上銷毀了,順序是對的。
+  rs_finalize();
 }
 
 void Engine::ThreadMain() {
@@ -133,10 +152,10 @@ void Engine::ThreadMain() {
     job();
     cv_.notify_all();
   }
-  // 收尾也在同一條執行緒上 —— session 的銷毀同樣受那條執行緒約定管。
+  // session 的銷毀必須在建立它的那條執行緒上 —— 也就是這裡。
+  // rs_finalize 則留給 Stop()(與 rs_init 同一條執行緒)。
   for (auto& kv : sessions_) rs_session_destroy(kv.second);
   sessions_.clear();
-  rs_finalize();
 }
 
 void Engine::Post(std::function<void()> fn) {
