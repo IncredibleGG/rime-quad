@@ -14,6 +14,9 @@
 //   rime_service.exe --quit-after <秒>      到時自己結束(CI 用,避免殘留進程)
 
 #include <windows.h>
+// WIN32_LEAN_AND_MEAN 之下 windows.h 不會帶進 shellapi.h,而我們要
+// CommandLineToArgvW。
+#include <shellapi.h>
 
 #include <cstdarg>
 #include <cstdio>
@@ -109,8 +112,55 @@ void EnsureDir(const std::string& utf8) {
 
 }  // namespace
 
-int wmain(int argc, wchar_t** argv) {
+// ⚠⚠ 進入點必須是 **main**,不可以是 wmain。⚠⚠
+//
+// glog 的 ProgramInvocationShortName() 在 Windows/MSVC 上走這一條
+// (deps/glog/src/utilities.cc,HAVE___ARGV 分支):
+//
+//     return const_basename(__argv[0]);
+//
+// 而 `__argv` **只有在 CRT 以窄字元進入點啟動時才會被填**。用 wmain 的話
+// CRT 只填 __wargv,__argv 是 NULL —— 於是 librime 一呼叫
+// google::InitGoogleLogging(SetupLogging 裡)就是空指標解參考。
+//
+// 這不是理論。CI run #16–#19 每一次都在同一個位置崩:0xC0000005,
+// RVA 對到 glog utilities.cc 的 ProgramInvocationShortName+0x22。
+// 而同一個 job 裡的 tools/rime_console.cc —— 同一份 rime_shell.cc、
+// 同一批靜態庫、同一份資料 —— 完全正常,因為**它用的是 main**。
+// 「差在哪」就差在這裡,而症狀(服務進程一啟動就死)看起來與進入點毫無關聯。
+//
+// 參數仍然取寬字元版本:窄字元的 argv 走 ANSI 代碼頁,使用者名稱或安裝
+// 路徑裡有非 ANSI 字元(中文使用者目錄很常見)時會被換成 '?',而那正好是
+// %APPDATA% 底下的使用者資料目錄。
+static int RunService(int argc, wchar_t** argv);
+
+int main(int /*narrow_argc*/, char** /*narrow_argv*/) {
+  int argc = 0;
+  LPWSTR* argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc);
+  if (!argv) {
+    std::fprintf(stderr, "CommandLineToArgvW 失敗\n");
+    return 2;
+  }
+  const int rc = RunService(argc, argv);
+  ::LocalFree(argv);
+  return rc;
+}
+
+static int RunService(int argc, wchar_t** argv) {
   ::SetUnhandledExceptionFilter(&CrashFilter);
+
+#ifdef _MSC_VER
+  // 上面那段註解說的事,在這裡變成一道會講人話的檢查。
+  // 進入點若哪天被改回 wchar_t 版本,這一行會直接說出原因;
+  // 沒有它的話,症狀是 librime 深處的一個空指標解參考,
+  // 而那要花掉五輪 CI 才查得到(#16–#19 就是)。
+  if (__argv == nullptr || __argv[0] == nullptr) {
+    Err("[service] __argv 是空的 —— 進入點必須是 main 而不是 wmain。\n"
+        "  glog 的 ProgramInvocationShortName() 會走 const_basename(__argv[0]),\n"
+        "  用寬字元進入點時 CRT 只填 __wargv,那裡就會是空指標解參考。\n");
+    return 1;
+  }
+#endif
 
   std::string shared = EnvUtf8(L"RIME_SHARED_DATA_DIR");
   std::string user = EnvUtf8(L"RIME_USER_DATA_DIR");

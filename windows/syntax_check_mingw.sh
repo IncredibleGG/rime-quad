@@ -51,7 +51,9 @@ log "編譯器: ${MINGW}"
 SHIM="${SCRIPT_DIR}/tests/mingw_syntax_shim.h"
 [ -f "${SHIM}" ] || die "找不到 ${SHIM}"
 
-FLAGS=(-std=c++17 -fsyntax-only -municode -DUNICODE -D_UNICODE
+# 不帶 -municode:那是給 wmain 用的,而服務進程刻意用 main
+# (見 service/main.cc 檔頭 —— glog 的 __argv)。
+FLAGS=(-std=c++17 -fsyntax-only -DUNICODE -D_UNICODE
        -DWIN32_LEAN_AND_MEAN -Wall -Wextra -Wno-unused-parameter
        -include "${SHIM}"
        -I"${SCRIPT_DIR}/common" -I"${ROOT}/core/include")
