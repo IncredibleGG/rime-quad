@@ -232,7 +232,29 @@ adbs shell ime set "$IME_ID" >/dev/null 2>&1 || true
 adbs shell ime list -s > "$OUT_DIR/ime_list.txt" 2>/dev/null || true
 grep -q "^$IME_ID\$" "$OUT_DIR/ime_list.txt" \
   || fail "系統看不到 $IME_ID。檢查 manifest 是否同時具備:BIND_INPUT_METHOD 權限、android.view.InputMethod intent-filter、指向含至少一個 subtype 的 method.xml 的 android.view.im meta-data"
-pass "已啟用並設為預設"
+pass "系統看得到 $IME_ID"
+
+# ⚠ 這一段是後來補的,而補的理由值得留著:
+#
+#   原本這裡只確認「ime list -s 裡有這個 id」,然後就印 **「已啟用並設為預設」**。
+#   但 `ime set` 的錯誤被 `|| true` 吞掉了,而且「被列出來」跟「是目前的輸入法」
+#   是兩件事。實際發生過:ime set 沒生效,目前的輸入法還是 Gboard
+#   (mCurId=com.google.android.inputmethod.latin/...),而關卡照樣印綠燈,
+#   一路等到 120 秒之後才報「鍵盤沒有出現」—— 訊息還指向「首次部署卡住」,
+#   把人帶去查一個完全無關的方向。
+#
+#   **一句宣稱「設為預設」的 PASS,就要真的去讀回來確認。**
+SET_OK=0
+for i in 1 2 3 4 5; do
+  adbs shell settings get secure default_input_method 2>/dev/null \
+    | tr -d "\r" > "$OUT_DIR/default_ime.txt" || true
+  if grep -qx "$IME_ID" "$OUT_DIR/default_ime.txt"; then SET_OK=1; break; fi
+  adbs shell ime set "$IME_ID" >/dev/null 2>&1 || true
+  sleep 1
+done
+[ "$SET_OK" -eq 1 ] \
+  || fail "ime set 沒有生效:目前的預設輸入法是 $(cat "$OUT_DIR/default_ime.txt" 2>/dev/null),不是 $IME_ID"
+pass "已設為預設輸入法(讀回 secure default_input_method 確認)"
 
 # --- 4. 開啟輸入目標 ---------------------------------------------------------
 step "4. 開啟輸入目標"
@@ -261,6 +283,15 @@ for i in $(seq 1 "$DEPLOY_TIMEOUT"); do
   # 每 10 秒補點一次輸入框。只點一次不夠:視窗剛開時點下去可能還沒 layout 完,
   # 而那一次錯過就再也沒有人去叫鍵盤了。
   [ $((i % 10)) -eq 5 ] && adbs shell input tap 540 300 >/dev/null 2>&1 || true
+  # 順便盯著預設輸入法有沒有被系統換掉。被換掉的話再等下去是浪費 —— 而且
+  # 最後那句「鍵盤沒有出現」會把人帶去查部署,方向完全錯。
+  if [ $((i % 20)) -eq 10 ]; then
+    NOW_IME="$(adbs shell settings get secure default_input_method 2>/dev/null | tr -d "\r")"
+    if [ -n "$NOW_IME" ] && [ "$NOW_IME" != "$IME_ID" ]; then
+      echo "  [INFO] 預設輸入法在等待期間變成 $NOW_IME,重新設定"
+      adbs shell ime set "$IME_ID" >/dev/null 2>&1 || true
+    fi
+  fi
   [ $((i % 15)) -eq 0 ] && echo "  ...已等待 ${i}s(首次部署較慢屬正常)"
   sleep 1
 done
@@ -271,10 +302,23 @@ if [ "$SHOWN" -ne 1 ]; then
   #   (b) 叫了、輸入法也起來了,但畫面沒出現 → 那才是我們的 bug。
   # 少了這一句,兩者在報告裡長得一模一樣。
   adbs logcat -d > "$OUT_DIR/logcat.txt" 2>/dev/null || true
-  REQ=$(grep -c "ImeTracker.*onRequestShow" "$OUT_DIR/logcat.txt" 2>/dev/null || echo 0)
-  BAD=$(grep -c "ImeTracker.*onFailed" "$OUT_DIR/logcat.txt" 2>/dev/null || echo 0)
-  IMEUP=$(grep -c "$IME_PKG.*nativeloader\|Start proc.*$IME_PKG" "$OUT_DIR/logcat.txt" 2>/dev/null || echo 0)
+  # ⚠ 不可寫成 `X=$(grep -c ... || echo 0)`:grep 沒命中時會**同時**輸出 "0"
+  # 並回非零,於是 || 那邊再補一個 "0",變數變成兩行 "0\n0",後面的
+  # `[ "$X" -eq 0 ]` 就炸成 "integer expression expected"。
+  # 這個 bug 就長在我自己上一輪加的診斷裡,而它讓診斷本身變成雜訊。
+  count_in_log() {   # count_in_log <pattern>
+    local n
+    n=$(grep -cE "$1" "$OUT_DIR/logcat.txt" 2>/dev/null) || n=0
+    printf '%s' "${n:-0}"
+  }
+  REQ=$(count_in_log "ImeTracker.*onRequestShow")
+  BAD=$(count_in_log "ImeTracker.*onFailed")
+  IMEUP=$(count_in_log "$IME_PKG.*nativeloader|Start proc.*$IME_PKG")
+  CUR_NOW="$(adbs shell settings get secure default_input_method 2>/dev/null | tr -d "\r")"
   echo "  [INFO] ImeTracker:請求 $REQ 次、失敗 $BAD 次;輸入法進程啟動跡象 $IMEUP 次"
+  echo "  [INFO] 此刻的預設輸入法:$CUR_NOW(待測:$IME_ID)"
+  [ "$CUR_NOW" = "$IME_ID" ] \
+    || echo "  [INFO] 預設輸入法不是待測的那個 —— 系統把它換掉了,查這裡而不是查部署"
   if [ "$REQ" -gt 0 ] && [ "$BAD" -ge "$REQ" ] && [ "$IMEUP" -eq 0 ]; then
     echo "  [INFO] 每一次請求都失敗、而且輸入法進程從沒被啟動 —— 指向宿主/測試靶沒把鍵盤叫起來,不是輸入法本身"
   fi

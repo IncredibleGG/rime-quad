@@ -174,7 +174,18 @@ done
 adbs shell ime enable "$IME_ID" >/dev/null 2>&1 || true
 adbs shell ime set "$IME_ID" >/dev/null 2>&1 || true
 adbs shell ime list -s 2>/dev/null | grep -q "^$IME_ID\$" || fail "系統看不到 $IME_ID"
-pass "已啟用並設為預設"
+# 「被列出來」跟「是目前的輸入法」是兩件事,而 ime set 的錯誤被 || true 吞掉了。
+# 實際發生過:set 沒生效、目前的輸入法還是 Gboard,而關卡照樣印綠燈,
+# 一路等到 120 秒後才報「鍵盤沒有出現」。見 verify_rime_compose.sh 同一段。
+SET_OK=0
+for i in 1 2 3 4 5; do
+  CUR="$(adbs shell settings get secure default_input_method 2>/dev/null | tr -d "\r")"
+  if [ "$CUR" = "$IME_ID" ]; then SET_OK=1; break; fi
+  adbs shell ime set "$IME_ID" >/dev/null 2>&1 || true
+  sleep 1
+done
+[ "$SET_OK" -eq 1 ] || fail "ime set 沒有生效:目前的預設輸入法是 $CUR,不是 $IME_ID"
+pass "已啟用並設為預設(讀回 secure default_input_method 確認)"
 
 step "2. 開啟輸入目標並等待鍵盤"
 adbs shell monkey -p dev.rime.imetest -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 \
