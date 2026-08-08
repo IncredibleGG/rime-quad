@@ -107,7 +107,9 @@ done
 [[ -d "${ANDROID_NDK}" ]] || die "找不到 NDK: ${ANDROID_NDK}"
 TOOLCHAIN_FILE="${ANDROID_NDK}/build/cmake/android.toolchain.cmake"
 [[ -f "${TOOLCHAIN_FILE}" ]] || die "找不到 NDK toolchain file: ${TOOLCHAIN_FILE}"
-[[ -f "${LIBRIME_SRC}/CMakeLists.txt" ]] || die "librime 原始碼不在 ${LIBRIME_SRC}"
+[[ -f "${LIBRIME_SRC}/CMakeLists.txt" ]] || die "librime 原始碼不在 ${LIBRIME_SRC}
+先執行 scripts/fetch_librime.sh —— 它會取回釘住的 commit 與 5 個相依 submodule,
+並與 third_party/prebuilt/manifest.json 對帳確認是同一顆引擎。"
 
 CMAKE_VER="$("${CMAKE_BIN}" --version | head -1 | awk '{print $3}')"
 case "${CMAKE_VER}" in

@@ -53,6 +53,17 @@ jobs:
       - name: 取得方案原始資料（版本已釘死）
         run: ./scripts/fetch_rime_data.sh
 
+      - name: 取得 librime 原始碼（版本已釘死）
+        run: |
+          # third_party/librime/ 在 .gitignore 裡（那是上游的原始碼，不進本倉庫），
+          # 所以 CI 上必須自己取。少了這一步，下一步的 cmake 會直接說
+          # 「The source directory ... does not exist」——這個 workflow 從來沒有
+          # 在乾淨的機器上成功過，只是以前沒有人看紅燈。
+          #
+          # 只取 opencc:APK 建置本身用的是 third_party/prebuilt/ 底下已進版控的 .a，
+          # 不需要重編 librime；這裡要 opencc 只是為了產生 .ocd2 詞典。
+          ./scripts/fetch_librime.sh opencc
+
       - name: 建 host 版 opencc 以產生詞典
         run: |
           # 交叉編譯時 opencc 的 Dictionaries target 會執行剛編出來的 Android 版

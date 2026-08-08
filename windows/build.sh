@@ -39,11 +39,11 @@ ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 TP="${ROOT}/third_party"
 
 # ---------------------------------------------------------------- 釘住的版本
-# librime 必須與 Android 用的是同一個 commit。四端共用同一顆引擎是這個專案的
-# 前提;不同 commit 代表「同一份 schema 在兩端可能編出不同結果」,那就沒得談了。
-# 這個值必須與 third_party/prebuilt/manifest.json 的 librime.commit 一致。
-LIBRIME_REPO="${LIBRIME_REPO:-https://github.com/rime/librime.git}"
-LIBRIME_COMMIT="${LIBRIME_COMMIT:-1d0df6e40cdcac17a986adc65e4668ae84ae0ada}"
+# librime 的 commit **不在這裡**,在 scripts/fetch_librime.sh —— 那是四端唯一的
+# 釘住點。原本這裡寫了自己的一份,而 Android 的 CI 也需要同一份原始碼,
+# 兩邊各寫一個值遲早會漂移;漂移的症狀是「同一份 schema 在兩端編出不同結果」,
+# 那種問題沒人查得動。那支腳本還會與 third_party/prebuilt/manifest.json 對帳。
+#
 # 與 scripts/build_native.sh 同版本。librime 只用 header-only 的部分,
 # 上游 install-boost.bat 也只做 `b2 headers`,不需要編任何 Boost 二進位。
 BOOST_VERSION="${BOOST_VERSION:-1.89.0}"
@@ -212,7 +212,6 @@ log "ROOT       = ${ROOT}"
 log "ARCH       = ${ARCH}"
 log "cmake      = ${CMAKE} (${CMAKE_VER})"
 log "ninja      = ${NINJA}"
-log "librime    = ${LIBRIME_COMMIT:0:8}"
 log "Boost      = ${BOOST_VERSION}"
 log "prefix     = ${PREFIX}"
 
@@ -224,41 +223,9 @@ mkdir -p "${BUILD_ROOT}" "${PREFIX}"
 
 # ---------------------------------------------------------------- librime 原始碼
 # third_party/librime 不在版控裡(見 .gitignore),CI 上必須自己取。
-# 淺層取回**釘住的 commit**,不是 --depth 1 抓 HEAD —— 那樣上游一動就不可重現。
+# 取得與釘住 commit 的邏輯共用 scripts/fetch_librime.sh —— 四端唯一的釘住點。
 fetch_librime() {
-  if [ -d "${LIBRIME_SRC}/.git" ]; then
-    local cur
-    cur="$(git -C "${LIBRIME_SRC}" rev-parse HEAD 2>/dev/null || echo none)"
-    if [ "${cur}" = "${LIBRIME_COMMIT}" ]; then
-      log "librime 已在 ${LIBRIME_COMMIT:0:8}"
-    else
-      log "librime 目前在 ${cur:0:8},切到 ${LIBRIME_COMMIT:0:8}"
-      git -C "${LIBRIME_SRC}" fetch -q --depth 1 origin "${LIBRIME_COMMIT}"
-      git -C "${LIBRIME_SRC}" checkout -q --detach "${LIBRIME_COMMIT}"
-    fi
-  else
-    log "取得 librime @ ${LIBRIME_COMMIT:0:8}"
-    rm -rf "${LIBRIME_SRC}"
-    mkdir -p "${LIBRIME_SRC}"
-    git -C "${LIBRIME_SRC}" init -q
-    git -C "${LIBRIME_SRC}" remote add origin "${LIBRIME_REPO}"
-    git -C "${LIBRIME_SRC}" fetch -q --depth 1 origin "${LIBRIME_COMMIT}" \
-      || die "抓取 librime ${LIBRIME_COMMIT} 失敗"
-    git -C "${LIBRIME_SRC}" checkout -q --detach FETCH_HEAD
-  fi
-
-  # 只取要用的 5 個 submodule。googletest 不取:BUILD_TEST=OFF,取了只是白等。
-  # 這裡刻意不加 --depth 1:submodule 的釘住 commit 常常不在預設分支的淺層裡,
-  # 加了會間歇性失敗,而間歇性失敗比多下載幾十 MB 貴得多。
-  log "取得 librime 的 5 個相依 submodule"
-  git -C "${LIBRIME_SRC}" submodule update --init -- \
-    deps/glog deps/yaml-cpp deps/leveldb deps/marisa-trie deps/opencc \
-    || die "submodule 取得失敗"
-
-  local sm
-  sm="$(git -C "${LIBRIME_SRC}" submodule status deps/glog deps/yaml-cpp \
-        deps/leveldb deps/marisa-trie deps/opencc)"
-  printf '%s\n' "${sm}" | sed 's/^/    /'
+  "${ROOT}/scripts/fetch_librime.sh" glog yaml-cpp leveldb marisa-trie opencc
 }
 
 # ---------------------------------------------------------------- patches

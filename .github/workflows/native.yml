@@ -37,6 +37,13 @@ jobs:
           # header-only 的 Boost 查找會直接失敗。
           sdkmanager --install "ndk;27.2.12479018" "cmake;3.22.1" > /dev/null
 
+      - name: 取得 librime 原始碼與 5 個相依（版本已釘死）
+        run: |
+          # 與 build.yml 同一個缺口:third_party/librime/ 不在版控裡，而
+          # scripts/build_native.sh 在前置檢查就會 die（「librime 原始碼不在 …」）。
+          # 這支 workflow 是手動/每月觸發，所以更久沒有人發現它從來沒跑成功過。
+          ./scripts/fetch_librime.sh
+
       - name: 交叉編譯（arm64-v8a）
         run: ./scripts/build_native.sh arm64-v8a
 
