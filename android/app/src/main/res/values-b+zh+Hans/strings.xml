@@ -428,4 +428,66 @@
     <string name="keyboard_no_schema">尚无可用方案（rs_schema_list 返回空）</string>
     <string name="keyboard_layout_not_loaded">布局尚未载入</string>
 
+
+    <!-- ─────────────────────── 無障礙朗讀名稱 ─────────────────────── -->
+    <!--
+      這一區的字**畫面上一個都看不到**,只有 TalkBack 會念出來。
+
+      ⚠ 兩件事跟一般文案不同:
+        1. 它可以比畫面上的長。鍵面受寬度限制,朗讀名不受 —— 鍵面印「⌫」,
+           念出來要是「退格」。
+        2. 它描述的是**這顆鍵會做什麼**,不是它長什麼樣。地球鍵不要念成
+           「地球」,要念「選擇鍵盤」。
+
+      鍵面本身(字母、標點、漢字)不在這裡:那些直接念鍵面就對了。
+    -->
+    <string name="a11y_backspace">退格</string>
+    <string name="a11y_enter">换行</string>
+    <string name="a11y_shift">上档</string>
+    <string name="a11y_shift_lock">大写锁定</string>
+    <string name="a11y_space">空格键</string>
+    <string name="a11y_globe">选择键盘</string>
+    <string name="a11y_keyboard_hide">收起键盘</string>
+    <string name="a11y_settings">键盘设置</string>
+    <string name="a11y_emoji">表情符号</string>
+    <string name="a11y_search">搜索</string>
+    <string name="a11y_go">前往</string>
+    <string name="a11y_done">完成</string>
+    <string name="a11y_next">下一个</string>
+    <string name="a11y_clipboard">剪贴板</string>
+    <string name="a11y_undo">撤销</string>
+    <string name="a11y_mic">语音输入</string>
+    <string name="a11y_arrow_left">向左</string>
+    <string name="a11y_arrow_right">向右</string>
+    <string name="a11y_arrow_up">向上</string>
+    <string name="a11y_arrow_down">向下</string>
+    <string name="a11y_clear">清掉正在打的字</string>
+    <string name="a11y_cursor_left">光标左移</string>
+    <string name="a11y_cursor_right">光标右移</string>
+    <string name="a11y_cursor_home">光标移到开头</string>
+    <string name="a11y_cursor_end">光标移到结尾</string>
+    <string name="a11y_candidate_next_page">下一页候选字</string>
+    <string name="a11y_candidate_prev_page">上一页候选字</string>
+    <string name="a11y_schema_picker">选择键盘</string>
+    <string name="a11y_schema_next">下一个输入方案</string>
+    <string name="a11y_schema_prev">上一个输入方案</string>
+    <string name="a11y_input_mode">中英切换</string>
+    <string name="a11y_input_mode_cjk">中文</string>
+    <string name="a11y_input_mode_latin">英数</string>
+    <string name="a11y_variant">繁简切换</string>
+    <string name="a11y_variant_trad">繁体</string>
+    <string name="a11y_variant_simp">简体</string>
+    <string name="a11y_shape">全角半角切换</string>
+    <string name="a11y_shape_full">全角</string>
+    <string name="a11y_shape_half">半角</string>
+    <string name="a11y_layout_primary">回到主键盘</string>
+    <string name="a11y_layout_previous">回上一个键盘</string>
+    <string name="a11y_layout_switch">换一个键盘</string>
+    <string name="a11y_action_type">输入</string>
+    <string name="a11y_action_more">看更多符号</string>
+    <string name="a11y_candidate_current">目前选取</string>
+
+    <string name="a11y_layer_switch">切换到 %1$s</string>
+    <string name="a11y_candidate">候选字第 %1$d 个：%2$s</string>
+
 </resources>

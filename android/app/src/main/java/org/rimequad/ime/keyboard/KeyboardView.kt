@@ -48,6 +48,14 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.onLongClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -491,8 +499,19 @@ private fun CandidateBar(
             ) {
                 itemsIndexed(state.candidates) { index, candidate ->
                     val highlighted = index == state.highlighted
+                    // 候選字本身念得出來,但少了序號使用者無從說「我要第三個」;
+                    // 而「現在停在哪一個」走 stateDescription,選字移動時會重念。
+                    val candDesc = stringResource(
+                        R.string.a11y_candidate, index + 1, candidate.text
+                    )
+                    val candState = stringResource(R.string.a11y_candidate_current)
                     Row(
                         modifier = Modifier
+                            .semantics(mergeDescendants = true) {
+                                contentDescription = candDesc
+                                role = Role.Button
+                                if (highlighted) stateDescription = candState
+                            }
                             .clip(RoundedCornerShape(style.item.cornerRadius.dp))
                             .background(
                                 Color(
@@ -592,9 +611,19 @@ private fun Toolbar(
         itemsIndexed(items) { _, item ->
             val face = faceOf(item.labelFrom, item.icon, item.label, state.status)
             val active = isActiveFace(false, item.labelFrom, state.status)
+            // 工具列項目就是「沒有 send 的鍵」,朗讀名走同一套規則(見 KeyA11y)。
+            // 這裡用 clickable,語意上的點擊動作它自己會帶,所以只要補名字與狀態。
+            val itemDesc =
+                toolbarItemDescription(item.icon, item.label, item.labelFrom, item.tap)
+            val itemState = a11yStateText(item.labelFrom, state.status)
             Box(
                 modifier = Modifier
                     .fillMaxHeight()
+                    .semantics(mergeDescendants = true) {
+                        contentDescription = itemDesc
+                        role = Role.Button
+                        itemState?.let { stateDescription = it }
+                    }
                     .clip(RoundedCornerShape(style.item.cornerRadius.dp))
                     .background(
                         Color(
@@ -804,6 +833,12 @@ private fun KeyGrid(
         return
     }
 
+    // 層切換鍵的朗讀名要用**目標層自己宣告的名字**（見 KeyA11y），
+    // 那是佈局作者寫的、已經在地化過的字。
+    val layerLabels = remember(layout) {
+        layout.layers.associate { it.id to it.label.get(ConfigRepository.LOCALE) }
+    }
+
     val height = keyboardGeometry(theme, layout, layer).keyboardHeight
     // §9.2：佈局的 metrics 覆寫主題的間距（null = 沿用主題）。
     val rowSpacing = layout.metrics.rowSpacing ?: theme.keyboard.rowSpacing
@@ -849,6 +884,7 @@ private fun KeyGrid(
                                 theme = theme,
                                 scaler = scaler,
                                 status = state.status,
+                                layerLabels = layerLabels,
                                 onEvent = onEvent,
                                 onPopup = { left, top, w ->
                                     val p = key.popup
@@ -972,6 +1008,7 @@ private fun KeyView(
     theme: Theme,
     scaler: Scaler,
     status: RimeStatus,
+    layerLabels: Map<String, String>,
     onEvent: (KeyboardEvent) -> Unit,
     onPopup: (left: Float, top: Float, width: Float) -> Unit,
     modifier: Modifier = Modifier,
@@ -1070,8 +1107,43 @@ private fun KeyView(
         )
     }
 
+    // ⚠ 語意層必須自己帶動作,不能只帶名字。
+    //
+    // 這顆鍵的觸發全部在下面的 `pointerInput` 裡,而 TalkBack 的「輕點兩下」
+    // 送的是無障礙的 ACTION_CLICK,**不會**變成 pointer 事件。只補
+    // contentDescription 的話,做出來的是一顆念得出名字、聚焦得到、按下去
+    // 什麼都不會發生的鍵 —— 正是這個專案抓過五次的那一類缺陷,換一個形式。
+    //
+    // 所以 onClick 直接呼叫同一個 fire(),長按同理。用 clearAndSetSemantics
+    // 而不是 semantics:鍵面上的「⌫」若留在語意樹裡,TalkBack 會把那個字元
+    // 連同名字一起念出來。
+    val description = keyDescription(key, layerLabels)
+    val spokenState = a11yStateText(key.labelFrom, status)
+    val typeLabel = stringResource(R.string.a11y_action_type)
+    val moreLabel = stringResource(R.string.a11y_action_more)
+    val hasLongPress = longPress != null || popup != null
+
     BoxWithConstraints(
-        modifier = box.pointerInput(key) {
+        modifier = box
+            .clearAndSetSemantics {
+                contentDescription = description
+                role = Role.Button
+                spokenState?.let { stateDescription = it }
+                if (key.tap != null || key.send != null) {
+                    onClick(label = typeLabel) { fire(); true }
+                }
+                if (hasLongPress) {
+                    onLongClick(label = moreLabel) {
+                        haptic()
+                        when {
+                            longPress != null -> currentOnEvent(KeyboardEvent.Act(longPress))
+                            else -> currentOnPopup(anchorLeft, anchorTop, anchorWidth)
+                        }
+                        true
+                    }
+                }
+            }
+            .pointerInput(key) {
             detectTapGestures(
                 onPress = {
                     trackPressed({ pressed = it }) {

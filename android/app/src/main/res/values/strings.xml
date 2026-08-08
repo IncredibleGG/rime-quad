@@ -501,4 +501,66 @@
     <string name="keyboard_no_schema">No input schemas available (rs_schema_list came back empty)</string>
     <string name="keyboard_layout_not_loaded">Layout has not loaded yet</string>
 
+
+    <!-- ─────────────────────── 無障礙朗讀名稱 ─────────────────────── -->
+    <!--
+      這一區的字**畫面上一個都看不到**,只有 TalkBack 會念出來。
+
+      ⚠ 兩件事跟一般文案不同:
+        1. 它可以比畫面上的長。鍵面受寬度限制,朗讀名不受 —— 鍵面印「⌫」,
+           念出來要是「退格」。
+        2. 它描述的是**這顆鍵會做什麼**,不是它長什麼樣。地球鍵不要念成
+           「地球」,要念「選擇鍵盤」。
+
+      鍵面本身(字母、標點、漢字)不在這裡:那些直接念鍵面就對了。
+    -->
+    <string name="a11y_backspace">Backspace</string>
+    <string name="a11y_enter">Enter</string>
+    <string name="a11y_shift">Shift</string>
+    <string name="a11y_shift_lock">Caps lock</string>
+    <string name="a11y_space">Space</string>
+    <string name="a11y_globe">Choose keyboard</string>
+    <string name="a11y_keyboard_hide">Hide keyboard</string>
+    <string name="a11y_settings">Keyboard settings</string>
+    <string name="a11y_emoji">Emoji</string>
+    <string name="a11y_search">Search</string>
+    <string name="a11y_go">Go</string>
+    <string name="a11y_done">Done</string>
+    <string name="a11y_next">Next</string>
+    <string name="a11y_clipboard">Clipboard</string>
+    <string name="a11y_undo">Undo</string>
+    <string name="a11y_mic">Voice input</string>
+    <string name="a11y_arrow_left">Left</string>
+    <string name="a11y_arrow_right">Right</string>
+    <string name="a11y_arrow_up">Up</string>
+    <string name="a11y_arrow_down">Down</string>
+    <string name="a11y_clear">Clear what you have typed</string>
+    <string name="a11y_cursor_left">Move cursor left</string>
+    <string name="a11y_cursor_right">Move cursor right</string>
+    <string name="a11y_cursor_home">Move cursor to start</string>
+    <string name="a11y_cursor_end">Move cursor to end</string>
+    <string name="a11y_candidate_next_page">Next page of candidates</string>
+    <string name="a11y_candidate_prev_page">Previous page of candidates</string>
+    <string name="a11y_schema_picker">Choose keyboard</string>
+    <string name="a11y_schema_next">Next input method</string>
+    <string name="a11y_schema_prev">Previous input method</string>
+    <string name="a11y_input_mode">Chinese / Latin</string>
+    <string name="a11y_input_mode_cjk">Chinese</string>
+    <string name="a11y_input_mode_latin">Latin</string>
+    <string name="a11y_variant">Traditional / Simplified</string>
+    <string name="a11y_variant_trad">Traditional</string>
+    <string name="a11y_variant_simp">Simplified</string>
+    <string name="a11y_shape">Fullwidth / halfwidth</string>
+    <string name="a11y_shape_full">Fullwidth</string>
+    <string name="a11y_shape_half">Halfwidth</string>
+    <string name="a11y_layout_primary">Back to the main keyboard</string>
+    <string name="a11y_layout_previous">Back to the previous keyboard</string>
+    <string name="a11y_layout_switch">Switch keyboard</string>
+    <string name="a11y_action_type">type</string>
+    <string name="a11y_action_more">see more symbols</string>
+    <string name="a11y_candidate_current">currently highlighted</string>
+
+    <string name="a11y_layer_switch">Switch to %1$s</string>
+    <string name="a11y_candidate">Candidate %1$d: %2$s</string>
+
 </resources>
