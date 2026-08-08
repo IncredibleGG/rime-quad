@@ -58,9 +58,9 @@ name:
   zh-Hans: "QWERTY・Android 惯例"
 
 description:
-  en: "26-key QWERTY following mainstream Android soft-keyboard conventions: digit hints, ?123 pill, emoji/language key in the bottom row."
-  zh-Hant: "依 Android 主流輸入法慣例排的 26 鍵：角落數字提示、?123 藥丸鍵、底列有表情／語言鍵。"
-  zh-Hans: "依 Android 主流输入法惯例排的 26 键：角落数字提示、?123 药丸键、底列有表情／语言键。"
+  en: "26-key QWERTY following mainstream Android soft-keyboard conventions: digit hints, ?123 pill, language key in the bottom row."
+  zh-Hant: "依 Android 主流輸入法慣例排的 26 鍵：角落數字提示、?123 藥丸鍵、底列有語言鍵。"
+  zh-Hans: "依 Android 主流输入法惯例排的 26 键：角落数字提示、?123 药丸键、底列有语言键。"
 
 author: "rime-quad"
 license: "CC0-1.0"
@@ -165,7 +165,12 @@ layers:
       # `candidates.bar.toolbar` 正好是同一個位置（主題檔裡設）。
       # 只裝一種語言時 Gboard 底列第三顆是表情鍵；裝兩種以上時它變成地球鍵，
       # 表情移到逗號的長按。中文輸入法實務上必須有中／英切換，因此本檔採
-      # 「多語言版」的排法：第三顆是狀態鍵（中／英），表情放逗號長按。
+      # 「多語言版」的排法：第三顆是狀態鍵（中／英）。
+      #
+      # ⚠ 逗號的長按原本指向表情面板，已移除，理由有兩層：Android 端沒有表情
+      #   面板（見 VerbSupport），而且 §9.6 的長按解析是 long_press 勝過 popup ——
+      #   它一直把逗號自己的標點彈出盤（、？！…）整個遮住，四份佈局裡的那盤
+      #   符號從上線起沒有任何人叫得出來。
       - weight: 1.0
         keys:
           - id: "to_sym"
@@ -178,7 +183,6 @@ layers:
             style: modifier
             width: 0.94
             send: { keysym: "comma" }
-            long_press: "emoji"
             popup:
               layout: row
               keys:
@@ -282,7 +286,7 @@ layers:
       - weight: 1.0
         keys:
           - { id: "to_sym", label: "?123", style: pill, width: 1.48, tap: "layer:sym1" }
-          - { id: "comma", label: "，", style: modifier, width: 0.94, send: { keysym: "comma" }, long_press: "emoji" }
+          - { id: "comma", label: "，", style: modifier, width: 0.94, send: { keysym: "comma" } }
           - { id: "lang", label_from: input_mode_pair, icon: globe, width: 0.94, tap: "input_mode:toggle", long_press: "schema:picker" }
           - id: "space"
             icon: space
@@ -357,7 +361,7 @@ layers:
       - weight: 1.0
         keys:
           - { id: "to_abc", label: "ABC", style: pill, width: 1.48, tap: "layer:lower" }
-          - { id: "comma", label: "，", style: modifier, width: 0.94, send: { keysym: "comma" }, long_press: "emoji" }
+          - { id: "comma", label: "，", style: modifier, width: 0.94, send: { keysym: "comma" } }
           - { id: "lang", label_from: input_mode_pair, icon: globe, width: 0.94, tap: "input_mode:toggle", long_press: "schema:picker" }
           - id: "space"
             icon: space
@@ -424,7 +428,7 @@ layers:
       - weight: 1.0
         keys:
           - { id: "to_abc", label: "ABC", style: pill, width: 1.48, tap: "layer:lower" }
-          - { id: "comma", label: "，", style: modifier, width: 0.94, send: { keysym: "comma" }, long_press: "emoji" }
+          - { id: "comma", label: "，", style: modifier, width: 0.94, send: { keysym: "comma" } }
           - { id: "lang", label_from: input_mode_pair, icon: globe, width: 0.94, tap: "input_mode:toggle", long_press: "schema:picker" }
           - id: "space"
             icon: space

@@ -36,6 +36,7 @@ import org.rimequad.ime.keyboard.PanelRoute
 import org.rimequad.ime.keyboard.RemappingLayoutRepository
 import org.rimequad.ime.keyboard.RimeKeyboard
 import org.rimequad.ime.keyboard.ThemeChoice
+import org.rimequad.ime.keyboard.VerbSupport
 import org.rimequad.ime.keyboard.UserLayoutStore
 import org.rimequad.ime.prefs.KeyBehavior
 import org.rimequad.ime.prefs.LocalKeyBehavior
@@ -938,6 +939,16 @@ class RimeInputMethodService : InputMethodService() {
 
     /** §9.5 的 action 分派。 */
     private fun handleAction(action: KeyAction) {
+        // 還沒實作的動詞在這裡就結束,不進 when。
+        //
+        // 以前 EMOJI 是 when 裡的一個分支,只印一行 log —— 那正是本專案抓過
+        // 四次的那種缺陷:鍵在、圖示在、按下去有回饋,就是什麼都沒發生,而且
+        // 畫面與自動化都看不出異狀。集中在 [VerbSupport] 之後,「還沒做」變成
+        // 一個查得到的事實:工具列據此不渲染,佈局據此在建置期被擋下。
+        if (!VerbSupport.isImplemented(action.verb)) {
+            Log.i(TAG, "action ${action.raw} 的動詞在 Android 端尚未實作,忽略")
+            return
+        }
         val ic = currentInputConnection
         when (action.verb) {
             ActionVerb.NOOP -> Unit
@@ -1011,9 +1022,10 @@ class RimeInputMethodService : InputMethodService() {
                 refreshFromRime()
             }
 
-            // rime_shell 沒有「移動高亮」的函式，只有換頁。見回報中的 ABI 缺口。
-            ActionVerb.CANDIDATE_NEXT, ActionVerb.CANDIDATE_PREV ->
-                Log.w(TAG, "action ${action.raw} 尚無對應的 rime_shell 呼叫，忽略")
+            // rime_shell 沒有「移動高亮」的函式，只有換頁(ABI 缺口,已回報)。
+            // 連同 EMOJI 一起由 [VerbSupport] 在進 when 之前擋掉,這裡只保留
+            // 分支讓 when 維持窮盡。
+            ActionVerb.CANDIDATE_NEXT, ActionVerb.CANDIDATE_PREV -> Unit
 
             ActionVerb.CURSOR_LEFT -> sendHostKey(KeyEvent.KEYCODE_DPAD_LEFT)
             ActionVerb.CURSOR_RIGHT -> sendHostKey(KeyEvent.KEYCODE_DPAD_RIGHT)
@@ -1039,8 +1051,8 @@ class RimeInputMethodService : InputMethodService() {
             // 那一行最不顯眼的「全部設定 ›」後面。
             ActionVerb.SETTINGS -> openPanel(PanelRoute.QUICK)
 
-            // 表情面板尚未實作，維持 noop 而不是假裝有效。
-            ActionVerb.EMOJI -> Log.i(TAG, "emoji 面板尚未實作")
+            // 同上,實際上到不了這裡。
+            ActionVerb.EMOJI -> Unit
         }
         syncConfigToUi()
     }

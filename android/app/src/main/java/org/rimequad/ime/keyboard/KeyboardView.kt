@@ -568,7 +568,14 @@ private fun Toolbar(
 ) {
     val bar = theme.candidates.bar
     val toolbar = bar.toolbar
-    if (!toolbar.show || toolbar.items.isEmpty()) {
+    // 本端還沒實作的動詞不畫出來（理由與另外兩個消費端見 [VerbSupport]）。
+    //
+    // 過濾放在「畫的時候」而不是「解析的時候」是刻意的:解析出來的 Theme 是
+    // 規範的忠實表示,四端要拿它互相對照;「Android 這一版剛好還沒做」是本端的
+    // 事實,不該混進去。同理也不從 core/themes/*.yaml 裡把 emoji 刪掉 ——
+    // 桌面端做出表情面板時不必反過來把主題改回來。
+    val items = toolbar.items.filter { VerbSupport.isImplemented(it.tap.verb) }
+    if (!toolbar.show || items.isEmpty()) {
         Spacer(modifier)
         return
     }
@@ -579,7 +586,7 @@ private fun Toolbar(
         horizontalArrangement = Arrangement.spacedBy(2.dp),
         contentPadding = PaddingValues(horizontal = 4.dp, vertical = 3.dp),
     ) {
-        itemsIndexed(toolbar.items) { _, item ->
+        itemsIndexed(items) { _, item ->
             val face = faceOf(item.labelFrom, item.icon, item.label, state.status)
             val active = isActiveFace(false, item.labelFrom, state.status)
             Box(

@@ -181,10 +181,12 @@ layers:
             swipe:
               left: { tap: "clear" }
 
-      # 底列：123 / 地球 / 麥克風 / 空白 / return。
-      # ⚠ 麥克風那一格是本格式的一個缺口：§9.5 沒有 `voice_input` 這個 verb。
-      #   這裡退而求其次讓它開表情面板（`emoji`），並在 label 上照實標示。
-      #   真正的語音輸入要等 action verb 補上，已回報。
+      # 底列：123 / 地球 / 空白 / return。
+      # ⚠ 真機 iOS 這裡還有一顆麥克風。§9.5 沒有 `voice_input` 這個 verb，本檔
+      #   一度讓那一格改開表情面板頂替 —— 但 Android 端根本沒有表情面板，於是
+      #   那顆鍵從上線起就按了沒反應：圖示在、按壓色在、就是什麼都不會發生。
+      #   與其留一顆假的，不如不放：空白鍵吃掉那 1.00 單位（4.00 → 5.00），
+      #   整列仍是 10 單位。verb 補上之後再把它加回來。
       - weight: 1.0
         keys:
           - id: "to_num"
@@ -199,15 +201,10 @@ layers:
             width: 1.25
             tap: "input_mode:toggle"
             long_press: "schema:picker"
-          - id: "aux"
-            icon: emoji
-            style: modifier
-            width: 1.00
-            tap: "emoji"
           - id: "space"
             icon: space
             style: space
-            width: 4.00
+            width: 5.00
             label_from: schema_name
             send: { keysym: "space" }
             swipe:
@@ -286,11 +283,10 @@ layers:
         keys:
           - { id: "to_num", label: "123", style: modifier, width: 1.25, tap: "layer:num" }
           - { id: "lang", label_from: input_mode_pair, icon: globe, style: modifier, width: 1.25, tap: "input_mode:toggle", long_press: "schema:picker" }
-          - { id: "aux", icon: emoji, style: modifier, width: 1.00, tap: "emoji" }
           - id: "space"
             icon: space
             style: space
-            width: 4.00
+            width: 5.00
             label_from: schema_name
             send: { keysym: "space" }
             swipe:
@@ -356,11 +352,10 @@ layers:
         keys:
           - { id: "to_abc", label: "ABC", style: modifier, width: 1.25, tap: "layer:lower" }
           - { id: "lang", label_from: input_mode_pair, icon: globe, style: modifier, width: 1.25, tap: "input_mode:toggle", long_press: "schema:picker" }
-          - { id: "aux", icon: emoji, style: modifier, width: 1.00, tap: "emoji" }
           - id: "space"
             icon: space
             style: space
-            width: 4.00
+            width: 5.00
             send: { keysym: "space" }
             swipe:
               left:  { tap: "cursor:left" }
@@ -422,11 +417,10 @@ layers:
         keys:
           - { id: "to_abc", label: "ABC", style: modifier, width: 1.25, tap: "layer:lower" }
           - { id: "lang", label_from: input_mode_pair, icon: globe, style: modifier, width: 1.25, tap: "input_mode:toggle", long_press: "schema:picker" }
-          - { id: "aux", icon: emoji, style: modifier, width: 1.00, tap: "emoji" }
           - id: "space"
             icon: space
             style: space
-            width: 4.00
+            width: 5.00
             send: { keysym: "space" }
             swipe:
               left:  { tap: "cursor:left" }
