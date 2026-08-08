@@ -76,7 +76,15 @@ add_library(rime_common STATIC
   common/protocol.cc
   common/keymap.cc
   common/ime_policy.cc
-  common/cand_layout.cc)
+  common/cand_layout.cc
+  common/schema_choice.cc
+  common/settings.cc
+  common/schema_list_patch.cc
+  # net_policy.cc 是離線守門的**判斷**與紀錄格式(Android NetworkGate 的移植)。
+  # ⚠ 它不會開任何連線,目前也還沒有東西呼叫它 —— 方案市集還沒做。
+  #   放進來是因為它有測試,而且是下一輪的地基。CI 會斷言**兩個二進位
+  #   都沒有任何網路相依**,所以「Windows 端不連網」這句話仍然成立而且驗得到。
+  common/net_policy.cc)
 target_include_directories(rime_common PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/common"
   "${RIME_ROOT}/core/include")
@@ -93,6 +101,11 @@ add_executable(rime_tests
   tests/test_policy.cc
   tests/test_layout.cc
   tests/test_link_state.cc
+  tests/test_schema_choice.cc
+  tests/test_settings.cc
+  tests/test_net_policy.cc
+  tests/test_proto_compat.cc
+  tests/test_schema_list_patch.cc
   # 這一支用**真的**鍵盤佈局(LoadKeyboardLayout + ToUnicodeEx),
   # 是 CI 上唯一驗得到「有沒有真的問佈局」的地方。
   tests/test_win32_layouts.cc
@@ -111,16 +124,24 @@ target_link_libraries(rime_tests PRIVATE rime_common user32)
 #
 # 真正不可以出現的是 VCRUNTIME140 / MSVCP140 / ucrtbase 那一組 —— 那代表
 # /MT 沒生效,而後果是「在某些程式裡輸入法整個不存在」。
+# ⚠ lang_bar.cc 是這一輪唯一加進 DLL 的檔案,而且是不得不加的:
+#   ITfLangBarItem 是 TSF 向**文字服務**要的介面,語言列的按鈕只能在這裡。
+#   它不畫東西、不載字型、不建視窗,按下去只送一則單向 IPC 訊息。
+#   設定介面本體在服務進程那一側(service/settings_window.cc)。
 add_library(rime_tsf SHARED
   tsf/dll.cc
   tsf/guids.cc
   tsf/registration.cc
   tsf/text_service.cc
   tsf/ipc_client.cc
+  tsf/lang_bar.cc
   tsf/win32_oracle.cc
   tsf/rime_tsf.def)
+# oleaut32:SysAllocString(語言列按鈕的 BSTR)。它是 COM 的字串配置器,
+# 不是新的能力面 —— 而且**沒有任何網路 DLL**,那是 check_binaries.sh 守的。
 target_link_libraries(rime_tsf PRIVATE rime_common rime_winshared
-                                        kernel32 user32 advapi32 ole32 uuid)
+                                        kernel32 user32 advapi32 ole32 oleaut32
+                                        uuid)
 set_target_properties(rime_tsf PROPERTIES OUTPUT_NAME "rime_tsf")
 
 # ── 安裝程式的手腳 ────────────────────────────────────────────────
@@ -210,12 +231,15 @@ add_executable(rime_service
   service/engine.cc
   service/pipe_server.cc
   service/cand_window.cc
+  service/settings_store.cc
+  service/settings_window.cc
   "${RIME_ROOT}/core/src/rime_shell.cc")
 target_include_directories(rime_service PRIVATE "${RIME_PREFIX}/include")
 target_link_libraries(rime_service PRIVATE
   rime_common rime_winshared
   ${RIME_STATIC_LIBS} ${RIME_SYSTEM_LIBS}
-  user32 gdi32 shell32)
+  # comctl32:設定視窗的分頁控制項。shell32:系統匣圖示與「開啟資料夾」。
+  user32 gdi32 shell32 comctl32)
 # /MAP:服務進程崩掉時,崩潰過濾器印的是 RVA;要把 RVA 變成函式名就需要這份
 # 對照表。CI 會把它一起上傳。這是在沒有偵錯器、沒有符號伺服器的機器上
 # 唯一查得動的辦法 —— 而 Windows 端的建置機器正是這種機器。

@@ -86,8 +86,8 @@ int IndexOf(const int* allowed, int n, int value) {
 
 }  // namespace
 
-const int kCandCountValues[] = {0, 3, 5, 7, 9, -1};
-const int kCandCountCount = 6;
+const int kCandCountValues[] = {0, 3, 5, 7, 9};
+const int kCandCountCount = 5;
 const int kCandScaleValues[] = {0, 85, 100, 120, 145};
 const int kCandScaleCount = 5;
 

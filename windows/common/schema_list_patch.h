@@ -51,6 +51,16 @@ PatchResult WriteSchemaList(const std::string& yaml,
                             const std::vector<std::string>& order,
                             std::string* out);
 
+// 在 `patch:` 底下設定(或改寫)一個純量鍵,例如 `menu/page_size: 9`。
+// value 為空字串 = **刪掉那個鍵**(回到「沒設過」,見 settings.h 的檔頭)。
+//
+// 與 WriteSchemaList 同樣保守:找不到 `patch:` 就明著失敗,不猜。
+PatchResult UpsertPatchScalar(const std::string& yaml, const std::string& key,
+                              const std::string& value, std::string* out);
+
+// 讀回來。沒有那個鍵回傳空字串。
+std::string ReadPatchScalar(const std::string& yaml, const std::string& key);
+
 // 方案 id 的字元規則。id 有一部分來自下載回來的市集索引(不可信輸入),
 // 而它會被寫進一個 librime 會照著去找檔案的 YAML 檔。
 bool IsPlausibleSchemaId(const std::string& id);

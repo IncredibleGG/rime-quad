@@ -92,10 +92,39 @@ fi
 # 允許清單刻意很短。多出來的東西一律當成錯誤:相依是會悄悄長出來的,
 # 而每多一個,就多一種「在某台機器上載入失敗」的可能。
 # 要加新的相依請連同「為什麼在每一個宿主進程裡都一定有它」的理由一起加。
-ALLOWED="kernel32.dll user32.dll advapi32.dll ole32.dll"
+# oleaut32.dll 是這一輪新加的:語言列按鈕的 GetText / GetTooltipString
+# 要回傳 BSTR,而 BSTR 只能用 SysAllocString 配置(呼叫端會用
+# SysFreeString 釋放,配置器必須是同一個)。它是 COM 的一部分,
+# 每一個載入了 ole32 的進程裡本來就有。
+ALLOWED="kernel32.dll user32.dll advapi32.dll ole32.dll oleaut32.dll"
 # 這一組出現就是 /MT 沒生效。後果是在沒裝 VC++ 執行檔套件的機器上,
 # DLL 在載入階段就失敗 —— 而使用者看到的是「這個程式裡沒有這個輸入法」。
 FORBIDDEN="vcruntime140.dll msvcp140.dll ucrtbase.dll msvcr120.dll msvcrt.dll"
+
+# ── 網路 ──────────────────────────────────────────────────────
+#
+# ⚠ **這一條守的是產品定位,不是技術細節。**
+#
+# 這個輸入法的主張是「離線為預設」。使用者要能相信它,而說服他的方式
+# **不是** README 上的一句話,是這件事本身可以被外人驗證:
+# 拿 dumpbin /dependents 看一眼,兩個二進位都沒有任何網路 DLL。
+#
+# 這一條對 rime_tsf.dll 尤其重要 —— 那個 DLL 被載入到**每一個**接受文字
+# 輸入的進程裡,包括瀏覽器與提權的進程。它有網路能力這件事,
+# 光靠讀原始碼是不會有人發現的。
+#
+# 目前 Windows 端**沒有任何一行程式碼會開連線**(方案市集還沒做,
+# windows/common/net_policy.cc 只有判斷邏輯,不含任何網路 API)。
+# 哪天要做,這條會紅 —— 那時要做的是:
+#   1. 把連線集中在**唯一一個** .cc(服務進程那一側),
+#   2. 把 winhttp.dll 加進 rime_service.exe 的例外(**不是** DLL 的),
+#   3. 補上開關、fail-closed 與連網紀錄(見 common/net_policy.h)。
+# 在那三件事做完之前,這條紅著是對的。
+#
+# ws2_32.dll 是唯一的例外,而且只給服務進程:leveldb 與 glog 在 Windows 上
+# 為了取主機名連結它(見 CMakeLists 的 RIME_SYSTEM_LIBS)。那是 librime
+# 的相依,不是我們開的連線 —— 但它**不准**出現在瘦 DLL 上。
+NET_DLLS="winhttp.dll wininet.dll urlmon.dll ws2_32.dll ws2_32.dll wsock32.dll dnsapi.dll winsock.dll iphlpapi.dll httpapi.dll"
 
 check_deps() {
   local file="$1"; shift
@@ -119,6 +148,16 @@ check_deps() {
       api-ms-win-crt-*)
         echo "  !! ${d} —— 動態 UCRT。同上,/MT 沒有生效。" >&2
         fail=1 ;;
+    esac
+    case " ${NET_DLLS} " in
+      *" ${d} "*)
+        if [ "${strict}" = "strict" ] || [ "${d}" != "ws2_32.dll" ]; then
+          echo "  !! ${d} —— 這支二進位有網路能力。" >&2
+          echo "     Windows 端目前不連網,而「不連網」這件事是靠這一條" >&2
+          echo "     從外面驗證的(見本腳本 NET_DLLS 那一段的說明)。" >&2
+          echo "     真的要加連網功能的話,那一段寫了要先做完哪三件事。" >&2
+          fail=1
+        fi ;;
     esac
     if [ "${strict}" = "strict" ]; then
       case " ${ALLOWED} " in

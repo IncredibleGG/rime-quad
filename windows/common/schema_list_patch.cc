@@ -174,4 +174,85 @@ PatchResult WriteSchemaList(const std::string& yaml,
   return PatchResult::kOk;
 }
 
+namespace {
+
+// "  menu/page_size: 9   # 註解" → key = "menu/page_size", value = "9"
+bool SplitScalar(const std::string& text, std::string* key, std::string* value) {
+  size_t i = text.find_first_not_of(" \t");
+  if (i == std::string::npos || text[i] == '#' || text[i] == '-') return false;
+  const size_t colon = text.find(':', i);
+  if (colon == std::string::npos) return false;
+  *key = text.substr(i, colon - i);
+  size_t v = colon + 1;
+  while (v < text.size() && (text[v] == ' ' || text[v] == '\t')) ++v;
+  size_t e = text.size();
+  while (e > v && (text[e - 1] == ' ' || text[e - 1] == '\t')) --e;
+  *value = text.substr(v, e - v);
+  return !key->empty();
+}
+
+}  // namespace
+
+std::string ReadPatchScalar(const std::string& yaml, const std::string& key) {
+  const std::vector<Line> lines = Split(yaml);
+  bool in_patch = false;
+  for (const Line& l : lines) {
+    if (l.blank || l.comment) continue;
+    if (l.indent == 0) {
+      in_patch = StartsWithKeyword(l, "patch");
+      continue;
+    }
+    if (!in_patch) continue;
+    std::string k, v;
+    if (SplitScalar(l.text, &k, &v) && k == key) return v;
+  }
+  return std::string();
+}
+
+PatchResult UpsertPatchScalar(const std::string& yaml, const std::string& key,
+                              const std::string& value, std::string* out) {
+  if (key.empty()) return PatchResult::kBadSchemaId;
+  // 值會被原樣寫進 YAML。換行就能偽造出別的設定 —— 這裡的值來自
+  // 設定介面的下拉選單,但那不是把檢查省掉的理由。
+  if (value.find('\n') != std::string::npos ||
+      value.find('\r') != std::string::npos || value.find('#') != std::string::npos)
+    return PatchResult::kBadSchemaId;
+
+  const std::vector<Line> lines = Split(yaml);
+  size_t patch_at = std::string::npos, key_at = std::string::npos;
+  size_t key_indent = 2;
+  bool in_patch = false;
+  for (size_t i = 0; i < lines.size(); ++i) {
+    if (lines[i].blank || lines[i].comment) continue;
+    if (lines[i].has_tab) return PatchResult::kNoPatchSection;
+    if (lines[i].indent == 0) {
+      in_patch = StartsWithKeyword(lines[i], "patch");
+      if (in_patch && patch_at == std::string::npos) patch_at = i;
+      continue;
+    }
+    if (!in_patch || key_at != std::string::npos) continue;
+    std::string k, v;
+    if (SplitScalar(lines[i].text, &k, &v) && k == key) {
+      key_at = i;
+      key_indent = lines[i].indent;
+    }
+  }
+  if (patch_at == std::string::npos) return PatchResult::kNoPatchSection;
+
+  std::vector<std::string> result;
+  for (size_t i = 0; i < lines.size(); ++i) {
+    if (i == key_at) {
+      if (!value.empty())
+        result.push_back(std::string(key_indent, ' ') + key + ": " + value);
+      // value 為空 = 刪掉這一行(= 回到「沒設過」)
+      continue;
+    }
+    result.push_back(lines[i].text);
+    if (i == patch_at && key_at == std::string::npos && !value.empty())
+      result.push_back("  " + key + ": " + value);
+  }
+  *out = Join(result);
+  return PatchResult::kOk;
+}
+
 }  // namespace rimewin

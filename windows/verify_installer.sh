@@ -363,6 +363,57 @@ case "${d_user}" in
   *) note_fail "user 是「${d_user}」,預期在 %APPDATA% 底下" ;;
 esac
 
+# ── 5b. 語言設定檔 → 方案(那個「簡體使用者打出繁體字」的缺陷)────
+#
+# ⚠ 這一段斷言的是**裝好的那份二進位**,不是單元測試裡的那一份。
+#   單元測試證明 ChooseSchema 這個函式是對的;這裡證明使用者真的裝到
+#   機器上的那支 rime_service.exe 也會給同一個答案 ——
+#   兩者之間隔著 CMake 的來源清單、連結器,以及「有沒有真的編進去」。
+#
+# --print-choice 不啟動引擎、不碰管道、不需要詞庫,所以在這個 job 裡跑得動。
+log "5b. langid → 方案(簡體使用者必須拿到簡體方案)"
+
+choice_of() {  # $1 = langid, $2 = 欄位名
+  "${INSTALL_DIR}/rime_service.exe" --print-choice "$1" 2>&1 \
+    | tr -d '\r' | awk -F= -v k="$2" '$1==k { sub("^" k "=", ""); print; exit }'
+}
+
+# ⚠ 這裡刻意用一個**乾淨的**使用者設定:--print-choice 會讀
+#   %APPDATA%\RimeQuad\rimequad.settings,而設定裡的覆寫優先於 langid。
+#   runner 上那個檔案不存在,所以讀到的就是「沒有覆寫」——
+#   但如果哪天有人在這支腳本前面寫了設定,這段斷言會安靜地變成在測別的東西。
+if [ -f "${USER_DIR}/rimequad.settings" ]; then
+  note_fail "runner 上竟然已經有 rimequad.settings —— 下面的斷言測到的
+     會是那份設定的覆寫,而不是 langid 的推導。"
+fi
+
+for pair in "0x0804:luna_pinyin:zh_hans" \
+            "0x0404:luna_pinyin_tw:zh_hant_tw" \
+            "0x0C04:luna_pinyin:zh_hant_hk"; do
+  lang="${pair%%:*}"; rest="${pair#*:}"
+  want_schema="${rest%%:*}"; want_variant="${rest#*:}"
+  got_schema="$(choice_of "${lang}" schema)"
+  got_variant="$(choice_of "${lang}" variant)"
+  if [ "${got_schema}" = "${want_schema}" ] && \
+     [ "${got_variant}" = "${want_variant}" ]; then
+    ok "${lang} → ${got_schema} / ${got_variant}"
+  else
+    note_fail "${lang} 給的是「${got_schema} / ${got_variant}」,
+     預期「${want_schema} / ${want_variant}」。
+     這正是使用者回報過的那個缺陷:選了簡體輸入法、打出來是繁體字。"
+  fi
+done
+
+# 反向測試:不是中文的語言必須**沒有意見**(而不是隨便挑一個)。
+# 少了這一條,一個「永遠回傳 luna_pinyin」的實作也會讓上面三條全過。
+neg_schema="$(choice_of "0x0409" schema)"
+if [ -z "${neg_schema}" ]; then
+  ok "0x0409(en-US)沒有意見 —— 上面三條不是恆真的"
+else
+  note_fail "0x0409 竟然選了「${neg_schema}」。非中文的語言不該被我們
+     挑一個中文方案 —— 而且這代表上面那三條斷言是恆真的。"
+fi
+
 # ══════════════════════════════════════════════════════════════════
 #  6. 用**安裝好的**東西真的打出「你好」
 # ══════════════════════════════════════════════════════════════════

@@ -88,8 +88,17 @@ jobs:
       # 匯出的四個 COM 進入點齊不齊、DLL 有沒有意外的相依。
       # 後者守的是 /MT:相依到 VCRUNTIME140.dll 的話,在沒裝 VC++ 執行檔套件
       # 的機器上 DLL 會在載入階段失敗,而症狀是「輸入法在某些程式裡不存在」。
-      - name: 二進位結構檢查（匯出符號、相依白名單）
+      - name: 二進位結構檢查（匯出符號、相依白名單、**沒有網路相依**）
         run: ./windows/check_binaries.sh third_party/build/windows-x64/logic/bin
+
+      # 離線稽核。Android 端的 scripts/audit_offline.sh 在原始碼層面守
+      # 「整個 app 只有一個檔案碰得到網路」,這一支是 Windows 端的對應物。
+      # 目前的主張更強:**一個檔案都沒有**。
+      - name: 離線稽核（原始碼層面:沒有任何檔案碰網路 API）
+        run: ./windows/audit_offline_win.sh
+
+      - name: 反向測試（離線稽核必須抓得到植入的違規）
+        run: ./windows/audit_offline_win.sh --self-check
 
       # 安裝程式最貴的失敗模式是「忘了把執行期資料包進去」——
       # 那樣的話安裝程式編得出來、安裝成功、輸入法也註冊得上,

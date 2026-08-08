@@ -28,7 +28,11 @@
 #include <string>
 #include <thread>
 
+#include <utility>
+#include <vector>
+
 #include "../common/protocol.h"
+#include "../common/schema_choice.h"
 
 namespace rimewin {
 
@@ -59,6 +63,45 @@ class Engine {
   Result ChangePage(uint64_t id, bool backward);
   Result SelectSchema(uint64_t id, const std::string& schema_id);
 
+  // ── 設定介面要用的 ──────────────────────────────────────────
+  //
+  // rs_schema_list 不吃 session(方案清單是全域的),但仍然走引擎執行緒:
+  // 它回傳的字串有生命週期,而別的執行緒同時在呼叫 rs_* 的話那份緩衝
+  // 會被踩掉。這裡在引擎執行緒上把字串複製出來再回來。
+  std::vector<std::pair<std::string, std::string>> SchemaList();
+
+  // 對**目前存在的每一個 session** 套用。設定介面改了字形之後,
+  // 使用者不該還要換一個程式才看得到效果。
+  void SetOptionAll(const char* option, bool value);
+  void SelectSchemaAll(const std::string& schema_id);
+
+  bool SetOption(uint64_t id, const char* option, bool value);
+  std::string SchemaOfSession(uint64_t id);
+
+  // 把「這個語言該用什麼」套到一個 session 上。回傳實際選中的方案 id
+  // (沒有選就回空字串)。
+  std::string ApplyChoice(uint64_t id, const std::string& schema_id,
+                          const std::vector<OptionAssign>& options);
+
+  int AbiVersion() const;
+
+  // ── 部署 ────────────────────────────────────────────────────
+  //
+  // ⚠ rs_deploy_callback 不在呼叫端的執行緒上,而且可能在 rs_deploy()
+  //   早就返回之後才觸發。所以「呼叫過了所以做完了」是錯的。
+  //
+  // ⚠ 更陰險的是**上一輪的結果**:直接讀一個 atomic 狀態的話,
+  //   剛啟動時那一次首次部署的 SUCCESS 會被當成這一次的結果,
+  //   於是使用者按下按鈕的瞬間就看到「完成」。所以這裡用序號:
+  //   BeginDeploy 記下當下的序號,PollDeploy 只認**比它新**的終局狀態。
+  //   (Android 端用 AtomicBoolean armed 解同一個問題。)
+  //
+  // BeginDeploy 回傳 false = rs_deploy() 拒絕啟動(多半是已經有一個
+  // 部署在進行中)。呼叫端**必須**把這件事說出來,不可以靜靜地什麼都不做。
+  bool BeginDeploy(uint32_t* out_seq);
+  // 回傳 false = 還沒結束。true 時 *status:1 = 成功,-1 = 失敗。
+  bool PollDeploy(uint32_t since_seq, int* status);
+
   std::string last_error() const;
 
  private:
@@ -82,7 +125,12 @@ class Engine {
 
   // 0 = 還沒有結果, 1 = 成功, -1 = 失敗。只由部署回呼寫,別處只讀。
   std::atomic<int> deploy_state_{0};
+  // 每收到一次**終局**的部署結果就加一。見 BeginDeploy 的說明:
+  // 沒有這個序號的話,上一輪的結果會被讀成這一輪的。
+  std::atomic<uint32_t> deploy_seq_{0};
   std::string init_error_;
+  mutable std::mutex err_mu_;
+  std::string last_error_;
 };
 
 }  // namespace rimewin

@@ -127,8 +127,10 @@ TEST(Settings_dropdown_index_maps_both_ways) {
   CHECK_INT(CandCountAtIndex(-1), 0);
   CHECK_INT(CandCountAtIndex(999), 0);
   CHECK_INT(IndexOfCandCount(4), 0);  // 不是清單上的值
-  // 「不限」是最後一格,不是第一格 —— 這一條很容易寫反。
-  CHECK_INT(CandCountAtIndex(kCandCountCount - 1), -1);
+  // 候選數對應的是 librime 的 menu/page_size,所以每一格都必須是
+  // librime 收得下的正整數。負數或 0 送進去的話部署不會失敗,
+  // 但候選窗會變成空的 —— 又一個「看起來正常」的失效。
+  for (int i = 1; i < kCandCountCount; ++i) CHECK(CandCountAtIndex(i) > 0);
 }
 
 TEST(Settings_last_used_is_per_language) {

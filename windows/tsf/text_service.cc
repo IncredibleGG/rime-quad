@@ -195,9 +195,9 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* mgr, TfClientId id,
 
   // 語言列上的設定按鈕。加不上去不是錯誤(某些宿主沒有語言列),
   // 系統匣那條路是獨立的。
-  lang_bar_ = new (std::nothrow) LangBarButton([this]() { OpenSettings(); });
-  if (lang_bar_ && !LangBarButton::AddTo(thread_mgr_, lang_bar_)) {
-    lang_bar_->Release();
+  lang_bar_ = CreateLangBarButton([this]() { OpenSettings(); });
+  if (lang_bar_ && !AddLangBarButton(thread_mgr_, lang_bar_)) {
+    ReleaseLangBarButton(lang_bar_);
     lang_bar_ = nullptr;
   }
 
@@ -210,8 +210,8 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* mgr, TfClientId id,
 
 STDMETHODIMP TextService::Deactivate() {
   if (lang_bar_) {
-    LangBarButton::RemoveFrom(thread_mgr_, lang_bar_);
-    lang_bar_->Release();
+    RemoveLangBarButton(thread_mgr_, lang_bar_);
+    ReleaseLangBarButton(lang_bar_);
     lang_bar_ = nullptr;
   }
   if (profile_sink_cookie_ != TF_INVALID_COOKIE && thread_mgr_) {

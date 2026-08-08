@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <string>
 
+#include "../common/schema_choice.h"
 #include "../winshared/winutil.h"
 #include "rime_shell.h"
 
@@ -30,8 +31,8 @@ bool WaitOverlapped(HANDLE pipe, OVERLAPPED* ov, HANDLE stop_event,
 
 }  // namespace
 
-PipeServer::PipeServer(Engine* engine, CandidateUi* ui)
-    : engine_(engine), ui_(ui) {
+PipeServer::PipeServer(Engine* engine, CandidateUi* ui, SettingsStore* settings)
+    : engine_(engine), ui_(ui), settings_(settings) {
   stop_event_ = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
 }
 
@@ -135,6 +136,14 @@ void PipeServer::ServeClient(HANDLE pipe) {
   FrameReader reader;
   bool authed = false;
   uint64_t session = 0;
+  // 這條連線的宿主是從哪一個語言設定檔進來的。0 = 不知道
+  // (v1 的用戶端,或系統問不出來)。**0 必須等於「沒有意見」。**
+  uint32_t langid = 0;
+  // 上一次看到的方案 id。使用者按 Ctrl+` 換方案時,快照裡的 schema_id
+  // 會變 —— 那是我們唯一能發現「他換了」的地方(切換是 librime 內部
+  // 處理的,我們沒有攔那顆鍵)。發現了就記進設定,下一個 app 才不會被
+  // 打回預設 —— 否則那顆鍵在使用者眼裡是「換了,但換到別的視窗就沒了」。
+  std::string last_schema;
   RECT caret{0, 0, 0, 0};
   char buf[8192];
 
@@ -162,6 +171,20 @@ void PipeServer::ServeClient(HANDLE pipe) {
       ui_->Hide();
     else
       ui_->Update(snap, caret);
+  };
+
+  // librime 內建的方案切換器(Ctrl+` / F4)是引擎自己處理的,我們沒有
+  // 攔那顆鍵 —— 所以「使用者換了方案」只能從快照上看出來。
+  auto note_schema = [&](const Snapshot& snap) {
+    if (snap.schema_id.empty() || snap.schema_id == last_schema) return;
+    last_schema = snap.schema_id;
+    if (!settings_ || langid == 0) return;
+    Settings st = settings_->Load();
+    // 使用者在設定裡明著指定了「所有語言都用這個」的話,不覆蓋他的選擇 ——
+    // 那是他要我們不要猜的意思。
+    if (!st.Raw(keys::kSchemaForced).empty()) return;
+    st.RememberLastUsed(langid, snap.schema_id);
+    settings_->Save(st);
   };
 
   for (;;) {
@@ -204,14 +227,22 @@ void PipeServer::ServeClient(HANDLE pipe) {
         // rime_shell.h 檔頭要的就是「實作端 vs 呼叫端」的比對。
         ok.shell_abi = static_cast<uint32_t>(rs_abi_version());
         ok.service_version = "rime-quad-windows/0.2";
-        if (h.proto != kProtocolVersion) {
+        // ⚠ 不是「等於最新版」,是「在支援的區間裡」。
+        //   DLL 與服務可能來自不同的建置(瀏覽器可以開好幾天,
+        //   它握著的 DLL 就是那麼舊)。舊 DLL 連上新服務時,
+        //   我們照它宣告的版本解,少掉的欄位取「沒有意見」。
+        if (h.proto < kMinProtocolVersion || h.proto > kProtocolVersion) {
           ErrorMsg e;
           e.code = 2;
           e.text = "協議版本不符";
           send(EncodeError(seq, e));
           goto done;
         }
+        // 回報**協商出來的**版本,不是我們支援的最新版 ——
+        // 用戶端拿它跟自己送出去的比對。
+        ok.proto = h.proto;
         authed = true;
+        langid = h.input_langid;
         if (!send(EncodeHelloOk(seq, ok))) goto done;
         break;
       }
@@ -219,6 +250,30 @@ void PipeServer::ServeClient(HANDLE pipe) {
         SessionOk ok;
         ok.session = engine_->NewSession();
         session = ok.session;
+        if (ok.session != 0) {
+          // ── 這裡就是那個缺陷的修法 ──────────────────────────
+          //
+          // 使用者從哪一份語言設定檔進來(langid),決定預設用哪個方案
+          // 與哪一種字形。設定介面裡的選擇優先於它 —— 完整的優先順序
+          // 寫在 common/schema_choice.h。
+          //
+          // 套用的時機是 session 剛建立時,**不是**每一顆按鍵:
+          // 每顆鍵都套的話,使用者用 Ctrl+` 換過的方案會被一直打回去。
+          std::vector<std::string> ids;
+          for (const auto& kv : engine_->SchemaList()) ids.push_back(kv.first);
+          const Settings st =
+              settings_ ? settings_->Load() : Settings();
+          const SchemaChoice choice =
+              ChooseSchema(langid, ids, st.SchemaPref());
+          std::vector<OptionAssign> opts =
+              PlanVariant(choice.variant, Variant::kFollow);
+          // 標點是獨立的一項(不屬於字形的 radio group)。
+          const Tri punct = st.GetTri(keys::kTextAsciiPunct);
+          if (punct != Tri::kUnset)
+            opts.push_back({"ascii_punct", punct == Tri::kTrue});
+          engine_->ApplyChoice(ok.session, choice.schema_id, opts);
+          last_schema = engine_->SchemaOfSession(ok.session);
+        }
         if (!send(EncodeSessionOk(seq, ok))) goto done;
         break;
       }
@@ -231,6 +286,7 @@ void PipeServer::ServeClient(HANDLE pipe) {
         KeyReq k;
         if (!DecodeKey(payload, &seq, &k)) goto done;
         Result r = engine_->ProcessKey(k.session, k.keysym, k.mods);
+        note_schema(r.snap);
         push_ui(r.snap);
         if (!send(EncodeResult(seq, r))) goto done;
         break;
@@ -281,6 +337,15 @@ void PipeServer::ServeClient(HANDLE pipe) {
         Result r = engine_->SelectSchema(sc.session, sc.schema_id);
         push_ui(r.snap);
         if (!send(EncodeResult(seq, r))) goto done;
+        break;
+      }
+      case Op::kOpenSettings: {
+        uint64_t sid = 0;
+        if (!DecodeSimple(payload, &seq, &sid)) goto done;
+        // 單向,不回覆。⚠ 這裡在連線執行緒上,而且宿主的 UI 執行緒
+        // 正在等這一則的**下一顆按鍵** —— 回呼只能 PostMessage,
+        // 絕不可以在這裡建視窗或等任何東西。
+        if (on_open_settings_) on_open_settings_();
         break;
       }
       case Op::kPing:

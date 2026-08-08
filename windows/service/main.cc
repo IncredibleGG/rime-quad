@@ -13,6 +13,11 @@
 //   rime_service.exe --ready-file <path>    就緒後寫一個檔案(CI 用來等它起來)
 //   rime_service.exe --quit-after <秒>      到時自己結束(CI 用,避免殘留進程)
 //   rime_service.exe --print-dirs           只印出解析出來的三個目錄就結束
+//   rime_service.exe --settings             把設定視窗叫出來。已經有一支服務
+//                                           在跑的話就通知它並立刻結束 ——
+//                                           不會起第二支服務。
+//   rime_service.exe --print-choice <langid>  只印出「這個語言會選哪個方案」
+//                                           就結束(給 CI 斷言用,不啟動引擎)
 //
 // ── 資料目錄:安裝到 Program Files 之後,這一格是最容易錯的 ────────
 //
@@ -45,12 +50,15 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <thread>
 
 #include "../winshared/winutil.h"
 #include "cand_window.h"
 #include "engine.h"
 #include "pipe_server.h"
 #include "rime_shell.h"
+#include "settings_store.h"
+#include "settings_window.h"
 
 namespace {
 
@@ -249,6 +257,8 @@ static int RunService(int argc, wchar_t** argv) {
   std::string seed;
   bool no_ui = false;
   bool print_dirs = false;
+  bool open_settings = false;
+  long print_choice = -1;
   int wait_deploy = 0;
   int quit_after = 0;
   std::wstring ready_file;
@@ -260,6 +270,9 @@ static int RunService(int argc, wchar_t** argv) {
     };
     if (a == L"--no-ui") no_ui = true;
     else if (a == L"--print-dirs") print_dirs = true;
+    else if (a == L"--settings") open_settings = true;
+    else if (a == L"--print-choice" && i + 1 < argc)
+      print_choice = ::wcstol(argv[++i], nullptr, 0);
     else if (a == L"--shared") next(&shared);
     else if (a == L"--user") next(&user);
     else if (a == L"--seed") next(&seed);
@@ -295,6 +308,27 @@ static int RunService(int argc, wchar_t** argv) {
   // --print-dirs 放在這裡:三個目錄都解析完、但還沒動任何狀態(沒有建目錄、
   // 沒有搶單一實例的 mutex、沒有起引擎)。CI 靠它在安裝完成後**立刻**斷言
   // 「shared 指到 Program Files、user 指到 %APPDATA%」,不必等好幾分鐘的詞庫編譯。
+  // --print-choice:只做「langid → 方案」那一格的判斷就結束。
+  //
+  // 這一條是給 CI 用的:它不啟動引擎、不碰管道、不需要詞庫,所以在
+  // install-x64 那個 job 裡跑得動,而且斷言的是**裝好的那份二進位**
+  // 真的會替簡體使用者選簡體方案 —— 不是單元測試裡的那一份。
+  if (print_choice >= 0) {
+    rimewin::SettingsStore store(user);
+    const rimewin::Settings st = store.Load();
+    // 不問引擎(它還沒起來),所以 available 是空的 —— ChooseSchema 對
+    // 空清單會回第一順位。這正是我們要斷言的那個「表上寫什麼」。
+    const rimewin::SchemaChoice c = rimewin::ChooseSchema(
+        static_cast<uint32_t>(print_choice), {}, st.SchemaPref());
+    Say("langid=0x%04X (%s)\n", static_cast<unsigned>(print_choice),
+        rimewin::LangIdName(static_cast<uint32_t>(print_choice)));
+    Say("schema=%s\n", c.schema_id.c_str());
+    const char* v = rimewin::VariantOptionName(c.variant);
+    Say("variant=%s\n", v ? v : "");
+    Say("source=%s\n", c.source);
+    return 0;
+  }
+
   if (print_dirs) {
     Say("shared=%s\n", shared.c_str());
     Say("user=%s\n", user.c_str());
@@ -332,6 +366,23 @@ static int RunService(int argc, wchar_t** argv) {
   HANDLE single = ::CreateMutexW(nullptr, TRUE, mutex_name.c_str());
   if (!single || ::GetLastError() == ERROR_ALREADY_EXISTS) {
     // 已經有一支在跑,這不是錯誤。
+    //
+    // ⚠ 但如果是 --settings 進來的,**一定要把訊息傳過去**。
+    //   靜靜結束的話,使用者按了語言列上的「設定」什麼都不會發生 ——
+    //   而那正是這個專案抓過四次的那種鍵。
+    if (open_settings) {
+      HANDLE ev = ::OpenEventW(EVENT_MODIFY_STATE, FALSE,
+                               rimewin::RimeSettingsEventName().c_str());
+      if (ev) {
+        ::SetEvent(ev);
+        ::CloseHandle(ev);
+      } else {
+        Err("找不到執行中的服務的設定事件 —— 設定視窗叫不出來。\n");
+        if (single) ::CloseHandle(single);
+        return 1;
+      }
+    }
+    if (single) ::CloseHandle(single);
     return 0;
   }
 
@@ -392,7 +443,33 @@ static int RunService(int argc, wchar_t** argv) {
 
   Say("[service] 候選窗 %s\n", no_ui ? "(--no-ui,不建)" : "已就緒");
 
-  rimewin::PipeServer server(&engine, ui);
+  // ── 設定介面 ────────────────────────────────────────────────
+  //
+  // 視窗一開始就建好但不顯示(見 settings_window.cc):使用者按下語言列
+  // 按鈕時要立刻看到窗,而「按了之後過一秒才出現」與「按了沒反應」
+  // 在使用者眼裡是同一件事。系統匣圖示也掛在它的訊息迴圈上。
+  rimewin::SettingsStore settings_store(user);
+  rimewin::SettingsWindow settings(&engine, &settings_store, shared);
+  HANDLE settings_event = nullptr;
+  if (!no_ui) {
+    settings.SetCandidateWindow(&window);
+    if (!settings.Start()) {
+      Err("設定視窗建立失敗 —— 語言列與系統匣的入口這次不會出現。\n");
+    } else {
+      // 啟動時就把候選字級套上去。少了這一步,使用者要重開一次設定
+      // 才會看到自己上次選的字級 —— 那看起來像「設定沒有被記住」。
+      const rimewin::Settings st = settings_store.Load();
+      const int scale = st.GetEnumInt(rimewin::keys::kCandScale,
+                                      rimewin::kCandScaleValues,
+                                      rimewin::kCandScaleCount);
+      if (scale > 0) window.SetTextScale(scale / 100.0);
+      settings_event = ::CreateEventW(
+          nullptr, FALSE, FALSE, rimewin::RimeSettingsEventName().c_str());
+    }
+  }
+
+  rimewin::PipeServer server(&engine, ui, &settings_store);
+  server.SetOpenSettingsHandler([&settings]() { settings.Open(); });
   if (!server.Start()) {
     Err("具名管道建立失敗(可能已經有一支服務在跑)\n");
     return 1;
@@ -411,6 +488,24 @@ static int RunService(int argc, wchar_t** argv) {
   }
   Say("[service] ready\n");
 
+  // 具名事件那條路。DLL 在管道還沒連上時走它(見 tsf/lang_bar.h)。
+  // ⚠ 用**一條自己的執行緒**而不是把它併進下面的 WaitForSingleObject:
+  //   結束事件與設定事件的語意完全不同,合在一起等的話,
+  //   「開設定」有可能被寫成「結束服務」——那是最糟的一種手滑。
+  std::thread settings_thread;
+  if (settings_event) {
+    settings_thread = std::thread([&]() {
+      for (;;) {
+        HANDLE waits[2] = {settings_event, quit};
+        const DWORD r = ::WaitForMultipleObjects(quit ? 2 : 1, waits, FALSE,
+                                                 INFINITE);
+        if (r != WAIT_OBJECT_0) return;  // quit 或錯誤
+        settings.Open();
+      }
+    });
+  }
+  if (open_settings) settings.Open();
+
   // 等結束訊號,而不是無止境地 Sleep。
   //
   // 升級與解除安裝之前必須停掉這支進程,否則 rime_service.exe 與
@@ -422,7 +517,12 @@ static int RunService(int argc, wchar_t** argv) {
     const DWORD wait_ms =
         quit_after > 0 ? static_cast<DWORD>(quit_after) * 1000 : INFINITE;
     ::WaitForSingleObject(quit, wait_ms);
-    ::CloseHandle(quit);
+    // ⚠ 這裡**不可以**立刻 CloseHandle(quit):設定事件那條執行緒也在等它。
+    //   關掉之後那條執行緒會在一個已經失效的 handle 上等,而那是未定義行為
+    //   —— 症狀會是「結束服務時偶爾當掉」,而且與設定功能看起來毫無關聯。
+    //   --quit-after 逾時的路徑上 quit 從來沒被設起來過,所以這裡補一次,
+    //   不然下面的 join 會永遠等下去。
+    ::SetEvent(quit);
   } else {
     // 建不出事件不該讓服務起不來 —— 退回舊行為,只是停不掉而已。
     if (quit_after > 0)
@@ -432,7 +532,14 @@ static int RunService(int argc, wchar_t** argv) {
   }
   Say("[service] 結束,收尾中\n");
 
+  if (settings_thread.joinable()) {
+    // quit 上面一定被設起來了,所以那條執行緒會自己醒。
+    settings_thread.join();
+  }
+  if (quit) ::CloseHandle(quit);
+  if (settings_event) ::CloseHandle(settings_event);
   server.Stop();
+  settings.Stop();
   window.Stop();
   engine.Stop();
   ::ReleaseMutex(single);

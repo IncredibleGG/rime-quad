@@ -57,7 +57,8 @@ constexpr const char* kSchemaLastPrefix = "schema.last.";   // + 4 位大寫十�
 constexpr const char* kTextVariant = "text.variant";        // "" | zh_hant | zh_hans | …
 constexpr const char* kTextAsciiPunct = "text.ascii_punct";  // 三態
 // 候選窗
-constexpr const char* kCandCount = "cand.count";            // 0=跟隨;3/5/7/9;-1=不限
+constexpr const char* kCandCount = "cand.count";            // 0=跟隨;3/5/7/9
+                                                            // = librime 的 menu/page_size
 constexpr const char* kCandScale = "cand.scale";            // 0=跟隨;85/100/120/145
 // 連網
 constexpr const char* kNetEnabled = "net.enabled";          // 三態,未設 == 關
@@ -71,7 +72,11 @@ constexpr const char* kNetIndexUrl = "net.index_url";       // "" = 用內建預
 //   拿到「小」。所以索引↔數值的換算是純函式,而且有測試。
 //
 //   0 一律代表「跟隨主題預設」,固定排在第一格。
-extern const int kCandCountValues[];   // {0, 3, 5, 7, 9, -1}  -1 = 不限
+// ⚠ 這一格對應的是 librime 的 `menu/page_size`,不是「畫幾個」。
+//   只截掉畫面上的候選而不動 page_size 的話,數字鍵仍然選得到
+//   看不見的那幾個 —— 那正是「看得到但摸不到」的鏡像版本。
+//   沒有「不限」:桌面的候選窗是一條橫列,而且選字靠數字鍵。
+extern const int kCandCountValues[];   // {0, 3, 5, 7, 9}
 extern const int kCandCountCount;
 extern const int kCandScaleValues[];   // {0, 85, 100, 120, 145}
 extern const int kCandScaleCount;

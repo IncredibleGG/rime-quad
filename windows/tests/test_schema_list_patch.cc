@@ -146,3 +146,54 @@ TEST(SchemaListPatch_read_distinguishes_missing_from_empty) {
   CHECK(found);
   CHECK_INT(empty.size(), 0);
 }
+
+// ── patch: 底下的純量鍵(候選數 = librime 的 menu/page_size)──────
+
+TEST(PatchScalar_upsert_and_read) {
+  const std::string in =
+      "patch:\n"
+      "  schema_list:\n"
+      "    - schema: a\n";
+  std::string out;
+  CHECK(UpsertPatchScalar(in, "menu/page_size", "7", &out) == PatchResult::kOk);
+  CHECK_STR(ReadPatchScalar(out, "menu/page_size"), "7");
+  // 方案清單沒有被動到。
+  bool found = false;
+  CHECK_INT(ReadSchemaList(out, &found).size(), 1);
+  // 改值是原地換,不是再加一行。
+  std::string out2;
+  CHECK(UpsertPatchScalar(out, "menu/page_size", "9", &out2) == PatchResult::kOk);
+  CHECK_STR(ReadPatchScalar(out2, "menu/page_size"), "9");
+  size_t n = 0, pos = 0;
+  while ((pos = out2.find("menu/page_size", pos)) != std::string::npos) { ++n; ++pos; }
+  CHECK_INT(n, 1);
+}
+
+TEST(PatchScalar_empty_value_deletes_the_key) {
+  // 「跟隨預設」= 刪掉那一行,不是寫一個哨兵值(見 settings.h 檔頭)。
+  std::string a, b;
+  CHECK(UpsertPatchScalar("patch:\n  x: 1\n", "menu/page_size", "5", &a) ==
+        PatchResult::kOk);
+  CHECK_STR(ReadPatchScalar(a, "menu/page_size"), "5");
+  CHECK(UpsertPatchScalar(a, "menu/page_size", "", &b) == PatchResult::kOk);
+  CHECK_STR(ReadPatchScalar(b, "menu/page_size"), "");
+  CHECK(b.find("menu/page_size") == std::string::npos);
+  CHECK(b.find("x: 1") != std::string::npos);
+}
+
+TEST(PatchScalar_refuses_a_value_that_could_forge_a_line) {
+  std::string out;
+  CHECK(UpsertPatchScalar("patch:\n  x: 1\n", "menu/page_size",
+                          "9\n  schema_list: []", &out) ==
+        PatchResult::kBadSchemaId);
+  CHECK(UpsertPatchScalar("patch:\n  x: 1\n", "menu/page_size", "9 # 註解",
+                          &out) == PatchResult::kBadSchemaId);
+  CHECK(UpsertPatchScalar("no_patch_here:\n  x: 1\n", "k", "v", &out) ==
+        PatchResult::kNoPatchSection);
+}
+
+TEST(PatchScalar_does_not_read_keys_outside_patch) {
+  // 上游的 default.yaml 頂層也有 menu:,不可以把它當成我們的設定。
+  const std::string in = "menu/page_size: 5\npatch:\n  x: 1\n";
+  CHECK_STR(ReadPatchScalar(in, "menu/page_size"), "");
+}

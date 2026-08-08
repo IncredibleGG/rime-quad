@@ -10,14 +10,19 @@ namespace rimewin {
 namespace {
 
 std::atomic<int>* g_deploy_slot = nullptr;
+std::atomic<uint32_t>* g_deploy_seq = nullptr;
 
 void OnDeploy(rs_deploy_status status, void* /*ud*/) {
   // ⚠ 這個回呼**不在**呼叫端的執行緒上,而且可能在 rs_deploy() 早已返回
-  //   之後才觸發(rime_shell.h 檔頭)。所以這裡只碰一個 atomic:
+  //   之後才觸發(rime_shell.h 檔頭)。所以這裡只碰 atomic:
   //   不加鎖、不碰 session、不碰 UI。
   if (!g_deploy_slot) return;
   if (status == RS_DEPLOY_SUCCESS) g_deploy_slot->store(1);
   else if (status == RS_DEPLOY_FAILURE) g_deploy_slot->store(-1);
+  else return;  // IDLE / RUNNING 不是終局,不動序號
+  // 序號一定要在狀態之後才加:讀的那一邊先看序號再讀狀態,
+  // 反過來的話它會看到新序號配舊狀態。
+  if (g_deploy_seq) g_deploy_seq->fetch_add(1);
 }
 
 uint32_t FlagsOf(const rs_status& s) {
@@ -79,6 +84,7 @@ Engine::~Engine() { Stop(); }
 bool Engine::Start(const std::string& shared_dir, const std::string& user_dir,
                    const std::string& log_dir) {
   g_deploy_slot = &deploy_state_;
+  g_deploy_seq = &deploy_seq_;
 
   // ⚠ rs_init 在**呼叫端的執行緒**上做,不丟給引擎執行緒。
   //
@@ -108,6 +114,7 @@ bool Engine::Start(const std::string& shared_dir, const std::string& user_dir,
     setup.on_deploy = &OnDeploy;
     if (!rs_init(&setup)) {
       init_error_ = rs_last_error();
+  last_error_ = init_error_;
       Mark("rs_init 失敗");
       return false;
     }
@@ -316,6 +323,107 @@ Result Engine::SelectSchema(uint64_t id, const std::string& schema_id) {
   return r;
 }
 
-std::string Engine::last_error() const { return init_error_; }
+std::vector<std::pair<std::string, std::string>> Engine::SchemaList() {
+  std::vector<std::pair<std::string, std::string>> out;
+  Post([&] {
+    const int32_t n = rs_schema_list(nullptr, nullptr, 0);
+    if (n <= 0) return;
+    std::vector<const char*> ids(static_cast<size_t>(n), nullptr);
+    std::vector<const char*> names(static_cast<size_t>(n), nullptr);
+    const int32_t got = rs_schema_list(ids.data(), names.data(), n);
+    for (int32_t i = 0; i < got && i < n; ++i) {
+      out.emplace_back(ids[i] ? ids[i] : "", names[i] ? names[i] : "");
+    }
+  });
+  return out;
+}
+
+bool Engine::SetOption(uint64_t id, const char* option, bool value) {
+  bool ok = false;
+  Post([&] {
+    const uintptr_t sess = Find(id);
+    if (!sess) return;
+    ok = rs_set_option(sess, option, value);
+  });
+  return ok;
+}
+
+void Engine::SetOptionAll(const char* option, bool value) {
+  Post([&] {
+    for (const auto& kv : sessions_) rs_set_option(kv.second, option, value);
+  });
+}
+
+void Engine::SelectSchemaAll(const std::string& schema_id) {
+  Post([&] {
+    for (const auto& kv : sessions_) rs_select_schema(kv.second, schema_id.c_str());
+  });
+}
+
+std::string Engine::SchemaOfSession(uint64_t id) {
+  std::string out;
+  Post([&] {
+    const uintptr_t sess = Find(id);
+    if (!sess) return;
+    const rs_snapshot* s = rs_snapshot_acquire(sess);
+    if (s && s->status.schema_id) out = s->status.schema_id;
+    // ⚠ acquire 一定要配對 release。而且 commit 在 acquire 當下就被消費了
+    //   (rime_shell.h 檔頭)—— 所以這裡**不可以**在有 commit 待取時被呼叫。
+    //   目前的呼叫點只有 session 剛建立之後,那時不可能有 commit。
+    if (s) rs_snapshot_release(sess);
+  });
+  return out;
+}
+
+std::string Engine::ApplyChoice(uint64_t id, const std::string& schema_id,
+                                const std::vector<OptionAssign>& options) {
+  std::string chosen;
+  Post([&] {
+    const uintptr_t sess = Find(id);
+    if (!sess) return;
+    if (!schema_id.empty() && rs_select_schema(sess, schema_id.c_str()))
+      chosen = schema_id;
+    // 字形要在選方案**之後**才設:換方案會重建 context,
+    // 先設的話會被換方案那一步洗掉。
+    for (const OptionAssign& a : options) rs_set_option(sess, a.option, a.value);
+  });
+  return chosen;
+}
+
+int Engine::AbiVersion() const { return rs_abi_version(); }
+
+bool Engine::BeginDeploy(uint32_t* out_seq) {
+  if (out_seq) *out_seq = deploy_seq_.load();
+  // rs_deploy 是唯一允許跨執行緒呼叫的函式(rime_shell.h),
+  // 所以不必進引擎佇列 —— 而且**不該**進:部署要好幾分鐘,
+  // 佔住引擎執行緒等於整個輸入法停擺。
+  if (rs_deploy()) return true;
+  {
+    std::lock_guard<std::mutex> lock(err_mu_);
+    const char* e = rs_last_error();
+    last_error_ = e ? e : "";
+    if (last_error_.empty())
+      last_error_ = "引擎沒有給原因(多半是已經有一個部署在進行中)";
+  }
+  return false;
+}
+
+bool Engine::PollDeploy(uint32_t since_seq, int* status) {
+  if (deploy_seq_.load() == since_seq) return false;
+  const int v = deploy_state_.load();
+  if (v == 0) return false;
+  if (status) *status = v;
+  if (v != 1) {
+    std::lock_guard<std::mutex> lock(err_mu_);
+    const char* e = rs_last_error();
+    last_error_ = e ? e : "";
+  }
+  return true;
+}
+
+std::string Engine::last_error() const {
+  std::lock_guard<std::mutex> lock(err_mu_);
+  return last_error_.empty() ? init_error_ : last_error_;
+}
 
 }  // namespace rimewin

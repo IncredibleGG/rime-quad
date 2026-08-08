@@ -13,14 +13,23 @@
 #include <thread>
 #include <vector>
 
+#include <functional>
+
 #include "cand_window.h"
 #include "engine.h"
+#include "settings_store.h"
 
 namespace rimewin {
 
 class PipeServer {
  public:
-  PipeServer(Engine* engine, CandidateUi* ui);
+  PipeServer(Engine* engine, CandidateUi* ui, SettingsStore* settings);
+
+  // 收到 Op::kOpenSettings 時呼叫。可以是 nullptr(--no-ui 的 CI 模式)。
+  // ⚠ 這個回呼會在**連線執行緒**上跑,實作必須只是 PostMessage。
+  void SetOpenSettingsHandler(std::function<void()> fn) {
+    on_open_settings_ = std::move(fn);
+  }
   ~PipeServer();
 
   bool Start();
@@ -34,6 +43,8 @@ class PipeServer {
 
   Engine* engine_;
   CandidateUi* ui_;
+  SettingsStore* settings_;
+  std::function<void()> on_open_settings_;
   HANDLE stop_event_ = nullptr;
   HANDLE listen_thread_ = nullptr;
   std::atomic<bool> stopping_{false};
