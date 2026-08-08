@@ -28,7 +28,7 @@ import org.rimequad.ime.theme.HapticStrength
  * 只需要認得一個物件就能做完震動與按鍵音。
  */
 @Immutable
-class KeyBehavior(
+data class KeyBehavior(
     val haptic: Boolean,
     val hapticStrength: HapticStrength,
     val sound: Boolean,
@@ -120,9 +120,31 @@ val LocalKeyBehavior = staticCompositionLocalOf { KeyBehavior.DEFAULT }
  * 長按延遲**不需要動 KeyboardView 一行**：在 `RimeKeyboard` 外面把這個代理
  * 提供進去就好。
  */
+@Immutable
 class LongPressViewConfiguration(
     private val base: ViewConfiguration,
     private val longPressMs: Long,
 ) : ViewConfiguration by base {
     override val longPressTimeoutMillis: Long get() = longPressMs
+
+    // ⚠ 這兩支不是樣板碼，是一個**視覺 bug 的修法**，刪掉會讓它復發。
+    //
+    // `LocalViewConfiguration` 的值一換，Compose 就會對整棵樹裡每一個
+    // `Modifier.pointerInput` 呼叫 `onViewConfigurationChange()`，
+    // 而那支的實作是 `resetPointerInputHandler()` —— 手指還按著的那一顆鍵，
+    // 它的手勢協程當場被取消。
+    //
+    // 換句話說：只要這個物件每次重組都是新的一份，使用者**每按一顆鍵**
+    // 就會把自己按下的那顆鍵的手勢協程殺掉。回報過的「點一下就變灰、
+    // 變不回來」就是這麼來的（見 KeyboardViewPressStateTest 的檔頭）。
+    //
+    // 所以它必須有值相等性：長按門檻沒變、base 沒變，就是同一份設定，
+    // Compose 不該把它當成新值。
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is LongPressViewConfiguration) return false
+        return base == other.base && longPressMs == other.longPressMs
+    }
+
+    override fun hashCode(): Int = 31 * base.hashCode() + longPressMs.hashCode()
 }

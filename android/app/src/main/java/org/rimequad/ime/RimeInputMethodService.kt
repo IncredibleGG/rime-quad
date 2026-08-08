@@ -11,6 +11,7 @@ import android.view.inputmethod.EditorInfo
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalViewConfiguration
 import kotlinx.coroutines.CoroutineScope
@@ -260,15 +261,32 @@ class RimeInputMethodService : InputMethodService() {
                 //   · LocalViewConfiguration 長按門檻(detectTapGestures 讀的就是它)
                 // 這樣 KeyboardView 幾乎不必改,顏色與尺寸仍舊完全由主題驅動。
                 val current = uiState.theme
-                val behavior =
+                // ⚠ 這兩個 remember 不是效能優化，是正確性。
+                //
+                // 這個 lambda 每一次 uiState 變動都會重跑 —— 也就是**每按一顆鍵**。
+                // 沒有 remember 的話，每次都會產生一份新的 KeyBehavior 與
+                // LongPressViewConfiguration；`LocalViewConfiguration` 的值一換，
+                // Compose 就對整棵樹每一個 `Modifier.pointerInput` 呼叫
+                // `onViewConfigurationChange()` → `resetPointerInputHandler()`，
+                // 把**手指還按著的那顆鍵**的手勢協程取消掉。
+                // 使用者看到的就是「點一下鍵就變灰，再也變不回來」。
+                //
+                // 兩道防線：這裡讓值穩定（不再無謂地換），
+                // KeyView 的 `try/finally` 讓按下狀態即使被取消也一定歸位。
+                val behavior = remember(current?.feedback, prefs) {
                     if (current == null) KeyBehavior.DEFAULT
                     else KeyBehavior.of(current.feedback, prefs)
+                }
+                val baseViewConfiguration = LocalViewConfiguration.current
+                val viewConfiguration = remember(baseViewConfiguration, behavior.longPressMs) {
+                    LongPressViewConfiguration(
+                        base = baseViewConfiguration,
+                        longPressMs = behavior.longPressMs.toLong(),
+                    )
+                }
                 CompositionLocalProvider(
                     LocalKeyBehavior provides behavior,
-                    LocalViewConfiguration provides LongPressViewConfiguration(
-                        base = LocalViewConfiguration.current,
-                        longPressMs = behavior.longPressMs.toLong(),
-                    ),
+                    LocalViewConfiguration provides viewConfiguration,
                 ) {
                     RimeKeyboard(state = uiState, onEvent = ::handleEvent)
                 }

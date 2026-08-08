@@ -32,6 +32,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -980,7 +981,21 @@ private fun KeyView(
     // 引入偏好之前**完全一致**(震動 KEYBOARD_TAP、無按鍵音、400/60 ms)。
     val behavior = LocalKeyBehavior.current
 
-    fun haptic() = behavior.onKeyPress(view)
+    // ⚠ `status` 以前是 `pointerInput` 的 key 之一，那是這顆鍵「按下去就變灰、
+    // 變不回來」的另一半原因：使用者按下**這一輪組字的第一顆鍵**時，
+    // `isComposing` 由 false 翻成 true，key 一變 Compose 就把手勢協程重置掉 ——
+    // 手指還按著，回饋就沒了（修好 finally 之前則是永遠卡在按下色）。
+    //
+    // 而 `status` 根本沒有被手勢邏輯用到：它只影響鍵面文字與 active 色，
+    // 那兩者走的是重組，不是手勢。真正需要「隨時是最新的」是這幾個
+    // callback，用 rememberUpdatedState 餵進去即可，不必重啟協程。
+    //
+    // 現在只剩 `key` 是 key：佈局換掉時本來就該重來一次。
+    val currentOnEvent by rememberUpdatedState(onEvent)
+    val currentOnPopup by rememberUpdatedState(onPopup)
+    val currentBehavior by rememberUpdatedState(behavior)
+
+    fun haptic() = currentBehavior.onKeyPress(view)
 
     /** §9.6 的點擊解析：tap → send → noop。 */
     fun fire() {
@@ -988,8 +1003,8 @@ private fun KeyView(
         val tap = key.tap
         val send = key.send
         when {
-            tap != null -> onEvent(KeyboardEvent.Act(tap))
-            send != null -> onEvent(KeyboardEvent.Send(send))
+            tap != null -> currentOnEvent(KeyboardEvent.Act(tap))
+            send != null -> currentOnEvent(KeyboardEvent.Send(send))
         }
     }
 
@@ -1001,7 +1016,7 @@ private fun KeyView(
         LaunchedEffect(key, behavior) {
             delay(behavior.repeatDelayMs.toLong())
             while (true) {
-                key.send?.let { onEvent(KeyboardEvent.Send(it)) }
+                key.send?.let { currentOnEvent(KeyboardEvent.Send(it)) }
                 delay(behavior.repeatIntervalMs.toLong())
             }
         }
@@ -1028,24 +1043,26 @@ private fun KeyView(
     }
 
     BoxWithConstraints(
-        modifier = box.pointerInput(key, status, fireOnDown) {
+        modifier = box.pointerInput(key) {
             detectTapGestures(
                 onPress = {
-                    pressed = true
-                    if (fireOnDown) fire()
-                    tryAwaitRelease()
-                    pressed = false
+                    trackPressed({ pressed = it }) {
+                        if (fireOnDown) fire()
+                        tryAwaitRelease()
+                    }
                 },
                 onTap = if (fireOnDown) null else ({ _ -> fire() }),
                 onDoubleTap = if (doubleTap == null) {
                     null
                 } else {
-                    { _ -> haptic(); onEvent(KeyboardEvent.Act(doubleTap)) }
+                    { _ -> haptic(); currentOnEvent(KeyboardEvent.Act(doubleTap)) }
                 },
                 onLongPress = when {
                     key.repeat -> null
-                    longPress != null -> ({ _ -> haptic(); onEvent(KeyboardEvent.Act(longPress)) })
-                    popup != null -> ({ _ -> haptic(); onPopup(anchorLeft, anchorTop, anchorWidth) })
+                    longPress != null ->
+                        ({ _ -> haptic(); currentOnEvent(KeyboardEvent.Act(longPress)) })
+                    popup != null ->
+                        ({ _ -> haptic(); currentOnPopup(anchorLeft, anchorTop, anchorWidth) })
                     else -> null
                 },
             )
@@ -1116,6 +1133,46 @@ internal fun faceOf(
     if (fromStatus != null) return fromStatus
     icon?.let { name -> ICONS[name]?.let { return it } }
     return label
+}
+
+/**
+ * 按下狀態的生命週期：**進去一定出得來**。
+ *
+ * ── 為什麼這五行值得一支獨立的函式 ──────────────────────────────────────
+ * 這裡曾經是直白的三行：
+ *
+ * ```
+ * pressed = true
+ * tryAwaitRelease()
+ * pressed = false      // ← 有可能一次都不會執行
+ * ```
+ *
+ * `tryAwaitRelease()` 是**懸掛點**，而它所在的手勢協程隨時會被 Compose 取消：
+ * `Modifier.pointerInput` 的 key 變了、節點被卸下、或者
+ * `LocalViewConfiguration` / `LocalDensity` 換了值 —— 最後這條最狠，
+ * 它會對整棵樹的**每一個** `pointerInput` 呼叫 `onViewConfigurationChange()`，
+ * 而那支的實作就是 `resetPointerInputHandler()`。取消是以例外的形式從懸掛點
+ * 拋出來的，所以寫在它後面的那一行直接被跳過。
+ *
+ * 跳過的後果不是「少一次動畫」，是**這顆鍵永遠停在按下色**：這個狀態的唯一
+ * 擁有者就是這條已經死掉的協程，沒有第二個地方會把它改回來。使用者回報的
+ * 「點一下他就變成灰色了，變不回來白色了」就是這麼來的（見
+ * KeyPressStateTest 的檔頭，那裡記了完整的因果鏈）。
+ *
+ * 拆成函式而不是就地補一個 `finally`，是為了讓這件事**測得到**：
+ * 渲染需要整個 Compose 執行期，這條規則不需要。
+ */
+internal suspend fun trackPressed(
+    setPressed: (Boolean) -> Unit,
+    awaitRelease: suspend () -> Unit,
+) {
+    setPressed(true)
+    try {
+        awaitRelease()
+    } finally {
+        // 取消路徑也要走到這裡，所以不能寫在 try 之後。
+        setPressed(false)
+    }
 }
 
 /** §8.8.1 的 active：佈局宣告的鎖定，或執行期狀態（英數模式的中／英鍵）。 */
