@@ -52,6 +52,12 @@ get_filename_component(RIME_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
 # 看起來像引擎壞了,實際上引擎好得很。
 add_compile_options(/utf-8 /EHsc /W3)
 
+# UNICODE / _UNICODE。程式碼裡一律呼叫明確的 W 版本 API,所以這兩個巨集
+# 影響的其實只有**資源巨集**:少了它們,IDC_ARROW 之類的東西會展開成
+# MAKEINTRESOURCEA,傳給 LoadCursorW 就是 C2664。
+# NOMINMAX:windows.h 的 min/max 巨集會把 std::max(a, b) 弄壞。
+add_compile_definitions(UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+
 # 產物位置固定,讓腳本與 CI 不必猜。
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
@@ -95,12 +101,14 @@ target_link_libraries(rime_tests PRIVATE rime_common user32)
 
 # ── TSF 瘦 DLL ────────────────────────────────────────────────────────
 #
-# 相依刻意壓到最小。uuid.lib 與 msctf.lib 都是為了 TSF 的介面 GUID:
-#   · uuid.lib 是靜態庫,只帶常數進來,不會在匯入表裡多一個 DLL。
-#   · msctf.lib 是 msctf.dll 的 import library。我們**不呼叫** msctf.dll 的
-#     任何函式,所以連結器不會為它產生匯入項 —— 連上去是零成本的保險。
-#     (就算真的產生了也無妨:msctf.dll 是 TSF 執行期本身,凡是載入 TIP 的
-#      進程一定已經有它。CI 的白名單因此把它列為允許。)
+# 相依刻意壓到最小。uuid.lib 是為了 TSF 的介面 GUID(IID_ITfThreadMgr、
+# CLSID_TF_CategoryMgr、GUID_TFCAT_* …)—— 它是**靜態**庫,只帶常數進來,
+# 不會在匯入表裡多一個 DLL。
+#
+# ⚠ 不要加 msctf.lib:現代的 Windows SDK **沒有這個檔案**(TSF 完全是 COM,
+#   沒有要匯入的函式),連上去只會得到 LNK1181: cannot open input file。
+#   實測過(CI run #15)。GUID 全部在 uuid.lib 裡。
+#
 # 真正不可以出現的是 VCRUNTIME140 / MSVCP140 / ucrtbase 那一組 —— 那代表
 # /MT 沒生效,而後果是「在某些程式裡輸入法整個不存在」。
 add_library(rime_tsf SHARED
@@ -111,8 +119,7 @@ add_library(rime_tsf SHARED
   tsf/win32_oracle.cc
   tsf/rime_tsf.def)
 target_link_libraries(rime_tsf PRIVATE rime_common rime_winshared
-                                        kernel32 user32 advapi32 ole32
-                                        uuid msctf)
+                                        kernel32 user32 advapi32 ole32 uuid)
 set_target_properties(rime_tsf PROPERTIES OUTPUT_NAME "rime_tsf")
 
 add_executable(rime_probe

@@ -92,7 +92,7 @@ fi
 # 允許清單刻意很短。多出來的東西一律當成錯誤:相依是會悄悄長出來的,
 # 而每多一個,就多一種「在某台機器上載入失敗」的可能。
 # 要加新的相依請連同「為什麼在每一個宿主進程裡都一定有它」的理由一起加。
-ALLOWED="kernel32.dll user32.dll advapi32.dll ole32.dll msctf.dll"
+ALLOWED="kernel32.dll user32.dll advapi32.dll ole32.dll"
 # 這一組出現就是 /MT 沒生效。後果是在沒裝 VC++ 執行檔套件的機器上,
 # DLL 在載入階段就失敗 —— 而使用者看到的是「這個程式裡沒有這個輸入法」。
 FORBIDDEN="vcruntime140.dll msvcp140.dll ucrtbase.dll msvcr120.dll msvcrt.dll"
