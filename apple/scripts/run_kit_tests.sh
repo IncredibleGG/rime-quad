@@ -35,7 +35,8 @@ if [ "${RC}" -ne 0 ]; then
   # ⚠ 只印 tail 的話,失敗的斷言多半已經被後面幾百行「passed」擠出畫面。
   #   這裡先把**失敗的那幾行**單獨抓出來 —— 修的時候需要的就只有這些。
   echo "!! 單元測試失敗。失敗的斷言:" >&2
-  printf '%s\n' "${OUT}" | grep -E "error:|XCTAssert|: failed|' failed" | head -60 >&2
+  FAILED_LINES="$(grep -E "error:|XCTAssert|: failed|' failed" <<< "${OUT}" || true)"
+  printf '%s\n' "${FAILED_LINES}" | sed -n '1,60p' >&2
   echo "--- 最後 40 行 ---" >&2
   printf '%s\n' "${OUT}" | tail -40 >&2
   exit 1
@@ -45,7 +46,7 @@ printf '%s\n' "${OUT}" | tail -12
 
 # xcodebuild/swift-testing 的輸出格式:
 #   Executed 87 tests, with 0 failures (0 unexpected) in 0.123 (0.456) seconds
-COUNT="$(printf '%s\n' "${OUT}" | awk '/Executed [0-9]+ test/ { n=$2 } END { print n+0 }')"
+COUNT="$(awk '/Executed [0-9]+ test/ { n=$2 } END { print n+0 }' <<< "${OUT}")"
 echo "已執行測試數: ${COUNT}"
 
 if [ "${COUNT}" -lt "${MIN_TESTS}" ]; then
@@ -54,13 +55,20 @@ if [ "${COUNT}" -lt "${MIN_TESTS}" ]; then
   exit 1
 fi
 
-if printf '%s\n' "${OUT}" | grep -qE '[1-9][0-9]* test.* skipped'; then
+if grep -qE '[1-9][0-9]* test.* skipped' <<< "${OUT}"; then
   echo "!! 有測試被略過。略過不算通過。" >&2
   exit 1
 fi
 
 # ---------------------------------------------------------------- 變異
 # 格式: <檔案>|<原字串>|<替換>|<這個變異該打紅哪一組>
+# ⚠ **不要把 printf 接進會提早結束的指令(grep -q / head)。**
+#   本腳本開了 `pipefail`,而 `grep -q` 找到第一個符合就結束 ——
+#   輸出一大(207 項測試之後就夠大了)printf 就會吃到 SIGPIPE,
+#   整條管線的結束碼變成 141,於是 `if ! ... grep -q` 恆為真。
+#   症狀是**四個明明打中的變異被報成「紅的不是那一組」**,
+#   而且只在測試變多之後才開始發生 —— 看起來像變異測試壞了,
+#   其實是這支腳本自己壞了。一律改用 herestring(<<<),不經管線。
 MUTATIONS=(
   "Sources/RimeQuadKit/KeyMapper.swift|public static let unicodeKeysymBase: Int32 = 0x0100_0000|public static let unicodeKeysymBase: Int32 = 0x0200_0000|KeyMapperTests"
   "Sources/RimeQuadKit/CandidateLayout.swift|let itemHeight = measured.map(\\.height).max() ?? 0|let itemHeight = measured.map(\\.height).min() ?? 0|CandidateLayoutTests"
@@ -122,9 +130,10 @@ PY
   if [ "${MRC}" -eq 0 ]; then
     echo "!! 植入違規之後測試仍然通過 —— ${group} 沒有在測它宣稱在測的東西。" >&2
     mutation_failures=$((mutation_failures + 1))
-  elif ! printf '%s\n' "${MOUT}" | grep -q "${group}"; then
+  elif ! grep -q -- "${group}" <<< "${MOUT}"; then
     echo "!! 測試紅了,但紅的不是 ${group}。變異打到了別的地方:" >&2
-    printf '%s\n' "${MOUT}" | grep -E "error:|failed" | head -5 >&2
+    FAILED_LINES="$(grep -E "error:|failed" <<< "${MOUT}" || true)"
+    printf '%s\n' "${FAILED_LINES}" | sed -n '1,5p' >&2
     mutation_failures=$((mutation_failures + 1))
   else
     echo "  ✓ ${group} 如預期變紅"
