@@ -27,9 +27,15 @@ OUT="$ROOT/build/release-check"
 [ "${1:-}" = "--skip-emu" ] && SKIP_EMU=1
 
 mkdir -p "$OUT"
-PASS=0; FAIL=0
+PASS=0; FAIL=0; SKIP=0
+SKIPPED=""
 ok()   { echo "  [PASS] $*"; PASS=$((PASS+1)); }
 bad()  { echo "  [FAIL] $*" >&2; FAIL=$((FAIL+1)); }
+# 略過**不是**通過。這支腳本曾經因為升級測試的步驟順序寫反而把那一關判成
+# 「略過」,然後在結尾報「失敗 0 項」—— 一片全綠,而真正該驗的東西一次都沒驗。
+# 所以略過要自己有一個計數,而且要在結尾逐項列出來,逼人看見。
+skip() { echo "  [SKIP] $*"; SKIP=$((SKIP+1)); SKIPPED="$SKIPPED
+    · $*"; }
 step() { echo; echo "=== $* ==="; }
 
 step "0. 離線稽核（產品定位）"
@@ -55,9 +61,39 @@ else
 fi
 
 step "2. 單元測試"
-if (cd android && nohup ./gradlew --console=plain :app:testDebugUnitTest > "$OUT/unittest.log" 2>&1); then
-  N="$(grep -oE '[0-9]+ tests' "$OUT/unittest.log" | tail -1 || echo '?')"
-  ok "單元測試通過（$N）"
+# ⚠ 兩個地方以前會讓這一關**一項都沒跑就報 PASS**:
+#
+#   1. Gradle 判 UP-TO-DATE。發布檢查跑在剛建置完之後,任務多半是最新的,
+#      於是 `:app:testDebugUnitTest` 直接跳過,gradle 回 0,這裡就 ok。
+#      任務選項 `--rerun`(要放在任務名**後面**,放前面 gradle 會當成未知的
+#      全域選項而印出說明並失敗)讓那一個任務一定重跑,相依不受影響。
+#   2. 數量從 log 抓。log 裡沒有「N tests」時原本填 `?` 然後照樣 ok ——
+#      **數不出來就不該說通過**。改成讀測試結果的 XML,而且 0 項就算失敗。
+RESULTS="$ROOT/android/app/build/test-results/testDebugUnitTest"
+rm -rf "$RESULTS"
+if (cd android && nohup ./gradlew --console=plain :app:testDebugUnitTest --rerun \
+      > "$OUT/unittest.log" 2>&1); then
+  N="$(python3 - "$RESULTS" <<'PYEOF'
+import glob, os, sys, xml.etree.ElementTree as ET
+total = fails = skipped = 0
+for x in glob.glob(os.path.join(sys.argv[1], "*.xml")):
+    r = ET.parse(x).getroot()
+    total += int(r.get("tests") or 0)
+    fails += int(r.get("failures") or 0) + int(r.get("errors") or 0)
+    skipped += int(r.get("skipped") or 0)
+print("%d %d %d" % (total, fails, skipped))
+PYEOF
+)" || N="0 0 0"
+  set -- $N
+  if [ "${1:-0}" -eq 0 ]; then
+    bad "單元測試一項都沒跑 —— gradle 判 UP-TO-DATE 或結果檔不見了，這不是通過"
+  elif [ "${2:-0}" -gt 0 ]; then
+    bad "單元測試有 $2 項失敗（共 $1 項），見 $OUT/unittest.log"
+  elif [ "${3:-0}" -gt 0 ]; then
+    bad "單元測試有 $3 項被略過（共 $1 項）—— 略過的測試守不住任何東西"
+  else
+    ok "單元測試通過（$1 項，0 略過）"
+  fi
 else
   bad "單元測試失敗，見 $OUT/unittest.log"
   grep -E "FAILED|AssertionError" "$OUT/unittest.log" | head -10 || true
@@ -126,7 +162,7 @@ if [ "$SKIP_EMU" -eq 0 ]; then
       && ok "已移除舊安裝，接下來驗的是全新安裝的路徑" \
       || echo "  [INFO] 無既有安裝可移除，繼續"
   else
-    echo "  [INFO] 未指定 RIME_SERIAL，略過清空；驗證結果可能受殘留狀態影響"
+    skip "未指定 RIME_SERIAL，沒有清空 app 資料 —— 驗的不是全新安裝的體驗"
   fi
 
   step "6. 真正的輸入驗證（走實體按鍵路徑）"
@@ -162,7 +198,7 @@ if [ "$SKIP_EMU" -eq 0 ]; then
     PREV="$cand"; break
   done
   if [ -z "$PREV" ]; then
-    echo "  [INFO] release/ 下沒有前一版可用來測升級，略過"
+    skip "release/ 下沒有前一版，升級路徑完全沒有驗到"
   else
     echo "  前一版：$(basename "$PREV")"
     # 先移除，才能裝回舊簽章的版本 —— 第 6 步已經裝上新版了，
@@ -182,7 +218,7 @@ if [ "$SKIP_EMU" -eq 0 ]; then
         head -5 "$OUT/upgrade.log" >&2
       fi
     else
-      echo "  [INFO] 前一版裝不上（可能簽章不同或降版），略過升級測試"
+      skip "前一版裝不上（簽章不同或降版），升級路徑沒有驗到"
     fi
   fi
 
@@ -199,10 +235,18 @@ fi
 
 echo
 echo "============================================"
-echo " 通過 $PASS 項，失敗 $FAIL 項"
+echo " 通過 $PASS 項，失敗 $FAIL 項，略過 $SKIP 項"
 echo "============================================"
+if [ "$SKIP" -gt 0 ]; then
+  echo "以下這幾關沒有驗到,發布前自己決定能不能接受:$SKIPPED"
+  echo
+fi
 if [ "$FAIL" -gt 0 ]; then
   echo "驗證未通過，不要發布。" >&2
   exit 1
 fi
-echo "可以發布：./scripts/publish_apk.sh"
+if [ "$SKIP" -gt 0 ]; then
+  echo "可以發布，但上面那 $SKIP 關是沒驗過的：./scripts/publish_apk.sh"
+else
+  echo "可以發布：./scripts/publish_apk.sh"
+fi
