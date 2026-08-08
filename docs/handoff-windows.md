@@ -17,7 +17,12 @@ Android / iOS / Windows / macOS。**Android 已經是可用的產品**,其餘三
 
 - 程式碼:`https://github.com/IncredibleGG/rime-quad`(公開)
 - 建置機器:`lc@192.168.60.223` 的 `/home/lc/rime`(Android 的模擬器與工具鏈都在這)
-- CI:GitHub Actions,`.github/workflows/build.yml`(Android)、`native.yml`(librime 交叉編譯)
+- CI:GitHub Actions。**建置全部在雲端,不需要自備 Windows 機器** ——
+  `windows-latest` runner 內建 MSVC。現有 workflow:`build.yml`(Android)、
+  `native.yml`(librime 交叉編譯);Windows 的要你自己加。
+
+⚠ **但 CI 給的是「編得出來」,不是「真的能用」。** TSF 需要註冊 COM in-proc server
+並有真實的文字輸入情境,CI runner 上做不到。驗證要分兩層,見 §8。
 
 ---
 

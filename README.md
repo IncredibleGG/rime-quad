@@ -93,10 +93,33 @@ windows/                     Windows TSF 端
 
 ---
 
-## 建置機器
+## 建置與驗證
 
-| 平台 | 需要什麼 | 現況 |
+**建置全部在 GitHub Actions 上**,不需要任何本機環境:
+
+| 平台 | CI runner | workflow |
 |---|---|---|
+| Android | `ubuntu-latest` + NDK | `.github/workflows/build.yml` |
+| macOS | `macos-latest`(內建 Xcode) | 待建立 |
+| Windows | `windows-latest`(內建 MSVC) | 待建立 |
+| iOS | `macos-latest` | 待建立 |
+
+**但 CI 給的是「編得出來」,不是「真的能用」。**
+
+這個專案抓到的真 bug 幾乎都是靠實際安裝、點鍵、截圖比對輸入框內容才發現的
+—— 按下去顏色回不來、重輸鍵是裝飾品、中英鍵不換佈局、鍵盤被拉伸。**這些編譯
+全部成功。** 桌面兩端在 CI 上跑不了那個迴圈:macOS 的輸入法要由系統從
+`~/Library/Input Methods` 載入,CI runner 沒有登入的圖形工作階段;Windows 的 TSF
+要註冊 COM in-proc server 並有真實輸入情境。
+
+所以每一端都要有兩層:
+
+1. **CI 能做的**:單元測試、連結與符號檢查、以及 `tools/rime_console.cc` 那種
+   **不經 UI 直接驅動 librime** 的核心驗證(純命令列,四端 runner 都跑得起來)。
+   Android 上就是這一層把「核心與資料對不對」和「UI 對不對」分開的。
+2. **只有人做得到的**:在真實裝置上實際用一遍。這一層無可取代。
+
+---|---|---|
 | Android | Linux/macOS + JDK 17 + Android SDK/NDK | ✅ 已具備，M1 即在此完成 |
 | macOS | **一台 Mac** + Xcode | ❌ 尚無可用機器 |
 | iOS | **一台 Mac** + Xcode（模擬器可測，上架需開發者帳號） | ❌ 尚無可用機器 |
