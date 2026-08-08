@@ -78,6 +78,27 @@ pass() { echo "  [PASS] $*"; }
 fail() { echo "  [FAIL] $*" >&2; echo >&2; echo "artifact 在:$OUT_DIR" >&2; exit 1; }
 step() { echo; echo "=== $* ==="; }
 
+# 讀出前景 app 那個輸入框的內容。鍵盤自己 dump 不出來(見檔頭),但輸入框
+# dump 得出來,而「按住有沒有打出東西」正是靠它回答的。
+read_field() {
+  adbs shell "uiautomator dump /sdcard/rime_lp.xml >/dev/null 2>&1" >/dev/null 2>&1 || return 1
+  adbs pull /sdcard/rime_lp.xml "$OUT_DIR/ui.xml" >/dev/null 2>&1 || return 1
+  adbs shell rm -f /sdcard/rime_lp.xml >/dev/null 2>&1 || true
+  python3 - "$OUT_DIR/ui.xml" <<'PY'
+import sys, xml.etree.ElementTree as ET
+root = ET.parse(sys.argv[1]).getroot()
+best = ""
+for n in root.iter("node"):
+    if "EditText" not in n.get("class", ""):
+        continue
+    if n.get("focused") == "true":
+        print(n.get("text", "")); sys.exit(0)
+    if n.get("text") and not best:
+        best = n.get("text")
+print(best)
+PY
+}
+
 SERIAL="${RIME_SERIAL:-${ANDROID_SERIAL:-}}"
 if [ -z "$SERIAL" ]; then
   SERIAL="$("$ADB" devices | awk '/emulator-[0-9]+\tdevice/{print $1; exit}')"
@@ -132,15 +153,32 @@ if [ -n "$READY_LOG" ]; then
 fi
 
 # --- 3. 鍵盤矩形 ------------------------------------------------------------
-step "3. 讀出鍵盤矩形(不寫死座標)"
+step "3. 決定鍵盤矩形"
 RECT="$(adbs shell dumpsys input_method 2>/dev/null \
         | sed -n 's/.*touchableRegion=SkRegion((\([0-9]*\),\([0-9]*\),\([0-9]*\),\([0-9]*\)).*/\1 \2 \3 \4/p' \
         | head -1)"
-[ -n "$RECT" ] || fail "讀不到 touchableRegion,無法知道鍵盤在哪。看 $OUT_DIR/input_method.txt"
+RECT_SRC="touchableRegion"
+if [ -z "$RECT" ]; then
+  # 本專案的 IME 沒有覆寫 onComputeInsets,所以系統根本不知道鍵盤佔哪一塊:
+  # touchableRegion 是空的 SkRegion()、contentTopInsets 是 0。
+  # (裝 Gboard 的機器上讀得到,所以本機開發時不會發現。)
+  # 退而求其次用畫面下半部,但**絕不能就這樣相信它**:戳到桌布跟戳到鍵盤
+  # 在像素比對上都會「沒有變化」,於是這一關會在什麼都沒驗到的情況下報綠。
+  # 所以第 5 關之後會實際檢查那幾下按住有沒有打出東西 —— 沒有就判失敗。
+  SZ="$(adbs shell wm size 2>/dev/null | tr -d '\r')"
+  WH="$(printf '%s\n' "$SZ" | sed -n 's/^Override size: \([0-9]*\)x\([0-9]*\)$/\1 \2/p' | head -1)"
+  [ -n "$WH" ] || WH="$(printf '%s\n' "$SZ" | sed -n 's/^Physical size: \([0-9]*\)x\([0-9]*\)$/\1 \2/p' | head -1)"
+  [ -n "$WH" ] || fail "既讀不到 touchableRegion 也讀不到 wm size,不知道鍵盤在哪"
+  set -- $WH
+  # 下緣留 3%:那裡是導覽列,戳它會退出 app。
+  RECT="0 $(( $2 * 55 / 100 )) $1 $(( $2 * 97 / 100 ))"
+  RECT_SRC="畫面下半部（推定，${1}x${2}）"
+  echo "  [INFO] dumpsys 的 touchableRegion 是空的（本 IME 不回報 insets）"
+fi
 set -- $RECT
 KL="$1"; KT="$2"; KR="$3"; KB="$4"
 [ "$((KR - KL))" -gt 100 ] && [ "$((KB - KT))" -gt 100 ] || fail "鍵盤矩形不合理:$RECT"
-pass "鍵盤矩形 = ($KL,$KT)-($KR,$KB),$((KR - KL))x$((KB - KT)) px"
+pass "鍵盤矩形 = ($KL,$KT)-($KR,$KB),$((KR - KL))x$((KB - KT)) px（來源:$RECT_SRC）"
 
 # --- 4. 基準畫面 ------------------------------------------------------------
 step "4. 拍下按住之前的鍵盤"
@@ -162,6 +200,18 @@ for fy in 35 55 75; do
     sleep 0.4
   done
 done
+# ── 戳到的真的是鍵盤嗎 ──────────────────────────────────────────────
+# 這一步是上面那個「推定矩形」的安全帶,少了它整關會變成裝飾品:
+# 對著桌布按住 9 次,畫面當然不會有變化,於是像素比對報綠、這一關報通過,
+# 而「按住」這條路徑一次都沒有被執行到。
+# 按住之後輸入框裡必須出現東西 —— 那才證明按到的是會做事的按鍵。
+TYPED="$(read_field || true)"
+if [ -z "$TYPED" ]; then
+  fail "按住 $N 次之後輸入框仍是空的。要嘛戳的位置不在鍵盤上(矩形推定錯了),
+       要嘛按鍵根本不吃「按住」只吃「輕點」—— 兩種都必須修,不能當作通過。"
+fi
+pass "按住有打出東西（輸入框:'$TYPED'）—— 戳到的確實是鍵盤"
+
 for fx in 25 50 75; do
   # 超過系統長按門檻(500ms):走的是 onLongClick 與彈出盤那條路徑。
   adbs shell input swipe "$(frac_x $fx)" "$(frac_y 55)" "$(frac_x $fx)" "$(frac_y 55)" "$LONG_MS" \
@@ -292,23 +342,7 @@ done
 CMD="${CMD}sleep 0.5; input keyevent KEYCODE_SPACE; "
 adbs shell "$CMD" >/dev/null 2>&1 || fail "注入按鍵失敗"
 sleep 1.5
-adbs shell "uiautomator dump /sdcard/rime_lp.xml >/dev/null 2>&1" || fail "uiautomator dump 失敗"
-adbs pull /sdcard/rime_lp.xml "$OUT_DIR/ui.xml" >/dev/null 2>&1 || fail "拉不回 ui.xml"
-adbs shell rm -f /sdcard/rime_lp.xml >/dev/null 2>&1 || true
-ACTUAL="$(python3 - "$OUT_DIR/ui.xml" <<'PY'
-import sys, xml.etree.ElementTree as ET
-root = ET.parse(sys.argv[1]).getroot()
-best = ""
-for n in root.iter("node"):
-    if "EditText" not in n.get("class", ""):
-        continue
-    if n.get("focused") == "true":
-        print(n.get("text", "")); sys.exit(0)
-    if n.get("text") and not best:
-        best = n.get("text")
-print(best)
-PY
-)"
+ACTUAL="$(read_field || true)"
 echo "  實際: '$ACTUAL'  預期含: '$EXPECT_TEXT'"
 adbs exec-out screencap -p > "$OUT_DIR/after-longpress.png" 2>/dev/null || true
 case "$ACTUAL" in
