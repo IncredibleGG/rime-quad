@@ -26,6 +26,17 @@ std::wstring CurrentUserSidString();
 // 而不是連上去才發現版本不合。
 std::wstring RimePipeName();
 
+// 請服務進程結束用的具名事件。
+//
+// 為什麼需要它:升級與解除安裝之前必須先停掉服務,而服務持有使用者詞庫的
+// LevelDB。直接 TerminateProcess 等於在寫入中途拔電源 —— 詞庫壞掉的症狀是
+// 「升級之後我學過的詞全沒了」,而使用者不會把它跟解除安裝程序聯想在一起。
+//
+// 命名空間用 `Local\`(每個登入工作階段各一份)而不是 `Global\`:
+// 服務本來就是每個使用者一支,而 Global\ 需要 SeCreateGlobalPrivilege。
+// 名字裡帶 SID 的理由同管道名 —— 同一台機器上的兩個人不可以互相關掉對方的服務。
+std::wstring RimeServiceQuitEventName();
+
 // 目前的進程是不是被提權的。TSF 的 DLL 會被載入到提權的進程裡,
 // 而從那裡 CreateProcess 起來的服務也會是提權的 —— 那支服務接著會用
 // 提權的身分去讀寫使用者的設定檔與詞庫。不可以。

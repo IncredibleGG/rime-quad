@@ -12,6 +12,29 @@
 //   rime_service.exe --wait-deploy <秒>     等首次部署完成才開始服務
 //   rime_service.exe --ready-file <path>    就緒後寫一個檔案(CI 用來等它起來)
 //   rime_service.exe --quit-after <秒>      到時自己結束(CI 用,避免殘留進程)
+//   rime_service.exe --print-dirs           只印出解析出來的三個目錄就結束
+//
+// ── 資料目錄:安裝到 Program Files 之後,這一格是最容易錯的 ────────
+//
+//   shared  <安裝目錄>\data\shared    唯讀。方案、詞庫、opencc 詞典。
+//   seed    <安裝目錄>\data\user      唯讀**範本**,首次執行時複製過去。
+//   user    %APPDATA%\RimeQuad        可寫。使用者詞典、設定、編譯產物。
+//
+// 三件必須講清楚的事:
+//
+// 1. **使用者資料絕對不可以放在安裝目錄底下。** 裝在 C:\Program Files 之下的
+//    話,一般權限的進程寫不進去 —— 而 librime 寫不進去時不會停,它會繼續跑,
+//    然後使用者學過的詞一個都留不住。沒有錯誤訊息。所以 user 一律走 %APPDATA%,
+//    而且底下有一道明確的檢查擋住「user 落在安裝目錄裡」這件事。
+//
+// 2. **範本要複製,不是直接當使用者目錄用。** core/data/user 裡的
+//    default.custom.yaml 把 schema_list 限縮成實際打包的四個方案;
+//    少了它,librime 會照上游 default.yaml 去部署 cangjie5 / quick5 等
+//    我們根本沒有詞庫的方案。複製時**只補不覆蓋**,使用者改過的不能被裝回去。
+//
+// 3. librime 的編譯產物(.bin)進的是 <user>\build,不是 shared ——
+//    所以唯讀的安裝目錄是成立的。CI 有一道斷言在守這件事:跑完一輪之後
+//    安裝目錄底下的檔案清單與時間戳必須一個位元都沒變。
 
 #include <windows.h>
 // WIN32_LEAN_AND_MEAN 之下 windows.h 不會帶進 shellapi.h,而我們要
@@ -93,6 +116,20 @@ std::string DefaultSharedDir() {
   return rimewin::WideToUtf8(dir + L"\\data\\shared");
 }
 
+// 首次執行要複製過去的範本(core/data/user 的內容)。
+std::string DefaultSeedDir() {
+  const std::wstring dir = rimewin::ModuleDirectory(nullptr);
+  if (dir.empty()) return std::string();
+  return rimewin::WideToUtf8(dir + L"\\data\\user");
+}
+
+// %APPDATA%\RimeQuad(Roaming)。
+//
+// 為什麼是 Roaming 而不是 Local:這裡放的是**使用者的資料** —— 自訂短語、
+// 學習過的詞、設定。跟著人走是對的,而 RIME 生態(Weasel 用 %APPDATA%\Rime)
+// 也是這個慣例,使用者搬移或備份時找得到。
+// 代價是編譯產物(<user>\build)也跟著漫遊,在有漫遊設定檔的網域環境裡會變重。
+// 那是已知的取捨,不是沒想過。
 std::string DefaultUserDir() {
   const std::string appdata = EnvUtf8(L"APPDATA");
   if (appdata.empty()) return std::string();
@@ -108,6 +145,50 @@ bool DirExists(const std::string& utf8) {
 void EnsureDir(const std::string& utf8) {
   if (utf8.empty()) return;
   ::CreateDirectoryW(rimewin::Utf8ToWide(utf8).c_str(), nullptr);
+}
+
+std::wstring LowerW(std::wstring s) {
+  for (wchar_t& c : s)
+    if (c >= L'A' && c <= L'Z') c = static_cast<wchar_t>(c - L'A' + L'a');
+  return s;
+}
+
+// 使用者目錄不可以落在安裝目錄底下。
+//
+// 這不是潔癖。裝在 C:\Program Files 之下時,一般權限的進程對那棵樹只有讀取權;
+// 而 librime 寫不進使用者目錄時**不會停下來**,它會照常給候選、照常上屏,
+// 只是一個學過的詞都留不住,而且完全沒有錯誤訊息。等使用者發現「它從來沒學會
+// 我的詞」已經是好幾天以後,而那時沒有任何線索指向權限。
+bool UserDirInsideInstallDir(const std::string& user_utf8) {
+  const std::wstring install = LowerW(rimewin::ModuleDirectory(nullptr));
+  if (install.empty()) return false;
+  const std::wstring user = LowerW(rimewin::Utf8ToWide(user_utf8));
+  return user.size() >= install.size() &&
+         user.compare(0, install.size(), install) == 0;
+}
+
+// 把範本目錄裡的檔案補進使用者目錄。**只補不覆蓋。**
+//
+// bFailIfExists = TRUE 是這件事的全部重點:使用者改過的 default.custom.yaml
+// 不可以在每次啟動(或每次升級)時被裝回原樣。
+// 只做一層,不遞迴 —— core/data/user 目前就是平的一層,而「遞迴複製到使用者
+// 資料目錄」是一個哪天資料變複雜就會出事的動作,要做的時候應該是明著決定的。
+int SeedUserDir(const std::string& seed_utf8, const std::string& user_utf8) {
+  if (seed_utf8.empty() || !DirExists(seed_utf8)) return 0;
+  const std::wstring seed = rimewin::Utf8ToWide(seed_utf8);
+  const std::wstring user = rimewin::Utf8ToWide(user_utf8);
+  WIN32_FIND_DATAW fd{};
+  HANDLE h = ::FindFirstFileW((seed + L"\\*").c_str(), &fd);
+  if (h == INVALID_HANDLE_VALUE) return 0;
+  int copied = 0;
+  do {
+    if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+    if (::CopyFileW((seed + L"\\" + fd.cFileName).c_str(),
+                    (user + L"\\" + fd.cFileName).c_str(), TRUE))
+      ++copied;
+  } while (::FindNextFileW(h, &fd));
+  ::FindClose(h);
+  return copied;
 }
 
 }  // namespace
@@ -165,7 +246,9 @@ static int RunService(int argc, wchar_t** argv) {
   std::string shared = EnvUtf8(L"RIME_SHARED_DATA_DIR");
   std::string user = EnvUtf8(L"RIME_USER_DATA_DIR");
   std::string log = EnvUtf8(L"RIME_LOG_DIR");
+  std::string seed;
   bool no_ui = false;
+  bool print_dirs = false;
   int wait_deploy = 0;
   int quit_after = 0;
   std::wstring ready_file;
@@ -176,8 +259,10 @@ static int RunService(int argc, wchar_t** argv) {
       if (i + 1 < argc) *out = rimewin::WideToUtf8(argv[++i]);
     };
     if (a == L"--no-ui") no_ui = true;
+    else if (a == L"--print-dirs") print_dirs = true;
     else if (a == L"--shared") next(&shared);
     else if (a == L"--user") next(&user);
+    else if (a == L"--seed") next(&seed);
     else if (a == L"--log") next(&log);
     else if (a == L"--wait-deploy" && i + 1 < argc) wait_deploy = _wtoi(argv[++i]);
     else if (a == L"--quit-after" && i + 1 < argc) quit_after = _wtoi(argv[++i]);
@@ -190,6 +275,34 @@ static int RunService(int argc, wchar_t** argv) {
 
   if (shared.empty()) shared = DefaultSharedDir();
   if (user.empty()) user = DefaultUserDir();
+  if (seed.empty()) seed = DefaultSeedDir();
+
+  if (user.empty()) {
+    Err("解析不出使用者資料目錄(%%APPDATA%% 是空的?)\n");
+    return 1;
+  }
+  if (UserDirInsideInstallDir(user)) {
+    // 見上面 UserDirInsideInstallDir 的說明。寧可現在就大聲停下來,
+    // 也不要讓使用者用了三天才發現輸入法從來沒記住過任何東西。
+    Err("使用者資料目錄落在安裝目錄底下: %s\n"
+        "  安裝目錄(通常是 C:\\Program Files\\RimeQuad)對一般權限的進程是唯讀的,\n"
+        "  而 librime 寫不進去時**不會報錯**,只是一個學過的詞都留不住。\n"
+        "  使用者資料應該在 %%APPDATA%%\\RimeQuad。\n",
+        user.c_str());
+    return 1;
+  }
+
+  // --print-dirs 放在這裡:三個目錄都解析完、但還沒動任何狀態(沒有建目錄、
+  // 沒有搶單一實例的 mutex、沒有起引擎)。CI 靠它在安裝完成後**立刻**斷言
+  // 「shared 指到 Program Files、user 指到 %APPDATA%」,不必等好幾分鐘的詞庫編譯。
+  if (print_dirs) {
+    Say("shared=%s\n", shared.c_str());
+    Say("user=%s\n", user.c_str());
+    Say("seed=%s\n", seed.c_str());
+    Say("log=%s\n", log.c_str());
+    return 0;
+  }
+
   EnsureDir(user);
   // log 為空時傳 ""(只寫 stderr)而**不是** NULL(交給 librime 決定暫存目錄)。
   // rime_shell.h 明說兩者語意不同,而 tools/rime_console.cc 走的是 "" 那條 ——
@@ -203,6 +316,15 @@ static int RunService(int argc, wchar_t** argv) {
     return 1;
   }
 
+  // 首次執行:把 <安裝目錄>\data\user 的範本補進使用者目錄。
+  // 少了 default.custom.yaml 的話,librime 會照上游 default.yaml 去部署
+  // cangjie5 / quick5 等我們沒有詞庫的方案 —— 部署會噴錯,而使用者看到的是
+  // 「有些方案切過去就一個候選都沒有」。
+  {
+    const int copied = SeedUserDir(seed, user);
+    if (copied > 0) Say("[service] 從範本補上 %d 個檔案\n", copied);
+  }
+
   // 單一實例。每個宿主進程都會嘗試啟動服務(DLL 那邊有節流,但仍會撞在一起),
   // 沒有這道鎖的話會有好幾支服務同時開著同一份使用者詞庫。
   const std::wstring mutex_name =
@@ -212,6 +334,16 @@ static int RunService(int argc, wchar_t** argv) {
     // 已經有一支在跑,這不是錯誤。
     return 0;
   }
+
+  // 結束事件在這裡就建好,不等到最後才建。
+  //
+  // 首次部署要編好幾分鐘的詞庫,而使用者很可能正好在那段時間裡按下解除安裝。
+  // 事件晚建的話,那幾分鐘裡 stop-service 找不到東西可以通知,只能強制結束 ——
+  // 而那正是最不該強制結束的一段(詞庫正在寫)。
+  HANDLE quit = ::CreateEventW(nullptr, TRUE, FALSE,
+                               rimewin::RimeServiceQuitEventName().c_str());
+  if (!quit)
+    Err("[service] 結束事件建立失敗 —— 停止服務只能靠結束進程\n");
 
   // 候選窗的座標是螢幕座標,而宿主(TSF 的 GetTextExt)給的是實體像素。
   // 沒有宣告 DPI 感知的話,系統會對我們的視窗做縮放,候選窗在高 DPI 螢幕上
@@ -279,13 +411,26 @@ static int RunService(int argc, wchar_t** argv) {
   }
   Say("[service] ready\n");
 
-  if (quit_after > 0) {
-    ::Sleep(static_cast<DWORD>(quit_after) * 1000);
+  // 等結束訊號,而不是無止境地 Sleep。
+  //
+  // 升級與解除安裝之前必須停掉這支進程,否則 rime_service.exe 與
+  // rime_tsf.dll 都被佔用著換不掉。而**不可以**直接 TerminateProcess:
+  // 這支進程持有使用者詞庫的 LevelDB,從中途拔掉的話詞庫會壞,
+  // 而症狀是「升級之後我學過的詞全沒了」——使用者不會把它跟安裝程序聯想在一起。
+  // rime_ime_setup.exe stop-service 送的就是這個事件(在上面建好)。
+  if (quit) {
+    const DWORD wait_ms =
+        quit_after > 0 ? static_cast<DWORD>(quit_after) * 1000 : INFINITE;
+    ::WaitForSingleObject(quit, wait_ms);
+    ::CloseHandle(quit);
   } else {
-    // 沒有結束條件時就一直跑。真正的結束是使用者登出或手動結束進程 ——
-    // 本輪還沒有系統匣圖示,那是下一輪的事(已列在 README)。
-    for (;;) ::Sleep(60000);
+    // 建不出事件不該讓服務起不來 —— 退回舊行為,只是停不掉而已。
+    if (quit_after > 0)
+      ::Sleep(static_cast<DWORD>(quit_after) * 1000);
+    else
+      for (;;) ::Sleep(60000);
   }
+  Say("[service] 結束,收尾中\n");
 
   server.Stop();
   window.Stop();

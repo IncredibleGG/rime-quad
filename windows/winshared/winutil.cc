@@ -59,6 +59,12 @@ std::wstring RimePipeName() {
   return L"\\\\.\\pipe\\rime-quad." + sid + L".v1";
 }
 
+std::wstring RimeServiceQuitEventName() {
+  std::wstring sid = CurrentUserSidString();
+  if (sid.empty()) sid = L"unknown";
+  return L"Local\\RimeQuadServiceQuit." + sid;
+}
+
 bool IsProcessElevated() {
   HANDLE token = nullptr;
   if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &token))

@@ -91,6 +91,15 @@ jobs:
       - name: 二進位結構檢查（匯出符號、相依白名單）
         run: ./windows/check_binaries.sh third_party/build/windows-x64/logic/bin
 
+      # 安裝程式最貴的失敗模式是「忘了把執行期資料包進去」——
+      # 那樣的話安裝程式編得出來、安裝成功、輸入法也註冊得上,
+      # 然後一個字都打不出來,而且沒有任何錯誤訊息。
+      # make_installer.sh 有一道逐項點名的 payload 檢查在擋它;
+      # 這一步用一棵故意殘缺的樹去跑那道檢查,要求它真的紅。
+      # 放在快速 job 是因為它只是 shell 邏輯,不需要 librime、也不需要 ISCC。
+      - name: 反向測試（安裝包資料檢查必須會紅）
+        run: ./windows/make_installer.sh --self-check
+
       - name: 上傳瘦 DLL 與測試執行檔
         if: always()
         uses: actions/upload-artifact@v4
@@ -245,6 +254,13 @@ jobs:
       - name: 端到端 IPC 驗證（經由具名管道:nihao → 你好）
         run: ./windows/verify_ime.sh
 
+      # ── 安裝程式 ────────────────────────────────────────────────
+      # 打包工具是 Inno Setup(理由見 windows/installer/rimequad.iss 檔頭)。
+      # 這一步同時會逐項點名檢查要裝進去的東西 —— 尤其是 core/data/shared,
+      # 少了它會裝出一個「註冊得上但一個字都打不出來」的輸入法。
+      - name: 建置安裝程式（RimeQuad-Setup-x64.exe）
+        run: ./windows/make_installer.sh
+
       - name: 上傳建置與驗證日誌
         if: always()
         uses: actions/upload-artifact@v4
@@ -255,9 +271,10 @@ jobs:
             third_party/build/windows-x64/verify/logs/
             third_party/build/windows-x64/ime-verify/
             third_party/build/windows-x64/ime/bin/*.map
+            third_party/build/windows-x64/installer/iscc*.log
           if-no-files-found: warn
 
-      - name: 上傳產物（DLL、服務、console）
+      - name: 上傳產物（DLL、服務、console、驗證工具）
         if: success()
         uses: actions/upload-artifact@v4
         with:
@@ -265,5 +282,90 @@ jobs:
           path: |
             third_party/build/windows-x64/ime/bin/rime_tsf.dll
             third_party/build/windows-x64/ime/bin/rime_service.exe
+            third_party/build/windows-x64/ime/bin/rime_ime_setup.exe
+            third_party/build/windows-x64/ime/bin/rime_probe.exe
             third_party/build/windows-x64/console/bin/rime_console.exe
           if-no-files-found: error
+
+      # ⚠ 名字是固定的(不帶 sha)。協調端的發布流程會照這個名字來抓。
+      #   改名字等於讓發布流程安靜地抓不到東西。
+      - name: 上傳安裝程式
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RimeQuad-Setup-x64
+          path: third_party/build/windows-x64/installer/RimeQuad-Setup-x64.exe
+          if-no-files-found: error
+
+  # ────────────────────────────────────────────────────────────────
+  # 安裝驗證:在一台**乾淨的** runner 上真的裝一次、驗一次、解除安裝一次。
+  #
+  # ⚠ 這個 job 是這一輪最有價值的東西,比安裝程式本身還有價值。
+  #
+  # 上一輪把「regsvr32 是否真的註冊成功、輸入法是否出現在系統的清單上」
+  # 列在「只有人做得到」那一欄。那個判斷有一半是錯的:windows-latest 的
+  # runner 上我們是系統管理員,所以這一整條跑得動 ——
+  #
+  #   靜默安裝 → 斷言登錄檔真的長出東西 → 用 TSF 的 API 列舉出自己
+  #   → 用**安裝好的**服務與資料經由真的具名管道打出「你好」
+  #   → 靜默解除安裝 → 斷言登錄檔清乾淨、而使用者詞典還在
+  #
+  # 刻意獨立成一個 job 而不是接在 core-x64 後面:那台機器上有完整的建置樹,
+  # 而「裝出來的東西自己就夠了」正是要驗的事。在建置樹旁邊驗,
+  # 驗到的可能是建置樹裡的檔案。
+  # ────────────────────────────────────────────────────────────────
+  install-x64:
+    runs-on: windows-latest
+    needs: core-x64
+    timeout-minutes: 90
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: 關掉 autocrlf
+        run: |
+          git config --global core.autocrlf input
+          git config --global core.longpaths true
+
+      # 只為了取得驗證腳本。二進位一律從 artifact 來 —— 這個 job 不建任何東西。
+      - name: 取出原始碼
+        uses: actions/checkout@v4
+
+      - name: 下載安裝程式
+        uses: actions/download-artifact@v4
+        with:
+          name: RimeQuad-Setup-x64
+          path: dist
+
+      - name: 下載驗證工具（probe、setup）
+        uses: actions/download-artifact@v4
+        with:
+          name: rime-windows-x64-${{ github.sha }}
+          path: tools-dl
+
+      - name: 確認拿到的東西
+        run: |
+          ls -l dist tools-dl
+          # download-artifact 會攤平目錄結構;若哪天不再攤平,這裡會直接說出來,
+          # 而不是讓後面的步驟以「找不到檔案」的形式失敗。
+          for f in dist/RimeQuad-Setup-x64.exe tools-dl/rime_probe.exe tools-dl/rime_ime_setup.exe; do
+            [ -f "$f" ] || { echo "!! 缺少 $f" >&2; exit 1; }
+          done
+
+      # runner 本身就是系統管理員,所以靜默安裝跑得動。
+      - name: 安裝、斷言、解除安裝、斷言
+        run: |
+          ./windows/verify_installer.sh \
+            --setup dist/RimeQuad-Setup-x64.exe \
+            --probe tools-dl/rime_probe.exe \
+            --tool  tools-dl/rime_ime_setup.exe
+
+      - name: 上傳安裝驗證日誌
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-install-verify-${{ github.sha }}
+          path: dist/verify/
+          if-no-files-found: warn

@@ -146,5 +146,12 @@ log "檢查 rime_service.exe 的相依(只擋 CRT;服務進程的相依不受限
 check_deps "${BIN_DIR}/rime_service.exe" loose
 
 echo
+# rime_ime_setup.exe 由安裝程式在**使用者剛裝好、什麼都還沒設定**的機器上執行。
+# 它若相依動態 CRT,症狀是「安裝程式跑到註冊那一步就失敗」,而錯誤訊息會是
+# 一個沒有人看得懂的 HRESULT。/MT 同樣不可少。
+log "檢查 rime_ime_setup.exe 的相依(只擋 CRT)"
+check_deps "${BIN_DIR}/rime_ime_setup.exe" loose
+
+echo
 [ "${fail}" -eq 0 ] || die "二進位檢查失敗,見上。"
 log "二進位檢查全部通過 ✓"

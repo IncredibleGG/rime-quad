@@ -114,6 +114,7 @@ target_link_libraries(rime_tests PRIVATE rime_common user32)
 add_library(rime_tsf SHARED
   tsf/dll.cc
   tsf/guids.cc
+  tsf/registration.cc
   tsf/text_service.cc
   tsf/ipc_client.cc
   tsf/win32_oracle.cc
@@ -121,6 +122,26 @@ add_library(rime_tsf SHARED
 target_link_libraries(rime_tsf PRIVATE rime_common rime_winshared
                                         kernel32 user32 advapi32 ole32 uuid)
 set_target_properties(rime_tsf PROPERTIES OUTPUT_NAME "rime_tsf")
+
+# ── 安裝程式的手腳 ────────────────────────────────────────────────
+#
+# 註冊 / 反註冊 / 檢查 / 停服務。安裝程式(Inno Setup)呼叫的就是它,
+# 而 CI 的 windows/verify_installer.sh 也靠它的 check 動詞做斷言。
+#
+# 它與 DLL 共用 tsf/registration.cc —— 那是刻意的:兩份實作會漂移,
+# 而漂移的症狀是「用安裝程式裝的能用,自己 regsvr32 的不能用」。
+# registration_check.cc 則**只**在這裡,不進 DLL:DLL 住在每一個宿主進程裡,
+# 沒有理由為了「檢查」多背一份程式碼(見 windows/check_binaries.sh 的允許清單)。
+#
+# 它也不需要 librime —— 所以它在 logic 那一組就建得出來,快速 job 就驗得到。
+add_executable(rime_ime_setup
+  setup/setup_main.cc
+  tsf/guids.cc
+  tsf/registration.cc
+  tsf/registration_check.cc)
+target_include_directories(rime_ime_setup PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(rime_ime_setup PRIVATE rime_winshared
+                                             kernel32 user32 advapi32 ole32 uuid)
 
 add_executable(rime_probe
   tests/probe_main.cc

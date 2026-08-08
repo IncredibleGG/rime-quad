@@ -166,6 +166,10 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
 - `[2026-08-08] [Windows] 只動了 windows/ 與 .github/workflows/windows.yml。workflow 的 on.push.branches 加了 windows 分支(原本只有 main,推到自己的分支不會跑 CI)。沒有動 core/、docs/theme-format.md、android/、apple/。`
 - `[2026-08-08] [Windows] 給其餘三端參考:core/include/rime_shell.h 的 rs_modifier 與 librime 的遮罩是兩套東西(kSuperMask 1<<26 是後者,由 core/src/rime_shell.cc 的 to_rime_mask 轉換)。Windows 端在 windows/tests/test_keymap.cc 放了一條斷言把自己那份重寫的 Mod 位元與 rime_shell.h 的 RS_MOD_* 逐位釘在一起,順便釘住 RIME_SHELL_ABI_VERSION == 1。core/ 那邊若要動 ABI,這條會紅。`
 - `[2026-08-08] [Windows] ⚠ 給其餘三端(尤其是 macOS/iOS 會做常駐進程的):**進入點若是寬字元版本,glog 會在初始化時空指標解參考。** glog 的 ProgramInvocationShortName() 在 Windows/MSVC 上走 const_basename(__argv[0])(deps/glog/src/utilities.cc 的 HAVE___ARGV 分支),而 __argv 只有在 CRT 以窄字元進入點啟動時才會被填 —— 用 wmain 的話 CRT 只填 __wargv,__argv 是 NULL。症狀是「一啟動就 0xC0000005,堆疊在 glog 深處」,與進入點看起來毫無關聯,花了五輪 CI 才查到(run #16–#20)。tools/rime_console.cc 用的是 main,所以它一直是綠的。Apple 端不走這條路徑,但**任何新的、會連結 librime 的執行檔都要注意進入點**,而且不要相信「rime_console 過了所以引擎沒問題」——引擎沒問題,是宿主的進入點有問題。`
+- `[2026-08-08] [Windows] 有安裝程式了:RimeQuad-Setup-x64.exe(Inno Setup)。CI 的 artifact 名字**固定叫 RimeQuad-Setup-x64**,裡面是同名的 .exe —— 協調端的發布流程照這個名字抓,改名字等於讓發布安靜地抓不到東西。裝到 C:\Program Files\RimeQuad(位置固定,不讓使用者選),UAC 提權寫在安裝程式自己的 manifest 裡(雙擊就跳,不必右鍵「以系統管理員身分執行」)。使用者詞典在 %APPDATA%\RimeQuad,解除安裝**刻意不刪**。選 Inno 不選 WiX 的理由見 windows/installer/rimequad.iss 檔頭:需求是單一 .exe 而 WiX 原生產物是 .msi(要單一 exe 得再套 Burn bootstrapper);解除安裝要跑真的邏輯(停服務、反註冊、保留詞典),Inno 的 Pascal script 直接做得到,MSI 要另外編一個 custom action DLL。`
+- `[2026-08-08] [Windows] ⚠ 給其餘三端(尤其 macOS/iOS 之後也要做安裝包的):**「輸入法有沒有被系統接受」比我以為的更驗得到。** 上一輪我把「regsvr32 註冊成不成功、輸入法有沒有出現在系統清單上」寫進「CI 驗不了」那一欄,那個判斷有一半是錯的 —— windows-latest 的 runner 上我們有系統管理員權限,於是「靜默安裝 → 斷言登錄檔真的長出東西 → 用 TSF 的 API 列舉出自己 → 用**裝好的**東西經由真管道打一次字 → 靜默解除安裝 → 斷言清乾淨、而使用者詞典還在」整條跑得動(windows/verify_installer.sh)。macOS 端的 IMKit 註冊(TISCreateInputSourceList 之類)大概率也有同一類可列舉的 API。**不要太早把事情歸到「只有人做得到」那一欄** —— 我就歸錯過一次。`
+- `[2026-08-08] [Windows] ⚠ 使用者資料的位置對桌面端是硬約束:%APPDATA%\RimeQuad,**不可以在安裝目錄底下**。理由不是潔癖 —— librime 寫不進使用者目錄時**不會停下來**,它照常給候選、照常上屏,只是一個學過的詞都留不住,而且完全沒有錯誤訊息;等使用者發現「它從來沒學會我的詞」已經是好幾天以後,那時沒有任何線索指向權限。Windows 端兩道守法:(1) 服務進程有一道檢查,使用者目錄落在安裝目錄底下就大聲停;(2) CI 比對安裝目錄跑前跑後的檔案清單與時間戳,一個位元都不准變 —— **CI 上我們是系統管理員,權限本身擋不出這個 bug,只有那道比對擋得住**。macOS 端裝進 /Library/Input Methods 時同理。另外:唯讀安裝目錄底下要放一份「首次執行才複製過去」的範本(我們是 data\user\default.custom.yaml,它把 schema_list 限縮成真的有詞庫的四個方案),複製時**只補不覆蓋**,否則使用者改過的設定每次升級都會被裝回原樣。`
+- `[2026-08-08] [Windows] 語言設定檔改成**每個中文語言各註冊一份**:0x0404(zh-Hant-TW)、0x0804(zh-Hans-CN)、0x0C04(zh-Hant-HK),各有自己的 GUID 與各自字形的描述字串。原本只註冊 0x0404,結果**系統語言是簡體中文的使用者在自己的語言底下找不到這個輸入法** —— 它掛在「繁体中文(中国台湾)」那一欄。使用者實際回報過。⚠ 兩件事要分清楚,不要修錯地方:清單上的**語言標籤**由註冊的 langid 決定;**實際上屏簡體還是繁體**由 RIME 方案(luna_pinyin vs luna_pinyin_tw)與簡繁開關決定。兩者無關。**而且目前還沒接起來**:服務進程不知道使用者是從哪一份 profile 進來的,預設方案仍是 schema_list 的第一項 luna_pinyin_tw,所以簡體使用者選了 zh-Hans 那一份、打出來還是繁體字。已列進 windows/README.md 的缺口,下一輪處理(要讓 DLL 把 profile 的 langid 帶進 IPC)。**這條對 macOS 端同樣成立** —— 輸入法在系統清單上掛在哪個語言底下,和它輸出什麼字是兩回事,而使用者只會看到後者不對。`
 - `[2026-08-08] [Windows] 驗證用的使用者目錄要明確指定方案。librime 把「上次選的方案」記在 <user>/user.yaml。Windows 的 verify_ime.sh 沿用 verify_console.sh 編好的使用者目錄以省下詞庫編譯時間,結果拿到的是上一支腳本最後選的注音,nihao 被打成「所噢草莓」。四端的驗證腳本若有共用使用者目錄的,同樣要明著選方案 ——「不指定」不是中性的。`
 
 ---
@@ -199,7 +203,40 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
   ⚠ **runner 沒有登入的圖形工作階段,所以候選窗、實際打字、修飾鍵、VoiceOver、
   各宿主 app 的相容性一項都沒驗到。完整清單見 apple/README.md §3。**
   規範 `docs/theme-format.md` 由本端擴充(見 §5),Windows 端可直接繼承。
-- **Windows** — 核心層已綠,**TSF 輸入法已寫出但沒有人在真 Windows 上用過**。
+- **Windows** — **有安裝程式了,而且 CI 會真的把它裝起來驗一遍。**
+  使用者已在真 Windows 上裝起來,輸入法出現在語言列上 —— TSF 註冊是通的。
+
+  第三個里程碑(安裝程式,本輪):`RimeQuad-Setup-x64.exe`(Inno Setup)。
+  雙擊跳 UAC、裝到 `C:\Program Files\RimeQuad`、安裝時完成 COM 與 TSF 註冊、
+  執行期資料(`core/data/shared` + `data/user` 範本)一起裝、
+  「新增或移除程式」有項目、解除安裝停服務+反註冊+清乾淨
+  **但保留 `%APPDATA%\RimeQuad` 的使用者詞典**。
+  語言設定檔改成三份(zh-Hant-TW / zh-Hans-CN / zh-Hant-HK),
+  原本只有 TW 那一份,簡體使用者在自己的語言底下找不到它。
+
+  新的 CI job `install-x64` 在一台乾淨的 runner 上靜默安裝、斷言、解除安裝、
+  再斷言。**斷言到的東西**(完整清單見 `windows/README.md`):
+  CLSID / InprocServer32 的**精確路徑** / ThreadingModel、
+  CTF 底下**三個** langid 的設定檔、能力類別 6 類 1+5×3 筆、
+  `ITfInputProcessorProfiles::EnumLanguageProfiles` 對每一個 langid 都列舉得到我們、
+  ARP 那一筆、資料目錄解析、
+  **用裝好的服務與裝好的詞庫經由真管道打出「你好」**、
+  **跑完之後安裝目錄一個位元都沒變**(使用者資料沒寫進 Program Files)、
+  解除安裝後登錄檔全清而 `%APPDATA%\RimeQuad` 還在。
+  四道反向測試:裝之前 check 必須紅、故意刪 InprocServer32 後必須紅、
+  解除安裝後必須紅、安裝包少了執行期資料必須出不了貨。
+
+  **仍然驗不到的:** 在記事本/瀏覽器/Office/市集 App 裡真的打得出字、
+  `ActivateEx` 與組字、候選窗的樣子與位置、高 DPI、
+  使用者的語言列上到底看不看得到它(還取決於他的語言清單)、
+  「每一顆鍵是不是都做了它宣稱的事」。**CI 綠仍然不等於好用。**
+
+  已知缺口:只有 x64;**簡體使用者選 zh-Hans 那一份打出來仍是繁體字**
+  (langid 沒有帶進 IPC,預設方案還是 luna_pinyin_tw);
+  `enable-user` 不會替使用者把中文加進 Windows 的語言清單;
+  TSF 不給純修飾鍵事件;沒有顯示屬性;沒有系統匣;沒有編 librime-lua。
+
+  前兩個里程碑(核心層、TSF)的細節保留在下面。
 
   第一個里程碑(核心層,協調端整理的那一段,保留):
   `windows-latest`(windows-2025-vs2026 / MSVC 14.51)上以 MSVC 從原始碼建

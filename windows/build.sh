@@ -577,13 +577,13 @@ build_ime() {
   (只要瘦 DLL 與單元測試的話用 windows/build.sh logic,那個不需要 librime。)"
   configure_and_build ime "-DRIME_PREFIX=$(w "${PREFIX}")"
   require_artifacts "${BUILD_ROOT}/ime/bin" \
-    rime_tsf.dll rime_service.exe rime_tests.exe rime_probe.exe
+    rime_tsf.dll rime_service.exe rime_ime_setup.exe rime_tests.exe rime_probe.exe
 }
 
 build_logic() {
   configure_and_build logic
   require_artifacts "${BUILD_ROOT}/logic/bin" \
-    rime_tsf.dll rime_tests.exe rime_probe.exe
+    rime_tsf.dll rime_ime_setup.exe rime_tests.exe rime_probe.exe
   # 這裡刻意再確認一次 rime_service.exe **不在**:logic 這一組不該把
   # 服務進程建出來。若它出現了,代表 CMakeLists 的分界線破了。
   if [ -f "${BUILD_ROOT}/logic/bin/rime_service.exe" ]; then

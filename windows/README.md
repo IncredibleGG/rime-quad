@@ -1,9 +1,80 @@
 # Windows 端
 
-目前的狀態:**核心層已綠,TSF 的輸入法已經寫出來,但沒有人在真 Windows 上用過。**
+目前的狀態:**有安裝程式了(`RimeQuad-Setup-x64.exe`),而且 CI 會真的把它裝起來、
+斷言註冊、打一次字、再解除安裝。** 使用者已在真 Windows 上裝起來,輸入法出現在語言列上。
 
-這兩件事的差距就是本文件最重要的一節 ——
-[「沒有被驗證的部分」](#沒有被驗證的部分)。請先看那一節再看別的。
+還沒有人驗證過的部分見
+[「沒有被驗證的部分」](#沒有被驗證的部分) —— 那一節仍然是本文件最重要的一節,
+只是這一輪從裡面搬走了好幾項。
+
+---
+
+## 安裝
+
+```
+RimeQuad-Setup-x64.exe     下載、雙擊、下一步、裝好。
+```
+
+雙擊就會跳 UAC 提權對話框(`PrivilegesRequired=admin` 寫在安裝程式自己的
+manifest 裡),不需要右鍵「以系統管理員身分執行」。裝完之後按
+`Win + 空白鍵` 切換輸入法。
+
+| 東西 | 位置 |
+|---|---|
+| 程式與唯讀資料 | `C:\Program Files\RimeQuad`(位置固定,安裝時不讓選) |
+| **使用者詞典、設定** | **`%APPDATA%\RimeQuad`** |
+
+解除安裝走「新增或移除程式」,它會停掉服務、反註冊、刪掉程式,
+**但刻意不刪 `%APPDATA%\RimeQuad`** —— 那是使用者的資料。
+
+### 為什麼使用者資料一定要在 `%APPDATA%`
+
+裝在 `C:\Program Files` 之下的話,一般權限的進程對那棵樹只有讀取權。
+而 **librime 寫不進使用者目錄時不會停下來**:它照常給候選、照常上屏,
+只是一個學過的詞都留不住,而且完全沒有錯誤訊息。等使用者發現
+「它從來沒學會我的詞」已經是好幾天以後,那時沒有任何線索指向權限。
+
+所以:
+
+- `service/main.cc` 有一道檢查,使用者目錄若落在安裝目錄底下就**大聲停下來**。
+- CI 在跑完一輪之後比對安裝目錄的檔案清單與時間戳,**一個位元都不准變**。
+  (runner 上我們是系統管理員,權限本身擋不出這個 bug,只有那道比對擋得住。)
+- 首次執行時 `<安裝目錄>\data\user` 的範本會被**只補不覆蓋**地複製過去。
+  少了裡面的 `default.custom.yaml`,librime 會照上游 `default.yaml` 去部署
+  cangjie5 / quick5 等我們沒有詞庫的方案 —— 部署噴錯,而使用者看到的是
+  「有些方案切過去一個候選都沒有」。
+
+### 打包工具:Inno Setup(不是 WiX)
+
+完整理由在 `windows/installer/rimequad.iss` 檔頭。摘要:需求是**一個 .exe**,
+而 WiX 的原生產物是 .msi,要變成單一 .exe 得再套一層 Burn bootstrapper;
+解除安裝要跑真的邏輯(停服務、反註冊、保留詞典),Inno 的 Pascal script
+直接做得到,MSI 要另外編一個 custom action DLL;而且 runner 內建 Inno。
+MSI 唯一贏的是網域 GPO 派送,那不是這一輪的目標。
+
+### 註冊在哪些語言底下
+
+| langid | | 描述字串 |
+|---|---|---|
+| `0x0404` | zh-Hant-TW | RIME 四端輸入法 |
+| `0x0804` | zh-Hans-CN | RIME 四端输入法 |
+| `0x0C04` | zh-Hant-HK | RIME 四端輸入法 |
+
+第一版只註冊了 `0x0404`,結果**系統語言是簡體中文的使用者在自己的語言底下
+找不到這個輸入法** —— 它掛在「繁体中文(中国台湾)」那一欄。使用者實際回報過。
+
+⚠ **語言標籤與實際打出簡繁是兩件事。** 清單上顯示成哪一種中文由這裡的 langid
+決定;實際上屏的是簡體還是繁體字由 RIME 方案(`luna_pinyin` vs
+`luna_pinyin_tw`)與簡繁開關決定,與 langid 無關。
+
+⚠ **目前這兩件事還沒有接起來。** 服務進程不知道使用者是從哪一個 langid 的
+profile 進來的,而預設方案是 `default.custom.yaml` 的 `schema_list` 第一項
+(`luna_pinyin_tw`,繁體)。也就是說**簡體使用者選了 zh-Hans 那一份,
+打出來仍然是繁體字。** 這是已知的、還沒解的問題,不是這一輪的範圍;
+要解得讓 DLL 把 profile 的 langid 帶進 IPC 交給服務去挑方案。
+
+zh-SG(`0x1004`)與 zh-MO(`0x1404`)刻意沒註冊:每多一份,有該語言的
+使用者清單上就多一項。要加的成本只有一個 GUID 加一列。
 
 ---
 
@@ -35,7 +106,15 @@
 | `winshared/` | UTF 轉換、使用者 SID、管道名 | 否 |
 | `tsf/` | COM 外殼、文字服務、IPC 用戶端、ToUnicodeEx | 否(但可語法檢查) |
 | `service/` | 引擎、管道伺服器、候選窗 | 否(但可語法檢查) |
+| `setup/` | `rime_ime_setup.exe`:註冊/反註冊/檢查/停服務 | 否(但可語法檢查) |
+| `installer/` | Inno Setup 腳本 | —(不編譯) |
 | `tests/` | 單元測試、真實佈局測試、probe | 部分 |
+
+註冊的實作在 `tsf/registration.cc`,**`rime_tsf.dll` 與 `rime_ime_setup.exe`
+共用同一份**。兩邊各寫一份會漂移,而漂移的症狀是「用安裝程式裝的能用、
+自己 `regsvr32` 的不能用」—— 兩種註冊狀態長得幾乎一樣,只差一個子鍵。
+檢查與列舉那一份(`tsf/registration_check.cc`)**只**連進 setup,不進 DLL:
+DLL 住在每一個宿主進程裡,它的相依有一份很短的允許清單。
 
 ---
 
@@ -170,16 +249,53 @@ DLL 回報 `pfEaten = TRUE` 卻拿不到結果 —— 那顆鍵既沒進文件�
 | **經由真的具名管道**打出「你好」(luna_pinyin_tw) | `verify_ime.sh` + `rime_probe.exe` |
 | 核心層(librime + 資料)真的打得出字 | `verify_console.sh` |
 | 測試框架本身會不會紅 | `rime_tests --self-check`(反向測試) |
+| 安裝包少了執行期資料就出不了貨 | `make_installer.sh --self-check`(反向測試) |
+| **真的裝一次:登錄檔、TSF 列舉、打字、解除安裝** | `verify_installer.sh`,見下 |
+
+### 這一輪從「驗不了」搬到「驗得了」的
+
+上一輪把「regsvr32 是否真的註冊成功、輸入法是否出現在系統的清單上」列在
+只有人做得到那一欄。**那個判斷有一半是錯的** —— `windows-latest` 的 runner 上
+我們是系統管理員,所以 `windows/verify_installer.sh` 這一整條跑得動:
+
+| 斷言 | 具體內容 |
+|---|---|
+| 靜默安裝 | `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`,結束碼必須 0 |
+| 檔案 | 三個二進位 + `data\shared` 的四個 schema、三本詞庫、`essay.txt`、`.ocd2`、`data\user\default.custom.yaml` |
+| COM | `HKLM\SOFTWARE\Classes\CLSID\{E94B9FC2-…}` 存在 |
+| COM | `…\InprocServer32` 預設值 **等於**`C:\Program Files\RimeQuad\rime_tsf.dll`(精確比對,抓「登錄檔指著建置樹裡那份」) |
+| COM | `…\InprocServer32` 的 `ThreadingModel` = `Apartment` |
+| TSF | `HKLM\SOFTWARE\Microsoft\CTF\TIP\{CLSID}` 存在 |
+| TSF | `…\LanguageProfile\0x00000404\{07FB3057-…}`、`\0x00000804\{57BE9E4D-…}`、`\0x00000C04\{23BBABB2-…}` **三個都在**(不是「至少一個」) |
+| TSF | `…\Category\Category` 底下正好 6 個類別,底下正好 1 + 5×3 筆 |
+| **系統接受了嗎** | `ITfInputProcessorProfiles::EnumLanguageProfiles(langid)` 對**每一個** langid 都列舉得到我們;`ITfInputProcessorProfileMgr::EnumProfiles` 也列得到 |
+| 使用者側 | `HKCU\…\CTF\TIP\{CLSID}\LanguageProfile\…` 有東西(`enable-user` 真的生效) |
+| 新增或移除程式 | `…\Uninstall\{7A033CF7-…}_is1` 有 `DisplayName` / `DisplayVersion` / `UninstallString` |
+| 資料目錄 | `rime_service.exe --print-dirs`:shared 在 Program Files 底下,user **不在** |
+| **真的打得出字** | 用**安裝好的**服務與**安裝好的**詞庫(不給 `--shared` / `--user`),經由真的具名管道 `nihao → 你好` |
+| **沒有寫進 Program Files** | 跑完之後安裝目錄的檔案清單與時間戳與跑之前逐字元相同 |
+| 解除安裝 | 走登錄檔裡那一筆 `UninstallString`(使用者按下去會跑的同一支) |
+| 解除安裝後 | CLSID、CTF\TIP、三份語言設定檔、ARP 那一筆**全部消失**,安裝目錄清空 |
+| **解除安裝後** | **`%APPDATA%\RimeQuad` 還在而且非空** —— 唯一一項重裝也補救不回來的失敗 |
+
+反向測試(證明上面那些不是恆真):
+
+- 安裝**之前** `rime_ime_setup.exe check` 必須以非零結束
+- 裝好之後**故意刪掉** `InprocServer32`,`check` 必須紅;重新註冊後必須又綠
+- 解除安裝**之後** `check` 必須再度紅
+- `make_installer.sh --self-check`:空的 payload 紅、只少 `default.custom.yaml` 紅、補齊後綠
 
 ### 只有人在真 Windows 上跑才驗得到的
 
 **以下每一項目前都是「寫出來了,沒被驗過」。**
 
-1. **`regsvr32 rime_tsf.dll` 是否真的註冊成功**,輸入法是否出現在語言列上。
-   註冊需要系統管理員權限,而 CI runner 上沒有辦法確認結果。
-2. **切到這個輸入法之後 `ActivateEx` 有沒有被呼叫**、sink 有沒有掛上。
-3. **在記事本裡打不打得出字。** 組字視窗(TSF composition)會不會出現、
+1. **切到這個輸入法之後 `ActivateEx` 有沒有被呼叫**、sink 有沒有掛上。
+2. **在記事本裡打不打得出字。** 組字視窗(TSF composition)會不會出現、
    preedit 更新對不對、commit 進不進得去文件。
+   ⚠ CI 驗到的是「服務端打得出字」,不是「TSF 這一層打得出字」。
+3. **使用者的語言列上到底看不看得到它。** CI 斷言得到「系統接受了這個輸入法」,
+   但看不看得到還取決於使用者的語言清單裡有沒有那幾種中文,
+   而 runner 上沒有辦法製造那個情境。
 4. **候選窗會不會出現**、位置對不對、在高 DPI 與多螢幕下對不對。
    `GetTextExt` 在很多宿主上會失敗或給空矩形(已有退回宿主視窗左上角的路徑,
    但那條路徑也沒被驗過)。
@@ -208,8 +324,18 @@ DLL 回報 `pfEaten = TRUE` 卻拿不到結果 —— 那顆鍵既沒進文件�
   要補得另外掛低階鍵盤 hook。
 - **沒有顯示屬性(組字底線)。** 未實作 `ITfDisplayAttributeProvider`,
   preedit 在部分宿主裡不會有視覺區別。
-- **沒有系統匣圖示、沒有設定介面、沒有安裝程式。** 服務目前靠 DLL 自動啟動,
-  沒有正常的結束方式。
+- **沒有系統匣圖示、沒有設定介面。** 服務靠 DLL 自動啟動;結束的方式是
+  `rime_ime_setup.exe stop-service`(送具名事件,安裝程式與解除安裝程式用它),
+  但使用者手上沒有按鈕。
+- **簡體使用者選 zh-Hans 那一份,打出來仍然是繁體字。** 語言設定檔已經按
+  langid 分開註冊了(見上面「註冊在哪些語言底下」),但服務進程不知道
+  使用者是從哪一份進來的,預設方案仍是 `schema_list` 的第一項
+  `luna_pinyin_tw`。要解得讓 DLL 把 profile 的 langid 帶進 IPC。
+- **`enable-user` 只做 `EnableLanguageProfile`。** 它不會替使用者把
+  「中文(繁體/簡體)」加進 Windows 的語言清單 —— 那需要 `input.dll` 的
+  `InstallLayoutOrTip`,而那不是有文件的 API。所以使用者的語言清單裡
+  沒有任何中文時,裝完仍然看不到這個輸入法;安裝完成頁明著寫了怎麼加。
+  **不要在文案裡宣稱做得到我們沒做到的事。**
 - **沒有編 librime-lua。** 倚賴 `lua_translator` / `lua_filter` 的第三方方案
   在 Windows 上會**部署成功但一個候選都沒有**。補上時
   `patches/librime-lua@sandbox.patch` 必須同時到位 —— `build.sh` 有一道會
@@ -232,17 +358,48 @@ windows/verify_console.sh                         # 核心層
 windows/verify_ime.sh                             # 經由具名管道的端到端
 windows/check_binaries.sh third_party/build/windows-x64/ime/bin
 third_party/build/windows-x64/ime/bin/rime_tests.exe
+windows/make_installer.sh                         # → installer/RimeQuad-Setup-x64.exe
 ```
 
-註冊(需要系統管理員權限的命令提示字元):
+安裝與驗證(需要系統管理員權限):
+
+```bash
+windows/verify_installer.sh \
+  --setup third_party/build/windows-x64/installer/RimeQuad-Setup-x64.exe \
+  --probe third_party/build/windows-x64/ime/bin/rime_probe.exe \
+  --tool  third_party/build/windows-x64/ime/bin/rime_ime_setup.exe
+```
+
+⚠ 它會**真的**裝到 `C:\Program Files\RimeQuad`、註冊、然後解除安裝。
+不要在自己日常用的機器上跑。
+
+手動操作(開發用;一般使用者走安裝程式,不碰這些):
 
 ```
-regsvr32 rime_tsf.dll
-regsvr32 /u rime_tsf.dll
+rime_ime_setup.exe register        全機註冊(需提權)
+rime_ime_setup.exe unregister
+rime_ime_setup.exe enable-user     目前使用者
+rime_ime_setup.exe check [--user]  斷言註冊狀態,不通過就非零結束
+rime_ime_setup.exe paths           印出所有會被寫到的登錄檔路徑與 GUID
+rime_ime_setup.exe dump            印出登錄檔實況
+rime_ime_setup.exe stop-service
 ```
 
-`rime_service.exe` 需要找得到共用資料目錄:預設是**與執行檔同目錄**的
-`data\shared`,或用 `--shared` / `RIME_SHARED_DATA_DIR` 指定。
+`regsvr32 rime_tsf.dll` 仍然有效(那兩個匯出是 COM in-proc server 的既定介面,
+而且與 `rime_ime_setup.exe register` **共用同一份實作** —— 見 `tsf/registration.cc`),
+但它只會告訴你一個 HRESULT。開發時用 `rime_ime_setup.exe check`。
+
+`rime_service.exe` 找資料的順序:
+
+```
+rime_service.exe --print-dirs      # 印出解析結果就結束,不啟動引擎
+```
+
+| | 預設 | 覆寫 |
+|---|---|---|
+| shared | `<執行檔目錄>\data\shared` | `--shared` / `RIME_SHARED_DATA_DIR` |
+| user | `%APPDATA%\RimeQuad` | `--user` / `RIME_USER_DATA_DIR` |
+| 範本 | `<執行檔目錄>\data\user` | `--seed` |
 
 ---
 

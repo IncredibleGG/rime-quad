@@ -62,6 +62,7 @@ SRCS=(
   "${SCRIPT_DIR}"/tsf/*.cc
   "${SCRIPT_DIR}"/winshared/*.cc
   "${SCRIPT_DIR}"/service/*.cc
+  "${SCRIPT_DIR}"/setup/*.cc
   "${SCRIPT_DIR}/tests/probe_main.cc"
   "${SCRIPT_DIR}/tests/test_win32_layouts.cc"
 )
