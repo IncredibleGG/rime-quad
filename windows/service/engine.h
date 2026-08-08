@@ -57,6 +57,7 @@ class Engine {
   Result CommitComposition(uint64_t id);
   Result Clear(uint64_t id);
   Result ChangePage(uint64_t id, bool backward);
+  Result SelectSchema(uint64_t id, const std::string& schema_id);
 
   std::string last_error() const;
 

@@ -15,14 +15,16 @@
 //     那一層由 windows/tests/test_keymap.cc 與 test_win32_layouts.cc 覆蓋。
 //
 // 用法:
-//   rime_probe.exe --keys nihao --select 1 --expect 你好
+//   rime_probe.exe --keys nihao --select 1 --schema luna_pinyin_tw --expect 你好
 
 #include <windows.h>
+#include <shellapi.h>
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "../tsf/ipc_client.h"
 #include "../winshared/winutil.h"
@@ -45,16 +47,38 @@ void PrintSnapshot(const char* tag, const Snapshot& s) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int main(int /*narrow_argc*/, char** /*narrow_argv*/) {
+  // ⚠ 參數必須從 CommandLineToArgvW 取,不可以用窄字元的 argv。
+  //   窄字元 argv 走的是系統 ANSI 代碼頁,而我們要比對的預期值是「你好」——
+  //   在英文 runner 上那兩個字會變成 "??",於是斷言永遠不會通過,
+  //   而錯誤訊息長得像「commit 是「你好」,預期「??」」。實測過(CI run #20)。
+  //
+  //   進入點仍然是 main 而不是 wmain:理由見 service/main.cc 檔頭
+  //   (glog 的 __argv)。這裡雖然沒有 glog,但兩支保持同一種寫法。
+  int argc = 0;
+  LPWSTR* wargv = ::CommandLineToArgvW(::GetCommandLineW(), &argc);
+  if (!wargv) {
+    std::fprintf(stderr, "CommandLineToArgvW 失敗\n");
+    return 2;
+  }
+  std::vector<std::string> args;
+  args.reserve(static_cast<size_t>(argc));
+  for (int i = 0; i < argc; ++i) args.push_back(WideToUtf8(wargv[i]));
+  ::LocalFree(wargv);
+
   std::string keys = "nihao";
   std::string expect;
+  std::string schema;
   int select = 1;
   for (int i = 1; i < argc; ++i) {
-    if (!std::strcmp(argv[i], "--keys") && i + 1 < argc) keys = argv[++i];
-    else if (!std::strcmp(argv[i], "--expect") && i + 1 < argc) expect = argv[++i];
-    else if (!std::strcmp(argv[i], "--select") && i + 1 < argc) select = std::atoi(argv[++i]);
+    const std::string& a = args[static_cast<size_t>(i)];
+    if (a == "--keys" && i + 1 < argc) keys = args[static_cast<size_t>(++i)];
+    else if (a == "--expect" && i + 1 < argc) expect = args[static_cast<size_t>(++i)];
+    else if (a == "--schema" && i + 1 < argc) schema = args[static_cast<size_t>(++i)];
+    else if (a == "--select" && i + 1 < argc)
+      select = std::atoi(args[static_cast<size_t>(++i)].c_str());
     else {
-      std::fprintf(stderr, "未知參數: %s\n", argv[i]);
+      std::fprintf(stderr, "未知參數: %s\n", a.c_str());
       return 2;
     }
   }
@@ -75,7 +99,27 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "!! 連不上服務或握手失敗\n");
     return 1;
   }
-  std::printf("握手完成,session 已建立\n\n");
+  std::printf("握手完成,session 已建立\n");
+
+  // ⚠ 一定要明確指定方案。librime 把「上次選的方案」記在使用者目錄的
+  //   user.yaml 裡,所以「不指定」的結果取決於那個目錄的歷史 ——
+  //   CI 上這個目錄是從 verify_console.sh 沿用來的,而它最後一個案例是注音,
+  //   於是 nihao 被當成注音打出了「所噢草莓」。實測過(CI run #20)。
+  if (!schema.empty()) {
+    Result r;
+    if (!ipc.SendSelectSchema(schema, &r)) {
+      std::fprintf(stderr, "!! 切換方案 %s 失敗\n", schema.c_str());
+      return 1;
+    }
+    std::printf("方案 -> %s(引擎回報 %s)\n", schema.c_str(),
+                r.snap.schema_id.c_str());
+    if (r.snap.schema_id != schema) {
+      std::fprintf(stderr, "!! 方案沒有切過去:要的是 %s,實際是 %s\n",
+                   schema.c_str(), r.snap.schema_id.c_str());
+      return 1;
+    }
+  }
+  std::printf("\n");
 
   std::string committed;
   Snapshot last;

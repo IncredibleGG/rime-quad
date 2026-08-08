@@ -136,6 +136,16 @@ TEST(protocol_all_message_roundtrips) {
     CHECK_INT(sid, 33);
   }
   {
+    SchemaReq m;
+    m.session = 13;
+    m.schema_id = "luna_pinyin_tw";
+    uint32_t seq = 0;
+    SchemaReq out;
+    CHECK(DecodeSelectSchema(EncodeSelectSchema(9, m), &seq, &out));
+    CHECK_INT(out.session, 13);
+    CHECK_STR(out.schema_id, "luna_pinyin_tw");
+  }
+  {
     ErrorMsg m;
     m.code = 7;
     m.text = "沒有這個 session";

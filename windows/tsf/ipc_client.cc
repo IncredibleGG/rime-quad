@@ -320,6 +320,15 @@ bool IpcClient::SendClear(Result* out) {
   return RequestResult(EncodeSimple(seq, Op::kClear, session_), seq, out);
 }
 
+bool IpcClient::SendSelectSchema(const std::string& schema_id, Result* out) {
+  if (!MayEatKey()) return false;
+  SchemaReq m;
+  m.session = session_;
+  m.schema_id = schema_id;
+  const uint32_t seq = ++seq_;
+  return RequestResult(EncodeSelectSchema(seq, m), seq, out);
+}
+
 void IpcClient::SendOneWay(const std::string& payload) {
   if (pipe_ == INVALID_HANDLE_VALUE) return;
   if (!WriteAllTimed(Frame(payload), kKeyTimeoutMs)) Fail(LinkFailure::kIoError);

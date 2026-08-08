@@ -305,6 +305,17 @@ Result Engine::ChangePage(uint64_t id, bool backward) {
   return r;
 }
 
+Result Engine::SelectSchema(uint64_t id, const std::string& schema_id) {
+  Result r;
+  Post([&] {
+    const uintptr_t sess = Find(id);
+    if (!sess) return;
+    r.handled = rs_select_schema(sess, schema_id.c_str());
+    r.snap = TakeSnapshotLocked(sess);
+  });
+  return r;
+}
+
 std::string Engine::last_error() const { return init_error_; }
 
 }  // namespace rimewin

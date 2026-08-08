@@ -224,6 +224,13 @@ std::string EncodeCaretRect(uint32_t seq, const CaretRect& m) {
   return s;
 }
 
+std::string EncodeSelectSchema(uint32_t seq, const SchemaReq& m) {
+  std::string s = Head(Op::kSelectSchema, seq);
+  PutU64(&s, m.session);
+  PutStr(&s, m.schema_id);
+  return s;
+}
+
 std::string EncodePing(uint32_t seq) { return Head(Op::kPing, seq); }
 std::string EncodePong(uint32_t seq) { return Head(Op::kPong, seq); }
 
@@ -314,6 +321,14 @@ bool DecodeCaretRect(const std::string& p, uint32_t* seq, CaretRect* out) {
   if (!c.I32(&out->top)) return false;
   if (!c.I32(&out->right)) return false;
   if (!c.I32(&out->bottom)) return false;
+  return c.AtEnd();
+}
+
+bool DecodeSelectSchema(const std::string& p, uint32_t* seq, SchemaReq* out) {
+  Cursor c(p);
+  if (!ReadHead(&c, Op::kSelectSchema, seq)) return false;
+  if (!c.U64(&out->session)) return false;
+  if (!c.Str(&out->schema_id)) return false;
   return c.AtEnd();
 }
 

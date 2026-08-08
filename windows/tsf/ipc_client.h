@@ -38,6 +38,7 @@ class IpcClient {
   bool SendCommitComposition(Result* out);
   bool SendClear(Result* out);
   bool SendChangePage(bool backward, Result* out);
+  bool SendSelectSchema(const std::string& schema_id, Result* out);
 
   // 單向,沒有回覆:候選窗位置不值得為它多一趟往返。
   void SendCaretRect(int32_t l, int32_t t, int32_t r, int32_t b);

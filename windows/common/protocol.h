@@ -52,6 +52,7 @@ enum class Op : uint8_t {
   kPing = 0x0A,
   kChangePage = 0x0B,
   kHighlight = 0x0C,
+  kSelectSchema = 0x0D,
   // 服務 → 用戶端
   kHelloOk = 0x81,
   kSessionOk = 0x82,
@@ -92,6 +93,14 @@ struct KeyReq {
 struct ArgReq {
   uint64_t session = 0;
   int32_t arg = 0;
+};
+
+// 指定方案。前端(或驗證用的 probe)要能明確選一個方案 ——
+// librime 會把「上次選的方案」記在使用者目錄的 user.yaml 裡,
+// 所以「不指定」的結果取決於那個目錄的歷史,不是一件確定的事。
+struct SchemaReq {
+  uint64_t session = 0;
+  std::string schema_id;
 };
 
 struct CaretRect {
@@ -158,6 +167,7 @@ std::string EncodeSessionEnd(uint32_t seq, uint64_t session);
 std::string EncodeKey(uint32_t seq, const KeyReq& m);
 std::string EncodeArg(uint32_t seq, Op op, const ArgReq& m);
 std::string EncodeCaretRect(uint32_t seq, const CaretRect& m);
+std::string EncodeSelectSchema(uint32_t seq, const SchemaReq& m);
 std::string EncodeSimple(uint32_t seq, Op op, uint64_t session);
 std::string EncodePing(uint32_t seq);
 std::string EncodePong(uint32_t seq);
@@ -178,6 +188,7 @@ bool DecodeSessionOk(const std::string& p, uint32_t* seq, SessionOk* out);
 bool DecodeKey(const std::string& p, uint32_t* seq, KeyReq* out);
 bool DecodeArg(const std::string& p, uint32_t* seq, ArgReq* out);
 bool DecodeCaretRect(const std::string& p, uint32_t* seq, CaretRect* out);
+bool DecodeSelectSchema(const std::string& p, uint32_t* seq, SchemaReq* out);
 bool DecodeSimple(const std::string& p, uint32_t* seq, uint64_t* session);
 bool DecodeResult(const std::string& p, uint32_t* seq, Result* out);
 bool DecodeError(const std::string& p, uint32_t* seq, ErrorMsg* out);

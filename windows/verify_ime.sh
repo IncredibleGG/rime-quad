@@ -28,12 +28,13 @@ BUILD_ROOT="${ROOT}/third_party/build/windows-${ARCH}"
 BIN="${BUILD_ROOT}/ime/bin"
 WORK="${BUILD_ROOT}/ime-verify"
 
-KEYS="nihao"; SELECT=1; EXPECT="你好"
+KEYS="nihao"; SELECT=1; EXPECT="你好"; SCHEMA="luna_pinyin_tw"
 while [ $# -gt 0 ]; do
   case "$1" in
     --keys)   KEYS="$2"; shift 2 ;;
     --select) SELECT="$2"; shift 2 ;;
     --expect) EXPECT="$2"; shift 2 ;;
+    --schema) SCHEMA="$2"; shift 2 ;;
     *) die "未知參數: $1" ;;
   esac
 done
@@ -100,7 +101,11 @@ done
 log "服務就緒"
 
 set +e
-"${BIN}/rime_probe.exe" --keys "${KEYS}" --select "${SELECT}" --expect "${EXPECT}" \
+# --schema 不可省。使用者目錄是從 verify_console.sh 沿用來的,而 librime 把
+# 「上次選的方案」記在 user.yaml 裡 —— 不指定的話,這個測試驗到的是哪一個
+# 方案取決於上一支腳本最後跑了什麼。實測:曾經因此用注音去打 nihao。
+"${BIN}/rime_probe.exe" --keys "${KEYS}" --select "${SELECT}" \
+  --schema "${SCHEMA}" --expect "${EXPECT}" \
   > "${WORK}/probe.log" 2>&1
 rc=$?
 set -e

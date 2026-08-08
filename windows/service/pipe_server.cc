@@ -275,6 +275,14 @@ void PipeServer::ServeClient(HANDLE pipe) {
         caret.bottom = c.bottom;
         break;  // 單向,不回覆
       }
+      case Op::kSelectSchema: {
+        SchemaReq sc;
+        if (!DecodeSelectSchema(payload, &seq, &sc)) goto done;
+        Result r = engine_->SelectSchema(sc.session, sc.schema_id);
+        push_ui(r.snap);
+        if (!send(EncodeResult(seq, r))) goto done;
+        break;
+      }
       case Op::kPing:
         if (!send(EncodePong(seq))) goto done;
         break;
