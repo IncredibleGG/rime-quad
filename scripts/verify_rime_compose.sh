@@ -96,7 +96,21 @@ IME_PKG="${IME_ID%%/*}"
 mkdir -p "$OUT_DIR"
 
 pass() { echo "  [PASS] $*"; }
-fail() { echo "  [FAIL] $*" >&2; echo >&2; echo "驗證失敗。artifact 在:$OUT_DIR" >&2; exit 1; }
+# 失敗時一定要把 logcat 抓下來。
+# 這一版之前,「鍵盤沒出現」那條訊息叫人去看 $OUT_DIR/logcat.txt,而 logcat.txt
+# 只在成功路徑的尾端才寫 —— 也就是**唯一需要它的時候它不存在**。CI 上因此有
+# 一輪失敗完全查不出原因。診斷訊息指向的檔案必須真的會被產生出來。
+dump_logcat_on_fail() {
+  [ -n "${SERIAL:-}" ] || return 0
+  [ -d "${OUT_DIR:-}" ] || return 0
+  adbs logcat -d > "$OUT_DIR/logcat.txt" 2>/dev/null || true
+  adbs shell dumpsys input_method > "$OUT_DIR/input_method.txt" 2>/dev/null || true
+  # 部署訊息單獨抽一份出來,免得在幾萬行裡找。
+  grep -Ei "rime|RimeQuad|org.rimequad|deploy|ANR|FATAL|died" \
+    "$OUT_DIR/logcat.txt" > "$OUT_DIR/logcat-rime.txt" 2>/dev/null || true
+  echo "  [INFO] 已存 logcat:$OUT_DIR/logcat.txt($(wc -l < "$OUT_DIR/logcat.txt" 2>/dev/null || echo 0) 行)、logcat-rime.txt" >&2
+}
+fail() { echo "  [FAIL] $*" >&2; dump_logcat_on_fail; echo >&2; echo "驗證失敗。artifact 在:$OUT_DIR" >&2; exit 1; }
 step() { echo; echo "=== $* ==="; }
 
 SERIAL=""

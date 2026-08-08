@@ -100,7 +100,17 @@ IME_PKG="${IME_ID%%/*}"
 mkdir -p "$OUT_DIR"
 
 pass() { echo "  [PASS] $*"; }
-fail() { echo "  [FAIL] $*" >&2; echo >&2; echo "artifact 在:$OUT_DIR" >&2; exit 1; }
+# 見 verify_rime_compose.sh 裡同名函式的註解:失敗時沒有 logcat 等於查不出原因。
+dump_logcat_on_fail() {
+  [ -n "${SERIAL:-}" ] || return 0
+  [ -d "${OUT_DIR:-}" ] || return 0
+  adbs logcat -d > "$OUT_DIR/logcat.txt" 2>/dev/null || true
+  adbs shell dumpsys input_method > "$OUT_DIR/input_method.txt" 2>/dev/null || true
+  grep -Ei "rime|RimeQuad|org.rimequad|deploy|ANR|FATAL|died" \
+    "$OUT_DIR/logcat.txt" > "$OUT_DIR/logcat-rime.txt" 2>/dev/null || true
+  echo "  [INFO] 已存 logcat:$OUT_DIR/logcat.txt" >&2
+}
+fail() { echo "  [FAIL] $*" >&2; dump_logcat_on_fail; echo >&2; echo "artifact 在:$OUT_DIR" >&2; exit 1; }
 step() { echo; echo "=== $* ==="; }
 
 SERIAL="${RIME_SERIAL:-${ANDROID_SERIAL:-}}"
