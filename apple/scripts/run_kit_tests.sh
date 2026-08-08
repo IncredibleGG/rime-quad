@@ -21,7 +21,7 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PKG="${ROOT}/apple/RimeQuad"
-MIN_TESTS="${MIN_TESTS:-60}"
+MIN_TESTS="${MIN_TESTS:-150}"
 
 cd "${PKG}" || exit 1
 
@@ -62,6 +62,11 @@ MUTATIONS=(
   "Sources/RimeQuadKit/CommitPolicy.swift|if s.menuCount > 0 { return .keepComposing }|if s.menuCount > 99 { return .keepComposing }|CommitPolicyTests"
   "Sources/RimeQuadKit/ThemeParser.swift|w.lines = c.child(\"lines\").int(1, min: 0, max: 16)|w.lines = c.child(\"lines\").int(2, min: 0, max: 16)|ThemeParserTests"
   "Sources/RimeQuadKit/StatusFace.swift|public static let latin = \"En\"|public static let latin = \"英\"|StatusFaceTests"
+  "Sources/RimeQuadKit/InputModeBinding.swift|case .hans: return true|case .hans: return false|SessionOptionsTests"
+  "Sources/RimeQuadKit/SettingsCatalog.swift|blurb: T(\"打勾的方案才會出現在切換清單裡。可以拖曳排序,最上面那一個是預設。\",|blurb: T(\"改 schema_list\",|SettingsCatalogTests"
+  "Sources/RimeQuadKit/ArchiveGuard.swift|\"yaml\", \"yml\", \"txt\", \"ocd2\", \"gram\", \"json\", \"md\", \"lua\",|\"yaml\", \"yml\", \"txt\", \"ocd2\", \"gram\", \"json\", \"md\", \"lua\", \"bin\",|ArchiveGuardTests"
+  "Sources/RimeQuadKit/UserPhrases.swift|out.insert(p, at: 0)|out.append(p)|UserPhrasesTests"
+  "Sources/RimeQuadKit/IPC.swift|if case .finished = state { return true }|if false { return true }|IPCTests"
 )
 
 BACKUP_DIR="$(mktemp -d)"

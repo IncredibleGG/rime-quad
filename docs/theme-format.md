@@ -754,6 +754,54 @@ resolved(run) = script_fallback[script_of(run)]   (若存在)
 |---|---|---|---|
 | `orientation` | enum `horizontal` \| `vertical` | `horizontal` | 全 |
 
+#### 8.6.0 文字區塊的字體綁定（規範性）
+
+§8.4 定義了具名字體堆疊，但**沒有說哪一塊文字用哪一個堆疊** ——
+Windows 端因此整個候選窗退回系統 UI 字型，只套規範裡有的 `size`。
+結果是「主題指定了候選字體」這件事在桌面端完全沒有效果。這一節補上綁定。
+
+**預設綁定（規範性）：**
+
+| 區塊 | 預設字體堆疊 |
+|---|---|
+| `candidates.label` | `typography.fonts.label` |
+| `candidates.text` | `typography.fonts.candidate` |
+| `candidates.comment` | `typography.fonts.comment` |
+| `preedit` | `typography.fonts.preedit` |
+| `status_bar`（§8.12） | `typography.fonts.ui` |
+| `candidates.bar.toolbar`（§8.6.6.1） | `typography.fonts.ui` |
+| `keyboard.key_styles.*`（§8.8.1） | `typography.fonts.key` |
+
+上表的六個堆疊名稱在 §8.4 已經是規範性的，且解析器**必須**在缺失時以內建預設補齊，
+所以綁定永遠解得出東西，不需要「找不到就用系統字型」這條退路。
+
+**桌面端不得改用系統 UI 字型當預設。** `$system` 代號（§8.4.1）已經是那個意思，
+而走代號才能讓「主題指定了字體」與「主題沒指定，用系統字體」是**同一條程式路徑**。
+兩條路徑的實作必然分岔：Windows 目前就是「有指定也不看」。
+
+**每個文字區塊新增一個 `font` 欄位（選用）：**
+
+| 欄位 | 型別 | 預設 | 說明 |
+|---|---|---|---|
+| `font` | string | 見上表 | `typography.fonts` 的**鍵名**，不是字體家族名 |
+
+寫的是鍵名而不是家族名，是為了讓一份主題只在 `typography.fonts` 一個地方描述字體。
+候選窗與鍵盤各寫一份 `family: [...]` 的話，換字體要改兩處，而漏改的那一處
+不會有任何診斷。
+
+解析規則（規範性）：
+
+1. `font` 缺席 → 用上表的預設鍵名。
+2. `font` 的值出現在**合併後**的 `typography.fonts` 裡 → 用它。
+   （合併後：`inherits` 帶進來的鍵也算數，見 §7.2 映射逐鍵合併。）
+3. 否則 → 退回上表的預設鍵名，並發一則 WARNING `bad_enum`，
+   `args = [寫下的值, 合併後 fonts 的所有鍵名以 `,` 串接（依 §3.3 的出現順序）, 預設鍵名]`。
+
+`font` **只**決定 `family` / `weight` / `italic` / `script_fallback`。
+**字級一律取該區塊自己的 `size`**，不從堆疊來 —— `fonts` 沒有字級欄位，
+而 `candidates.label.size` 與 `candidates.text.size` 本來就必須能分開設。
+
+
 #### 8.6.1 `candidates.label`（序號標籤）
 
 | 欄位 | 型別 | 預設 | 平台 |
@@ -807,6 +855,74 @@ resolved(run) = script_fallback[script_of(run)]   (若存在)
 | `border_color` | color | `transparent` |
 | `highlight_border_width` | length | `0` |
 | `highlight_border_color` | color | `transparent` |
+
+#### 8.6.4.1 item 內部的間距與量測（規範性）
+
+§11 原本列著「候選窗的量測與排版是分開的兩件事，而格式只規範了後者」——
+§8.6.7.1 的輸入是「每一項的寬高」，但那個寬高**怎麼量**沒有規範。
+Windows 端因此暫時拿 item **之間**的 `metrics.spacing` 來當 item **內部**的間距。
+這一節補上它。**新增欄位全部有預設值，預設等同既有行為，不遞增 major（§5.3）。**
+
+一個候選項由三段組成：**標籤**（§8.6.1）、**候選文字**（§8.6.2）、**註解**（§8.6.3）。
+`candidates.item` 新增三個欄位描述它們之間的距離：
+
+| 欄位 | 型別 | 預設 | 說明 |
+|---|---|---|---|
+| `label_gap` | length 0–64 | `metrics.spacing` | 標籤與候選文字之間 |
+| `comment_gap` | length 0–64 | `metrics.spacing` | `comment.position: after` 時，候選文字與註解之間 |
+| `comment_gap_v` | length 0–64 | `2` | `comment.position: below` 時，兩行之間的垂直距離 |
+
+前兩者的預設值刻意取 `metrics.spacing`（與 `item.spacing` 同源），
+這正是 Windows 端目前的行為 —— **既有實作不必改就已經合規**，
+而想把「項內」與「項間」分開的主題現在有辦法說出口。
+
+##### 量測演算法（規範性）
+
+輸入：三段各自的量測寬高 `lw/lh`（標籤）、`tw/th`（候選文字）、`cw/ch`（註解）。
+各段以 §8.6.0 綁定的字體堆疊與自己的 `size` 量測。
+
+```
+0. 空段一律 w = 0、h = 0，且**不參與**任何間距：
+     label.show == false                      → lw = lh = 0
+     格式化後的標籤為空字串                    → lw = lh = 0
+     comment.show == false 或 position: hidden → cw = ch = 0
+     候選的 comment 為空字串                   → cw = ch = 0
+
+1. position 為 after（或註解為空）：
+     inner_w = lw
+             + (lw > 0 && tw > 0 ? label_gap   : 0) + tw
+             + (tw > 0 && cw > 0 ? comment_gap : 0) + cw
+     inner_h = max(lh, th, ch)
+
+2. position 為 below：
+     top_w   = lw + (lw > 0 && tw > 0 ? label_gap : 0) + tw
+     inner_w = max(top_w, cw)
+     inner_h = max(lh, th) + (ch > 0 ? comment_gap_v + ch : 0)
+
+3. 項的量測尺寸 —— 這就是 §8.6.7.1 的輸入 w[i] / h[i]：
+     w[i] = max(item.min_width, inner_w + 2 * item.padding_h)
+     h[i] =                     inner_h + 2 * item.padding_v
+```
+
+三條容易做錯的地方：
+
+* **`min_width` 夾在加上 padding 之後**，不是之前。§8.6.7.1 第 8 步的
+  `max(item.min_width, ...)` 夾的是欄寬，兩處必須是同一個座標系，否則
+  `min_width` 在單行與多行排版下的意思會不一樣。
+* **空段不留空隙。** 標籤關掉時 `inner_w` 少的是 `lw + label_gap`，
+  不是只少 `lw`。留下來的那一格空白看起來像對齊錯誤，而且沒有任何線索。
+  這與 §8.12「空狀態必須整項略過」是同一條規則。
+* **`h[i]` 是逐項的**，§8.6.7.1 第 1 步再取全頁最大值當格高。
+  `position: below` 時只有帶註解的那幾項是兩行高，取最大值才不會互相蓋住
+  （§10 第 22 條）。
+
+##### 這一節不規範什麼
+
+**字形本身的量測。** `lw` / `tw` / `cw` 由平台的排版引擎決定（advance width、
+kerning、行高），四端不可能逐 px 相同，規範它只會產生沒有人做得到的要求。
+所以檢核（§10 第 26–27 條）驗的是「**給定** lw/tw/cw，算出的 w/h」，
+不是「同一個字串在兩端寬度相同」。
+
 
 #### 8.6.5 `candidates.separator` / `candidates.page_indicator`
 
@@ -916,13 +1032,14 @@ items:
 | `border_width` | length | `metrics.border_width` | |
 | `border_color` | color | `transparent` | |
 | `min_width` | length | `0` | |
-| `max_width` | length | `640` | 超出則換行／截斷，由實作決定 |
+| `max_width` | length | `640` | **不是硬上界**，超出時的處置見 §8.6.7.1 的 `overflow` 與 §8.6.7.2。不得因為放不下而丟棄候選 |
 | `placement` | enum `below` \| `above` \| `auto` | `auto` | `auto` = 空間不足時翻面 |
 | `offset_x` / `offset_y` | length −64–64 | `0` / `6` | 相對插入點的位移 |
-| `follow_caret` | bool | `true` | `false` = 固定在螢幕角落 |
-| `backdrop` | enum `none` \| `blur` \| `vibrancy` | `none` | 不支援的平台 **必須** 靜默退化為 `none`（INFO 級診斷） |
-| `opacity` | ratio | `1.0` | |
-| `shadow.show` | bool | `true` | |
+| `follow_caret` | bool | `true` | `false` = 固定在螢幕角落，哪一個角由 `anchor` 決定 |
+| `anchor` | enum `top_leading` \| `top_trailing` \| `bottom_leading` \| `bottom_trailing` | `bottom_trailing` | 僅 `follow_caret: false` 時有效，見 §8.6.7.3 |
+| `backdrop` | enum `none` \| `blur` \| `vibrancy` | `none` | 不支援的平台 **必須** 退化，見 §8.6.7.4 |
+| `opacity` | ratio 0.05–1.0 | `1.0` | 下界不是 0，見 §8.6.7.4 |
+| `shadow.show` | bool | `true` | 不支援的平台 **必須** 退化，見 §8.6.7.4 |
 | `shadow.radius` | length 0–64 | `18` | |
 | `shadow.offset_x` / `offset_y` | length | `0` / `4` | |
 | `shadow.color` | color | `#00000040` | |
@@ -998,15 +1115,16 @@ items:
      shrink → room = max(0, avail_w - (columns-1)*column_gap)
               scale = room / Σ colw
               colw[c] := max(item.min_width, colw[c] * scale)
-              夾到 `item.min_width` 之後仍然超出 → **接受超出**。
+              夾到 `item.min_width` 之後仍然超出 → **接受超出**，
+              並由第 9 步的 9a 讓窗跟著變寬(§8.6.7.2)。
               **不得** 把任何一欄縮成 0：那會產生一個看得見卻讀不到的候選。
      clip   → 欄寬不動，窗寬由第 9 步夾住，超出的部分被裁掉。
 
    兩種情況下，**量測寬度大於它拿到的格寬**的項 **必須** 被標記為需要截斷，
    渲染端 **必須** 在那些項的尾端加上 `…`（U+2026）。
 
-9. 窗的外框：
-     window_w = clamp(content_w + 2*padding, min_width, max_width>0 ? max_width : ∞)
+9. 窗的外框（`effective_max` 的兩條例外見 §8.6.7.2 第二節）：
+     window_w = clamp(content_w + 2*padding, min_width, effective_max)
      window_h = content_h + 2*padding
                 （+ preedit 區塊的高度，若 `preedit.show`）
                 （+ 狀態列的高度，若 `status_bar.show`，見 §8.12）
@@ -1018,6 +1136,124 @@ items:
 `lines` 只描述已經拿到的這一頁怎麼排。
 
 **檢核（見 §10 第 19–21 條）** 提供了可逐項驗算的具體數字。
+
+#### 8.6.7.2 `max_width` 溢出：候選完整性與窗寬的例外（規範性）
+
+§8.6.7 的表格原本在 `max_width` 那一列寫「超出則換行／截斷，由實作決定」。
+那正好是最需要一致的一格：Windows 端據此做成「橫排時**丟掉**放不下的候選、
+直排時讓窗變寬」，而 macOS 端做的是別的 —— 同一份主題在兩台電腦上
+看到的候選**數量**不一樣。這一節取消那句「由實作決定」。
+
+##### 一、不得丟棄候選（規範性）
+
+**候選窗不得少畫本頁的任何一個候選。**
+
+一頁有幾個候選由方案的 `page_size` 決定（§8.6.7.1 已寫明本格式不得改變它），
+而序號標籤與使用者按下的數字鍵是一一對應的。丟掉第 5 個候選之後，
+使用者按 `5` **仍然會選到那個看不見的字** —— 畫面與行為分岔，
+而且沒有任何提示。這是「看得到但摸不到」的鏡像，更難查。
+
+因此 §8.6.7.1 第 8 步的兩種處置都保留全部 n 個候選：
+
+* `shrink` —— 縮欄寬，放不下的項被標記為需要截斷，尾端加 `…`（U+2026）。
+* `clip` —— 欄寬不動，超出窗的部分被裁掉。**被裁掉的是像素，不是候選。**
+  裁切**必須**只發生在窗的內容區邊界上，**不得**改變第 5 步算出的任何落點；
+  被裁到一半的項**不**加 `…`（它沒有被截斷，只是被窗蓋住了）。
+
+##### 二、`max_width` 不是硬上界（規範性）
+
+把 §8.6.7.1 第 9 步的第一行改寫成下列形式。其餘各步不變。
+
+```
+9. effective_max = (max_width > 0) ? max_width : ∞
+
+   9a. overflow == shrink 且第 8 步夾到 item.min_width 之後 content_w 仍 > avail_w
+         → effective_max := content_w + 2 * padding
+       （shrink 的承諾是「縮，不裁」。縮到底還是放不下時，
+         守住承諾的唯一辦法是讓窗變寬。）
+
+   9b. 否則若 colw[0] + 2 * padding > effective_max
+         → effective_max := colw[0] + 2 * padding
+       （colw[0] 是第 5 步落在第一格的那一欄，經第 8 步處理後的寬度。
+         **第一個候選一定要看得見** —— 一個空的候選窗比一個太寬的候選窗
+         更難理解，而 max_width 寫得太小是主題的筆誤，不是使用者的錯。）
+
+   window_w = clamp(content_w + 2 * padding, min_width, effective_max)
+```
+
+`min_width` 仍然是下界，且**優先於** `effective_max`：兩者衝突時（`min_width`
+大於 `effective_max`）以 `min_width` 為準 —— `clamp` 的既有語義。
+
+**9a / 9b 不產生任何診斷。** 這是執行期計算的夾制，不是欄位綁定時的夾制，
+依 §10 第 4b 條的但書不發診斷。（發了的話同一份主題會因為使用者這一次
+剛好打了一個長詞而多一則診斷，§10 第 9 條的序列比對立刻失守。）
+
+##### 三、直排與橫排走同一套（規範性）
+
+`orientation` 只決定主要軸（§8.6.7.1），**不**決定溢出處置。
+直排也適用 `overflow`、也適用第一項例外。
+「橫排截斷、直排變寬」這種依 orientation 分岔的行為**不合規** ——
+主題作者換一個 `orientation` 不該連帶換掉溢出語義。
+
+
+#### 8.6.7.3 `follow_caret: false` 落在哪一個角（規範性）
+
+原本只寫「固定在螢幕角落」，沒說哪一個角。Windows 端暫取右下。
+新增一個欄位把它說清楚，**預設值就是 Windows 目前的行為**，既有實作不必改。
+
+| 欄位 | 型別 | 預設 | 說明 |
+|---|---|---|---|
+| `anchor` | enum `top_leading` \| `top_trailing` \| `bottom_leading` \| `bottom_trailing` | `bottom_trailing` | 僅 `follow_caret: false` 時有效 |
+
+**語義（規範性）：**
+
+* `top` / `bottom` 指**螢幕可用區**的上／下緣。可用區 = 扣掉系統永久佔用的
+  區域之後剩下的矩形（macOS：選單列與 Dock；Windows：工作列）。
+  用整個螢幕矩形會讓窗被工作列蓋住，那是實測會發生的事，不是理論問題。
+* `leading` / `trailing` 指**書寫方向**的起點／末端：LTR 下 `leading` = 左；
+  RTL 下 `leading` = 右。不寫「左／右」是為了讓 §11 的 RTL 缺口日後補起來時
+  不必改這一格。
+* 螢幕的選定：**含有目前插入點的那一個**。取不到插入點（宿主回報空矩形，
+  見 §8.6.7 的 `follow_caret`）時取**目前作用中視窗**所在的螢幕；
+  再取不到才取主螢幕。三段回落是規範性的 —— 直接用主螢幕的話，
+  雙螢幕使用者的候選窗會固定出現在另一台螢幕上。
+* `offset_x` / `offset_y` 在此模式下是**向內**的邊距：正值把窗推離它靠著的那兩條邊。
+  `bottom_trailing` + `offset_y: 6` = 窗的下緣距可用區下緣 6。
+  （`follow_caret: true` 時 `offset_x`/`offset_y` 仍是相對插入點的位移，語義不同，
+  這是刻意的：兩種模式下「位移」本來就是相對不同的東西。）
+* 窗**必須**完整落在可用區內。第 9 步算出的窗比可用區還大時，先夾窗的尺寸，
+  再擺位置 —— 位置的計算不得產生負的邊距。
+
+#### 8.6.7.4 平台做不到時怎麼退化（規範性）
+
+`backdrop` / `opacity` / `shadow.*` 需要平台級的視窗合成能力。
+原本只有 `backdrop` 那一列寫了「必須靜默退化為 `none`」，其餘兩項沒規定，
+於是 Windows 端（要用分層視窗才做得到）乾脆三項都不實作，而規範不知道。
+
+| 欄位 | 平台做不到時 **必須** 的行為 | 診斷 |
+|---|---|---|
+| `backdrop` | 視為 `none`，並改以 `background` 的**不透明**色繪製底 | INFO `feature_unsupported`，args `["candidates.window.backdrop", <值>]` |
+| `opacity` < 1.0 | 視為 `1.0`（完全不透明） | INFO `feature_unsupported`，args `["candidates.window.opacity", <值>]` |
+| `shadow.show: true` | 視為 `false`；`shadow.radius` / `offset_*` / `color` 一律無效 | INFO `feature_unsupported`，args `["candidates.window.shadow", "true"]` |
+
+四條共同規則：
+
+1. **退化不得改變排版。** 背板、透明度、陰影都**不佔內容空間**：
+   §8.6.7.1 算出的 `window_w`、`window_h` 與每一項的落點，
+   在支援與不支援的平台上**必須完全相同**。§10 第 19–22 條那幾組數字
+   就是靠這條才能在四端一起驗算。陰影尤其容易做錯 —— 把 `shadow.radius`
+   加進窗的大小裡，整組落點就全部偏掉了。
+2. **每個欄位每次載入最多一則診斷**，不得每畫一次一則。診斷是主題的性質，
+   不是每一幀的性質。
+3. **是 INFO，不是 WARNING。** 主題作者沒有做錯任何事，是平台做不到。
+4. **這三則診斷不參與 §10 第 9 條的比對。** 它們是平台能力相依的：
+   同一份主題在做得到的平台上零則、做不到的平台上三則。
+   §10 第 9 條比的是解析結果，不是渲染能力。
+
+`opacity` 的下界改為 **0.05**（原為 `ratio` 的 0.0）。理由：`opacity: 0` 的候選窗
+完全看不見，等於這個輸入法壞了，而使用者不會想到去看主題檔的一個小數。
+超出 → 依 §10 第 4b 條夾制 + 一則 WARNING `out_of_range`。
+
 
 ### 8.7 `preedit`
 
@@ -1038,6 +1274,21 @@ items:
 
 游標位置與選取範圍取自 `rs_composition`（單位為 **UTF-8 位元組**，
 渲染前 **必須** 轉成該平台的字串索引 —— 這是四端最常見的越界崩潰來源）。
+
+**桌面端:組字串畫在哪(規範性)。** §11 原本列著「有兩個地方可以畫，
+規範沒說該畫在哪，而兩邊同時畫會出現兩份組字串」。裁決如下:
+
+1. 桌面端 **必須** 把組字串交給宿主(macOS 的 marked text／Windows TSF 的
+   composition string)。這不是樣式選擇 —— 插入點的位置、宿主自己的重繪、
+   以及無障礙工具讀得到組字中的內容，都只有這條路徑做得到。
+2. 因此 `preedit.show` 在桌面端的語義是「**候選窗裡是否再畫一份**」，
+   而不是「要不要顯示組字串」。**桌面端的預設值是 `false`**
+   (行動端仍為 `true`:軟鍵盤沒有宿主 marked text 可用)。
+3. 主題把它設成 `true` 時，兩份組字串同時存在是**刻意的**——
+   有些使用者要在候選窗裡看到帶選取標記的完整組字。實作 **不得**
+   因此改成不送 marked text。
+4. `preedit.show: true` 時，候選窗的高度依 §8.6.7.1 第 9 步加上這一塊;
+   `false` 時 **不得** 為它保留任何空間。
 
 ### 8.8 `keyboard`（僅行動端；桌面端必須整段忽略）
 
@@ -1415,6 +1666,23 @@ items:
 **無必備項。** 與 §8.6.6.1 不同，這裡**不**規定「必須能觸達 `schema:picker`」——
 桌面端的方案切換入口是系統畫的輸入法選單，永遠在那裡，主題刪不掉。
 規定一個主題無法威脅到的必備項只會產生噪音。
+
+
+##### 這一節與 §11 的關係（給第三個桌面端）
+
+Windows 端回報「中／英、簡／繁的狀態指示完全沒有畫，因為沒有規範可依」。
+**那個缺口在這一節關掉了**，不需要再等：`source: input_mode_pair` 與
+`source: variant` 就是那兩個指示，字面（`中`/`En`、`简`/`繁`）是規範性的、
+四端一致，預設清單裡也已經有它們。`status_bar.show` 預設 `false` 是刻意的，
+但主題可以打開，而**實作必須支援** —— 「預設關閉」不是「可以不做」。
+
+同理，「候選窗的多欄／表格排版沒有定義」在 §8.6.7.1 關掉了。
+桌面端目前只剩下一個與狀態列有關的缺口仍在 §11：**`source` 全部是文字，
+沒有圖示**。在補上之前，任何「一顆代表當前方案的小圖示」都是各端自己發明的，
+不要做。
+
+`status_bar` 的字體綁定見 §8.6.0（預設 `typography.fonts.ui`，可用 `font` 欄位改）。
+`follow_caret: false` 時狀態列仍然在候選窗內部，不是螢幕上的另一條帶子。
 
 ### 8.13 `accessibility`
 
@@ -2279,6 +2547,49 @@ key_patches:
     §8.6.6.1 的預設工具列少一項且**不產生任何診斷**；
     佈局裡指向 `emoji` 的鍵**不會**在執行期消失，而是讓建置期測試變紅。
 
+26. **item 內部量測**（§8.6.4.1）。標籤寬 12、候選文字寬 40、註解寬 24，三段行高皆 20；
+    `label_gap: 4`、`comment_gap: 4`、`comment_gap_v: 2`、`padding_h: 6`、`padding_v: 6`、
+    `item.min_width: 0`：
+    * `comment.position: after` → `inner_w = 12+4+40+4+24 = 84`，`w = 96`，`h = 32`。
+    * `comment.position: below` → `top_w = 56`，`inner_w = max(56,24) = 56`，`w = 68`；
+      `inner_h = 20 + 2 + 20 = 42`，`h = 54`。
+27. **空段不留空隙**（§8.6.4.1 第 0 步）。承上，`label.show: false` →
+    `after` 的 `inner_w = 40+4+24 = 68`，`w = 80`。
+    **不是 `84 − 12 = 72`** —— 那是把 `label_gap` 留下來的錯法，畫面上會看到一格
+    對不齊的空白。註解為空字串時同理：`inner_w = 12+4+40 = 56`，`w = 68`。
+28. **`anchor`**（§8.6.7.3）。`follow_caret: false`、可用區 1440×860、窗 228×32、
+    `offset_x: 0`、`offset_y: 6`：
+    * `anchor: bottom_trailing` → 窗的下緣距可用區下緣 **6**，trailing 緣距可用區
+      trailing 緣 **0**。
+    * `anchor: top_leading` → 窗的上緣距可用區上緣 **6**，leading 緣距 leading 緣 **0**。
+    位移恆為**向內**的邊距，不隨 `top`/`bottom` 改變正負號。
+29. **`max_width` 不是硬上界**（§8.6.7.2 第二節）。單一量測寬 400 的候選、
+    `max_width: 300`、`padding: 6`、`min_width: 0`、`item.min_width: 0`：
+    * `overflow: shrink` → 欄寬縮成 288，窗寬 **300**，該項**被標記為需要截斷**。
+    * `overflow: clip` → 欄寬維持 400，窗寬 **412**（9b 抬高了上界），
+      該項**不**被標記為需要截斷。
+    再把 `item.min_width` 設成 150、候選改成 3 個各寬 200、`column_gap: 4`：
+    `shrink` 縮到 93⅓ 後被 `min_width` 夾回 150，`content_w = 458` 仍超出 →
+    9a 把窗寬抬成 **470**，三項全部標記為需要截斷。
+    （對照第 21 條：`item.min_width` 為 0 時同樣的輸入是窗寬 300。）
+30. **不得丟棄候選**（§8.6.7.2 第一節）。3 個各寬 200 的候選、`max_width: 300`、
+    `overflow: clip` → 排版結果**必須含有三項**，落點依序 x = 0 / 204 / 408，
+    窗寬 300；需要截斷的項數為 **0**（它們是被窗蓋住，不是被截斷）。
+    只回傳兩項、或把第三項的落點改掉，都是不合規。
+31. **退化不改排版**（§8.6.7.4 第 1 條）。在第 19 條那組輸入上加開
+    `backdrop: blur`、`opacity: 0.8`、`shadow.show: true` → 窗仍是 **228×32**、
+    第 i 項的 x 仍是 `i × 44`；在完全不支援這三者的平台上也是同一組數字，
+    只是多三則 INFO `feature_unsupported`（且這三則不參與第 9 條的比對）。
+32. **`opacity: 0`** → 夾成 **0.05**，且恰好一則 WARNING `out_of_range`，
+    path 為 `candidates.window.opacity`（§8.6.7.4 末段，規則同第 4b 條）。
+33. **字體綁定**（§8.6.0）。主題只寫
+    `typography.fonts.candidate.family: ["Iansui", "$system"]`，未寫任何 `font` 欄位 →
+    候選文字用該堆疊、序號標籤用 `fonts.label`（未定義時為內建預設），
+    兩者**不得**都退回系統 UI 字型。
+    `candidates.label.font: "candidate"` → 標籤改用 candidate 堆疊，
+    但字級仍是 `candidates.label.size`（**不是** `text.size`）。
+    `candidates.label.font: "nope"` → 恰好一則 WARNING `bad_enum`，退回 `fonts.label`。
+
 ---
 
 ## 11. 尚未規範、已知的缺口
@@ -2309,18 +2620,12 @@ key_patches:
   （主題）：`cn-t9-pinyin` 配 `cn-compact-*` 是 1.53（＝三星），配 `intl-gboard-*`
   會是 1.80。作者沒有辦法說「這份佈局是為那份主題設計的」。
 
-* **候選窗的量測與排版是分開的兩件事，而格式只規範了後者。** §8.6.7.1 的輸入是
-  「每一項的寬高」，但那個寬高怎麼量（label 與 text 之間留幾 dp、`comment` 在
-  `after` 時與 text 之間留幾 dp）目前是實作自由。同一份主題在 macOS 與 Windows 上
-  的候選窗寬度因此可能差幾個 pt。要收斂得再規範一組 item 內部的間距欄位。
 * **`status_bar` 沒有圖示。** §8.12 的 `source` 全部是文字。桌面輸入法常見的
   「一顆代表當前方案的小圖示」描述不出來，而 §9.6 的語義圖示表是為鍵盤設計的。
 * **候選窗的鍵盤操作沒有規範。** 桌面使用者會期待方向鍵移動高亮、
   `-`/`=` 翻頁，但那些是 librime 的 keybinding（方案層），不是本格式的。
   結果是「候選窗長什麼樣」由主題決定、「怎麼操作它」由方案決定，
   兩者無法互相對齊 —— 主題作者畫了上下排列的候選，方案的 keybinding 卻是左右翻頁。
-* **`preedit` 在桌面端有兩個地方可以畫**：候選窗裡，或宿主 app 的 marked text。
-  規範只描述了樣式，沒說該畫在哪，而兩邊同時畫會出現兩份組字串。
 ### 本節之外：v1 實作回饋已修補的項目
 
 下列缺陷是 Android 端把 `bopomofo-dachen.yaml` 真正渲染出來時撞到的，
@@ -2337,6 +2642,14 @@ key_patches:
 §9.5.1（渲染端宣告未實作的動詞）、§9.5.2（`input_mode:toggle`）、
 §9.6（`label_from: input_mode_pair`、`a11y_label` 與朗讀名的推導順序）、
 §10 第 9 條（診斷比對的作用域）。
+
+第四輪（Windows 端做出 TSF 與桌面候選窗之後回報的六個缺口）補的是：
+§8.6.0（文字區塊的字體綁定 + `font` 欄位）、§8.6.4.1（item 內部間距與量測演算法）、
+§8.6.7.2（`max_width` 溢出:不得丟棄候選、`effective_max` 的兩條例外、
+直排橫排同一套）、§8.6.7.3（`anchor`）、§8.6.7.4（`backdrop`/`opacity`/`shadow`
+不支援時的退化與「退化不得改變排版」）、§8.7（桌面端組字串畫在哪）、
+§8.12 末段（確認 §11 的多欄與狀態列兩項已由 §8.6.7.1 與 §8.12 覆蓋）、
+§10 第 26–33 條。
 
 第二輪（S24U 實機量測回饋）補的是:§8.8.0（高度模型改為固定預算 ÷ Σweight）、
 §8.8.0.1（`key_aspect` 描述的是參考格上那顆鍵）、§9.1.1（`for_schema` 拆成
