@@ -20,8 +20,13 @@ inputs:
   lineage-base64:        { required: true }
   old-keystore-base64:   { required: true }
   old-key-alias:         { required: true }
-  old-keystore-password: { required: true }
-  old-key-password:      { required: true }
+  # 舊 debug keystore 的密碼**不是秘密**:那是 Android 工具寫死的公開常數
+  # "android"(CREDENTIALS.txt 與 build.gradle.kts 都這麼寫)。
+  # 把它放進 Secrets 有實際害處:GitHub 會把它遮罩掉,而 "android" 這個字
+  # 出現在每一條路徑裡 —— 日誌會變成 `/usr/local/lib/***/sdk`、
+  # `***/app/build/...`,排查時什麼都看不出來。所以是預設值,不是 secret。
+  old-keystore-password: { required: false, default: android }
+  old-key-password:      { required: false, default: android }
 
 runs:
   using: composite

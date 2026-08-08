@@ -179,21 +179,49 @@ lineage_chain() {
 
 # 取出某個 SDK 區間下實際生效的簽章者
 #
-# ⚠ apksigner 有兩種標題寫法,而且**同一支工具對不同 APK 會給不同的寫法**:
-#     Signer #1 certificate SHA-256 digest: …
-#     Signer (minSdkVersion=28, maxSdkVersion=35) #1 certificate SHA-256 digest: …
-#   後者出現在指定的區間跨過輪替邊界、或簽章區塊的版本組合讓工具想講清楚時。
-#   原本只認前者,於是 CI 建的 APK 明明簽對了卻被判成「沒有簽章者」——
-#   一個把**好的**建置擋下來的檢查,下場通常是被人整個關掉。
-#   兩種都認,而且抓不到時要把 apksigner 說了什麼原封不動印出來:
-#   「讀不出來」與「簽錯了」是完全不同的兩件事,不能都報成同一句。
+# ⚠ apksigner 的輸出格式跟 build-tools 版本走,而**本機與 CI 的 build-tools
+#   不會永遠一樣**。實測到的兩種:
+#
+#     舊(build-tools 35 / 36.1):
+#       Signer #1 certificate SHA-256 digest: 444b…
+#     新(GitHub runner 上的那一版):
+#       V3.0 Signer: certificate SHA-256 digest: 444b…
+#       V2 Signer: certificate SHA-256 digest: 6aaa…
+#
+#   原本只認舊格式,於是 CI 建的 APK 明明**簽得完全正確**(digest 一字不差)
+#   卻被判成「沒有簽章者」。一個把好的建置擋下來的檢查,下場通常是被人
+#   整個關掉 —— 那才是真正的損失。
+#
+#   兩種格式的語意不同,要分開處理:
+#     · 舊格式的 `Signer #1` 已經是 apksigner 幫你算好的「這個區間實際生效
+#       的簽章者」,直接取。
+#     · 新格式是把**每一個簽章方案**各印一行。Android 會挑它支援的最高
+#       版本,所以有效簽章者是印出來的方案裡版本號最大的那一個
+#       (28+ 看到 V2=舊金鑰 與 V3.0=新金鑰,實際生效的是 V3.0)。
+#
+#   而且抓不到時要把 apksigner 說了什麼原封不動印出來:「讀不出來」與
+#   「簽錯了」是完全不同的兩件事,不能都報成同一句 —— 上一版就是這樣,
+#   於是排查時完全看不出來問題其實出在解析器。
 signer_in_range() {
   local out digest
   out="$("$APKSIGNER" verify --min-sdk-version "$2" --max-sdk-version "$3" \
           --print-certs "$1" 2>&1 || true)"
-  digest="$(printf '%s\n' "$out" \
-            | sed -n -E 's/^Signer (\([^)]*\) )?#1 certificate SHA-256 digest: //p')"
-  # 只取第一行。不用 head,避免 SIGPIPE 配上 pipefail 變成間歇性失敗。
+  digest="$(printf '%s\n' "$out" | python3 -c '
+import re, sys
+plain, schemes = [], []
+for line in sys.stdin:
+    m = re.match(r"^Signer (?:\([^)]*\) )?#\d+ certificate SHA-256 digest: (\S+)", line)
+    if m:
+        plain.append(m.group(1))
+        continue
+    m = re.match(r"^V(\d+(?:\.\d+)?) Signer: certificate SHA-256 digest: (\S+)", line)
+    if m:
+        schemes.append((float(m.group(1)), m.group(2)))
+if plain:
+    print(plain[0])
+elif schemes:
+    print(max(schemes)[1])
+')"
   digest="${digest%%$'\n'*}"
   if [ -z "$digest" ]; then
     {

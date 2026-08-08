@@ -202,8 +202,11 @@ def main():
         "ANDROID_LINEAGE_BASE64":         b64file("signing-lineage.bin"),
         "ANDROID_OLD_KEYSTORE_BASE64":    b64file("old-debug.keystore"),
         "ANDROID_OLD_KEY_ALIAS":          need("oldKeyAlias"),
-        "ANDROID_OLD_KEYSTORE_PASSWORD":  need("oldStorePassword"),
-        "ANDROID_OLD_KEY_PASSWORD":       need("oldKeyPassword"),
+        # 舊 debug keystore 的密碼**刻意不放進來**。那是 Android 工具寫死的
+        # 公開常數 "android",不是秘密;而把它設成 secret 有實際害處 ——
+        # GitHub 會遮罩它,於是日誌裡每一個 "android" 都變成 ***
+        # (`/usr/local/lib/***/sdk`、`***/app/build/...`),排查時什麼都看不出來。
+        # 值寫在 .github/actions/restore-signing/action.yml 的 default 裡。
         "R2_RCLONE_CONF_BASE64":
             base64.b64encode(read_rclone_section(rconf, "r2").encode()).decode("ascii"),
     }

@@ -108,8 +108,9 @@ jobs:
           lineage-base64:        ${{ secrets.ANDROID_LINEAGE_BASE64 }}
           old-keystore-base64:   ${{ secrets.ANDROID_OLD_KEYSTORE_BASE64 }}
           old-key-alias:         ${{ secrets.ANDROID_OLD_KEY_ALIAS }}
-          old-keystore-password: ${{ secrets.ANDROID_OLD_KEYSTORE_PASSWORD }}
-          old-key-password:      ${{ secrets.ANDROID_OLD_KEY_PASSWORD }}
+          # old-keystore-password / old-key-password 刻意不從 Secrets 來:
+          # 那是 Android 工具的公開常數 "android",設成 secret 只會讓
+          # GitHub 把日誌裡每一個 "android" 遮成 ***。見 restore-signing 的註解。
 
       - name: 決定 versionCode
         id: vc
@@ -283,8 +284,9 @@ jobs:
           lineage-base64:        ${{ secrets.ANDROID_LINEAGE_BASE64 }}
           old-keystore-base64:   ${{ secrets.ANDROID_OLD_KEYSTORE_BASE64 }}
           old-key-alias:         ${{ secrets.ANDROID_OLD_KEY_ALIAS }}
-          old-keystore-password: ${{ secrets.ANDROID_OLD_KEYSTORE_PASSWORD }}
-          old-key-password:      ${{ secrets.ANDROID_OLD_KEY_PASSWORD }}
+          # old-keystore-password / old-key-password 刻意不從 Secrets 來:
+          # 那是 Android 工具的公開常數 "android",設成 secret 只會讓
+          # GitHub 把日誌裡每一個 "android" 遮成 ***。見 restore-signing 的註解。
 
       - name: 取回快車道建好的 APK
         uses: actions/download-artifact@v4
