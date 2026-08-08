@@ -134,6 +134,8 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
 - `[2026-08-08] [Windows] 產品決定待確認:TSF 的輸入法設定檔目前註冊在 langid 0x0404(zh-Hant-TW)底下,因為內建方案是 luna_pinyin_tw / bopomofo_tw。要不要另外註冊一份 0x0804(zh-Hans)是產品決定,不是技術限制 —— 多一份 profile 就多一個 GUID。→ 待裁決`
 - `[2026-08-08] [Windows] 只動了 windows/ 與 .github/workflows/windows.yml。workflow 的 on.push.branches 加了 windows 分支(原本只有 main,推到自己的分支不會跑 CI)。沒有動 core/、docs/theme-format.md、android/、apple/。`
 - `[2026-08-08] [Windows] 給其餘三端參考:core/include/rime_shell.h 的 rs_modifier 與 librime 的遮罩是兩套東西(kSuperMask 1<<26 是後者,由 core/src/rime_shell.cc 的 to_rime_mask 轉換)。Windows 端在 windows/tests/test_keymap.cc 放了一條斷言把自己那份重寫的 Mod 位元與 rime_shell.h 的 RS_MOD_* 逐位釘在一起,順便釘住 RIME_SHELL_ABI_VERSION == 1。core/ 那邊若要動 ABI,這條會紅。`
+- `[2026-08-08] [Windows] ⚠ 給其餘三端(尤其是 macOS/iOS 會做常駐進程的):**進入點若是寬字元版本,glog 會在初始化時空指標解參考。** glog 的 ProgramInvocationShortName() 在 Windows/MSVC 上走 const_basename(__argv[0])(deps/glog/src/utilities.cc 的 HAVE___ARGV 分支),而 __argv 只有在 CRT 以窄字元進入點啟動時才會被填 —— 用 wmain 的話 CRT 只填 __wargv,__argv 是 NULL。症狀是「一啟動就 0xC0000005,堆疊在 glog 深處」,與進入點看起來毫無關聯,花了五輪 CI 才查到(run #16–#20)。tools/rime_console.cc 用的是 main,所以它一直是綠的。Apple 端不走這條路徑,但**任何新的、會連結 librime 的執行檔都要注意進入點**,而且不要相信「rime_console 過了所以引擎沒問題」——引擎沒問題,是宿主的進入點有問題。`
+- `[2026-08-08] [Windows] 驗證用的使用者目錄要明確指定方案。librime 把「上次選的方案」記在 <user>/user.yaml。Windows 的 verify_ime.sh 沿用 verify_console.sh 編好的使用者目錄以省下詞庫編譯時間,結果拿到的是上一支腳本最後選的注音,nihao 被打成「所噢草莓」。四端的驗證腳本若有共用使用者目錄的,同樣要明著選方案 ——「不指定」不是中性的。`
 
 ---
 
@@ -157,10 +159,11 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
   兩者以具名管道通訊(DACL 只授權目前使用者的 SID)。
   按鍵映射不用常數表 —— 會產生字元的鍵一律問 `ToUnicodeEx(..., hkl)`,
   並以**真實**的德文/法文佈局在 CI 上驗證(`LoadKeyboardLayout`)。
-  CI 兩個 job:`logic-x64`(不需 librime,幾分鐘)與 `core-x64`。
-  驗到的:編得起來、四個 COM 匯出齊全、DLL 相依白名單(守 `/MT`)、
-  54 個單元測試 + 反向測試、既有的 `rime_console` 核心驗證不回歸、
-  以及**經由真的具名管道**驅動服務打出「你好」。
+  CI 兩個 job:`logic-x64`(不需 librime,約 3 分鐘)與 `core-x64`,run #21 全綠。
+  驗到的:編得起來、四個 COM 匯出正好那四個、`rime_tsf.dll` 的相依正好是
+  kernel32/user32/advapi32/ole32(守 `/MT`,沒有任何 CRT DLL)、
+  58 個單元測試 815 個斷言 + 反向測試、既有的 `rime_console` 核心驗證不回歸、
+  以及**經由真的具名管道**驅動服務以 luna_pinyin_tw 打出「你好」。
   **驗不到的(清單見 `windows/README.md`「沒有被驗證的部分」):**
   regsvr32 註冊、TSF 組字、候選窗的樣子、在記事本/瀏覽器裡真的打得出字。
   **CI 綠不等於能用 —— 需要有人在真 Windows 上跑一遍。**

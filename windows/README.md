@@ -167,7 +167,7 @@ DLL 回報 `pfEaten = TRUE` 卻拿不到結果 —— 那顆鍵既沒進文件�
 | 組字政策(`menu.count` 那條)、標籤格式 | `test_policy.cc` |
 | 候選窗排版與定位(含翻面、夾回螢幕內) | `test_layout.cc` |
 | fail-open:每一種失敗都不吃按鍵 | `test_link_state.cc` |
-| **經由真的具名管道**打出「你好」 | `verify_ime.sh` + `rime_probe.exe` |
+| **經由真的具名管道**打出「你好」(luna_pinyin_tw) | `verify_ime.sh` + `rime_probe.exe` |
 | 核心層(librime + 資料)真的打得出字 | `verify_console.sh` |
 | 測試框架本身會不會紅 | `rime_tests --self-check`(反向測試) |
 
@@ -253,7 +253,8 @@ regsvr32 /u rime_tsf.dll
 產物不受影響 —— 編譯器仍然是 `cl.exe`。
 
 **`common/` 底下不可以 include windows.h。** 那不是潔癖,是那條驗證管道本身:
-`run_logic_tests.sh` 靠它在 Ubuntu 上跑 54 個案例、786 個斷言。
+`run_logic_tests.sh` 靠它在 Ubuntu 上跑 54 個案例、786 個斷言(MSVC 上再加
+4 個真實鍵盤佈局的案例,共 58 個、815 個斷言)。
 Windows 專屬的小工具放在 `winshared/`。
 
 **CMake 只在建 librime 相依時釘 3.x。** CMake 4 移除了 `FindBoost`,而 librime 用
@@ -293,6 +294,34 @@ TSF 的 DLL 被載入到**每一個**宿主進程裡,相依到 `VCRUNTIME140.dll
 與 Clang 不同。對不上會是連結錯誤;但「對上了卻接到別的東西」只有實際查一次表
 才看得出來,所以 `verify_console.sh` 明著斷言 `BackSpace → 0x00FF08` 與
 未知鍵名 `→ 0`。
+
+**⚠ 服務進程的進入點必須是 `main`,不可以是 `wmain`。**
+
+這一條花了五輪 CI 才查到,而它與輸入法一點關係都沒有。glog 的
+`ProgramInvocationShortName()` 在 Windows/MSVC 上走這一條
+(`deps/glog/src/utilities.cc` 的 `HAVE___ARGV` 分支):
+
+```cpp
+return const_basename(__argv[0]);
+```
+
+而 `__argv` **只有在 CRT 以窄字元進入點啟動時才會被填**。用 `wmain` 的話
+CRT 只填 `__wargv`,`__argv` 是 `NULL` —— 於是 librime 的 `SetupLogging`
+一呼叫 `google::InitGoogleLogging` 就是空指標解參考,服務進程一啟動就死。
+
+症狀完全不指向進入點:`0xC0000005`,堆疊在 glog 深處,而同一個 job 裡的
+`rime_console`(同一份 `rime_shell.cc`、同一批靜態庫、同一份資料)完全正常 ——
+差別只在**它用的是 `main`**。`service/main.cc` 裡有一道會講人話的檢查守著這件事。
+
+參數則仍然用 `CommandLineToArgvW` 取寬字元版本:窄字元 `argv` 走系統 ANSI
+代碼頁,使用者目錄或安裝路徑裡有中文時會被換成 `?`。`rime_probe.exe` 也踩過
+同一個坑 —— `--expect 你好` 變成 `--expect ??`,斷言永遠不會通過。
+
+**驗證用的使用者目錄要明確指定方案。** librime 把「上次選的方案」記在
+`<user>/user.yaml` 裡。`verify_ime.sh` 沿用 `verify_console.sh` 編好的使用者目錄
+(省掉好幾分鐘的詞庫編譯),而那支腳本最後一個案例是注音 —— 於是 `nihao`
+被當成注音打出了「所噢草莓」。現在 probe 明著送 `select_schema` 並斷言
+引擎真的切過去了。**「不指定」不是中性的,它等於「取決於上一個人做了什麼」。**
 
 **單元測試框架沒有 SKIP。** 要嘛跑、要嘛不存在。而且案例跑完一個斷言都沒有
 就算失敗 —— 「測試函式存在但裡面什麼都沒斷言」在報表上與通過長得一樣。
