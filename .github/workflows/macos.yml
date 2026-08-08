@@ -1,20 +1,22 @@
-name: macOS (核心驗證)
+name: macOS (核心 + 輸入法)
 
-# 這個 workflow 驗證的是：librime + 資料 + rime_shell 門面在 macOS 上
-# 編得出來、跑得起來、而且真的打得出字。它是桌面端的品質基線 ——
-# 這裡是綠的，之後 IMKit 或候選窗出問題就必在 UI 那一側。
+# 這個 workflow 分兩層,對應 docs/handoff-macos.md §7:
 #
-# 與 Android 的 build.yml 的關係：
-#   Android 的 .a 是預先編好入版控的，日常只組裝 APK + 跑 JUnit。
-#   macOS 沒有預編的 .a（CI 是唯一的建置環境），所以這裡從原始碼全編。
+#   (a) CI 驗得了的 —— 純邏輯單元測試、核心層打得出字、.app 編得起來、
+#       bundle 結構與 IMKit 宣告齊全、二進位真的連上 librime。
+#   (b) 只有人做得到的 —— 在真的 Mac 上裝起來實際用。**這裡一項都驗不到。**
 #
-# ⚠ 這裡刻意**不**驗證 UI。macos runner 沒有登入的圖形工作階段，
-#   系統不會從 ~/Library/Input Methods 載入輸入法，候選窗與實際打字
-#   在 CI 上驗不了（見 docs/handoff-macos.md §7）。這一層只保證核心。
+# ⚠ macos runner **沒有登入的圖形工作階段**,系統不會從 ~/Library/Input Methods
+#   載入輸入法。所以「候選窗有沒有出現」「在真的 app 裡打不打得出字」
+#   「按下去有沒有反應」在這裡全部驗不了。這個 workflow 全綠**不代表能用**。
+#   沒被驗到的完整清單見 apple/README.md。
+#
+# 步驟順序是刻意的:不需要 librime 的檢查排在前面。單元測試 40 秒就跑完,
+# 而從原始碼建 librime 要 4 分鐘 —— Kit 壞掉時不該讓人等那 4 分鐘。
 
 on:
   push:
-    branches: [main]
+    branches: [main, macos]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -26,7 +28,7 @@ concurrency:
 jobs:
   core-verify:
     runs-on: macos-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - name: 取出原始碼
@@ -38,8 +40,14 @@ jobs:
           echo "arch: $(uname -m)"
           cmake --version | head -1
           clang++ --version | head -1
+          swift --version
           bash --version | head -1
 
+      # ── (a-1) 純邏輯:不需要 librime,所以排最前面 ──────────────
+      - name: 單元測試（主題解析 / keysym 映射 / 候選窗排版 / 上屏狀態機）
+        run: ./apple/scripts/run_kit_tests.sh
+
+      # ── (a-2) 核心層:與上一輪相同,不得回歸 ────────────────────
       - name: 取得方案原始資料（版本已釘死）
         run: ./scripts/fetch_rime_data.sh
 
@@ -96,9 +104,30 @@ jobs:
       - name: 核心驗證 — 注音 su3cl3 → 你好
         run: ./apple/scripts/verify_console.sh su3cl3 bopomofo_tw 你好
 
-      # 這一輪沒有 .app（IMKit/候選窗是下一輪）。打包的是核心層：
-      # 驗證過的靜態庫、標頭、rime_console。Ubuntu 建置機編不了 macOS，
-      # CI 是唯一的建置管道，所以這包要留下來給下一輪的 Swift 綁定用。
+      # ── (a-3) 輸入法本體 ──────────────────────────────────────
+      - name: 建 RimeQuad.app（IMKServer + IMKInputController + 候選窗）
+        run: ./apple/scripts/build_app.sh
+
+      - name: 驗證 .app 的結構與 IMKit 宣告
+        run: ./apple/scripts/verify_app_bundle.sh
+
+      - name: bundle 驗證的反向測試（證明它真的會紅）
+        run: |
+          # 與核心斷言同一個紀律：先證明它會失敗。
+          # 這裡刻意破壞三件**各自獨立**的東西，因為 verify_app_bundle.sh
+          # 有二十幾條斷言，只壞一條證明不了其他條有在跑。
+          set -e
+          BROKEN=/tmp/Broken.app
+          rm -rf "$BROKEN"
+          cp -R apple/build/RimeQuad.app "$BROKEN"
+          /usr/libexec/PlistBuddy -c "Delete :InputMethodConnectionName" \
+            "$BROKEN/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :InputMethodServerControllerClass NoSuchClass" \
+            "$BROKEN/Contents/Info.plist"
+          rm -rf "$BROKEN/Contents/Resources/themes"
+          ./apple/scripts/verify_app_bundle.sh --expect-fail "$BROKEN"
+          rm -rf "$BROKEN"
+
       - name: 打包核心產物
         run: ./apple/scripts/package_core.sh
 
@@ -107,4 +136,19 @@ jobs:
         with:
           name: rime-macos-core
           path: apple/build/dist/*.tar.gz
+          if-no-files-found: error
+
+      - name: 打包 .app
+        run: |
+          cd apple/build
+          # 用 tar 而不是讓 upload-artifact 直接吃目錄:zip 會丟掉執行權限
+          # 與符號連結,解開之後的 .app 是壞的。
+          tar czf RimeQuad-app-$(uname -m).tar.gz RimeQuad.app
+          ls -lh RimeQuad-app-*.tar.gz
+
+      - name: 上傳 .app
+        uses: actions/upload-artifact@v4
+        with:
+          name: rime-macos-app
+          path: apple/build/RimeQuad-app-*.tar.gz
           if-no-files-found: error

@@ -1,2 +1,5 @@
 # apple/scripts/build_macos.sh 的產物（CI 上每次重建，不入版控）
 build/
+
+# SwiftPM
+RimeQuad/.build/

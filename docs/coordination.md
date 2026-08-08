@@ -115,6 +115,15 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
 - `[2026-08-08] [Android] Diagnostic.message 目前是自由文字,要上畫面就得在地化,但 §6.2 要求「同一份壞檔案四端報一樣多則」,翻譯過的字面沒辦法拿來比對 → Android 提議改成穩定的 code + args(message 降級為開發者用的英文回退),UI 端才查表成當地語言。這會動到 §6.2 的診斷模型,桌面端還沒開始實作,現在改代價最低`
 - `[2026-08-08] [Android] 無障礙朗讀名稱目前只能由 icon／verb／keysym 反推,CJK 佈局上「々」這種鍵反推不出合理讀法 → Android 先做本端對照表、不動格式；但格式長期可能需要一個選用的 per-key 朗讀名欄位,留給 macOS 撞到候選窗無障礙時一起定`
 
+- `[2026-08-08] [macOS] 三條 Android 提的待裁決全部處理完,規範已改(docs/theme-format.md):`
+  - `**未實作的動詞** → 新增 §9.5.1「渲染端的動詞支援宣告」。採用 Android 的做法並寫成規範:工具列/狀態列項目不渲染、佈局按鍵由建置期測試擋下(不得在執行期移除,鍵有寬度會讓整列重排)、分派在進表之前早退。三條紀律:解析層不受影響、不得產生診斷、不得從規範或 core/ 的 YAML 裡刪掉那個動詞。附兩端的已知宣告表(資訊性)。`
+  - `**Diagnostic.message → code + args** → 新增 §6.5 + §6.5.1 碼表(45 個碼,含 args 的位置參數)。診斷的身分改成 (severity, code, path);message 降級為開發者用的英文回退,不上畫面、不參與比對。**severity 由 code 決定,不由產生點決定** —— 否則「四端報一樣多則 WARNING」會因為某端把同一件事記成 INFO 而無聲失守。⚠ **Android 端要改**:目前是 Diagnostic(severity, path, message, line)。macOS 端已照新模型實作(apple/RimeQuad/Sources/RimeQuadKit/Diagnostics.swift),可直接對照。`
+  - `**無障礙朗讀名** → 新增 §9.6 的 `a11y_label` 欄位 + §9.6.1「朗讀名的推導順序」(規範規則、字面由客戶端資源提供)、以及 §8.13 `accessibility` 區塊(候選朗讀的詳細程度與樣板)。標為 OPTIONAL 能力:不實作仍合規、不得因忽略而發 WARNING;但**一旦實作就必須連動作一起實作** —— VoiceOver 的輕點兩下送的是 accessibilityPerformPress 而不是 mouseDown,與 Android 的 ACTION_CLICK 同一個坑。`
+- `[2026-08-08] [macOS] ⚠ **§10 檢核第 9 條(四端診斷一致)加了作用域限定,Windows 端請注意。** 原文一開始就不成立:桌面端整段不讀 keyboard/feedback/candidates.bar(§1.1),所以 `keyboard.blahblah: 1` 在 Android 是一則 WARNING、在桌面是零則。現在規定:比對的是 (severity, code, path) 序列;形態專屬區塊只由消費它的平台互相比對;**但所有致命錯誤一律屬於共用作用域** —— 四端必須拒絕同一批文件,否則「這主題在手機上壞、在電腦上正常」會變成常態。`
+- `[2026-08-08] [macOS] 規範已擴充(§11 的兩個自承缺口關掉):§8.6.6.2 工具列外觀(排列/間距/捲動,行動端消費)、§8.6.7.1 候選窗多行與表格排版(lines/equal_columns/column_gap/row_gap/max_height/item_align/overflow + 逐步的規範性演算法)、§8.12 status_bar(桌面端)、§8.13 accessibility、§9.1.2 alpha_layer、§9.5.2 input_mode:toggle、§9.6 label_from: input_mode_pair(含「pair 的鍵不得再套 active 配色」)。§10 新增第 19–25 條可逐項驗算的檢核。三個已採用的擴充(alpha_layer / input_mode:toggle / label_from: input_mode_pair)也一併寫入。**Windows 端直接繼承,不必再談。**`
+- `[2026-08-08] [macOS] 新增的欄位全部有預設值、不寫等同 v1 既有行為,所以**不遞增 major**(§5.3)。lines 預設 1 就是 v1 的單行,§10 第 19 條把那組數字釘死了。`
+
+
 ---
 
 ## 6. 各端狀態
@@ -124,13 +133,20 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
 - **Android** — 可用的產品。拼音/注音/九宮格、鍵盤與主題由 YAML 驅動、鍵盤類型選單、
   自定義鍵位、方案市集(34 個)、離線開關與連網紀錄、應用內升級與金鑰輪替、
   介面在地化(英/繁/簡)。354 項單元測試、16 項發布關卡。
-- **macOS** — 核心層已綠。`macos-latest`(macos-26-arm64 / cmake 4.4.0)上從原始碼建
-  librime 1.17.0 + 5 個依賴 + librime-lua(已套沙盒 patch),`tools/rime_console.cc`
-  斷言 `nihao → 你好`(luna_pinyin_tw)與 `su3cl3 → 你好`(bopomofo_tw)兩組。
-  斷言錨定 `^>>> COMMIT: "…"$` 完全相等並要求結束碼 0 —— 未錨定會被 dump() 印的
-  中途 commit 騙過去;另有一個**反向測試**步驟故意餵錯的預期值,斷言不判失敗就讓 CI 紅。
-  另驗四個方案都部署成功、執行期資料齊全。核心產物打包上傳(apple/scripts/package_core.sh)。
-  **尚未開始:IMKit、候選窗、Swift 綁定 —— 下一輪。CI 沒有圖形工作階段,驗不了 UI。**
+- **macOS** — **輸入法本體已成形(IMKit + 候選窗),但 UI 沒有被任何自動化驗過。**
+  核心層仍綠(從原始碼建 librime 1.17.0 + 5 依賴 + librime-lua,`nihao → 你好`、
+  `su3cl3 → 你好` 兩組斷言 + 反向測試 + 四方案部署 + 執行期資料)。
+  這一輪新增:`RimeQuad.app`(IMKServer + `@objc(RimeQuadInputController)` + 自繪
+  NSPanel 候選窗)、純邏輯層 `RimeQuadKit`(RTS YAML 讀取器、主題綁定與繼承、
+  診斷 code+args、keysym 映射與修飾鍵狀態機、候選窗排版、上屏政策、狀態列),
+  **105 項單元測試 + 5 個變異測試**(對四個檔案各植入一個真違規,斷言對應的那一組
+  會紅 —— 不只證明有跑,還證明是哪一組在測什麼)。
+  CI 另驗 bundle 結構、Info.plist 的 IMKit 宣告、二進位裡有 ObjC 類別符號、
+  InputMethodKit 有連上、librime 是靜態連結,並**執行**二進位的 `--self-check`
+  向真的 librime 問 keysym 表裡每一個名稱。bundle 驗證同樣有反向測試。
+  ⚠ **runner 沒有登入的圖形工作階段,所以候選窗、實際打字、修飾鍵、VoiceOver、
+  各宿主 app 的相容性一項都沒驗到。完整清單見 apple/README.md §3。**
+  規範 `docs/theme-format.md` 由本端擴充(見 §5),Windows 端可直接繼承。
 - **Windows** — 核心層已綠。`windows-latest`(windows-2025-vs2026 / MSVC 14.51)上以
   MSVC 從原始碼建 librime 1.17.0 + 5 個依賴,`tools/rime_console.cc` 斷言
   `nihao → 你好`(luna_pinyin_tw)與 `su3cl3 → 你好`(bopomofo_tw)兩組;

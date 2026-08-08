@@ -17,7 +17,7 @@
 | **MUST NOT / 不得** | 同上 |
 | **SHOULD / 應** | 有正當理由可偏離，但須在實作中留註記 |
 | **MAY / 可** | 純選用 |
-| **診斷（diagnostic）** | 解析過程產生的一則 `{severity, path, message, line}` 記錄 |
+| **診斷（diagnostic）** | 解析過程產生的一則 `{severity, code, args, path, line}` 記錄，見 §6.5 |
 | **致命錯誤（fatal）** | 文件被整份拒絕，不產生任何結果物件 |
 | **可回復錯誤（recoverable）** | 該欄位改用預設值，解析繼續，並產生一則 WARNING 診斷 |
 
@@ -372,8 +372,9 @@ min_client: "0.4.0"
 
 解析器 **必須** 回傳完整診斷清單（不是只回第一筆），且 **必須** 在
 「主題編輯器」情境下可取得（M2 之後會有 UI）。
-每則診斷 **必須** 含：嚴重度、YAML 路徑（如 `keyboard.key_styles.default.background`）、
-可讀訊息、以及**行號**（若讀取層能提供）。
+每則診斷 **必須** 含：嚴重度、**穩定的診斷碼**、該碼的位置參數、
+YAML 路徑（如 `keyboard.key_styles.default.background`）、以及**行號**
+（若讀取層能提供）。**訊息文字不是規範的一部分** —— 理由與完整碼表見 §6.5。
 
 ### 6.2 致命錯誤的完整清單
 
@@ -422,6 +423,110 @@ min_client: "0.4.0"
 * `ERROR` — 僅用於致命錯誤。
 * `WARNING` — 上表全部。
 * `INFO` — 棄用欄位、被忽略的平台專屬欄位。
+
+### 6.5 診斷的身分：`code` + `args`（v1 期間的模型變更）
+
+**決定：一則診斷的身分是 `(severity, code, path)`。`message` 不再是規範的一部分。**
+
+初稿把診斷定義成 `{severity, path, message, line}`，其中 `message` 是自由文字。
+這個定義在**要把診斷拿給使用者看**的那一刻自我矛盾：
+
+* §10 檢核第 9 條要求「同一份壞檔案，四端報一樣多則、內容一致」。
+* 但訊息一旦在地化（Android 端已經在做介面在地化），四端就沒有任何
+  可以互相比對的東西了 —— 中文的「不是合法的顏色」與英文的
+  `is not a valid color` 是同一則診斷，字串比對卻永遠不相等。
+* 而不在地化，就等於規劃中的主題編輯器只能對非英語使用者顯示英文。
+
+因此：
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| `severity` | enum | **由 `code` 決定**，不得由產生點自行選擇（見下） |
+| `code` | string | 下表的穩定識別碼。**這是規範的一部分**，不得為了好看而更名 |
+| `args` | list<string> | 填進在地化樣板的參數，順序由下表逐碼固定 |
+| `path` | string | YAML 路徑，如 `candidates.window.background`；根層級為空字串 |
+| `line` | int \| null | 來源行號，讀取層取不到時為 null |
+
+`message` **可** 繼續存在，但它是**開發者用的英文回退**：不上使用者畫面、
+不參與四端比對、不受本規範約束。UI 端 **必須** 以 `code` 查自己的在地化樣板，
+並以 `args` 依序填入。
+
+**`severity` 由 `code` 決定，不由產生點決定。** 這一條看似瑣碎，卻是
+第 9 條檢核能不能成立的關鍵：只要有一端把同一件事記成 INFO 而別端記成 WARNING，
+「四端報一樣多則 WARNING」就失守了，而且失守得無聲無息。實作 **應** 讓
+`severity` 是 `code` 上的一個函式，而不是每個 `diag.warn(...)` 呼叫點的參數。
+
+**未知的 `code`：** 讀到自己不認得的 code 的 UI（例如舊版客戶端讀新版產生的
+診斷清單）**必須** 退化為顯示 `code` 字面值與 `args`，**不得** 丟棄該則診斷。
+
+#### 6.5.1 碼表（規範性）
+
+`args` 欄列出的是**位置參數**，順序固定。
+
+**致命（ERROR）** —— 與 §6.2 的 F 編號對應：
+
+| code | F | args |
+|---|---|---|
+| `fatal.yaml_syntax` | F1 | `[detail]` |
+| `fatal.root_not_mapping` | F2 | `[]` |
+| `fatal.format_missing` | F3 | `[document-id]` |
+| `fatal.format_malformed` | F3 | `[format-tag, document-id]` |
+| `fatal.format_kind_mismatch` | F3 | `[actual-kind, expected-kind, document-id]` |
+| `fatal.format_major_unsupported` | F3 | `[document-id, kind, major, supported-major]` |
+| `fatal.id_missing` | F4 | `[document-name]` |
+| `fatal.id_invalid` | F4 | `[id]` |
+| `fatal.id_mismatch` | F4 | `[id, document-name]` |
+| `fatal.document_not_found` | — | `[id]`（最初要求的那一份就找不到，不是父代） |
+| `fatal.parent_not_found` | F5 | `[parent-id]` |
+| `fatal.inherits_cycle` | F6 | `[chain]`（`a -> b -> a`） |
+| `fatal.inherits_too_deep` | F6 | `[max-depth]` |
+| `fatal.min_client` | F7 | `[required-version, running-version]` |
+| `fatal.layers_missing` | F8 | `[]` |
+| `fatal.default_layer_unknown` | F9 | `[layer-id]` |
+| `fatal.alpha_layer_unknown` | F9 | `[layer-id]` |
+| `fatal.layer_empty` | F10 | `[layer-id]` |
+
+**可回復（WARNING）**：
+
+| code | 何時 | args |
+|---|---|---|
+| `unknown_field` | §6.3 未知欄位 | `[field]` 或 `[field, suggestion]` |
+| `duplicate_key` | §3.2 同一映射中重複的 key | `[key]` |
+| `type_mismatch` | 期待映射／序列／純量卻得到別的 | `[expected, found]` |
+| `bad_bool` | §4.1 轉不出布林 | `[value]` |
+| `bad_number` | §4.2 轉不出數字 | `[value]` |
+| `out_of_range` | §4.2 夾制 | `[value, min, max, clamped]` |
+| `bad_enum` | §4.8 未知列舉值 | `[value, allowed, default]` |
+| `bad_color` | §4.7 顏色字面值不合法，或 `$ref` 指向不存在的 palette 條目 | `[value]` |
+| `palette_not_scalar` | palette 條目不是純量 | `[name]` |
+| `palette_bad_color` | palette 條目的值不是合法顏色 | `[name, value]` |
+| `palette_unresolved_ref` | palette 條目指向解不出來的條目 | `[name, target]` |
+| `palette_self_reference` | palette 條目指向自己 | `[name]` |
+| `palette_cycle_or_too_deep` | 成環或深度 > 8 | `[name]` |
+| `entry_dropped` | 序列／映射中某一筆型別不合而被丟棄 | `[]` |
+| `asset_incomplete` | font-asset 缺 `family` 或 `file` | `[]` |
+| `asset_path_escape` | §2.4 asset 路徑越界 | `[file]` |
+| `unknown_script_tag` | §8.4.2 未知 ISO 15924 標籤 | `[tag]` |
+| `unknown_icon` | §9.6 未知圖示名 | `[icon]` |
+| `unknown_action` | §9.5 未知 verb | `[raw]` |
+| `bad_action_argument` | §9.5 已知 verb 但參數缺失或不合法 | `[raw]` |
+| `toolbar_item_no_tap` | §8.6.6.1 工具列項目缺 `tap` | `[]` |
+| `status_item_no_source` | §8.12 狀態列項目缺 `source` 或 source 未知 | `[]` |
+| `nested_platform_overrides` | §7.4 巢狀的 `platform_overrides` | `[]` |
+
+**INFO**：
+
+| code | 何時 | args |
+|---|---|---|
+| `required_item_restored` | §8.6.6.1 / §8.12 的必備項被補回 | `[action]` |
+| `deprecated_field` | §5.6 棄用欄位 | `[field]` |
+| `feature_unsupported` | 該平台不支援某個值（如 `backdrop: vibrancy`），靜默退化 | `[field, value]` |
+| `legacy_block_ignored` | §8.8.0.2 舊的 `keyboard.height` 區塊被忽略 | `[field]` |
+
+> **新增 code 不算破壞性變更**（§5.3）：舊 UI 讀到未知 code 會退化為顯示字面值。
+> **更名或移除 code 算**，因為在地化樣板是照 code 查的。
+
+---
 
 ---
 
@@ -777,6 +882,29 @@ items:
 
 `tap` 缺席或無法解析的項目 → 丟棄該項 + WARNING（不影響其他項）。
 
+##### 8.6.6.2 工具列的外觀（僅行動端）
+
+§8.6.6.1 規定了工具列的**內容**與必備項，但排列方式、間距、能不能捲動
+都還沒定義（§11 列著）。補上：
+
+| 欄位 | 型別 | 預設 | 說明 |
+|---|---|---|---|
+| `arrangement` | enum `leading` \| `center` \| `space_between` \| `space_evenly` | `leading` | |
+| `spacing` | length 0–64 | `2` | 項與項之間 |
+| `padding_h` | length 0–64 | `4` | |
+| `padding_v` | length 0–64 | `3` | |
+| `item_size` | size | `18` | 圖示與文字的字級 |
+| `item_min_width` | length 0–128 | `36` | 觸控目標的下界 |
+| `scroll` | bool | `true` | 放不下時可橫向捲動 |
+
+**`scroll: true` 是預設，而且它不只是體驗問題。** 工具列的必備項（`schema:picker`、
+`settings`）在窄螢幕上可能被擠出可視範圍；不能捲動的話，使用者就真的**觸達不到**
+那兩個入口，而 §8.6.6.1 的必備項規定也就跟著失效。實作若不支援捲動，
+**必須** 改為讓項目縮小或換行，**不得** 直接裁掉。
+
+`space_between` / `space_evenly` 與 `scroll: true` 同時成立時，
+項目總寬小於可用寬度才套用排列，否則以捲動為準（排列失去意義）。
+
 #### 8.6.7 `candidates.window` — 桌面端候選窗（僅 macOS / Windows）
 
 | 欄位 | 型別 | 預設 | 說明 |
@@ -800,6 +928,96 @@ items:
 | `shadow.color` | color | `#00000040` | |
 
 `window` **可** 覆寫 §8.6.1–8.6.5 的任一子區塊。
+
+#### 8.6.7.1 多行與表格排版（僅桌面端）
+
+§11 原本列著「候選窗的多列／表格排版沒有定義，只有 `orientation` 與 `max_width`，
+不足以描述」。這一節補上它。**這是 v1 的新增欄位，全部有預設值，
+不寫等同於 v1 既有行為**（單行），所以不遞增 major（§5.3）。
+
+| 欄位 | 型別 | 預設 | 說明 |
+|---|---|---|---|
+| `lines` | int 0–16 | `1` | 次要軸上的行數。`1` = v1 的單行；`0` = 自動（見下） |
+| `equal_columns` | bool | `true` | `true` = 所有欄同寬（取全頁最寬項）；`false` = 逐欄取該欄最寬項 |
+| `column_gap` | length 0–128 | = `candidates.item.spacing` | 欄與欄之間 |
+| `row_gap` | length 0–128 | = `candidates.item.spacing` | 列與列之間 |
+| `max_height` | length 0–4096 | `0` | `0` = 不限 |
+| `item_align` | enum `leading` \| `center` \| `trailing` | `leading` | 項在格內的水平對齊（欄比項寬時才看得出來） |
+| `overflow` | enum `shrink` \| `clip` | `shrink` | 排完仍超出 `max_width` 時怎麼辦 |
+
+**`orientation` 決定主要軸，`lines` 決定次要軸上有幾行。** 兩者正交：
+
+| `orientation` | `lines` | 結果 |
+|---|---|---|
+| `horizontal` | `1` | 一列，候選由左至右（v1 行為） |
+| `horizontal` | `n` | n 列的表格，**逐列填滿**（row-major） |
+| `vertical` | `1` | 一欄，候選由上至下 |
+| `vertical` | `n` | n 欄的清單，**逐欄填滿**（column-major）—— 中文輸入法的兩欄候選 |
+
+##### 排版演算法（規範性）
+
+輸入：本頁 n 個候選的量測尺寸 `w[i]`、`h[i]`（**已含 `item.padding_h/​padding_v`**）。
+
+```
+1. 列高一律相同：item_h = max(h[0..n-1])
+   （`comment.position: below` 會讓部分項高一倍；用最大值才不會互相蓋住。）
+
+2. 可用內容寬 avail_w = max_width > 0 ? max_width - 2*padding : ∞
+   可用內容高 avail_h = max_height > 0 ? max_height - 2*padding : ∞
+
+3. 決定 L（行數）：
+     lines >= 1 → L = min(lines, n)
+     lines == 0 → 自動。從 L = 1 起遞增，取**第一個**讓內容塞得下的 L：
+                    horizontal 比的是內容寬 <= avail_w
+                    vertical   比的是內容高 <= avail_h
+                  都塞不下 → L = n。相關的上限是 ∞ 時 → L = 1。
+
+   ⚠ 自動的收斂方向由 orientation 決定，這不是任意的：
+     horizontal 增加**列**數會減少欄數，所以往「不要太寬」收斂；
+     vertical 增加**欄**數會減少列數，所以往「不要太長」收斂。
+     反過來做的話 `lines: 0` 對其中一種 orientation 完全沒有作用。
+
+4. K = ceil(n / L)          # 主要軸上每行放幾個
+   實際用到的行數 L' = ceil(n / K)   # L 可能用不完：n=5、L=4 → K=2 → 只需 3 行
+     horizontal → rows = L',  columns = K
+     vertical   → rows = K,   columns = L'
+
+5. 第 i 個候選（0 起算）落在：
+     horizontal → row = floor(i / K),  column = i mod K
+     vertical   → row = i mod K,       column = floor(i / K)
+
+6. 欄寬：
+     equal_columns == true  → 每一欄都是 max(w[0..n-1])
+     equal_columns == false → 第 c 欄是落在該欄的項的 max(w)，該欄無項則為 0
+
+7. 內容尺寸：
+     content_w = Σ colw[c] + (columns - 1) * column_gap
+     content_h = rows * item_h + (rows - 1) * row_gap
+
+8. 超出 avail_w 時（`overflow`）：
+     shrink → room = max(0, avail_w - (columns-1)*column_gap)
+              scale = room / Σ colw
+              colw[c] := max(item.min_width, colw[c] * scale)
+              夾到 `item.min_width` 之後仍然超出 → **接受超出**。
+              **不得** 把任何一欄縮成 0：那會產生一個看得見卻讀不到的候選。
+     clip   → 欄寬不動，窗寬由第 9 步夾住，超出的部分被裁掉。
+
+   兩種情況下，**量測寬度大於它拿到的格寬**的項 **必須** 被標記為需要截斷，
+   渲染端 **必須** 在那些項的尾端加上 `…`（U+2026）。
+
+9. 窗的外框：
+     window_w = clamp(content_w + 2*padding, min_width, max_width>0 ? max_width : ∞)
+     window_h = content_h + 2*padding
+                （+ preedit 區塊的高度，若 `preedit.show`）
+                （+ 狀態列的高度，若 `status_bar.show`，見 §8.12）
+     max_height > 0 時 window_h 再夾到 max_height。
+```
+
+**`lines` 與 `max_visible` 無關。** 一頁有幾個候選是 librime 的 `page_size` 決定的，
+本格式**不得**改變它 —— 改了會讓候選的序號標籤與使用者按的數字鍵對不上。
+`lines` 只描述已經拿到的這一頁怎麼排。
+
+**檢核（見 §10 第 19–21 條）** 提供了可逐項驗算的具體數字。
 
 ### 8.7 `preedit`
 
@@ -1110,6 +1328,122 @@ Gboard 的鍵高在兩種螢幕上都是 47 dp（差 0.2 dp），鍵寬卻從 35
 `map<enum{android, ios, macos, windows}, <主題文件的任意子集>>`，預設 `{}`。
 套用時機與規則見 §7.4 第 5 步。
 
+### 8.12 `status_bar`（僅桌面端）
+
+§11 原本列著「狀態列／工具列的外觀完全未規範」。這一節補上桌面端那一半，
+行動端那一半在 §8.6.6.2。
+
+**桌面端沒有工具列。** 行動端的工具列（§8.6.6.1）承擔的是主要導覽，因為
+軟鍵盤沒有選單列可用；桌面端的等價物是 IMKit / TSF 提供的**輸入法選單**
+（macOS 是選單列上那顆圖示，Windows 是語言列），方案切換與設定都在那裡，
+而且是系統畫的、輸入法不能也不該重畫。
+
+所以桌面端這一塊要解決的是另一個問題：**使用者看不見自己在什麼狀態**。
+中／英、繁／简、全／半這幾個開關會被鍵盤上的操作改變，而候選窗一收起來
+就沒有任何地方看得到它們。`status_bar` 是候選窗裡的一條狀態帶，
+**預設關閉**（`show: false`）—— 大多數時候候選窗應該愈小愈好。
+
+| 欄位 | 型別 | 預設 | 說明 |
+|---|---|---|---|
+| `show` | bool | `false` | |
+| `position` | enum `top` \| `bottom` | `bottom` | 在候選格陣的上方或下方 |
+| `background` | color | `transparent` | |
+| `height` | length 0–64 | `0` | `0` = 依內容（字高 + 2×`padding_v`） |
+| `padding_h` | length 0–64 | `metrics.padding` | |
+| `padding_v` | length 0–64 | `2` | |
+| `spacing` | length 0–64 | `metrics.spacing` | 項與項之間 |
+| `arrangement` | enum `leading` \| `center` \| `trailing` \| `space_between` | `leading` | |
+| `size` | size | `11` | |
+| `color` | color | `#808080` | |
+| `active_color` | color | = `color` | 「當前這一態」那一段的顏色 |
+| `separator.show` | bool | `false` | 與候選區之間的分隔線 |
+| `separator.color` | color | `#808080` | |
+| `separator.width` | length 0–8 | `1` | |
+| `items` | list<status-item> | 見下方預設清單 | |
+
+**status-item** 欄位：
+
+| 欄位 | 型別 | 預設 | 說明 |
+|---|---|---|---|
+| `source` | enum | — **必填** | 見下表 |
+| `text` | string | `""` | 僅 `source: text` 使用 |
+| `tap` | action \| null | `null` | §9.5 的 action 字串；點下去做什麼 |
+
+`source` 的取值與顯示（規範性，四端字面一致）：
+
+| `source` | 顯示 |
+|---|---|
+| `schema_name` | `rs_status.schema_name` |
+| `schema_id` | `rs_status.schema_id` |
+| `input_mode` | `is_ascii_mode ? "En" : "中"` |
+| `input_mode_pair` | `中/En` 兩態同時顯示，見 §9.6 的 `label_from: input_mode_pair` |
+| `shape` | `is_full_shape ? "全" : "半"` |
+| `variant` | `is_simplified ? "简" : "繁"` |
+| `page` | 頁碼，見下 |
+| `text` | 該項的 `text` 欄位 |
+
+**空狀態必須整項略過（規範性）。** 解析出來是空字串時（schema 尚未載入完成、
+`source: text` 但 `text` 為空、只有一頁時的 `page`），該項 **必須** 完全不佔位置，
+**不得** 畫成一塊看不出用途的空白。這與 §9.6 第 1 步「狀態值非空」是同一條規則。
+
+**`page` 的顯示規則（規範性）：**
+
+```
+page_no == 0 且 is_last_page  → 空（不顯示）
+否則                          → "<page_no + 1>" ，非最後一頁時後綴 "+"
+```
+
+只有一頁時不顯示的理由：候選只有一頁是最常見的情形，每次組字都掛一個「1」
+是純粹的噪音。後綴用 `+` 而不是 `n/m`，是因為 librime 不提供總頁數
+（`rs_menu` 只有 `is_last_page`），寫成 `1/3` 就得靠猜。
+
+**預設清單（規範性，`items` 缺席時必須產生這一份）：**
+
+```yaml
+items:
+  - { source: schema_name,     tap: "schema:picker" }
+  - { source: input_mode_pair, tap: "input_mode:toggle" }
+  - { source: variant,         tap: "toggle:simplification" }
+  - { source: page }
+```
+
+`source` 缺席或未知 → 丟棄該項 + WARNING（`status_item_no_source`），不影響其他項。
+`tap` 無法解析 → 該項仍然顯示但不可點 + WARNING（§9.5 的 `unknown_action` /
+`bad_action_argument`）。**刻意與工具列不同**：工具列項目沒有 `tap` 就完全沒有用途，
+而狀態列項目本來就以「顯示狀態」為主，可點只是加分。
+
+**無必備項。** 與 §8.6.6.1 不同，這裡**不**規定「必須能觸達 `schema:picker`」——
+桌面端的方案切換入口是系統畫的輸入法選單，永遠在那裡，主題刪不掉。
+規定一個主題無法威脅到的必備項只會產生噪音。
+
+### 8.13 `accessibility`
+
+| 欄位 | 型別 | 預設 | 平台 |
+|---|---|---|---|
+| `announce_candidates` | enum `full` \| `text_only` \| `none` | `full` | 全 |
+| `candidate_announcement` | string | `"{label} {text} {comment}"` | 全 |
+| `announce_input_mode` | bool | `true` | 全 |
+| `announce_page` | bool | `true` | 全 |
+
+`candidate_announcement` 的佔位符與 §8.6.1 同源：`{label}`、`{text}`、`{comment}`。
+**未知佔位符必須原樣保留。**
+
+展開後 **必須** 把連續空白收成一個、並去掉前後空白 ——
+空的 `{comment}` 會在朗讀器裡變成一個沒有理由的停頓。
+
+`announce_candidates: text_only` 時只念候選文字本身（給覺得序號與註解太吵的使用者）；
+`none` 時候選項不對輔助技術曝光（此時 **必須** 仍讓候選窗本身有一個 role，
+否則朗讀器會報告一個沒有內容的視窗）。
+
+> **這一節只規範「念什麼」，不規範「怎麼被摸到」。** 候選項在四端都是自繪的矩形，
+> 要讓輔助技術摸得到得各自建語意節點，那是實作的事。但有一條跨端的教訓
+> 必須寫在這裡：**朗讀名補上之後，動作也要補。**
+> Android 端實測發現，TalkBack 的「輕點兩下」送的是無障礙的 `ACTION_CLICK`，
+> **不會**變成觸控事件；macOS 的 VoiceOver 同理送的是 `accessibilityPerformPress`，
+> 不會變成 `mouseDown`。只補名字的結果是一顆
+> **念得出名字、聚焦得到、按下去什麼都不會發生**的候選 ——
+> 而這種缺陷只有用朗讀器的人碰得到，所以更不會有人回報。
+
 ---
 
 ## 9. 鍵盤佈局格式（`rime-layout/1`）
@@ -1132,6 +1466,7 @@ Gboard 的鍵高在兩種螢幕上都是 47 dp（差 0.2 dp），鍵寬卻從 35
 | `auto_for_schema` | string-list | = `for_schema` 去掉 `"*"` | **自動命中**：切到哪些方案時自動換上它。見 §9.1.1 |
 | `direction` | enum `ltr` \| `rtl` | `ltr` | `rtl` 時列內順序鏡射 |
 | `default_layer` | string | 第一個 layer 的 id | 不存在 → F9 |
+| `alpha_layer` | string \| null | `null` | 本佈局的拉丁字母層。只有 `input_mode:toggle` 讀它，見 §9.1.2。指向不存在的層 → F9 |
 | `primary` | bool | `false` | 見 §9.5 的 `@primary` |
 | `metrics` | 見 §9.2 | `{}` | |
 | `layers` | list<layer> | — **必填** | 空 → F8 |
@@ -1214,6 +1549,32 @@ for_schema: ["*"]                 # 誰都能用
 
 這是「一套配置四端共用」的實際兌現點：使用者裝了注音方案，
 四端裡的兩個行動端會自動換上 `bopomofo-dachen`，不需要各自再設定一次。
+
+#### 9.1.2 `alpha_layer`：中英切換的另一半
+
+`alpha_layer` 宣告本佈局的**拉丁字母層**。只有 `input_mode:toggle`（§9.5.2）讀它。
+
+它存在的理由是一個真的壞掉過的東西：舊的 `toggle:ascii_mode` 只切引擎開關、
+不動佈局。那在 QWERTY 上剛好沒問題（本來就是 26 鍵），在**九宮格上等於按了沒用** ——
+使用者進了英文模式，眼前仍然是 `abc` / `def` / `ghi` 八顆鍵，26 個字母一個都打不出來。
+
+規則：
+
+* `alpha_layer` **必須** 是本佈局宣告過的層 id。指向不存在的層 → **致命錯誤 F9**
+  （與 `default_layer` 同級：這不是外觀瑕疵，是那顆鍵會壞掉）。
+* **不得** 跨佈局。跨佈局跳轉是 `switch_layout` 的事，而那條路徑會走進
+  「進得去出不來」—— 從九宮格 `switch_layout:@primary` 跳到 `qwerty` 之後，
+  `qwerty` 上沒有任何一顆鍵知道要回哪裡。
+* 回程是**結構性**存在的：字母層是本佈局的一層，切回中文永遠落在 `default_layer` 上，
+  **不需要**那一層自己記得放一顆回程鍵。
+* 沒宣告 `alpha_layer` 的佈局（`qwerty`、`intl-*`）按下 `input_mode:toggle` 時
+  **只切模式，佈局原地不動**。這是正確行為，不是退化。
+
+> **非字母鍵盤應該宣告 `alpha_layer`。** 九宮格、筆畫、注音大千的主層都打不出
+> 26 個字母，沒有字母層的話那顆中英鍵就是一顆「按了沒用」的鍵 ——
+> 而「按了沒用」是本規範反覆點名要防的失敗類型。這是 **SHOULD** 而非 MUST，
+> 因為判定「這份佈局是不是字母鍵盤」需要語義知識，格式無法檢查；
+> 渲染端 **應** 在自己的建置期測試裡守住它（Android 端已經這麼做）。
 
 ### 9.2 `metrics`（佈局層級，覆寫主題）
 
@@ -1479,6 +1840,7 @@ action 是字串，語法 `<verb>` 或 `<verb>:<arg>[:<arg>]`。
 | `switch_layout:@primary` | 切回使用者的主要英數佈局（`primary: true` 者） |
 | `switch_layout:@previous` | 切回上一次使用的佈局 |
 | `toggle:<option>` | 切換 librime 開關，呼叫 `rs_set_option(!rs_get_option(o))` |
+| `input_mode:toggle` | 「切中英」的**完整**語義：切 `ascii_mode`，**並且**切到本佈局的 `alpha_layer`。見 §9.5.2 |
 | `set:<option>:<on\|off>` | 設定 librime 開關 |
 | `schema:next` / `schema:prev` | 循環切換已啟用的 schema |
 | `schema:picker` | 開啟 schema 選單 UI |
@@ -1532,6 +1894,77 @@ prev: i - 1 < 0                → 若非第一頁則 rs_change_page(後退) 並
 > 因為 librime 在組字中會消費它們（退格刪除輸入碼、空白選字、Return 上屏原文）。
 > 寫成 action 會讓組字狀態下的行為錯掉。
 
+#### 9.5.1 渲染端的動詞支援宣告（規範性）
+
+動詞表是四端共用的，**某一端還沒跟上是常態**。危險的不是沒跟上，
+是沒跟上的**表現方式**：
+
+```
+ActionVerb.EMOJI -> log("表情面板尚未實作")
+```
+
+這一行在畫面上完全看不出來。鍵在、圖示在、按下去有按壓色也有震動，
+只是什麼都沒發生 —— 而自動化測試會全綠，因為畫面確實正確。
+本專案已經抓到四顆這種鍵（重輸、中英、按壓色、工具列表情），共同點都是這個。
+最糟的一次是 `intl-gboard` 逗號的 `long_press: emoji`：§9.6 規定 long_press 勝過
+popup，所以那個什麼都不做的 emoji 一直把逗號自己的標點盤整個遮住，
+**四份佈局裡那盤符號從上線起沒有人叫得出來。**
+
+因此，每個渲染端 **必須** 維護一份「本端未實作的 verb」清單，
+並讓三個消費端各自照它做該做的事：
+
+| 消費端 | 規則 |
+|---|---|
+| **工具列 / 狀態列項目** | **必須** 不渲染。項目沒有固定寬度，少一項不影響其他項的幾何，可以在執行期做 |
+| **佈局按鍵** | **不得** 在執行期移除。鍵有寬度，少一顆整列會重排，使用者會看到一個位置飄移的鍵盤 —— 比一顆沒反應的鍵更糟。**必須** 改由渲染端的建置期測試擋下，讓佈局作者決定那個位置該放什麼 |
+| **動作分派** | **必須** 在進分派表之前就據此早退，使分派表裡不會留下「安靜的 noop 分支」 |
+
+三條共同的紀律：
+
+* **解析層不受影響。** 解析出來的結果物件是文件的忠實表示，四端要拿它互相對照
+  （§10 第 9 條）；「本端這一版剛好還沒做」是渲染端的事實，不該混進去。
+* **不得產生診斷。** 這不是文件的缺陷，是實作的進度。發診斷會讓每一份主題
+  都刷出一堆與作者無關的噪音。
+* **不得從規範或 `core/` 的 YAML 裡刪掉那個動詞。** 別端做出來時，
+  一份 YAML 都不必改就會自己回來。
+
+**清單裡的每一項都必須寫明理由。** 沒有理由的項目，下一個讀到的人不知道
+它是「還沒做」還是「這個形態上不存在」，也就不知道能不能刪。
+
+已知的兩端宣告（資訊性，非規範）：
+
+| 端 | 未實作 | 理由 |
+|---|---|---|
+| Android | `emoji` | 表情面板尚未實作 |
+| Android | `candidate:next` / `candidate:prev` | 曾是 ABI 缺口，`rs_highlight_candidate` 補上後可移除 |
+| macOS | `emoji` | 同上 |
+| macOS | `hide_keyboard` | 桌面沒有軟鍵盤，**形態上不存在**，不是進度問題 |
+| macOS | `cursor:*` | IMKit 沒有讓輸入法移動宿主 app 游標的 API |
+| macOS | `layer` / `layer_once` / `layer_lock` / `switch_layout` | 桌面端不消費 `core/layouts/`，沒有「層」這個東西 |
+
+> ⚠ `input_mode:toggle` **不在**桌面端的清單裡。它的語義是「切模式，並且切到
+> 本佈局的 `alpha_layer`」，而規範明文規定沒宣告字母層的佈局**只切模式** ——
+> 桌面端連佈局都沒有，所以它退化成純粹的模式切換，是做得到的。
+> 把它列為不支援會讓狀態列的「中/En」整項消失，那才是真的壞掉。
+#### 9.5.2 `input_mode:toggle`：切中英是一件事，不是兩件
+
+```
+1. ascii := !rs_get_option("ascii_mode")
+2. rs_set_option("ascii_mode", ascii)
+3. 本佈局有宣告 alpha_layer 時：
+     ascii == true  → 切到 alpha_layer
+     ascii == false → 切回 default_layer，並清掉 layer_once 的回程記錄
+   沒宣告時 → 佈局不動
+```
+
+**為什麼要一個新動詞而不是讓 `toggle:ascii_mode` 也換層。** 因為
+`toggle:<option>` 的語義是「轉發一個 librime 開關」，它對 `ascii_mode` 以外的
+開關（`full_shape`、`simplification`…）都不該有佈局副作用。給其中一個開關
+偷偷加上特例，下一個讀到的人不會知道，而且 §9.5 的表也寫不下這件事。
+
+**桌面端**（不消費 `core/layouts/`）沒有「層」這個東西，所以第 3 步整個不成立，
+本動詞退化成純粹的模式切換。這是**合規的**，不必宣告不支援（見 §9.5.1）。
+
 ### 9.6 `key` 的完整欄位
 
 | 欄位 | 型別 | 預設 | 說明 |
@@ -1552,6 +1985,7 @@ prev: i - 1 < 0                → 若非第一頁則 rs_change_page(後退) 並
 | `long_press` | action \| null | `null` | |
 | `popup` | popup-spec \| null | `null` | 見下 |
 | `swipe` | map<enum{up,down,left,right}, sub-key> | `{}` | 見下 |
+| `a11y_label` | string | `""` | 朗讀器要念的名字。留空時由渲染端依 §9.6.1 推導 |
 
 `icon` 的規範名稱（渲染器自繪向量，格式不承載圖形資料）：
 `backspace` `enter` `shift` `shift_lock` `space` `globe` `keyboard_hide`
@@ -1612,6 +2046,7 @@ prev: i - 1 < 0                → 若非第一頁則 rs_change_page(後退) 並
 |---|---|
 | `none`（預設） | 用 `label` |
 | `input_mode` | `is_ascii_mode ? "英" : "中"` |
+| `input_mode_pair` | `中/En` —— 兩態同時顯示，當前那一態強調。見下 |
 | `shape` | `is_full_shape ? "全" : "半"` |
 | `variant` | `is_simplified ? "简" : "繁"` |
 | `schema_name` | `rs_status.schema_name` |
@@ -1619,6 +2054,62 @@ prev: i - 1 < 0                → 若非第一頁則 rs_change_page(後退) 並
 
 `label_from != none` 時 `label` 作為狀態不可用時的後備。
 上表的中文字面是規範性的（四端一致），需要本地化時由客戶端資源覆蓋。
+
+**`input_mode_pair` 為什麼不是外觀偏好。** 它與 `input_mode` 的差別是**歧義**，
+不是美感：只寫一個「中」的切換鍵有兩種讀法 ——「現在是中文」與「按了會變中文」——
+而它們指向相反的操作。真機使用者回報過。同時畫出兩態、強調當前那一態，
+這個歧義**在結構上就不存在**，不必靠使用者猜。三星實機是同一個作法。
+
+渲染（規範性）：
+
+```
+三段，順序固定：  "中"  "/"  "En"
+is_ascii_mode == false → 第一段強調
+is_ascii_mode == true  → 第三段強調
+分隔線那一段永遠不強調
+```
+
+「強調」的具體表現由渲染端決定（前景色 + 粗體 vs. 未強調的 hint 色是建議作法），
+但**兩態必須都看得見**，不得只畫當前那一態。
+
+拉丁那一段用 `En` 而不是 `英`：一邊漢字一邊拉丁，兩態一眼就分得開；
+兩邊都是漢字時，「中／英」在小字級下要辨認得花時間。
+
+⚠ **`label_from: input_mode_pair` 的鍵不得再套用 §8.8.1 的 active 配色。**
+那顆鍵已經在鍵面上同時畫出兩態並強調了當前那一態，再把整顆鍵染成 accent 色
+只是重複同一個訊息，而且會讓「英文模式」看起來像「這顆鍵被鎖住了」。
+（`label_from: input_mode` 則相反，它**應該**在 ascii 模式下畫成 active ——
+它只有一個字，需要另一個訊號。）
+
+
+#### 9.6.1 朗讀名（`a11y_label`）
+
+自繪的鍵盤與候選窗在輔助技術眼中是一塊念不出來的方格。渲染端**必須**替
+每一個可互動的元素提供朗讀名；`a11y_label` 讓佈局作者在推導不出合理讀法時
+直接把答案寫下來。
+
+**推導順序（規範性，`a11y_label` 為空時）。** 刻意與鍵面文字的解析順序**不同**：
+
+```
+1. a11y_label 非空                → 用它
+2. label_from != none             → 念這顆鍵**切換什麼**（「中英切換」），
+                                     現在停在哪一態走平台的「狀態」通道，不混進名字
+3. icon != null                   → 念它**做什麼**：地球鍵是「選擇鍵盤」，不是「地球」
+4. tap 是層／佈局切換             → 念**目標層自己宣告的名字**：
+                                     「?123」念出來是「切換到 符號」，不是「問號一二三」
+5. 否則                            → 念鍵面文字（字母、標點、漢字直接念就對了）
+```
+
+第 2–4 步的字面由**客戶端資源**提供（要在地化），格式只規定推導**規則**。
+
+**`a11y_label` 存在的理由是第 5 步推不出來的鍵。** CJK 佈局上「々」「〆」
+這類鍵直接念字元對朗讀器沒有意義，而它們既沒有 `icon` 也沒有 `label_from`，
+規則怎麼寫都推不出合理讀法。這一格只有佈局作者知道答案。
+
+**這是 OPTIONAL 能力。** 不實作朗讀名的渲染端仍然合規：它 **必須** 能解析
+`a11y_label` 而不報錯，**不得** 因為忽略而產生 WARNING。但一旦實作了，
+就 **必須** 連同**動作**一起實作 —— 見 §8.13 結尾那條跨端教訓：
+只補名字的結果是一顆「念得出名字、聚焦得到、按下去什麼都不會發生」的鍵。
 
 **popup-spec：**
 
@@ -1722,7 +2213,27 @@ key_patches:
    `send.keysym` 解析為 `0x31`。
 7. `bopomofo` 層每一列的 `Σ width` 皆為 `11.0`。
 8. `inherits` 指向自己 → 致命錯誤 F6，不得無限遞迴或堆疊溢位。
-9. 診斷清單長度與內容在四端一致（同一份壞檔案，四端報一樣多則）。
+9. **診斷比對（作用域限定）。** 同一份壞檔案，四端報出的
+   `(severity, code, path)` **序列**必須相同 —— 比對的是這個三元組，
+   不是訊息文字（§6.5），也不含 `args` 與行號。
+
+   ⚠ **但只在共用作用域內成立。** 本規範有形態專屬的區塊，桌面端整段不讀
+   （§1.1），因此不可能為它們產生診斷。作用域規則：
+
+   | 區塊 | 誰必須參與比對 |
+   |---|---|
+   | 除下列以外的一切 | **四端全部** |
+   | `keyboard`、`feedback`、`candidates.bar`、以及所有佈局文件 | 僅 Android / iOS |
+   | `candidates.window`、`status_bar` | 僅 macOS / Windows |
+
+   **所有致命錯誤（§6.2）一律屬於共用作用域**，無論它出現在哪個區塊：
+   四端必須拒絕同一批文件，否則「這份主題在我的手機上壞掉，在電腦上正常」
+   會變成一種正常現象。
+
+   > 初稿沒有這條作用域限定，而它其實一開始就不成立：桌面端不讀 `keyboard`，
+   > `keyboard.blahblah: 1` 在 Android 上是一則 WARNING、在 macOS 上是零則。
+   > 要嘛要求桌面端把用不到的區塊也完整解析一遍（純粹為了產生診斷），
+   > 要嘛承認比對有作用域。選後者。
 10. `candidates.bar.toolbar.items` 缺席時，解析結果為 §8.6.6.1 的六項預設清單；
     主題若把 `items` 覆寫成不含 `schema:picker` 的清單，實作補回該項並發 INFO。
 11. 空白鍵（同時有 `icon: space` 與 `label_from: schema_name`）在 schema 已載入時
@@ -1748,18 +2259,34 @@ key_patches:
     `for_schema: ["t9_pinyin"]` + `auto_for_schema: []` 的佈局
     **出現在選單裡**，但切換方案時**不會**被自動選中。
 
+19. **候選窗單行**（`lines: 1`、`orientation: horizontal`）：5 個各寬 40、高 20 的候選，
+    `padding: 6`、`column_gap: 4` → 內容 216×20，窗 228×32，
+    第 i 項的 x 為 `i × 44`。這是 v1 行為，任何改動都不得動到這一組數字。
+20. **表格排版**：同樣 5 個候選、`lines: 2`：
+    `horizontal` → 2 列 3 欄，落點依序 (0,0)(0,1)(0,2)(1,0)(1,1)；
+    `vertical` → 3 列 2 欄，落點依序 (0,0)(1,0)(2,0)(0,1)(1,1)。
+    **兩者的落點不同，這正是 row-major 與 column-major 的差別。**
+21. **`overflow: shrink`**：3 個各寬 200 的候選、`max_width: 300`、`padding: 6`、
+    `column_gap: 4` → 欄寬各縮成 93⅓，內容寬恰為 288，且**三項都被標記為需要截斷**。
+    改成 `overflow: clip` 時欄寬維持 200、內容寬 608，窗寬被夾成 300。
+22. **列高取該頁最高的項**：一項高 20、一項高 36（`comment.position: below`）→
+    兩項的格高都是 36，內容高 36。取最小值或取第一項都會讓其中一項被切掉。
+23. **狀態列的空狀態**：`schema_name` 為空字串時該項**完全不佔位置**；
+    只有一頁時 `source: page` 同樣不顯示。
+24. **`input_mode_pair`**：`is_ascii_mode == false` 時三段為
+    `中`(強調) `/` `En`；`true` 時強調落在第三段。純文字形態恆為 `中/En`。
+25. **未實作的動詞**：把 `emoji` 加進渲染端的未實作清單後，
+    §8.6.6.1 的預設工具列少一項且**不產生任何診斷**；
+    佈局裡指向 `emoji` 的鍵**不會**在執行期消失，而是讓建置期測試變紅。
+
 ---
 
 ## 11. 尚未規範、已知的缺口
 
 誠實列出，避免各端各自發明：
 
-* **候選窗的多列／表格排版。** 桌面端在候選數多時常用兩欄或表格，
-  目前只有 `orientation` 與 `max_width`，不足以描述。v2 議題。
 * **主題預覽圖。** 主題商店需要縮圖，格式尚未定義 `preview` 欄位。
 * **深色主題的自動生成。** 目前必須手寫 counterpart，沒有「由淺色推導深色」的機制。
-* **工具列的外觀細節。** §8.6.6.1 已規定工具列的**內容**與必備項，
-  但排列方式（靠左／平均分佈）、項目間距、是否可捲動仍未規範。
 * **`text` 與 `keysym` 的混合送出**（例如一鍵送出多個 keysym 序列）。
   倉頡的簡碼、日文的濁音變換可能會需要。
 * **RTL 的完整語義。** `direction: rtl` 目前只鏡射列內順序，
@@ -1782,6 +2309,18 @@ key_patches:
   （主題）：`cn-t9-pinyin` 配 `cn-compact-*` 是 1.53（＝三星），配 `intl-gboard-*`
   會是 1.80。作者沒有辦法說「這份佈局是為那份主題設計的」。
 
+* **候選窗的量測與排版是分開的兩件事，而格式只規範了後者。** §8.6.7.1 的輸入是
+  「每一項的寬高」，但那個寬高怎麼量（label 與 text 之間留幾 dp、`comment` 在
+  `after` 時與 text 之間留幾 dp）目前是實作自由。同一份主題在 macOS 與 Windows 上
+  的候選窗寬度因此可能差幾個 pt。要收斂得再規範一組 item 內部的間距欄位。
+* **`status_bar` 沒有圖示。** §8.12 的 `source` 全部是文字。桌面輸入法常見的
+  「一顆代表當前方案的小圖示」描述不出來，而 §9.6 的語義圖示表是為鍵盤設計的。
+* **候選窗的鍵盤操作沒有規範。** 桌面使用者會期待方向鍵移動高亮、
+  `-`/`=` 翻頁，但那些是 librime 的 keybinding（方案層），不是本格式的。
+  結果是「候選窗長什麼樣」由主題決定、「怎麼操作它」由方案決定，
+  兩者無法互相對齊 —— 主題作者畫了上下排列的候選，方案的 keybinding 卻是左右翻頁。
+* **`preedit` 在桌面端有兩個地方可以畫**：候選窗裡，或宿主 app 的 marked text。
+  規範只描述了樣式，沒說該畫在哪，而兩邊同時畫會出現兩份組字串。
 ### 本節之外：v1 實作回饋已修補的項目
 
 下列缺陷是 Android 端把 `bopomofo-dachen.yaml` 真正渲染出來時撞到的，
@@ -1790,6 +2329,14 @@ key_patches:
 §9.1.1（schema 切換的退回規則）、§9.4（keysym 回落所需的 ABI）、
 §9.4.1（`send.text` 撞上組字）、§9.5（`candidate:next/prev` 所需的 ABI）、
 §9.6（鍵面解析順序、圖示退化表、swipe 為 OPTIONAL）。
+
+第三輪（macOS 端做出 IMKit 與候選窗時的回饋）補的是：§6.5（診斷改成
+`code` + `args`，訊息文字退出規範）、§8.6.6.2（工具列的排列與捲動）、
+§8.6.7.1（候選窗的多行／表格排版與 `max_width` 超出時的處置）、
+§8.12（桌面端狀態列）、§8.13（無障礙朗讀）、§9.1.2（`alpha_layer`）、
+§9.5.1（渲染端宣告未實作的動詞）、§9.5.2（`input_mode:toggle`）、
+§9.6（`label_from: input_mode_pair`、`a11y_label` 與朗讀名的推導順序）、
+§10 第 9 條（診斷比對的作用域）。
 
 第二輪（S24U 實機量測回饋）補的是:§8.8.0（高度模型改為固定預算 ÷ Σweight）、
 §8.8.0.1（`key_aspect` 描述的是參考格上那顆鍵）、§9.1.1（`for_schema` 拆成
