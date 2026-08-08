@@ -35,7 +35,15 @@ TEST(keymap_mod_bits_match_rime_shell_abi) {
   CHECK_INT(kModCaps, RS_MOD_CAPS);
   CHECK_INT(kModRelease, RS_MOD_RELEASE);
   // 順便釘住門面 ABI:對不上就代表 core/ 動過而 Windows 端沒跟上。
-  CHECK_INT(RIME_SHELL_ABI_VERSION, 1);
+  //
+  // 改這個數字之前,必須先確認上面那六個位元還對得上,以及 IPC 握手裡的
+  // shell_abi 兩側仍然同源(瘦 DLL 用編譯期常數、服務用 rs_abi_version())。
+  //
+  // 變更紀錄:
+  //   1 -> 2  core/ 新增 rs_sync_user_data() 與 rs_sync_dir()(詞庫匯出要
+  //           先讓 librime 把記憶體裡的交易落地)。純新增函式,rs_modifier
+  //           的位元與所有既有結構的佈局一個位元都沒動,Windows 端無需改碼。
+  CHECK_INT(RIME_SHELL_ABI_VERSION, 2);
 }
 
 TEST(keymap_char_to_keysym_rules) {
