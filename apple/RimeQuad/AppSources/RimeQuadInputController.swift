@@ -351,7 +351,10 @@ enum SettingsLauncher {
         let parsed = SettingsCommand.parse(arguments)
         var info: [String: String] = ["redeploy": parsed.redeploy ? "1" : "0"]
         if let page = parsed.page { info["page"] = page }
-        DistributedNotificationCenter.default.postNotificationName(
+        // ⚠ `default` 在這個位置是**方法**不是屬性,少了 () 編不過。
+        //   (AppDelegate 那邊的 `.default.addObserver` 之所以編得過,
+        //    是因為那個呼叫形狀讓 Swift 選到了另一個多載。)
+        DistributedNotificationCenter.default().postNotificationName(
             Notification.Name(SettingsCommand.notification), object: nil,
             userInfo: info, deliverImmediately: true)
     }
