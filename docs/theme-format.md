@@ -512,9 +512,9 @@ YAML 路徑（如 `keyboard.key_styles.default.background`）、以及**行號**
 | `bad_action_argument` | §9.5 已知 verb 但參數缺失或不合法 | `[raw]` |
 | `toolbar_item_no_tap` | §8.6.6.1 工具列項目缺 `tap` | `[]` |
 | `status_item_no_source` | §8.12 狀態列項目缺 `source` 或 source 未知 | `[]` |
-| `syllables_no_slots` | §8.6.6.3.3 D1：`keyboard_slot` 但當前 layer 的可用格位 < 2 | `[layout-id, layer-id, count]` |
+| `syllables_no_slots` | §8.6.6.3.3 D1：`keyboard_slot` 但當前 layer 的可用格位 < 2。⚠ **尚未實作**（§8.6.6.3.4） | `[layout-id, layer-id, count]` |
 | `syllables_slot_unknown` | §9.3.1：`syllable_slots` 的某個 id 在該 layer 找不到對應的鍵 | `[layer-id, key-id]` |
-| `syllables_toggle_missing` | §8.6.6.3.3 D3：`on_demand` 但佈局沒有 `syllables:toggle` 鍵 | `[layout-id]` |
+| `syllables_toggle_missing` | §8.6.6.3.3 D3：`on_demand` 但佈局沒有 `syllables:toggle` 鍵。⚠ **尚未實作**（§8.6.6.3.4） | `[layout-id]` |
 | `nested_platform_overrides` | §7.4 巢狀的 `platform_overrides` | `[]` |
 
 **INFO**：
@@ -1154,8 +1154,14 @@ total = h + candidates.bar.height
 | `trigger: on_demand` | **零端實作。** Android 解析得出這個值，渲染端只走 `while_composing` | 主題寫 `on_demand` 會得到 `while_composing` 的行為，**而且拿不到 D3 的 WARNING**（下一列） |
 | `syllables:toggle`（§9.5） | **零端實作。** 隨附的 12 份佈局沒有一份用它 | 它只在 `on_demand` 底下有意義，所以與上一列一起卡住 |
 | D1 / D3 的 WARNING | **Android 做了退化本身，沒有發診斷**（`keyboard/KeyboardView.kt` 的 `effectivePlacement`） | 主題作者宣告 `keyboard_slot` 卻拿到 `above_candidates` 時，今天沒有任何訊息 |
-| D4 的 WARNING | **Android 沒有做。** 那一層由建置期測試 `T9SyllablesTest` 守著（id 存在、彼此不同列、不吃底列） | 隨附佈局的使用者不會遇到（壞佈局進不了 release）；**第三方佈局沒有這道保護** |
+| ~~D4 的 WARNING~~ | **Android 已實作**（`theme/LayoutParser.kt`，佈局解析時發，並把那一筆丟掉） | 已解。第三方佈局把 `syllable_slots` 指到不存在的鍵時會被指名 |
 | 桌面端的消歧欄 | **零端實作，而且 v1 刻意不做**（§8.6.6.3.5） | 桌面使用者今天沒有逐音節消歧 |
+
+**碼表上的 ⚠ 尚未實作 是規範性記號，不是註解。** §6.5.1 裡帶這個記號的 code
+**不得**出現在任何一端的實作裡 —— 規範可以走在實作前面，但兩者的差距必須
+**寫在碼表上讀得出來**。行動端的 `DiagnosticCodeSpecTest` 兩個方向都驗：
+沒有記號的 code 必須實作，有記號的 code 必須**還沒**實作。所以做完之後
+「把記號拿掉」不是禮貌，是讓測試轉綠的必要步驟。
 
 **這張表是規範的一部分。** 理由與 §9.5.1 一樣：「還沒做」與「這個形態上不存在」是
 兩件事，分不出來的人會刪掉不該刪的東西。表上的每一項做完之後 **應** 從這張表移走，

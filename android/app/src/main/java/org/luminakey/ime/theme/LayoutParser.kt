@@ -10,6 +10,7 @@ import org.luminakey.ime.theme.DiagnosticCode.FATAL_LAYERS_MISSING
 import org.luminakey.ime.theme.DiagnosticCode.FATAL_LAYER_EMPTY
 import org.luminakey.ime.theme.DiagnosticCode.MUTUALLY_EXCLUSIVE
 import org.luminakey.ime.theme.DiagnosticCode.ROW_WIDTH_MISMATCH
+import org.luminakey.ime.theme.DiagnosticCode.SYLLABLES_SLOT_UNKNOWN
 import org.luminakey.ime.theme.DiagnosticCode.SEND_INCOMPLETE
 import org.luminakey.ime.theme.DiagnosticCode.UNKNOWN_ACTION
 import org.luminakey.ime.theme.DiagnosticCode.UNKNOWN_ICON
@@ -310,12 +311,35 @@ object LayoutParser {
             }
         }
 
+        // §9.3.1 / §8.6.6.3.3 D4：宣告的格位必須是本層真的有的鍵。
+        //
+        // ⛔ 不得默默丟掉。「有人把 pu_comma 改名」的症狀是消歧欄少一格、
+        // 或少到剩一格之後整條退化成上方橫排 —— 畫面完全正常，沒有任何東西會叫。
+        // 隨附的 12 份佈局有建置期測試守著，第三方佈局只有這一則。
+        val declaredSlots = c.child("syllable_slots").stringList(emptyList())
+        val keyIds = rows.flatMap { r -> r.keys.mapNotNull { it.id } }.toSet()
+        val slots = ArrayList<String>(declaredSlots.size)
+        for ((i, slot) in declaredSlots.withIndex()) {
+            if (slot in keyIds) {
+                slots.add(slot)
+            } else {
+                // path 帶序號：同一層宣告了兩個壞 id 是兩則診斷，
+                // 共用一個 path 會讓它們的 (severity, code, path) 撞在一起而被去重。
+                diag.add(
+                    SYLLABLES_SLOT_UNKNOWN,
+                    "${c.path}.syllable_slots[$i]",
+                    c.node?.line,
+                    listOf(id, slot),
+                )
+            }
+        }
+
         return LayoutLayer(
             id = id,
             label = c.child("label").localized(),
             units = units,
             rows = rows,
-            syllableSlots = c.child("syllable_slots").stringList(emptyList())
+            syllableSlots = slots,
         )
     }
 

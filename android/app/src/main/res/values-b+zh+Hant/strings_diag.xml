@@ -84,4 +84,5 @@
     <string name="diag_kind_string_list">一份文字清單</string>
     <string name="diag_kind_localized_string">一段文字（或每種語言各一段）</string>
 
+    <string name="diag_syllables_slot_unknown">「%1$s」這一層把「%2$s」列為消歧格位，但這一層沒有這個 id 的鍵，該筆已丟棄。</string>
 </resources>

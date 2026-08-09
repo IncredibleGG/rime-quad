@@ -41,6 +41,58 @@ class LayoutParserTest {
         }
     }
 
+    // ── §9.3.1 / §8.6.6.3.3 D4：syllable_slots 指到不存在的鍵 ──────────────
+
+    /** 一份最小的九宮格形狀：三顆真的鍵，外加兩個指不到的格位宣告。 */
+    private val badSlotLayout = """
+        format: rime-layout/1
+        id: t9-bad-slot
+        layers:
+          - id: main
+            units: 3
+            syllable_slots: ["pu_comma", "pu_gone", "pu_never"]
+            rows:
+              - keys:
+                  - { id: "pu_comma", label: "，", send: { keysym: "comma" } }
+                  - { id: "k_a", label: "a", send: { keysym: "a" } }
+                  - { id: "k_b", label: "b", send: { keysym: "b" } }
+    """.trimIndent()
+
+    /**
+     * 「有人把 `pu_comma` 改名」是這條存在的唯一理由。
+     *
+     * 沒有這一則的話，症狀是**消歧欄安靜地少一格**；少到兩格以下，
+     * 整條會依 D1 退化成上方橫排 —— 而畫面從頭到尾看起來完全正常。
+     * 隨附的 12 份佈局有建置期測試守著，第三方佈局只有這一則。
+     */
+    @Test
+    fun `syllable_slots 指到不存在的鍵要指名並丟棄`() {
+        val r = loadInline("t9-bad-slot", "t9-bad-slot" to badSlotLayout)
+        val layer = r.value!!.layer("main")!!
+
+        // 丟掉壞的、留下好的 —— 不是整份作廢，也不是原樣留著。
+        assertEquals(listOf("pu_comma"), layer.syllableSlots)
+
+        val d = r.diagnostics.filter { it.code == DiagnosticCode.SYLLABLES_SLOT_UNKNOWN }
+        assertEquals("兩個壞 id 要兩則，不是被去重成一則", 2, d.size)
+        assertEquals(Severity.WARNING, d[0].severity)
+        assertEquals(listOf("main", "pu_gone"), d[0].args)
+        assertEquals(listOf("main", "pu_never"), d[1].args)
+        // path 帶序號，否則兩則的 (severity, code, path) 會撞在一起而被去重。
+        assertTrue("兩則的 path 一樣，其中一則會被去重掉", d[0].path != d[1].path)
+    }
+
+    @Test
+    fun `syllable_slots 全部指得到時不產生任何診斷`() {
+        // 反向：上一條要是把好 id 也當成壞的，這裡會紅。
+        val good = badSlotLayout
+            .replace("pu_gone", "k_a")
+            .replace("pu_never", "k_b")
+        val r = loadInline("t9-bad-slot", "t9-bad-slot" to good)
+        assertEquals(listOf("pu_comma", "k_a", "k_b"), r.value!!.layer("main")!!.syllableSlots)
+        assertEquals(RepoFixtures.describe(r.diagnostics), 0, r.diagnostics.size)
+    }
+
     // ── 檢核 6：注音的 label / hint / send 三者分離 ────────────────────────
 
     @Test

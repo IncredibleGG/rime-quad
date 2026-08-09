@@ -91,6 +91,15 @@ enum class DiagnosticCode(
     STATUS_ITEM_NO_SOURCE("status_item_no_source", 0..0),
     NESTED_PLATFORM_OVERRIDES("nested_platform_overrides", 0..0),
 
+    /**
+     * §9.3.1 / §8.6.6.3.3 D4：`syllable_slots` 宣告的 id 在該 layer 裡找不到。
+     * 那一筆丟掉，可用格位數跟著少一個（可能因此觸發 D1）。args: `[layer-id, key-id]`
+     *
+     * ⚠ **不得默默退回。** 「有人把 `pu_comma` 改名」的症狀是消歧欄安靜地少一格
+     * 或整條消失，而畫面完全正常 —— 隨附佈局有建置期測試守著，第三方佈局沒有。
+     */
+    SYLLABLES_SLOT_UNKNOWN("syllables_slot_unknown", 2..2),
+
     // ── INFO（§6.4）────────────────────────────────────────────────────
     REQUIRED_ITEM_RESTORED("required_item_restored", 1..1),
     DEPRECATED_FIELD("deprecated_field", 1..1),

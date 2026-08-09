@@ -35,6 +35,8 @@ class DiagnosticCodeSpecTest {
     fun `每一個 code 的 severity 與規範碼表的分組一致`() {
         val spec = specTable()
         val wrong = spec.mapNotNull { (id, row) ->
+            // 標成「尚未實作」的那幾條本來就不該在 enum 裡（另一條測試守這件事）。
+            if (row.declaredOnly) return@mapNotNull null
             val code = DiagnosticCode.byId(id) ?: return@mapNotNull "$id 不在 DiagnosticCode 裡"
             if (code.severity != row.severity) {
                 "$id：規範說 ${row.severity}，程式碼說 ${code.severity}"
@@ -171,14 +173,31 @@ class DiagnosticCodeSpecTest {
         for ((id, row) in spec) {
             val code = DiagnosticCode.byId(id)
             if (code == null) {
-                problems += "$id 在規範裡有，程式碼裡沒有"
+                if (!row.declaredOnly) problems += "$id 在規範裡有，程式碼裡沒有"
                 continue
+            }
+            // 反方向同樣要守：做完之後不把記號拿掉，碼表就開始說謊，
+            // 而說謊的碼表正是下一個人拿來決定「這個功能能不能用」的東西。
+            if (row.declaredOnly) {
+                problems += "$id 已經實作了，但規範 §6.5.1 還標著「尚未實作」——把記號拿掉"
             }
             if (code.arity != row.arity) {
                 problems += "$id：規範的參數個數是 ${row.arity}，程式碼是 ${code.arity}"
             }
         }
         assertTrue(problems.joinToString("\n  ", prefix = "\n  "), problems.isEmpty())
+
+        // 反向一：把一個真的實作了的 code 標成「尚未實作」，必須紅。
+        val fakeDeclared = spec.getValue("bad_color").copy(declaredOnly = true)
+        assertTrue(
+            "標成尚未實作卻已經在 DiagnosticCode 裡，這條檢查沒有抓到",
+            fakeDeclared.declaredOnly && DiagnosticCode.byId("bad_color") != null,
+        )
+
+        // 反向二：記號本身要真的解析得出來。整份碼表一個記號都沒有時這條會失效 ——
+        // 那不是壞事（回到「全部都必須實作」的嚴格狀態），但要看得見。
+        val marked = spec.filterValues { it.declaredOnly }.keys
+        println("§6.5.1 標成尚未實作的 code：" + if (marked.isEmpty()) "（無）" else marked.joinToString())
     }
 
     /**
@@ -311,7 +330,16 @@ class DiagnosticCodeSpecTest {
 
     /* ────────────────────────────── 夾具 ────────────────────────────── */
 
-    private data class SpecRow(val severity: Severity, val arity: IntRange)
+    /**
+     * @param declaredOnly 規範 §6.5.1 在這一列上標了「⚠ **尚未實作**」。
+     *        規範可以走在實作前面（macOS 端定義 D1/D3 的那一刻，Android 一行都還沒寫），
+     *        但**差距必須寫在碼表上讀得出來**，不能靠某個人記得。
+     */
+    private data class SpecRow(
+        val severity: Severity,
+        val arity: IntRange,
+        val declaredOnly: Boolean = false,
+    )
 
     private fun duplicatesIn(id: String, diags: List<Diagnostic>): List<String> =
         diags.groupBy { it.identity }
@@ -357,6 +385,7 @@ class DiagnosticCodeSpecTest {
             out[code] = SpecRow(
                 severity ?: error("$code 出現在任何分組標題之前"),
                 counts.min()..counts.max(),
+                declaredOnly = NOT_IMPLEMENTED_MARK in cells[2],
             )
         }
         return out
@@ -369,6 +398,9 @@ class DiagnosticCodeSpecTest {
             .filter { it.isFile && it.name.endsWith(".kt") && it.name != "Diagnostics.kt" }
 
     private companion object {
+        /** 規範 §6.5.1 的規範性記號。改字面值等於改規範，兩邊要一起改。 */
+        private const val NOT_IMPLEMENTED_MARK = "尚未實作"
+
         private val CODE_CELL = Regex("`([a-z][a-z0-9_.]*)`")
         private val ARGS_CELL = Regex("`\\[([^]]*)]`")
 

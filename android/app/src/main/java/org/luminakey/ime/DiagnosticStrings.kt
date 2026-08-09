@@ -141,6 +141,7 @@ class DiagnosticStrings(context: Context) : DiagnosticText.TemplateSource {
             DiagnosticCode.KEY_PATCH_NO_TARGET -> R.string.diag_key_patch_no_target
             DiagnosticCode.ACTION_TARGET_MISSING -> R.string.diag_action_target_missing
             DiagnosticCode.AUTO_FOR_SCHEMA_WILDCARD -> R.string.diag_auto_for_schema_wildcard
+            DiagnosticCode.SYLLABLES_SLOT_UNKNOWN -> R.string.diag_syllables_slot_unknown
             DiagnosticCode.USER_REMAP_UNAPPLICABLE -> R.string.diag_user_remap_unapplicable
         }
     }
