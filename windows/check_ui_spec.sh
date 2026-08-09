@@ -302,6 +302,10 @@ run_checks() {
   local t
   for t in \
       "test_ui_strings.cc:ui_strings_no_banned_engine_words" \
+      "test_service_state.cc:service_state_three_situations_are_three_different_states" \
+      "test_service_state.cc:service_state_every_state_says_a_different_sentence" \
+      "test_service_state.cc:service_state_preparing_is_not_a_failure" \
+      "test_service_state.cc:service_state_reads_the_not_ready_flag_off_the_wire" \
       "test_layout.cc:layout_never_drops_candidates_horizontal_shrink" \
       "test_ui_layout.cc:ui_layout_every_clickable_target_meets_the_minimum" \
       "test_ui_layout.cc:ui_layout_content_column_three_worked_cases" \
@@ -657,6 +661,164 @@ PYSCRIPT
     w26bad=1
   fi
   [ "${w26bad}" -eq 0 ] && ok "W26 狀態列寬度一變就重走 PlaceStatusBar,而且 简/繁 那一格按下去立刻改變"
+
+  # ── W27:三種處境三句話,而且那三句話真的流到畫面上 ─────────────
+  #
+  # ⚠ 這一條守的是 common/service_state.h 檔頭那個缺陷:
+  #   「還在準備 / 準備失敗 / 引擎不在」被壓成一個布林,於是三種都畫
+  #   同一句紅字「輸入法沒有在跑」—— 而第一種那句話是假的,
+  #   而且它正好是使用者第一次安裝時看到的那一句。
+  #
+  # ⚠ **這裡刻意不用 `grep -q 某個名字` 掃整個檔案。** 那種寫法上一輪
+  #   剛被實測拆穿:名字在註解或別的函式裡出現一次,那一條就永遠綠。
+  #   下面逐一把**函式本體**挖出來,比對的是呼叫位置與**資料真的流過去**
+  #   (`service_state_ = CurrentServiceState();`、
+  #    `c.text = UiText(StatusTextFor(service_state_));`),
+  #   以及對照表回了幾條**相異**的字串 —— 合併回同一句就少一條。
+  check
+  local w27bad=0
+  local w27out; w27out="$("${PY}" - "${bar}" "${sw}" "${CODE_DIR}/common/service_state.cc" <<'PYSCRIPT'
+import re, sys
+
+paths = sys.argv[1:4]
+srcs = []
+for p in paths:
+    try:
+        srcs.append(open(p, encoding='utf-8', errors='replace').read())
+    except OSError:
+        print('NOFILE=%s' % p)
+        srcs.append('')
+bar, sw, st = srcs
+
+FOUND = [0]
+
+def body(src, key):
+    """把一個函式的本體挖出來。挖不到 = 掃描範圍錯了,要紅,不是零個違規。"""
+    i = src.find(key)
+    if i < 0:
+        return None
+    b = src.find('{', i)
+    if b < 0:
+        return None
+    j = src.find('\n}\n', b)
+    if j < 0:
+        return None
+    FOUND[0] += 1
+    return src[b + 1:j]
+
+def norm(s):
+    return ' '.join(s.split())
+
+def want(tag, src, key, needles, forbidden=()):
+    bd = body(src, key)
+    if bd is None:
+        print('NOFUNC=%s' % tag)
+        return
+    n = norm(bd)
+    for x in needles:
+        if norm(x) not in n:
+            print('MISS=%s :: %s' % (tag, x))
+    for x in forbidden:
+        if norm(x) in n:
+            print('LEFTOVER=%s :: %s' % (tag, x))
+
+# ── 那一橫 ───────────────────────────────────────────────────────
+want('StatusBar::Relayout', bar, 'void StatusBar::Relayout()',
+     ['service_state_ = CurrentServiceState();',
+      'c.text = UiText(StatusTextFor(service_state_));',
+      'if (!StateShowsCells(service_state_))'],
+     # 舊的合併判斷不可以留在這裡。
+     ['deploy_done()'])
+
+want('StatusBar::CurrentServiceState', bar,
+     'ServiceState StatusBar::CurrentServiceState()',
+     ['facts.engine_present = engine_ != nullptr;',
+      'facts.deploy_done = engine_ && engine_->deploy_done();',
+      'facts.deploy_ok = engine_ && engine_->deploy_ok();',
+      'facts.engine_says_not_ready = engine_not_ready_.load();',
+      'return ServiceStateOf(facts);'])
+
+want('StatusBar::OnSnapshot', bar, 'void StatusBar::OnSnapshot(',
+     ['SnapshotSaysNotReady(snap.status_flags)',
+      'SnapshotFlagsAreUsable(snap.status_flags)'])
+
+want('StatusBar::ThreadMain', bar, 'void StatusBar::ThreadMain()',
+     ['::SetTimer(hwnd_, kStateTimer, kStatePollMs, nullptr);'])
+
+want('StatusBar::WndProc', bar, 'LRESULT CALLBACK StatusBar::WndProc(',
+     ['case WM_TIMER:',
+      'const ServiceState now = self->CurrentServiceState();',
+      'if (now != self->service_state_) { self->Relayout();'])
+
+want('StatusBar::Paint', bar, 'void StatusBar::Paint(',
+     ['StateIsFailure(service_state_)'])
+
+# ── 設定側欄 ─────────────────────────────────────────────────────
+want('SettingsWindow::OnPaint', sw, 'void SettingsWindow::OnPaint(',
+     ['const ServiceState state = SidebarServiceState();',
+      'UiText(SidebarStatusTextFor(state))',
+      'StateIsFailure(state)'],
+     # 兩態三元式的殘骸。留著就代表側欄還是只會說兩句話。
+     ['UiString::kNavStatusNotRunning'])
+
+want('SettingsWindow::SidebarServiceState', sw,
+     'ServiceState SettingsWindow::SidebarServiceState()',
+     ['facts.engine_present = engine_ != nullptr;',
+      'facts.deploy_done = engine_ && engine_->deploy_done();',
+      'facts.deploy_ok = engine_ && engine_->deploy_ok();',
+      'facts.engine_says_not_ready = deploying_;',
+      'return ServiceStateOf(facts);'])
+
+want('SettingsWindow::WndProc', sw, 'LRESULT CALLBACK SettingsWindow::WndProc(',
+     ['if (self && w == kServiceStateTimer) self->OnServiceStateTick();'])
+
+want('SettingsWindow::ThreadMain', sw, 'void SettingsWindow::ThreadMain()',
+     ['::SetTimer(hwnd_, kServiceStateTimer, kServiceStatePollMs, nullptr);'])
+
+# ── 對照表本身:三種不可以回同一句 ───────────────────────────────
+for tag, key, floor in (('StatusTextFor', 'UiString StatusTextFor(', 4),
+                        ('SidebarStatusTextFor',
+                         'UiString SidebarStatusTextFor(', 4)):
+    bd = body(st, key)
+    if bd is None:
+        print('NOFUNC=%s' % tag)
+        continue
+    names = set(re.findall(r'return UiString::(k[A-Za-z0-9_]+);', bd))
+    print('DISTINCT=%s=%d' % (tag, len(names)))
+    if len(names) < floor:
+        print('MERGED=%s=%d' % (tag, len(names)))
+
+print('FUNCS=%d' % FOUND[0])
+PYSCRIPT
+)"
+  local nfuncs; nfuncs="$(num "$(printf '%s\n' "${w27out}" | sed -n 's/^FUNCS=//p')")"
+  # ⚠ §2-G2:挖不到函式時的行為必須是**紅**,不是「零個違規」。
+  need_scope "W27 挖到的函式數" "${nfuncs}" 12 || w27bad=1
+  local w27miss; w27miss="$(printf '%s\n' "${w27out}" | grep '^NOFUNC=\|^NOFILE=' || true)"
+  if [ -n "${w27miss}" ]; then
+    red "W27:挖不到這些函式 —— 掃描範圍錯了,不是沒有違規"
+    printf '%s\n' "${w27miss}" | head -6 >&2
+    w27bad=1
+  fi
+  local w27gap; w27gap="$(printf '%s\n' "${w27out}" | grep '^MISS=' || true)"
+  if [ -n "${w27gap}" ]; then
+    red "W27:三種處境的判斷沒有真的流到畫面上(下面每一行是一個斷掉的接點)"
+    printf '%s\n' "${w27gap}" | head -8 >&2
+    w27bad=1
+  fi
+  local w27old; w27old="$(printf '%s\n' "${w27out}" | grep '^LEFTOVER=' || true)"
+  if [ -n "${w27old}" ]; then
+    red "W27:舊的兩態判斷還留在繪製碼裡 —— 三種處境又會被壓回同一句"
+    printf '%s\n' "${w27old}" | head -4 >&2
+    w27bad=1
+  fi
+  local w27merged; w27merged="$(printf '%s\n' "${w27out}" | grep '^MERGED=' || true)"
+  if [ -n "${w27merged}" ]; then
+    red "W27:對照表把不同狀態指到同一條字串了(這就是那個缺陷本身)"
+    printf '%s\n' "${w27merged}" | head -4 >&2
+    w27bad=1
+  fi
+  [ "${w27bad}" -eq 0 ] && ok "W27 三種處境三句話:${nfuncs} 個函式本體逐一驗過呼叫位置與資料流,而且那一橫與側欄都會自己更新"
 }
 
 # ────────────────────────────────────────────────────────────────
@@ -695,6 +857,16 @@ self_check() {
 "W25b 又把高度丟掉|common/ui_layout.cc|s=s.replace('int ScrollMaxDip(int page, int window_w_dip, int window_h_dip,','int ScrollMaxDipRemoved(int page, int window_w_dip, int window_h_dip,',1)"
 "W26 狀態列不重擺|service/status_bar.cc|s=s.replace('  ApplyPlacement(MulDivRound(total_w, 96, static_cast<int>(dpi_)));','',1)"
 "W26b 简繁不樂觀寫入|service/status_bar.cc|s=s.replace('        now = simplified_;\n        simplified_ = !now;\n      }\n      // 走設定視窗那一支','        now = simplified_;\n      }\n      // 走設定視窗那一支',1)"
+"W27a Relayout 不再問狀態|service/status_bar.cc|s=s.replace('  service_state_ = CurrentServiceState();','  service_state_ = ServiceState::kReady;',1)"
+"W27b 那一橫的字寫死一句|service/status_bar.cc|s=s.replace('    c.text = UiText(StatusTextFor(service_state_));','    c.text = UiText(UiString::kBarNotRunning);',1)"
+"W27c 不讀線路上的旗標|service/status_bar.cc|s=s.replace('SnapshotSaysNotReady(snap.status_flags)','false',1)"
+"W27d 事實少餵一格|service/status_bar.cc|s=s.replace('  facts.engine_says_not_ready = engine_not_ready_.load();','  facts.engine_says_not_ready = false;',1)"
+"W27e 拿掉那一橫自己更新的計時器|service/status_bar.cc|s=s.replace('  ::SetTimer(hwnd_, kStateTimer, kStatePollMs, nullptr);','',1)"
+"W27f 計時器還在但不再比對狀態|service/status_bar.cc|s=s.replace('      if (now != self->service_state_) {','      if (false) {',1)"
+"W27g 側欄又變回兩句|service/settings_window.cc|s=s.replace('  ::DrawTextW(hdc, UiText(SidebarStatusTextFor(state)),','  ::DrawTextW(hdc, UiText(UiString::kNavStatusNotRunning),',1)"
+"W27h 側欄不再自己更新|service/settings_window.cc|s=s.replace('      if (self && w == kServiceStateTimer) self->OnServiceStateTick();','',1)"
+"W27i 那一橫三種合併回同一句|common/service_state.cc|s=s.replace('      return UiString::kBarPreparing;','      return UiString::kBarNotRunning;',1)"
+"W27j 側欄三種合併回同一句|common/service_state.cc|s=s.replace('      return UiString::kNavStatusPreparing;','      return UiString::kNavStatusNotRunning;',1)"
 "範圍|__SCOPE__|"
   )
 

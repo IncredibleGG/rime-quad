@@ -60,6 +60,7 @@
 #include <vector>
 
 #include "../common/schema_choice.h"
+#include "../common/service_state.h"
 // ⚠ 頁、控制項 id 與**每一頁的版面**都住在這裡面。本檔不再自己算矩形。
 #include "../common/ui_layout.h"
 #include "../common/ui_strings.h"
@@ -117,6 +118,14 @@ class SettingsWindow {
   void OnCommand(int id, int code);
   void OnNotify(NMHDR* nm, LRESULT* result);
   void OnDeployTick();
+  // ⚠ 側欄底部那一行以前只在 WM_PAINT 時算,而 WM_PAINT 要等使用者
+  //   去碰視窗。首次安裝的人正好就坐在這一頁上等,於是「還沒好」
+  //   會一直寫在那裡,直到他去點別的東西。
+  void OnServiceStateTick();
+  // 現在到底怎麼了。判斷在 common/service_state.h,與懸浮狀態列
+  // **共用同一份** —— 各寫一份會漂移,而漂移的症狀是
+  // 「側欄說沒在跑,那一橫說在準備」。
+  ServiceState SidebarServiceState() const;
   void OnPaint(HDC hdc);
   void OnDpiChanged(UINT dpi, const RECT* suggested);
   void RefreshTheme();
@@ -187,6 +196,8 @@ class SettingsWindow {
   Theme theme_;
   UiLang ui_lang_ = UiLang::kZhHant;
   int page_ = kPageSchemas;
+  // 上一次畫在側欄底部的是哪一種狀態。只有它變了才重畫那一小塊。
+  ServiceState sidebar_state_ = ServiceState::kReady;
   // 鍵盤使用時才畫焦點環(§12.6.4 第 1 條)。滑鼠使用者身上到處是框,
   // 是 Win32 自繪最常見的破綻。WM_UPDATEUISTATE 維護它。
   bool show_focus_ = false;

@@ -58,6 +58,11 @@ enum class UiString : int {
   kNavText,
   kNavAdvanced,
   kNavStatusReady,
+  // ⚠ 「還在準備」「準備失敗」「沒有在跑」是**三件不同的事**,
+  //   所以是三條字串。合併回一條就是 common/service_state.h
+  //   檔頭那個缺陷本身。
+  kNavStatusPreparing,
+  kNavStatusPrepareFailed,
   kNavStatusNotRunning,
   kNavStatusOffline,
   kClose,
@@ -196,6 +201,8 @@ enum class UiString : int {
 
   // ── 懸浮狀態列 ──────────────────────────────────────────────
   kBarSettings,
+  kBarPreparing,
+  kBarPrepareFailed,
   kBarNotRunning,
   kBarPickSchema,
 

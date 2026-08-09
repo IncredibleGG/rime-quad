@@ -37,6 +37,12 @@ namespace {
   X(kNavText, L"Text", L"文字", L"文字")                                       \
   X(kNavAdvanced, L"Advanced", L"進階", L"高级")                               \
   X(kNavStatusReady, L"Ready to type", L"可以打字", L"可以打字")               \
+  X(kNavStatusPreparing,                                                       \
+    L"Getting ready - the first start takes a moment",                         \
+    L"正在準備 —— 第一次啟動要等一下",                                         \
+    L"正在准备 —— 第一次启动要等一下")                                         \
+  X(kNavStatusPrepareFailed, L"Could not finish getting the words ready",      \
+    L"字詞沒有整理成功", L"字词没有整理成功")                                  \
   X(kNavStatusNotRunning, L"Input method is not running", L"輸入法沒有在跑",   \
     L"输入法没有在跑")                                                         \
   X(kNavStatusOffline, L"Offline", L"離線", L"离线")                           \
@@ -322,6 +328,10 @@ namespace {
   X(kLangBarNotRunning, L"Not running", L"未啟動", L"未启动")                  \
   /* ── 懸浮狀態列 ────────────────────────────────────────────── */          \
   X(kBarSettings, L"Settings", L"設定", L"设置")                               \
+  X(kBarPreparing, L"Getting ready, one moment", L"正在準備,馬上就好",        \
+    L"正在准备,马上就好")                                                     \
+  X(kBarPrepareFailed, L"The words are not ready - click here",                \
+    L"字詞沒有整理完 —— 點這裡", L"字词没有整理完 —— 点这里")                  \
   X(kBarNotRunning, L"Input method is not running", L"輸入法沒有在跑",         \
     L"输入法没有在跑")                                                         \
   X(kBarPickSchema, L"Choose a typing method", L"選一種打字方式",              \
