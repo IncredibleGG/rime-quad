@@ -127,6 +127,11 @@ SELF_TEST = [
      ".github/workflows/macos.yml",
      "run: python3 ./apple/scripts/verify_names.py\n", "run: true\n",
      "workflow 還有「本檔自己(正向)」"),
+    ("換鍵的舊檔名不再被釘住(升級 = 使用者調過的鍵位消失)",
+     "apple/LuminaKey/Tests/LuminaKeyKitTests/KeyRemapTests.swift",
+     'XCTAssertEqual(KeyRemapStore.legacyFileName, "rimequad-layouts.json")',
+     "XCTAssertTrue(true)",
+     "仍然留著舊名字"),
     ("「多帶了東西」那條反向斷言沒有被反向驗",
      ".github/workflows/macos.yml",
      'expect "多打包了 core/layouts/" "✗ 沒有打包 core/layouts"',
@@ -369,9 +374,12 @@ MUST_KEEP = {          # 允許,而且**必須**還在(不見了 = 相容那一�
         "legacyMarkers",
     "apple/LuminaKey/Tests/LuminaKeyKitTests/ConfigAndDictTests.swift":
         "舊標記的測試",
+    "apple/LuminaKey/Tests/LuminaKeyKitTests/KeyRemapTests.swift":
+        "換鍵的舊檔名(釘住 KeyRemapStore.legacyFileName)",
 }
 MAY_MENTION = {        # 允許出現在說明文字裡,沒有也可以
     "apple/README.md",
+    "apple/LuminaKey/Sources/LuminaKeyKit/KeyRemapStore.swift",
     "apple/LuminaKey/AppSources/AppContext.swift",
     "apple/LuminaKey/SettingsSources/SettingsApp.swift",
     "apple/scripts/verify_names.py",
