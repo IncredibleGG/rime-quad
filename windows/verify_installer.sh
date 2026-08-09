@@ -201,8 +201,17 @@ assert_session_new_budget() {   # $1 = 這一次掃描的標籤
     ok "$1:**沒有任何一次建立 session 超過用戶端 300ms 的預算**(最久 ${max} ms)
      —— 也就是沒有宿主會因此 fail-open 成「打不出中文」。"
   else
+    # ⚠ 把「慢工作」那幾行一起印出來 —— 引擎只有一條執行緒,所以
+    #   「我為什麼慢」的答案幾乎一定是「**別人**擋在前面」,而那個別人
+    #   叫什麼名字只有這幾行說得出來(service/engine.cc 的 ReportSlowJob)。
+    #   少了它們,報告只會說「有一次 1328 ms」,而那 1.2 秒引擎在做什麼
+    #   仍然是個謎 —— 2026-08-09 那一輪就是這樣卡住的。
+    echo "      --- 建 session 的耗時 ---"
     (grep -ah 'SESSION_NEW_MS=\|SESSION_NEW 失敗' "${WORK}"/*.log \
        "${DIAG_SVC_LOG}" 2>/dev/null || true) | tail -20 | sed 's/^/      /'
+    echo "      --- 同一段時間裡引擎在忙什麼(慢工作)---"
+    (grep -ah '慢工作' "${WORK}"/*.log "${DIAG_SVC_LOG}" 2>/dev/null || true) \
+      | tail -25 | sed 's/^/      /'
     note_fail "$1:有 ${over} 次建立 session 超過 300ms(最久 ${max} ms)。
      每一次都代表一個宿主進程 fail-open —— 使用者在那個程式裡打不出中文,
      而且沒有任何錯誤訊息。這正是「選了輸入法之後有時候不能打中文」。

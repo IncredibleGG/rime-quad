@@ -330,18 +330,21 @@ void WarmUpEngine(rimewin::Engine* engine, rimewin::SettingsStore* store) {
       opts.push_back({"ascii_punct", punct == rimewin::Tri::kTrue});
 
     const ULONGLONG t1 = ::GetTickCount64();
-    const uint64_t sess = engine->NewSession();
-    if (sess == 0) {
-      Err("[service] 預熱 langid=0x%04X:建不出 session,跳過\n",
-          static_cast<unsigned>(langid));
-      continue;
-    }
-    const std::string chosen = engine->ApplyChoice(sess, choice.schema_id, opts);
-    engine->EndSession(sess);
+    // ⚠ 建好之後**留著**,不要用完就丟。
+    //
+    //   舊版是建一個 session、套上方案、然後 EndSession —— 它暖的是
+    //   librime 內部的快取(詞典 mmap 之類),而那確實有用。但量到的
+    //   rs_session_create 偶爾要 442~753 毫秒(CI run 31316116994),
+    //   那是**每一次建立都要付**的,快取暖不掉它。
+    //
+    //   而 SESSION_NEW 的預算是 300 毫秒。所以把這個已經建好、已經配好的
+    //   session 留下來當備用 —— 管道一打開,第一個連上來的宿主直接拿走,
+    //   一次上鎖就好,完全不進引擎佇列。
+    engine->PrimeSpareSession(langid, choice.schema_id, opts);
     ++warmed;
-    Say("[service] 預熱 langid=0x%04X 方案=%s 選項=%d 個 耗時=%llu ms\n",
+    Say("[service] 預熱 langid=0x%04X 方案=%s 選項=%d 個 耗時=%llu ms(留作備用)\n",
         static_cast<unsigned>(langid),
-        chosen.empty() ? "(沒有選到)" : chosen.c_str(),
+        choice.schema_id.empty() ? "(沒有選到)" : choice.schema_id.c_str(),
         static_cast<int>(opts.size()),
         static_cast<unsigned long long>(::GetTickCount64() - t1));
   }
