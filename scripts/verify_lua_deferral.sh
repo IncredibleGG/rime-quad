@@ -37,6 +37,9 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# 產品識別碼、以及 patches/ 裡那組沙盒符號名的唯一來源,見 scripts/lib/product.env。
+# shellcheck source=lib/product.sh
+. "$ROOT/scripts/lib/product.sh"
 SDK="${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}"
 ADB="$SDK/platform-tools/adb"
 NDK="$SDK/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin"
@@ -64,7 +67,7 @@ bad() { echo "  [FAIL] $*" >&2; FAIL=$((FAIL+1)); }
 # librime.a 裡必須真的有第二層沙盒的字串。沒有的話底下全部白測 ——
 # 很可能是 .a 是「套 patch 之前」建的。
 if strings "$ROOT/third_party/prebuilt/$ABI/lib/librime.a" > /tmp/.rimestr.$$ 2>/dev/null; then
-  if grep -q 'rimequad-path-sandbox' /tmp/.rimestr.$$; then
+  if grep -q "$RS_LUA_SANDBOX_MARK" /tmp/.rimestr.$$; then
     ok "librime.a 裡有第二層沙盒（.a 是套過 patch 之後建的）"
   else
     bad "librime.a 裡找不到沙盒字串 —— 這份 .a 不是套 patch 之後建的，底下的結果沒有意義"

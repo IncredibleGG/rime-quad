@@ -1,6 +1,6 @@
 # 備份格式（匯出／匯入）
 
-> 四端共用。Android 端的實作在 `android/app/src/main/java/org/rimequad/ime/store/Backup*.kt`
+> 四端共用。Android 端的實作在 `android/app/src/main/java/org/luminakey/ime/store/Backup*.kt`
 > 與 `UserDbSnapshot.kt`。桌面兩端還沒接，§8 列了要做的事。
 
 ---
@@ -34,16 +34,28 @@
 | 建議副檔名 | `.zip` |
 | 建議 MIME | `application/zip` |
 | 建議檔名 | `rime-backup-<yyyyMMdd>.zip`（只是建議，使用者可以改） |
-| 清單檔 | `rimequad-backup.json`（容器根目錄） |
+| 清單檔 | `luminakey-backup.json`（容器根目錄） |
 
-**辨識備份的方式是打開它找 `rimequad-backup.json`，不是看副檔名。**
+**辨識備份的方式是打開它找 `luminakey-backup.json`，不是看副檔名。**
 Android 的 SAF 交回來的 Uri 沒有可信的檔名（DocumentsUI 給的是 `msf:1000000072`
 這種不透明 id），桌面端使用者也會自己改名。認內容才可靠。
+
+> ⚠ **改名的相容規則（2026-08-09，規範性）。**
+> 舊名（改名前）：清單檔 `rimequad-backup.json`、`kind` 為 `rimequad-backup`。
+> **讀取端必須兩個名字都認得**（先找新名字，找不到再找舊名；`kind` 同理）；
+> **寫出端只寫新名字**。
+>
+> 少了這一條的下場是：使用者升級之後，他自己匯出的那份備份會被判成
+> `NOT_A_BACKUP`。那個訊息會叫他去找一個壞掉的檔案，而檔案是好的、
+> 壞掉的是我們。**這一類失敗不會有任何錯誤紀錄，畫面上只是一句「這不是備份」。**
+>
+> 舊名字的支援可以在確定沒有人手上還有舊備份之後移除，但**移除要是一個
+> 明確的決定**，不是因為沒有人記得它存在。
 
 容器內只有五個目錄，其餘一律不合法：
 
 ```
-rimequad-backup.json
+luminakey-backup.json
 dict/          使用者詞典
 schema/        已安裝方案的檔案 + 安裝帳本
 config/        使用者改過的 *.custom.yaml
@@ -53,11 +65,11 @@ layout/        自訂鍵位
 
 ---
 
-## 2. manifest：`rimequad-backup.json`
+## 2. manifest：`luminakey-backup.json`
 
 ```jsonc
 {
-  "kind": "rimequad-backup",       // 固定字串，認身分用
+  "kind": "luminakey-backup",       // 固定字串，認身分用
   "format_version": 1,             // 見 §6
   "created_at": 1754697600,        // Unix 秒。只給人看，不參與任何判斷
   "producer": {                    // 全部只給人看，不得用來閘門任何行為
@@ -192,7 +204,7 @@ librime 的 `Memory::OnCommit` 在使用者上屏之後**開一個交易**再把
 ### 3.2 `schema/` —— 已安裝的方案
 
 裡面是**已安裝套件放在 user_data_dir 裡的檔案**（相對路徑原樣保留），
-加上安裝帳本 `schema/rimequad-store.json`。
+加上安裝帳本 `schema/luminakey-store.json`。
 
 **為什麼連檔案一起帶走，而不是只記一份清單。** 這個 App 的定位是「離線為預設」。
 使用者換手機的當下很可能沒有開連網開關，甚至根本連不到我們的索引。
@@ -230,7 +242,7 @@ librime 的 `Memory::OnCommit` 在使用者上屏之後**開一個交易**再把
 
 桌面端沒有這三個 key 時忽略即可；**但不得新增一個「連網開關」到備份裡**。
 
-### 3.5 `layout/rimequad-layouts.json` —— 自訂鍵位
+### 3.5 `layout/luminakey-layouts.json` —— 自訂鍵位
 
 原樣搬移。格式見 `keyboard/UserLayoutStore.kt` 的 `LayoutRemapJson`。
 它存的是**操作**（swap / move）而不是快照，所以在新機器上套到新版的基礎佈局仍然成立。
@@ -260,7 +272,8 @@ librime 的 `Memory::OnCommit` 在使用者上屏之後**開一個交易**再把
 
 ## 5. 匯入流程（規範性）
 
-1. 讀 `rimequad-backup.json`；讀不到 → `NOT_A_BACKUP`。
+1. 讀 `luminakey-backup.json`；找不到則退回舊名 `rimequad-backup.json`
+   （見 §1 的改名相容規則）；兩個都讀不到 → `NOT_A_BACKUP`。
 2. 版本判定（§6）。**先於任何欄位檢查。**
 3. 逐檔解到暫存區並比對 `sha256`。任何一項不符 → 整包拒絕、清掉暫存、
    **使用者的資料目錄一個位元組都沒被動過**。

@@ -33,6 +33,9 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# 產品識別碼、以及 patches/ 裡那組沙盒符號名的唯一來源,見 scripts/lib/product.env。
+# shellcheck source=lib/product.sh
+. "$ROOT/scripts/lib/product.sh"
 HERE="$ROOT/scripts/lua_sandbox"
 LUA_SRC_DIR="$ROOT/third_party/librime-lua"
 PATCH="$ROOT/patches/librime-lua@sandbox.patch"
@@ -80,7 +83,7 @@ fi
 LUA54="$LUA_SRC_DIR/thirdparty/lua5.4"
 [ -f "$LUA54/lua.h" ] || die "Lua 原始碼不在 $LUA54"
 
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/rimequad-luasandbox.XXXXXX")"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/$RS_PRODUCT_ID_ROOT-luasandbox.XXXXXX")"
 cleanup() { [ "$KEEP" -eq 1 ] || rm -rf "$TMP"; }
 trap cleanup EXIT
 [ "$KEEP" -eq 1 ] && echo "暫存目錄：$TMP"
@@ -94,15 +97,15 @@ mkdir -p "$TMP/pristine"
 git -C "$LUA_SRC_DIR" archive HEAD src > "$TMP/src.tar" \
   || die "git archive 失敗（$LUA_SRC_DIR 不是 git 檢出？）"
 tar -xf "$TMP/src.tar" -C "$TMP/pristine" || die "解開原始碼失敗"
-grep -q 'kRimeQuadSandbox' "$TMP/pristine/src/lib/lua.cc" \
+grep -q "$RS_LUA_SANDBOX_SYM_STAGE1" "$TMP/pristine/src/lib/lua.cc" \
   && die "乾淨的原始碼裡就有沙盒？取到的不是上游版本"
 ( cd "$TMP/pristine" && git apply "$PATCH" ) \
   || die "patch 套不上乾淨的 librime-lua ${LIBRIME_LUA_COMMIT:0:8}"
 ok "patch 套用成功"
 
-python3 - "$TMP" <<'PY' || die "抽取沙盒字串失敗"
+python3 - "$TMP" "$RS_LUA_SANDBOX_SYM_STAGE1" "$RS_LUA_SANDBOX_SYM_STAGE2" <<'PY' || die "抽取沙盒字串失敗"
 import io, re, sys
-tmp = sys.argv[1]
+tmp, sym1, sym2 = sys.argv[1], sys.argv[2], sys.argv[3]
 def grab(path, name):
     s = io.open(path, encoding="utf-8").read()
     m = re.search(name + r'\[\] = R"SANDBOX\((.*?)\)SANDBOX";', s, re.S)
@@ -112,8 +115,8 @@ def grab(path, name):
     if len(body) < 200:
         raise SystemExit("%s 抽出來只有 %d 位元組，太短，八成抽錯了" % (name, len(body)))
     return body
-s1 = grab(tmp + "/pristine/src/lib/lua.cc", "kRimeQuadSandbox")
-s2 = grab(tmp + "/pristine/src/modules.cc", "kRimeQuadPathSandbox")
+s1 = grab(tmp + "/pristine/src/lib/lua.cc", sym1)
+s2 = grab(tmp + "/pristine/src/modules.cc", sym2)
 io.open(tmp + "/stage1.lua", "w", encoding="utf-8").write(s1)
 io.open(tmp + "/stage2.lua", "w", encoding="utf-8").write(s2)
 print("  第一層 %d 位元組、第二層 %d 位元組" % (len(s1), len(s2)))
@@ -122,7 +125,7 @@ ok "抽出兩段沙盒"
 
 # 順序：第二層必須在 rime.lua 之前。這一條 grep 得出來，就在這裡一起驗。
 MOD="$TMP/pristine/src/modules.cc"
-L_SBOX="$(grep -n 'kRimeQuadPathSandbox,' "$MOD" | head -1 | cut -d: -f1)"
+L_SBOX="$(grep -n "$RS_LUA_SANDBOX_SYM_STAGE2," "$MOD" | head -1 | cut -d: -f1)"
 L_RIME="$(grep -n 'luaL_dofile(L, user_file' "$MOD" | head -1 | cut -d: -f1)"
 if [ -n "$L_SBOX" ] && [ -n "$L_RIME" ] && [ "$L_SBOX" -lt "$L_RIME" ]; then
   ok "第二層裝在 rime.lua 之前（第 $L_SBOX -> $L_RIME 行）"

@@ -65,13 +65,16 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# 產品識別碼的唯一來源,見 scripts/lib/product.env。
+# shellcheck source=lib/product.sh
+. "$SCRIPT_DIR/lib/product.sh"
 
 ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}"
 ADB="$ANDROID_SDK_ROOT/platform-tools/adb"
 SERIAL="${RIME_SERIAL:-${ANDROID_SERIAL:-emulator-${RIME_EMU_PORT:-5554}}}"
 
-IME_PKG="org.rimequad.ime"
-IME_ID="${RIME_IME_ID:-$IME_PKG/.RimeInputMethodService}"
+IME_PKG="$RS_ANDROID_APP_ID"
+IME_ID="${RIME_IME_ID:-$RS_ANDROID_IME_ID}"
 TARGET_PKG="dev.rime.inputmatrix"
 TARGET_ACT="$TARGET_PKG/.MainActivity"
 TAG="IMEMATRIX"
@@ -192,7 +195,7 @@ if [ -n "$SCHEMA" ]; then
 <map>
     <string name=\"pending_schema\">$SCHEMA</string>
 </map>
-" | adbs shell "run-as $IME_PKG sh -c 'cat > shared_prefs/rimequad-store.xml'" >/dev/null 2>&1
+" | adbs shell "run-as $IME_PKG sh -c 'cat > shared_prefs/$RS_ANDROID_PREFS_STORE.xml'" >/dev/null 2>&1
 fi
 
 SRC_LAYOUT="$PROJECT_ROOT/core/layouts/$LAYOUT.yaml"

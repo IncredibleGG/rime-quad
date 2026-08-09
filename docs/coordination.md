@@ -51,6 +51,7 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
 | `docs/theme-format.md` | **只有 macOS 端**(第一個桌面端,候選窗規範由它擴充)。其餘一律回報 |
 | `core/layouts/`、`core/themes/` | Android(行動端的佈局);桌面端只讀 |
 | `core/data/`、`scripts/schema_store/` | 協調端 |
+| `scripts/lib/product.env` | **協調端**。產品名與四端識別碼的唯一來源。要改名就在這裡改一次,不要在自己那一端另立一份(見 §5 的 2026-08-09 條目) |
 | `scripts/` 其餘 | 誰做的誰維護,新增用不撞名的檔名 |
 | `docs/handoff-*.md`、本檔 | 大家都可以補,但**只加不刪別人的段落** |
 
@@ -379,6 +380,44 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
 - `[2026-08-08] [macOS] 只動了 apple/、.github/workflows/macos.yml、docs/theme-format.md、docs/settings-model.md(新檔)。沒有動 android/、windows/、core/、scripts/。`
 - `[2026-08-08] [macOS] ⚠ **更正我自己前一條的結論:`TISCreateInputSourceList` 在 GitHub runner 上**查得到**輸入法。** 我原本推論「TIS 只掃描有登入的圖形工作階段,而 runner 是背景工作階段,所以這一層驗不了」,並把它寫成不判失敗的參考資訊。**實測結果相反**:裝進 runner 的 `~/Library/Input Methods` 之後,TIS 列出 321 個輸入來源,其中三個是我們的,而且**在地化名稱解得出來**(`FOUND …Hans — RimeQuad (Simplified)`)。所以它現在是硬關卡,而且直接驗到真機回報的兩個缺陷:「輸入法沒出現在清單裡」(結束碼 4)與「清單顯示的是 bundle id」(結束碼 3 —— 名稱等於 id)。**教訓給四端:「這個驗不了」在寫進文件之前要先跑一次。** 我這一輪差點把一條驗得到的東西登記成驗不到的,而那種登記會一直被後面的人相信。`
 - `[2026-08-08] [macOS] ⚠ **給四端的一個驗證工具自壞案例。** run_kit_tests.sh 的變異測試突然報「四個變異打中了別的地方」,而錯的那四個每次不太一樣。原因不在變異:那支腳本開了 `pipefail`,而判定式是 `printf '%s' "$OUT" | grep -q "$group"` —— `grep -q` 找到第一個符合就結束,printf 吃到 SIGPIPE,整條管線的結束碼變成 141,於是 `if ! ...` 恆為真。輸出小的時候 printf 在 grep 結束前就寫完,所以它一路正常;測試從 105 項長到 207 項、輸出超過管線緩衝區之後才開始發作。**症狀看起來完全像是被驗的東西壞了。** 凡是 `set -o pipefail` 的腳本,不要把 printf/cat 接進 `grep -q` 或 `head`,改用 herestring。Android 與 Windows 的關卡腳本請自己檢查一遍。`
+
+- `[2026-08-09] [rename-shared] ⚠ **產品定名 LuminaKey,識別碼一起改。四端都要動,而且要動得一致。** 完整決策與「哪些刻意不改」見 `docs/decisions/product-name.md`;**值的唯一來源是 `scripts/lib/product.env`**(shell 與 python 各有一個十行讀取器,`scripts/verify_product_ids.sh` 每次比對兩邊逐字相同)。共用層這一輪已經改完:`scripts/`、`core/`、`docs/`、`README`、`.github/workflows/build.yml`。**`android/`、`apple/`、`windows/` 由各自那條線改,而且改完之前共用層的幾支腳本會是紅的**(見下面「合併順序」)。`
+
+  規範性命名表(**不可自行變體**):
+
+  | 項目 | 值 |
+  |---|---|
+  | 產品名(英文) | `LuminaKey` |
+  | 產品名(中文顯示) | `LuminaKey 輸入法` |
+  | 識別碼字根 | `luminakey` |
+  | Android applicationId / namespace | `org.luminakey.ime` |
+  | macOS bundle id | `org.luminakey.inputmethod.LuminaKey` |
+  | macOS 設定 app bundle id | `org.luminakey.inputmethod.LuminaKey.Settings` |
+  | macOS TISInputSourceID | `org.luminakey.inputmethod.LuminaKey.Hant` / `.Hans` |
+  | macOS 使用者資料目錄 | `~/Library/Application Support/LuminaKey` |
+  | Windows 使用者資料目錄 | `%APPDATA%\LuminaKey` |
+  | 備份清單檔 / `kind` | `luminakey-backup.json` / `luminakey-backup` |
+  | 安裝帳本 | `luminakey-store.json` |
+  | 自訂鍵位 | `luminakey-layouts.json` |
+  | Android SharedPreferences | `luminakey-store` / `luminakey-current-keyboard` / `luminakey-update` |
+  | `<schema>.custom.yaml` 的標記 | `luminakey-managed` |
+  | librime `app_name` 字根 | `rime.luminakey`(慣例同 rime.weasel / rime.squirrel) |
+
+  **刻意不改**(不是漏改,改了會斷):R2 路徑 `rime/…` 與 R2 上的檔名字根(應用內升級指著它)、GitHub repo 名 `rime-quad`、librime 與 RIME 方案(「Rime」講引擎時是**正確**的)、`patches/` 裡 librime-lua 沙盒的 C++ 符號(改了要重建 librime,而稽核比對的是已建好的 `.a`)。
+
+  ⚠ **落地檔名的相容條款(規範性)。** 舊名字的檔案還在既有裝置上。`docs/backup-format.md` §1 與 `docs/schema-store.md` §4.1 已寫進規則:**讀取端兩個名字都要認得(先新後舊),寫出端只寫新名字。** 漏掉這一條的下場是升級後備份被判成 `NOT_A_BACKUP`、「裝過哪些方案」變成空清單 —— **兩者都沒有錯誤訊息**,畫面上只是一片乾淨。
+
+  ⚠ **稽核樣式也要跟著改名。** `audit_offline.sh` 第 7 項擋「UA 自報家門」,樣式原本是 `rime|quad|ime`。改名之後 `luminakey-android` 這種 UA **不會**被那個樣式抓到 —— 守門的還在擋舊名,新名字大搖大擺地走出去,而稽核照樣全綠。現在樣式從 `product.env` 的 `SELF_ID_UA_PATTERN` 讀,而且 `verify_audit_offline.sh` 新舊名各植入一條。**這是改名時最容易漏、而且漏了完全沒有徵狀的一類。四端的守門腳本請自己掃一遍有沒有同型的東西。**
+
+  **合併順序(重要)。** 共用層的腳本現在照**新**的 id 去找東西,所以在 `android/` 改名落地之前,`scripts/audit_offline.sh`(找 `main/java/org/luminakey/ime/net/NetworkGate.kt`)與 `scripts/verify_audit_offline.sh`(往同一個套件路徑植入違規)會紅在「找不到檔案 / 植入失敗」。**那是預期中的紅,不是新缺陷**,而且刻意讓它紅得大聲——反過來設計成「找不到就跳過」的話,四條線各自綠燈合併之後就沒有人會發現識別碼其實對不上了。建議協調端把 `rename-android` 與 `rename-shared` **一起**合併。`apple/` 與 `windows/` 沒有這個耦合:`publish_desktop.sh` 改成從產物檔名**量出**它實際叫什麼,新舊名都吃得下(白名單在 `product.env` 的 `DESKTOP_APP_BASES`)。
+
+  **給各端的具體待辦:**
+  - **Android**:`applicationId` / `namespace` / 套件目錄 → `org.luminakey.ime`;`BackupFormat.MANIFEST_NAME` / `KIND` / `LAYOUT_ENTRY` / `REGISTRY_ENTRY`、`InstalledRegistry.FILE_NAME`、`UserLayoutStore.FILE_NAME`、三個 `PREFS` 常數 → 上表的值,**讀取端要同時認舊名**;`strings.xml` 的 `app_name`。服務類別名要不要跟著改由 Android 決定,決定了請回報 —— 共用層是從 `ANDROID_IME_SERVICE` 一行推出 IME id 的。
+  - **macOS/iOS**:bundle id、`TISInputSourceID`、`InfoPlist.strings` 的顯示名、使用者資料目錄、Swift 模組名(`docs/settings-model.md` 已寫成 `LuminaKeyKit`)。**資料目錄改名要寫遷移**,否則使用者的詞典找不到了。
+  - **Windows**:安裝程式 `AppName`、安裝目錄、`%APPDATA%` 目錄、TSF profile 的顯示名。⚠ 這條線目前在修「裝得起來但打不出字」,改名**之後另外處理**,不要插隊。
+  - 三端改完之後 CI artifact 名字若跟著變,請同步 `product.env` 的 `CI_ARTIFACT_*` 與 `DESKTOP_APP_BASES`。
+
+  **沒有驗到的**:這一輪只做了靜態驗證(全部改過的 shell 腳本 `bash -n`、`downloads_server.py` 實際起得來並回 200、`verify_product_ids.sh` 自帶反向測試)。**沒有裝過任何一份改名後的建置**,所以「改名後輸入法還註冊得上、還打得出字」一次都沒有被驗過。`
 
 ---
 

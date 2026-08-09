@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-registry.py — 安裝紀錄（`rimequad-store.json`）的 v1 → v2 遷移**參考實作**。
+registry.py — 安裝紀錄的 v1 → v2 遷移**參考實作**。
+
+帳本的檔名由 `scripts/lib/product.env` 的 `STORE_REGISTRY_FILE` 決定,
+2026-08-09 隨產品改名換成以新識別碼字根開頭的那個名字。
+⚠ **換檔名本身就是一次遷移**:舊名字的檔案還在既有使用者的裝置上,讀取端必須
+兩個名字都認得,否則升級之後「裝過哪些方案」會整批消失,而且不會有錯誤訊息 ——
+畫面上就只是一個乾淨的空清單。
 
 這支不在 app 裡跑。它存在的理由有兩個：
   1. 讓遷移演算法有一份可執行、可測試、可以拿去對照的定義 ——
@@ -38,7 +44,10 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                os.pardir, "lib"))
 import uid as uidlib   # noqa: E402
+import product         # noqa: E402
 
 FORMAT_V1 = 1
 FORMAT_V2 = 2
@@ -102,7 +111,8 @@ def main(argv=None):
     if not argv:
         argv = sys.argv[1:]
     if not argv:
-        print("用法: registry.py <rimequad-store.json> [輸出]", file=sys.stderr)
+        print(f"用法: registry.py <{product.STORE_REGISTRY_FILE}> [輸出]",
+              file=sys.stderr)
         return 2
     src = argv[0]
     doc = json.load(open(src, encoding="utf-8"))

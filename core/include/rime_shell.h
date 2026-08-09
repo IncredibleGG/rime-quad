@@ -82,7 +82,11 @@ typedef struct {
   /* NULL = 交給 librime 決定（暫存目錄）；"" = 只寫 stderr，不落地。
    * 兩者語意不同，不要混用。 */
   const char* log_dir;
-  const char* app_name;     /* 例："rime.android"，會寫進 librime 的 distribution 資訊 */
+  /* 寫進 librime 的 distribution 資訊(以及使用者目錄下的 installation.yaml)。
+   * 慣例是 `rime.<前端>`,同 rime.weasel / rime.squirrel;各端再自己接平台,
+   * 例:"rime.luminakey.android"。字根定義在 scripts/lib/product.env 的
+   * LIBRIME_APP_NAME_PREFIX —— 四端請從那裡取,不要各寫一個。 */
+  const char* app_name;
 
   rs_deploy_callback on_deploy; /* 可為 NULL */
   void* userdata;

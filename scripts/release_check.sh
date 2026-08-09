@@ -31,10 +31,14 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# 產品識別碼一律從這裡來,不在腳本裡寫死。理由見 scripts/lib/product.env 檔頭。
+# shellcheck source=lib/product.sh
+. "$ROOT/scripts/lib/product.sh"
 SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}"
 ADB="$SDK/platform-tools/adb"
 APK="$ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
-IME_ID="org.rimequad.ime/.RimeInputMethodService"
+IME_ID="$RS_ANDROID_IME_ID"
+PKG="$RS_ANDROID_APP_ID"
 SKIP_EMU=0
 EMU_ONLY=0
 STRICT=0
@@ -231,7 +235,7 @@ if [ "$SKIP_EMU" -eq 0 ]; then
     # 於是裝置上殘留的 versionCode 會擋下較低版本的安裝 —— 實際發生過：
     # 測試用的建置把 versionCode 調高到 26090100，正式建置 26080714 因此
     # 被 Android 當成降版拒絕，關卡失敗但產品沒問題。
-    "$ADB" -s "$SER" uninstall org.rimequad.ime >/dev/null 2>&1 \
+    "$ADB" -s "$SER" uninstall $PKG >/dev/null 2>&1 \
       && ok "已移除舊安裝，接下來驗的是全新安裝的路徑" \
       || echo "  [INFO] 無既有安裝可移除，繼續"
   else
@@ -313,15 +317,15 @@ if [ "$SKIP_EMU" -eq 0 ]; then
     # 先移除，才能裝回舊簽章的版本 —— 第 6 步已經裝上新版了，
     # 直接 install -r 舊版會因為簽章不同（或降版）而失敗，
     # 於是升級測試被「略過」而不是被執行。那正好放過了要驗的東西。
-    "$ADB" -s "$SER" uninstall org.rimequad.ime >/dev/null 2>&1 || true
+    "$ADB" -s "$SER" uninstall $PKG >/dev/null 2>&1 || true
     if "$ADB" -s "$SER" install "$PREV" >/dev/null 2>&1; then
       # 讓它跑一次，把舊版的 user 資料種下去。
       # 固定 sleep 25 不夠：首次啟動要解壓 13MB 並編譯方案，模擬器上常超過一分鐘，
       # 而「資料還沒種下去就升級」會讓下面的保留檢查驗到一個空目錄——空的比對
       # 空的永遠會過，於是這一關變成裝飾品。所以改成等到真的有資料為止。
-      "$ADB" -s "$SER" shell monkey -p org.rimequad.ime -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || true
+      "$ADB" -s "$SER" shell monkey -p $PKG -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || true
       # debug 建置是 debuggable，所以不需要 root 就能用 run-as 看自己的資料目錄。
-      seeded() { "$ADB" -s "$SER" shell "run-as org.rimequad.ime find . -type f 2>/dev/null | sort" 2>/dev/null | tr -d '\r'; }
+      seeded() { "$ADB" -s "$SER" shell "run-as $PKG find . -type f 2>/dev/null | sort" 2>/dev/null | tr -d '\r'; }
       BEFORE=""
       for i in $(seq 1 180); do
         BEFORE="$(seeded)"
@@ -337,12 +341,12 @@ if [ "$SKIP_EMU" -eq 0 ]; then
         # 種一個哨兵。使用者真正在意的是「我的東西還在嗎」，而那件事只有
         # 「升級前放進去的東西升級後還讀得到」能證明。
         MARKER_TEXT="rime-upgrade-marker-$$"
-        "$ADB" -s "$SER" shell "run-as org.rimequad.ime sh -c 'mkdir -p files && printf %s \"$MARKER_TEXT\" > files/.rime_upgrade_marker'" >/dev/null 2>&1 || true
-        CHK="$("$ADB" -s "$SER" shell "run-as org.rimequad.ime cat files/.rime_upgrade_marker 2>/dev/null" 2>/dev/null | tr -d '\r\n')"
+        "$ADB" -s "$SER" shell "run-as $PKG sh -c 'mkdir -p files && printf %s \"$MARKER_TEXT\" > files/.rime_upgrade_marker'" >/dev/null 2>&1 || true
+        CHK="$("$ADB" -s "$SER" shell "run-as $PKG cat files/.rime_upgrade_marker 2>/dev/null" 2>/dev/null | tr -d '\r\n')"
         [ "$CHK" = "$MARKER_TEXT" ] || bad "種不進哨兵檔（run-as 讀回 '$CHK'）——資料保留這一關驗不了"
         if "$ADB" -s "$SER" install -r "$APK" > "$OUT/upgrade.log" 2>&1; then
           ok "舊版可被新版覆蓋安裝（簽章相容、versionCode 未降版）"
-          NEWVC="$("$ADB" -s "$SER" shell dumpsys package org.rimequad.ime 2>/dev/null | grep -oE 'versionCode=[0-9]+' | head -1)"
+          NEWVC="$("$ADB" -s "$SER" shell dumpsys package $PKG 2>/dev/null | grep -oE 'versionCode=[0-9]+' | head -1)"
           echo "       安裝後：$NEWVC"
           # 「裝得上去」還不夠，要問資料在不在。簽章不同時 Android 會拒絕，
           # 但別的原因（例如 app 自己在升級路徑上把目錄砍了重建）一樣會讓
@@ -354,7 +358,7 @@ if [ "$SKIP_EMU" -eq 0 ]; then
           # 逐檔比會為了正常的輪替而報紅——那種假警報最後一定會被關掉，
           # 於是連真的資料遺失也一起關掉了。
           # 改問兩件不會誤判的事：我們自己種的哨兵還在嗎，資料量有沒有塌掉。
-          MARKER="$("$ADB" -s "$SER" shell "run-as org.rimequad.ime cat files/.rime_upgrade_marker 2>/dev/null" 2>/dev/null | tr -d '\r\n')"
+          MARKER="$("$ADB" -s "$SER" shell "run-as $PKG cat files/.rime_upgrade_marker 2>/dev/null" 2>/dev/null | tr -d '\r\n')"
           if [ "$MARKER" != "$MARKER_TEXT" ]; then
             bad "升級後哨兵檔不見了（讀到 '$MARKER'）——使用者的自訂詞庫與設定會跟著消失"
           elif [ "${NA:-0}" -lt $((NB / 2)) ]; then

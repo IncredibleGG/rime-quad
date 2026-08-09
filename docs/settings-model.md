@@ -153,7 +153,7 @@ macOS 端把這兩條做成**編譯期與 CI 的斷言**(`SettingsCatalog` 的 `
 ⚠ **預設 `false` 是這個專案的定位,不是一個可有可無的預設值。**
 而且連網守門必須 **fail-closed**:讀不到設定、行程正在收尾、政策自己爆掉,
 一律視為關閉。詳見 `android/.../net/NetworkGate.kt` 與
-`apple/.../RimeQuadKit/NetworkGate.swift` 的檔頭 —— 兩者是同一份設計。
+`apple/.../LuminaKeyKit/NetworkGate.swift` 的檔頭 —— 兩者是同一份設計。
 
 三條共用紀律:
 1. **單一連網出口。** 整個專案只有一個檔案碰得到網路 API,而且驗證方式是一行 grep。
@@ -218,7 +218,7 @@ Android 端真機回報過這個 bug,原話是「按了沒反應」。
 
 | 平台 | 來源 | 例 |
 |---|---|---|
-| macOS | `IMKInputController.setValue(_:forTag:client:)` 收到的輸入模式 id | `org.rimequad.inputmethod.RimeQuad.Hans` → `hans` |
+| macOS | `IMKInputController.setValue(_:forTag:client:)` 收到的輸入模式 id | `org.luminakey.inputmethod.LuminaKey.Hans` → `hans` |
 | Windows | TSF language profile 的 langid | `0x0804` → `hans`;`0x0404` → `hant` |
 | Android / iOS | 沒有這個訊號 | 恆為 `unspecified` |
 
@@ -332,7 +332,7 @@ UTF-8,**LF 或 CRLF 都必須讀得懂**(Windows 端匯出的帶 CR,
 留著會讓權重欄變成 `1\r` 而解析失敗,錯誤訊息卻看起來像使用者打錯字)。
 
 ```
-# RimeQuad 使用者詞庫 / user phrases — format 1
+# LuminaKey 使用者詞庫 / user phrases — format 1
 # 每行三欄,用 TAB 分隔:  詞<TAB>編碼<TAB>權重
 你好	ni hao	3
 黃小明	huang xiao ming	1
@@ -362,7 +362,7 @@ UTF-8,**LF 或 CRLF 都必須讀得懂**(Windows 端匯出的帶 CR,
 詞庫要對每一個**已啟用的方案**分別掛一次:
 
 ```yaml
-# rimequad-managed: custom_phrase v1
+# luminakey-managed: custom_phrase v1
 patch:
   "engine/translators/@next": table_translator@custom_phrase
   custom_phrase:
@@ -398,7 +398,7 @@ patch:
 
 * A 層(`default.custom.yaml`、`custom_phrase.txt`、方案檔)是純文字,直接同步即可。
 * B 層各端檔案格式不同,但**鍵名共用**(見 §3 的 id 欄),可以逐鍵對應。
-* 行動端專屬的檔案(例如 `rimequad-layouts.json` 的自訂鍵位)桌面端
+* 行動端專屬的檔案(例如 `luminakey-layouts.json` 的自訂鍵位)桌面端
   **必須原樣搬運、不得解析、不得清理** —— 否則同步會把使用者在手機上
   調好的鍵位洗掉。
 * 設定檔要帶 `version`,而且**讀到比自己新的版本時只讀不寫**。

@@ -13,12 +13,15 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# 產品識別、R2 路徑與 CI artifact 名字的唯一來源,見 scripts/lib/product.env。
+# shellcheck source=lib/product.sh
+. "$ROOT/scripts/lib/product.sh"
 PLATFORM="${1:?用法: publish_desktop.sh <macos|windows> <run_id>}"
 RUN_ID="${2:?缺 run_id}"
 
-REPO=IncredibleGG/rime-quad
+REPO="IncredibleGG/$RS_GITHUB_REPO"
 TOK=$(tr -d " \t\r\n" < "$HOME/.github-token")
-BUCKET=r2:tgapk/rime
+BUCKET="$RS_R2_REMOTE"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
@@ -50,6 +53,32 @@ else:
   rm -f "$WORK/a.zip"
 }
 
+# ⚠ 這支腳本裡有**兩個**名字。它們現在剛好一樣,但不是同一件事:
+#
+#   APP_BASE            這一份產物實際叫什麼(.app 的名字、Setup.exe 的字根、
+#                       使用者在系統設定裡看到的那個字、資料目錄的名字)。
+#                       它由 apple/ 與 windows/ 那兩條線決定,所以**從產物本身
+#                       量出來**,不在這裡猜。那兩條線改名之後,README 裡每一句
+#                       都會自動跟著改。
+#   $RS_R2_ARTIFACT_BASE R2 上的檔名。**刻意不改** —— 應用內升級與已經發出去的
+#                       連結指著它,改了會斷。見 scripts/lib/product.env。
+#
+# 兩者混用的下場是「說明書上的名字和包裡的名字對不上」,而 macOS 那條手動安裝
+# 路徑對不上時是**靜默失敗**:四步做完,系統一聲不吭地不載入它。
+#
+# 量出來之後要對照白名單。沒有這一步的話,artifact 裡多一個叫 Foo-app-x.tar.gz
+# 的東西就會讓整份 README 講一個不存在的產品。
+check_app_base() {   # check_app_base <量到的名字>
+  local got="$1" b
+  [ -n "$got" ] || { echo "量不出產物的名字" >&2; exit 1; }
+  for b in $RS_DESKTOP_APP_BASES; do
+    [ "$got" = "$b" ] && { echo "[name] 產物叫 $got"; return 0; }
+  done
+  echo "產物叫 $got,不在允許的名單裡($RS_DESKTOP_APP_BASES)。" >&2
+  echo "改名了就把新名字加進 scripts/lib/product.env 的 DESKTOP_APP_BASES。" >&2
+  exit 1
+}
+
 # 執行期資料是兩端共用的前置。沒有它就別發。
 require_data() {
   [ -d "$ROOT/core/data/shared" ] || { echo "core/data/shared 不存在，先跑 scripts/collect_data.sh" >&2; exit 1; }
@@ -72,28 +101,31 @@ upload() {  # upload <本機檔> <遠端相對路徑>
 case "$PLATFORM" in
 # ---------------------------------------------------------------- macOS ----
 macos)
-  fetch_artifact rime-macos-app "$WORK/dl"
-  TGZ=$(ls "$WORK"/dl/RimeQuad-app-*.tar.gz)
+  fetch_artifact "$RS_CI_ARTIFACT_MACOS_APP" "$WORK/dl"
+  TGZ=$(ls "$WORK"/dl/*-app-*.tar.gz)
   ARCH=$(basename "$TGZ" .tar.gz); ARCH=${ARCH##*-}
+  APP_BASE=$(basename "$TGZ"); APP_BASE=${APP_BASE%%-app-*}
+  check_app_base "$APP_BASE"
   # 反向確認：包裡真的有 .app 而且有可執行檔，不是空殼
   # 注意：不可寫成 `tar tzf ... | grep -q`。set -o pipefail 之下，grep 命中即結束
   # 會讓 tar 收到 SIGPIPE，整條 pipeline 判失敗——**命中反而變成失敗**。
   LIST=$(tar tzf "$TGZ")
-  grep -q 'RimeQuad.app/Contents/MacOS/RimeQuad' <<<"$LIST" \
-    || { echo "包裡沒有 RimeQuad.app/Contents/MacOS/RimeQuad" >&2; exit 1; }
+  grep -q "$APP_BASE.app/Contents/MacOS/$APP_BASE" <<<"$LIST" \
+    || { echo "包裡沒有 $APP_BASE.app/Contents/MacOS/$APP_BASE" >&2; exit 1; }
   grep -q 'Contents/Resources/SharedSupport/.*schema.yaml' <<<"$LIST" \
     || { echo "包裡沒有方案資料——裝得起來但一個字都打不出來" >&2; exit 1; }
 
-  NAME="RimeQuad-macos-$ARCH-$STAMP-$SHORT.tar.gz"
+  NAME="$RS_R2_ARTIFACT_BASE-macos-$ARCH-$STAMP-$SHORT.tar.gz"
+  LATEST_TGZ="$RS_R2_ARTIFACT_BASE-latest.tar.gz"
   cp "$TGZ" "$WORK/$NAME"
-  upload "$WORK/$NAME" "macos/$NAME"
-  upload "$WORK/$NAME" "macos/RimeQuad-latest.tar.gz"
+  upload "$WORK/$NAME" "$RS_R2_MACOS_DIR/$NAME"
+  upload "$WORK/$NAME" "$RS_R2_MACOS_DIR/$LATEST_TGZ"
 
   # .pkg 是主要下載。手動裝那條路徑(解壓→xattr→搬到隱藏目錄→登出)四步
   # 任何一步錯都是**靜默失敗** —— 使用者第一次就把 .app 放進了 /Applications,
   # 系統照樣登錄它、行程也起得來,但永遠不會出現在輸入來源清單裡。
-  fetch_artifact rime-macos-installer "$WORK/pkg"
-  PKG=$(ls "$WORK"/pkg/RimeQuad-*.pkg)
+  fetch_artifact "$RS_CI_ARTIFACT_MACOS_PKG" "$WORK/pkg"
+  PKG=$(ls "$WORK"/pkg/*.pkg)
   # 這裡只驗「它是不是一個真的 .pkg」—— Ubuntu 上沒有 xar / pkgutil,拆不開它。
   # **內容由 CI 驗**:apple/scripts/verify_pkg.sh 在 macOS runner 上真的裝一次,
   # 斷言檔案落在 ~/Library/Input Methods,並斷言 PackageInfo 的 install-location。
@@ -103,13 +135,14 @@ macos)
     || { echo "$PKG 不是 xar 封存(.pkg 應該是)" >&2; exit 1; }
   [ "$(stat -c%s "$PKG")" -gt 3000000 ] \
     || { echo ".pkg 只有 $(stat -c%s "$PKG") bytes —— 不可能帶著方案資料" >&2; exit 1; }
-  PNAME="RimeQuad-macos-$ARCH-$STAMP-$SHORT.pkg"
+  PNAME="$RS_R2_ARTIFACT_BASE-macos-$ARCH-$STAMP-$SHORT.pkg"
+  LATEST_PKG="$RS_R2_ARTIFACT_BASE-latest.pkg"
   cp "$PKG" "$WORK/$PNAME"
-  upload "$WORK/$PNAME" "macos/$PNAME"
-  upload "$WORK/$PNAME" "macos/RimeQuad-latest.pkg"
+  upload "$WORK/$PNAME" "$RS_R2_MACOS_DIR/$PNAME"
+  upload "$WORK/$PNAME" "$RS_R2_MACOS_DIR/$LATEST_PKG"
 
   cat > "$WORK/README.txt" <<TXT
-RimeQuad macOS  $STAMP  ($SHORT, $ARCH)
+$APP_BASE macOS  $STAMP  ($SHORT, $ARCH)
 
 ⚠ 這是第一個可安裝的版本，還沒有任何人在真的 Mac 上用過它。
    CI 驗過的是「編得起來、結構正確、105 項單元測試綠、核心層打得出你好」。
@@ -117,45 +150,56 @@ RimeQuad macOS  $STAMP  ($SHORT, $ARCH)
 
 安裝(建議)
 
-  雙擊 RimeQuad-latest.pkg,下一步到底。它會裝到正確位置並處理隔離屬性。
-  裝完登出再登入,然後:系統設定 → 鍵盤 → 輸入來源 → + → 繁體中文/簡體中文 → RimeQuad
+  雙擊 $LATEST_PKG,下一步到底。它會裝到正確位置並處理隔離屬性。
+  裝完登出再登入,然後:系統設定 → 鍵盤 → 輸入來源 → + → 繁體中文/簡體中文 → $APP_BASE
 
 手動安裝(進階,四步任何一步錯都是靜默失敗)
 
-  tar xzf RimeQuad-latest.tar.gz
-  xattr -dr com.apple.quarantine RimeQuad.app      # ← 不做這步，系統會靜默地不載入它
-  cp -R RimeQuad.app ~/Library/Input\\ Methods/
+  tar xzf $LATEST_TGZ
+  xattr -dr com.apple.quarantine $APP_BASE.app      # ← 不做這步，系統會靜默地不載入它
+  cp -R $APP_BASE.app ~/Library/Input\\ Methods/
   然後登出再登入（第一次安裝最保險），到
-  系統設定 → 鍵盤 → 輸入來源 → + → 繁體中文 → RimeQuad
+  系統設定 → 鍵盤 → 輸入來源 → + → 繁體中文 → $APP_BASE
 
   這個版本是 ad-hoc 簽章、只有 $ARCH，不是可散布的正式版本。
 
 移除
 
-  rm -rf ~/Library/Input\\ Methods/RimeQuad.app
-  rm -rf ~/Library/Application\\ Support/RimeQuad     # 使用者詞典也會一起刪
+  rm -rf ~/Library/Input\\ Methods/$APP_BASE.app
+  rm -rf ~/Library/Application\\ Support/$APP_BASE     # 使用者詞典也會一起刪
 
-資料放在 ~/Library/Application Support/RimeQuad，
+資料放在 ~/Library/Application Support/$APP_BASE，
 刻意避開 Squirrel 的 ~/Library/Rime——共用使用者詞典會互相踩。
 
 首次部署要花幾秒到幾十秒，那段時間沒有候選是正常的。
 
 commit: $SHA
 TXT
-  upload "$WORK/README.txt" "macos/README-latest.txt"
+  upload "$WORK/README.txt" "$RS_R2_MACOS_DIR/README-latest.txt"
   ;;
 
 # -------------------------------------------------------------- Windows ----
 windows)
   require_data
-  fetch_artifact "rime-windows-x64" "$WORK/dl"
+  # Setup.exe 先抓,因為產物實際叫什麼名字是從它的檔名量出來的,
+  # 而底下的 zip 內容與 README 都要用那個名字。
+  fetch_artifact "$RS_CI_ARTIFACT_WINDOWS_SETUP" "$WORK/setup"
+  SETUP=$(ls "$WORK"/setup/*-Setup-x64.exe)
+  APP_BASE=$(basename "$SETUP"); APP_BASE=${APP_BASE%-Setup-x64.exe}
+  check_app_base "$APP_BASE"
+  LATEST_SETUP="$RS_R2_ARTIFACT_BASE-Setup-x64-latest.exe"
+
+  fetch_artifact "$RS_CI_ARTIFACT_WINDOWS" "$WORK/dl"
   BIN=$(find "$WORK/dl" -name rime_tsf.dll -printf '%h\n' | head -1)
   [ -n "$BIN" ] || { echo "artifact 裡找不到 rime_tsf.dll" >&2; exit 1; }
   for f in rime_tsf.dll rime_service.exe; do
     [ -f "$BIN/$f" ] || { echo "缺 $f" >&2; exit 1; }
   done
 
-  PKG="$WORK/RimeQuad-windows-x64"
+  # 資料夾名字用 R2 上的字根:它會原封不動變成 zip 裡的頂層目錄,而使用者
+  # 是照著 README 去找那個資料夾的。
+  PKGDIR="$RS_R2_ARTIFACT_BASE-windows-x64"
+  PKG="$WORK/$PKGDIR"
   mkdir -p "$PKG/data"
   cp "$BIN"/rime_tsf.dll "$BIN"/rime_service.exe "$PKG/"
   # rime_console.exe 在 artifact 裡是另一個目錄（console/bin），不在 ime/bin。
@@ -176,7 +220,10 @@ windows)
   #
   # 另外加了自我提權:沒有管理員權限時自己用 PowerShell 重新叫起來,
   # 而不是印一行「請以系統管理員身分執行」然後關掉 —— 使用者看不到那行字。
-  crlf() { sed -e 's/$/\r/' > "$1"; }
+  # @@APP@@ 換成產物實際的名字。heredoc 維持 <<'BAT'(逐字):.bat 裡有
+  # %~dp0、反斜線路徑與 errorlevel 區塊,交給 shell 去展開只會多一種出錯的
+  # 方式,而 .bat 出錯的樣子是「雙擊完全沒反應」。
+  crlf() { sed -e "s/@@APP@@/$APP_BASE/g" -e 's/$/\r/' > "$1"; }
 
   crlf "$PKG/install.bat" <<'BAT'
 @echo off
@@ -192,7 +239,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo   RimeQuad 註冊中...
+echo   @@APP@@ 註冊中...
 echo.
 
 if not exist "%~dp0rime_tsf.dll" (
@@ -211,7 +258,7 @@ if errorlevel 1 (
 echo   [v] 已註冊。
 echo.
 echo   接下來：設定 - 時間與語言 - 語言與地區 - 中文 - 選項 - 新增鍵盤
-echo           選 RimeQuad，然後用 Win+空白鍵切換。
+echo           選 @@APP@@，然後用 Win+空白鍵切換。
 echo.
 pause
 BAT
@@ -236,7 +283,7 @@ pause
 BAT
 
   cat > "$PKG/README.txt" <<TXT
-RimeQuad Windows x64  $STAMP  ($SHORT)
+$APP_BASE Windows x64  $STAMP  ($SHORT)
 
 ⚠ 這是第一個可安裝的版本，**還沒有任何人在真的 Windows 上用過它**。
    目前為止一顆鍵都沒有被人按過。CI 驗過的是編得起來、COM 匯出正確、
@@ -248,15 +295,15 @@ RimeQuad Windows x64  $STAMP  ($SHORT)
 
 安裝(建議)
 
-  雙擊 RimeQuad-Setup-x64-latest.exe,它會自己要求管理員權限。
-  裝完:設定 → 時間與語言 → 語言與地區 → 中文 → 選項 → 新增鍵盤 → RimeQuad
+  雙擊 $LATEST_SETUP,它會自己要求管理員權限。
+  裝完:設定 → 時間與語言 → 語言與地區 → 中文 → 選項 → 新增鍵盤 → $APP_BASE
 
 手動安裝(進階,用 zip 那一份)
 
-  1. 把整個資料夾解壓到一個固定位置（例如 C:\\RimeQuad）。
+  1. 把整個資料夾解壓到一個固定位置（例如 C:\\$APP_BASE）。
      ⚠ 之後不要搬動——註冊表記的是這個路徑。
   2. 雙擊 install.bat（它會自己要求管理員權限）。
-  3. 設定 → 時間與語言 → 語言與地區 → 中文 → 選項 → 新增鍵盤 → RimeQuad
+  3. 設定 → 時間與語言 → 語言與地區 → 中文 → 選項 → 新增鍵盤 → $APP_BASE
   4. Win+空白鍵切換輸入法。
 
 移除
@@ -282,29 +329,27 @@ RimeQuad Windows x64  $STAMP  ($SHORT)
 commit: $SHA
 TXT
 
-  NAME="RimeQuad-windows-x64-$STAMP-$SHORT.zip"
-  (cd "$WORK" && zip -qr "$NAME" RimeQuad-windows-x64)
+  NAME="$RS_R2_ARTIFACT_BASE-windows-x64-$STAMP-$SHORT.zip"
+  (cd "$WORK" && zip -qr "$NAME" "$PKGDIR")
   # 反向確認：包裡真的有資料
   ZLIST=$(unzip -l "$WORK/$NAME")
   grep -q 'data/shared/.*schema.yaml' <<<"$ZLIST" \
     || { echo "包裡沒有方案資料——裝得起來但一個字都打不出來" >&2; exit 1; }
-  upload "$WORK/$NAME" "windows/$NAME"
-  upload "$WORK/$NAME" "windows/RimeQuad-windows-x64-latest.zip"
+  upload "$WORK/$NAME" "$RS_R2_WINDOWS_DIR/$NAME"
+  upload "$WORK/$NAME" "$RS_R2_WINDOWS_DIR/$RS_R2_ARTIFACT_BASE-windows-x64-latest.zip"
 
   # Setup.exe 是主要下載:雙擊、自己跳 UAC、裝到 Program Files、
   # 詞典放 %APPDATA%(裝在 Program Files 底下的 data\user 會因權限寫不進去)、
   # 「新增或移除程式」裡有解除安裝項目。zip 那份留給想手動放的人。
-  fetch_artifact RimeQuad-Setup-x64 "$WORK/setup"
-  SETUP=$(ls "$WORK"/setup/RimeQuad-Setup-x64.exe)
   [ -s "$SETUP" ] || { echo "Setup.exe 是空的" >&2; exit 1; }
   # 反向確認:它是 PE 執行檔,不是誰放錯的文字檔
   head -c2 "$SETUP" | grep -q "MZ" \
     || { echo "Setup.exe 不是 PE 執行檔" >&2; exit 1; }
-  SNAME="RimeQuad-Setup-x64-$STAMP-$SHORT.exe"
+  SNAME="$RS_R2_ARTIFACT_BASE-Setup-x64-$STAMP-$SHORT.exe"
   cp "$SETUP" "$WORK/$SNAME"
-  upload "$WORK/$SNAME" "windows/$SNAME"
-  upload "$WORK/$SNAME" "windows/RimeQuad-Setup-x64-latest.exe"
-  upload "$PKG/README.txt" "windows/README-latest.txt"
+  upload "$WORK/$SNAME" "$RS_R2_WINDOWS_DIR/$SNAME"
+  upload "$WORK/$SNAME" "$RS_R2_WINDOWS_DIR/$LATEST_SETUP"
+  upload "$PKG/README.txt" "$RS_R2_WINDOWS_DIR/README-latest.txt"
   ;;
 *)
   echo "未知平台: $PLATFORM" >&2; exit 1 ;;

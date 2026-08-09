@@ -45,7 +45,11 @@ ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}"
 ADB="$ANDROID_SDK_ROOT/platform-tools/adb"
 SERIAL="${RIME_SERIAL:-${ANDROID_SERIAL:-emulator-${RIME_EMU_PORT:-5556}}}"
 
-IME_ID="${RIME_IME_ID:-org.rimequad.ime/.RimeInputMethodService}"
+# 產品識別碼的唯一來源,見 scripts/lib/product.env。
+# shellcheck source=lib/product.sh
+. "$SCRIPT_DIR/lib/product.sh"
+IME_ID="${RIME_IME_ID:-$RS_ANDROID_IME_ID}"
+IME_PKG="${IME_ID%%/*}"
 PKG="dev.rime.inputmatrix"
 ACT="$PKG/.MainActivity"
 TAG="IMEMATRIX"
@@ -273,7 +277,7 @@ probe_n() {
 # 佈局狀態不隨編輯框重置:上一輪測試若停在 numeric-symbol,這一輪整份矩陣
 # 會對著符號鍵盤戳字母。
 #
-# 一開始是用 `am force-stop org.rimequad.ime` 來重置的 —— **那是錯的**。
+# 一開始是用 `am force-stop "$IME_PKG"` 來重置的 —— **那是錯的**。
 # force-stop 會把套件打成 Android 的 stopped 狀態,IMMS 之後就不會再自動
 # 把它綁回來,輸入法整個消失,後續全部在沒有輸入法的情況下空跑。
 # 改成按 numeric-symbol 佈局左下角的「ABC」鍵切回去 —— 那顆鍵和 qwerty 的
@@ -653,7 +657,7 @@ if [ "$RUN_SCENARIOS" -eq 1 ]; then
   #    —— 那正是使用者回報的「打一個字刪一個字」會長的樣子。所以這裡的
   #    斷言不是「打出什麼」,而是**絕對不可以出現 deleteSurroundingText**。
   scen "部署進行中(session 尚未就緒)打字"
-  adbs shell am force-stop org.rimequad.ime >/dev/null 2>&1
+  adbs shell am force-stop "$IME_PKG" >/dev/null 2>&1
   sleep 0.5
   launch_field textCapSentencesMultiLine
   adbs logcat -c >/dev/null 2>&1

@@ -136,6 +136,13 @@ jobs:
           echo "rime.versionCode=$CODE" >> "$HOME/.gradle/gradle.properties"
           echo "本次 versionCode = $CODE"
 
+      # 放在發布關卡**之前**:它只讀檔案、兩秒跑完,而它擋的是「改名改一半」——
+      # 顯示名改了識別碼沒改、或某支腳本又把 id 寫死了一份。那一類缺陷在編譯期、
+      # 單元測試、發布關卡全部是綠的,只有使用者裝上去才發現。先讓它說話,
+      # 免得後面十分鐘的關卡綠燈蓋掉一個「這份建置的 id 根本對不上」。
+      - name: 產品識別碼只有一份(自帶反向測試)
+        run: ./scripts/verify_product_ids.sh
+
       - name: 發布關卡(不需要模擬器的部分)
         run: ./scripts/release_check.sh --skip-emu --strict
 
