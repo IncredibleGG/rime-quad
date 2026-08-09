@@ -341,6 +341,33 @@ fi
 #
 # notes 用 python 轉義,不然說明裡有一個雙引號或反斜線就會產生壞掉的 JSON,
 # 而那份 JSON 會被幾百台裝置抓下去。
+# ── 套件識別碼 ────────────────────────────────────────────────────────
+#
+# ⚠ 從 **APK 本身**讀,不是從 product.env 讀。理由與 version_code 相同:
+#   這份 JSON 描述的是這一個檔案,而不是「我們以為建出來的東西」。
+#   設定檔與實際產物不一致時,寫進去的必須是產物那一邊。
+#
+# 為什麼要有這個欄位:改 applicationId 等於換一個 app,舊版**升不上去**。
+# 沒有這個欄位的話,升級器會下載完 28MB、交給系統、然後拿到
+#   INSTALL_FAILED_INVALID_APK: specified package X inconsistent with Y
+# 而 App 只能把那句話原樣丟給使用者 —— 它甚至會被寫成「APK 檔案無效或已損毀」,
+# 而檔案完全正常。使用者實際撞過這一次。
+#
+# ⚠ **這幾個欄位永遠是選用的。** 改成必填,等於所有舊版本安靜地再也收不到更新,
+#   而畫面上寫「版本資訊格式錯誤」—— 比原本的問題更糟。
+APK_PACKAGE="$("$AAPT" dump badging "$APK" 2>/dev/null \
+  | grep -oE "package: name='[^']+'" | head -1 | cut -d"'" -f2)"
+[ -n "$APK_PACKAGE" ] || die "從 APK 讀不到套件名,已中止(沒有上傳)"
+
+# 只有換套件識別碼的那一次要寫。值取自 product.env 的一次性宣告 ——
+# 有它,升級器才分得出「我們改名了」與「這份清單根本不是我們的」。
+REPLACES_JSON=""
+if [ -n "${RS_ANDROID_APP_ID_PREVIOUS:-}" ] \
+   && [ "$RS_ANDROID_APP_ID_PREVIOUS" != "$APK_PACKAGE" ]; then
+  REPLACES_JSON="
+  \"replaces_package\": \"$RS_ANDROID_APP_ID_PREVIOUS\","
+fi
+
 NOTES_JSON="$(NOTES="$NOTES" python3 -c 'import json,os;print(json.dumps(os.environ["NOTES"]))')"
 cat > "$ROOT/release/version.json" <<JSON
 {
@@ -353,6 +380,7 @@ cat > "$ROOT/release/version.json" <<JSON
   "sha256": "$SHA256",
   "url": "$BASE_URL/$REMOTE_SUBDIR/$NAME",
   "latest_url": "$BASE_URL/$REMOTE_SUBDIR/rime-latest.apk",
+  "package": "$APK_PACKAGE",$REPLACES_JSON
   "notes": $NOTES_JSON
 }
 JSON
