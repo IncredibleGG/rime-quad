@@ -648,8 +648,17 @@ done
 "${INSTALL_DIR}/rime_ime_setup.exe" stop-service --dir "${INSTALL_DIR_W}" \
   > "${WORK}/stop-for-doctor.log" 2>&1 || true
 sleep 2
+#
+# ⚠ 這一次**不加** --no-engine:第 7 格(引擎層)在這裡才驗得到,而且
+#   只有在這裡驗得到 —— 它要呼叫 rime_console.exe 直接驅動 librime,
+#   而那需要一份**已經部署完**的使用者目錄(上面 §6 已經做完了),
+#   還需要**服務不在跑**(服務持有使用者詞庫的 LevelDB,兩支同時開會打架)。
+#   剛好這兩個條件在這一刻同時成立。
+#
+#   沒有這一條的話,doctor 最有價值的那一格(「引擎層通不通」——
+#   分層診斷的第一刀)會是整支工具裡唯一沒有人驗過的部分。
 set +e
-"${INSTALL_DIR}/rime_ime_setup.exe" doctor --no-engine --no-scan \
+"${INSTALL_DIR}/rime_ime_setup.exe" doctor --no-scan \
   > "${WORK}/doctor-nosvc.log" 2>&1
 rc_doc=$?
 set -e
@@ -664,6 +673,20 @@ else
   printf '%s\n' "${doctor_nosvc}" | sed 's/^/    /'
   note_fail "服務停掉之後 doctor 紅了,但沒有指出是服務那一格"
 fi
+
+# 引擎層那一格。斷言的是它真的跑了 rime_console 並拿到「你好」——
+# 而不是安靜地跳過(「這個安裝裡沒有 rime_console.exe」也是 [INFO],
+# 印出來長得跟通過很像)。
+case "${doctor_nosvc}" in
+  *"[PASS] 引擎層打得出「你好」"*)
+    ok "doctor 的引擎層那一格真的跑了 rime_console 並拿到「你好」" ;;
+  *"沒有 rime_console.exe"*)
+    note_fail "安裝包裡沒有 rime_console.exe —— 分層診斷的第一刀切不下去。
+     那一格會安靜地變成 [INFO],而 [INFO] 印出來跟通過很像。" ;;
+  *)
+    printf '%s\n' "${doctor_nosvc}" | sed -n '/7. 引擎層/,/^$/p' | sed 's/^/    /'
+    note_fail "doctor 的引擎層那一格沒有通過 —— 見上" ;;
+esac
 
 # 後面的「安裝目錄一個位元都沒變」需要服務是停的 —— 剛好已經停了。
 # 但為了不讓兩段互相依賴,下面那一步仍然會自己再停一次(冪等)。

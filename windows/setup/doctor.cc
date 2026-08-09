@@ -488,6 +488,29 @@ void SectionEngine(Report& r, const std::wstring& dir) {
   }
   ::CreateDirectoryW(user.c_str(), nullptr);
 
+  // ⚠ 使用者資料目錄裡有沒有非 ASCII 字元。
+  //
+  // 這一格 CI **永遠看不到** —— runner 的帳號叫 runneradmin。而中文使用者的
+  // Windows 帳號名稱是中文是很常見的事,於是 %APPDATA% 會長成
+  // C:\Users\王小明\AppData\Roaming\RimeQuad。
+  //
+  // 我們自己這一側是乾淨的(全程寬字元 + UTF-8),但路徑要交給 librime,
+  // 而它在 Windows 上怎麼解讀那串位元組是它的事。萬一它當成系統 ANSI 代碼頁,
+  // 結果會是「建不出目錄 / 部署失敗 / 一個候選都沒有」,而且沒有錯誤訊息。
+  // 所以先把這個事實印出來 —— 它是 WARN 不是 FAIL:我們**還沒有證據**說它
+  // 一定會壞,而把一件沒被證實的事印成 FAIL,會讓使用者去修一個不存在的問題。
+  {
+    bool non_ascii = false;
+    for (wchar_t c : user)
+      if (c > 0x7F) non_ascii = true;
+    if (non_ascii) {
+      r.Warn("使用者資料目錄裡有非 ASCII 字元: " + W(user));
+      r.Note("多半是 Windows 帳號名稱是中文。這一格 CI 永遠測不到,");
+      r.Note("而它是「部署失敗、一個候選都沒有」的已知嫌疑之一。");
+      r.Note("下面的引擎層檢查若在這種路徑下失敗,請把這一段一起回報。");
+    }
+  }
+
   wchar_t tmp_dir[MAX_PATH] = {0};
   ::GetTempPathW(MAX_PATH, tmp_dir);
   const std::wstring out_path =

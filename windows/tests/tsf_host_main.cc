@@ -651,6 +651,29 @@ static int Run(int argc, wchar_t** argv) {
     hr = thread_mgr->QueryInterface(IID_ITfKeystrokeMgr, (void**)&ks);
     Step("QueryInterface(ITfKeystrokeMgr)", hr);
     if (SUCCEEDED(hr) && ks) {
+      // ⚠ 送按鍵之前先把「TSF 覺得誰有焦點」印出來。
+      //
+      // ITfKeystrokeMgr 只會把按鍵交給**有執行緒焦點**的那一份文字服務。
+      // IsThreadFocus 是 FALSE 的話,KeyDown 會乖乖回 S_OK / pfEaten=FALSE
+      // 而完全不呼叫任何人 —— 看起來就像「輸入法不吃這顆鍵」,
+      // 但其實它根本沒被問過。這兩件事要查的地方完全不同。
+      BOOL thread_focus = FALSE;
+      const HRESULT fhr = thread_mgr->IsThreadFocus(&thread_focus);
+      Say("  IsThreadFocus = %d (hr=0x%08lX)\n", thread_focus ? 1 : 0,
+          static_cast<unsigned long>(fhr));
+      ITfDocumentMgr* focused = nullptr;
+      const HRESULT ghr = thread_mgr->GetFocus(&focused);
+      Say("  ThreadMgr::GetFocus = %p (hr=0x%08lX)%s\n",
+          static_cast<void*>(focused), static_cast<unsigned long>(ghr),
+          focused == docmgr ? " —— 就是我們那一份" : " —— **不是我們那一份**");
+      if (focused) focused->Release();
+      // 焦點不在我們身上就再要一次。有些系統要在 profile 啟用**之後**
+      // 才吃得下 SetFocus。
+      if (focused != docmgr && docmgr) {
+        const HRESULT shr = thread_mgr->SetFocus(docmgr);
+        Say("  重新 SetFocus hr=0x%08lX\n", static_cast<unsigned long>(shr));
+        Pump(200);
+      }
       Say("\n--- 送按鍵 ---\n");
       for (wchar_t ch : keys) {
         WPARAM vk = 0;
@@ -682,12 +705,21 @@ static int Run(int argc, wchar_t** argv) {
   // 「一顆按鍵都沒有到達 OnTestKeyDown」與「到達了但沒吃」是兩件完全不同的事。
   // 前者要查 ActivateEx 那一段(key event sink 掛上了沒有),
   // 後者要查佈局或連線。把它們併成一句話,就是把人往錯的方向送。
-  const bool saw_any_key = trace.find("按鍵 vk=") != std::string::npos;
+  //
+  // ⚠ 一定要**重新讀一次**記錄檔。上面那個 trace 是在送按鍵**之前**讀的
+  //   (它要回答「ActivateEx 有沒有被呼叫」),按鍵行還沒寫進去。
+  //   拿它來判斷「按鍵有沒有到達」會永遠說沒有 —— 實測 CI run #59 就是這樣:
+  //   記錄檔裡明明有兩行 keysym=0x6E / 0x69,而這支程式報「一顆都沒到達」。
+  //   一個讀舊資料的斷言比沒有斷言更糟:它會把人送去查一段其實是好的程式碼。
+  const std::string trace_after_keys = ReadAll(trace_path);
+  const bool saw_any_key =
+      trace_after_keys.find("按鍵 vk=") != std::string::npos;
   if (!keys.empty() && !saw_any_key) {
     Fail("按鍵**一顆都沒有到達 OnTestKeyDown** —— 不是「不吃」,是根本沒收到。\n"
          "     要查的是 ActivateEx 裡的 AdviseKeyEventSink,不是佈局也不是連線。\n"
          "     記錄裡的 key sink 那一行會說掛上了沒有。");
-    if (key_sink_bad)
+    if (key_sink_bad || trace_after_keys.find("**沒掛上,收不到按鍵**") !=
+                            std::string::npos)
       Fail("記錄明說 key event sink 兩種都掛不上");
   }
   if (require_eaten && eaten_count == 0 && saw_any_key)
