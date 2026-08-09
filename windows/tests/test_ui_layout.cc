@@ -316,3 +316,86 @@ TEST(ui_layout_stack_puts_danger_last_behind_a_divider) {
   CHECK(diag_copy_bottom > 0);
   CHECK(reset_y >= diag_copy_bottom + 2 * space::s7 + metric::kHairline);
 }
+
+
+// ── W25:捲動量真的有套到控制項上,而且捲出去的不准藏 ──────────────
+//
+// ⚠ 這兩條是**上一輪守門失效的直接補丁**。上一輪 W25 驗的是
+//   「settings_window.cc 裡有沒有 WS_VSCROLL / EnsureFocusVisible 這些字」,
+//   而覆核者把 `const int y = p->rect.y - scroll_;` 改成
+//   `const int y = p->rect.y;`(捲軸拖得動、內容一動也不動),
+//   206 個測試與守門腳本全綠。現在那三件事住在 ScrollPlaceControlDip()。
+
+TEST(ui_layout_scrolled_placement_actually_subtracts_the_scroll) {
+  const RectI r{40, 600, 300, 30};
+  const int viewport = 500;
+
+  // 捲動量 0:原地。
+  CHECK_INT(ScrollPlaceControlDip(r, 0, viewport).y_dip, 600);
+  // 捲動量 250:往上移 250。**不是 600。**
+  CHECK_INT(ScrollPlaceControlDip(r, 250, viewport).y_dip, 350);
+  // 捲過頭:y 可以是負的(控制項的上半截被父視窗裁掉,那是對的)。
+  CHECK_INT(ScrollPlaceControlDip(r, 800, viewport).y_dip, -200);
+
+  // 捲動量每多 1 DIP,y 就少 1 DIP —— 一格都不能停。
+  // (`y = rect.y` 那種寫法在這裡會立刻紅:差值會是 0。)
+  for (int scroll = 0; scroll <= 400; scroll += 37) {
+    CHECK_INT(ScrollPlaceControlDip(r, scroll, viewport).y_dip, r.y - scroll);
+    CHECK_INT(ScrollPlaceControlDip(r, scroll, viewport).y_dip -
+                  ScrollPlaceControlDip(r, scroll + 1, viewport).y_dip,
+              1);
+  }
+
+  // 同一頁上的兩顆控制項,捲動之後相對位置不變(整頁一起動)。
+  const RectI a{40, 100, 300, 30};
+  const RectI b{40, 700, 300, 30};
+  const int gap = b.y - a.y;
+  CHECK_INT(ScrollPlaceControlDip(b, 260, viewport).y_dip -
+                ScrollPlaceControlDip(a, 260, viewport).y_dip,
+            gap);
+}
+
+TEST(ui_layout_scrolled_out_controls_stay_in_the_tab_order) {
+  const int viewport = 500;
+  const RectI r{40, 600, 300, 30};
+
+  // 完全在可視範圍以外(還沒捲到)。**不准藏** ——
+  // 藏起來就退出 Tab 順序,鍵盤使用者再也走不到它,
+  // 而捲動的存在正是為了讓那些控制項碰得到。
+  const ScrolledPlacement below = ScrollPlaceControlDip(r, 0, viewport);
+  CHECK(below.visible);
+  CHECK_INT(below.clip_h_dip, 0);  // 一個像素都不露,但它在
+
+  // 已經捲上去、整顆在可視範圍裡:不裁。
+  const ScrolledPlacement inside = ScrollPlaceControlDip(r, 300, viewport);
+  CHECK(inside.visible);
+  CHECK_INT(inside.clip_h_dip, -1);
+
+  // 捲到一半:只露出可視範圍以內那一截,免得畫在底部固定列上面。
+  const ScrolledPlacement half = ScrollPlaceControlDip(r, 120, viewport);
+  CHECK(half.visible);
+  CHECK_INT(half.y_dip, 480);
+  CHECK_INT(half.clip_h_dip, 20);
+
+  // 捲過頭(整顆在上方):上方由父視窗的 client 矩形負責,這裡不裁。
+  const ScrolledPlacement above = ScrollPlaceControlDip(r, 900, viewport);
+  CHECK(above.visible);
+  CHECK_INT(above.clip_h_dip, -1);
+
+  // 走一次真的版面:外觀頁在預設視窗尺寸下捲不完,而**每一顆**
+  // (含捲到看不見的那幾顆)都必須 visible。
+  const int W = kWindowDefaultW;
+  const int vh = ContentViewportHeightDip(kWindowDefaultH);
+  const PageLayout pl = LayoutSettingsPageDip(kPageAppearance, W, false);
+  const int smax = ScrollMaxDip(kPageAppearance, W, kWindowDefaultH, false);
+  CHECK(smax > 0);  // 這一頁真的捲得動,否則下面測不到東西
+  int off_screen = 0, hidden = 0;
+  for (const PlacedControl& c : pl.items) {
+    if (c.rect.empty()) continue;
+    const ScrolledPlacement sp = ScrollPlaceControlDip(c.rect, 0, vh);
+    if (sp.clip_h_dip == 0) ++off_screen;
+    if (!sp.visible) ++hidden;
+  }
+  CHECK(off_screen > 0);   // 掃描範圍非空:真的有捲到看不見的控制項
+  CHECK_INT(hidden, 0);    // 而且沒有一顆是藏起來的
+}

@@ -307,6 +307,8 @@ run_checks() {
       "test_ui_layout.cc:ui_layout_content_column_three_worked_cases" \
       "test_ui_layout.cc:ui_layout_every_clickable_target_is_reachable" \
       "test_ui_layout.cc:ui_layout_scroll_range_actually_uses_the_window_height" \
+      "test_ui_layout.cc:ui_layout_scrolled_placement_actually_subtracts_the_scroll" \
+      "test_ui_layout.cc:ui_layout_scrolled_out_controls_stay_in_the_tab_order" \
       "test_ui_layout.cc:ui_layout_every_control_belongs_to_exactly_one_page" \
       "test_statusbar_place.cc:statusbar_falls_back_when_the_monitor_disappears" \
       "test_statusbar_place.cc:statusbar_growing_wider_stays_inside_the_work_area" \
@@ -354,21 +356,80 @@ run_checks() {
   fi
 
   # ── W12:跟著系統即時切換 ────────────────────────────────────
+  #
+  # ⚠ 上一版這一條算了一個 w12(數「同一個檔案裡 WM_SETTINGCHANGE 與
+  #   ImmersiveColorSet 都出現」的檔案數),然後**從來沒有讀它** ——
+  #   真正的斷言只剩「windows/ 底下某處有 ImmersiveColorSet 這個字串」。
+  #   而那個字串住在 ui_theme.cc 的比對函式裡,把設定視窗的
+  #   WM_SETTINGCHANGE 整段刪掉它照樣是綠的。
+  #
+  #   現在驗的是資料流:比對函式真的比對那個字面值,而**每一個**
+  #   有 WM_SETTINGCHANGE 分支的視窗都要在那一支裡呼叫它、並且換主題。
   check
-  local w12=0
-  for f in "${CODE_DIR}"/service/*.cc; do
-    if grep -q 'WM_SETTINGCHANGE' "${f}" && grep -q 'ImmersiveColorSet' "${f}"; then
-      w12=$((w12+1))
-    fi
-  done
-  # ui_theme.cc 有比對,settings_window / status_bar 有訊息分支 —— 至少一處
-  # 兩者同時出現才算數。
-  local w12a; w12a="$(hits 'ImmersiveColorSet')"
-  if [ -z "${w12a}" ]; then
-    red "W12:找不到 ImmersiveColorSet 的比對 —— 系統換深淺時我們不會跟著換"
-  else
-    ok "W12 有處理 WM_SETTINGCHANGE 並比對 ImmersiveColorSet"
-  fi
+  local w12bad=0
+  local w12out; w12out="$("${PY}" - "${CODE_DIR}" <<'PYSCRIPT'
+import glob, os, re, sys
+root = sys.argv[1]
+out = []
+
+theme = os.path.join(root, 'service', 'ui_theme.cc')
+try:
+    t = open(theme, encoding='utf-8', errors='replace').read()
+except OSError:
+    t = ''
+m = re.search(r'bool Theme::IsColorSetChange\(LPARAM l\) \{(.*?)\n\}', t, re.S)
+if not m:
+    out.append('NO_COMPARE_FN')
+elif 'L"ImmersiveColorSet"' not in m.group(1):
+    out.append('NO_LITERAL')
+elif 'lstrcmpiW' not in m.group(1):
+    out.append('NOT_CASE_INSENSITIVE')
+
+n = 0
+for f in sorted(glob.glob(os.path.join(root, 'service', '*.cc'))):
+    src = open(f, encoding='utf-8', errors='replace').read()
+    for m in re.finditer(r'case WM_SETTINGCHANGE:(.{0,400}?)(?=\n *case |\n *default:)',
+                         src, re.S):
+        n += 1
+        body = m.group(1)
+        rel = os.path.relpath(f, root)
+        if 'IsColorSetChange(l)' not in body:
+            out.append('NO_CALL=' + rel)
+        if 'RefreshTheme()' not in body:
+            out.append('NO_REFRESH=' + rel)
+print('SCOPE_OK')
+print('HANDLERS=%d' % n)
+for line in out:
+    print(line)
+PYSCRIPT
+)"
+  w12msg() { red "W12:$1"; w12bad=1; }
+  case "${w12out}" in
+    SCOPE_OK*) ;;
+    *) w12msg "掃描程式沒跑完(沒有 SCOPE_OK)。實際輸出:
+${w12out}" ;;
+  esac
+  local nw12; nw12="$(num "$(printf '%s\n' "${w12out}" | sed -n 's/^HANDLERS=//p')")"
+  need_scope "W12 WM_SETTINGCHANGE 分支數" "${nw12}" 2 || w12bad=1
+  local line12
+  while IFS= read -r line12; do
+    case "${line12}" in
+      ''|SCOPE_OK|HANDLERS=*) continue ;;
+      NO_COMPARE_FN) w12msg "找不到 Theme::IsColorSetChange —— 掃描範圍錯了" ;;
+      NO_LITERAL)
+        w12msg "IsColorSetChange 沒有比對 L\"ImmersiveColorSet\" —— 系統換深淺時
+     我們收得到 WM_SETTINGCHANGE 卻認不出是哪一種,於是不會跟著換" ;;
+      NOT_CASE_INSENSITIVE)
+        w12msg "IsColorSetChange 沒有用 lstrcmpiW —— 那個字串的大小寫不保證" ;;
+      NO_CALL=*)
+        w12msg "${line12#NO_CALL=} 的 WM_SETTINGCHANGE 分支沒有呼叫 IsColorSetChange(l) ——
+     這個視窗不會跟著系統換深淺(而整檔 grep 看不出來:那個字串在 ui_theme.cc)" ;;
+      NO_REFRESH=*)
+        w12msg "${line12#NO_REFRESH=} 認出了色彩變更卻沒有 RefreshTheme() —— 認出來了不做事" ;;
+      *) w12msg "未知的回報:${line12}" ;;
+    esac
+  done <<< "${w12out}"
+  [ "${w12bad}" -eq 0 ] && ok "W12 ${nw12} 個 WM_SETTINGCHANGE 分支都呼叫 IsColorSetChange(l) 並換主題,而比對函式真的比對 L\"ImmersiveColorSet\""
 
   # ── W13:高對比是第三種模式 ──────────────────────────────────
   check
@@ -574,32 +635,170 @@ PYSCRIPT
   fi
   [ "${w24bad}" -eq 0 ] && ok "W24 版面全部在 common/ui_layout.cc;${ntable} 顆控制項與 ${npages} 頁的版面兩個方向都對得上,而且沒有一顆同時屬於兩頁"
 
-  # ── W25:內容區必須捲得動 ────────────────────────────────────
+  # ── W25:內容區必須捲得動,而且捲動量真的要套到控制項上 ──
   #
   # ⚠ 外觀頁的內容高 890 DIP。150% 的 1080p 筆電 client 約 667 DIP ——
   #   **視窗拉到最大也碰不到深淺色三態**,而那三顆是整個 UI 上唯一的入口。
-  #   所以「可以拉大視窗」不算修好;要有捲動,而且滾輪、捲軸、鍵盤焦點
-  #   三條路都要有。少任何一條,使用者就有一條路是死的。
+  #
+  # ⚠ **上一輪這一條是假綠的,而且是被實測拆出來的。** 舊版對整份
+  #   settings_window.cc `grep -q` 七個字串。三種拆法都騙得過它:
+  #     (a) `const int y = p->rect.y - scroll_;` → `= p->rect.y;`
+  #         捲軸拖得動、內容一動也不動。七個字串一個不少。
+  #     (b) 捲出可視範圍的控制項改回 `ShowWindow(SW_HIDE)`
+  #         —— 它一退出 Tab 順序,鍵盤使用者就再也碰不到。一樣全綠。
+  #     (c) 主視窗的 WS_VSCROLL 拿掉(捲軸整條消失)—— 而 :172 那顆
+  #         IDC_DIAG 唯讀 EDIT 也寫著 WS_VSCROLL,所以整檔 grep 永遠命中。
+  #         `EnsureFocusVisible` 同一形狀:名字出現兩次(呼叫、定義),
+  #         把訊息迴圈裡的**呼叫**刪掉、定義留著,也是綠的。
+  #
+  #   所以現在驗的是**呼叫位置與資料流**,不是「檔案裡有沒有這個字」:
+  #     · 三件事的決定權搬到 common/ui_layout.cc 的 ScrollPlaceControlDip(),
+  #       那是一支純函式,由兩條真的單元測試釘住;
+  #     · 這裡驗的是 LayoutUi() 真的把 `scroll_` 送進去、而且 y / 裁切 /
+  #       ShowWindow 的引數都是從它的回傳值來的。
+  #
+  # ⚠ 這一段的 python 失敗時**必須是紅**。上一次寫错一個跳脫字元,
+  #   python 當場 SyntaxError、輸出是空的,而這一條印了 ok ——
+  #   所以它必須先印 SCOPE_OK,沒有那一行就當作沒跑過。
   check
-  local w25bad=0 need25
-  for need25 in 'WS_VSCROLL' 'WM_MOUSEWHEEL' 'WM_VSCROLL' 'SetScrollInfo' \
-                'GetScrollInfo' 'EnsureFocusVisible' 'SetWindowRgn'; do
-    if ! grep -q "${need25}" "${sw}" 2>/dev/null; then
-      red "W25:settings_window.cc 少了 ${need25} —— 內容區有 384 DIP 在視窗外面,少一條路就有一種使用者碰不到它"
-      w25bad=1
-    fi
-  done
-  # 純函式那一側:捲動範圍必須真的吃視窗高度。
-  if ! grep -q 'int ScrollMaxDip(' "${CODE_DIR}/common/ui_layout.cc" 2>/dev/null; then
-    red "W25:common/ui_layout.cc 沒有 ScrollMaxDip —— 捲動範圍不是純函式就測不到"
-    w25bad=1
-  fi
-  local w25void; w25void="$(grep -n '(void)window_h_dip' "${CODE_DIR}/common/ui_layout.cc" 2>/dev/null || true)"
-  if [ -n "${w25void}" ]; then
-    red "W25:ui_layout.cc 又把 window_h_dip 丟掉了 —— 「排到視窗底部以外」對測試而言會再一次不存在"
-    w25bad=1
-  fi
-  [ "${w25bad}" -eq 0 ] && ok "W25 內容區捲得動:捲軸 + 滾輪 + 鍵盤焦點三條路都在,捲動範圍是純函式"
+  local w25bad=0
+  local w25out; w25out="$("${PY}" - "${sw}" "${CODE_DIR}/common/ui_layout.cc" <<'PYSCRIPT'
+import re, sys
+sw = open(sys.argv[1], encoding='utf-8', errors='replace').read()
+lay = open(sys.argv[2], encoding='utf-8', errors='replace').read()
+
+def body_of(src, head, endpat='\n}\n'):
+    i = src.find(head)
+    if i < 0:
+        return None
+    j = src.find(endpat, i)
+    return src[i:j] if j > 0 else src[i:]
+
+out = []
+
+# -- 1. main window creation must carry WS_VSCROLL --
+i = sw.find('hwnd_ = ::CreateWindowExW(')
+if i < 0:
+    out.append('NO_MAINWIN')
+else:
+    call = sw[i:sw.find(');', i)]
+    if 'kClass' not in call:
+        out.append('MAINWIN_NOT_KCLASS')
+    if 'WS_VSCROLL' not in call:
+        out.append('NO_MAINWIN_VSCROLL')
+
+# -- 2. message cases must reach their handlers --
+for msg, fn in (('WM_VSCROLL', 'OnVScroll('), ('WM_MOUSEWHEEL', 'OnMouseWheel(')):
+    m = re.search(r'case ' + msg + r':(.{0,200}?)(?=\n *case |\n *default:)', sw, re.S)
+    if not m:
+        out.append('NO_CASE=' + msg)
+    elif fn not in m.group(1):
+        out.append('CASE_DEAD=' + msg)
+
+# -- 3. keyboard focus must be *called* from the message loop --
+loop = body_of(sw, 'while (::GetMessageW(', '\n  }\n')
+if loop is None:
+    out.append('NO_MSGLOOP')
+elif 'EnsureFocusVisible()' not in loop:
+    out.append('NO_FOCUS_CALL')
+efv = body_of(sw, 'void SettingsWindow::EnsureFocusVisible()')
+if efv is None:
+    out.append('NO_FOCUS_DEF')
+elif 'SetScroll(' not in efv:
+    out.append('FOCUS_DEF_DEAD')
+
+# -- 4. LayoutUi: scrollbar fed, and the three wires --
+lu = body_of(sw, 'void SettingsWindow::LayoutUi() {')
+if lu is None:
+    out.append('NO_LAYOUTUI')
+else:
+    if 'si.nPos = scroll_;' not in lu or '::SetScrollInfo(hwnd_, SB_VERT, &si,' not in lu:
+        out.append('SCROLLBAR_NOT_FED')
+    if not re.search(r'ScrollPlaceControlDip\(\s*p->rect,\s*scroll_,\s*viewport_h\s*\)', lu):
+        out.append('NO_SCROLL_ARG')
+    if not re.search(r'place\(id, RectI\{p->rect\.x, sp\.y_dip,', lu):
+        out.append('Y_NOT_FROM_FN')
+    if not re.search(r'ClipToViewport\(i, c, p->rect\.w, sp\.clip_h_dip\)', lu):
+        out.append('CLIP_NOT_FROM_FN')
+    if not re.search(r'::ShowWindow\(c, sp\.visible \? SW_SHOW : SW_HIDE\);', lu):
+        out.append('SHOW_NOT_FROM_FN')
+    n_hide = lu.count('SW_HIDE')
+    if n_hide != 2:
+        out.append('EXTRA_HIDE=%d' % n_hide)
+
+# -- 5. the pure side --
+if 'int ScrollMaxDip(' not in lay:
+    out.append('NO_SCROLLMAX')
+if 'ScrolledPlacement ScrollPlaceControlDip(' not in lay:
+    out.append('NO_PUREFN')
+if '(void)window_h_dip' in lay:
+    out.append('VOID_HEIGHT')
+
+print('SCOPE_OK')
+for line in out:
+    print(line)
+PYSCRIPT
+)"
+  w25msg() { red "W25:$1"; w25bad=1; }
+  case "${w25out}" in
+    SCOPE_OK*) ;;
+    *) w25msg "這一條的掃描程式根本沒跑完(沒有 SCOPE_OK)。
+     上一版就是這樣失效的:python 當場 SyntaxError、輸出是空的,
+     而「沒有任何違規」被印成了 ok。實際輸出:
+${w25out}" ;;
+  esac
+  local line
+  while IFS= read -r line; do
+    case "${line}" in
+      ''|SCOPE_OK) continue ;;
+      NO_MAINWIN)  w25msg "找不到 hwnd_ = ::CreateWindowExW( —— 掃描範圍錯了" ;;
+      MAINWIN_NOT_KCLASS) w25msg "hwnd_ 的建立呼叫裡沒有 kClass —— 抓錯呼叫了,這一條不算數" ;;
+      NO_MAINWIN_VSCROLL)
+        w25msg "**主視窗**的建立呼叫裡沒有 WS_VSCROLL —— 捲軸整條不存在。
+     (整檔 grep 拉不出這件事:IDC_DIAG 那顆唯讀 EDIT 也寫著 WS_VSCROLL。)" ;;
+      NO_CASE=*)   w25msg "WndProc 裡沒有 ${line#NO_CASE=} 分支 —— 那一條路是死的" ;;
+      CASE_DEAD=*) w25msg "${line#CASE_DEAD=} 分支在,卻沒有呼叫對應的處理常式 ——
+     訊息被吞下來什麼都不做,與沒接一樣,而 grep 看得到字串" ;;
+      NO_MSGLOOP)  w25msg "找不到訊息迴圈 —— 掃描範圍錯了" ;;
+      NO_FOCUS_CALL)
+        w25msg "訊息迴圈裡**沒有呼叫** EnsureFocusVisible() —— Tab 走到視窗外的
+     控制項時畫面一動也不動,使用者在盲按。(定義留著不算:
+     那個名字在檔案裡本來就有兩次,整檔 grep 永遠是綠的。)" ;;
+      NO_FOCUS_DEF)   w25msg "找不到 EnsureFocusVisible 的定義" ;;
+      FOCUS_DEF_DEAD) w25msg "EnsureFocusVisible 沒有呼叫 SetScroll() —— 它不會把任何東西捲進來" ;;
+      NO_LAYOUTUI)    w25msg "找不到 LayoutUi —— 掃描範圍錯了" ;;
+      SCROLLBAR_NOT_FED)
+        w25msg "捲軸沒有吃到 scroll_(缺 si.nPos = scroll_ 或 SetScrollInfo)——
+     拇指位置與實際捲動量會對不上" ;;
+      NO_SCROLL_ARG)
+        w25msg "LayoutUi 沒有把 **scroll_** 送進 ScrollPlaceControlDip() ——
+     捲軸拖得動、內容一動也不動。這正是上一輪被實測拆掉而全綠的那一行。" ;;
+      Y_NOT_FROM_FN)
+        w25msg "控制項的 y **不是**從 ScrollPlaceControlDip() 的回傳值來的(預期
+     place(id, RectI{p->rect.x, sp.y_dip, ...}))—— 寫成 p->rect.y 就是不捲了" ;;
+      CLIP_NOT_FROM_FN)
+        w25msg "裁切高度不是從 ScrollPlaceControlDip() 來的(預期
+     ClipToViewport(i, c, p->rect.w, sp.clip_h_dip))" ;;
+      SHOW_NOT_FROM_FN)
+        w25msg "ShowWindow 的引數不是 sp.visible(預期
+     ::ShowWindow(c, sp.visible ? SW_SHOW : SW_HIDE);)—— 寫死 SW_HIDE 的話,
+     捲出可視範圍的控制項會退出 Tab 順序,鍵盤使用者再也碰不到它" ;;
+      EXTRA_HIDE=*)
+        w25msg "LayoutUi 裡的 SW_HIDE 有 ${line#EXTRA_HIDE=} 處(只允許 2:「這一頁上不
+     出現」那一支,加上 sp.visible 那個三元式)—— 多出來的那一個很可能
+     在把捲出去的控制項藏起來" ;;
+      NO_SCROLLMAX)
+        w25msg "common/ui_layout.cc 沒有 ScrollMaxDip —— 捲動範圍不是純函式就測不到" ;;
+      NO_PUREFN)
+        w25msg "common/ui_layout.cc 沒有 ScrollPlaceControlDip —— 捲動後的位置/裁切/顯示
+     又回到 settings_window.cc 裡了,而那裡單元測試看不到" ;;
+      VOID_HEIGHT)
+        w25msg "ui_layout.cc 又把 window_h_dip 丟掉了 —— 「排到視窗底部以外」對測試
+     而言會再一次不存在" ;;
+      *) w25msg "未知的回報:${line}" ;;
+    esac
+  done <<< "${w25out}"
+  [ "${w25bad}" -eq 0 ] && ok "W25 內容區捲得動:主視窗有捲軸、滾輪/捲軸/鍵盤焦點三條路都接到處理常式,而且 y / 裁切 / 顯示與否三條接線都從 ScrollPlaceControlDip() 來"
 
   # ── W26:狀態列寬度一變就要重新夾進工作區 ─────────────────────
   #
@@ -633,29 +832,81 @@ PYSCRIPT
     red "W26:ApplyPlacement 沒有收寬度參數 —— 從 GetWindowRect 讀回來的是舊寬度"
     w26bad=1
   fi
-  # 简/繁 那一格必須樂觀寫入(否則指示器要等使用者打一個字才會動,
-  # 而且再按一次送的是同一個值)。
-  local w26v; w26v="$("${PY}" - "${bar}" <<'PYSCRIPT'
+  # ── 按下去畫面要立刻動:兩格都要「樂觀寫入 + 重畫」 ──────────
+  #
+  # ⚠ 上一版只看 kCellVariant 分支裡有沒有 `simplified_ = `。覆核者
+  #   保留樂觀寫入、只拿掉 `Relayout()` + `::InvalidateRect()`,
+  #   那一格照樣不會變 —— 而 W26 仍然印 ok。狀態寫了沒有重畫,
+  #   使用者看到的與「根本沒寫」一模一樣。
+  #
+  #   所以現在對**兩格**(中/En 與 简/繁)都要求同一個形狀,而且要求
+  #   順序:先寫本地狀態 → 再送出去 → 再重畫。少一步就紅。
+  local w26c; w26c="$("${PY}" - "${bar}" <<'PYSCRIPT'
 import re, sys
 s = open(sys.argv[1], encoding='utf-8', errors='replace').read()
+out = []
 m = re.search(r'void StatusBar::ClickCell\(int cell\) \{(.*?)\n\}\n', s, re.S)
 if not m:
-    print('NOFUNC'); raise SystemExit
+    print('SCOPE_OK')
+    print('NOFUNC')
+    raise SystemExit
 body = m.group(1)
-cell = re.search(r'case kCellVariant: \{(.*?)\n    \}', body, re.S)
-if not cell:
-    print('NOCELL'); raise SystemExit
-if 'simplified_ = ' not in cell.group(1):
-    print('NOOPTIMISTIC')
+
+# (格名, 樂觀寫入的形態, 送出去的呼叫)
+cells = (
+    ('kCellMode', 'ascii_mode_ = !now;', 'SetAsciiModeAll('),
+    ('kCellVariant', 'simplified_ = !now;', 'SetVariantPref('),
+)
+for name, write, send in cells:
+    c = re.search(r'case ' + name + r': \{(.*?)\n    \}', body, re.S)
+    if not c:
+        out.append('NOCELL=' + name)
+        continue
+    b = c.group(1)
+    iw = b.find(write)
+    if iw < 0:
+        out.append('NOOPTIMISTIC=' + name)
+        continue
+    if send not in b:
+        out.append('NOSEND=' + name)
+    ir = b.find('Relayout();')
+    ii = b.find('::InvalidateRect(hwnd_, nullptr, TRUE);')
+    if ir < 0 or ii < 0:
+        out.append('NOREPAINT=' + name)
+    elif ir < iw or ii < iw:
+        out.append('REPAINT_BEFORE_WRITE=' + name)
+print('SCOPE_OK')
+for line in out:
+    print(line)
 PYSCRIPT
 )"
-  if printf '%s\n' "${w26v}" | grep -q 'NOFUNC\|NOCELL'; then
-    red "W26:找不到 ClickCell 的 kCellVariant 分支 —— 掃描範圍錯了"
-    w26bad=1
-  elif printf '%s\n' "${w26v}" | grep -q 'NOOPTIMISTIC'; then
-    red "W26:简/繁 那一格沒有樂觀寫入 simplified_ —— 按下去畫面不動,而且再按一次送的是同一個值"
-    w26bad=1
-  fi
+  w26msg() { red "W26:$1"; w26bad=1; }
+  case "${w26c}" in
+    SCOPE_OK*) ;;
+    *) w26msg "简/繁 那一段的掃描程式沒跑完(沒有 SCOPE_OK)。實際輸出:
+${w26c}" ;;
+  esac
+  local l26
+  while IFS= read -r l26; do
+    case "${l26}" in
+      ''|SCOPE_OK) continue ;;
+      NOFUNC)   w26msg "找不到 StatusBar::ClickCell —— 掃描範圍錯了" ;;
+      NOCELL=*) w26msg "ClickCell 裡找不到 ${l26#NOCELL=} 分支 —— 掃描範圍錯了" ;;
+      NOOPTIMISTIC=*)
+        w26msg "${l26#NOOPTIMISTIC=} 那一格沒有樂觀寫入本地狀態 —— 指示器要等使用者
+     打一個字才會動,而且再按一次送的是同一個值(它是拿本地狀態反推的)" ;;
+      NOSEND=*)
+        w26msg "${l26#NOSEND=} 那一格只改了本地狀態,沒有把新值送出去 ——
+     指示器動了而引擎沒動,那比不動更糟" ;;
+      NOREPAINT=*)
+        w26msg "${l26#NOREPAINT=} 那一格寫了狀態卻沒有 Relayout() + InvalidateRect() ——
+     **那一格照樣不會變**。使用者看到的與根本沒寫一模一樣,
+     而只看「有沒有寫入」的檢查會是綠的(上一輪就是這樣被拆掉的)。" ;;
+      REPAINT_BEFORE_WRITE=*)
+        w26msg "${l26#REPAINT_BEFORE_WRITE=} 那一格先重畫才寫狀態 —— 畫出來的是舊值" ;;
+      *) w26msg "未知的回報:${l26}" ;;
+    esac
+  done <<< "${w26c}"
   [ "${w26bad}" -eq 0 ] && ok "W26 狀態列寬度一變就重走 PlaceStatusBar,而且 简/繁 那一格按下去立刻改變"
 }
 
@@ -695,6 +946,18 @@ self_check() {
 "W25b 又把高度丟掉|common/ui_layout.cc|s=s.replace('int ScrollMaxDip(int page, int window_w_dip, int window_h_dip,','int ScrollMaxDipRemoved(int page, int window_w_dip, int window_h_dip,',1)"
 "W26 狀態列不重擺|service/status_bar.cc|s=s.replace('  ApplyPlacement(MulDivRound(total_w, 96, static_cast<int>(dpi_)));','',1)"
 "W26b 简繁不樂觀寫入|service/status_bar.cc|s=s.replace('        now = simplified_;\n        simplified_ = !now;\n      }\n      // 走設定視窗那一支','        now = simplified_;\n      }\n      // 走設定視窗那一支',1)"
+"W12a 設定視窗不跟著系統換深淺(整檔 grep 抓不到)|service/settings_window.cc|s=s.replace('Theme::IsColorSetChange(l) ||','false ||',1)"
+"W12b 比對的字面值被換掉|service/ui_theme.cc|s=s.replace('L'+chr(34)+'ImmersiveColorSet'+chr(34),'L'+chr(34)+'SomethingElse'+chr(34),1)"
+"W25a 捲動量沒套到控制項(覆核者實測的拆法)|service/settings_window.cc|s=s.replace('place(id, RectI{p->rect.x, sp.y_dip, p->rect.w, p->rect.h});','place(id, RectI{p->rect.x, p->rect.y, p->rect.w, p->rect.h});',1)"
+"W25b 捲動量沒送進純函式|service/settings_window.cc|s=s.replace('ScrollPlaceControlDip(p->rect, scroll_, viewport_h)','ScrollPlaceControlDip(p->rect, 0, viewport_h)',1)"
+"W25c 捲出可視範圍就藏起來(覆核者實測的拆法)|service/settings_window.cc|s=s.replace('::ShowWindow(c, sp.visible ? SW_SHOW : SW_HIDE);','::ShowWindow(c, SW_HIDE);',1)"
+"W25d 主視窗的捲軸拿掉(覆核者實測的拆法)|service/settings_window.cc|s=s.replace('WS_THICKFRAME | WS_VSCROLL | WS_CLIPCHILDREN','WS_THICKFRAME | WS_CLIPCHILDREN',1)"
+"W25e 訊息迴圈裡的焦點呼叫刪掉、定義留著(覆核者實測的拆法)|service/settings_window.cc|s=s.replace('        EnsureFocusVisible();','        (void)0;',1)"
+"W25f 滾輪分支在但什麼都不做|service/settings_window.cc|s=s.replace('      if (self) self->OnMouseWheel(GET_WHEEL_DELTA_WPARAM(w));','',1)"
+"W25g 裁切高度不從純函式來|service/settings_window.cc|s=s.replace('ClipToViewport(i, c, p->rect.w, sp.clip_h_dip);','ClipToViewport(i, c, p->rect.w, -1);',1)"
+"W25h 純函式從 common/ 消失|common/ui_layout.cc|s=s.replace('ScrolledPlacement ScrollPlaceControlDip(','ScrolledPlacement ScrollPlaceControlDipGone(',1)"
+"W26c 简/繁 寫了狀態但不重畫(覆核者實測的拆法)|service/status_bar.cc|s=s.replace('                                      : VariantPref::kSimplified);\\n      Relayout();\\n      ::InvalidateRect(hwnd_, nullptr, TRUE);','                                      : VariantPref::kSimplified);',1)"
+"W26d 中/En 寫了狀態但不重畫|service/status_bar.cc|s=s.replace('      if (engine_) engine_->SetAsciiModeAll(!now);\\n      Relayout();\\n      ::InvalidateRect(hwnd_, nullptr, TRUE);','      if (engine_) engine_->SetAsciiModeAll(!now);',1)"
 "範圍|__SCOPE__|"
   )
 
@@ -713,13 +976,26 @@ self_check() {
       rm -rf "${tmp}/windows"
       mkdir -p "${tmp}/windows"
     else
-      "${PY}" - "${tmp}/windows/${relfile}" <<PYMUT
+      # ⚠ 植入本身失敗(跳脫寫錯、錪點不存在)時，樹是**沒改過的**，
+      #   於是守門當然是綠的 —— 而舊版把那報成「那一條不算數」，
+      #   讀起來像是守門有問題。兩種情況要分開講，而且都要紅。
+      if ! "${PY}" - "${tmp}/windows/${relfile}" <<PYMUT
 import io,sys
 p=sys.argv[1]
 s=open(p,encoding='utf-8').read()
+before=s
 ${pysnip}
+if s==before:
+    sys.stderr.write('NOCHANGE\n')
+    raise SystemExit(3)
 open(p,'w',encoding='utf-8').write(s)
 PYMUT
+      then
+        printf '  \033[1;31m%s 的違規**根本沒有植入成功**(錨點對不上或跳脫寫錯) —— 這一條反向測試等於沒做\033[0m\n' "${name}" >&2
+        fail=$((fail+1))
+        rm -rf "${tmp}"
+        continue
+      fi
     fi
 
     local out

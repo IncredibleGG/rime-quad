@@ -711,14 +711,14 @@ void SettingsWindow::LayoutUi() {
     if (id == IDC_STATUS) {
       place(id, RectI{cx, H - kBottomBarH, cw - 120 - space::s3,
                       metric::kMinTarget});
-      ClipToViewport(i, c, RectI{}, 0, H);
+      ClipToViewport(i, c, 0, -1);
       ::ShowWindow(c, SW_SHOW);
       continue;
     }
     if (id == IDC_CLOSE) {
       place(id, RectI{W - space::s7 - 100, H - kBottomBarH, 100,
                       metric::kMinTarget});
-      ClipToViewport(i, c, RectI{}, 0, H);
+      ClipToViewport(i, c, 0, -1);
       ::ShowWindow(c, SW_SHOW);
       continue;
     }
@@ -730,33 +730,42 @@ void SettingsWindow::LayoutUi() {
       ::ShowWindow(c, SW_HIDE);
       continue;
     }
-    const int y = p->rect.y - scroll_;
-    place(id, RectI{p->rect.x, y, p->rect.w, p->rect.h});
-    ClipToViewport(i, c, p->rect, y, viewport_h);
-    // ⚠ 捲出可視範圍的控制項**不隱藏**,只裁成空的。隱藏會讓它退出
-    //   Tab 順序,於是鍵盤使用者再也捲不到它 —— 而捲動的存在正是
-    //   為了讓那些控制項碰得到。
-    ::ShowWindow(c, SW_SHOW);
+    // ── 捲動後的位置、裁切、顯示與否 ─────────────────
+    //
+    // ⚠ 這三件事的**決定權不在這裡**,在 common/ui_layout.cc 的
+    //   ScrollPlaceControlDip()。理由是這個檔案在 Ubuntu 上編不起來,
+    //   單元測試看不到它 —— 上一輪那行
+    //   `const int y = p->rect.y - scroll_;` 就是寫在這裡,而把
+    //   `- scroll_` 拿掉(捲軸拖得動、內容一動也不動)之後,
+    //   206 個單元測試與守門腳本全綠。
+    //
+    //   現在這裡只做一件事:把算好的三個值接到 Win32 上。
+    //   三條接線都不得寫死(y 不得是 p->rect.y、ShowWindow 的引數
+    //   不得是字面的 SW_SHOW/SW_HIDE)—— check_ui_spec.sh 的 W25
+    //   驗的就是這三條。
+    const ScrolledPlacement sp =
+        ScrollPlaceControlDip(p->rect, scroll_, viewport_h);
+    place(id, RectI{p->rect.x, sp.y_dip, p->rect.w, p->rect.h});
+    ClipToViewport(i, c, p->rect.w, sp.clip_h_dip);
+    // 捲出可視範圍的控制項**不隱藏**,只裁成空的(sp.visible
+    // 永遠是 true,而那是被單元測試釘住的規定)。隱藏會讓它退出
+    // Tab 順序,於是鍵盤使用者再也捲不到它 —— 而捲動的存在正是
+    // 為了讓那些控制項碰得到。
+    ::ShowWindow(c, sp.visible ? SW_SHOW : SW_HIDE);
   }
 
   ::InvalidateRect(hwnd_, nullptr, TRUE);
   in_layout_ = false;
 }
 
-void SettingsWindow::ClipToViewport(int index, HWND c, const RectI& r,
-                                    int y_dip, int viewport_h_dip) {
-  // 子視窗本來就會被父視窗的 client 矩形裁掉,所以**上方**不必處理。
-  // 要處理的只有下方那 54 DIP:底部固定列與它上面那條 hairline ——
-  // 那一塊仍然在 client 裡面,捲到一半的控制項會畫在「關閉」鈕上面。
+void SettingsWindow::ClipToViewport(int index, HWND c, int w_dip,
+                                    int clip_h_dip) {
+  // 裁到多高由 ScrollPlaceControlDip() 決定(而那一支有單元測試)。
+  // 這裡只負責把它換成像素、並且**只在變動時才動**:
+  // SetWindowRgn 會重畫,每次 LayoutUi 都無條件呼叫的話,捲動時整頁會閃。
   const int dpi = static_cast<int>(dpi_);
-  int visible = -1;  // -1 = 不裁
-  if (!r.empty() && y_dip + r.h > viewport_h_dip) {
-    visible = viewport_h_dip - y_dip;
-    if (visible < 0) visible = 0;
-  }
+  const int visible = clip_h_dip < 0 ? -1 : clip_h_dip;  // -1 = 不裁
   if (index >= 0 && index < static_cast<int>(clip_h_.size())) {
-    // ⚠ 只在變動時才動。SetWindowRgn 會重畫,每次 LayoutUi 都無條件
-    //   呼叫的話,捲動時整頁會閃。
     if (clip_h_[index] == visible) return;
     clip_h_[index] = visible;
   }
@@ -764,7 +773,7 @@ void SettingsWindow::ClipToViewport(int index, HWND c, const RectI& r,
     ::SetWindowRgn(c, nullptr, TRUE);
     return;
   }
-  const int w_px = Dip(r.w > 0 ? r.w : 1, dpi);
+  const int w_px = Dip(w_dip > 0 ? w_dip : 1, dpi);
   // CreateRectRgn 之後所有權交給視窗 —— **不可以**自己 DeleteObject。
   ::SetWindowRgn(c, ::CreateRectRgn(0, 0, w_px, Dip(visible, dpi)), TRUE);
 }

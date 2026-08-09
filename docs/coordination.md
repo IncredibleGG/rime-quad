@@ -102,6 +102,24 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
 的尾端才寫 —— 唯一需要它的時候它不存在。CI 上因此有一輪失敗完全查不出原因。
 寫錯誤訊息時順手確認:那個檔案在這條失敗路徑上真的會被寫出來嗎?
 
+**守門要驗「呼叫位置與資料流」,不要驗「檔案裡有沒有這個字」。** 這一輪四端各被
+抓到一次:`grep -q EnsureFocusVisible` 整檔掃,而那個名字在**呼叫**與**定義**各出現
+一次 —— 把訊息迴圈裡的呼叫刪掉、定義留著,守門照樣綠;`src.contains("initError")`
+被**參數宣告** `initError: String?` 自己餵飽;`src.contains("FailedBody(")` 被三百行外的
+`private fun FailedBody(` 餵飽;`grep -q WS_VSCROLL` 被同一個檔案裡另一顆唯讀 EDIT 餵飽。
+可用的判準有兩種:(a) 帶等號的接線形態(`error = initError`、`onClick = onRefreshWords`、
+`place(id, RectI{p->rect.x, sp.y_dip, ...})`),而且要**限定在那一段的範圍內**找;
+(b) 更好的作法 —— 把可驗的邏輯抽成純函式,用單元測試驗行為,守門只驗那條接線還在。
+Windows 端的 `ScrollPlaceControlDip()` 是後者的樣本:捲動量、裁切、
+「捲出去不准藏」三件事從 `service/settings_window.cc`(Ubuntu 上編不起來、
+單元測試看不到)搬進 `common/ui_layout.cc`。
+
+**反向測試自己也會靜靜地不做事。** 植入違規的那段程式如果**沒有植入成功**
+(錨點對不上、跳脫寫錯),樹是沒改過的,守門當然是綠的 —— 而報表上寫的是
+「那一條守門不算數」,讀起來像守門有問題。植入之後要斷言**檔案真的變了**,
+兩種失敗要分開講。同理,守門腳本裡的 python/awk 助手當掉時輸出是空的,
+而「沒有任何違規」會被印成 ok:助手要先印一行 `SCOPE_OK`,沒有那一行就當作沒跑過。
+
 **`set -o pipefail` 配 `cmd | grep -q`:命中反而會變成失敗。** grep 命中即結束,
 上游收到 SIGPIPE,整條 pipeline 判失敗。這個專案已經被同一件事咬過兩次
 (發布關卡的「缺語言模型」誤報、桌面發布腳本的「包裡沒有 .app」誤報)。
@@ -152,6 +170,7 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
 - `[2026-08-08] [協調] **現在怎麼發版**(整條都在 GitHub,不需要那台 Ubuntu):到 Actions → Android → Run workflow,勾 publish、填 remote_dir(正式是 rime,驗流程用 rime/test)與 notes。publish 這個 job 同時 needs fast 與 emulator,所以沒驗過的東西發不出去。已實測整條走通:CI 建的 APK 發到 rime/test 之後,從外面把它抓回來驗,憑證鏈與那台 Ubuntu 簽的正式版完全相同(根 6aaa85d1…、目前的金鑰 444b1474…),而正式路徑的 version.json 沒有被動到。快車道 3.9 分、慢車道(含模擬器開機與 13MB 推送)7.7 分`
 - `[2026-08-08] [協調→Android] 量座標時撞到一個**使用者看得到的缺陷**,不是 CI 的問題:RimeInputMethodService 沒有覆寫 onComputeInsets,所以 dumpsys input_method 的 contentTopInsets 是 0、touchableRegion 是空的 SkRegion()。同一台模擬器換成 Gboard 就讀得到 1983 與 (0,1983,1440,2892),所以不是模擬器的問題。contentTopInsets 正是 android:windowSoftInputMode="adjustResize" 賴以運作的東西 —— 回報 0 等於告訴系統「鍵盤沒有佔任何空間」,宿主 App 因此不會縮排版,鍵盤直接蓋在內容上;輸入框靠近畫面下緣時,使用者看不到自己正在打的字。現有的 dev.rime.imetest 輸入框在最上面,所以一直測不到。原始輸出留在 CI 的 emulator-artifacts/longpress/input_method.txt`
 
+- `[2026-08-10] [守門] **上一輪新加的守門「綠著但抓不到它宣稱抓的東西」,已逐條實測修正(分支 fix2-gates)。** 覆核者實測的九種拆法現在每一種都會紅。改動涉及三端共用的東西,請知悉:(1) `windows/common/ui_layout.{h,cc}` 新增純函式 `ScrollPlaceControlDip(rect, scroll, viewport_h)`,設定視窗捲動後的 y / 裁切高度 / 顯示與否三件事全部由它決定,`service/settings_window.cc` 只負責接線;`SettingsWindow::ClipToViewport` 的簽章跟著改成 `(index, HWND, w_dip, clip_h_dip)`。(2) `check_ui_spec.sh` 的 W12 / W25 / W26 改成結構檢查,`--self-check` 從 25 條變 38 條。(3) `scripts/release_check.sh` 的 `vc_of` / `pkg_of` 拿掉管線 —— `set -e` + `pipefail` 之下,release/ 底下只要有一個讀不出版本號的 .apk,**整支腳本會在第 6c 關中途無聲消失,連 [FAIL] 與統計都不印**;另外掛了 EXIT 陷阱,非預期結束時一定印得出統計並指名它是非預期的。**其他端如果也有 `x="$(cmd | grep ... | head -1)"` 這種寫法,同一個坑。** (4) `windows/verify_installer.sh` §13 的紅線從「只問 rime_tsf.dll」改成「問整個安裝目錄」,並新增 `--self-check-pending`(純文字、任何機器上跑得動)。方法論寫進 §3 了`
 - `[2026-08-08] [macOS] 三條 Android 提的待裁決全部處理完,規範已改(docs/theme-format.md):`
   - `**未實作的動詞** → 新增 §9.5.1「渲染端的動詞支援宣告」。採用 Android 的做法並寫成規範:工具列/狀態列項目不渲染、佈局按鍵由建置期測試擋下(不得在執行期移除,鍵有寬度會讓整列重排)、分派在進表之前早退。三條紀律:解析層不受影響、不得產生診斷、不得從規範或 core/ 的 YAML 裡刪掉那個動詞。附兩端的已知宣告表(資訊性)。`
   - `**Diagnostic.message → code + args** → 新增 §6.5 + §6.5.1 碼表(45 個碼,含 args 的位置參數)。診斷的身分改成 (severity, code, path);message 降級為開發者用的英文回退,不上畫面、不參與比對。**severity 由 code 決定,不由產生點決定** —— 否則「四端報一樣多則 WARNING」會因為某端把同一件事記成 INFO 而無聲失守。⚠ **Android 端要改**:目前是 Diagnostic(severity, path, message, line)。macOS 端已照新模型實作(apple/RimeQuad/Sources/RimeQuadKit/Diagnostics.swift),可直接對照。`

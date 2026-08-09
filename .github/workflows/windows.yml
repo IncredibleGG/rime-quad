@@ -34,7 +34,7 @@ name: Windows (核心驗證 + TSF)
 
 on:
   push:
-    branches: [main, windows, fix-win]
+    branches: [main, windows, fix-win, fix2-gates]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -114,6 +114,20 @@ jobs:
       #   那一條從第一天起就是假綠的,是這個反向測試把它翻出來的。
       - name: 反向測試（每一條檢核都必須真的會紅）
         run: ./windows/check_ui_spec.sh --self-check
+
+      # ── 升級不重開機那一節的判準,自己先驗一次 ────────────────
+      #
+      # ⚠ windows/verify_installer.sh 只有在**真的裝過一次**的 runner 上
+      #   才跑得完(core-x64 的最後面),而它 §13 的紅線
+      #   「升級沒有把任何東西排進開機佇列」以前只問了一個檔名
+      #   (rime_tsf.dll)。那一節的宣稱比它驗的大很多,中間的差距
+      #   (rime_service.exe、data\shared 的四十份 yaml、.ocd2)全是綠的。
+      #
+      #   判準本身是純文字處理,所以它可以在這裡先被驗一次:
+      #   --self-check-pending 餵合成的佇列內容,並且逐項證明
+      #   **舊判準漏掉、新判準抓到**。
+      - name: 開機佇列的判準必須抓得到不只 rime_tsf.dll
+        run: ./windows/verify_installer.sh --self-check-pending
 
       - name: 二進位結構檢查（匯出符號、相依白名單、**沒有網路相依**）
         run: ./windows/check_binaries.sh third_party/build/windows-x64/logic/bin
