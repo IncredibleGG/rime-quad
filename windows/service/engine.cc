@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 
 #include "../common/ime_policy.h"
 #include "rime_shell.h"
@@ -9,13 +10,22 @@
 namespace rimewin {
 namespace {
 
-// 低優先的工作(收 session)在引擎閒下來多久之後才做。
+// 低優先的工作(收 session、補充備用 session)在引擎閒下來多久之後才做。
 //
-// 挑 400 毫秒的理由:它要明顯大於「一個宿主離開、下一個宿主連上來」
-// 那個間隔的**下限**(使用者關掉一個程式再切到另一個,中間至少也有
-// 幾百毫秒),同時遠小於任何人會察覺到的東西 —— 詞典寫回晚 0.4 秒,
-// 沒有任何人在等。
-constexpr int64_t kLowPriorityIdleMs = 400;
+// ⚠ 1500 毫秒不是「保險起見」挑的,是被量出來的兩件事夾出來的:
+//
+//   · 低優先的工作**很貴**:收 session 要把使用者詞典寫回去,補一個備用
+//     session 量到 442~753 毫秒。而它們一旦開始就停不下來。
+//   · 按鍵的預算只有 **50 毫秒**。所以只要在使用者還在打字的空檔裡插進去
+//     一件,那一顆字就打不出來。
+//
+//   打字時的按鍵間隔是十分之幾秒,「想一下」的停頓才是一兩秒 ——
+//   所以門檻要明顯大於前者。取 1500 毫秒:連續打字時這條路自然不會被
+//   走到,而使用者一停下來就會被補上。
+//
+//   代價只有「收尾晚一點做」與「連開兩個程式時第二個可能沒有備用的」,
+//   兩者都退回原本的行為,**不會比現在差**。
+constexpr int64_t kLowPriorityIdleMs = 1500;
 
 // 一件工作慢到多少毫秒就值得記一行。
 //
@@ -177,99 +187,67 @@ void Engine::Stop() {
 
 void Engine::ThreadMain() {
   for (;;) {
-    std::function<void()> job;
-    const char* job_label = "(沒有標籤)";
-    int64_t job_enqueued = 0;
-    uint64_t destroy_id = 0;
+    Job job;
+    bool have_job = false;
+    bool is_low = false;
     bool done_all = false;
     {
       std::unique_lock<std::mutex> lock(mu_);
       for (;;) {
-        if (stop_ && queue_.empty() && pending_destroy_.empty()) {
+        if (stop_ && queue_.empty() && low_queue_.empty()) {
           done_all = true;
           break;
         }
         if (!queue_.empty()) break;
-        if (!pending_destroy_.empty()) {
+        if (!low_queue_.empty()) {
           // ── ⚠ 低優先的工作還要「等引擎閒下來一段時間」才做 ──────────
           //
           // 只把它排到後面是不夠的:排序只在工作**還沒開始**時有用。
-          // 量到的實況(CI run 31313794449,§13):
-          //     SESSION_NEW_MS=250(建 session 141 ms)
-          //     SESSION_NEW_MS=297(建 session 141 ms)
-          //     SESSION_NEW_MS=328(建 session 219 ms)  ← 超過預算
-          // 而同一輪 §6 那一支服務是 94~110 ms(建 session 16~47 ms)。
-          // 差別在於:前一個宿主剛離開,引擎一空下來就**開始**寫回它的
-          // 使用者詞典,而下一個宿主的 SESSION_NEW 正好撞在那中間 ——
-          // 一旦開始就停不下來,它只能等。
+          // 低優先的兩件事都很貴 —— 收 session 要把使用者詞典寫回去,
+          // 補一個備用 session 要 442~753 毫秒(量到的)—— 而它們一旦
+          // 開始就停不下來。在引擎還忙的時候動它們,等於用一顆打不出來
+          // 的字(按鍵預算只有 50 毫秒)去換別的東西。
           //
-          // 所以低優先的工作要再等一小段安靜期。使用者關掉一個程式、
-          // 再打開另一個,中間的間隔遠大於這個值;而詞典寫回晚幾百毫秒
-          // **沒有任何人在等**。
+          // 使用者連續打字時引擎一直是忙的,所以這條路自然不會被走到;
+          // 他停下來想事情的時候才會。而這兩件事晚幾秒**沒有任何人在等**。
           const int64_t idle_ms = NowSteadyMs() - last_normal_ms_;
           if (stop_ || idle_ms >= kLowPriorityIdleMs) break;
-          cv_.wait_for(lock, std::chrono::milliseconds(
-                                 kLowPriorityIdleMs - idle_ms));
+          cv_.wait_for(lock,
+                       std::chrono::milliseconds(kLowPriorityIdleMs - idle_ms));
           continue;
         }
         cv_.wait(lock);
       }
       if (done_all) break;
       if (!queue_.empty()) {
-        job = std::move(queue_.front().fn);
-        job_label = queue_.front().label;
-        job_enqueued = queue_.front().enqueued_ms;
+        job = std::move(queue_.front());
         queue_.pop_front();
       } else {
-        // ── ⚠ 收 session 只在**沒有別的事**的時候做 ────────────────
-        //
-        // rs_session_destroy 要把使用者詞典寫回去,而引擎只有一條執行緒。
-        // 照先進先出排的話,某個宿主一離開,**下一個宿主的 SESSION_NEW
-        // 就排在那筆寫回後面** —— 而 SESSION_NEW 只有 300 毫秒的預算,
-        // 超過就 fail-open,那個程式整個工作階段打不出中文。
-        //
-        // 2026-08-09 量到的:按鍵矩陣 18 個宿主接連進出,而排在別人
-        // 離開後面的那幾個就是這樣逾時的。
-        //
-        // 但「收掉一個已經走掉的 session」**不是延遲敏感的事**,
-        // 沒有任何人在等它;「建立一個新 session」才是。所以把它降級:
-        // 佇列空了才做。這既不動任何預算,也不會把成本推進按鍵那條
-        // 50 毫秒的路徑(上一輪已經證明那樣更糟)。
-        //
-        // ⚠ 不會被餓死:只要沒有新工作就會做,而收尾時下面那個迴圈
-        //   會把剩下的全部收乾淨。
-        destroy_id = pending_destroy_.front();
-        pending_destroy_.pop_front();
+        job = std::move(low_queue_.front());
+        low_queue_.pop_front();
+        is_low = true;
       }
+      have_job = true;
     }
-    if (job) {
-      const int64_t t_start = NowSteadyMs();
-      job();
-      const int64_t t_end = NowSteadyMs();
-      // ⚠ 「等了多久」與「跑了多久」一定要分開報。
-      //   等很久 = **別人擋在前面**(去看上一行是誰);
-      //   跑很久 = 這件事本身就慢(去看它做了什麼)。
-      //   併成一個數字的話,兩種完全不同的問題長得一模一樣 ——
-      //   而引擎只有一條執行緒,所以前者才是常態。
-      ReportSlowJob(job_label, t_start - job_enqueued, t_end - t_start);
+    if (!have_job) continue;
+    const int64_t t_start = NowSteadyMs();
+    job.fn();
+    const int64_t t_end = NowSteadyMs();
+    // ⚠ 「等了多久」與「跑了多久」一定要分開報。
+    //   等很久 = **別人擋在前面**(去看上一行是誰);
+    //   跑很久 = 這件事本身就慢(去看它做了什麼)。
+    //   併成一個數字的話,兩種完全不同的問題長得一模一樣 ——
+    //   而引擎只有一條執行緒,所以前者才是常態。
+    //
+    //   低優先的工作不報「等待」:它是**刻意**被押後的,那個數字沒有意義。
+    ReportSlowJob(job.label, is_low ? 0 : t_start - job.enqueued_ms,
+                  t_end - t_start);
+    if (!is_low) {
       // 「引擎最後一次忙於**有人在等的**工作」是什麼時候。低優先的工作
-      // 靠它決定要不要再等一下(見上面)。收 session 不算忙 ——
-      // 不然一串連續的收尾會讓自己一直看起來很忙。
-      {
-        std::lock_guard<std::mutex> lock(mu_);
-        last_normal_ms_ = t_end;
-      }
-    } else if (destroy_id != 0) {
-      const int64_t t_start = NowSteadyMs();
-      auto it = sessions_.find(destroy_id);
-      if (it != sessions_.end()) {
-        rs_session_destroy(it->second);
-        sessions_.erase(it);
-        session_lang_.erase(destroy_id);
-      }
-      // 收 session 是低優先的,但它一旦開始就擋得住下一個人 ——
-      // 所以它慢的時候更要說出來。
-      ReportSlowJob("收 session(低優先)", 0, NowSteadyMs() - t_start);
+      // 靠它決定要不要再等一下(見上面)。低優先的自己不算忙 ——
+      // 不然一串連續的收尾會讓自己一直看起來很忙,永遠等不到安靜期。
+      std::lock_guard<std::mutex> lock(mu_);
+      last_normal_ms_ = t_end;
     }
     cv_.notify_all();
   }
@@ -335,16 +313,128 @@ void Engine::EndSession(uint64_t id) {
   });
 }
 
-void Engine::EndSessionAsync(uint64_t id) {
-  // ⚠ **不進一般佇列。** 進去的話它就排在下一個宿主的 SESSION_NEW 前面,
-  //   而那正是要修的東西(理由寫在 ThreadMain 裡)。這裡放的是一份
-  //   「有空再收」的清單,引擎執行緒沒有別的事時才處理。
+namespace {
+bool SameOptions(const std::vector<OptionAssign>& a,
+                 const std::vector<OptionAssign>& b) {
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); ++i) {
+    if (a[i].value != b[i].value) return false;
+    const char* x = a[i].option ? a[i].option : "";
+    const char* y = b[i].option ? b[i].option : "";
+    if (std::strcmp(x, y) != 0) return false;
+  }
+  return true;
+}
+}  // namespace
+
+// 丟一件「有空再做」的工作。與 Post 不同:不等它、而且優先權比一般工作低。
+void Engine::PostLow(const char* label, std::function<void()> fn) {
   {
     std::unique_lock<std::mutex> lock(mu_);
     if (stop_) return;
-    pending_destroy_.push_back(id);
+    Job j;
+    j.label = label;
+    j.enqueued_ms = NowSteadyMs();
+    // ⚠ 按值移動進佇列。這一支丟了就走,呼叫端的堆疊在工作真正執行之前
+    //   就已經不存在了 —— 捕捉參考等於一個懸空參考。
+    j.fn = std::move(fn);
+    low_queue_.push_back(std::move(j));
   }
   cv_.notify_all();
+}
+
+uint64_t Engine::TakeSpareSession(uint32_t langid, const std::string& schema_id,
+                                  const std::vector<OptionAssign>& options) {
+  uint64_t stale = 0;
+  uint64_t id = 0;
+  {
+    std::lock_guard<std::mutex> lock(spare_mu_);
+    auto it = spare_.find(langid);
+    if (it == spare_.end()) return 0;
+    if (it->second.schema_id == schema_id &&
+        SameOptions(it->second.options, options)) {
+      id = it->second.session;
+    } else {
+      // 計畫變了(使用者改過設定,或方案清單變了)。這一個不能用 ——
+      // 交出去的話,他改完設定開的第一個程式會拿到一個照舊設定配好的
+      // session,而那種錯誤是**靜默**的。收掉它,這一次當場建一個。
+      stale = it->second.session;
+    }
+    spare_.erase(it);
+  }
+  if (stale != 0) EndSessionAsync(stale);
+  return id;
+}
+
+void Engine::RequestSpareSession(uint32_t langid, const std::string& schema_id,
+                                 const std::vector<OptionAssign>& options) {
+  {
+    std::lock_guard<std::mutex> lock(spare_mu_);
+    if (spare_.count(langid)) return;          // 已經有一個備著
+    if (spare_pending_.count(langid)) return;  // 已經排了一件補充工作
+    spare_pending_[langid] = true;
+  }
+  // ⚠ 走低優先那條路。補一個 session 本身要 442~753 毫秒(量到的),
+  //   而按鍵的預算只有 50 毫秒 —— 在引擎還忙著的時候補,等於用一顆
+  //   打不出來的字去換下一個程式開得快一點。低優先那條路要等引擎
+  //   真的閒下來才動,而使用者連續打字時引擎一直是忙的。
+  PostLow("補充備用 session", [this, langid, schema_id, options] {
+    {
+      std::lock_guard<std::mutex> lock(spare_mu_);
+      spare_pending_.erase(langid);
+      if (spare_.count(langid)) return;
+    }
+    MakeSpareOnEngineThread(langid, schema_id, options);
+  });
+}
+
+// ⚠ **只能在引擎執行緒上呼叫**(它直接碰 sessions_ / next_id_ 與 rs_*)。
+void Engine::MakeSpareOnEngineThread(uint32_t langid,
+                                     const std::string& schema_id,
+                                     const std::vector<OptionAssign>& options) {
+  const rs_session s = rs_session_create();
+  if (s == RS_INVALID_SESSION) return;
+  const uint64_t id = next_id_++;
+  sessions_[id] = s;
+  session_lang_[id] = langid;
+  if (!schema_id.empty()) rs_select_schema(s, schema_id.c_str());
+  // 字形要在選方案**之後**才設(換方案會重建 context)。
+  for (const OptionAssign& a : options) rs_set_option(s, a.option, a.value);
+  std::lock_guard<std::mutex> lock(spare_mu_);
+  SparePlan p;
+  p.session = id;
+  p.schema_id = schema_id;
+  p.options = options;
+  spare_[langid] = std::move(p);
+}
+
+void Engine::PrimeSpareSession(uint32_t langid, const std::string& schema_id,
+                               const std::vector<OptionAssign>& options) {
+  // ⚠ 這一支是**同步**的,而且只有暖機會用它。
+  //
+  //   補充備用 session 平常走低優先那條路(要等引擎閒下來 1.5 秒),
+  //   但暖機是在**管道還沒打開之前**做的 —— 那時沒有任何宿主連得上來,
+  //   所以「等閒下來」既沒有意義也來不及:管道一開就可能有人連上來,
+  //   而他要的正是這個備用 session。
+  Post("預先建好備用 session", [&] {
+    {
+      std::lock_guard<std::mutex> lock(spare_mu_);
+      if (spare_.count(langid)) return;
+    }
+    MakeSpareOnEngineThread(langid, schema_id, options);
+  });
+}
+
+void Engine::EndSessionAsync(uint64_t id) {
+  // ⚠ **不進一般佇列。** 進去的話它就排在下一個宿主的 SESSION_NEW 前面,
+  //   而那正是要修的東西(理由寫在 ThreadMain 裡)。
+  PostLow("收 session", [this, id] {
+    auto it = sessions_.find(id);
+    if (it == sessions_.end()) return;
+    rs_session_destroy(it->second);
+    sessions_.erase(it);
+    session_lang_.erase(id);
+  });
 }
 
 Snapshot Engine::TakeSnapshotLocked(uintptr_t sess) {

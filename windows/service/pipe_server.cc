@@ -469,8 +469,38 @@ void PipeServer::ServeClient(HANDLE pipe) {
         //   2026-08-09 的按鍵矩陣 18 個宿主裡有 8 個卡在這裡。
         //   所以下面每一步都要問一句:它非得擋在這條路徑上嗎?
         const DWORD t_begin = ::GetTickCount();
+        // ── 先把「這個語言該用什麼」算出來 ──────────────────────
+        //
+        // 兩件事都要用到它:比對備用 session 的計畫合不合,以及(沒有
+        // 備用時)當場套上去。方案清單走快取,所以這一段不進引擎佇列。
+        std::vector<std::string> ids;
+        for (const auto& kv : engine_->SchemaListCached())
+          ids.push_back(kv.first);
+        const Settings st = settings_ ? settings_->Load() : Settings();
+        const SchemaChoice choice = ChooseSchema(langid, ids, st.SchemaPref());
+        std::vector<OptionAssign> opts;
+        if (choice.set_variant) opts = PlanVariant(choice.simplified, langid);
+        // 標點是獨立的一項(不屬於簡繁那一組)。
+        // ⚠ kUnset = followSchema = **完全不呼叫 rs_set_option**。
+        //   設成 false 不是同一件事:很多方案根本沒有那個開關,
+        //   而有些方案的預設是 true。
+        const Tri punct = st.Punctuation();
+        if (punct != Tri::kUnset)
+          opts.push_back({"ascii_punct", punct == Tri::kTrue});
+
+        // ── 有沒有預先建好的可以直接拿 ────────────────────────
+        //
+        // ⚠ 這是整段最重要的一行。量到的 rs_session_create 偶爾要 442~753
+        //   毫秒(CI run 31316116994),而這一趟的預算是 300 毫秒 ——
+        //   那不是排程解得掉的,只能**不要在使用者等著的時候建**。
         SessionOk ok;
-        ok.session = engine_->NewSession();
+        bool from_spare = false;
+        ok.session = engine_->TakeSpareSession(langid, choice.schema_id, opts);
+        if (ok.session != 0) {
+          from_spare = true;
+        } else {
+          ok.session = engine_->NewSession();
+        }
         session = ok.session;
         const DWORD t_created = ::GetTickCount();
         if (ok.session == 0) {
@@ -503,51 +533,32 @@ void PipeServer::ServeClient(HANDLE pipe) {
           //
           // 套用的時機是 session 剛建立時,**不是**每一顆按鍵:
           // 每顆鍵都套的話,使用者用 Ctrl+` 換過的方案會被一直打回去。
-          engine_->SetSessionLangId(ok.session, langid);
-          // ⚠ 用**快取**那一支。量到的(CI run 31315693513):
-          //     [engine] 慢工作 列方案 等待=0 ms 執行=46~99 ms  ×26
-          //   SESSION_NEW 那 94~110 毫秒裡有一半是這一趟,而它問的是
-          //   一件全域且幾乎不變的事 —— 方案清單只有重新部署之後才會變。
-          //   每個宿主連上來都重問一次,是把一個常數當成變數。
-          std::vector<std::string> ids;
-          for (const auto& kv : engine_->SchemaListCached())
-            ids.push_back(kv.first);
-          const Settings st = settings_ ? settings_->Load() : Settings();
-          const SchemaPreference pref = st.SchemaPref();
-          const SchemaChoice choice = ChooseSchema(langid, ids, pref);
-          std::vector<OptionAssign> opts;
-          if (choice.set_variant) opts = PlanVariant(choice.simplified, langid);
-          // 標點是獨立的一項(不屬於簡繁那一組)。
-          // ⚠ kUnset = followSchema = **完全不呼叫 rs_set_option**。
-          //   設成 false 不是同一件事:很多方案根本沒有那個開關,
-          //   而有些方案的預設是 true。
-          const Tri punct = st.Punctuation();
-          if (punct != Tri::kUnset)
-            opts.push_back({"ascii_punct", punct == Tri::kTrue});
-          // ⚠⚠ **這一步必須是同步的。試過非同步,而且量到它更糟。**
-          //
-          //   rs_select_schema 要載入詞典與 prism,是這一趟裡最貴的一步。
-          //   2026-08-09 我把它改成「丟進佇列就走」,想法是:佇列是 FIFO 的,
-          //   第一顆按鍵一定排在它後面,所以順序仍然正確。順序**確實**正確,
-          //   但成本沒有消失 —— 它只是從一個 300 毫秒的預算,
-          //   搬進了一個 **50 毫秒**的預算(kKeyTimeoutMs,按鍵往返)。
-          //
-          //   量到的結果(CI run 31311692114):
-          //       11:51:08.048 連線就緒 session=3
-          //       11:51:08.048 按鍵 vk=0x4E … 吃掉=1   ← TestKeyDown 說吃
-          //       11:51:08.165 按鍵 vk=0x49 … 吃掉=0   ← KeyDown 逾時,連線降級
-          //   TestKeyDown 說吃、KeyDown 說不吃 —— 那顆鍵在真的宿主裡會
-          //   **直接消失**,比原本的「打不出中文」更糟。
-          //
-          //   結論:貴的工作不能塞進任何一個客戶端還在等的往返。要修的話,
-          //   正確的方向是讓方案在**服務暖機時**就載好(service/main.cc 的
-          //   WarmUpEngine),而不是把它推到下一個更緊的預算裡。
-          engine_->ApplyChoice(ok.session, choice.schema_id, opts);
+          if (!from_spare) {
+            engine_->SetSessionLangId(ok.session, langid);
+            // ⚠⚠ **這一步必須是同步的。試過非同步,而且量到它更糟。**
+            //
+            //   rs_select_schema 要載入詞典與 prism。2026-08-09 我把它改成
+            //   「丟進佇列就走」,想法是:佇列是 FIFO 的,第一顆按鍵一定排在
+            //   它後面,所以順序仍然正確。順序**確實**正確,但成本沒有消失 ——
+            //   它只是從 300 毫秒的預算搬進了 **50 毫秒**的預算
+            //   (kKeyTimeoutMs,按鍵往返):
+            //       11:51:08.048 按鍵 vk=0x4E … 吃掉=1   ← TestKeyDown 說吃
+            //       11:51:08.165 按鍵 vk=0x49 … 吃掉=0   ← KeyDown 逾時
+            //   TestKeyDown 說吃、KeyDown 說不吃 —— 那顆鍵在真的宿主裡會
+            //   **直接消失**,比原本的「打不出中文」更糟。
+            //
+            //   正確的做法是**根本不要在使用者等著的時候做** ——
+            //   也就是上面那個備用 session。這裡是它拿不到時的退路,
+            //   而退路本來就該是「和以前一樣」。
+            engine_->ApplyChoice(ok.session, choice.schema_id, opts);
+          }
           // ⚠ 原本這裡還有一趟 engine_->SchemaOfSession(),目的只是讓
           //   note_schema 不要把「我們剛選的方案」誤判成「使用者按了
           //   Ctrl+` 換方案」。那一趟現在被 schema_seeded 取代 ——
           //   看到的第一份快照就是答案,不必再問引擎一次。
           schema_seeded = false;
+          // 把剛拿走的那一個補回去(低優先,要等引擎真的閒下來)。
+          engine_->RequestSpareSession(langid, choice.schema_id, opts);
         }
         // ⚠⚠ **記錄一定要在 send 之前。**
         //
@@ -562,9 +573,14 @@ void PipeServer::ServeClient(HANDLE pipe) {
         //   超過它就代表那個宿主會 fail-open 成打英文。
         {
           const DWORD t_done = ::GetTickCount();
-          Log("[pipe] SESSION_NEW_MS=%lu(建 session %lu ms)%s\n",
+          // ⚠ 一定要說出這一次是**拿現成的**還是**當場建的**。
+          //   備用 session 那條路的價值全在數字上,而「今天剛好很快」與
+          //   「真的拿到現成的」在總時間上長得一模一樣 ——
+          //   分不出來的話,池子壞掉(永遠拿不到)也不會有人發現。
+          Log("[pipe] SESSION_NEW_MS=%lu(建 session %lu ms,%s)%s\n",
               static_cast<unsigned long>(t_done - t_begin),
               static_cast<unsigned long>(t_created - t_begin),
+              from_spare ? "備用" : "當場建",
               (t_done - t_begin) >= 300 ? "  ** 超過用戶端 300ms 的預算 **" : "");
         }
         if (!send(EncodeSessionOk(seq, ok))) goto done;

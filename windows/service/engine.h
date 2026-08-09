@@ -79,6 +79,37 @@ class Engine {
   // 離開的宿主不需要陪著詞典寫回去;工作本身仍然在引擎執行緒上、順序不變。
   void EndSessionAsync(uint64_t id);
 
+  // ── ⚠ 預先建好的備用 session ──────────────────────────────────
+  //
+  // 量到的(CI run 31316116994,引擎的慢工作記錄):
+  //
+  //     [engine] 慢工作 建 session       等待=0 ms 執行=442 / 530 / 603 / 753 ms
+  //     [engine] 慢工作 套用方案與選項   等待=0 ms 執行=196 / 382 / 492 ms
+  //
+  //   而正常的時候它們是 46~72 ms。**「等待」全部是 0** —— 沒有人擋在
+  //   前面,是 librime 這兩個呼叫本身偶爾就要花掉半秒到四分之三秒。
+  //
+  // 這件事我們改不掉,而 SESSION_NEW 的預算是 300 毫秒。所以唯一的辦法是
+  // **不要在使用者等著的時候建 session**:平常就先建好一個放著,
+  // 宿主連上來時直接交出去(只是一次上鎖,不進引擎佇列)。
+  //
+  // ⚠ 補一個回去也要 442~753 毫秒,而那會擋住按鍵(預算只有 50 毫秒)。
+  //   所以補充走的是低優先那條路,而且要等引擎**真的閒下來**
+  //   (kLowPriorityIdleMs)。使用者連續打字時引擎一直是忙的 → 不補 →
+  //   池子空了就退回當場建立,也就是**最壞情況不比現在差**。
+  //
+  // ⚠ 計畫不合就不能用:交出去之前要比對「方案 + 選項」與這一次算出來的
+  //   是不是同一組。不比對的話,使用者剛改完設定的第一個程式會拿到一個
+  //   照舊設定配好的 session,而那種錯誤是靜默的。
+  uint64_t TakeSpareSession(uint32_t langid, const std::string& schema_id,
+                            const std::vector<OptionAssign>& options);
+  void RequestSpareSession(uint32_t langid, const std::string& schema_id,
+                           const std::vector<OptionAssign>& options);
+  // 暖機專用:**同步**先建好一個。暖機跑在管道打開之前,那時「等引擎閒
+  // 下來」既沒有意義也來不及 —— 管道一開就可能有人連上來要它。
+  void PrimeSpareSession(uint32_t langid, const std::string& schema_id,
+                         const std::vector<OptionAssign>& options);
+
   Result ProcessKey(uint64_t id, int32_t keysym, uint32_t mods);
   Result SelectCandidate(uint64_t id, int32_t index);
   Result CommitComposition(uint64_t id);
@@ -165,6 +196,13 @@ class Engine {
   //   現在每一件慢工作都會自己report:等了多久、跑了多久、叫什麼名字。
   void Post(const char* label, std::function<void()> fn);
   void Post(std::function<void()> fn) { Post("(沒有標籤)", std::move(fn)); }
+  // 丟一件「有空再做」的工作:不等它,而且**優先權比一般工作低**
+  // (要等引擎閒下來 kLowPriorityIdleMs 才會被撿走)。見 ThreadMain。
+  void PostLow(const char* label, std::function<void()> fn);
+
+  // ⚠ 只能在引擎執行緒上呼叫(直接碰 sessions_ / next_id_ 與 rs_*)。
+  void MakeSpareOnEngineThread(uint32_t langid, const std::string& schema_id,
+                               const std::vector<OptionAssign>& options);
 
   // 以下三個只在引擎執行緒上呼叫。
   Snapshot TakeSnapshot(uint64_t id);
@@ -182,10 +220,11 @@ class Engine {
     int64_t enqueued_ms = 0;
   };
   std::deque<Job> queue_;
-  // 「有空再收」的 session。與 queue_ 分開,而且**優先權比它低** ——
-  // 收掉一個已經走掉的 session 沒有人在等,建立一個新的才有人在等。
+  // 「有空再做」的工作:收掉走掉的 session、補充備用 session。
+  // 與 queue_ 分開,而且**優先權比它低** —— 這兩件事都沒有人在等,
+  // 而「建立一個新 session」與「處理一顆按鍵」有人在等。
   // 完整的理由見 ThreadMain。
-  std::deque<uint64_t> pending_destroy_;
+  std::deque<Job> low_queue_;
   // 引擎最後一次跑「有人在等的」工作是什麼時候(steady clock,毫秒)。
   int64_t last_normal_ms_ = 0;
   bool stop_ = false;
@@ -204,6 +243,22 @@ class Engine {
   // 而讀快取的人(連線執行緒)完全不該碰引擎的佇列鎖。
   mutable std::mutex cache_mu_;
   std::vector<std::pair<std::string, std::string>> schema_cache_;
+
+  // 預先建好的備用 session,一個 langid 一個。
+  //
+  // ⚠ 為什麼一個就夠:一個 langid 只在「使用者開了一個新程式」時被取走,
+  //   而兩個程式在同一個 kLowPriorityIdleMs 之內接連開起來是少見的;
+  //   真的撞上就退回當場建立(不比現在差)。**先用量到的東西決定要不要
+  //   加大**,不要憑感覺放三個 —— 每一個都是一份常駐的 librime session。
+  struct SparePlan {
+    uint64_t session = 0;
+    std::string schema_id;
+    std::vector<OptionAssign> options;
+  };
+  mutable std::mutex spare_mu_;
+  std::map<uint32_t, SparePlan> spare_;
+  // 這個 langid 已經排了一件補充工作,不要重複排。
+  std::map<uint32_t, bool> spare_pending_;
 
   std::string init_error_;
   mutable std::mutex err_mu_;
