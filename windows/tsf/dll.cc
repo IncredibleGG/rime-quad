@@ -85,7 +85,30 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
       // 在 DllMain 裡做檔案 I/O 通常是要避免的 —— 這裡可以做,是因為
       // Trace() 只用 kernel32 裡本來就已經載入的函式,不會觸發任何
       // LoadLibrary(見 tsf/trace.h 的規矩 2 與 3)。
-      rimewin::Trace("DLL 載入(DLL_PROCESS_ATTACH)");
+      //
+      // ⚠ 路徑一定要印出來。升級之後同一台機器上會**同時存在兩份** DLL:
+      //   新的在 rime_tsf.dll,舊的被改名成 rime_tsf.dll.old-<時間戳>
+      //   (機制見 docs/decisions/no-restart.md)。使用者回報「有些程式
+      //   能打字、有些不能」時,「這個進程跑的是哪一份」是第一個要問的問題,
+      //   而它只有在這裡答得出來 —— 事後去看磁碟上那個路徑是沒有用的,
+      //   因為那裡躺的已經是新檔了。
+      //
+      //   GetModuleFileNameW 是 kernel32,而且只寫進堆疊上的緩衝區,
+      //   在載入器鎖底下是安全的(不配置堆積、不觸發載入)。
+      {
+        wchar_t self[MAX_PATH];
+        const DWORD n = ::GetModuleFileNameW(instance, self, MAX_PATH);
+        // Trace 的格式化是窄字元的,而安裝路徑可能有中文 —— 只轉 ASCII,
+        // 其餘換成 '?'。這裡要看的是**檔名**,那一段一定是 ASCII。
+        char narrow[MAX_PATH];
+        DWORD i = 0;
+        for (; i < n && i < MAX_PATH - 1; ++i)
+          narrow[i] = (self[i] >= 0x20 && self[i] < 0x7F)
+                          ? static_cast<char>(self[i]) : '?';
+        narrow[i] = 0;
+        rimewin::Trace("DLL 載入(DLL_PROCESS_ATTACH)映像=%s",
+                       n ? narrow : "(問不到)");
+      }
       break;
     default:
       break;

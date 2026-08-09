@@ -61,6 +61,23 @@
 //                     還有程式握著 rime_tsf.dll,所以檔案刪不掉。
 //                     見 windows/verify_installer.sh §11。
 //
+//   ── 兩階段模式:升級發生在**這個進程還活著**的時候 ─────────────
+//
+//   --phase2-ready-file <檔>   第一階段打完字之後寫出這個檔(對外的訊號:
+//                              「我已經載入舊版 DLL 並且打得出字了,
+//                                可以開始裝新版」)
+//   --phase2-go-file <檔>      然後等這個檔出現(對內的訊號:「裝好了」),
+//                              再打一次同樣的字並斷言同樣的結果
+//   --phase2-timeout-ms <毫秒> 等 go 檔的上限(預設 600000)
+//   --phase2-relink-ms <毫秒>  等「重新連上服務」的上限(預設 240000)
+//
+//   ⚠ 這個模式驗的是使用者升級之後**真實存在**的狀態:
+//     已經開著的程式(檔案總管、瀏覽器)手上是**舊的 DLL 映像**,
+//     而服務進程已經換成新的。兩者談不攏的話,症狀是
+//     「有些程式能打字、有些不能」——而使用者完全無法理解為什麼。
+//     那比全部壞掉更難查,所以它必須有一道關卡。
+//     見 windows/verify_installer.sh §13。
+//
 // 結束碼 0 = 要求的每一項都成立。
 #include <msctf.h>
 #include <windows.h>
@@ -504,6 +521,46 @@ void HostDefaultAction(FakeDoc* doc, const SeqKey& k) {
   }
 }
 
+// 送一顆鍵並讓假宿主做它的預設處理。
+//
+// ⚠ 抽成函式**不是**為了少打字。第二階段(升級之後)要走的必須是
+//   與第一階段**完全同一段**程式碼 —— 兩段各寫一份的話,「升級之後
+//   還打得出字」驗到的會是另一條路,而那正是這個專案抓過很多次的形狀。
+struct SendOutcome {
+  BOOL test_eaten = FALSE;
+  BOOL eaten = FALSE;
+  bool host_did = false;
+};
+
+SendOutcome SendKeyThrough(ITfKeystrokeMgr* ks, FakeDoc* doc, const SeqKey& sk) {
+  SendOutcome o;
+  ks->TestKeyDown(sk.vk, sk.lparam, &o.test_eaten);
+  ks->KeyDown(sk.vk, sk.lparam, &o.eaten);
+  BOOL up_eaten = FALSE;
+  ks->KeyUp(sk.vk, sk.lparam | 0xC0000000, &up_eaten);
+  // ⚠ 輸入法沒吃 → 宿主自己處理。真的編輯框就是這樣。
+  if (!o.eaten) {
+    HostDefaultAction(doc, sk);
+    o.host_did = true;
+  }
+  return o;
+}
+
+bool FileThere(const std::wstring& path) {
+  return ::GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+bool TouchFile(const std::wstring& path) {
+  HANDLE h = ::CreateFileW(path.c_str(), GENERIC_WRITE,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return false;
+  DWORD written = 0;
+  ::WriteFile(h, "ready\r\n", 7, &written, nullptr);
+  ::CloseHandle(h);
+  return true;
+}
+
 bool ParseSeq(const std::wstring& seq, std::vector<SeqKey>* out) {
   size_t i = 0;
   while (i < seq.size()) {
@@ -626,6 +683,10 @@ static int Run(int argc, wchar_t** argv) {
   DWORD wait_ms = 3000;
   std::wstring hold_dll;
   DWORD hold_ms = 0;
+  std::wstring phase2_ready;
+  std::wstring phase2_go;
+  DWORD phase2_timeout_ms = 600000;
+  DWORD phase2_relink_ms = 240000;
 
   for (int i = 1; i < argc; ++i) {
     const std::wstring a = argv[i];
@@ -647,6 +708,12 @@ static int Run(int argc, wchar_t** argv) {
     else if (a == L"--hold-dll" && i + 1 < argc) hold_dll = argv[++i];
     else if (a == L"--hold-ms" && i + 1 < argc)
       hold_ms = static_cast<DWORD>(::wcstol(argv[++i], nullptr, 0));
+    else if (a == L"--phase2-ready-file" && i + 1 < argc) phase2_ready = argv[++i];
+    else if (a == L"--phase2-go-file" && i + 1 < argc) phase2_go = argv[++i];
+    else if (a == L"--phase2-timeout-ms" && i + 1 < argc)
+      phase2_timeout_ms = static_cast<DWORD>(::wcstol(argv[++i], nullptr, 0));
+    else if (a == L"--phase2-relink-ms" && i + 1 < argc)
+      phase2_relink_ms = static_cast<DWORD>(::wcstol(argv[++i], nullptr, 0));
     else {
       Say("未知參數: %s\n", Narrow(a).c_str());
       return 2;
@@ -864,8 +931,11 @@ static int Run(int argc, wchar_t** argv) {
   int eaten_count = 0;
   int mismatch_count = 0;
   int host_handled = 0;
+  // ⚠ ks 提到迴圈外面:第二階段(升級之後)要用**同一個**介面再送一次鍵。
+  //   在第一階段就 Release 掉的話,第二階段得自己再 QueryInterface 一次 ——
+  //   那是另一條路,而「升級之後還能不能打字」要驗的正是原本那一條。
+  ITfKeystrokeMgr* ks = nullptr;
   if (!plan.empty()) {
-    ITfKeystrokeMgr* ks = nullptr;
     hr = thread_mgr->QueryInterface(IID_ITfKeystrokeMgr, (void**)&ks);
     Step("QueryInterface(ITfKeystrokeMgr)", hr);
     if (SUCCEEDED(hr) && ks) {
@@ -894,36 +964,22 @@ static int Run(int argc, wchar_t** argv) {
       }
       Say("\n--- 送按鍵 ---\n");
       for (const SeqKey& sk : plan) {
-        BOOL test_eaten = FALSE;
-        BOOL eaten = FALSE;
-        const HRESULT t = ks->TestKeyDown(sk.vk, sk.lparam, &test_eaten);
-        const HRESULT k = ks->KeyDown(sk.vk, sk.lparam, &eaten);
-        BOOL up_eaten = FALSE;
-        ks->KeyUp(sk.vk, sk.lparam | 0xC0000000, &up_eaten);
-
-        // ⚠ 輸入法沒吃 → 宿主自己處理。真的編輯框就是這樣。
-        bool did_host = false;
-        if (!eaten) {
-          HostDefaultAction(doc, sk);
-          did_host = true;
-          ++host_handled;
-        }
+        const SendOutcome o = SendKeyThrough(ks, doc, sk);
+        if (o.host_did) ++host_handled;
         // TestKeyDown 說吃、KeyDown 說不吃 = **這顆鍵在真實宿主上會消失**。
-        // 這支假宿主因為有上面那一段所以看不出來,但真的程式不會補救它 ——
-        // 所以在這裡明著數出來。這正是「可以打字,不能刪除」的形狀。
-        if (test_eaten && !eaten) ++mismatch_count;
+        // 這支假宿主因為有 HostDefaultAction 所以看不出來,但真的程式不會
+        // 補救它 —— 所以在這裡明著數出來。
+        // 這正是「可以打字,不能刪除」的形狀。
+        if (o.test_eaten && !o.eaten) ++mismatch_count;
 
         // 這一行是給 verify_input_matrix.sh 解析的。欄位順序不要動。
         Say("  KEY %-8s vk=0x%02X test=%d down=%d host=%d doc=\"%s\"\n",
             Narrow(sk.label).c_str(), static_cast<unsigned>(sk.vk),
-            test_eaten ? 1 : 0, eaten ? 1 : 0, did_host ? 1 : 0,
+            o.test_eaten ? 1 : 0, o.eaten ? 1 : 0, o.host_did ? 1 : 0,
             Narrow(doc->text).c_str());
-        (void)t;
-        (void)k;
-        if (eaten) ++eaten_count;
+        if (o.eaten) ++eaten_count;
         Pump(60);
       }
-      ks->Release();
     }
     Say("\n  文件內容 = \"%s\"\n", Narrow(doc->text).c_str());
     Say("  被吃掉的按鍵 = %d / %d(宿主自己處理了 %d 顆)\n", eaten_count,
@@ -983,6 +1039,150 @@ static int Run(int argc, wchar_t** argv) {
       Fail("文件裡是「%s」,預期「%s」", Narrow(doc->text).c_str(),
            Narrow(expect).c_str());
   }
+
+  // ── 這個進程到底載入了哪一份 DLL ──────────────────────────────
+  //
+  // 升級之後同一台機器上會同時有兩份:新的在 rime_tsf.dll,舊的被改名成
+  // rime_tsf.dll.old-<時間戳>(見 docs/decisions/no-restart.md)。
+  // 「新開的進程有沒有用到新版」這個問題,只有在進程**裡面**答得出來。
+  {
+    HMODULE m = ::GetModuleHandleW(L"rime_tsf.dll");
+    wchar_t p[MAX_PATH] = {0};
+    if (m && ::GetModuleFileNameW(m, p, MAX_PATH))
+      Say("  LOADED_TSF_DLL=%s\n", Narrow(p).c_str());
+    else
+      Say("  LOADED_TSF_DLL=(沒有載入)\n");
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  //  第二階段:升級發生在**這個進程還活著**的時候
+  // ══════════════════════════════════════════════════════════════
+  //
+  // 使用者實測回報「我沒重啟也能用」。他機器上的真實狀態是:
+  // 已經開著的程式握著**舊的** DLL 映像,而服務進程已經是**新的**。
+  // 這一段就是把那個狀態做出來,然後問一句話:那樣還打得出字嗎?
+  //
+  // 走不通的症狀不是「壞掉」,是「有些程式能打字、有些不能」——
+  // 而使用者完全無法理解為什麼。那比全部壞掉更難查。
+  if (!phase2_go.empty()) {
+    Say("\n══ 第二階段:舊的 DLL 映像 + 新的服務 ══\n");
+    if (!ks || plan.empty()) {
+      Fail("第二階段需要 --keys 或 --seq(要有東西可以打)");
+    } else if (expect.empty()) {
+      Fail("第二階段需要 --expect —— 沒有它就沒有斷言,那一格等於沒在測");
+    } else {
+      bool go = false;
+      if (!phase2_ready.empty()) {
+        if (TouchFile(phase2_ready))
+          Say("  已寫出就緒訊號 %s(外面可以開始裝新版了)\n",
+              Narrow(phase2_ready).c_str());
+        else
+          Fail("寫不出就緒訊號 %s —— 外面的腳本會一直等下去",
+               Narrow(phase2_ready).c_str());
+      }
+      Say("  等 %s 出現(上限 %lu 毫秒)…\n", Narrow(phase2_go).c_str(),
+          static_cast<unsigned long>(phase2_timeout_ms));
+      const DWORD go_deadline = ::GetTickCount() + phase2_timeout_ms;
+      for (;;) {
+        if (FileThere(phase2_go)) {
+          go = true;
+          break;
+        }
+        if (::GetTickCount() >= go_deadline) break;
+        // ⚠ 這裡要抽訊息,不能單純 Sleep。這個進程仍然是一個 TSF 宿主,
+        //   而 TSF 有一部分工作靠視窗訊息推動 —— 幾分鐘不抽訊息的話,
+        //   等升級結束之後它已經不是一個正常的宿主了,
+        //   而後面量到的「連不回去」就會是我們自己造成的。
+        Pump(200);
+      }
+      if (!go) {
+        Fail("等不到 %s —— 外面那一步沒有完成,第二階段什麼都沒驗到",
+             Narrow(phase2_go).c_str());
+      } else {
+        Say("  收到訊號:新版已經裝好,而這個進程手上的 DLL 映像還是舊的。\n");
+
+        // ── 重新連上服務 ────────────────────────────────────────
+        //
+        // 升級把舊的服務進程停掉了。舊的 DLL 必須自己:
+        //   開管道失敗 → 啟動新的 rime_service.exe → 重新握手
+        //   (版本協商,必要時降級到 v1)→ 重新開 session。
+        //
+        // 用「送一顆 n 看它吃不吃」來問,而不是去讀什麼內部狀態:
+        // 使用者感覺得到的就是這一件事。吃掉了代表整條路都通了。
+        SeqKey probe_key;
+        probe_key.label = L"n";
+        probe_key.ch = L'n';
+        SeqKey esc_key;
+        const bool have_probe =
+            AsciiToKey(L'n', &probe_key.vk, &probe_key.lparam);
+        const bool have_esc = NamedToKey(L"ESC", &esc_key);
+        if (!have_probe) Fail("這個佈局上打不出 'n',第二階段沒辦法探測");
+        bool relinked = false;
+        int probes = 0;
+        const DWORD t0 = ::GetTickCount();
+        const DWORD relink_deadline = t0 + phase2_relink_ms;
+        while (have_probe && ::GetTickCount() < relink_deadline) {
+          doc->text.clear();
+          doc->sel_start = doc->sel_end = 0;
+          ++probes;
+          const SendOutcome o = SendKeyThrough(ks, doc, probe_key);
+          if (o.eaten) {
+            // 吃掉了 = 連上、握手過、session 開好、正在組字。
+            // 把組字清掉再開始真正的那一趟。
+            if (have_esc) SendKeyThrough(ks, doc, esc_key);
+            relinked = true;
+            break;
+          }
+          Pump(500);
+        }
+        doc->text.clear();
+        doc->sel_start = doc->sel_end = 0;
+        const DWORD relink_ms = ::GetTickCount() - t0;
+        Say("  PHASE2_RELINK_MS=%lu\n", static_cast<unsigned long>(relink_ms));
+        Say("  PHASE2_PROBES=%d\n", probes);
+
+        if (!relinked) {
+          Fail("**舊的 DLL 連不回新的服務**(試了 %d 次,%lu 毫秒)。\n"
+               "     這正是使用者升級之後的狀態:已經開著的程式手上是舊的\n"
+               "     DLL 映像,服務卻已經換成新的。連不回去的話,他看到的是\n"
+               "     「有些程式能打字、有些不能」,而且完全無法理解為什麼。\n"
+               "     要查三件事,而且順序就是這個:\n"
+               "       1. 管道名有沒有跟著版本走(winshared/winutil.cc\n"
+               "          的 RimePipeName —— 跟著版本走的話,舊 DLL 會去敲\n"
+               "          一條不存在的管道,而錯誤碼是 2「找不到檔案」)\n"
+               "       2. 握手的版本協商與降級重試(common/protocol.h 的\n"
+               "          kMinProtocolVersion、tsf/ipc_client.cc 的 EnsureReady)\n"
+               "       3. rime_shell 的 ABI —— 那一格**沒有降級的路**,\n"
+               "          不合就是不合(ipc_client.cc 的 Handshake)\n"
+               "     瘦 DLL 的除錯記錄裡那幾行「連線失敗」會直接說是哪一個。",
+               probes, static_cast<unsigned long>(relink_ms));
+        } else {
+          Ok("舊的 DLL 重新連上了新的服務(%lu 毫秒、%d 次嘗試)",
+             static_cast<unsigned long>(relink_ms), probes);
+          Say("\n--- 第二階段送按鍵(同一段程式碼、同一個 ks)---\n");
+          for (const SeqKey& sk : plan) {
+            const SendOutcome o = SendKeyThrough(ks, doc, sk);
+            Say("  KEY %-8s vk=0x%02X test=%d down=%d host=%d doc=\"%s\"\n",
+                Narrow(sk.label).c_str(), static_cast<unsigned>(sk.vk),
+                o.test_eaten ? 1 : 0, o.eaten ? 1 : 0, o.host_did ? 1 : 0,
+                Narrow(doc->text).c_str());
+            Pump(60);
+          }
+          Say("  PHASE2_DOC=\"%s\"\n", Narrow(doc->text).c_str());
+          if (doc->text == expect)
+            Ok("**升級之後,同一個進程用舊的 DLL 照樣打得出「%s」**",
+               Narrow(expect).c_str());
+          else
+            Fail("第二階段打出來的是「%s」,預期「%s」——\n"
+                 "     舊的 DLL 連上了新的服務,但打出來的東西不對。\n"
+                 "     那比連不上更糟:使用者不會發現。",
+                 Narrow(doc->text).c_str(), Narrow(expect).c_str());
+        }
+      }
+    }
+  }
+
+  if (ks) ks->Release();
 
   DumpTrace(trace_path);
 

@@ -199,6 +199,41 @@ std::wstring RimeUserDataDir() {
   return dir + L"\\" + kUserDataFolderName;
 }
 
+// ⚠ 這兩個名字是**磁碟上真的存在的東西**,而且安裝程式那一側(Pascal 腳本)
+//   另有一份字面值 —— 兩邊漂移的症狀是「掃描永遠掃不到任何東西」,
+//   而那看起來與「本來就沒有東西要掃」一模一樣(也就是一片綠燈)。
+//   所以 windows/verify_installer.sh §13 會去看磁碟上真的長出什麼名字。
+static const wchar_t kTsfDllName[] = L"rime_tsf.dll";
+static const wchar_t kStaleTsfDllPattern[] = L"rime_tsf.dll.old-*";
+
+const wchar_t* RimeTsfDllName() { return kTsfDllName; }
+const wchar_t* RimeStaleTsfDllPattern() { return kStaleTsfDllPattern; }
+
+StaleDllSweep SweepStaleTsfDlls(const std::wstring& dir,
+                                bool schedule_if_locked) {
+  StaleDllSweep out;
+  if (dir.empty()) return out;
+  WIN32_FIND_DATAW fd{};
+  HANDLE h = ::FindFirstFileW((dir + L"\\" + kStaleTsfDllPattern).c_str(), &fd);
+  if (h == INVALID_HANDLE_VALUE) return out;
+  do {
+    if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+    const std::wstring full = dir + L"\\" + fd.cFileName;
+    if (::DeleteFileW(full.c_str())) {
+      ++out.deleted;
+      continue;
+    }
+    ++out.locked;
+    // 刪不掉 = 還有進程握著那份映像。這是**預期中**的情形,不是錯誤。
+    if (!schedule_if_locked) continue;
+    // 第二個參數是 nullptr = 開機時刪除(而不是搬到某處)。
+    if (::MoveFileExW(full.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT))
+      ++out.scheduled;
+  } while (::FindNextFileW(h, &fd));
+  ::FindClose(h);
+  return out;
+}
+
 std::wstring ModuleDirectory(HMODULE module) {
   std::vector<wchar_t> buf(MAX_PATH);
   for (;;) {

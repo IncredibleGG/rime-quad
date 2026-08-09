@@ -456,6 +456,26 @@ static int RunService(int argc, wchar_t** argv) {
     return 0;
   }
 
+  // ── 掃掉升級留下的舊 DLL ────────────────────────────────────────
+  //
+  // 升級時安裝程式把舊的 rime_tsf.dll 改名挪開(理由見
+  // docs/decisions/no-restart.md);當下那顆檔案還被宿主進程握著,刪不掉。
+  // 這裡是「下次啟動時再檢查一次」的那一次 —— 而且是最合適的一次:
+  // 服務進程在使用者登入後才被拉起來,那時上一輪的宿主大多已經結束了。
+  //
+  // ⚠ 三件事刻意如此:
+  //   · 放在搶到單一實例**之後**,所以同一台機器上只有一支在掃。
+  //   · 不排開機清除(那要寫 HKLM,而服務是一般權限)—— 只做刪得掉的。
+  //   · **失敗完全不影響啟動流程**,連一行錯誤都不算。刪不掉只代表
+  //     還有人握著,那是正常狀態,不是故障。
+  {
+    const rimewin::StaleDllSweep sw = rimewin::SweepStaleTsfDlls(
+        rimewin::ModuleDirectory(nullptr), /*schedule_if_locked=*/false);
+    if (sw.deleted > 0 || sw.locked > 0)
+      Err("[service] 舊 DLL 清理:刪掉 %d 個,%d 個還被握著(留著,下次再掃)\n",
+          sw.deleted, sw.locked);
+  }
+
   // 結束事件在這裡就建好,不等到最後才建。
   //
   // 首次部署要編好幾分鐘的詞庫,而使用者很可能正好在那段時間裡按下解除安裝。

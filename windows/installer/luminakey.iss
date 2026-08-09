@@ -176,9 +176,26 @@ Name: "{group}\{#ProductName} 設定"; Filename: "{app}\rime_service.exe"; Param
 Name: "{group}\{#ProductName} 診斷：輸入法為什麼不能用"; Filename: "{app}\rime_ime_setup.exe"; Parameters: "doctor --report"; Comment: "檢查安裝、註冊、服務、引擎,並把結果用記事本打開"
 
 [Files]
-; restartreplace + uninsrestartdelete:
-;   rime_tsf.dll 在升級的當下可能正被宿主進程載入著而換不掉。
-;   這兩個旗標讓它排到下次開機再換 / 再刪,而不是讓整個安裝失敗。
+; ══ rime_tsf.dll:**不原地覆蓋**,先改名挪開 ═══════════════════════
+;
+; ⚠ 這一行的兩個旗標現在是**退路**,不是主要機制。主要機制在 [Code] 的
+;   PrepareToInstall:它會先把舊的 rime_tsf.dll 改名成
+;   rime_tsf.dll.old-<時間戳>,於是 Inno 走到這一行時目的地根本不存在,
+;   直接寫一個新檔 —— 不需要排隊、不需要重新啟動。
+;
+;   為什麼改名做得到而覆蓋做不到:Windows 的載入器開映像檔時給的是
+;   FILE_SHARE_READ | FILE_SHARE_DELETE。DELETE 這一格同時涵蓋「重新命名」,
+;   所以一顆**正被載入著**的 DLL 改得了名字,只是刪不掉也覆蓋不掉。
+;   已經載入它的進程繼續用手上那份映像(它跟著改名後的檔案走),
+;   而**新開的進程**從 InprocServer32 指的那個固定路徑拿到新檔。
+;
+;   舊檔什麼時候消失:下一次安裝、或服務進程下一次啟動時掃一遍就刪掉
+;   (見 setup_main.cc 的 sweep-stale-dlls)。**刪不掉不是錯誤** ——
+;   那只代表還有進程握著它,幾 MB 而已,下一次再試。
+;
+;   restartreplace 留著的唯一理由:萬一改名那一步失敗(例如目錄權限被改過),
+;   安裝仍然要能完成,而不是整個回滾。它會不會被走到,由
+;   windows/verify_installer.sh §13 斷言 —— 正常路徑上它一次都不該被用到。
 Source: "{#PayloadDir}\rime_tsf.dll";       DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
 Source: "{#PayloadDir}\rime_service.exe";   DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
 Source: "{#PayloadDir}\rime_ime_setup.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
@@ -414,8 +431,8 @@ FinishedHeadingLabel=[name] 安裝完成
 FinishedLabelNoIcons=[name] 已安裝在您的電腦上。
 FinishedLabel=[name] 已安裝在您的電腦上。%n%n切換輸入法:按 Win + 空白鍵,選擇「[name]」。清單上只會有一格 —— 它掛在您原本就有的那一個中文語言底下。%n%n開啟設定:「開始」功能表 →「[name] 設定」。方案、簡繁、候選字大小都在那裡。%n也可以用工作列右下角的系統匣圖示(Windows 11 預設把新圖示收在「^」裡面,要先點開那個箭頭),或語言列上的「設定」。%n%n簡體 / 繁體在設定的「文字」分頁切換,系統匣圖示按右鍵也切得到。%n%n首次使用時輸入法會在背景編譯詞庫,可能需要一到數分鐘;在那之前打出來的是英文,這是正常的。%n%n若打不出中文或看不到設定視窗,請執行「開始」功能表裡的「[name] 診斷:輸入法為什麼不能用」,它會把原因寫成一份報告並用記事本打開。
 ClickFinish=按「完成」結束安裝程式。
-FinishedRestartLabel=[name] 已經裝好了,但有幾個檔案要等重新啟動之後才換得掉 —— 舊版還被某些正在執行的程式(檔案總管、瀏覽器、Office…)握著。%n%n在重新啟動之前,您用到的還是舊版。要現在重新啟動嗎?
-FinishedRestartMessage=[name] 已經裝好了,但有幾個檔案要等重新啟動之後才換得掉 —— 舊版還被某些正在執行的程式(檔案總管、瀏覽器、Office…)握著。%n%n在重新啟動之前,您用到的還是舊版。%n%n要現在重新啟動嗎?
+FinishedRestartLabel=[name] 已經裝好,現在就可以用,不必重新啟動。%n%n只有一件事沒做完:輸入法掛進各個程式的那一小層有一份舊檔還被某些正在執行的程式(檔案總管、瀏覽器、Office…)握著,所以換不掉。引擎、詞庫與設定都已經是新版了。%n%n您可以完全不理它 —— 下次您正常關機或重新啟動時就會換過去。要現在重新啟動嗎?
+FinishedRestartMessage=[name] 已經裝好,現在就可以用,不必重新啟動。%n%n只有一件事沒做完:輸入法掛進各個程式的那一小層有一份舊檔還被某些正在執行的程式(檔案總管、瀏覽器、Office…)握著,所以換不掉。引擎、詞庫與設定都已經是新版了。%n%n您可以完全不理它 —— 下次您正常關機或重新啟動時就會換過去。%n%n要現在重新啟動嗎?
 ShowReadmeCheck=是,我想閱讀說明檔
 YesRadio=是,立刻重新啟動電腦(&Y)
 NoRadio=否,我稍後自己重新啟動(&N)
@@ -510,8 +527,8 @@ UninstallOnlyOnWin64=這份安裝只能在 64 位元的 Windows 上移除。
 OnlyAdminCanUninstall=這份安裝只能由具有系統管理員權限的使用者移除。
 UninstallStatusLabel=請稍候,正在從您的電腦移除 %1…
 UninstalledAll=%1 已從您的電腦順利移除。
-UninstalledMost=%1 移除完成。%n%n有部分項目無法移除,重新啟動電腦後會自動清除。
-UninstalledAndNeedsRestart=%1 已經移除完成,只剩安裝資料夾裡幾個檔案還刪不掉。%n%n【為什麼】這個輸入法要能用,就必須被載入到每一個可以打字的程式裡。您現在還開著的程式(檔案總管、瀏覽器、Office…)仍然握著那幾個檔案,所以它們現在刪不掉。這不是安裝程式出錯。%n%n【不重新啟動會怎樣】輸入法本身已經完全停用了 —— 它不會再出現在輸入法清單裡,也不會再被任何程式載入。留下的只是幾個佔幾 MB 的檔案,系統已經排好在下次開機時自動清掉。但在重新啟動之前您裝不回來:再執行一次安裝程式時它會擋下來,請您先重新啟動。%n%n【可以晚點再重新啟動嗎】可以,現在選「否」不會有任何問題,下次您正常關機或重新啟動時就會清乾淨。但請注意:登出再登入是不夠的,那份清單只有在開機時才會被處理。%n%n要現在重新啟動嗎?
+UninstalledMost=%1 已經移除,而且已經停止作用了。%n%n安裝資料夾裡還剩一個檔案刪不掉,因為還有正在執行的程式握著它。它已經排好在下次開機時自動清除,您不需要做任何事,也不需要現在重新啟動。
+UninstalledAndNeedsRestart=%1 已經移除完成,只剩安裝資料夾裡幾個檔案還刪不掉。%n%n【您不需要現在重新啟動】請直接選「否」。輸入法已經完全停用了 —— 它不會再出現在輸入法清單裡,也不會再被任何程式載入。留下的只是幾個佔幾 MB 的檔案,系統已經排好在下次開機時自動清掉。%n%n【為什麼會有檔案刪不掉】這個輸入法要能用,就必須被載入到每一個可以打字的程式裡。您現在還開著的程式(檔案總管、瀏覽器、Office…)仍然握著那幾個檔案。這不是安裝程式出錯。%n%n【要重新安裝也不必先重開機】現在就可以再裝回來,安裝程式不會擋。%n%n只有一件事要知道:那份清除清單只有在開機時才會被處理,登出再登入是不夠的。所以那幾個檔案會留到您下次正常關機為止 —— 除此之外沒有任何影響。%n%n要現在重新啟動嗎?
 UninstallDataCorrupted=檔案「%1」已損毀,無法移除
 ConfirmDeleteSharedFileTitle=要移除共用檔案嗎?
 ConfirmDeleteSharedFile2=系統顯示下面這個共用檔案已經沒有任何程式在使用。要讓移除程式把它刪掉嗎?%n%n如果還有程式在用它而它被刪掉,那些程式可能會不正常。不確定的話請選「否」——把它留在系統上不會造成任何問題。
@@ -539,6 +556,100 @@ const
   //   幾百行裡撈出來。十五份裡漏改一份,撈出來的就會少幾行,
   //   而「少了幾行」在報表上看起來跟「那一步沒跑」一模一樣。
   LogTag = '{#ProductName}: ';
+  // 被載入到每一個宿主進程裡的那一顆。整份「不重啟」的機制都繞著它。
+  TsfDllName = 'rime_tsf.dll';
+
+// ══════════════════════════════════════════════════════════════════
+//  命令列旗標
+// ══════════════════════════════════════════════════════════════════
+//
+// ⚠ 兩種找法都做。
+//
+// Inno 的解除安裝程式會**把自己複製到暫存目錄再跑一次**(_iu*.tmp),
+// 而那一次的參數列是它自己組出來的(會多一個 /SECONDPHASE=...)。
+// 只看 ParamStr 的話,旗標有可能在第二階段就不見了 —— 而症狀是
+// 「帶了 /PURGEUSERDATA 卻沒有刪」,看起來像刪除功能壞掉。
+// GetCmdTail 拿的是原始命令列字串,兩種都查一次是零成本的保險。
+//
+// ⚠ 這個函式**必須定義在 PrepareToInstall 之前**:Pascal Script 是
+//   單趟編譯的,用到還沒宣告的函式會在 ISCC 就失敗。
+function CmdLineParamExists(const Value: String): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+    if CompareText(ParamStr(I), Value) = 0 then begin
+      Result := True;
+      Exit;
+    end;
+  if Pos(Uppercase(Value), Uppercase(GetCmdTail)) > 0 then
+    Result := True;
+end;
+
+// ══════════════════════════════════════════════════════════════════
+//  升級不得要求重新啟動:把舊的 DLL **改名挪開**,不要原地覆蓋
+// ══════════════════════════════════════════════════════════════════
+//
+// 決策紀錄:docs/decisions/no-restart.md。一句話:
+//
+//   **一個每次更新都要重開機的輸入法,使用者就不會更新它** ——
+//   然後安全性修正到不了他手上。更新阻力是安全性問題,不是體驗問題。
+//
+// 機制與為什麼它成立,寫在上面 [Files] 段 rime_tsf.dll 那一行的註解。
+// 這裡只放實作。
+
+// 掃掉之前挪開的舊 DLL。回傳真的刪掉了幾個。
+//
+// ⚠ **刪不掉不是錯誤,一次都不是。** 刪不掉只代表還有進程握著那份映像
+//   (瀏覽器可以開好幾天),而那顆檔案佔幾 MB、不影響任何功能。
+//   下一次安裝、或服務進程下一次啟動時會再掃一次。
+//   為了它要求使用者重新開機,正是這一輪要消滅的東西。
+function SweepStaleDlls(const Dir: String): Integer;
+var
+  fr: TFindRec;
+begin
+  Result := 0;
+  if not FindFirst(Dir + '\' + TsfDllName + '.old-*', fr) then Exit;
+  try
+    repeat
+      if DeleteFile(Dir + '\' + fr.Name) then
+        Result := Result + 1;
+    until not FindNext(fr);
+  finally
+    FindClose(fr);
+  end;
+end;
+
+// 把 {app}\rime_tsf.dll 改名成 rime_tsf.dll.old-<時間戳>-<序號>。
+//
+// 回傳 True = 「這條路走通了」,包含**檔案本來就不存在**(全新安裝)的情形;
+// 那時 NewName 是空字串。回傳 False 才是真的失敗,呼叫端要退回 Inno 的
+// restartreplace,並且明著記一行 —— 「悄悄退回退路」與「機制生效」
+// 在安裝記錄上長得一模一樣,而那正是這個專案吃過最多次的虧。
+function MoveTsfDllAside(const Dir: String; var NewName: String): Boolean;
+var
+  Src, Cand: String;
+  i: Integer;
+begin
+  NewName := '';
+  Src := Dir + '\' + TsfDllName;
+  if not FileExists(Src) then begin
+    Result := True;
+    Exit;
+  end;
+  // 同一秒內可能挪開兩次(重跑安裝程式),所以名字後面再帶一個序號。
+  for i := 0 to 99 do begin
+    Cand := Src + '.old-' + GetDateTimeString('yyyymmddhhnnss', #0, #0)
+            + '-' + IntToStr(i);
+    if not FileExists(Cand) then begin
+      Result := RenameFile(Src, Cand);
+      if Result then NewName := Cand;
+      Exit;
+    end;
+  end;
+  Result := False;
+end;
 
 // 停掉舊的服務進程。
 //
@@ -562,9 +673,47 @@ begin
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Dir, Moved: String;
+  n: Integer;
 begin
+  Dir := ExpandConstant('{app}');
+
   // 在複製檔案**之前**。跑到 [Run] 才停就已經太遲了 —— 那時檔案早就換過。
   StopExistingService;
+
+  // 先掃掉上一次升級留下的。放在挪開**之前**是刻意的:這樣「這一次挪開的
+  // 那一顆」不會在同一輪裡就被自己掃掉(它一定還被握著,掃不掉,
+  // 但順序寫對比較不會讓下一個人看錯)。
+  n := SweepStaleDlls(Dir);
+  if n > 0 then
+    Log(LogTag + '清掉 ' + IntToStr(n) + ' 個先前挪開的舊 DLL');
+
+  // ⚠ /LEGACYINPLACE 是**只有 CI 在用**的旗標,而且它刻意重現一個已經修掉的
+  //   缺陷:跳過「改名挪開」,讓 Inno 去原地覆蓋一顆正被握著的 DLL。
+  //
+  //   為什麼要留這條路:沒有它的話,windows/verify_installer.sh §13 的
+  //   「不重啟就生效」那一關**有可能只是因為 runner 上沒有人握著 DLL**
+  //   而通過 —— 也就是一個永遠綠、永遠沒在測的關卡。這個專案已經抓過
+  //   四次那種東西。加上這個旗標之後,§13 會拿它跑一次反向測試並**要求它紅**。
+  //
+  //   同樣的作法在 setup_main.cc 的 enable-user-legacy-all 也用過一次,
+  //   理由完全相同:製造「舊狀態」最誠實的方法是真的跑一次舊行為,
+  //   而不是猜舊行為會留下什麼然後手寫進去。
+  //
+  //   它不會出現在任何使用者看得到的地方。
+  if CmdLineParamExists('/LEGACYINPLACE') then begin
+    Log(LogTag + '⚠ /LEGACYINPLACE:刻意跳過「改名挪開」(反向測試用,不是正常路徑)');
+  end else if MoveTsfDllAside(Dir, Moved) then begin
+    if Moved <> '' then
+      Log(LogTag + '舊的 ' + TsfDllName + ' 已改名挪開 -> ' + Moved)
+    else
+      Log(LogTag + '沒有舊的 ' + TsfDllName + ' 要挪開(全新安裝)');
+  end else
+    // 這一行是紅旗。走到這裡代表 Inno 等一下會撞上一顆換不掉的檔案,
+    // 於是排進開機佇列並在最後一頁問使用者要不要重新啟動。
+    Log(LogTag + '!! 改名挪開**失敗** —— 退回 restartreplace,這次升級可能會要求重新啟動');
+
   Result := '';
 end;
 
@@ -711,6 +860,50 @@ begin
 end;
 
 // ══════════════════════════════════════════════════════════════════
+//  解除安裝也不要強迫重新啟動
+// ══════════════════════════════════════════════════════════════════
+//
+// 走到這裡時輸入法**已經停止作用了**:unregister 把 CLSID 與 CTF\TIP 整棵
+// 刪掉,所以沒有任何新進程會再載入它。剩下的只是磁碟上那顆檔案。
+//
+// 舊的作法是讓 Inno 的 uninsrestartdelete 去刪 rime_tsf.dll:刪不掉時它會
+// 排進開機佇列**並且把整個解除安裝標成「需要重新啟動」**,於是使用者在
+// 最後一個對話框被問「要現在重新啟動嗎」。而他重不重啟,對輸入法有沒有
+// 停用、對他能不能重新安裝,**都沒有差別**。
+//
+// 現在改成:先改名挪開(改名對被載入的 DLL 是允許的),再刪那個改名後的檔。
+//   · 沒有人握著 → 直接刪掉,一點痕跡都不留,Inno 也不會問任何事。
+//   · 有人握著   → 刪不掉,交給 rime_ime_setup.exe 排進開機清除。
+//                  那是**我們**排的,Inno 不知道,所以它不會問要不要重啟。
+//
+// 兩條路的共同點:Inno 走到它的 rime_tsf.dll 那一筆時檔案已經不在了,
+// 於是它既不排隊、也不設「需要重新啟動」。**告知,而不強迫。**
+procedure MoveTsfDllAsideForUninstall(const Dir, Exe: String);
+var
+  Moved: String;
+  Rc: Integer;
+begin
+  SweepStaleDlls(Dir);
+  if not MoveTsfDllAside(Dir, Moved) then begin
+    Log(LogTag + '解除安裝:改名挪開失敗,退回 Inno 的 uninsrestartdelete');
+    Exit;
+  end;
+  if Moved = '' then Exit;  // 本來就沒有那顆檔案
+  Log(LogTag + '解除安裝:' + TsfDllName + ' 已改名挪開 -> ' + Moved);
+  if DeleteFile(Moved) then begin
+    Log(LogTag + '  沒有人握著它,已直接刪除 —— 不需要重新啟動,也不會問');
+    Exit;
+  end;
+  // 刪不掉 = 還有程式(檔案總管 / 瀏覽器 / Office)握著那份映像。
+  // 排進開機清除,然後**就這樣**。不要求重新啟動。
+  if Exec(Exe, 'sweep-stale-dlls --dir "' + Dir + '" --schedule-if-locked', '',
+          SW_HIDE, ewWaitUntilTerminated, Rc) then
+    Log(LogTag + '  還有程式握著,已排進開機清除 rc=' + IntToStr(Rc))
+  else
+    Log(LogTag + '  還有程式握著,而且排不進開機清除 —— 檔案會留著(幾 MB,無害)');
+end;
+
+// ══════════════════════════════════════════════════════════════════
 //  「連我的資料一起刪」
 // ══════════════════════════════════════════════════════════════════
 //
@@ -738,26 +931,8 @@ var
   GPurge: Boolean;
   GPurgeOk: Boolean;
 
-// ⚠ 兩種找法都做。
-//
-// Inno 的解除安裝程式會**把自己複製到暫存目錄再跑一次**(_iu*.tmp),
-// 而那一次的參數列是它自己組出來的(會多一個 /SECONDPHASE=...)。
-// 只看 ParamStr 的話,旗標有可能在第二階段就不見了 —— 而症狀是
-// 「帶了 /PURGEUSERDATA 卻沒有刪」,看起來像刪除功能壞掉。
-// GetCmdTail 拿的是原始命令列字串,兩種都查一次是零成本的保險。
-function CmdLineParamExists(const Value: String): Boolean;
-var
-  I: Integer;
-begin
-  Result := False;
-  for I := 1 to ParamCount do
-    if CompareText(ParamStr(I), Value) = 0 then begin
-      Result := True;
-      Exit;
-    end;
-  if Pos(Uppercase(Value), Uppercase(GetCmdTail)) > 0 then
-    Result := True;
-end;
+// (CmdLineParamExists 定義在本區段開頭 —— PrepareToInstall 也要用它,
+//  而 Pascal Script 是單趟編譯的。)
 
 // 問產品自己:使用者資料目錄在哪裡。
 //
@@ -858,12 +1033,17 @@ begin
     //   1. 先把路徑問出來(這時 {app}\rime_ime_setup.exe 還在)
     //   2. 再問使用者要不要刪(問的時候路徑已經是真的,能顯示給他看)
     //   3. 停服務 / 反註冊(UninstallCleanup)—— 服務還握著詞庫時刪不掉
-    //   4. 最後才刪資料
+    //   4. 刪資料
+    //   5. **最後**才把 DLL 改名挪開。放在最後是因為第 3 步的 unregister
+    //      要先跑完:反註冊之後才不會有新的進程去載入它,挪開才有意義。
+    //      而且第 3、4 步都會用到 {app}\rime_ime_setup.exe,那一支必須還在。
     GUserDataDir := QueryUserDataDir(ExpandConstant('{app}\' + SetupExeName));
     Log(LogTag + '使用者資料目錄 = ' + GUserDataDir);
     DecidePurge;
     UninstallCleanup;
     if GPurge then DoPurge(ExpandConstant('{app}\' + SetupExeName));
+    MoveTsfDllAsideForUninstall(ExpandConstant('{app}'),
+                                ExpandConstant('{app}\' + SetupExeName));
     Exit;
   end;
   if CurUninstallStep <> usPostUninstall then Exit;
