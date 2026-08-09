@@ -114,7 +114,11 @@ HARDCODE_RE='org\.(luminakey|rimequad)|(luminakey|rimequad)-(store|layouts|backu
 #
 # ⚠ 掃描範圍原本只有 scripts/。2026-08-09 的合併稽核發現 apple/scripts/ 與
 #   android/ 從來沒有被看過一眼,所以加進來。
-SCRIPT_ROOTS="scripts android apple"
+# ⚠ windows 是後來補上的,而補的理由要留著:Windows 端改完名之後,實測把
+#    winutil.cc 的資料夾名改回舊值,這支腳本**照樣 12/12 全綠** —— 因為
+#    windows/ 從來不在任何一個掃描根裡。這正是這支腳本檔頭自己警告的那種
+#    失敗:改了顯示名、沒改識別碼,而編譯期、單元測試、發布關卡全部是綠的。
+SCRIPT_ROOTS="scripts android apple windows"
 
 # apple/ 的建置與驗證腳本可以寫死名字,**條件是有人盯著它們**:
 # `apple/scripts/verify_names.py` 逐條斷言那些字面值彼此相符,而且它自己有
@@ -130,7 +134,8 @@ apple/scripts/run_kit_tests.sh|Swift 套件路徑 apple/LuminaKey/… 與變異�
 apple/scripts/verify_app_bundle.sh|bundle 內的名字;verify_names.py §6
 apple/scripts/verify_pkg.sh|裝完之後的 bundle id;verify_names.py §6
 apple/scripts/verify_single_egress.sh|Swift 套件路徑
-apple/scripts/verify_user_dict.sh|寫出去的 custom_phrase 掛載檔;標記另由第 6 項釘住"
+apple/scripts/verify_user_dict.sh|寫出去的 custom_phrase 掛載檔;標記另由第 6 項釘住
+windows/verify_product_names.sh|Windows 那一側的同型規則檔,自帶 20 列逐列反向測試"
 
 scan_scripts() {   # scan_scripts <root>
   local root="$1" d
@@ -212,7 +217,8 @@ LEGACY_LABEL='舊名'
 #   在這裡再掃一次只會逼人把同一件事寫兩遍。第 3 項會斷言那支腳本還在。
 LEGACY_TARGETS="core docs tools README.md .github/workflows/build.yml \
 android/app/src android/testdata \
-apple/LuminaKey/Sources apple/LuminaKey/AppSources apple/LuminaKey/SettingsSources"
+apple/LuminaKey/Sources apple/LuminaKey/AppSources apple/LuminaKey/SettingsSources \
+windows/common windows/service windows/tsf windows/winshared windows/installer"
 scan_legacy() {   # scan_legacy <root>
   local root="$1" t targets=""
   for t in $LEGACY_TARGETS; do
@@ -484,6 +490,18 @@ if [ -z "$LEGACY_MISS" ]; then
 else
   bad "相容條款不見了 —— 使用者升級之後東西會安靜地不見,而不是報錯:"
   printf '%s\n' "$LEGACY_MISS" | sed 's/^/         /' >&2
+fi
+
+# Windows 端的落地識別碼由它自己那份同型規則檔驗(20 列,逐列反向測試)。
+# 放在這裡而不是抄一份進來:抄的那一份會腐爛,而腐爛的方式正好是「兩邊都綠」。
+if [ -x "$ROOT/windows/verify_product_names.sh" ]; then
+  if bash "$ROOT/windows/verify_product_names.sh" >/dev/null 2>&1; then
+    ok "Windows 端的落地識別碼(windows/verify_product_names.sh)"
+  else
+    bad "Windows 端的落地識別碼對不上,細節跑 windows/verify_product_names.sh"
+  fi
+else
+  bad "找不到 windows/verify_product_names.sh —— Windows 的識別碼現在沒有人在守"
 fi
 
 echo
