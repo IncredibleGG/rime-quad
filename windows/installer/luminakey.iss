@@ -162,8 +162,18 @@ DisableDirPage=yes
 ;   捷徑指向錯的執行檔或錯的參數,症狀是「點了沒反應」——
 ;   而這個專案抓過四次那種鍵。目標與參數寫在這裡,斷言在那裡,
 ;   兩邊對不上時 CI 紅。
+;
+; ⚠ **捷徑名字裡不可以有半形冒號。** NTFS 把「名字:something」解讀成
+;   交替資料流(ADS):磁碟上長出來的是一個叫「LuminaKey 診斷」的**空檔案**,
+;   真正的 .lnk 內容躲在一個看不見的資料流裡,而「開始」功能表裡那一項
+;   什麼都不會做 —— 正是「點了沒反應」。
+;
+;   ⚠ 這件事在 2026-08-09 之前**一直是壞的**,而且沒有人發現:
+;   在此之前沒有任何一道關卡看過這兩個捷徑,而診斷捷徑正是
+;   「使用者說不能用」時我們叫他去點的那一個。
+;   現在用全形冒號(U+FF1A),而 §12a 會斷言檔案真的在、指對了、參數對了。
 Name: "{group}\{#ProductName} 設定"; Filename: "{app}\rime_service.exe"; Parameters: "--settings"; Comment: "開啟 {#ProductNameZh} 的設定視窗(方案、簡繁、候選字大小)"
-Name: "{group}\{#ProductName} 診斷:輸入法為什麼不能用"; Filename: "{app}\rime_ime_setup.exe"; Parameters: "doctor --report"; Comment: "檢查安裝、註冊、服務、引擎,並把結果用記事本打開"
+Name: "{group}\{#ProductName} 診斷：輸入法為什麼不能用"; Filename: "{app}\rime_ime_setup.exe"; Parameters: "doctor --report"; Comment: "檢查安裝、註冊、服務、引擎,並把結果用記事本打開"
 
 [Files]
 ; restartreplace + uninsrestartdelete:

@@ -80,6 +80,9 @@ void Usage() {
       "                             不給 --lang 就依使用者既有的語言清單自動選。\n"
       "  disable-user               全部停用\n"
       "  user-profiles              印出目前啟用了哪幾份、以及自動判斷會選哪一份\n"
+      "  find-window --class <類別名>\n"
+      "                             那個視窗類別現在存不存在。找到 = 0,沒找到 = 1\n"
+      "                             (CI 用:斷言「設定視窗真的開出來了」)\n"
       "  check [--dll <路徑>] [--user] [--no-enum]\n"
       "                             斷言註冊狀態;不通過就以非零結束\n"
       "                             --no-enum:只驗登錄檔,不問 TSF 的列舉 API\n"
@@ -438,11 +441,13 @@ static int Run(int argc, wchar_t** argv) {
   bool want_enum = true;
   bool purge_confirmed = false;
   uint32_t explicit_langid = 0;
+  std::wstring window_class;
   DoctorOptions doctor;
 
   for (int i = 2; i < argc; ++i) {
     const std::wstring a = argv[i];
-    if (a == L"--lang" && i + 1 < argc) explicit_langid = ParseLangId(argv[++i]);
+    if (a == L"--class" && i + 1 < argc) window_class = argv[++i];
+    else if (a == L"--lang" && i + 1 < argc) explicit_langid = ParseLangId(argv[++i]);
     else if (a == L"--dll" && i + 1 < argc) dll = argv[++i];
     else if (a == L"--dir" && i + 1 < argc) dir = argv[++i];
     else if (a == L"--user") want_user = true;
@@ -620,6 +625,33 @@ static int Run(int argc, wchar_t** argv) {
     opt.check_user = want_user;
     opt.check_enum = want_enum;
     return CheckRegistration(opt) ? 0 : 1;
+  }
+
+  if (verb == L"find-window") {
+    // ⚠ 這個動詞存在的理由是**編碼**,不是功能。
+    //
+    //   原本這一格是 verify_installer.sh 用 PowerShell 的 FindWindowW 做的,
+    //   而類別名與「開始」功能表的路徑都含中文。Git Bash → powershell.exe
+    //   的命令列會經過一次代碼頁轉換,中文在那裡被換掉之後,
+    //   FindWindow 找的是一個不存在的類別 —— 於是它**永遠回報找不到**,
+    //   而那看起來與「設定視窗真的沒開出來」一模一樣。
+    //
+    //   類別名由呼叫端傳進來(腳本從 scripts/lib/product.env 推導),
+    //   這裡刻意**不寫死** —— 寫死就變成產品名的第二份。
+    if (window_class.empty()) {
+      Say("!! find-window 需要 --class <類別名>\n");
+      return 2;
+    }
+    const HWND h = ::FindWindowW(window_class.c_str(), nullptr);
+    Say("類別「%s」:%s\n", WideToUtf8(window_class).c_str(),
+        h ? "找到了" : "找不到");
+    if (h) {
+      DWORD pid = 0;
+      ::GetWindowThreadProcessId(h, &pid);
+      Say("  hwnd=%p pid=%lu visible=%d\n", static_cast<void*>(h),
+          static_cast<unsigned long>(pid), ::IsWindowVisible(h) ? 1 : 0);
+    }
+    return h ? 0 : 1;
   }
 
   if (verb == L"dump") {

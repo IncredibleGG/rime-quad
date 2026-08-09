@@ -42,11 +42,14 @@ ok()   { printf '  ✓ %s\n' "$*"; }
 BIN=""
 FULL=0
 LANGID="0x0404"
+# 呼叫端有沒有明確指定。沒有的話 1b 會用 enable-user 自動選的那一份 ——
+# 那才是使用者機器上會發生的事。
+LANGID_EXPLICIT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --bin)    BIN="$2"; shift 2 ;;
     --full)   FULL=1; shift ;;
-    --langid) LANGID="$2"; shift 2 ;;
+    --langid) LANGID="$2"; LANGID_EXPLICIT=1; shift 2 ;;
     *) die "未知參數: $1" ;;
   esac
 done
@@ -171,15 +174,37 @@ fi
 # ⚠ 用 --lang 指定,不用自動判斷:runner 上一個中文語言都沒有,自動判斷
 #   會落到退路(0x0804),而這支腳本待會要 activate 的是 ${LANGID}。
 #   兩者不一致的話,失敗的原因會指向完全錯的地方。
-log "1b. 替目前使用者啟用 ${LANGID}(真實順序是 register → enable-user → 使用)"
-if "${TOOL}" enable-user --lang "${LANGID}" > "${WORK}/enable-user.log" 2>&1; then
-  cat "${WORK}/enable-user.log"
-  ok "已替目前使用者啟用 ${LANGID}(而且只有這一份)"
+log "1b. 替目前使用者啟用一份(真實順序是 register → enable-user → 使用)"
+if [ -n "${LANGID_EXPLICIT}" ]; then
+  "${TOOL}" enable-user --lang "${LANGID}" > "${WORK}/enable-user.log" 2>&1 || true
 else
-  cat "${WORK}/enable-user.log"
-  note_fail "enable-user 失敗 —— 下面每一格都會以「打不出字」的形式紅,
-     而真正的原因在這裡。"
+  "${TOOL}" enable-user > "${WORK}/enable-user.log" 2>&1 || true
 fi
+cat "${WORK}/enable-user.log"
+
+# ⚠ **待會要 activate 的,必須是實際被啟用的那一份。**
+#
+#   runner 上使用者的語言清單裡一個中文都沒有,而已安裝的輸入語言有
+#   0x0804(zh-CN)沒有 0x0404(zh-TW)。硬要 activate 0x0404 的話,
+#   TSF 會去 activate 它找得到的那一個(實測回報 0x0804),
+#   於是宿主與 DLL 對「現在是哪一份」的認知不一致,而症狀是
+#   **按鍵一顆都沒有到達 OnTestKeyDown** —— 一個指向完全錯誤方向的紅燈。
+#
+#   這件事本身就是這一輪在修的問題的另一面:**註冊一個使用者沒有的語言,
+#   他就找不到我們**。腳本硬寫一個 langid,等於在測一個不會發生的情境。
+"${TOOL}" user-profiles > "${WORK}/user-profiles.log" 2>&1 || true
+CHOSEN="$(tr -d '\r' < "${WORK}/user-profiles.log" \
+          | sed -n 's/^ENABLED=\(0x[0-9A-Fa-f]*\)=.*/\1/p' | head -1)"
+n_on="$(tr -d '\r' < "${WORK}/user-profiles.log" | sed -n 's/^ENABLED_COUNT=//p' | head -1)"
+if [ "${n_on}" = "1" ] && [ -n "${CHOSEN}" ]; then
+  ok "已替目前使用者啟用 ${CHOSEN},而且**正好一份**(清單上只會有一格)"
+  LANGID="${CHOSEN}"
+else
+  cat "${WORK}/user-profiles.log"
+  note_fail "enable-user 之後啟用了 ${n_on:-?} 份(預期 1)。
+     下面每一格都會以「打不出字」的形式紅,而真正的原因在這裡。"
+fi
+echo "  後面的宿主會 activate ${LANGID}"
 
 # ══════════════════════════════════════════════════════════════════
 #  3. 真的走一遍

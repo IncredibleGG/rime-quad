@@ -157,41 +157,64 @@ user_language_list() {
 
 # ── 設定視窗現在開著嗎 ────────────────────────────────────────────
 #
-# 用 FindWindowW 問類別名,不是找進程、也不是找標題。
+# 問視窗類別名,不是找進程、也不是找標題:
 #   · 找進程只證明「服務在跑」,那與「視窗開出來了」是兩件事 ——
 #     而使用者按下去看到的是後者。
 #   · 標題會隨語言與版本變,類別名不會。
-# 類別名的唯一來源是 product.env(見 windows/verify_product_names.sh 的
-# 「設定窗類別名」那一列),所以這裡是推導出來的,不是抄的。
+#
+# ⚠ 走產品自己的 `rime_ime_setup.exe find-window`,**不走 PowerShell**。
+#   第一版是 PowerShell 的 FindWindowW,而類別名含中文:
+#   Git Bash → powershell.exe 的命令列會經過一次代碼頁轉換,中文被換掉之後
+#   它找的是一個不存在的類別,於是**永遠回報找不到** ——
+#   而那看起來與「設定視窗真的沒開出來」一模一樣(CI run #86 就是這樣)。
+#
+# 類別名的唯一來源仍然是 product.env(見 verify_product_names.sh 的
+# 「設定窗類別名」那一列),由這裡推導後傳進去。
 SETTINGS_CLASS="${RS_PRODUCT_NAME}SettingsWindow"
 settings_window_present() {
-  local out
-  out="$(powershell -NoProfile -NonInteractive -Command "
-    Add-Type -Namespace W -Name N -MemberDefinition '
-      [DllImport(\"user32.dll\", CharSet=CharSet.Unicode)]
-      public static extern IntPtr FindWindowW(string c, string w);' | Out-Null
-    if ([W.N]::FindWindowW('${SETTINGS_CLASS}', \$null) -ne [IntPtr]::Zero) { 'YES' } else { 'NO' }
-  " 2>/dev/null | tr -d '\r \n')"
-  [ "${out}" = "YES" ]
+  "${INSTALL_DIR}/rime_ime_setup.exe" find-window --class "${SETTINGS_CLASS}" \
+    >/dev/null 2>&1
 }
 
 # ── 捷徑(.lnk)指到哪裡、帶什麼參數 ──────────────────────────────
 #
-# ⚠ 這是這一輪非加不可的一項。捷徑指向錯的執行檔或錯的參數,症狀是
-#   **「點了沒反應」**—— 而這個專案抓過四次那種鍵(重輸鍵呼叫的是結束組字、
-#   中英鍵切了模式卻不換佈局、按下後顏色回不來、工具列的 emoji 鍵什麼都不做)。
-#   共同點都是「畫面完全正常、自動化全過」。捷徑存在但參數打錯,長得一模一樣。
+# ⚠ 這是這一輪非加不可的一項,而它**第一次跑就抓到一個一直存在的缺陷**:
+#   捷徑名字裡的冒號是半形的,而 NTFS 把「名字:something」解讀成交替資料流,
+#   於是磁碟上長出來的是一個叫「LuminaKey 診斷」的空檔案 ——
+#   「開始」功能表裡那一項什麼都不會做。那正是我們叫使用者去點的診斷入口。
 #
-# 輸出兩行:目標路徑、參數。讀不到就兩行都是空的。
-lnk_target_and_args() {
-  powershell -NoProfile -NonInteractive -Command "
-    \$sh = New-Object -ComObject WScript.Shell
+# ⚠ **不要在命令列上傳中文給 PowerShell。** Git Bash → powershell.exe 會經過
+#   一次代碼頁轉換,而「開始」功能表的資料夾名是產品的中文名 ——
+#   轉壞之後 CreateShortcut 拿到一個不存在的路徑,回傳空字串,
+#   而那看起來與「捷徑指到錯的地方」一模一樣(CI run #86 就是這樣)。
+#   所以改成:把腳本寫成檔案(UTF-8 with BOM,PowerShell 讀得對),
+#   讓它自己去列舉整個「開始」功能表,結果寫成 UTF-8 的 TSV,bash 再讀。
+#   命令列上一個非 ASCII 字元都沒有。
+dump_start_menu_shortcuts() {   # $1 = 輸出檔(TSV: 名字 \t 目標 \t 參數)
+  local ps1="${WORK}/dump-lnk.ps1"
+  printf '\xEF\xBB\xBF' > "${ps1}"
+  cat >> "${ps1}" <<'PS1EOF'
+$ErrorActionPreference = 'Stop'
+$roots = @(
+  (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'),
+  (Join-Path $env:AppData     'Microsoft\Windows\Start Menu\Programs')
+)
+$sh = New-Object -ComObject WScript.Shell
+$out = New-Object System.Collections.ArrayList
+foreach ($r in $roots) {
+  if (-not (Test-Path $r)) { continue }
+  Get-ChildItem -Path $r -Recurse -Filter *.lnk -ErrorAction SilentlyContinue | ForEach-Object {
     try {
-      \$l = \$sh.CreateShortcut('$1')
-      \$l.TargetPath
-      \$l.Arguments
-    } catch { ''; '' }
-  " 2>/dev/null | tr -d '\r'
+      $l = $sh.CreateShortcut($_.FullName)
+      [void]$out.Add(($_.BaseName + "`t" + $l.TargetPath + "`t" + $l.Arguments))
+    } catch { }
+  }
+}
+[System.IO.File]::WriteAllLines($env:RIMEWIN_LNK_OUT, $out, (New-Object System.Text.UTF8Encoding($false)))
+PS1EOF
+  RIMEWIN_LNK_OUT="$(cygpath -w "$1")" \
+    powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+               -File "$(cygpath -w "${ps1}")" >/dev/null 2>&1 || true
 }
 
 # ══════════════════════════════════════════════════════════════════
@@ -1320,27 +1343,32 @@ log "12. 設定的入口"
 #
 # {group} = DefaultGroupName = [Setup] 的 AppName = 產品的中文名。
 # 全機安裝,所以在 ProgramData 底下的共用「開始」功能表。
-START_MENU="$(cygpath -u "${ProgramData:-C:\\ProgramData}")/Microsoft/Windows/Start Menu/Programs/${RS_PRODUCT_NAME_ZH}"
-echo "  程式集資料夾:${START_MENU}"
-if [ -d "${START_MENU}" ]; then
-  ls -1 "${START_MENU}" | sed 's/^/    /'
+LNK_TSV="${WORK}/shortcuts.tsv"
+dump_start_menu_shortcuts "${LNK_TSV}"
+if [ ! -s "${LNK_TSV}" ]; then
+  note_fail "列不出任何「開始」功能表捷徑 —— 這一節什麼都沒驗到。
+     (不是產品的問題,是這段測試自己壞了;但**不可以**因此當成通過。)"
 else
-  note_fail "找不到程式集資料夾 —— 「開始」功能表裡什麼都沒有,
-     而那是新手唯一找得到的入口。"
+  echo "  「開始」功能表裡與我們有關的捷徑:"
+  grep -i 'LuminaKey\|rime_' "${LNK_TSV}" | sed 's/^/    /' || true
 fi
 
 # 名字、目標、參數三者都要對。三者的來源是 installer/luminakey.iss 的 [Icons]。
 check_lnk() {
   local name="$1" want_exe="$2" want_args="$3"
-  local path="${START_MENU}/${name}.lnk"
-  if [ ! -f "${path}" ]; then
-    note_fail "缺少捷徑「${name}」(${path})"
+  local row target args
+  # TSV 的第一欄是**不含副檔名**的檔名。名字含中文,但這裡是檔案內容的比對
+  # (UTF-8 進、UTF-8 出),不經過命令列,所以中文是安全的。
+  row="$(awk -F'\t' -v n="${name}" '$1 == n { print; exit }' "${LNK_TSV}" 2>/dev/null || true)"
+  if [ -z "${row}" ]; then
+    note_fail "缺少捷徑「${name}」。
+     ⚠ 名字裡有半形冒號的話,NTFS 會把它當成交替資料流 ——
+     磁碟上長出來的是一個截斷的空檔案,而「開始」功能表裡那一項
+     什麼都不會做。用全形冒號。"
     return
   fi
-  local out target args
-  out="$(lnk_target_and_args "$(cygpath -w "${path}")")"
-  target="$(printf '%s\n' "${out}" | sed -n 1p)"
-  args="$(printf '%s\n' "${out}" | sed -n 2p)"
+  target="$(printf '%s' "${row}" | cut -f2)"
+  args="$(printf '%s' "${row}" | cut -f3)"
   echo "    ${name}"
   echo "      → ${target} ${args}"
   case "${target}" in
@@ -1356,7 +1384,15 @@ check_lnk() {
   fi
 }
 check_lnk "${RS_PRODUCT_NAME} 設定" "rime_service.exe" "--settings"
-check_lnk "${RS_PRODUCT_NAME} 診斷:輸入法為什麼不能用" "rime_ime_setup.exe" "doctor --report"
+check_lnk "${RS_PRODUCT_NAME} 診斷：輸入法為什麼不能用" "rime_ime_setup.exe" "doctor --report"
+
+# 反向測試:上面那個比對真的會在名字不對時紅嗎?
+# 沒有這一條的話,「awk 永遠比不到東西」與「捷徑都在」在報表上分不出來。
+if awk -F'\t' '$1 == "LuminaKey 這個捷徑不存在"' "${LNK_TSV}" 2>/dev/null | grep -q .; then
+  note_fail "一個不存在的捷徑名竟然比對得到 —— 上面兩條斷言不算數"
+else
+  ok "反向測試通過:不存在的捷徑名比對不到"
+fi
 
 # ── 12b. 捷徑真的按得下去嗎(冷:服務沒在跑)──────────────────────
 #
@@ -1394,39 +1430,52 @@ fi
 #   那時它必須**把訊息傳過去**,不是靜靜結束。
 log "  12c. 服務已經在跑時,第二支 --settings 要通知它(具名事件)"
 if [ "${opened}" -eq 1 ]; then
-  # 先把視窗關掉,不然「本來就開著」會讓下面那條恆真。
-  powershell -NoProfile -NonInteractive -Command "
-    Add-Type -Namespace W2 -Name N -MemberDefinition '
-      [DllImport(\"user32.dll\", CharSet=CharSet.Unicode)]
-      public static extern IntPtr FindWindowW(string c, string w);
-      [DllImport(\"user32.dll\")]
-      public static extern bool ShowWindow(IntPtr h, int n);' | Out-Null
-    \$h = [W2.N]::FindWindowW('${SETTINGS_CLASS}', \$null)
-    if (\$h -ne [IntPtr]::Zero) { [W2.N]::ShowWindow(\$h, 0) | Out-Null }
-  " >/dev/null 2>&1 || true
-  sleep 2
+  # 先把整支服務收掉,再從乾淨狀態重來。
+  #
+  # ⚠ 原本這裡是用 PowerShell 的 ShowWindow 把視窗藏起來,但那條路同樣
+  #   要在命令列上傳類別名,而且「藏起來」不等於「視窗不存在」——
+  #   FindWindow 找得到隱藏的視窗,所以那個做法根本擋不住恆真。
+  #   收掉進程才是真的回到「服務沒在跑」。
+  kill "${cold_pid}" 2>/dev/null || true
+  taskkill //IM rime_service.exe //F >/dev/null 2>&1 || true
+  sleep 3
   if settings_window_present; then
-    echo "    (關不掉視窗,12c 的斷言會恆真 —— 明著說,不當成通過)"
-    note_fail "12c 沒有驗到:設定視窗關不掉,所以「第二支通知第一支」這條路
-     這一輪**沒有被驗證**。"
+    note_fail "服務收掉之後設定視窗還在 —— 12c 的斷言會恆真,這一節沒有驗到。"
   else
-    set +e
-    "${INSTALL_DIR}/rime_service.exe" --settings > "${WORK}/settings-warm.log" 2>&1
-    rc_warm=$?
-    set -e
-    warm=0
-    for i in $(seq 1 15); do
-      if settings_window_present; then warm=1; break; fi
+    # 起一支長命的服務(不帶 --settings),然後用第二支 --settings 去通知它。
+    "${INSTALL_DIR}/rime_service.exe" --quit-after 60 \
+      > "${WORK}/settings-host.log" 2>&1 &
+    host_pid=$!
+    up=0
+    for i in $(seq 1 30); do
+      if "${INSTALL_DIR}/rime_ime_setup.exe" doctor --no-engine --no-scan \
+           >/dev/null 2>&1; then up=1; break; fi
       sleep 1
     done
-    if [ "${warm}" -eq 1 ] && [ "${rc_warm}" -eq 0 ]; then
-      ok "具名事件那條路成立:第二支 --settings 把視窗叫回來了(rc=${rc_warm})"
+    sleep 2
+    if settings_window_present; then
+      note_fail "第一支服務(不帶 --settings)就把視窗開出來了 ——
+     那不該發生,而且會讓下面那條斷言恆真。"
     else
-      cat "${WORK}/settings-warm.log" 2>/dev/null
-      note_fail "服務已經在跑時,第二支 rime_service.exe --settings 沒有把視窗叫出來
+      set +e
+      "${INSTALL_DIR}/rime_service.exe" --settings > "${WORK}/settings-warm.log" 2>&1
+      rc_warm=$?
+      set -e
+      warm=0
+      for i in $(seq 1 15); do
+        if settings_window_present; then warm=1; break; fi
+        sleep 1
+      done
+      if [ "${warm}" -eq 1 ] && [ "${rc_warm}" -eq 0 ]; then
+        ok "具名事件那條路成立:第二支 --settings 把視窗叫出來了(rc=${rc_warm})"
+      else
+        cat "${WORK}/settings-warm.log" 2>/dev/null
+        note_fail "服務已經在跑時,第二支 rime_service.exe --settings 沒有把視窗叫出來
      (rc=${rc_warm})。語言列按鈕在管道還沒連上時走的就是這條 ——
      症狀是「按了設定,什麼都沒發生」。"
+      fi
     fi
+    kill "${host_pid}" 2>/dev/null || true
   fi
 else
   note_fail "12b 沒過,所以 12c 這一節**沒有被驗證**。"
