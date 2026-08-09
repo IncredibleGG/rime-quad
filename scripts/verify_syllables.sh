@@ -120,6 +120,9 @@ info() { echo "[syllables] $*" >&2; }
 pass() { echo "  [PASS] $*"; }
 FAILURES=0
 FAIL_LOG=""
+# bad-slot-ids:植入**真的生效**在幾份佈局上,以及對哪幾份是空包彈。
+PLANT_APPLIED=0
+PLANT_INERT=""
 # ⚠ 訊息要留下來。「紅了」不等於「該紅的那一條紅了」:模擬器抽風、APK 裝不上去
 #   同樣會讓退出碼變 1,而 --plant 的斷言若只看退出碼,就會把環境故障當成
 #   「反向測試通過」—— 那正是這一支要防的假綠燈的另一個形狀。
@@ -134,6 +137,28 @@ finish() {
     if [ "$FAILURES" -eq 0 ]; then
       echo "✗ 植入了 $PLANT,斷言卻還是全綠 —— 這一關沒有在守。artifact:$OUT_DIR"
       return 1
+    fi
+    if [ "$PLANT" = "bad-slot-ids" ]; then
+      # 「至少有一份紅了」不夠:植入生效在 N 份佈局上,就必須有 N 份紅。
+      local nred
+      nred="$(printf '%s\n' "$FAIL_LOG" | grep -cE "$want")"
+      if [ "$PLANT_APPLIED" -eq 0 ]; then
+        echo "✗ bad-slot-ids 一份佈局都植入不進去(沒有一份有 syllable_slots)—— 這一關在空轉。"
+        return 1
+      fi
+      if [ "$nred" -lt "$PLANT_APPLIED" ]; then
+        echo "✗ 植入生效的佈局有 $PLANT_APPLIED 份,卻只有 $nred 份紅了。"
+        printf '%s\n' "$FAIL_LOG" | sed '/^$/d; s/^/    /'
+        return 1
+      fi
+      if [ -n "$PLANT_INERT" ]; then
+        echo "⚠ 下面這幾份佈局沒有 syllable_slots,bad-slot-ids 對它們是空包彈,"
+        echo "   **這一輪沒有反向驗到它們的第 2 關**:$PLANT_INERT"
+        echo "   (它們的消歧欄是另一個機制畫出來的,要反向驗需要另一種植入。)"
+      fi
+      echo "✓ 反向測試通過:$PLANT_APPLIED 份植入生效的佈局全部紅在該紅的那一條(共 $FAILURES 項)"
+      echo "   artifact:$OUT_DIR"
+      return 0
     fi
     if ! printf '%s' "$FAIL_LOG" | grep -qE "$want"; then
       echo "✗ 植入了 $PLANT,紅的卻不是該紅的那一條(要找的是 /$want/)。"
@@ -361,9 +386,21 @@ for LAYOUT in "${T9_LAYOUTS[@]}"; do
   SRC_LAYOUT="$ROOT/core/layouts/$LAYOUT.yaml"
   adbs shell "run-as $IME_PKG mkdir -p files/rime/user/layouts" >/dev/null 2>&1
   PLANTED_NOTE=""
-  if [ "$PLANT" = "bad-slot-ids" ]; then
+  if [ "$PLANT" = "bad-slot-ids" ] && grep -q '^    syllable_slots:' "$SRC_LAYOUT"; then
     PLANTED_NOTE="(已植入 bad-slot-ids)"
     SED_SLOTS='s/^    syllable_slots: .*/    syllable_slots: ["nope_1", "nope_2", "nope_3"]/'
+    PLANT_APPLIED=$((PLANT_APPLIED + 1))
+  elif [ "$PLANT" = "bad-slot-ids" ]; then
+    # ⚠ 這一份佈局根本沒有 syllable_slots,那個 sed 一個字都改不到 ——
+    #   **植入是空包彈**。CI 上實際發生過:t9-pinyin 沒有 syllable_slots,
+    #   於是它在 --plant bad-slot-ids 那一輪照樣讀得到 ni/mi、照樣 PASS,
+    #   而整支腳本仍然報「反向測試通過」—— 那一份佈局的第 2 關**沒有被反向驗過**,
+    #   清單上卻不會有任何一個字說出這件事。
+    #   有上限就要說出來,不能靜靜地少驗一份。
+    PLANTED_NOTE="(bad-slot-ids 對這一份無效:沒有 syllable_slots)"
+    SED_SLOTS='s/^__never__$/&/'
+    PLANT_INERT="$PLANT_INERT $LAYOUT"
+    info "⚠ $LAYOUT 沒有 syllable_slots —— bad-slot-ids 對它是空包彈,這一輪沒有反向驗到它"
   else
     SED_SLOTS='s/^__never__$/&/'
   fi
