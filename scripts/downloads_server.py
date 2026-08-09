@@ -283,7 +283,19 @@ def page():
         f"<h1>{html.escape(product.PRODUCT_NAME)} 下載</h1>",
         f'<div class="sub">{html.escape(product.PRODUCT_NAME_ZH)} · 以 RIME(librime)為引擎 · '
         f'清單直接讀自 R2,{d["at"]} 更新</div>',
-        card("Android", "可用的產品", "", d["android"], extra_meta=a_meta),
+        card("Android", "可用的產品", "", d["android"], extra_meta=a_meta,
+             # ⚠ 這一段不是客套話,是一則真的會咬人的事:產品改名時 applicationId
+             #   從 org.rimequad.ime 換成 org.luminakey.ime,而 Android 的
+             #   PackageInstaller 只認套件名 —— 舊 app 裡的「檢查更新」抓到新版、
+             #   下載 30MB、然後一定會失敗,而錯誤訊息說的是「檔案無效或已損毀」,
+             #   看起來像我們的檔案壞了。舊 app 已經發出去了,改不動它,
+             #   所以唯一能講這句話的地方就是這裡。
+             note=f"<b>如果你手機上裝的是改名前的版本</b>(圖示一樣、但那時叫 RimeQuad),"
+                  f"app 內的「檢查更新」會失敗,顯示「APK 檔案無效或已損毀」—— "
+                  f"那不是檔案壞了,是 Android 不允許換套件名的升級。"
+                  f"請先<b>解除安裝舊的那一個</b>,再裝下面這份。"
+                  f"⚠ 解除安裝會一併刪掉舊 app 裡的詞庫與設定,"
+                  f"想留的話先在舊 app 裡「匯出詞庫」。"),
         card("macOS (Apple Silicon)", "帶設定介面", "warn", d["macos"],
              note="雙擊 .pkg,下一步到底,<b>裝完登出再登入</b>。"
                   f"然後系統設定 → 鍵盤 → 輸入來源 → + → 繁體中文/簡體中文 → {product.PRODUCT_NAME}。"
