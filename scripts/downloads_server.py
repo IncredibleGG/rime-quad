@@ -228,6 +228,38 @@ def macos_install_text(app_bundle, archive_name):
     )
 
 
+def rename_note():
+    """改名前的舊 app 為什麼按「檢查更新」一定會失敗。
+
+    ⚠ 這一段不是客套話,是一則真的會咬人的事:改名時 applicationId 換了,
+    而 Android 的 `PackageInstaller` 只認套件名 —— 舊 app 裡的「檢查更新」
+    抓得到新版、下載 30MB、然後一定失敗,而它顯示的是「APK 檔案無效或已損毀」,
+    看起來像我們的檔案壞了。使用者已經回報過這一則。
+
+    舊 app 已經發出去了,改不動它;新版的 version.json 也救不了它
+    (套件名不同,`PackageInstaller` 在安裝那一步就拒收)。
+    所以唯一講得到這句話的地方就是這個下載頁。
+
+    ⚠ **名字一律從 product.env 讀。** 寫死的話,`ANDROID_APP_ID_PREVIOUS`
+    那份一次性宣告被拿掉的那一天,這段文字會留在頁面上繼續講一件已經
+    不成立的事 —— 而且 `verify_product_ids.sh` 第 3 關會當場抓到寫死的識別碼
+    (實測過:它抓到了)。
+    """
+    prev = getattr(product, "ANDROID_APP_ID_PREVIOUS", "")
+    if not prev or prev == product.ANDROID_APP_ID:
+        return ""      # 宣告已經過期 = 沒有舊套件在外面了,這段話就該消失
+    old_name = getattr(product, "LEGACY_PRODUCT_NAME", "") or prev
+    return (
+        f"<b>如果你手機上裝的是改名前的版本</b>(那時叫 {html.escape(old_name)},"
+        f"套件名 <code>{html.escape(prev)}</code>),app 內的「檢查更新」會失敗,"
+        f"顯示「APK 檔案無效或已損毀」—— 那不是檔案壞了,"
+        f"是 Android 不允許換套件名的升級。"
+        f"請先<b>解除安裝舊的那一個</b>,再裝下面這份。"
+        f"⚠ 解除安裝會一併刪掉舊 app 裡的詞庫與設定,"
+        f"想留的話先在舊 app 裡「匯出詞庫」。"
+    )
+
+
 def card(title, tag, tag_cls, items, extra_meta="", note="", install="", alt=None):
     if not items:
         return (f'<div class="card"><div class="head"><span class="name">{title}</span>'
@@ -284,18 +316,7 @@ def page():
         f'<div class="sub">{html.escape(product.PRODUCT_NAME_ZH)} · 以 RIME(librime)為引擎 · '
         f'清單直接讀自 R2,{d["at"]} 更新</div>',
         card("Android", "可用的產品", "", d["android"], extra_meta=a_meta,
-             # ⚠ 這一段不是客套話,是一則真的會咬人的事:產品改名時 applicationId
-             #   從 org.rimequad.ime 換成 org.luminakey.ime,而 Android 的
-             #   PackageInstaller 只認套件名 —— 舊 app 裡的「檢查更新」抓到新版、
-             #   下載 30MB、然後一定會失敗,而錯誤訊息說的是「檔案無效或已損毀」,
-             #   看起來像我們的檔案壞了。舊 app 已經發出去了,改不動它,
-             #   所以唯一能講這句話的地方就是這裡。
-             note=f"<b>如果你手機上裝的是改名前的版本</b>(圖示一樣、但那時叫 RimeQuad),"
-                  f"app 內的「檢查更新」會失敗,顯示「APK 檔案無效或已損毀」—— "
-                  f"那不是檔案壞了,是 Android 不允許換套件名的升級。"
-                  f"請先<b>解除安裝舊的那一個</b>,再裝下面這份。"
-                  f"⚠ 解除安裝會一併刪掉舊 app 裡的詞庫與設定,"
-                  f"想留的話先在舊 app 裡「匯出詞庫」。"),
+             note=rename_note()),
         card("macOS (Apple Silicon)", "帶設定介面", "warn", d["macos"],
              note="雙擊 .pkg,下一步到底,<b>裝完登出再登入</b>。"
                   f"然後系統設定 → 鍵盤 → 輸入來源 → + → 繁體中文/簡體中文 → {product.PRODUCT_NAME}。"
