@@ -2,4 +2,4 @@
 -keepclasseswithmembernames class * {
     native <methods>;
 }
--keep class org.rimequad.ime.core.RimeCore { *; }
+-keep class org.luminakey.ime.core.RimeCore { *; }

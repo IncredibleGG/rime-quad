@@ -16,7 +16,7 @@ set(PREBUILT_INC_DIR   "${PREBUILT_DIR}/include")
 set(PREBUILT_MANIFEST  "${RIME_ROOT}/third_party/prebuilt/manifest.json")
 
 if(NOT DEFINED RIME_JNI_CLASS OR RIME_JNI_CLASS STREQUAL "")
-  set(RIME_JNI_CLASS "org/rimequad/ime/core/RimeCore")
+  set(RIME_JNI_CLASS "org/luminakey/ime/core/RimeCore")
 endif()
 
 # ─────────────────────────────────────────────────────────────────────────────
