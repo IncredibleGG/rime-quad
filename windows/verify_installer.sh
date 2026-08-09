@@ -125,6 +125,43 @@ pending_has_our_dll() {
   pending_renames | grep -qi 'rime_tsf\.dll'
 }
 
+# PendingFileRenameOperations 是 REG_MULTI_SZ,reg.exe 把分隔印成字面的 \0。
+# 拆開之後每一行是一筆路徑;它們**成對**出現(來源、目的),
+# 目的為空 = 開機時刪除。
+pending_entries() {
+  pending_renames | sed 's/\\0/\n/g' | sed 's/^\\??\\//'
+}
+
+# ⚠ 這一個是升級那一節(§13)真正的紅線:佇列裡有一筆的路徑**正好是**
+#   那個固定的 rime_tsf.dll。那代表 Inno 沒能換掉檔案,只好排隊等開機 ——
+#   也就是說磁碟上那一顆還是舊的,**新開的進程也會拿到舊的**,
+#   一直到使用者重新開機為止,而且安裝程式會問他要不要現在重啟。
+#   結尾是 .old-<時間戳> 的那些是我們自己排的清理,無害,不算數。
+pending_targets_live_dll() {
+  pending_entries | grep -qiE 'rime_tsf\.dll$'
+}
+
+# ── 升級那幾節共用的小工具 ────────────────────────────────────────
+DLL_U="${INSTALL_DIR}/rime_tsf.dll"
+DLL_W="${INSTALL_DIR_W}\\rime_tsf.dll"
+
+# NTFS 的檔案 id。用它回答一個沒有別的辦法回答的問題:
+# 「現在躺在 rime_tsf.dll 那個路徑上的,還是不是舊 host 手上那一顆檔案?」
+# 路徑一樣、內容也可能一樣(同一次建置),**檔案 id 不一樣就是換過了**。
+#
+# ⚠ `|| true` 不是裝飾。fsutil 在檔案不存在(或這台機器上問不到)時以非零
+#   結束,而這個函式的結果是拿去做變數指派的 —— 配上 set -e,
+#   整支腳本會在那裡當場死掉,而錯誤訊息完全不會提到 fsutil。
+#   問不到就回空字串,呼叫端自己處理(它會退回別的證據)。
+file_id() {
+  (fsutil file queryfileid "$1" 2>/dev/null || true) \
+    | tr -d '\r' | awk '{print $NF}'
+}
+stale_list() {
+  (ls -1 "${INSTALL_DIR}"/rime_tsf.dll.old-* 2>/dev/null || true)
+}
+stale_count() { stale_list | wc -l | tr -d ' '; }
+
 reg_value() {
   # $1 = 鍵, $2 = 值名(空字串代表預設值)
   local out
@@ -1564,6 +1601,313 @@ log "  修回去"
 ok "重新註冊之後 check 又通過了"
 
 # ══════════════════════════════════════════════════════════════════
+#  13. 升級不得要求重新啟動
+# ══════════════════════════════════════════════════════════════════
+#
+# 決策紀錄:docs/decisions/no-restart.md。使用者的原話:
+#   「不要每次安裝都重啟啊。這個是大工程,任何端都不能這樣。」
+#
+# 而理由不是體驗:**一個每次更新都要重開機的輸入法,使用者就不會更新它**,
+# 然後安全性修正到不了他手上 —— 而這個專案的定位是經得起審計,
+# 那句話建立在「使用者手上跑的是我們現在的程式碼」之上。
+#
+# ── 這一節驗三件事,而第一件是使用者機器上**現在的真實狀態** ──────
+#
+#   1. 舊的 DLL 映像 + 新的服務進程,還打不打得出字。
+#      升級之後,已經開著的程式(檔案總管、瀏覽器)手上仍然是舊的 DLL,
+#      而服務已經換成新的。談不攏的症狀是「有些程式能打字、有些不能」,
+#      而使用者完全無法理解為什麼 —— 那比全部壞掉更難查。
+#   2. 新開的進程拿到的是**新檔**(而不是等下次開機才換)。
+#   3. 整個過程**沒有任何東西被排進開機佇列**、安裝程式沒有要求重新啟動。
+#
+# ── ⚠ 為什麼這一關不會是「永遠綠、永遠沒在測」 ────────────────────
+#
+# 因為它有反向測試,而且反向測試在最後面自成一節(§14):
+# 用 /LEGACYINPLACE 跑一次**跳過改名挪開**的安裝,並要求第 3 項的斷言
+# 真的紅。沒有那一節的話,這一關有可能只是因為 runner 上沒有人握著 DLL
+# 而通過 —— 這個專案已經抓過四次那種東西。
+#
+# ⚠ 誠實說一件事:這裡的「新版」是**同一次建置**再裝一次。它驗到的是
+#   換檔的機制與升級之後的相容性,**不是**「版本號真的變了」。
+#   兩個版本的位元組不同時會不會有別的問題(例如線路協議改版),
+#   這一節驗不到 —— 那要靠 protocol.h 的版本協商與 test_proto_compat.cc。
+if [ -n "${HOST}" ]; then
+log "13. 升級不得要求重新啟動(舊 DLL 還被握著的時候裝新版)"
+
+# ── ⚠ 誰在前景、誰在背景,是這一節唯一難寫對的地方 ────────────────
+#
+#   TSF 只把按鍵交給**擁有前景**的那一條執行緒(README 的「學到的兩件事」
+#   第 1 點:沒有前景時 KeyDown 回 S_OK、pfEaten=FALSE,一顆鍵都不會到達
+#   文字服務,而且不報錯)。
+#
+#   第一版把兩階段宿主丟到背景跑,好讓腳本騰出手去裝新版 —— 結果它搶不到
+#   前景(實測:`前景視窗 = ...0600A0(我們的是 ...070052)`、
+#   `IsThreadFocus = 0`),六顆按鍵一顆都沒到,於是第二階段量到的
+#   「連不回服務」**完全是假的** —— 它根本沒機會連。
+#
+#   所以現在反過來:**宿主在前景**(與 §6c 同一種跑法),
+#   而「等它就緒 → 裝新版 → 起新服務 → 放行」那一串在背景的子 shell 裡。
+p13_stop_service() {
+  "${INSTALL_DIR}/rime_ime_setup.exe" stop-service --dir "${INSTALL_DIR_W}" \
+    > "${WORK}/p13-stop.log" 2>&1 || true
+  for _ in $(seq 1 30); do
+    [ "$(count_service)" -eq 0 ] && break
+    sleep 1
+  done
+}
+
+# 起一支服務並等它**真的**就緒(ready 檔是服務自己在管道接得起連線、
+# 引擎也預熱過之後才寫的)。回傳 pid;失敗回空字串。
+#
+# ⚠ 為什麼不讓瘦 DLL 自己去啟動它(那條路 §5c 已經驗過了):
+#   這一節要問的是「舊的 DLL 映像跟新的服務談不談得攏」,
+#   而不是「服務要多久才部署完」。把部署延遲混進來的話,
+#   一次逾時會被記成「舊 DLL 連不回去」—— 而那兩件事要修的地方完全不同。
+p13_start_service() {   # $1 = ready 檔  $2 = 記錄檔
+  rm -f "$1"
+  "${INSTALL_DIR}/rime_service.exe" --no-ui --wait-deploy 1200 \
+    --ready-file "$(w "$1")" --quit-after 1800 > "$2" 2>&1 &
+  local pid=$!
+  local i
+  for i in $(seq 1 1200); do
+    [ -f "$1" ] && { echo "${pid}"; return 0; }
+    kill -0 "${pid}" 2>/dev/null || { echo ""; return 1; }
+    sleep 1
+  done
+  echo ""
+  return 1
+}
+
+# 起點必須乾淨,不然後面「多了一顆 .old-」的斷言不算數。
+"${INSTALL_DIR}/rime_ime_setup.exe" sweep-stale-dlls --dir "${INSTALL_DIR_W}" \
+  > "${WORK}/p13-sweep0.log" 2>&1 || true
+tr -d '\r' < "${WORK}/p13-sweep0.log" | sed 's/^/    /'
+if [ "$(stale_count)" -ne 0 ]; then
+  stale_list | sed 's/^/    /'
+  note_fail "13 開始前安裝目錄裡就有 rime_tsf.dll.old-*,而且掃不掉 ——
+     後面「升級之後正好多一顆」的斷言會失去意義。"
+fi
+[ -f "${DLL_U}" ] || die "13 開始前找不到 ${DLL_U}"
+ID_BEFORE="$(file_id "${DLL_W}")"
+if [ -n "${ID_BEFORE}" ]; then
+  log "  升級前 rime_tsf.dll 的檔案 id = ${ID_BEFORE}"
+else
+  printf '\033[1;33m  ⚠ fsutil 問不到檔案 id —— 「換成另一顆檔案了」那一格改用\033[0m\n' >&2
+  printf '\033[1;33m    「.old- 出現了」與「沒有排進開機佇列」兩條間接證據。\033[0m\n' >&2
+fi
+
+# ── 前置:自己起一支**升級前**的服務,並等它就緒 ────────────────
+log "  起一支升級前的服務(等它真的就緒)"
+p13_stop_service
+# ⚠ `|| true` 不是裝飾:服務起不來時這個函式以非零結束,而它的結果拿去做
+#   變數指派 —— 配上 set -e,整支腳本會在這一行當場死掉,而訊息完全不會
+#   提到服務。空字串就是「起不來」,下面那個 if 會好好地說出來。
+SVC_OLD_PID="$(p13_start_service "${WORK}/p13-ready-svc-old" "${WORK}/p13-svc-old.log" || true)"
+if [ -z "${SVC_OLD_PID}" ]; then
+  tr -d '\r' < "${WORK}/p13-svc-old.log" | tail -20 | sed 's/^/    /'
+  note_fail "升級前的服務起不來 —— 這一節後面每一條都驗不到"
+else
+  ok "升級前的服務已就緒(pid ${SVC_OLD_PID})"
+
+  RDY="${WORK}/p13-ready"
+  GO="${WORK}/p13-go"
+  rm -f "${RDY}" "${GO}" "${WORK}/p13-upgrade.rc"
+
+  # ── 背景:等宿主就緒 → 裝新版 → 起新服務並等它就緒 → 放行 ──────
+  (
+    for _ in $(seq 1 600); do
+      [ -f "${RDY}" ] && break
+      sleep 1
+    done
+    if [ ! -f "${RDY}" ]; then
+      echo "no-ready" > "${WORK}/p13-upgrade.rc"
+    else
+      set +e
+      "${SETUP}" //VERYSILENT //SUPPRESSMSGBOXES //NORESTART \
+                 "//LOG=$(w "${WORK}/p13-upgrade.log")"
+      echo "$?" > "${WORK}/p13-upgrade.rc"
+      set -e
+      # 安裝程式在複製檔案之前把舊服務停掉了。起一支**新的**,
+      # 並且等它真的就緒 —— 放行之後宿主才不會撞上「還在部署」。
+      #
+      # ⚠ `|| true`:起不來也一定要往下走到那個 `: > "${GO}"`。
+      #   少了它,子 shell 會被 set -e 帶走,而前景那支宿主會傻等到逾時 ——
+      #   然後回報「連不回服務」,把一個「服務根本沒起來」講成別的故事。
+      p13_start_service "${WORK}/p13-ready-svc-new" "${WORK}/p13-svc-new.log" \
+        > "${WORK}/p13-svc-new.pid" 2>/dev/null || true
+    fi
+    : > "${GO}"
+  ) &
+  UPGRADER_PID=$!
+
+  # ── 13a/13c:兩階段宿主,**在前景跑** ────────────────────────
+  log "  13a. 前景開一個真的 TSF 宿主:載入舊版、打出「你好」,然後等升級"
+  set +e
+  "${HOST}" --langid "${ACTIVE_LANGID}" --require-activate --require-eaten \
+            --keys nihao1 --expect 你好 \
+            --phase2-ready-file "$(w "${RDY}")" \
+            --phase2-go-file "$(w "${GO}")" \
+            --phase2-timeout-ms 900000 --phase2-relink-ms 300000 \
+            --trace "$(w "${WORK}/p13-oldhost-trace.log")" --wait-ms 5000 \
+            > "${WORK}/p13-oldhost.log" 2>&1
+  OLD_RC=$?
+  set -e
+  wait "${UPGRADER_PID}" 2>/dev/null || true
+  tr -d '\r' < "${WORK}/p13-oldhost.log" | sed 's/^/    /'
+
+  UPRC="$(cat "${WORK}/p13-upgrade.rc" 2>/dev/null || echo missing)"
+  UPLOG="$(tr -d '\r' < "${WORK}/p13-upgrade.log" 2>/dev/null || true)"
+
+  # ── 13b. 升級本身:機制有沒有跑、有沒有留下重啟的理由 ────────
+  log "  13b. 升級的結果(檔案、檔案 id、開機佇列)"
+  case "${UPRC}" in
+    0) ok "升級以 0 結束(而且是在有進程握著舊 DLL 的狀態下)" ;;
+    no-ready) note_fail "宿主沒有走到「打完字、等升級」那一步,升級根本沒跑" ;;
+    missing)  note_fail "背景那一段沒有留下結束碼 —— 升級沒跑到" ;;
+    *)        printf '%s' "${UPLOG}" | tail -40 | sed 's/^/    /'
+              note_fail "升級以 ${UPRC} 結束" ;;
+  esac
+
+  # 機制真的跑了嗎。**不要只看結果** —— 結果可能因為別的原因剛好是對的
+  # (例如 runner 上根本沒有人握著檔案),而那時這一關就沒在測東西。
+  if printf '%s' "${UPLOG}" | grep -q '已改名挪開'; then
+    ok "安裝程式**把舊的 DLL 改名挪開**了(而不是原地覆蓋)"
+    printf '%s' "${UPLOG}" | grep '已改名挪開' | head -2 | sed 's/^/    /'
+  else
+    note_fail "安裝記錄裡沒有「已改名挪開」—— 不重啟就生效的機制沒有跑到。
+     可能是 PrepareToInstall 沒被呼叫,或改名失敗退回了 restartreplace。"
+  fi
+  if printf '%s' "${UPLOG}" | grep -q '改名挪開.*失敗'; then
+    printf '%s' "${UPLOG}" | grep '改名挪開' | sed 's/^/    /'
+    note_fail "改名挪開失敗,退回了 restartreplace —— 這一次升級會要求重新啟動。"
+  fi
+
+  # ── 檔案層面:新開的進程會拿到哪一顆 ──────────────────────────
+  [ -f "${DLL_U}" ] || note_fail "升級之後 ${DLL_U} 不見了"
+  n_stale="$(stale_count)"
+  if [ "${n_stale}" -eq 1 ]; then
+    ok "舊檔被挪到 $(stale_list | sed 's|.*/||')(升級當下仍被宿主握著,無害)"
+  else
+    stale_list | sed 's/^/    /'
+    note_fail "預期正好 1 個 rime_tsf.dll.old-*,實際 ${n_stale} 個"
+  fi
+
+  ID_AFTER="$(file_id "${DLL_W}")"
+  if [ -n "${ID_BEFORE}" ] && [ -n "${ID_AFTER}" ]; then
+    if [ "${ID_AFTER}" != "${ID_BEFORE}" ]; then
+      ok "**rime_tsf.dll 現在是另一顆檔案了**(id ${ID_BEFORE} -> ${ID_AFTER})
+     —— 也就是說,現在新開的進程載入的是新裝的那一份,不必等重新開機。"
+    else
+      note_fail "升級之後 rime_tsf.dll 的檔案 id 沒變(還是 ${ID_BEFORE})。
+     那代表磁碟上躺的仍然是舊檔 —— **新開的程式也會拿到舊版**,
+     一直到使用者重新開機為止。這正是這一輪要修掉的東西。"
+    fi
+    stale_one="$(stale_list | head -1)"
+    if [ -n "${stale_one}" ]; then
+      id_stale="$(file_id "$(w "${stale_one}")")"
+      [ "${id_stale}" = "${ID_BEFORE}" ] \
+        && ok "被挪開的那一顆正是舊 host 手上那一顆(id ${id_stale})" \
+        || note_fail "被挪開的檔案 id=${id_stale},而升級前是 ${ID_BEFORE} —— 對不上"
+    fi
+  fi
+
+  # ── ⚠ 這一條是整節的核心斷言 ────────────────────────────────
+  if pending_targets_live_dll; then
+    echo "  --- PendingFileRenameOperations ---"
+    pending_entries | sed 's/^/    /'
+    note_fail "升級把 rime_tsf.dll **排進了開機佇列**。
+     那代表磁碟上那一顆還是舊的、新開的程式也拿到舊的,而且安裝程式
+     會在最後一頁問使用者要不要重新啟動 —— 這一整輪要修的就是這件事。"
+  else
+    ok "**升級沒有把任何東西排進開機佇列**(也就不會問要不要重新啟動)"
+  fi
+
+  # ── 13c. 舊的 DLL 映像 + 新的服務 ────────────────────────────
+  #
+  # 使用者機器上**現在**的狀態(他實測回報「我沒重啟也能用」的那一台)。
+  # 走不通的話,他看到的是「有些程式能打字、有些不能」。
+  log "  13c. 舊的 DLL 映像 + 新的服務"
+  if [ "${OLD_RC}" -eq 0 ]; then
+    ok "**舊的 DLL 映像在升級之後照樣打得出「你好」**(重新連上了新的服務)
+     —— 這是使用者升級之後那些沒關掉的程式(檔案總管、瀏覽器)的處境。"
+  else
+    note_fail "舊的 DLL 在升級之後不能用了(宿主結束碼 ${OLD_RC})。
+     症狀會是「有些程式能打字、有些不能」,而使用者無法理解為什麼。"
+  fi
+  (tr -d '\r' < "${WORK}/p13-oldhost.log" | grep -a 'PHASE2_' || true) \
+    | sed 's/^/    /'
+
+  # ── 13d. 新開的進程必須拿到新版 ──────────────────────────────
+  log "  13d. 升級之後新開一個宿主(它應該載入新裝的那一份)"
+  # ⚠ 先等服務接得起新的 session。引擎是單執行緒的,上一個宿主剛離開時
+  #   它的 EndSession 還排在佇列上 —— 那時 SESSION_NEW 會逾時,
+  #   而那與「新的 DLL 有問題」在結果上長得一模一樣(見 §6d 的同款說明)。
+  SETTLED13=0
+  for i in $(seq 1 120); do
+    if "${PROBE}" --connect-only --attempts 1 \
+         > "${WORK}/p13-settle.log" 2>&1; then
+      SETTLED13=1
+      break
+    fi
+    sleep 1
+  done
+  [ "${SETTLED13}" -eq 1 ] \
+    && ok "升級後的服務接得起新的 session(等了 ${i} 秒)" \
+    || note_fail "升級後的服務 120 秒內建不出新的 session —— 下面那一格會跟著紅,
+     但真正的原因在這裡。"
+  set +e
+  "${HOST}" --langid "${ACTIVE_LANGID}" --require-activate --require-eaten \
+            --keys nihao1 --expect 你好 \
+            --trace "$(w "${WORK}/p13-newhost-trace.log")" --wait-ms 5000 \
+            > "${WORK}/p13-newhost.log" 2>&1
+  rc=$?
+  set -e
+  tr -d '\r' < "${WORK}/p13-newhost.log" | sed 's/^/    /'
+  [ "${rc}" -eq 0 ] \
+    && ok "升級之後新開的宿主打得出「你好」" \
+    || note_fail "升級之後新開的宿主以 ${rc} 結束"
+  LOADED_NEW="$(tr -d '\r' < "${WORK}/p13-newhost.log" \
+                | sed -n 's/^ *LOADED_TSF_DLL=//p' | head -1)"
+  # ⚠ 大小寫不敏感地比。Windows 的路徑不分大小寫,而 %ProgramW6432% 與
+  #   GetModuleFileName 回來的字串來自不同的地方 —— 拿它們逐字比對的話,
+  #   一次大小寫差異就會變成一個看起來很嚴重、其實什麼事都沒有的紅字。
+  if [ "$(printf '%s' "${LOADED_NEW}" | tr 'A-Z' 'a-z')" \
+     = "$(printf '%s' "${DLL_W}" | tr 'A-Z' 'a-z')" ]; then
+    ok "它載入的是 ${LOADED_NEW} —— 那個路徑上現在躺的是新檔(見上面的檔案 id)"
+  else
+    note_fail "新宿主載入的是「${LOADED_NEW}」,預期「${DLL_W}」"
+  fi
+
+  # ── 13e. 舊檔的清理策略真的會清 ──────────────────────────────
+  #
+  # 兩個宿主都結束了,沒有人再握著那顆舊 DLL —— 這正是清理該生效的時機。
+  # (真實世界裡對應的是「使用者下次登入,服務啟動時掃一遍」。)
+  #
+  # ⚠ 這一條同時擋兩種相反的錯:
+  #   · 清不掉 → 舊檔會一次升級留一顆,幾年之後累積成幾十顆
+  #   · 清了不該清的 → 那就是把正在用的 DLL 刪掉
+  #   所以掃完之後**兩件事都要驗**:.old- 沒了,而 rime_tsf.dll 還在。
+  log "  13e. 沒有人握著之後,舊檔必須清得掉"
+  "${INSTALL_DIR}/rime_ime_setup.exe" sweep-stale-dlls --dir "${INSTALL_DIR_W}" \
+    > "${WORK}/p13-sweep.log" 2>&1 || true
+  tr -d '\r' < "${WORK}/p13-sweep.log" | sed 's/^/    /'
+  if [ "$(stale_count)" -eq 0 ]; then
+    ok "舊檔已經清乾淨(沒有人握著的時候它真的刪得掉)"
+  else
+    stale_list | sed 's/^/    /'
+    note_fail "沒有任何進程握著舊 DLL 了,sweep-stale-dlls 卻還是沒清掉。
+     那代表舊檔會一次升級留一顆,幾年之後累積成幾十顆。"
+  fi
+  [ -f "${DLL_U}" ] \
+    && ok "而且**還在用的那一顆沒有被掃掉**" \
+    || note_fail "掃描把 ${DLL_U} 也刪了 —— 那是正在用的那一顆!"
+
+  # 場地還原:§8 要解除安裝,身上不該還掛著我們起的服務。
+  p13_stop_service
+fi
+fi  # -n "${HOST}"
+
+# ══════════════════════════════════════════════════════════════════
 #  8. 靜默解除安裝
 # ══════════════════════════════════════════════════════════════════
 #
@@ -1869,12 +2213,20 @@ if [ -n "${HOST}" ]; then
      而使用者卻被要求重新啟動。這兩件事必須一致。"
   fi
 
-  # 不重開機就重裝,安裝程式擋不擋?
+  # ── ⚠ 不重開機就重裝,現在**必須**成功 ────────────────────────
   #
-  # 這一格決定文案要不要寫「重新啟動之前不要重新安裝」。Inno 有一則
-  # PreviousInstallNotCompleted 的內建訊息,但它到底會不會在**解除安裝**
-  # 留下的佇列上觸發,只有實測知道。
-  log "  不重開機直接重裝,看安裝程式擋不擋"
+  # 這一格從「量測」升級成「斷言」,而升級的理由是文案改了。
+  #
+  # 舊的作法讓 Inno 把 rime_tsf.dll 排進開機佇列,於是重裝會被
+  # PreviousInstallNotCompleted 擋下來(實測結束碼 8)——所以舊文案寫的是
+  # 「在重新啟動之前您裝不回來」。
+  #
+  # 現在解除安裝會先把那顆 DLL **改名挪開**,佇列裡再也沒有那個固定路徑,
+  # 於是重裝沒有東西可以擋。新文案據此寫了「要重新安裝也不必先重開機」。
+  #
+  # ⚠ 文案宣稱做得到、實際做不到,是這個專案吃過虧的那一種。
+  #   所以這裡不再只是印出結束碼 —— 它得真的是 0。
+  log "  不重開機直接重裝(文案宣稱做得到,這裡驗它)"
   set +e
   "${SETUP}" //VERYSILENT //SUPPRESSMSGBOXES //NORESTART \
              "//LOG=$(w "${WORK}/install4.log")"
@@ -1889,11 +2241,129 @@ if [ -n "${HOST}" ]; then
   else
     echo "    · 安裝記錄裡沒有提到 previous / restart"
   fi
+  if [ "${rc4}" -eq 0 ] && [ -f "${INSTALL_DIR}/rime_tsf.dll" ]; then
+    ok "**解除安裝之後不重開機就裝得回來**(結束碼 0)——
+     UninstalledAndNeedsRestart 那句「要重新安裝也不必先重開機」是真的。"
+  else
+    note_fail "解除安裝之後不重開機就重裝失敗(結束碼 ${rc4})。
+     解除安裝的對話框現在寫著「要重新安裝也不必先重開機」——
+     文案宣稱做得到而實際做不到,是這個專案吃過虧的那一種。
+     要嘛修好(讓解除安裝不要在佇列裡留下那個固定路徑),
+     要嘛把那句話改回去。**不可以留著一句不成立的話。**"
+  fi
 
   hold_cleanup
   trap - EXIT
 else
   log "11. (沒有給 --host,跳過「有程式握著 DLL 時解除安裝」那一節)"
+fi
+
+# ══════════════════════════════════════════════════════════════════
+#  14. ⚠ 反向測試:把「改名挪開」拿掉,§13 的核心斷言必須紅
+# ══════════════════════════════════════════════════════════════════
+#
+# ⚠⚠ **這一節是 §13 唯一的擔保,而且它比 §13 本身更重要。**
+#
+# 沒有它的話,§13 那句「升級沒有把任何東西排進開機佇列」有可能只是因為
+# runner 上根本沒有人握著 DLL 而通過 —— 也就是一個永遠綠、永遠沒在測的
+# 關卡。這個專案已經抓過四次那種東西(單元測試框架、離線稽核、
+# 安裝包資料檢查、發布關卡的升級測試),所以每一道新關卡都要先證明它會紅。
+#
+# 做法:用 /LEGACYINPLACE 跑一次安裝。那個旗標讓 PrepareToInstall
+# **跳過改名挪開**,退回 Inno 原本的行為(原地覆蓋、換不掉就排隊等開機)。
+# 也就是說,它重現的正是這一輪修掉的那個缺陷。
+#
+# 要求:在有人握著 DLL 的情況下,佇列裡必須真的出現一筆目的地是
+# rime_tsf.dll 的項目。出現了 = §13 那條斷言有牙齒。
+#
+# ⚠ 這一節放在**整支腳本的最後面**是刻意的:它會在 PendingFileRenameOperations
+#   裡留下一筆真的項目,而那會讓前面每一條看佇列的斷言(§8、§13)失去意義。
+#   放在最後就不必去動登錄檔清理它 —— 清理登錄檔本身是比留著更糟的風險。
+if [ -n "${HOST}" ]; then
+  log "14. 反向測試:拿掉「改名挪開」之後,§13 的斷言必須紅"
+
+  # 先回到一個乾淨的已安裝狀態(§11 之後的狀態是不確定的)。
+  set +e
+  "${SETUP}" //VERYSILENT //SUPPRESSMSGBOXES //NORESTART \
+             "//LOG=$(w "${WORK}/p14-install.log")"
+  rc=$?
+  set -e
+  [ "${rc}" -eq 0 ] || note_fail "§14 的前置安裝以 ${rc} 結束"
+  "${INSTALL_DIR}/rime_ime_setup.exe" sweep-stale-dlls --dir "${INSTALL_DIR_W}" \
+    >/dev/null 2>&1 || true
+
+  # 前提:現在佇列裡**不可以**已經有一筆指著那個固定路徑的項目 ——
+  # 有的話,後面量到的就不知道是誰留下的,這個反向測試等於沒做。
+  if pending_targets_live_dll; then
+    echo "  --- PendingFileRenameOperations ---"
+    pending_entries | sed 's/^/    /'
+    note_fail "§14 開始前佇列裡就已經有一筆指著 rime_tsf.dll ——
+     這個反向測試分不出結果是誰造成的,所以它證明不了任何事。"
+  elif [ ! -f "${DLL_U}" ]; then
+    note_fail "§14 開始前找不到 ${DLL_U},反向測試跑不了"
+  else
+    log "  讓一個進程握住 ${DLL_W}"
+    "${HOST}" --hold-dll "${DLL_W}" --hold-ms 180000 \
+      > "${WORK}/p14-hold.log" 2>&1 &
+    P14_PID=$!
+    p14_cleanup() { kill "${P14_PID}" 2>/dev/null || true; }
+    trap p14_cleanup EXIT
+    HELD=0
+    for _ in $(seq 1 30); do
+      grep -q '已載入' "${WORK}/p14-hold.log" 2>/dev/null && { HELD=1; break; }
+      sleep 1
+    done
+    if [ "${HELD}" -ne 1 ]; then
+      tr -d '\r' < "${WORK}/p14-hold.log" | sed 's/^/    /'
+      note_fail "沒有握住 DLL —— 反向測試量不到任何東西"
+    else
+      ok "DLL 已被另一個進程握住(重現使用者的處境)"
+      log "  帶 /LEGACYINPLACE 安裝(刻意跳過改名挪開)"
+      set +e
+      "${SETUP}" //VERYSILENT //SUPPRESSMSGBOXES //NORESTART //LEGACYINPLACE \
+                 "//LOG=$(w "${WORK}/p14-legacy.log")"
+      rc=$?
+      set -e
+      LEGLOG="$(tr -d '\r' < "${WORK}/p14-legacy.log" 2>/dev/null || true)"
+      [ "${rc}" -eq 0 ] || note_fail "帶 /LEGACYINPLACE 的安裝以 ${rc} 結束"
+
+      # 旗標真的生效了嗎。沒生效的話,下面那一條會因為「機制照樣跑了」
+      # 而不紅,而我們會誤以為反向測試通過。
+      if printf '%s' "${LEGLOG}" | grep -q 'LEGACYINPLACE'; then
+        ok "/LEGACYINPLACE 生效了(安裝記錄裡有那一行)"
+      else
+        note_fail "/LEGACYINPLACE 沒有生效 —— 安裝記錄裡沒有那一行。
+     這個反向測試等於跑了一次正常安裝,證明不了 §13 會紅。"
+      fi
+      if printf '%s' "${LEGLOG}" | grep -q '已改名挪開'; then
+        note_fail "帶了 /LEGACYINPLACE,卻還是改名挪開了 —— 旗標沒有作用。"
+      fi
+
+      # ── 核心:§13 那條斷言在這裡必須紅 ──────────────────────
+      if pending_targets_live_dll; then
+        echo "  --- PendingFileRenameOperations(這正是我們要消滅的東西)---"
+        pending_entries | grep -i 'rime_tsf' | sed 's/^/    /'
+        ok "**反向測試通過**:退回原地覆蓋之後,rime_tsf.dll 真的被排進了
+     開機佇列 —— 也就是說 §13 那條「沒有排進開機佇列」是有牙齒的,
+     它不是因為 runner 上沒人握著 DLL 才通過的。"
+      else
+        echo "  --- PendingFileRenameOperations ---"
+        pending_entries | sed 's/^/    /'
+        note_fail "⚠ **反向測試沒有紅。**
+     有一個進程握著 rime_tsf.dll,而且刻意跳過了改名挪開,
+     Inno 卻仍然沒有把它排進開機佇列。兩種可能,兩種都要處理:
+       (a) 這台 runner 上「握著 DLL」沒有真的成立 ——
+           那麼 §13 那條斷言也是空的,它一直沒在測東西;
+       (b) Inno 自己就會把換不掉的檔案挪開 ——
+           那麼改名挪開是多餘的複雜度,應該拿掉。
+     在查清楚是哪一種之前,不可以宣稱「升級不重啟」有被驗證。"
+      fi
+    fi
+    p14_cleanup
+    trap - EXIT
+  fi
+else
+  log "14. (沒有給 --host,跳過反向測試 —— 這也表示 §13 沒有擔保)"
 fi
 
 echo

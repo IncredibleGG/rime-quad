@@ -102,6 +102,39 @@ HostElevation ClassifyHostElevation();
 // 本模組(DLL 或 exe)所在的目錄,結尾不含反斜線。
 std::wstring ModuleDirectory(HMODULE module);
 
+// ── 「改名挪開」留下的舊 DLL ──────────────────────────────────────
+//
+// 升級時安裝程式**不原地覆蓋** rime_tsf.dll,而是把舊的改名成
+// `rime_tsf.dll.old-<時間戳>-<序號>` 再放上新檔(理由與機制見
+// docs/decisions/no-restart.md 與 installer/luminakey.iss 的 [Files] 段)。
+// 那顆改名後的檔案會被還沒結束的宿主進程繼續握著,所以當下刪不掉 ——
+// 這幾支函式負責「以後再回來掃一次」。
+//
+// ⚠ **刪不掉不是錯誤。** 一次都不是。
+//   刪不掉只代表還有進程握著那份映像(瀏覽器可以開好幾天),而那顆檔案
+//   佔幾 MB、不影響任何功能。呼叫端一律不因此回報失敗,更不可以因此
+//   要求使用者重新開機 —— 那正是這一輪要消滅的東西。
+//
+// ⚠ 檔名樣式**只寫在這裡一份**。安裝程式那一側(Pascal)另有一份字面值,
+//   兩邊必須一致;windows/verify_installer.sh §13 會實際檢查磁碟上長出來的
+//   名字對不對得上,所以漂移抓得到。
+const wchar_t* RimeTsfDllName();
+const wchar_t* RimeStaleTsfDllPattern();
+
+struct StaleDllSweep {
+  int deleted = 0;    // 真的刪掉了幾個
+  int locked = 0;     // 刪不掉幾個(還有人握著)
+  int scheduled = 0;  // 其中幾個排進了開機清除
+};
+
+// dir 底下所有 `rime_tsf.dll.old-*` 都試著刪掉。
+//
+// schedule_if_locked = true 時,刪不掉的那幾個會用
+// MoveFileEx(..., MOVEFILE_DELAY_UNTIL_REBOOT) 排進開機清除。
+// ⚠ 那個 API 要寫 HKLM,**需要系統管理員權限** —— 所以只有解除安裝程式
+//   (提權的)會傳 true;服務進程一律傳 false,它只做刪得掉的那些。
+StaleDllSweep SweepStaleTsfDlls(const std::wstring& dir, bool schedule_if_locked);
+
 // ── 使用者資料目錄:**唯一的決定處** ──────────────────────────────
 //
 // `%APPDATA%\<資料夾名>`。取不到 %APPDATA% 時回傳空字串。

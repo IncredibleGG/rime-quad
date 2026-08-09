@@ -90,6 +90,11 @@ void Usage() {
       "                             (剛註冊完的當下 CTF 還看不到,見標頭說明)\n"
       "  paths                      印出所有會被寫到的登錄檔路徑與 GUID\n"
       "  stop-service [--dir <目錄>]  停掉 rime_service.exe\n"
+      "  sweep-stale-dlls [--dir <目錄>] [--schedule-if-locked]\n"
+      "                             掃掉升級時「改名挪開」留下的 rime_tsf.dll.old-*。\n"
+      "                             刪不掉不是錯誤(還有程式握著)——一律以 0 結束。\n"
+      "                             --schedule-if-locked:刪不掉的排進開機清除\n"
+      "                             (要寫 HKLM,需要系統管理員權限)\n"
       "  dump                       印出登錄檔實況(診斷用)\n"
       "  user-data-path             印出使用者資料目錄(一行,不含其他東西)\n"
       "  purge-user-data --yes-delete-my-dictionary\n"
@@ -441,6 +446,7 @@ static int Run(int argc, wchar_t** argv) {
   bool want_user = false;
   bool want_enum = true;
   bool purge_confirmed = false;
+  bool schedule_if_locked = false;
   uint32_t explicit_langid = 0;
   std::wstring window_class;
   bool require_visible = false;
@@ -458,6 +464,7 @@ static int Run(int argc, wchar_t** argv) {
     else if (a == L"--report") doctor.open_report = true;
     else if (a == L"--no-engine") doctor.check_engine = false;
     else if (a == L"--no-scan") doctor.scan_processes = false;
+    else if (a == L"--schedule-if-locked") schedule_if_locked = true;
     // 參數名字刻意又長又白話。`--force` / `-y` 那種東西會被人習慣性地帶上,
     // 而這是唯一一個帶錯就救不回來的動作。
     else if (a == L"--yes-delete-my-dictionary") purge_confirmed = true;
@@ -691,6 +698,27 @@ static int Run(int argc, wchar_t** argv) {
   if (verb == L"purge-user-data") return PurgeUserData(purge_confirmed);
 
   if (verb == L"stop-service") return StopService(dir);
+
+  if (verb == L"sweep-stale-dlls") {
+    // ⚠ **這個動詞永遠以 0 結束,而且那是刻意的。**
+    //
+    //   它掃的是升級時被改名挪開的舊 DLL。掃不掉的唯一原因是「還有進程
+    //   握著那份映像」——瀏覽器可以開好幾天,那是**完全正常**的狀態,
+    //   不是故障。把它報成失敗的話,呼叫端(解除安裝程式)就得決定
+    //   要不要因此中止或要求重新開機,而那正是這一輪要消滅的東西。
+    //
+    //   真的出問題時看得出來:下面三個數字是機器可讀的,
+    //   windows/verify_installer.sh §13 拿它們斷言。
+    const StaleDllSweep s = SweepStaleTsfDlls(dir, schedule_if_locked);
+    Say("目錄: %s\n", WideToUtf8(dir).c_str());
+    Say("樣式: %s\n", WideToUtf8(RimeStaleTsfDllPattern()).c_str());
+    Say("SWEPT_DELETED=%d\n", s.deleted);
+    Say("SWEPT_LOCKED=%d\n", s.locked);
+    Say("SWEPT_SCHEDULED=%d\n", s.scheduled);
+    if (s.locked > 0 && s.scheduled == 0 && !schedule_if_locked)
+      Say("  (%d 個還被握著 —— 留著就好,下次啟動時再掃一次)\n", s.locked);
+    return 0;
+  }
 
   Say("未知動詞: %s\n", WideToUtf8(verb).c_str());
   Usage();
