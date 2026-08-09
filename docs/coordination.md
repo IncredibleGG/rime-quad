@@ -467,14 +467,23 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
   那裡碰的是 `*.userdb/`(librime 自己學到的詞),`docs/backup-format.md` §8.2
   講的就是這件事。兩件事共用「詞庫」兩個字,但機制完全不同,不要混。`
 
-- `[2026-08-09] [dictfix] ⚠ **給 macOS 端(不是我改的,我只動詞庫那一頁):
-  `SchemaPreflight` 可能會對 `luna_pinyin_tw.schema.yaml` 誤報缺檔。**
-  它的 `collect()` 對 `__patch:` 底下的每一個序列項都套 `includeTarget()`,
-  而那份方案的 `__patch` 第一項是 `switches/@2/reset: 3` —— 那是一個
-  **節點路徑,不是檔名**,會被算成要找 `switches/@2/reset.yaml`。
-  我沒有實測(這台建置機沒有 swift),也沒有動它,因為那是部署路徑不是詞庫路徑。
-  請確認一下 `checkAll` 有沒有跑在內建方案上;如果有,誤報會擋下正常的部署,
-  而 `SchemaPreflight` 的檔頭自己寫著「誤判比漏判更糟」。`
+- `[2026-08-09] [dictfix] ⚠⚠ **給 macOS/storefix(我沒有改,那不是詞庫路徑):
+  `SchemaPreflight` 對「本專案自己打包的方案」會報出不存在的缺檔,而它是
+  `StoreEngine.setEnabled(enabled: true)` 的硬關卡 —— 也就是說,使用者在
+  「輸入方案」頁把一個內建方案打勾,可能會被擋下來,訊息是「缺少相依檔案,已停止」。**
+  我把 `collect()` + `add()` 逐行移植到 python,對真的方案檔量了一次(2026-08-09):
+  `luna_pinyin_tw` 參照 3 個、判定缺 2 個;`bopomofo_tw` 參照 6 個、缺 2 個;
+  `luna_pinyin` 參照 11 個、缺 2 個。三個方案都不是真的缺檔。兩個來源:
+  (1) `__patch:` 底下的**節點路徑**被當成檔名 —— `switches/@2/reset: 3`
+  被算成要找 `switches/@2/reset.yaml`;
+  (2) RIME 的**可選** patch 目標 `luna_pinyin_tw.custom:/patch?` 那個結尾的 `?`
+  意思是「沒有也沒關係」,而 `includeTarget()` 沒有處理它,於是報 `*.custom.yaml` 缺檔;
+  `luna_pinyin` 還多一個 `grammar.yaml`(語言模型是選配)。
+  ⚠ **順帶一個會誤導除錯的交互作用:** 我這一輪讓「自己加的詞」去寫
+  `<schema>.custom.yaml`,那會**剛好把第 (2) 種的其中一個消音** ——
+  同一個方案在使用者加過詞之後與加詞之前,preflight 的結果會不一樣。
+  修的時候請一併補反向測試:`SchemaPreflight` 的檔頭自己寫著「誤判比漏判更糟」,
+  而它現在正在誤判自己家的方案。`
 
 - `[2026-08-09] [dictfix] **`docs/ui-design.md` §5.3 那一列我改了一格**(「我的詞庫 / ⏸ 未上架」
   → 「自己加的詞 / ✅ 已上架」),因為 §5.3 自己寫著「兩張表不一致時以 settings-model §1 為準,
