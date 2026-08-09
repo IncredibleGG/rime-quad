@@ -60,6 +60,15 @@ struct ReadyDiagnosis {
   uint32_t my_shell_abi = 0;  // 我方編譯時看到的 RIME_SHELL_ABI_VERSION
   bool peer_replied = false;  // 服務端有沒有回一則解得開的 HELLO_OK
   HelloOk peer;               // 它回了什麼
+  // 服務端明著回的 ERROR。
+  //
+  // ⚠ 以前這一則被整個丟掉:Exchange 看到 Op::kError 就 Fail(kServiceError),
+  //   而**服務已經把原因寫在裡面了**。於是診斷只剩「服務回了 ERROR」——
+  //   一句什麼都沒說的話,而真正的答案(「還沒握手」/「協議版本不符」/
+  //   「引擎現在建不出 session」)就在那則訊息的 text 欄位裡。
+  //   fail-open 讓這一切對使用者無聲,所以留在記錄裡的字就是全部的線索。
+  uint32_t service_error_code = 0;
+  std::string service_error;
   // 真正開過管道的次數。**不含**被連線狀態機的退避擋掉的那些 ——
   // 「重試 100 次」不等於「嘗試了 100 次」,見 common/link_state.h
   // 與 tests/test_link_state.cc 的 link_backoff_eats_almost_all_of_a_naive_retry_loop。

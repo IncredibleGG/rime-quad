@@ -184,6 +184,18 @@ void Engine::Post(std::function<void()> fn) {
   cv_.wait(lock, [&] { return done; });
 }
 
+void Engine::PostAsync(std::function<void()> fn) {
+  {
+    std::unique_lock<std::mutex> lock(mu_);
+    if (stop_) return;
+    // ⚠ **移動進佇列,不可以捕捉參考。** Post 捕捉參考是安全的,因為它
+    //   會站在原地等到工作跑完;這一支丟了就走,呼叫端的堆疊在工作真正
+    //   執行之前就已經不存在了。這兩支長得很像,而差別是一個懸空參考。
+    queue_.push_back(std::move(fn));
+  }
+  cv_.notify_all();
+}
+
 bool Engine::WaitDeploy(int seconds) {
   for (int i = 0; i < seconds * 10 && deploy_state_.load() == 0; ++i)
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -208,6 +220,17 @@ uint64_t Engine::NewSession() {
 
 void Engine::EndSession(uint64_t id) {
   Post([&] {
+    auto it = sessions_.find(id);
+    if (it == sessions_.end()) return;
+    rs_session_destroy(it->second);
+    sessions_.erase(it);
+    session_lang_.erase(id);
+  });
+}
+
+void Engine::EndSessionAsync(uint64_t id) {
+  // ⚠ 按值捕捉。這一支不等工作跑完,呼叫端的堆疊會先消失。
+  PostAsync([this, id] {
     auto it = sessions_.find(id);
     if (it == sessions_.end()) return;
     rs_session_destroy(it->second);
@@ -408,6 +431,21 @@ std::string Engine::ApplyChoice(uint64_t id, const std::string& schema_id,
     for (const OptionAssign& a : options) rs_set_option(sess, a.option, a.value);
   });
   return chosen;
+}
+
+void Engine::ApplyChoiceAsync(uint64_t id, const std::string& schema_id,
+                              const std::vector<OptionAssign>& options) {
+  // ⚠ 全部按值捕捉(schema_id 與 options 都複製一份)。呼叫端是連線執行緒,
+  //   它送出 SESSION_OK 之後馬上就回到讀取迴圈,那兩個參考早就不在了。
+  PostAsync([this, id, schema_id, options] {
+    const uintptr_t sess = Find(id);
+    if (!sess) return;
+    // 空字串 = 沒有意見,**不要**呼叫 rs_select_schema(更不可以傳 nullptr)。
+    if (!schema_id.empty()) rs_select_schema(sess, schema_id.c_str());
+    // 字形要在選方案**之後**才設:換方案會重建 context,
+    // 先設的話會被換方案那一步洗掉。
+    for (const OptionAssign& a : options) rs_set_option(sess, a.option, a.value);
+  });
 }
 
 int Engine::AbiVersion() const { return rs_abi_version(); }

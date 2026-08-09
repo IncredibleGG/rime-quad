@@ -49,6 +49,19 @@ enum class LinkFailure {
   //   而前者該降級重試 v1,後者不該(再試一次只是多花 300ms 的宿主 UI
   //   執行緒時間,而且會把真正的原因蓋掉)。
   kPeerClosed,
+  // 握手過了、訊息也解得開,但服務**給不出一個 session**。
+  //
+  // ⚠ 這一格是 2026-08-09 從 kBadMessage 裡分出來的,而分出來的理由是
+  //   一次真的誤導:服務在 `NewSession()` 回 0 時仍然送一則
+  //   session=0 的 SESSION_OK,而用戶端把它判成 kBadMessage ——
+  //   於是診斷寫著「訊息解不開或序號錯位」,而線路格式**完全正常**。
+  //   看到那句話的人會去查編解碼與分幀,那兩段都是好的;
+  //   真正的原因是 librime 正在部署,那段期間 rs_session_create() 給不出東西。
+  //
+  //   「線路壞了」與「引擎現在沒空」要修的地方完全不同,所以它們不可以
+  //   共用一個名字。服務端現在會明著回一則 ERROR(見 pipe_server.cc),
+  //   這一格則負責接住舊服務送來的 session=0。
+  kNoSession,
 };
 
 // 給診斷訊息用的名字。**不是**給程式判斷用的:比對請直接比 enum。
@@ -64,6 +77,7 @@ inline const char* LinkFailureName(LinkFailure k) {
     case LinkFailure::kBadMessage:    return "訊息解不開或序號錯位";
     case LinkFailure::kServiceError:  return "服務回了 ERROR";
     case LinkFailure::kPeerClosed:    return "對面關掉了連線";
+    case LinkFailure::kNoSession:     return "服務給不出 session";
   }
   // 沒有 default:新增一個列舉值而忘了給名字時,編譯器會用 -Wswitch 提醒。
   // 走到這裡代表值不在列舉範圍內(記憶體被踩了),說出來比回空字串好。

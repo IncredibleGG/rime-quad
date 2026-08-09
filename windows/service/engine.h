@@ -56,6 +56,35 @@ class Engine {
   uint64_t NewSession();
   void EndSession(uint64_t id);
 
+  // ── ⚠ 「不等它做完」的那幾支 ────────────────────────────────
+  //
+  // 引擎只有**一條**執行緒,每一件事都排在同一條佇列上。而 SESSION_NEW
+  // 的往返預算只有 300 毫秒(ipc_client.cc 的 kConnectTimeoutMs),
+  // 因為那一趟跑在宿主的 UI 執行緒上 —— 調大等於讓使用者按下第一顆鍵時
+  // 整個程式卡住那麼久。
+  //
+  // 2026-08-09 量到的實況:按鍵矩陣 18 個宿主裡有 8 個在
+  // 「建立 session」那一步逾時,而症狀是**那個宿主整個工作階段都打不出
+  // 中文**(fail-open 之下使用者只看到英文,沒有任何錯誤訊息)。
+  // 這很可能就是使用者回報的「選了輸入法之後有時候不能打中文」。
+  //
+  // 原因是 SESSION_NEW 在那 300 毫秒裡做了**五趟**佇列往返,其中兩趟很貴:
+  //   · rs_select_schema —— 要載入詞典與 prism
+  //   · 而且整串還可能排在**前一個宿主的** rs_session_destroy 後面,
+  //     那一步要把使用者詞典寫回去
+  //
+  // 所以下面這兩支不等結果。佇列是 FIFO 的,而那正是它們成立的理由:
+  // 同一個 session 的第一顆按鍵一定排在 ApplyChoiceAsync **後面**,
+  // 所以「還沒套好方案就處理按鍵」不可能發生。
+  //
+  // ⚠ 這**不是**把逾時調大或加重試 —— 那兩種做法只會讓這個缺陷更難查。
+  //   這是把本來就不該擋在往返路徑上的工作移開。
+  void ApplyChoiceAsync(uint64_t id, const std::string& schema_id,
+                        const std::vector<OptionAssign>& options);
+  // 離開的宿主不需要等詞典寫完才放手。它仍然佔著引擎執行緒(順序不變),
+  // 但至少不再讓那條連線的執行緒陪著一起等。
+  void EndSessionAsync(uint64_t id);
+
   Result ProcessKey(uint64_t id, int32_t keysym, uint32_t mods);
   Result SelectCandidate(uint64_t id, int32_t index);
   Result CommitComposition(uint64_t id);
@@ -114,7 +143,11 @@ class Engine {
 
  private:
   void ThreadMain();
-  void Post(std::function<void()> fn);  // 丟工作並等它做完
+  void Post(std::function<void()> fn);  // 丟工作並**等它做完**
+  // 丟工作就走,不等。⚠ 與 Post 不同,這一支必須把 fn **複製**進佇列:
+  // Post 之所以可以捕捉參考,是因為它會在原地等到工作跑完;這一支不等,
+  // 呼叫端的堆疊在工作執行之前就已經不在了。
+  void PostAsync(std::function<void()> fn);
 
   // 以下三個只在引擎執行緒上呼叫。
   Snapshot TakeSnapshot(uint64_t id);
