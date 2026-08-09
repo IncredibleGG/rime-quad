@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  App 畫面重做（docs/ui-design.md）新增的字串。
+
+  ⚠ 這一份是**回落語系，必須是英文**。找不到使用者語系時 Android 回落到這裡，
+  所以這裡寫中文的話，一個法國使用者看到的就是中文 —— 而三份檔案的 key 集合
+  仍然完全一致，形狀類的測試一個都不會叫。`UiStringsTest` 盯著這一條。
+
+  ── 為什麼另開一個檔而不是加進 strings.xml ──────────────────────────────
+  四端／多條線同時在跑，strings.xml 是最容易撞在一起的一個檔案。
+  新字串進獨立檔案，合併時衝突面積就只剩這一份。
+
+  ── 用字（docs/ui-design.md §6）─────────────────────────────────────────
+  這裡一個引擎內部的詞都不准出現。特別是：
+    deploy / 部署  → refresh the words（重新整理字詞）
+    schema        → typing method（打字方式）
+    candidate     → the little window that shows the choices（選字）
+    commit / 上屏  → type it out（打出來）
+-->
+<resources>
+
+    <!-- ───────────────────────── 無障礙 ─────────────────────────
+         這幾條是**念給人聽的**，不是畫面上的字。所以它們可以比畫面上的字囉唆，
+         因為聽的人沒有「一眼看完整列」這個選項。 -->
+
+    <!-- TalkBack：「輕點兩下以 <這一句>」。動詞 + 受詞，不是「啟動」。 -->
+    <string name="a11y_open_page">open %1$s</string>
+    <!-- 開關的狀態描述。少了它，TalkBack 念得出「開關」卻念不出開還是關。 -->
+    <string name="a11y_state_on">On</string>
+    <string name="a11y_state_off">Off</string>
+    <string name="a11y_back">Go back</string>
+    <!-- 空的輸入框對 TalkBack 是一格沉默的方塊：placeholder 不會被念出來。 -->
+    <string name="a11y_try_field">Scratch pad. Type here to try the keyboard out.</string>
+    <string name="a11y_pick_keyboard">use %1$s</string>
+    <string name="a11y_selected">Selected</string>
+
+    <!-- ───────────────── 引導第 1 步：這是什麼（§8）─────────────────
+         第 2、3 步是系統層級的操作，這一步不是 —— 它是唯一一次可以先講清楚
+         「這東西預設不連網」的機會。講完才問使用者要不要往下走。 -->
+    <string name="intro_title">LuminaKey</string>
+    <string name="intro_lead">A Chinese keyboard that stays offline.</string>
+    <string name="intro_point_offline">Offline unless you say otherwise. With the switch off, not a single packet leaves your phone.</string>
+    <string name="intro_point_control">If you do turn it on, everywhere it connected to is listed for you to check.</string>
+    <string name="intro_point_no_account">No account, no sign-in.</string>
+    <string name="intro_start">Start</string>
+    <!-- ⚠ 沒有「跳過」。第 2、3 步沒做就是不能打字，跳過等於讓使用者帶著一個
+         壞掉的東西離開（Trime 的 SKIP 按下去進入崩潰迴圈）。 -->
+
+    <!-- ───────────────── 打字方式（§5.3 的更名）─────────────────
+         舊名是「鍵盤」，與同一屏的「外觀」會被混淆：使用者以為「鍵盤」是調
+         鍵盤長相的地方，而它其實是選方案的地方。桌面端的副標早就寫「你要用
+         哪一種打字方式」—— 兩端都已經承認那才是白話。 -->
+    <string name="home_typing_method">Typing method</string>
+    <string name="page_typing_method">Typing method</string>
+
+    <!-- 一個方案都沒有時（§7.3 的空狀態）。三件事：為什麼是空的、這是不是
+         正常、下一步按哪裡。 -->
+    <string name="typing_empty_title">No typing methods yet</string>
+    <string name="typing_empty_body">This is not normal — four of them usually arrive with the app. Refreshing the words is the thing to try first.</string>
+    <string name="typing_empty_action">Refresh the words</string>
+
+    <!-- ───────────────── 進階（§7.8）───────────────── -->
+    <string name="advanced_intro">Come here when something is wrong. You should not need it day to day.</string>
+    <!-- 整理中不是一顆「按了沒反應」的按鈕，是一段狀態。 -->
+    <string name="advanced_redeploy_running">Refreshing the words now…</string>
+
+    <!-- ───────────────── 破壞性動作的二次確認（§4.9 / C3–C5）─────────────
+         確認鍵寫出它會做什麼，不是「確定」。內文同時點名**會消失的**與
+         **不會消失的**，兩句都要。 -->
+    <string name="reset_confirm_title">Put every setting back?</string>
+    <string name="reset_confirm_lost">Your typing method, colours, sound, vibration and text choices go back to how they arrived.</string>
+    <string name="reset_confirm_kept">The words you added yourself, and the typing methods you installed, are not touched.</string>
+    <string name="reset_confirm_do">Put the settings back</string>
+    <string name="reset_confirm_cancel">Leave them as they are</string>
+    <string name="reset_done">Settings are back to how they arrived</string>
+
+    <!-- ───────────────── 首頁 ───────────────── -->
+    <string name="home_try_it_hint">Nothing here is saved, and you cannot break anything.</string>
+
+    <!-- A 層設定：改了要重新整理字詞才生效，所以在控制項底下當場說（§4.1）。 -->
+    <string name="appearance_candidate_count_note">Changing this one needs the words refreshed before it takes effect.</string>
+
+</resources>

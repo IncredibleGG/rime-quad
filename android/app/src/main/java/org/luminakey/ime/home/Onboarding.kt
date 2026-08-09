@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -32,15 +33,16 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.luminakey.ime.R
@@ -66,7 +68,7 @@ import org.luminakey.ime.prefs.PrefsStore
  *
  * **這個前提是實測過的**：App 被切到背景（使用者人在系統的輸入法設定頁）
  * 期間，部署照樣跑完，phase 從 DEPLOYING 走到 READY 全程發生在背景。
- * 所以進度條出現在畫面最下面、只有 3dp 高，旁邊寫著「不用等它」——
+ * 所以進度條出現在畫面最下面、細細一條，旁邊寫著「不用等它」——
  * 它不是一道關卡，是一件背景在做的事。
  *
  * ── 真的有人比它快 ──────────────────────────────────────────────────────
@@ -98,27 +100,98 @@ fun OnboardingScreen(
 
     // 「準備中」那一屏有一排鍵盤卡，長度不固定，所以只有它捲動；
     // 另外三種狀態一律**不捲動** —— 引導頁一旦要捲，「一屏就是全部」就破了。
-    val base = modifier.fillMaxSize().padding(horizontal = 22.dp)
+    val base = modifier.fillMaxSize().padding(horizontal = Space.s6)
+
+    // 第 1 步：這是什麼（§8）。
+    //
+    // 它與底下三種狀態不同 —— 那三種是**系統事實推導出來的**，這一步不是，
+    // 它是一段話。所以它需要一個自己的旗標，而這正是本專案唯一可以接受
+    // 「記旗標」的地方：記錯的後果是多讀一次介紹，不是被困在某一步出不來。
+    //
+    // 用 rememberSaveable 而不是持久化：轉螢幕要留著，但下次冷啟動時
+    // 若使用者仍在引導中，再看一次介紹沒有害處 —— 他還沒走到任何地方。
+    var introSeen by rememberSaveable { mutableStateOf(false) }
+    if (!introSeen && stage != SetupStage.READY) {
+        Column(base) {
+            Spacer(Modifier.height(Space.s8))
+            IntroBody(onStart = { introSeen = true })
+        }
+        return
+    }
+
     when (stage) {
         SetupStage.NOT_ENABLED, SetupStage.ENABLED_NOT_DEFAULT ->
             Column(base) {
-                Spacer(Modifier.height(28.dp))
+                Spacer(Modifier.height(Space.s8))
                 TwoStepBody(stage = stage, system = system)
             }
 
         SetupStage.PREPARING ->
             Column(base.verticalScroll(rememberScrollState())) {
-                Spacer(Modifier.height(28.dp))
+                Spacer(Modifier.height(Space.s8))
                 PreparingBody()
-                Spacer(Modifier.height(28.dp))
+                Spacer(Modifier.height(Space.s8))
             }
 
         SetupStage.READY ->
             Column(base) {
-                Spacer(Modifier.height(28.dp))
+                Spacer(Modifier.height(Space.s8))
                 ReadyBody(onFinished = onFinished)
             }
     }
+}
+
+/* ─────────────────────── 第 1 步：這是什麼 ─────────────────────── */
+
+/**
+ * 「離線是預設」只有這一次機會講清楚。
+ *
+ * 這一屏刻意**只有一顆按鈕，而且沒有「跳過」**。第 2、3 步是系統層級的操作，
+ * 沒做就是不能打字 —— 給一顆跳過鍵等於讓使用者帶著一個壞掉的東西離開
+ * （Trime 的精靈按下 SKIP 之後 IME 進入崩潰迴圈，崩的是 `ColorManager`，
+ * 錯誤訊息對使用者毫無意義）。
+ *
+ * 三點各佔一行、不放圖示：這三句話本身就是這個產品與其他輸入法的**全部差別**，
+ * 配一個圖示只會把眼睛帶去看圖示。
+ */
+@Composable
+private fun ColumnScope.IntroBody(onStart: () -> Unit) {
+    Text(
+        text = stringResource(R.string.intro_title),
+        fontSize = TypeScale.t1,
+        lineHeight = TypeScale.t1Line,
+        fontWeight = FontWeight.SemiBold,
+        modifier = Modifier.semantics { heading() },
+    )
+    Spacer(Modifier.height(Space.s1))
+    Text(
+        text = stringResource(R.string.intro_lead),
+        fontSize = TypeScale.t3,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+
+    Spacer(Modifier.height(Space.s7))
+    for (line in listOf(
+        R.string.intro_point_offline,
+        R.string.intro_point_control,
+        R.string.intro_point_no_account,
+    )) {
+        Text(
+            text = stringResource(line),
+            fontSize = TypeScale.t5,
+            lineHeight = TypeScale.t5Line,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = Space.s4),
+        )
+    }
+
+    // 剩下的空間刻意留白，按鈕壓在底部：第一屏的重點是那三句話，不是按鈕。
+    Spacer(Modifier.weight(1f))
+    Button(
+        onClick = onStart,
+        modifier = Modifier.fillMaxWidth().heightIn(min = Dimens.touchTarget),
+    ) { Text(stringResource(R.string.intro_start), fontSize = TypeScale.t4) }
+    Spacer(Modifier.height(Space.s8))
 }
 
 /* ─────────────────────── 狀態 1 與 2：兩步 ─────────────────────── */
@@ -133,11 +206,11 @@ private fun ColumnScope.TwoStepBody(stage: SetupStage, system: ImeSystemState) {
             if (enabled) R.string.onboarding_last_step_title
             else R.string.onboarding_two_steps_title
         ),
-        fontSize = 27.sp,
+        fontSize = TypeScale.t1,
         fontWeight = FontWeight.SemiBold,
-        lineHeight = 34.sp,
+        lineHeight = TypeScale.t1Line,
     )
-    Spacer(Modifier.height(10.dp))
+    Spacer(Modifier.height(Space.s1))
     Text(
         text = if (enabled) {
             val now = system.currentImeLabel
@@ -146,12 +219,12 @@ private fun ColumnScope.TwoStepBody(stage: SetupStage, system: ImeSystemState) {
         } else {
             stringResource(R.string.onboarding_two_steps_body)
         },
-        fontSize = 15.5.sp,
-        lineHeight = 23.sp,
+        fontSize = TypeScale.t3,
+        lineHeight = TypeScale.t3Line,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 
-    Spacer(Modifier.height(34.dp))
+    Spacer(Modifier.height(Space.s7))
 
     PlainCard {
         StepRow(
@@ -191,7 +264,7 @@ private fun ColumnScope.TwoStepBody(stage: SetupStage, system: ImeSystemState) {
             if (enabled) R.string.deploy_hint_one_step else R.string.deploy_hint_two_steps
         )
     )
-    Spacer(Modifier.height(28.dp))
+    Spacer(Modifier.height(Space.s8))
 }
 
 @Composable
@@ -208,12 +281,12 @@ private fun StepRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 16.dp),
+            .padding(horizontal = Space.s5, vertical = Space.s5),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
             modifier = Modifier
-                .size(24.dp)
+                .size(Dimens.stepBadge)
                 .clip(CircleShape)
                 .background(
                     if (done) MaterialTheme.colorScheme.primary
@@ -223,17 +296,17 @@ private fun StepRow(
         ) {
             Text(
                 text = if (done) "✓" else index.toString(),
-                fontSize = 13.sp,
+                fontSize = TypeScale.t5,
                 fontWeight = FontWeight.SemiBold,
                 color = if (done) MaterialTheme.colorScheme.onPrimary
                 else MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Spacer(Modifier.size(14.dp))
+        Spacer(Modifier.size(Space.s4))
         Column(Modifier.weight(1f)) {
             Text(
                 text = title,
-                fontSize = if (done) 14.5.sp else 16.sp,
+                fontSize = if (done) TypeScale.t4 else TypeScale.t3,
                 fontWeight = if (done) FontWeight.Normal else FontWeight.Medium,
                 // 做完的事縮小、變灰；沒做的事變大。
                 color = if (done) MaterialTheme.colorScheme.onSurfaceVariant
@@ -242,7 +315,7 @@ private fun StepRow(
             if (state != null) {
                 Text(
                     text = state,
-                    fontSize = 12.5.sp,
+                    fontSize = TypeScale.t5,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -277,27 +350,28 @@ private fun PreparingBody() {
         text = stringResource(
             if (failed) R.string.preparing_failed_title else R.string.preparing_title
         ),
-        fontSize = 27.sp,
+        fontSize = TypeScale.t1,
         fontWeight = FontWeight.SemiBold,
+        modifier = Modifier.semantics { heading() },
     )
-    Spacer(Modifier.height(10.dp))
+    Spacer(Modifier.height(Space.s1))
     Text(
         text = if (failed) {
             stringResource(R.string.preparing_failed_body, error.orEmpty())
         } else {
             stringResource(R.string.preparing_body)
         },
-        fontSize = 15.5.sp,
-        lineHeight = 23.sp,
+        fontSize = TypeScale.t3,
+        lineHeight = TypeScale.t3Line,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 
     if (!failed) {
-        Spacer(Modifier.height(18.dp))
+        Spacer(Modifier.height(Space.s5))
         DeployBar()
     }
 
-    Spacer(Modifier.height(30.dp))
+    Spacer(Modifier.height(Space.s7))
 
     // 部署完成的那一刻方案清單會從檔案旁路換成引擎的清單，所以要跟著 phase 重算。
     val all = remember(RimeRuntime.phase) { starterKeyboards(availableKeyboards(context)) }
@@ -306,7 +380,7 @@ private fun PreparingBody() {
     if (all.isEmpty()) {
         Text(
             text = stringResource(R.string.preparing_no_keyboards),
-            fontSize = 13.5.sp,
+            fontSize = TypeScale.t4,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     } else {
@@ -319,10 +393,11 @@ private fun PreparingBody() {
                 scope.launch { applyKeyboardChoice(context, t) }
             },
         )
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(Space.s5))
         Text(
             text = stringResource(R.string.preparing_more_hint),
-            fontSize = 12.5.sp,
+            fontSize = TypeScale.t5,
+            lineHeight = TypeScale.t5Line,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
@@ -334,26 +409,32 @@ private fun PreparingBody() {
 private fun ReadyBody(onFinished: () -> Unit) {
     Text(
         text = stringResource(R.string.ready_title),
-        fontSize = 27.sp,
+        fontSize = TypeScale.t1,
         fontWeight = FontWeight.SemiBold,
         color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.semantics { heading() },
     )
-    Spacer(Modifier.height(10.dp))
+    Spacer(Modifier.height(Space.s1))
     Text(
         text = stringResource(R.string.ready_body),
-        fontSize = 15.5.sp,
+        fontSize = TypeScale.t3,
+        lineHeight = TypeScale.t3Line,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
-    Spacer(Modifier.height(22.dp))
+    Spacer(Modifier.height(Space.s7))
     TryField()
-    Spacer(Modifier.height(22.dp))
+    Spacer(Modifier.height(Space.s7))
     Text(
         text = stringResource(R.string.ready_hint),
-        fontSize = 13.sp,
+        fontSize = TypeScale.t5,
+        lineHeight = TypeScale.t5Line,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
-    Spacer(Modifier.height(14.dp))
-    TextButton(onClick = onFinished) { Text(stringResource(R.string.ready_more_settings)) }
+    Spacer(Modifier.height(Space.s4))
+    TextButton(
+        onClick = onFinished,
+        modifier = Modifier.heightIn(min = Dimens.touchTarget),
+    ) { Text(stringResource(R.string.ready_more_settings), fontSize = TypeScale.t4) }
 }
 
 /* ─────────────────────── 進度 ─────────────────────── */
@@ -368,20 +449,25 @@ private fun DeployLine(hint: String) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(
                 text = stringResource(R.string.deploy_line_title),
-                fontSize = 12.5.sp,
+                fontSize = TypeScale.t5,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.weight(1f),
             )
             Text(
                 text = stringResource(R.string.deploy_line_once),
-                fontSize = 12.5.sp,
+                fontSize = TypeScale.t5,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(Space.s3))
         DeployBar()
-        Spacer(Modifier.height(10.dp))
-        Text(text = hint, fontSize = 12.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(Space.s4))
+        Text(
+            text = hint,
+            fontSize = TypeScale.t5,
+            lineHeight = TypeScale.t5Line,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -411,15 +497,15 @@ private fun DeployBar() {
     Box(
         Modifier
             .fillMaxWidth()
-            .height(3.dp)
-            .clip(RoundedCornerShape(2.dp))
+            .height(Dimens.progress)
+            .clip(RoundedCornerShape(Radius.small))
             .background(MaterialTheme.colorScheme.surfaceVariant)
     ) {
         Box(
             Modifier
                 .fillMaxWidth(fraction)
-                .height(3.dp)
-                .clip(RoundedCornerShape(2.dp))
+                .height(Dimens.progress)
+                .clip(RoundedCornerShape(Radius.small))
                 .background(MaterialTheme.colorScheme.primary)
         )
     }

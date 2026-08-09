@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  App 畫面重做（docs/ui-design.md）新增的字串 —— 繁體。
+
+  用字照 docs/ui-design.md §6.2 的對照表：
+    部署 → 重新整理字詞    方案／schema → 打字方式
+    候選字 → 選字          上屏 → 打出來
+-->
+<resources>
+
+    <!-- ───────────────────────── 無障礙 ───────────────────────── -->
+    <string name="a11y_open_page">打開%1$s</string>
+    <string name="a11y_state_on">開啟</string>
+    <string name="a11y_state_off">關閉</string>
+    <string name="a11y_back">返回上一頁</string>
+    <string name="a11y_try_field">試打區。在這裡打字可以試試看鍵盤，打壞也沒關係。</string>
+    <string name="a11y_pick_keyboard">改用%1$s</string>
+    <string name="a11y_selected">已選取</string>
+
+    <!-- ───────────────── 引導第 1 步：這是什麼（§8）───────────────── -->
+    <string name="intro_title">LuminaKey</string>
+    <string name="intro_lead">一個不連網的中文輸入法。</string>
+    <string name="intro_point_offline">預設完全離線。開關關著的時候，一個封包都不會送出去。</string>
+    <string name="intro_point_control">真的要連網也由你決定，而且連過哪裡你都看得到。</string>
+    <string name="intro_point_no_account">不需要帳號，不用登入。</string>
+    <string name="intro_start">開始</string>
+
+    <!-- ───────────────── 打字方式（§5.3 的更名）───────────────── -->
+    <string name="home_typing_method">打字方式</string>
+    <string name="page_typing_method">打字方式</string>
+
+    <string name="typing_empty_title">還沒有任何打字方式</string>
+    <string name="typing_empty_body">這不正常 —— 通常安裝時就會有四種。先試試「重新整理字詞」。</string>
+    <string name="typing_empty_action">重新整理字詞</string>
+
+    <!-- ───────────────── 進階（§7.8）───────────────── -->
+    <string name="advanced_intro">出問題的時候來這裡。平常不用動。</string>
+    <string name="advanced_redeploy_running">正在重新整理字詞…</string>
+
+    <!-- ───────────────── 破壞性動作的二次確認（§4.9 / C3–C5）───────────── -->
+    <string name="reset_confirm_title">把每一項設定都變回原樣？</string>
+    <string name="reset_confirm_lost">你選的打字方式、配色、聲音、震動、文字設定，全部會回到剛裝好的樣子。</string>
+    <string name="reset_confirm_kept">你自己加的詞、你裝過的打字方式，都不會被動到。</string>
+    <string name="reset_confirm_do">把設定變回原樣</string>
+    <string name="reset_confirm_cancel">維持現在的設定</string>
+    <string name="reset_done">設定已經回到剛裝好的樣子</string>
+
+    <!-- ───────────────── 首頁 ───────────────── -->
+    <string name="home_try_it_hint">這裡打的字不會被存起來，也弄不壞任何東西。</string>
+
+    <!-- A 層設定：改了要重新整理字詞才生效，所以在控制項底下當場說（§4.1）。 -->
+    <string name="appearance_candidate_count_note">改這一項要重新整理字詞才會生效。</string>
+
+</resources>

@@ -38,9 +38,10 @@ import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import org.luminakey.ime.R
+import org.luminakey.ime.home.Radius
+import org.luminakey.ime.home.Space
+import org.luminakey.ime.home.TypeScale
 import org.luminakey.ime.net.NetworkRequiredCard
 import org.luminakey.ime.net.rememberNetworkEnabled
 
@@ -76,8 +77,8 @@ fun StoreScreen(controller: StoreController, modifier: Modifier = Modifier) {
     Box(modifier = modifier.fillMaxSize()) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(Space.s5),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = Space.s8),
         ) {
             item {
                 if (networkOn) SourceCard(controller)
@@ -92,12 +93,12 @@ fun StoreScreen(controller: StoreController, modifier: Modifier = Modifier) {
                             containerColor = MaterialTheme.colorScheme.errorContainer
                         ),
                     ) {
-                        Column(Modifier.padding(14.dp)) {
+                        Column(Modifier.padding(Space.s5)) {
                             Text(
                                 stringResource(R.string.store_index_error_title),
                                 fontWeight = FontWeight.SemiBold,
                             )
-                            Text(err, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
+                            Text(err, fontSize = TypeScale.t4, modifier = Modifier.padding(top = Space.s3))
                         }
                     }
                 }
@@ -106,7 +107,7 @@ fun StoreScreen(controller: StoreController, modifier: Modifier = Modifier) {
             if (controller.indexWarnings.isNotEmpty()) {
                 item {
                     Card(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(14.dp)) {
+                        Column(Modifier.padding(Space.s5)) {
                             Text(
                                 pluralStringResource(
                                     R.plurals.store_index_warnings,
@@ -116,7 +117,7 @@ fun StoreScreen(controller: StoreController, modifier: Modifier = Modifier) {
                                 fontWeight = FontWeight.SemiBold,
                             )
                             controller.indexWarnings.take(8).forEach {
-                                Text("· $it", fontSize = 12.sp)
+                                Text("· $it", fontSize = TypeScale.t5)
                             }
                         }
                     }
@@ -136,7 +137,7 @@ fun StoreScreen(controller: StoreController, modifier: Modifier = Modifier) {
                         Text(
                             cat.name,
                             style = MaterialTheme.typography.titleMedium,
-                            modifier = Modifier.padding(top = 8.dp),
+                            modifier = Modifier.padding(top = Space.s3),
                         )
                     }
                     items(pkgs, key = { it.id }) { pkg ->
@@ -151,7 +152,7 @@ fun StoreScreen(controller: StoreController, modifier: Modifier = Modifier) {
                     Text(
                         stringResource(R.string.store_local_section),
                         style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.padding(top = 8.dp),
+                        modifier = Modifier.padding(top = Space.s3),
                     )
                 }
                 items(localOnly, key = { it.id }) { p -> LocalPackageCard(controller, p) }
@@ -185,7 +186,7 @@ private fun SourceCard(controller: StoreController) {
     var draft by remember(controller.indexUrl) { mutableStateOf(controller.indexUrl) }
 
     Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(14.dp)) {
+        Column(Modifier.padding(Space.s5)) {
             Text(stringResource(R.string.store_source_title), fontWeight = FontWeight.SemiBold)
             if (editing) {
                 OutlinedTextField(
@@ -193,9 +194,9 @@ private fun SourceCard(controller: StoreController) {
                     onValueChange = { draft = it },
                     label = { Text(stringResource(R.string.store_source_field_label)) },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                    modifier = Modifier.fillMaxWidth().padding(top = Space.s3),
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(Space.s3)) {
                     TextButton(onClick = {
                         controller.applyIndexUrl(draft)
                         editing = false
@@ -210,11 +211,11 @@ private fun SourceCard(controller: StoreController) {
             } else {
                 Text(
                     controller.indexUrl,
-                    fontSize = 12.sp,
+                    fontSize = TypeScale.t5,
                     fontFamily = FontFamily.Monospace,
-                    modifier = Modifier.padding(top = 4.dp),
+                    modifier = Modifier.padding(top = Space.s1),
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(Space.s3)) {
                     TextButton(onClick = { controller.loadIndex() }, enabled = !controller.loading) {
                         Text(
                             stringResource(
@@ -235,12 +236,12 @@ private fun SourceCard(controller: StoreController) {
 @Composable
 private fun LocalImportCard(onPick: () -> Unit) {
     Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(14.dp)) {
+        Column(Modifier.padding(Space.s5)) {
             Text(stringResource(R.string.store_import_title), fontWeight = FontWeight.SemiBold)
             Text(
                 stringResource(R.string.store_import_body),
-                fontSize = 12.sp,
-                modifier = Modifier.padding(vertical = 4.dp),
+                fontSize = TypeScale.t5,
+                modifier = Modifier.padding(vertical = Space.s2),
             )
             OutlinedButton(onClick = onPick, modifier = Modifier.fillMaxWidth()) {
                 Text(stringResource(R.string.store_import_pick))
@@ -255,7 +256,7 @@ private fun LocalImportCard(onPick: () -> Unit) {
 private fun PackageCard(controller: StoreController, pkg: StorePackage) {
     val state = controller.stateOf(pkg)
     Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(14.dp)) {
+        Column(Modifier.padding(Space.s5)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(pkg.name, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                 if (pkg.recommended) {
@@ -264,11 +265,11 @@ private fun PackageCard(controller: StoreController, pkg: StorePackage) {
                         MaterialTheme.colorScheme.tertiaryContainer,
                     )
                 }
-                Box(Modifier.width(6.dp))
+                Box(Modifier.width(Space.s2))
                 StateBadge(state)
             }
             if (pkg.description.isNotEmpty()) {
-                Text(pkg.description, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
+                Text(pkg.description, fontSize = TypeScale.t4, modifier = Modifier.padding(top = Space.s1))
             }
             val sep = stringResource(R.string.store_meta_separator)
             val listSep = stringResource(R.string.store_meta_list_separator)
@@ -295,28 +296,28 @@ private fun PackageCard(controller: StoreController, pkg: StorePackage) {
                         )
                     }
                 },
-                fontSize = 11.sp,
-                modifier = Modifier.padding(top = 4.dp),
+                fontSize = TypeScale.t5,
+                modifier = Modifier.padding(top = Space.s1),
             )
             if (!pkg.verifiedDeployed) {
                 Text(
                     stringResource(R.string.store_unverified),
-                    fontSize = 11.sp,
+                    fontSize = TypeScale.t5,
                     color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(top = 4.dp),
+                    modifier = Modifier.padding(top = Space.s1),
                 )
             }
             pkg.layoutNote?.let {
                 Text(
                     stringResource(R.string.store_layout_note, it),
-                    fontSize = 11.sp,
-                    modifier = Modifier.padding(top = 4.dp),
+                    fontSize = TypeScale.t5,
+                    modifier = Modifier.padding(top = Space.s1),
                 )
             }
 
             Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.padding(top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(Space.s3),
+                modifier = Modifier.padding(top = Space.s3),
             ) {
                 when (state) {
                     StoreController.PackageState.NOT_INSTALLED ->
@@ -358,7 +359,7 @@ private fun PackageCard(controller: StoreController, pkg: StorePackage) {
 private fun LocalPackageCard(controller: StoreController, pkg: InstalledPackage) {
     val enabled = pkg.schemaIds.any { it in controller.enabledSchemas }
     Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(14.dp)) {
+        Column(Modifier.padding(Space.s5)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(pkg.name, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                 StateBadge(
@@ -375,11 +376,11 @@ private fun LocalPackageCard(controller: StoreController, pkg: InstalledPackage)
                             stringResource(R.string.store_meta_list_separator)
                         ),
                     ),
-                fontSize = 11.sp,
+                fontSize = TypeScale.t5,
             )
             Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.padding(top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(Space.s3),
+                modifier = Modifier.padding(top = Space.s3),
             ) {
                 if (pkg.schemaIds.isNotEmpty()) {
                     if (enabled) {
@@ -428,9 +429,9 @@ private fun StateBadge(state: StoreController.PackageState) = when (state) {
 private fun Badge(text: String, bg: Color) {
     Box(
         modifier = Modifier
-            .background(bg, RoundedCornerShape(6.dp))
-            .padding(horizontal = 8.dp, vertical = 2.dp)
-    ) { Text(text, fontSize = 11.sp) }
+            .background(bg, RoundedCornerShape(Radius.small))
+            .padding(horizontal = Space.s3, vertical = Space.s1)
+    ) { Text(text, fontSize = TypeScale.t5) }
 }
 
 /* ─────────────────────────── 對話框與進度 ─────────────────────────── */
@@ -456,7 +457,7 @@ private fun ConfirmDialog(controller: StoreController, plan: StoreController.Con
                         stringResource(
                             R.string.store_confirm_line, it.name, formatBytes(it.size)
                         ),
-                        fontSize = 13.sp,
+                        fontSize = TypeScale.t4,
                     )
                 }
                 // 索引的 size 是 **zip** 大小。實測 luna-pinyin：zip 0.4MB →
@@ -468,8 +469,8 @@ private fun ConfirmDialog(controller: StoreController, plan: StoreController.Con
                         R.string.store_confirm_installed_size,
                         formatBytes(plan.plan.estimatedInstalledBytes),
                     ),
-                    fontSize = 12.sp,
-                    modifier = Modifier.padding(top = 8.dp),
+                    fontSize = TypeScale.t5,
+                    modifier = Modifier.padding(top = Space.s3),
                 )
                 if (plan.plan.cycles.isNotEmpty()) {
                     Text(
@@ -477,8 +478,8 @@ private fun ConfirmDialog(controller: StoreController, plan: StoreController.Con
                             R.string.store_confirm_cycles,
                             plan.plan.cycles.joinToString("；") { it.joinToString(" ↔ ") },
                         ),
-                        fontSize = 12.sp,
-                        modifier = Modifier.padding(top = 6.dp),
+                        fontSize = TypeScale.t5,
+                        modifier = Modifier.padding(top = Space.s3),
                     )
                 }
                 if (plan.plan.alreadyInstalled.isNotEmpty()) {
@@ -491,14 +492,14 @@ private fun ConfirmDialog(controller: StoreController, plan: StoreController.Con
                                 stringResource(R.string.store_meta_list_separator)
                             ),
                         ),
-                        fontSize = 12.sp,
-                        modifier = Modifier.padding(top = 6.dp),
+                        fontSize = TypeScale.t5,
+                        modifier = Modifier.padding(top = Space.s3),
                     )
                 }
                 Text(
                     stringResource(R.string.store_confirm_footnote),
-                    fontSize = 12.sp,
-                    modifier = Modifier.padding(top = 8.dp),
+                    fontSize = TypeScale.t5,
+                    modifier = Modifier.padding(top = Space.s3),
                 )
             }
         },
@@ -536,14 +537,14 @@ private fun ConfirmDialog(controller: StoreController, plan: StoreController.Con
 @Composable
 private fun ToastBar(text: String, onDismiss: () -> Unit) {
     Box(
-        modifier = Modifier.fillMaxSize().padding(12.dp),
+        modifier = Modifier.fillMaxSize().padding(Space.s4),
         contentAlignment = Alignment.BottomCenter,
     ) {
         Snackbar(
             action = {
                 TextButton(onClick = onDismiss) { Text(stringResource(R.string.close)) }
             },
-        ) { Text(text, fontSize = 13.sp) }
+        ) { Text(text, fontSize = TypeScale.t4) }
     }
 }
 
@@ -560,9 +561,9 @@ private fun ResultDialog(controller: StoreController, r: StoreController.ResultU
         },
         text = {
             Column {
-                Text(r.message, fontSize = 14.sp)
+                Text(r.message, fontSize = TypeScale.t4)
                 r.details.forEach {
-                    Text("· $it", fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
+                    Text("· $it", fontSize = TypeScale.t5, modifier = Modifier.padding(top = Space.s1))
                 }
             }
         },
@@ -590,18 +591,18 @@ private fun JobOverlay(job: StoreController.JobUi) {
             .background(Color(0x99000000)),
         contentAlignment = Alignment.Center,
     ) {
-        Card(modifier = Modifier.fillMaxWidth().padding(24.dp)) {
-            Column(Modifier.padding(18.dp)) {
+        Card(modifier = Modifier.fillMaxWidth().padding(Space.s7)) {
+            Column(Modifier.padding(Space.s5)) {
                 Text(job.title, fontWeight = FontWeight.SemiBold)
-                Text(job.detail, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
+                Text(job.detail, fontSize = TypeScale.t4, modifier = Modifier.padding(top = Space.s3))
                 if (job.fraction >= 0f) {
                     LinearProgressIndicator(
                         progress = { job.fraction },
-                        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                        modifier = Modifier.fillMaxWidth().padding(top = Space.s4),
                     )
                 } else {
                     LinearProgressIndicator(
-                        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                        modifier = Modifier.fillMaxWidth().padding(top = Space.s4),
                     )
                 }
             }
