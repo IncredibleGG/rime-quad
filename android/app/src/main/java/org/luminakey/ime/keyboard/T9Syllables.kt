@@ -2,6 +2,7 @@ package org.luminakey.ime.keyboard
 
 import org.luminakey.ime.core.RimeCandidate
 import org.luminakey.ime.theme.ActionVerb
+import org.luminakey.ime.theme.KeyboardLayout
 import org.luminakey.ime.theme.KeyAction
 import org.luminakey.ime.theme.LabelSource
 import org.luminakey.ime.theme.LayoutKey
@@ -81,13 +82,16 @@ object T9Syllables {
      * 鍵換掉，等於在那張圖上開一個測不到的洞。這條規矩與鍵盤內面板
      * 「底列全程露在外面」（見 [PanelRoute]）是同一條。
      */
-    val SLOTS: Map<String, SlotSpec> = mapOf(
-        "cn-t9-pinyin" to SlotSpec("t9", listOf("pu_comma", "pu_period", "pu_question")),
-        "cn-t9-pinyin-numrow" to SlotSpec("t9", listOf("pu_comma", "pu_period", "pu_question")),
-    )
+    /**
+     * ⚠ 這份白名單已經**搬進佈局 YAML** 了：layer 上的 `syllable_slots:`
+     * （見 [org.luminakey.ime.theme.LayoutLayer.syllableSlots]）。
+     *
+     * 留著這段註解是因為它記著搬家的理由：原本是「兩個寫死的佈局 id + 寫死的
+     * layer id `"t9"` + 寫死的三個 key id」，於是新增一份九宮格佈局就得改
+     * Kotlin，而漏改的樣子是「消歧欄整欄不見，畫面只是照常顯示標點」——
+     * 沒有任何東西會叫。
+     */
 
-    /** [layerId] 之外的層不受影響（數字層、英數層仍然是標點）。 */
-    data class SlotSpec(val layerId: String, val keyIds: List<String>)
 
     /**
      * 少於兩格就沒辦法翻頁（翻頁鍵自己要佔一格），那樣會有讀音**看不到也摸不到**。
@@ -118,10 +122,8 @@ object T9Syllables {
     }
 
     /** 目前這一層有沒有消歧欄；沒有就回空清單，呼叫端照常畫標點。 */
-    fun slotKeys(layoutId: String?, layerId: String): List<String> {
-        val spec = SLOTS[layoutId ?: return emptyList()] ?: return emptyList()
-        return if (spec.layerId == layerId) spec.keyIds else emptyList()
-    }
+    fun slotKeys(layout: KeyboardLayout?, layerId: String): List<String> =
+        layout?.layers?.firstOrNull { it.id == layerId }?.syllableSlots ?: emptyList()
 
     /**
      * 一則 comment 的**第一個音節**；認不出來就回 null。

@@ -86,6 +86,11 @@ metrics:
 layers:
 
   - id: "t9"
+    # 拼音消歧欄借用左邊那一直欄（§8.6.6.3 的 keyboard_slot）。
+    # ⚠ 只吃前三格,**底列那一格不動**:`!@#` 是 switch_layout,一顆導覽鍵,
+    #   而 LayoutEscape 走的是佈局檔的靜態內容、看不見執行期替換 ——
+    #   在那裡動手就是在死路檢查上開一個測不到的洞。
+    syllable_slots: ["pu_comma", "pu_period", "pu_question"]
     label: "九宮格・數字列"
     units: 10
     rows:

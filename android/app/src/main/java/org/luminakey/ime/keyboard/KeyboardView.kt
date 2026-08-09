@@ -76,6 +76,7 @@ import kotlinx.coroutines.delay
 import org.luminakey.ime.core.RimeStatus
 import org.luminakey.ime.prefs.LocalKeyBehavior
 import org.luminakey.ime.R
+import org.luminakey.ime.theme.SyllablePlacement
 import org.luminakey.ime.theme.HintPosition
 import org.luminakey.ime.theme.KeyGeometry
 import org.luminakey.ime.theme.KeyboardLayout
@@ -146,10 +147,37 @@ fun RimeKeyboard(
     val readings = remember(state.candidates, syllableIndex) {
         T9Syllables.readingsAt(state.candidates, syllableIndex)
     }
-    val slotIds = T9Syllables.slotKeys(state.layout?.id, state.layerId)
-    // 只有一個讀音時**不換掉標點**：那一格點下去什麼都不會發生，而
-    // 「看得到摸不到」正是這個專案抓過六次的那一類缺陷。
-    val disambiguating = slotIds.size >= T9Syllables.MIN_SLOTS && readings.size >= 2
+    /* ── 位置由**風格**決定（§8.6.6.3）──────────────────────────────────
+     *
+     * iOS 是候選列上方一橫排、三星與語燕是左側直欄。同一個功能、同一個方案、
+     * 同一份詞庫，位置卻不同 —— 那就是風格。使用者的外觀設定是 iPhone 慣例，
+     * 所以他會看到上方那一排，而不是左欄。
+     *
+     * ⚠ **退化規則(一)：`keyboard_slot` 但佈局沒宣告格位 → 退化成
+     * `above_candidates`，不得什麼都不畫。** 少一欄的樣子是「畫面照常顯示
+     * 標點」，沒有任何東西會叫 —— 那正是這個專案吃過七次虧的形狀。
+     * 4 欄舊版九宮格沒有左標點欄，走的就是這一條。
+     */
+    val syllableStyle = theme.candidates.syllables
+    val declaredSlots = T9Syllables.slotKeys(state.layout, state.layerId)
+    // 只有一個讀音時**不出現**：點下去什麼都不會發生的東西不該畫出來。
+    // 方案沒有 spelling_hints 時 readings 一定是空的，於是整條自然不出現
+    // ——那就是退化規則(二)在本端的實際效果。
+    val hasReadings = readings.size >= 2
+    val effectivePlacement = when (syllableStyle.placement) {
+        SyllablePlacement.NONE -> SyllablePlacement.NONE
+        SyllablePlacement.ABOVE_CANDIDATES -> SyllablePlacement.ABOVE_CANDIDATES
+        SyllablePlacement.KEYBOARD_SLOT ->
+            if (declaredSlots.size >= T9Syllables.MIN_SLOTS) SyllablePlacement.KEYBOARD_SLOT
+            else SyllablePlacement.ABOVE_CANDIDATES
+    }
+    val slotIds =
+        if (effectivePlacement == SyllablePlacement.KEYBOARD_SLOT) declaredSlots else emptyList()
+    val showAboveRow =
+        effectivePlacement == SyllablePlacement.ABOVE_CANDIDATES && hasReadings
+    val shownReadings =
+        if (syllableStyle.maxItems > 0) readings.take(syllableStyle.maxItems) else readings
+    val disambiguating = slotIds.size >= T9Syllables.MIN_SLOTS && hasReadings
     val pin = if (disambiguating) T9Syllables.resolvePin(readings, pinnedSyllable) else null
     val slotCells: Map<String, T9Syllables.Cell> =
         if (!disambiguating) {
@@ -164,6 +192,14 @@ fun RimeKeyboard(
             .background(Color(theme.keyboard.background))
             .padding(bottom = bottomInsetDp(theme.keyboard.honorBottomInset)),
     ) {
+        if (showAboveRow) {
+            SyllableRow(
+                readings = shownReadings,
+                theme = theme,
+                height = syllableStyle.height,
+                onPick = { onEvent(KeyboardEvent.SelectSyllable(it)) },
+            )
+        }
         CandidateBar(
             state = state,
             theme = theme,
@@ -1554,3 +1590,52 @@ private val ICONS: Map<String, String> = mapOf(
     "arrow_up" to "↑",
     "arrow_down" to "↓",
 )
+
+/**
+ * 候選列**上方**那一排讀音（iOS 慣例）。
+ *
+ * 與左側直欄是同一個功能的兩種位置，走的也是同一個事件
+ * （[KeyboardEvent.SelectSyllable] → 改寫引擎的輸入串），所以「選了一個之後
+ * 讓我選下一個」在兩種風格底下的行為完全一樣，差的只有畫在哪裡。
+ *
+ * ⚠ 這一排是**加在鍵盤之上**的，不吃候選列的高度：吃掉候選列會讓候選在組字
+ * 途中忽然變矮又變回來，而使用者正在那一列上點字。
+ */
+@androidx.compose.runtime.Composable
+private fun SyllableRow(
+    readings: List<String>,
+    theme: org.luminakey.ime.theme.Theme,
+    height: Float,
+    onPick: (String) -> Unit,
+) {
+    val style = theme.candidates.bar.style
+    androidx.compose.foundation.layout.Row(
+        modifier = androidx.compose.ui.Modifier
+            .fillMaxWidth()
+            .height(height.dp)
+            .background(androidx.compose.ui.graphics.Color(theme.candidates.bar.background)),
+        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+    ) {
+        readings.forEach { syllable ->
+            androidx.compose.foundation.layout.Box(
+                modifier = androidx.compose.ui.Modifier
+                    .padding(horizontal = 12.dp)
+                    // 每一格都要是真的按鈕：少了 semantics，TalkBack 使用者
+                    // 會念得出來卻按不到，那又是一個「看得到摸不到」。
+                    .clickable { onPick(syllable) },
+                contentAlignment = androidx.compose.ui.Alignment.Center,
+            ) {
+                androidx.compose.foundation.text.BasicText(
+                    text = syllable,
+                    style = androidx.compose.ui.text.TextStyle(
+                        color = androidx.compose.ui.graphics.Color(style.label.color),
+                        fontSize = androidx.compose.ui.unit.TextUnit(
+                            style.label.size,
+                            androidx.compose.ui.unit.TextUnitType.Sp,
+                        ),
+                    ),
+                )
+            }
+        }
+    }
+}

@@ -143,7 +143,7 @@ object LayoutParser {
         "key_patches"
     )
     private val METRICS_KEYS = setOf("row_spacing", "key_spacing", "height_scale")
-    private val LAYER_KEYS = setOf("id", "label", "units", "rows")
+    private val LAYER_KEYS = setOf("id", "label", "units", "rows", "syllable_slots")
     private val ROW_KEYS = setOf("weight", "keys")
     private val KEY_KEYS = setOf(
         "id", "label", "hint", "icon", "label_from", "width", "style", "spacer",
@@ -312,7 +312,8 @@ object LayoutParser {
             id = id,
             label = c.child("label").localized(),
             units = units,
-            rows = rows
+            rows = rows,
+            syllableSlots = c.child("syllable_slots").stringList(emptyList())
         )
     }
 

@@ -245,56 +245,73 @@ class T9SyllablesTest {
     /* ── 格位宣告本身 ─────────────────────────────────────────────────── */
 
     /**
-     * 這份宣告本該住在佈局 YAML 裡（見 [T9Syllables.SLOTS]）。在它搬過去之前，
-     * 這條測試就是「它不會靜靜地失效」的唯一保證：有人把 `pu_comma` 改名，
-     * 消歧欄會整欄消失，而畫面上只是照常顯示標點 —— 沒有任何東西會叫。
+     * 宣告已經搬進佈局 YAML（layer 上的 `syllable_slots:`）。這條測試是
+     * 「它不會靜靜地失效」的唯一保證：有人把 `pu_comma` 改名，消歧欄會整欄
+     * 消失，而畫面上只是照常顯示標點 —— 沒有任何東西會叫。
+     *
+     * ⚠ 清單寫死在這裡是**故意**的：它就是「哪幾份佈局應該有消歧欄」的規格。
+     * 新增一份九宮格佈局時要**同時**加進這裡，漏了就等於漏了驗證。
      */
     @Test
     fun `每一個宣告的格位都真的存在於它宣告的那一層`() {
         val repo = FixtureRepo()
-        for ((layoutId, spec) in T9Syllables.SLOTS) {
+        val declaring = listOf("cn-t9-pinyin", "cn-t9-pinyin-numrow")
+        for (layoutId in declaring) {
             val layout = repo.loadLayout(layoutId).value
             assertNotNull("佈局 $layoutId 載不起來", layout)
-            val layer = layout!!.layer(spec.layerId)
-            assertNotNull("佈局 $layoutId 沒有 ${spec.layerId} 層", layer)
+            val layer = layout!!.layer("t9")
+            assertNotNull("佈局 $layoutId 沒有 t9 層", layer)
+            val keyIds = layer!!.syllableSlots
             assertTrue(
-                "$layoutId/${spec.layerId} 只宣告了 ${spec.keyIds.size} 格，" +
-                    "少於 ${T9Syllables.MIN_SLOTS} 格就翻不了頁，會有讀音摸不到",
-                spec.keyIds.size >= T9Syllables.MIN_SLOTS,
+                "$layoutId/t9 沒有宣告 syllable_slots —— 九宮格少了消歧欄，" +
+                    "而畫面上只是照常顯示標點，不會有任何東西叫",
+                keyIds.isNotEmpty(),
             )
-            val rows = layer!!.rows
+            assertTrue(
+                "$layoutId/t9 只宣告了 ${keyIds.size} 格，" +
+                    "少於 ${T9Syllables.MIN_SLOTS} 格就翻不了頁，會有讀音摸不到",
+                keyIds.size >= T9Syllables.MIN_SLOTS,
+            )
+            val rows = layer.rows
             val rowOf = HashMap<String, Int>()
             rows.forEachIndexed { i, r -> r.keys.forEach { k -> k.id?.let { rowOf[it] = i } } }
-            for (id in spec.keyIds) {
+            for (id in keyIds) {
                 assertTrue(
-                    "$layoutId/${spec.layerId} 裡沒有 id 為 $id 的鍵 —— " +
+                    "$layoutId/t9 裡沒有 id 為 $id 的鍵 —— " +
                         "消歧欄會整欄消失，而畫面上只是照常顯示標點",
                     rowOf.containsKey(id),
                 )
             }
             assertEquals(
                 "$layoutId 的格位必須落在不同列上（那是一整條直欄）",
-                spec.keyIds.size,
-                spec.keyIds.mapNotNull { rowOf[it] }.distinct().size,
+                keyIds.size,
+                keyIds.mapNotNull { rowOf[it] }.distinct().size,
             )
             assertFalse(
                 "$layoutId 的消歧欄吃到了**底列**。底列是導覽列（!@# 是 " +
                     "switch_layout），而 LayoutEscape 走的是佈局檔的靜態內容、" +
                     "看不見執行期替換 —— 在那裡動手就是在死路檢查上開一個測不到的洞。",
-                spec.keyIds.any { rowOf[it] == rows.lastIndex },
+                keyIds.any { rowOf[it] == rows.lastIndex },
             )
         }
     }
 
     @Test
     fun `只有宣告過的那一層會被接管`() {
+        val repo = FixtureRepo()
+        val t9 = repo.loadLayout(T9_LAYOUT).value!!
         assertEquals(
             listOf("pu_comma", "pu_period", "pu_question"),
-            T9Syllables.slotKeys(T9_LAYOUT, "t9"),
+            T9Syllables.slotKeys(t9, "t9"),
         )
-        assertEquals("數字層仍然是它自己", emptyList<String>(), T9Syllables.slotKeys(T9_LAYOUT, "num"))
-        assertEquals("英數層仍然是它自己", emptyList<String>(), T9Syllables.slotKeys(T9_LAYOUT, "en"))
-        assertEquals("全鍵盤沒有消歧欄", emptyList<String>(), T9Syllables.slotKeys("qwerty", "default"))
+        assertEquals("數字層仍然是它自己", emptyList<String>(), T9Syllables.slotKeys(t9, "num"))
+        assertEquals("英數層仍然是它自己", emptyList<String>(), T9Syllables.slotKeys(t9, "en"))
+        val qwerty = repo.loadLayout("qwerty").value!!
+        assertEquals(
+            "全鍵盤沒有消歧欄（走的是退化規則:上方橫排,不是什麼都不畫）",
+            emptyList<String>(),
+            T9Syllables.slotKeys(qwerty, "default"),
+        )
         assertEquals(emptyList<String>(), T9Syllables.slotKeys(null, "t9"))
     }
 

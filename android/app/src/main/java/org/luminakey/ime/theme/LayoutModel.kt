@@ -114,7 +114,19 @@ data class LayoutLayer(
     val id: String,
     val label: LocalizedString,
     val units: Float,
-    val rows: List<LayoutRow>
+    val rows: List<LayoutRow>,
+    /**
+     * §9：這一層要把哪幾顆鍵讓給拼音消歧欄（主題的
+     * `candidates.syllables.placement: keyboard_slot` 才會用到）。
+     *
+     * 值是本層既有的 `key.id`。空清單 = 這一層沒有消歧欄，照常畫它自己的鍵。
+     *
+     * ⚠ 這份宣告原本寫死在 `keyboard/T9Syllables.kt` 的 `SLOTS`（白名單兩個
+     * 佈局 id + 寫死的 layer id + 寫死的三個 key id）。搬過來之後，新增一份
+     * 九宮格佈局不必再改 Kotlin，而「有人把 `pu_comma` 改名」也會被
+     * `T9SyllablesTest` 當場抓到，不會靜靜地少一欄。
+     */
+    val syllableSlots: List<String> = emptyList()
 )
 
 data class LayoutMetrics(

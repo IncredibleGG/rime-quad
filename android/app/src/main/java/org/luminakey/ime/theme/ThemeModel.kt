@@ -208,7 +208,38 @@ data class CandidateWindow(
 data class Candidates(
     val shared: CandidateStyle,
     val bar: CandidateBar,
-    val window: CandidateWindow
+    val window: CandidateWindow,
+    val syllables: SyllableBar
+)
+
+/**
+ * 九宮格拼音消歧欄的**位置**（規範 §8.6.6.3，本端先實作、規範由 macOS 端補）。
+ *
+ * ── 為什麼位置是「風格」而不是「方案」或「佈局」 ────────────────────────
+ * 使用者給的截圖：**iOS 是候選列上方一橫排、三星是左側直欄**，語燕也是左側
+ * 直欄。同一個功能、同一個方案、同一份詞庫，位置卻不同 —— 那就是風格的定義。
+ */
+enum class SyllablePlacement {
+    /** 不顯示。方案沒有 `spelling_hints` 時的實際效果也是這個。 */
+    NONE,
+
+    /** 候選列上方一橫排（iOS 慣例）。**不需要佈局宣告任何東西**。 */
+    ABOVE_CANDIDATES,
+
+    /** 借用佈局某一層宣告的格位，通常是左側直欄（三星 / 語燕慣例）。 */
+    KEYBOARD_SLOT,
+}
+
+/** 什麼時候出現。`ON_DEMAND` 需要佈局上有 `syllables:toggle` 那顆鍵。 */
+enum class SyllableTrigger { WHILE_COMPOSING, ON_DEMAND }
+
+data class SyllableBar(
+    val placement: SyllablePlacement,
+    val trigger: SyllableTrigger,
+    /** 一次最多顯示幾個讀音；0 = 不限。 */
+    val maxItems: Int,
+    /** `above_candidates` 那一排的高度（dp）。 */
+    val height: Float,
 )
 
 data class Caret(val show: Boolean, val color: Int, val width: Float, val blink: Boolean)
