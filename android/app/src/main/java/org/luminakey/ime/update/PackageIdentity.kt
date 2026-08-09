@@ -7,7 +7,7 @@ package org.luminakey.ime.update
  *  ⚠ 換 applicationId = 換一個 app。系統**不允許**覆蓋安裝
  * ══════════════════════════════════════════════════════════════════════
  *
- * 2026-08-09 產品改名（`org.rimequad.ime` → `org.luminakey.ime`，見
+ * 2026-08-09 產品改名（`org.rimequad.ime` → `org.luminakey.ime`，見  舊名
  * `docs/decisions/product-name.md` 與 `scripts/lib/product.env` 的
  * `ANDROID_APP_ID_PREVIOUS`）。對 Android 而言那是兩個毫無關係的 app：
  *
@@ -79,7 +79,7 @@ object PackageIdentity {
      * 實際收到的長相（使用者 2026-08-09 回報的那一則）：
      *
      *     INSTALL_FAILED_INVALID_APK: android.content.pm.parsing.ApkLite@fff160d
-     *     specified package org.rimequad.ime inconsistent with org.luminakey.ime
+     *     specified package org.rimequad.ime inconsistent with org.luminakey.ime  舊名
      *
      * ⚠ **這是在剖析一個沒有人承諾過的字串。** AOSP 換一個字我們就撈不到 ——
      * 所以撈不到**不可以**讓分類失敗：[InstallFailure] 只拿它當「更精確的

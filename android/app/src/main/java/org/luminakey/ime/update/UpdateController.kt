@@ -112,7 +112,7 @@ class UpdateController private constructor(context: Context) {
      *  ⚠ 這一格不是「錯誤」，是一條**不同的路**
      * ══════════════════════════════════════════════════════════════════
      *
-     * 2026-08-09 產品改名（`org.rimequad.ime` → `org.luminakey.ime`）之後，
+     * 2026-08-09 產品改名（`org.rimequad.ime` → `org.luminakey.ime`）之後，  舊名
      * 使用者按下安裝拿到的是「APK 檔案無效或已損毀」。檔案沒有壞，是
      * 升級器提供了一個**它自己裝不起來的更新**，然後把系統的原始訊息
      * 原樣轉述。兩個缺陷，都在這一格裡修掉：

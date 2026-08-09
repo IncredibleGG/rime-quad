@@ -13,7 +13,7 @@ import android.content.pm.PackageInstaller
  *
  *     APK 檔案無效或已損毀。
  *     （系統訊息：INSTALL_FAILED_INVALID_APK: … specified package
- *      org.rimequad.ime inconsistent with org.luminakey.ime）
+ *      org.rimequad.ime inconsistent with org.luminakey.ime）  舊名
  *
  * 檔案完全正常 —— 它剛剛才通過 sha256 比對。真正的原因是產品改名換了
  * applicationId，而系統不允許覆蓋安裝。那句話把使用者指向**下載**，

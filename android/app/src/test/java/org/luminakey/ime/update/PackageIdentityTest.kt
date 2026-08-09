@@ -61,7 +61,7 @@ class PackageIdentityTest {
     fun `缺欄位是 UNKNOWN 而不是 SAME`() {
         assertEquals(
             PackageIdentity.Verdict.UNKNOWN,
-            PackageIdentity.compare("org.rimequad.ime", ok(json())),
+            PackageIdentity.compare("org.rimequad.ime", ok(json())),  // 舊名(測試夾具)
         )
     }
 
@@ -73,7 +73,7 @@ class PackageIdentityTest {
         assertEquals("org.luminakey.ime", m.packageId)
         assertEquals(
             PackageIdentity.Verdict.CHANGED,
-            PackageIdentity.compare("org.rimequad.ime", m),
+            PackageIdentity.compare("org.rimequad.ime", m),  // 舊名(測試夾具)
         )
     }
 
@@ -95,19 +95,19 @@ class PackageIdentityTest {
         val one = ok(
             json(
                 """  "package": "org.luminakey.ime",""" + "\n" +
-                    """  "replaces_package": "org.rimequad.ime",""" + "\n"
+                    """  "replaces_package": "org.rimequad.ime",""" + "\n"  // 舊名(測試夾具)
             )
         )
-        assertTrue(PackageIdentity.declaresReplacing("org.rimequad.ime", one))
+        assertTrue(PackageIdentity.declaresReplacing("org.rimequad.ime", one))  // 舊名(測試夾具)
 
         val many = ok(
             json(
                 """  "package": "org.luminakey.ime",""" + "\n" +
-                    """  "replaces_package": ["org.old.one", "org.rimequad.ime"],""" + "\n"
+                    """  "replaces_package": ["org.old.one", "org.rimequad.ime"],""" + "\n"  // 舊名(測試夾具)
             )
         )
-        assertEquals(listOf("org.old.one", "org.rimequad.ime"), many.replacesPackages)
-        assertTrue(PackageIdentity.declaresReplacing("org.rimequad.ime", many))
+        assertEquals(listOf("org.old.one", "org.rimequad.ime"), many.replacesPackages)  // 舊名(測試夾具)
+        assertTrue(PackageIdentity.declaresReplacing("org.rimequad.ime", many))  // 舊名(測試夾具)
         assertFalse(PackageIdentity.declaresReplacing("org.someone.else", many))
     }
 
@@ -144,9 +144,9 @@ class PackageIdentityTest {
     @Test
     fun `撈得出使用者實際收到的那一則`() {
         val raw = "INSTALL_FAILED_INVALID_APK: android.content.pm.parsing.ApkLite@fff160d " +
-            "specified package org.rimequad.ime inconsistent with org.luminakey.ime"
+            "specified package org.rimequad.ime inconsistent with org.luminakey.ime"  // 舊名(測試夾具)
         assertEquals(
-            "org.rimequad.ime" to "org.luminakey.ime",
+            "org.rimequad.ime" to "org.luminakey.ime",  // 舊名(測試夾具)
             PackageIdentity.inconsistentPackages(raw),
         )
     }

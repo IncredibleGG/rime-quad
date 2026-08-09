@@ -30,14 +30,14 @@ import org.luminakey.ime.store.MiniJson
  * 「目前版本」也是同一個來源（PackageInfo），兩邊比的是同一件事。
  *
  * ── ⚠ 為什麼還要有 `package`（2026-08-09 加）──────────────────────────
- * 2026-08-09 產品改名，applicationId 從 `org.rimequad.ime` 換成
+ * 2026-08-09 產品改名，applicationId 從 `org.rimequad.ime` 換成  舊名
  * `org.luminakey.ime`。Android 把套件名不同的兩份 APK 視為**兩個 app**，
  * 不允許覆蓋安裝 —— 而升級器當時只比 version_code，於是它下載了 28MB、
  * 讓使用者按下安裝，再把系統的拒絕原樣轉述給他：
  *
  *     APK 檔案無效或已損毀。
  *     （系統訊息：INSTALL_FAILED_INVALID_APK: … specified package
- *      org.rimequad.ime inconsistent with org.luminakey.ime）
+ *      org.rimequad.ime inconsistent with org.luminakey.ime）  舊名
  *
  * 那句話是**錯的**：檔案完全正常，sha256 也對得上。使用者會以為下載壞了，
  * 重試幾次、然後放棄。

@@ -17,7 +17,7 @@ import org.junit.Test
  *
  *     APK 檔案無效或已損毀。
  *     （系統訊息：INSTALL_FAILED_INVALID_APK: … specified package
- *      org.rimequad.ime inconsistent with org.luminakey.ime）
+ *      org.rimequad.ime inconsistent with org.luminakey.ime）  舊名
  *
  * 檔案完全正常。真正的原因是產品改名換了 applicationId。那句話會讓他
  * 重下載三次、每次都一樣，然後放棄 —— 而他要做的其實是匯出、解除安裝、
@@ -31,7 +31,7 @@ class InstallFailureTest {
     /** 使用者實際收到的那一則，一字不改。 */
     private val realWorldRaw =
         "INSTALL_FAILED_INVALID_APK: android.content.pm.parsing.ApkLite@fff160d " +
-            "specified package org.rimequad.ime inconsistent with org.luminakey.ime"
+            "specified package org.rimequad.ime inconsistent with org.luminakey.ime"  // 舊名
 
     /* ═════════════ 1. 使用者真的踩到的那一格 ═════════════ */
 

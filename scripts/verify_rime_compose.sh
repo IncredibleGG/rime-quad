@@ -238,7 +238,7 @@ if [ -n "$READY_LOG" ]; then
   #
   # ⚠ **force-stop 待測 IME 會讓系統把預設輸入法換掉,而且不會換回來。**
   #   量到的(2026-08-09,九宮格消歧欄那一輪):
-  #     ActivityManager: Force stopping org.luminakey.ime …
+  #     ActivityManager: Force stopping <本輸入法的套件> …
   #   之後 default_input_method 變成 com.google.android.inputmethod.latin,
   #   我們的行程再也沒起來 —— 接下來整輪都在對著 **Gboard** 打字、截圖裡是
   #   Gboard 的鍵盤,而腳本一路跑到底。force-stop 會把套件打進 stopped 狀態,
