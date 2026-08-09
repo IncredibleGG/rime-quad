@@ -19,6 +19,8 @@ public enum ActionVerb: String, Sendable, CaseIterable {
     case clear, hideKeyboard, settings, emoji
     /// §9.5：「切中英」的完整語義 —— 切模式**並且**切到佈局宣告的 `alpha_layer`。
     case inputModeToggle
+    /// §9.5：開關逐音節消歧欄。⚠ **零端實作**（§8.6.6.3.4）。
+    case syllablesToggle
 }
 
 public struct KeyAction: Sendable, Equatable {
@@ -123,6 +125,15 @@ public enum Actions {
         case "hide_keyboard": return KeyAction(.hideKeyboard, raw: t)
         case "settings": return KeyAction(.settings, raw: t)
         case "emoji": return KeyAction(.emoji, raw: t)
+        case "syllables":
+            // §9.5。認得它，是為了讓 §10 第 9 條在狀態列／工具列項目上成立：
+            // 不認得的話，同一份主題在行動端零則、在這一端一則 unknown_action。
+            // 「認得」不等於「做得到」—— 它在 DesktopVerbSupport.unimplemented 裡。
+            guard rest.first == "toggle" else {
+                diag.add(.badActionArgument, [t], path: path, line: line)
+                return nil
+            }
+            return KeyAction(.syllablesToggle, raw: t)
         default:
             diag.add(.unknownAction, [t], path: path, line: line)
             return nil
@@ -162,6 +173,12 @@ public enum DesktopVerbSupport {
         //   桌面端連佈局都沒有，所以它退化成純粹的模式切換，是**做得到**的。
         //   把它列為不支援會讓狀態列的「中/En」消失，那才是真的壞掉。
         .layer, .layerOnce, .layerLock, .switchLayout,
+
+        // §8.6.6.3.5：桌面端不渲染逐音節消歧欄，所以那顆開關在這一端沒有東西可開。
+        // 兩層理由疊在一起：(1) `trigger: on_demand` 四端都還沒實作（§8.6.6.3.4）；
+        // (2) 就算做了，桌面端也沒有軟鍵盤格位。留著它會讓狀態列上出現一顆
+        // 按下去什麼都不會發生的項目 —— 這一節存在的理由就是擋這個。
+        .syllablesToggle,
     ]
 
     public static func isImplemented(_ v: ActionVerb) -> Bool { !unimplemented.contains(v) }

@@ -155,6 +155,17 @@ final class ActionsTests: XCTestCase {
         XCTAssertEqual(parse("set:ascii_mode:maybe").1, [.badActionArgument])
         XCTAssertEqual(parse("candidate:select:x").1, [.badActionArgument])
     }
+
+    /// §9.5：`syllables:toggle` 必須是**認得的**動詞 —— 不認得的話，同一份含
+    /// 這顆動詞的主題在行動端零則、在這一端一則 `unknown_action`，§10 第 9 條失守。
+    /// 「認得」不等於「做得到」：它同時在 §9.5.1 的未實作清單裡（§8.6.6.3.5）。
+    func testSyllablesToggleIsKnownButUnimplementedOnDesktop() {
+        XCTAssertEqual(parse("syllables:toggle").0?.verb, .syllablesToggle)
+        XCTAssertEqual(parse("syllables:toggle").1, [], "認得的動詞不得產生診斷")
+        XCTAssertEqual(parse("syllables:nope").1, [.badActionArgument])
+        XCTAssertFalse(DesktopVerbSupport.isImplemented(.syllablesToggle),
+                       "桌面端不渲染消歧欄，這顆開關沒有東西可開（§8.6.6.3.5）")
+    }
 }
 
 final class LocalizedStringTests: XCTestCase {

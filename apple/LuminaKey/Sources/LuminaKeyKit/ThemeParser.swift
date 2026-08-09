@@ -8,6 +8,10 @@
 //    「unknown field」噪音，但區塊**內部**的診斷不會產生 ——
 //    這正是 §10 檢核第 9 條需要按作用域切開的原因（見規範 §10 的說明）。
 //
+//  ⚠ `candidates.syllables`（§8.6.6.3）**不在**那三個裡面：它被完整綁定，
+//    只是不渲染。§8.6.6.3.5 第 1 點明文要求桌面端這麼做，理由是欄位層級的
+//    診斷屬於第 9 條的共用作用域 —— 少解析一個區塊，第 9 條就在那裡破掉。
+//
 
 import Foundation
 
@@ -30,7 +34,10 @@ public enum ThemeParser {
 
     static let candidateStyleKeys: Set<String> =
         ["orientation", "label", "text", "comment", "item", "separator", "page_indicator"]
-    static let candidatesKeys: Set<String> = candidateStyleKeys.union(["bar", "window"])
+    static let candidatesKeys: Set<String> =
+        candidateStyleKeys.union(["bar", "window", "syllables"])
+    /// §8.6.6.3。`orientation` **不是**欄位（由 `placement` 推導），別加進來。
+    static let syllablesKeys: Set<String> = ["placement", "trigger", "max_items", "height"]
     static let windowKeys: Set<String> = candidateStyleKeys.union([
         "background", "corner_radius", "padding", "border_width", "border_color",
         "min_width", "max_width", "placement", "offset_x", "offset_y",
@@ -105,6 +112,8 @@ public enum ThemeParser {
         let windowCursor = candidatesCursor.mapping("window")
         windowCursor.warnUnknownKeys(windowKeys)
         theme.window = parseWindow(windowCursor, shared: shared, m: theme.metrics)
+
+        theme.syllables = parseSyllables(candidatesCursor.mapping("syllables"))
 
         theme.preedit = parsePreedit(c.mapping("preedit"), m: theme.metrics)
         theme.statusBar = parseStatusBar(c.mapping("status_bar"), m: theme.metrics, ctx: ctx)
@@ -260,6 +269,32 @@ public enum ThemeParser {
         s.pageIndicator.disabledColor = derivedColor(p, "disabled_color", "color",
                                                      pageColor, base.pageIndicator.disabledColor)
         s.pageIndicator.size = p.child("size").size(base.pageIndicator.size)
+        return s
+    }
+
+    /// §8.6.6.3 逐音節消歧欄。**桌面端解析它但不渲染它**（§8.6.6.3.5）。
+    ///
+    /// 為什麼要解析一個不畫的東西：§8.6.6.3.5 第 1 點。欄位層級的診斷屬於
+    /// §10 第 9 條的共用作用域，把整個區塊當成「已知但不進入」（`candidates.bar`
+    /// 的做法）會讓 `placemnt:` 這種拼字錯誤在四端報出不同的則數。
+    ///
+    /// ⚠ 這裡**不得**產生 `feature_unsupported`：`placement` 的預設值是
+    ///   `keyboard_slot`，所以每一份主題都會命中 —— 每次載入刷一則 INFO，
+    ///   而主題作者沒有做錯任何事（§8.6.6.3.5 第 3 點、§9.5.1 第二條紀律）。
+    ///
+    /// ⚠ 也**不得**在這裡跑 §8.6.6.3.3 的退化規則：D1/D3/D4 的輸入是佈局與
+    ///   當前方案，桌面端連 `core/layouts/` 都不消費，算不出來也不該假裝算得出來。
+    static func parseSyllables(_ c: Cursor) -> SyllableBar {
+        c.warnUnknownKeys(syllablesKeys)
+        var s = SyllableBar()
+        s.placement = SyllablePlacement(rawValue:
+            c.child("placement").enumOf(["none", "above_candidates", "keyboard_slot"],
+                                        s.placement.rawValue)) ?? s.placement
+        s.trigger = SyllableTrigger(rawValue:
+            c.child("trigger").enumOf(["while_composing", "on_demand"],
+                                      s.trigger.rawValue)) ?? s.trigger
+        s.maxItems = c.child("max_items").int(0, min: 0, max: 32)
+        s.height = c.child("height").length(40, min: 24, max: 96)
         return s
     }
 
