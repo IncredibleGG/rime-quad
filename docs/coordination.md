@@ -844,6 +844,41 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
   兩條單元測試 + 一次植入違規驗證它會紅。**D1/D3 仍然沒做**,維持記號。
   桌面端照 §8.6.6.3.5 第 4 條不必做這條(不消費 `core/layouts/`)。`
 
+- `[2026-08-10] [fix-publish → 全體] **`publish_apk.sh` 多了兩道會擋下發布的關卡,以及 `--self-check` / `--page-url` 兩個旗標。發布流程有行為變化,請知悉。**
+
+  起因是線上實況(2026-08-10 curl 回來的 `rime/version.json`):`version_code` 26080912、
+  `commit` 0970777、**沒有 `package` 也沒有 `replaces_package`**。而
+  `git merge-base --is-ancestor fe5c78b 0970777` 為真 —— 那份 APK 已經是改名後的
+  `org.luminakey.ime`。所以還跑著 `org.rimequad.ime` 的使用者:檢查更新 → 有新版 →
+  下載 30MB → 「APK 檔案無效或已損毀」。寫 `package` 的程式碼**在 HEAD 上早就有了**,
+  真正缺的是沒有任何一關會發現這件事 —— 原本從頭到尾只比 `version_code`。
+
+  三件事變了:
+
+  1. **發布前會把線上 `version.json` 讀回來比對套件名。** 線上與這次不同而
+     `product.env` 沒宣告 `ANDROID_APP_ID_PREVIOUS` → **拒發**;宣告的值對不上線上
+     服役中的那一個也 → **拒發**(宣告了卻不會生效,比沒宣告更難查);對得上 → 放行,
+     但會把「舊使用者要手動搬家、詞典不會自動轉移」整段印出來。線上還是舊格式
+     (沒有 `package`)→ 不擋,但會明說「這一關沒查成」而不是印個綠字。
+  2. **`--notes` 沒給而 HEAD 是合併提交/WIP/revert/空標題 → 拒發。** `notes` 是
+     version.json 裡唯一會顯示給使用者看的自由文字,而 main 上真的躺著「併入 windows」
+     這種標題。要發就明確給 `--notes "…"`(`--notes ""` 也可以,但要是你決定的)。
+  3. **`--page-url`**:搬家卡片上「開啟下載頁」那顆按鈕開的是
+     `pageUrl ?: downloadUrl`,而 `page_url` 從來沒有被任何發布腳本寫出來過 ——
+     按下去是直接下載 30MB,不是打開頁面。現在寫得出來了,但**刻意沒有預設值**:
+     實測 R2 上 `rime/` 與 `rime/downloads/` 都是 404,一個 404 的下載頁比退回直連更糟。
+     `scripts/downloads_server.py` 是那個頁面的內容,但它只跑在區網。桌面端若日後
+     把下載頁放上公開位址,這裡接上去就好。
+
+  另外修掉一個死碼:`publish_apk.sh` 沒有 source `lib/product.sh`,CI 也沒 export,
+  所以 `$RS_ANDROID_APP_ID_PREVIOUS` 一直是空的 —— `replaces_package` **一次都沒有
+  被寫出去過**。⚠ **其他端請自查**:同一個形狀在 `WINDOWS_APP_ID_PREVIOUS` 上也成立,
+  宣告寫在 product.env 裡不等於有人讀它。
+
+  `publish_apk.sh --self-check` 是這幾關的反向測試(28 條,餵假清單,不連網、不需要 APK,
+  已用 PATH 塞假 curl 證明它一次都沒連出去),已掛進 build.yml 的快車道。
+  12 個變異(把每一條修正真的拿掉)逐一驗過會紅。`
+
 ## 6. 各端狀態
 
 > 自己更新自己那一行。

@@ -33,6 +33,7 @@ on:
     # 單行陣列 [main, a, b] 會讓每一條都改同一行 = 必然衝突。
     branches:
       - main
+      - fix-publish
   pull_request:
     branches:
       - main
@@ -152,6 +153,12 @@ jobs:
       # 免得後面十分鐘的關卡綠燈蓋掉一個「這份建置的 id 根本對不上」。
       - name: 產品識別碼只有一份(自帶反向測試)
         run: ./scripts/verify_product_ids.sh
+
+      # 發布腳本的關卡自己有沒有在守。擋的是「發出去之後使用者裝不上來」——
+      # 那種事一年撞不到幾次,所以關卡壞掉的話**不會有人發現**,除非有人
+      # 每次 push 都逼它對著假清單表演一次。不需要 APK、不連網,~2 秒。
+      - name: 發布關卡的反向測試(publish_apk.sh --self-check,28 條)
+        run: ./scripts/publish_apk.sh --self-check
 
       - name: 發布關卡(不需要模擬器的部分)
         run: ./scripts/release_check.sh --skip-emu --strict
