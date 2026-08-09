@@ -46,6 +46,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import kotlinx.coroutines.launch
 import org.luminakey.ime.R
+import org.luminakey.ime.core.DeployEstimate
 import org.luminakey.ime.core.RimeCore
 import org.luminakey.ime.core.RimeRuntime
 import org.luminakey.ime.keyboard.ConfigRepository
@@ -692,7 +693,10 @@ fun AdvancedPage(controller: StoreController, onBack: () -> Unit) {
             } else {
                 NavRow(
                     title = stringResource(R.string.advanced_redeploy),
-                    subtitle = stringResource(R.string.advanced_redeploy_sub),
+                    subtitle = stringResource(
+                        R.string.advanced_redeploy_sub,
+                        DeployEstimate.TYPICAL_SECONDS,
+                    ),
                     onClick = { controller.redeploy() },
                 )
             }

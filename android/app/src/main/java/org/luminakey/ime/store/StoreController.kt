@@ -12,6 +12,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import org.luminakey.ime.BuildConfig
 import org.luminakey.ime.R
+import org.luminakey.ime.core.DeployEstimate
 import org.luminakey.ime.core.RimeCore
 import org.luminakey.ime.core.RimeRuntime
 import org.luminakey.ime.net.NetworkGate
@@ -75,7 +76,7 @@ class StoreSettings(context: Context) {
  *
  * ── 執行緒 ──────────────────────────────────────────────────────────────
  * 整條導入流程跑在單一背景執行緒上（[worker]），因為它會做網路 IO 與
- * 數秒到數十秒的部署。這是合法的：rime_shell.h 明訂 `rs_deploy()` 是
+ * 動輒數十秒的部署。這是合法的：rime_shell.h 明訂 `rs_deploy()` 是
  * **唯一**允許跨執行緒呼叫的函式，而導入流程只呼叫它。
  * `rs_schema_list()` 之類的讀取一律在主執行緒（UI）做。
  */
@@ -132,9 +133,11 @@ class StoreController(context: Context) {
      * 過路費 —— 真機回報的原話是「部署完就要退出界面對不」。
      *
      * 失敗則相反：訊息裡有 `rs_last_error()`、有回滾結果、有「請重新啟動
-     * app」這種需要他採取行動的指示。那種東西不能三秒後自己消失。
+     * app」這種需要他採取行動的指示。那種東西不能自己消失。
      *
-     * 所以：成功 → [toast]（短暫、不擋路）；失敗 → 本對話框（不自動關）。
+     * 所以：成功且沒話要說 → [toast]（短暫、不擋路）；其餘 → 本對話框
+     * （不自動關）。⚠ 「成功但帶著警告」也走這裡 —— 判斷寫在 [finishUi]，
+     * 那裡有它為什麼非得如此的完整理由。
      */
     data class ResultUi(
         val ok: Boolean,
@@ -373,7 +376,7 @@ class StoreController(context: Context) {
      *
      * 為什麼不讓那顆按鈕直接呼叫 `RimeCore.deploy()`：`rs_deploy()` 是
      * **非同步**的，直接呼叫會立刻返回，畫面上什麼都不會發生，而背景
-     * 其實跑了十幾秒（實測：模擬器 7.2 秒、三星 S24U 首次 12.5 秒）。
+     * 其實跑了十幾秒（耗時與量測來源見 [org.luminakey.ime.core.DeployEstimate]）。
      * 使用者只能猜它成功了沒 —— 這正是真機回報的那個 bug。
      *
      * 走這條路徑就自動得到：進行中狀態、耗時顯示、成功／失敗的明確結果
@@ -383,7 +386,11 @@ class StoreController(context: Context) {
     fun redeploy() {
         if (busy) return
         result = null
-        job = JobUi(str(R.string.job_deploying), str(R.string.job_deploying_detail, 0), -1f)
+        job = JobUi(
+            str(R.string.job_deploying),
+            str(R.string.job_deploying_detail, 0, DeployEstimate.TYPICAL_SECONDS),
+            -1f,
+        )
         worker.execute {
             when (val r = DeployGate.deployAndWait { ms ->
                 postProgress(SchemaStore.Progress.Deploying(ms))
@@ -513,7 +520,10 @@ class StoreController(context: Context) {
                             R.string.store_msg_imported_enabled,
                             schemaIds.joinToString(str(R.string.store_meta_list_separator)),
                         ),
-                        listOf(en.message),
+                        // 這裡原本傳的是 `listOf(en.message)` —— 那是成功訊息的
+                        // 複本，不是警告。要帶出來的是預檢的 details（例如
+                        // 反查詞典不在），跟另外兩個呼叫端一致。
+                        en.details,
                     )
 
                     is SchemaStore.Outcome.Failed -> finish(false, en.message, en.details)
@@ -564,7 +574,11 @@ class StoreController(context: Context) {
 
             is SchemaStore.Progress.Deploying -> JobUi(
                 str(R.string.job_deploying),
-                str(R.string.job_deploying_detail, p.elapsedMs / 1000),
+                str(
+                    R.string.job_deploying_detail,
+                    (p.elapsedMs / 1000).toInt(),
+                    DeployEstimate.TYPICAL_SECONDS,
+                ),
                 -1f,
             )
 
@@ -586,14 +600,20 @@ class StoreController(context: Context) {
         main.post {
             if (ok && pendingSchema != null) settings.pendingSchema = pendingSchema
             job = null
-            if (ok) {
-                // 成功 → 覆蓋層與對話框一起退掉，只留 snackbar。
-                result = null
-                showToast(message)
-            } else {
-                // 失敗 → 停在對話框上，使用者要讀錯誤訊息並決定怎麼辦。
-                toast = null
-                result = ResultUi(false, message, details)
+            // ⚠ 「成功要不要停在對話框上」是 [finishUi] 決定的，不是這裡。
+            // 寫在這裡的 if 曾經把 details 整段吃掉（見 FinishUi.kt 的註解）。
+            when (val ui = finishUi(ok, message, details)) {
+                is FinishUi.Toast -> {
+                    // 成功而且沒話要說 → 覆蓋層與對話框一起退掉，只留 snackbar。
+                    result = null
+                    showToast(ui.message)
+                }
+
+                is FinishUi.Dialog -> {
+                    // 有話要說 → 停在對話框上，使用者要讀完並決定怎麼辦。
+                    toast = null
+                    result = ResultUi(ui.ok, ui.message, ui.details)
+                }
             }
             refreshLocalState()
             refreshTick++
@@ -605,8 +625,8 @@ class StoreController(context: Context) {
 
     companion object {
         /**
-         * snackbar 停留時間。取 Material 的 `SnackbarDuration.Long`（10 秒）與
-         * `Short`（4 秒）之間：部署訊息帶著耗時數字，值得看清楚，但不該擋路。
+         * snackbar 停留時間（毫秒）。取 Material 的 `SnackbarDuration.Long` 與
+         * `Short` 之間：部署訊息帶著耗時數字，值得看清楚，但不該擋路。
          */
         const val TOAST_MS = 5_000L
     }

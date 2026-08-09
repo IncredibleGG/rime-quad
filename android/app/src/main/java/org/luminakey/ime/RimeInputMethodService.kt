@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import org.luminakey.ime.core.AndroidKeyMap
+import org.luminakey.ime.core.DeployEstimate
 import org.luminakey.ime.core.RimeCore
 import org.luminakey.ime.core.RimeRuntime
 import org.luminakey.ime.keyboard.T9Syllables
@@ -443,15 +444,31 @@ class RimeInputMethodService : InputMethodService() {
 
     /* ─────────────────── 初始化狀態 ─────────────────── */
 
+    /**
+     * ⚠ 這四句話**會上畫面**：`KeyboardView` 的候選列無條件把
+     * `fatalMessage ?: busyMessage` 當提示畫出來。所以它們一律走資源，
+     * 不可以是 Kotlin 字面值 —— 預設語系是英文（`res/values/` 是英文），
+     * 寫死中文等於讓全世界的使用者在鍵盤上看到中文。
+     *
+     * 秒數只有一個來源（[DeployEstimate]）。這裡原本自己寫死了一個以分鐘計的
+     * 說法，而同一件事在首頁寫的是十幾秒、在市集寫的又是另一個數字 ——
+     * 三種說法互相矛盾，使用者無從判斷自己是不是卡住了。
+     */
     private fun onPhase(phase: RimeRuntime.Phase) {
         when (phase) {
             RimeRuntime.Phase.IDLE,
             RimeRuntime.Phase.EXTRACTING,
-            -> uiState = uiState.copy(busyMessage = "正在準備輸入法資料…", fatalMessage = null)
+            -> uiState = uiState.copy(
+                busyMessage = getString(R.string.ime_notice_preparing),
+                fatalMessage = null,
+            )
 
             RimeRuntime.Phase.DEPLOYING ->
                 uiState = uiState.copy(
-                    busyMessage = "首次啟動：正在編譯詞庫，需要一到兩分鐘…",
+                    busyMessage = getString(
+                        R.string.ime_notice_deploying,
+                        DeployEstimate.TYPICAL_SECONDS,
+                    ),
                     fatalMessage = null,
                 )
 
@@ -475,7 +492,10 @@ class RimeInputMethodService : InputMethodService() {
             RimeRuntime.Phase.FAILED ->
                 uiState = uiState.copy(
                     busyMessage = null,
-                    fatalMessage = RimeRuntime.initError ?: "rime 初始化失敗",
+                    // initError 本身刻意是英文的故障載荷（見 RimeRuntime 的註解）；
+                    // 它沒有值的時候要回落到一句使用者讀得懂的話。
+                    fatalMessage = RimeRuntime.initError
+                        ?: getString(R.string.ime_notice_failed),
                 )
         }
         Log.i(TAG, "phase=$phase session=$session")

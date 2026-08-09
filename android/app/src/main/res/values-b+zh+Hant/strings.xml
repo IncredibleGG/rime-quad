@@ -47,8 +47,8 @@
 
     <string name="preparing_title">還在整理字詞</string>
     <string name="preparing_failed_title">字詞整理沒成功</string>
-    <string name="preparing_body">只有第一次要做，大概十幾秒。\n趁現在挑一個順手的就好，不挑也可以，會用第一個。</string>
-    <string name="preparing_failed_body">鍵盤還是打得開，但可能打不出字。到「進階與問題回報」按一次「重新整理字詞」通常就好了。\n\n%1$s</string>
+    <string name="preparing_body">只有第一次要做，大約 %1$d 秒。\n趁現在挑一個順手的就好，不挑也可以，會用第一個。</string>
+    <string name="preparing_failed_body">鍵盤還是打得開，但可能打不出字。重新整理一次字詞通常就好了。\n\n%1$s</string>
     <string name="preparing_no_keyboards">還讀不到可用的鍵盤清單。等字詞整理完，到「設定 › 鍵盤」也能挑。</string>
     <string name="preparing_pick">挑一個鍵盤</string>
     <string name="preparing_more_hint">還有更多鍵盤可以選。之後在鍵盤上點候選字那一列右邊的 ⚙ 就能換，不用回到這裡。</string>
@@ -66,7 +66,10 @@
     <string name="not_ready_not_enabled_body">要先在系統設定裡把它打開。</string>
     <string name="not_ready_not_default_body_current">現在用的是「%1$s」。</string>
     <string name="not_ready_not_default_body">去系統的鍵盤清單裡選它。</string>
-    <string name="not_ready_preparing_body">只有第一次要做，大概十幾秒。這段時間打字可能沒反應。</string>
+    <string name="not_ready_preparing_body">只有第一次要做，大約 %1$d 秒。這段時間打字可能沒反應。</string>
+    <string name="not_ready_failed">字詞整理沒成功</string>
+    <string name="not_ready_failed_body">鍵盤還是打得開，但可能打不出字。重新整理一次通常就好了。</string>
+    <string name="not_ready_refresh_words">重新整理字詞</string>
     <string name="not_ready_open_settings">去系統設定打開</string>
     <string name="not_ready_switch">切換成這個鍵盤</string>
 
@@ -271,7 +274,7 @@
     <plurals name="store_confirm_already">
         <item quantity="other">另有 %1$d 個相依已安裝，不重複下載：%2$s</item>
     </plurals>
-    <string name="store_confirm_footnote">下載後會逐一驗證 sha256，通過才解壓；接著重新整理一次字詞（可能要數秒到數十秒）。失敗會自動回滾。</string>
+    <string name="store_confirm_footnote">下載後會逐一驗證 sha256，通過才解壓；接著重新整理一次字詞（大約 %1$d 秒，方案多就更久）。失敗會自動回滾。</string>
     <string name="store_confirm_install_enable">下載並啟用</string>
     <string name="store_confirm_download_only">只下載</string>
 
@@ -288,7 +291,7 @@
     <string name="job_preflight">檢查相依</string>
     <string name="job_preflight_detail">確認詞典與配置檔都在</string>
     <string name="job_deploying">正在整理字詞</string>
-    <string name="job_deploying_detail">已耗時 %1$d 秒。實測 3 個方案約 7 秒，大方案更久。</string>
+    <string name="job_deploying_detail">已耗時 %1$d 秒。一般大約 %2$d 秒，大方案更久。</string>
     <string name="job_rolling_back">回滾中</string>
     <string name="job_rolling_back_detail">整理字詞失敗，正在還原：%1$s</string>
     <string name="job_enable">啟用方案</string>
@@ -323,7 +326,7 @@
     <string name="advanced_import_sub">自己準備的鍵盤方案包（.zip）</string>
     <string name="advanced_redeploy">重新整理字詞</string>
     <string name="advanced_redeploy_busy">整理中…</string>
-    <string name="advanced_redeploy_sub">打字怪怪的時候用，約十幾秒</string>
+    <string name="advanced_redeploy_sub">打字怪怪的時候用，大約 %1$d 秒</string>
     <string name="advanced_reset">全部回復預設</string>
     <string name="advanced_reset_pristine">目前全部都是預設值</string>
     <string name="advanced_reset_sub">把所有設定刪掉，回到隨附的值</string>
@@ -427,6 +430,10 @@
     <string name="keyboard_stub_notice">⟦STUB⟧ 未接 librime，候選字為假資料</string>
     <string name="keyboard_no_schema">尚無可用方案（rs_schema_list 回傳空）</string>
     <string name="keyboard_layout_not_loaded">佈局尚未載入</string>
+
+    <string name="ime_notice_preparing">正在準備輸入法資料…</string>
+    <string name="ime_notice_deploying">第一次啟動：正在整理字詞，大約 %1$d 秒…</string>
+    <string name="ime_notice_failed">輸入法沒能啟動</string>
 
 
     <!-- ─────────────────────── 無障礙朗讀名稱 ─────────────────────── -->

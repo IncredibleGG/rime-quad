@@ -13,7 +13,8 @@ import java.io.File
  * 帳本、以及「已安裝 ≠ 已啟用」這條分界。
  *
  * 分界的成本理由：librime 每次部署會編譯 schema_list 上的**所有**方案，
- * 實測三個方案 7.2 秒且累加。停用必須只動 schema_list、**留著檔案**，
+ * 實測三個方案的耗時見 core/DeployEstimate.kt，而且是累加的。
+ * 停用必須只動 schema_list、**留著檔案**，
  * 否則使用者想再用就得重新下載一次。
  */
 class InstalledRegistryTest {

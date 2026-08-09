@@ -39,6 +39,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import org.luminakey.ime.R
+import org.luminakey.ime.core.DeployEstimate
 import org.luminakey.ime.home.Radius
 import org.luminakey.ime.home.Space
 import org.luminakey.ime.home.TypeScale
@@ -497,7 +498,10 @@ private fun ConfirmDialog(controller: StoreController, plan: StoreController.Con
                     )
                 }
                 Text(
-                    stringResource(R.string.store_confirm_footnote),
+                    stringResource(
+                        R.string.store_confirm_footnote,
+                        DeployEstimate.TYPICAL_SECONDS,
+                    ),
                     fontSize = TypeScale.t5,
                     modifier = Modifier.padding(top = Space.s3),
                 )
@@ -579,9 +583,10 @@ private fun ResultDialog(controller: StoreController, r: StoreController.ResultU
  * 進度覆蓋層。
  *
  * 規範 §3 要求部署期間「顯示進度而非停在空白或假死狀態」。librime 不提供
- * 百分比，所以部署階段用不確定進度條 + **已耗時秒數**，並直說預期量級；
+ * 百分比，所以部署階段用不確定進度條 + **已耗時秒數**，並直說預期量級
+ * （那個量級只有一個來源，見 [org.luminakey.ime.core.DeployEstimate]）；
  * 下載階段有 content-length 才用確定進度條。寧可誠實地說「不知道還要多久，
- * 但已經跑了 12 秒」，也不要畫一條假的百分比。
+ * 但已經跑了這麼久」，也不要畫一條假的百分比。
  */
 @Composable
 private fun JobOverlay(job: StoreController.JobUi) {

@@ -33,6 +33,7 @@ on:
     # 單行陣列 [main, a, b] 會讓每一條都改同一行 = 必然衝突。
     branches:
       - main
+      - fix-android-ui
   pull_request:
     branches:
       - main

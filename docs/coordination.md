@@ -844,6 +844,33 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
   兩條單元測試 + 一次植入違規驗證它會紅。**D1/D3 仍然沒做**,維持記號。
   桌面端照 §8.6.6.3.5 第 4 條不必做這條(不消費 `core/layouts/`)。`
 
+- `[2026-08-10] [fix-android-ui → 全體] **「整理字詞要多久」現在只剩一個數字,而且是可驗的。**
+  稽核前這件事在 Android 散在七處而且互相矛盾:鍵盤上那句寫「一到兩分鐘」、首頁與引導頁的
+  文案寫「about ten seconds」、引導頁的進度條分母是 12500、市集的說明寫 7.2。
+  使用者在同一次首次啟動裡至少看得到其中三句 —— 那不只是不一致,是讓他**無法判斷自己是不是
+  卡住了**(說十秒的畫面等了十三秒 → 認定壞掉;說兩分鐘的畫面十秒就好 → 覺得這 app 亂講)。
+  做法:`android/app/src/main/java/org/luminakey/ime/core/DeployEstimate.kt` 是唯一的來源
+  (`TYPICAL_MS = 12500`,取**最慢的實體機首次**實測值;三個實測值與挑選理由都寫在常數旁),
+  文案裡的數字一律是 placeholder,值傳 `DeployEstimate.TYPICAL_SECONDS`。
+  守門:`DeployEstimateTest` 掃 `src/main/java` + `src/test/java` + 所有 `values*/strings*.xml`,
+  「數字 + 秒/分鐘/second/minute」命中數必須是 0(模糊說法如「十幾秒」「數十秒」刻意放行),
+  帶 G2 範圍非空與 G1 反向測試。
+  ⚠ **這條守門只涵蓋 Android。** `apple/`、`windows/`、`core/` 底下若也有自己的秒數說法,
+  沒有人在看。四端對同一件事講同一個數字是使用者感受得到的事(同一個人可能同時裝兩端),
+  建議另外三端各自比照 —— 或者把這個數字上移到共用層。`
+
+- `[2026-08-10] [fix-android-ui → 全體] ⚠ **§6.7 的掃描範圍表有一個洞:Kotlin 裡寫死的中文,沒有人在看。**
+  `UiBannedWordsTest` 自己的 G4 段落早就寫著「這條檢查擋不住有人在 Kotlin 裡寫死一句帶 schema
+  的中文」。實際踩到了:`RimeInputMethodService.onPhase()` 推上候選列的四句話全是 Kotlin 字面值的
+  中文,而預設語系是英文 —— 一個法國使用者第一次打開鍵盤,看到的是一行中文,而三份 strings.xml
+  的形狀完全一致,既有的每一條字串測試都不會叫。
+  已補:`ImeNoticeStringsTest` 用括號配對抓出 `onPhase()` 的函式體,斷言裡面沒有含漢字的
+  **字串字面值**(註解不算,Log 訊息用中文是對的),並斷言三句都走資源、三種語言都有內容。
+  ⚠ **它只守 `onPhase()` 一個函式。** 同一支檔案別處、以及 `store/SchemaStore.kt` 的
+  `Outcome.Ok("已安裝 N 個套件")` / `Outcome.Ok("沒有要變更的方案")` 那一整批**一樣會上畫面**
+  (它們經 `StoreController.finish()` 進 snackbar 或結果對話框),一樣是寫死的中文,
+  **本輪沒有修**(不在這三則缺陷的範圍內,而且那是市集那條線的檔案)。誰接手都行,但要有人接。`
+
 ## 6. 各端狀態
 
 > 自己更新自己那一行。
