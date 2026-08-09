@@ -23,7 +23,7 @@
 #     (各 338 / 246 處)。它們是 `rime_ime_setup.exe doctor` 的主控台輸出,
 #     不是視窗介面。W7 掃的是**寬字串**字面值,所以碰不到它們。
 #     那一整支工具還沒有在地化 —— 已列進報告的「還沒做」那一節。
-#   · `windows/installer/luminakey.iss`(安裝程式的字串)。
+#   · 安裝程式腳本(`windows/installer/*.iss`)裡的字串。
 #     它有自己的守門腳本:windows/check_installer_messages.sh。
 #   · `windows/*.sh` 自己。
 #
