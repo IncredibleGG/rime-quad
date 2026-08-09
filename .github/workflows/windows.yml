@@ -96,6 +96,25 @@ jobs:
       # 匯出的四個 COM 進入點齊不齊、DLL 有沒有意外的相依。
       # 後者守的是 /MT:相依到 VCRUNTIME140.dll 的話,在沒裝 VC++ 執行檔套件
       # 的機器上 DLL 會在載入階段失敗,而症狀是「輸入法在某些程式裡不存在」。
+      # ── 設定介面的規範檢核（docs/ui-design.md §12.12）────────────
+      #
+      # 23 條裡有 22 條機器驗得了,而**沒有一條需要真的 Windows** ——
+      # 版面、色票、狀態列位置還原、候選窗排版全部抽成純函式,
+      # 所以它們落在上面那一步的單元測試裡;這一步是對原始碼的靜態掃描。
+      #
+      # ⚠ 但也因此,它們一條都證明不了「畫出來好看」或「按下去真的有反應」。
+      #   那兩件事仍然在「人」那一欄,清單見 windows/README.md。
+      - name: 設定介面規範檢核（§12.12）
+        run: ./windows/check_ui_spec.sh
+
+      # ⚠ 與「框架必須會紅」同一個約定,而且這一步**真的抓到過東西**:
+      #   W7(catalog 以外不得有中文字面值)第一版用 `grep '[CJK 範圍]'`,
+      #   而它在某些 locale 下回 "Invalid collation character"。
+      #   stderr 被導去 /dev/null,於是錯誤變成零命中變成通過 ——
+      #   那一條從第一天起就是假綠的,是這個反向測試把它翻出來的。
+      - name: 反向測試（每一條檢核都必須真的會紅）
+        run: ./windows/check_ui_spec.sh --self-check
+
       - name: 二進位結構檢查（匯出符號、相依白名單、**沒有網路相依**）
         run: ./windows/check_binaries.sh third_party/build/windows-x64/logic/bin
 

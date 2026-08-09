@@ -94,7 +94,20 @@ add_library(rime_common STATIC
   # ⚠ 它不會開任何連線,目前也還沒有東西呼叫它 —— 方案市集還沒做。
   #   放進來是因為它有測試,而且是下一輪的地基。CI 會斷言**兩個二進位
   #   都沒有任何網路相依**,所以「Windows 端不連網」這句話仍然成立而且驗得到。
-  common/net_policy.cc)
+  common/net_policy.cc
+  # ── 這一輪加的:設定介面的純邏輯層 ────────────────────────────
+  #
+  # ⚠ 全部刻意不 include windows.h —— 版面、色票、狀態列位置還原都是
+  #   純函式,所以 windows/run_logic_tests.sh 在 Ubuntu 上驗得到它們
+  #   (docs/ui-design.md §12.12 的 W18/W19/W20/W22 靠這條)。
+  #   「畫出來好不好看」仍然只有人驗得到,但「算得對不對」不必等 CI。
+  common/ui_palette.cc
+  common/ui_layout.cc
+  common/statusbar_place.cc
+  # ⚠ 使用者看得到的每一個字。`windows/` 底下只有這一個檔案可以有
+  #   使用者可見字串(W7),而它同時被 DLL、服務、安裝工具連結 ——
+  #   語言列的按鈕與提權政策的說明也是使用者讀得到的字。
+  common/ui_strings.cc)
 target_include_directories(rime_common PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/common"
   "${RIME_ROOT}/core/include")
@@ -125,6 +138,10 @@ add_executable(rime_tests
   tests/test_elevation_policy.cc
   tests/test_key_eat_policy.cc
   tests/test_profile_choice.cc
+  tests/test_ui_layout.cc
+  tests/test_ui_palette.cc
+  tests/test_statusbar_place.cc
+  tests/test_ui_strings.cc
   # 這一支用**真的**鍵盤佈局(LoadKeyboardLayout + ToUnicodeEx),
   # 是 CI 上唯一驗得到「有沒有真的問佈局」的地方。
   tests/test_win32_layouts.cc
@@ -294,12 +311,21 @@ add_executable(rime_service
   service/cand_window.cc
   service/settings_store.cc
   service/settings_window.cc
+  service/status_bar.cc
+  service/ui_font.cc
+  service/ui_theme.cc
+  service/ui_confirm.cc
   "${RIME_ROOT}/core/src/rime_shell.cc")
 target_include_directories(rime_service PRIVATE "${RIME_PREFIX}/include")
 target_link_libraries(rime_service PRIVATE
   rime_common rime_winshared
   ${RIME_STATIC_LIBS} ${RIME_SYSTEM_LIBS}
   # comctl32:設定視窗的分頁控制項。shell32:系統匣圖示與「開啟資料夾」。
+  # comctl32:側欄與方案清單的 ListView(分頁控制項已經拿掉)。
+  # shell32:系統匣圖示與「開啟資料夾」。
+  # ⚠ **沒有** dwmapi:深色標題列那支是動態載入的(見 ui_theme.cc)——
+  #   靜態連結會讓這支程式在沒有 dwmapi.dll 的舊系統上根本載不起來,
+  #   而症狀是「安裝完什麼都沒發生」。
   user32 gdi32 shell32 comctl32)
 # /MAP:服務進程崩掉時,崩潰過濾器印的是 RVA;要把 RVA 變成函式名就需要這份
 # 對照表。CI 會把它一起上傳。這是在沒有偵錯器、沒有符號伺服器的機器上

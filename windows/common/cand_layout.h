@@ -5,13 +5,27 @@
 //   一個也不多。發現不足一律寫進 docs/coordination.md §5 回報,不自己加。
 //   規範一分岔,「一套配置四端共用」這個主張就沒了,而且會安靜地分岔。
 //
+// ── 2026-08-09:max_width 溢出改成照 §8.6.7.2(規範性)────────────
+//
+// 舊版在橫排時**丟掉**放不下的候選(`break` + `out.dropped`)。那不是外觀
+// 問題:一頁有幾個候選由方案的 page_size 決定,而序號標籤與使用者按下的
+// 數字鍵是一一對應的 —— 丟掉第 5 個之後,使用者按 `5` **仍然會選到那個
+// 看不見的字**。畫面與行為分岔,而且沒有任何提示。
+//
+// 現在照 §8.6.7.2:**不得少畫本頁的任何一個候選**,兩種處置都保留全部 n 項:
+//   · shrink — 縮欄寬,放不下的項標記 `truncated`,渲染端補 `…`(U+2026)。
+//   · clip   — 欄寬不動,超出窗的部分被裁掉。**裁掉的是像素,不是候選**;
+//              被裁到一半的項**不**標記 truncated(它沒有被截斷,只是被蓋住)。
+// 而 `max_width` 不再是硬上界:9a/9b 兩條例外見 ComputeLayout。
+//
 // 已知不足(已回報,見 coordination.md §5):
-//   · §8.6.7 的 max_width 說「超出則換行／截斷,**由實作決定**」——
-//     那正好是最需要一致的地方,兩端會做出兩種結果。本檔目前是截斷。
-//   · 多欄／表格排版(§11 自承未定義)。
+//   · §8.6.7.1 的多行／表格排版(`lines`、`equal_columns`、`item_align`、
+//     `max_height`)本檔尚未實作 —— 目前恆為單行(lines: 1),而欄寬是
+//     逐項的(等同 `equal_columns: false`)。溢出處置已經照 §8.6.7.2 落地,
+//     那是 M1;表格排版是 M3/M4。
 //   · 標籤與候選文字之間、候選文字與註解之間的間距沒有欄位。
-//     本檔暫用 metrics.spacing。
-//   · 狀態列(中/英、簡/繁)的外觀完全沒有規範。本輪不畫。
+//     本檔暫用 metrics.spacing(§8.6.4.1 已補上欄位,尚未接 —— M3)。
+//   · 狀態列(中/英、簡/繁)的外觀:§8.12 已經補上了,尚未接(M5)。
 //
 // 為什麼要把排版抽成純函式:候選窗在 CI 上看不到。但「窗有多寬」「翻不翻面」
 // 「截斷在第幾個」這些是可以算的,算錯的話使用者看到的是候選窗跑到螢幕外面
@@ -32,6 +46,8 @@ namespace rimewin {
 enum class Orientation { kHorizontal, kVertical };
 enum class CommentPosition { kAfter, kBelow, kHidden };
 enum class Placement { kBelow, kAbove, kAuto };
+// §8.6.7.1 的 `overflow`。⚠ 兩者都**保留全部候選**,差別只在「縮」還是「裁」。
+enum class Overflow { kShrink, kClip };
 
 struct Rgba {
   uint8_t r = 0, g = 0, b = 0, a = 255;
@@ -92,7 +108,13 @@ struct WindowStyle {  // §8.6.7
   double border_width = -1;
   Rgba border_color{0, 0, 0, 0};
   double min_width = 0;
+  // ⚠ **不是硬上界**(§8.6.7.2 第二節)。見 ComputeLayout 的 9a/9b。
   double max_width = 640;
+  Overflow overflow = Overflow::kShrink;  // §8.6.7.1
+  // §8.6.7.1:預設 = candidates.item.spacing,由 ResolveDefaults 補。
+  // -1 = 未指定。
+  double column_gap = -1;
+  double row_gap = -1;
   Placement placement = Placement::kAuto;
   double offset_x = 0;
   double offset_y = 6;
@@ -140,15 +162,20 @@ struct ItemLayout {
   bool has_label = false;
   bool has_comment = false;
   std::string label_display;  // 已套用 §8.6.1 的 format
+  // §8.6.7.1 第 8 步:量測寬度大於它拿到的格寬 → 渲染端**必須**在尾端
+  // 補 `…`(U+2026)。⚠ 只有 `shrink` 會產生它;`clip` 底下被窗蓋住的項
+  // **不**算截斷(它沒有被截短,只是被遮住),所以那時恆為 false。
+  bool truncated = false;
 };
 
 struct WindowLayout {
   double width = 0;
   double height = 0;
+  // ⚠ **恆等於輸入的候選數**(§8.6.7.2 第一節,規範性)。
+  //   少一項就代表使用者按那個數字鍵會選到看不見的字。W15 在守這件事。
   std::vector<ItemLayout> items;
-  // 因為 max_width 而沒放進來的候選數。> 0 時代表使用者看不到全部候選 ——
-  // 服務進程要記進日誌,不然「候選少了幾個」查不出原因。
-  int32_t dropped = 0;
+  // 需要補 `…` 的項數。診斷用;不是「少畫了幾個」。
+  int32_t truncated_count = 0;
 };
 
 WindowLayout ComputeLayout(const std::vector<Candidate>& items,

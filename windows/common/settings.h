@@ -68,9 +68,23 @@ constexpr const char* kSchemasPinnedHans = "schemas.pinnedHans";
 //   規範 §3 明著標的。主題不得改變一頁有幾個候選,否則序號標籤會與
 //   使用者按的數字鍵對不上。所以這裡**沒有**那個鍵。
 constexpr const char* kAppearanceCandidateScale = "appearance.candidateScale";
+// 深淺色。三態(followSystem / light / dark),id 取自 docs/settings-model.md §3。
+constexpr const char* kAppearanceAppearance = "appearance.appearance";
+// ⚠ 以下兩個是 **Windows 端自己加的**,docs/settings-model.md §3 還沒有對應的 id。
+//   懸浮狀態列是這一輪新增的表面(docs/ui-design.md §12.10),而規範裡的
+//   `appearance.showStatusBar` 指的是**候選窗裡面**那一條(§8.12),不是同一個東西。
+//   已寫進 docs/coordination.md §5 請規範所有權方(macOS 端)裁決 id。
+//   在裁決之前用這兩個名字,而且**不與規範的鍵重名** —— 重名的話,
+//   哪天規範真的定義了 showStatusBar,兩邊會安靜地互相覆蓋。
+constexpr const char* kAppearanceFloatingBar = "appearance.floatingBar";
+constexpr const char* kAppearanceFloatingBarPos = "appearance.floatingBarPos";
 // 文字
 constexpr const char* kTextVariant = "text.variant";
 constexpr const char* kTextPunctuation = "text.punctuation";
+// 連網
+// 進階
+// 介面語言。system / en / zh-Hant / zh-Hans。
+constexpr const char* kAdvancedLanguage = "advanced.language";
 // 連網
 constexpr const char* kNetworkEnabled = "network.enabled";
 constexpr const char* kStoreIndexUrl = "store.indexUrl";

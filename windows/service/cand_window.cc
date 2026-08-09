@@ -3,7 +3,9 @@
 #include <string>
 
 #include "../common/ime_policy.h"
+#include "../common/ui_dip.h"
 #include "../winshared/winutil.h"
+#include "ui_font.h"
 
 namespace rimewin {
 namespace {
@@ -18,20 +20,18 @@ constexpr UINT WM_RIME_RESTYLE = WM_APP + 4;
 
 COLORREF ToColorRef(const Rgba& c) { return RGB(c.r, c.g, c.b); }
 
-HFONT MakeFont(double px) {
-  LOGFONTW lf{};
-  // 字型家族刻意不寫死也不自己發明欄位:規範還沒有規定桌面候選窗用哪一個
-  // 字型欄位。先用系統的 UI 字型,只套規範裡有的**字級**。
-  // 等 macOS 端把桌面端的字型規範補上,這裡再照著讀。
-  NONCLIENTMETRICSW ncm{};
-  ncm.cbSize = sizeof(ncm);
-  if (::SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0))
-    lf = ncm.lfMessageFont;
-  lf.lfHeight = -static_cast<LONG>(px + 0.5);
-  lf.lfWidth = 0;
-  lf.lfQuality = CLEARTYPE_QUALITY;
-  return ::CreateFontIndirectW(&lf);
-}
+// ⚠ 這裡原本用 SPI_GETNONCLIENTMETRICS 的 lfMessageFont,而 §8.6.0
+//   **明文禁止**桌面端改用系統 UI 字型當預設:`$system` 代號已經是那個
+//   意思,而走代號才能讓「主題指定了字體」與「主題沒指定」是**同一條
+//   程式路徑**。兩條路的話,主題一旦指定字體,那條沒被走過的路就開始腐爛。
+//
+//   順帶修掉一個計算錯誤:舊碼把 lfMessageFont.lfHeight 再乘一次 dpi_scale_,
+//   而在 per-monitor-v2 進程裡那份度量已經含一次系統 DPI 的縮放。
+//   現在字級直接來自規範的 DIP 值,那個問題自然消失。
+//
+// ⚠ **CreateFontIndirectW 不在這個檔案裡**(W6):它只能出現在 ui_font.cc,
+//   因為那支 API 永遠不會失敗 —— 給一個不存在的字體,它回一個有效的
+//   HFONT 然後 GDI 安靜地替你挑一個。存在性檢查只有一個地方做得起。
 
 }  // namespace
 
@@ -159,6 +159,20 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM w,
       return MA_NOACTIVATE;
     case WM_ERASEBKGND:
       return 1;  // 全部在 WM_PAINT 裡畫,避免閃爍
+    case WM_DPICHANGED:
+      // ⚠ 候選窗每一次 Relayout 都會依插入點所在螢幕重取 DPI,所以平常
+      //   不靠這則訊息。但**視窗已經開著**而使用者這時改了縮放比例
+      //   (或把它拖到另一顆螢幕)的話,下一次重排要等到他再按一個鍵 ——
+      //   中間那段時間字是糊的或大小是錯的。
+      //   §12.3 第 1 條:每一個 top-level 視窗都要處理它。
+      if (self) {
+        RECT* sug = reinterpret_cast<RECT*>(l);
+        if (sug)
+          ::SetWindowPos(hwnd, nullptr, sug->left, sug->top, 0, 0,
+                         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        self->Relayout();
+      }
+      return 0;
     default:
       break;
   }
@@ -170,14 +184,16 @@ Extent CandidateWindow::MeasureWithFont(const std::string& utf8, double size) {
   const std::wstring w = Utf8ToWide(utf8);
   HDC hdc = ::GetDC(hwnd_);
   if (!hdc) return e;
-  HFONT font = MakeFont(size * dpi_scale_);
+  // 字級是 DIP,量測要用該螢幕 DPI 的像素高度。fonts_ 自己快取,
+  // 所以這裡不會每一次量測都建一個字型(那是舊碼的行為)。
+  HFONT font = fonts_.Get(static_cast<int>(size + 0.5), false,
+                          FontRole::kCandidate);
   HGDIOBJ old = ::SelectObject(hdc, font);
   SIZE sz{};
   ::GetTextExtentPoint32W(hdc, w.c_str(), static_cast<int>(w.size()), &sz);
   e.width = sz.cx;
   e.height = sz.cy;
   ::SelectObject(hdc, old);
-  ::DeleteObject(font);
   ::ReleaseDC(hwnd_, hdc);
   return e;
 }
@@ -213,16 +229,26 @@ void CandidateWindow::Relayout() {
                : nullptr;
     if (fn) fn(mon, 0 /*MDT_EFFECTIVE_DPI*/, &dpi_x, &dpi_y);
   }
-  dpi_scale_ = static_cast<double>(dpi_y) / 96.0;
+  dpi_ = dpi_y ? dpi_y : 96;
+  // ⚠ 字型是像素單位的:換螢幕就要整組重建,不重建就是模糊或錯大小。
+  //   script 依 rs_status.is_simplified 決定(§8.4.2 第 5 條,四端必須一致)
+  //   —— 漢字本身不帶語言資訊,不照這一條的話,同一份主題在兩台電腦上
+  //   會顯示不同字形。
+  const Script sc = (shown_.status_flags & kStSimplified) ? Script::kHans
+                                                          : Script::kHant;
+  if (fonts_.dpi() != dpi_ || fonts_.script() != sc) fonts_.Reset(dpi_, sc);
+  const double dpi_scale = static_cast<double>(dpi_) / 96.0;
 
   CandidateStyle scaled = style_;
-  scaled.item.padding_h *= dpi_scale_;
-  scaled.item.padding_v *= dpi_scale_;
-  scaled.item.spacing *= dpi_scale_;
-  scaled.window.padding *= dpi_scale_;
-  scaled.window.border_width *= dpi_scale_;
-  scaled.window.max_width *= dpi_scale_;
-  scaled.metrics.spacing *= dpi_scale_;
+  scaled.item.padding_h *= dpi_scale;
+  scaled.item.padding_v *= dpi_scale;
+  scaled.item.spacing *= dpi_scale;
+  scaled.window.column_gap *= dpi_scale;
+  scaled.window.row_gap *= dpi_scale;
+  scaled.window.padding *= dpi_scale;
+  scaled.window.border_width *= dpi_scale;
+  scaled.window.max_width *= dpi_scale;
+  scaled.metrics.spacing *= dpi_scale;
   // 使用者選的候選字級。**排版與繪製要用同一個值**:量測用一個、
   // 畫用另一個的話,字會畫到框外面,而畫面看起來只是「有點擠」。
   const double ts = text_scale_.load();
@@ -275,9 +301,12 @@ void CandidateWindow::Paint(HDC hdc) {
 
   // 與 Relayout 用同一個倍率(見那裡的說明)。
   const double ts = text_scale_.load();
-  HFONT f_label = MakeFont(style_.label.size * dpi_scale_ * ts);
-  HFONT f_text = MakeFont(style_.text.size * dpi_scale_ * ts);
-  HFONT f_comment = MakeFont(style_.comment.size * dpi_scale_ * ts);
+  HFONT f_label = fonts_.Get(static_cast<int>(style_.label.size * ts + 0.5),
+                             false, FontRole::kLabel);
+  HFONT f_text = fonts_.Get(static_cast<int>(style_.text.size * ts + 0.5),
+                            false, FontRole::kCandidate);
+  HFONT f_comment = fonts_.Get(static_cast<int>(style_.comment.size * ts + 0.5),
+                               false, FontRole::kComment);
 
   for (size_t i = 0; i < layout_.items.size(); ++i) {
     const ItemLayout& box = layout_.items[i];
@@ -307,10 +336,23 @@ void CandidateWindow::Paint(HDC hdc) {
       ::SelectObject(mem, f_text);
       ::SetTextColor(mem,
                      ToColorRef(hl ? style_.text.highlight_color : style_.text.color));
-      const std::wstring s = Utf8ToWide(shown_.items[i].text);
-      ::TextOutW(mem, static_cast<int>(box.x + box.text_x),
-                 static_cast<int>(box.y + box.text_y), s.c_str(),
-                 static_cast<int>(s.size()));
+      std::wstring s = Utf8ToWide(shown_.items[i].text);
+      if (box.truncated) {
+        // §8.6.7.2:被 `shrink` 縮到放不下的項,尾端**必須**加 U+2026。
+        // ⚠ 只有 shrink 會標記;`clip` 底下被窗蓋住的項不加 ——
+        //   它沒有被截短,只是被遮住,加了反而在騙人。
+        RECT clip{static_cast<LONG>(box.x + box.text_x),
+                  static_cast<LONG>(box.y),
+                  static_cast<LONG>(box.x + box.w),
+                  static_cast<LONG>(box.y + box.h)};
+        ::DrawTextW(mem, s.c_str(), -1, &clip,
+                    DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS |
+                        DT_NOPREFIX);
+      } else {
+        ::TextOutW(mem, static_cast<int>(box.x + box.text_x),
+                   static_cast<int>(box.y + box.text_y), s.c_str(),
+                   static_cast<int>(s.size()));
+      }
     }
     if (box.has_comment) {
       ::SelectObject(mem, f_comment);
@@ -325,9 +367,8 @@ void CandidateWindow::Paint(HDC hdc) {
 
   ::BitBlt(hdc, 0, 0, client.right, client.bottom, mem, 0, 0, SRCCOPY);
 
-  ::DeleteObject(f_label);
-  ::DeleteObject(f_text);
-  ::DeleteObject(f_comment);
+  // ⚠ 字型由 fonts_ 持有並快取,這裡**不可以** DeleteObject ——
+  //   刪掉之後下一幀拿到的是一個已經無效的 HFONT。
   ::SelectObject(mem, old_bmp);
   ::DeleteObject(bmp);
   ::DeleteDC(mem);

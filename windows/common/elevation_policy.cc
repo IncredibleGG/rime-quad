@@ -2,6 +2,8 @@
 
 #include "elevation_policy.h"
 
+#include "ui_strings.h"
+
 namespace rimewin {
 
 HostElevation ClassifyHostElevation(bool token_query_ok, bool is_elevated,
@@ -81,17 +83,15 @@ const wchar_t* HostElevationTooltipW(HostElevation e) {
     case HostElevation::kNormal:
     case HostElevation::kWholeSession:
       return nullptr;  // 可以啟動 —— 按鈕顯示正常的樣子
+    // ⚠ 這三句是使用者讀得到的字,所以它們住在 ui_strings.cc ——
+    //   `windows/` 底下只有那一個檔案可以有使用者可見字串(W7)。
+    //   它們原本硬編在這裡,而且只有繁體中文;現在跟著介面語言走。
     case HostElevation::kSplitToken:
-      return L"LuminaKey:這個視窗是以系統管理員身分執行的,"
-             L"輸入法服務不會從這裡啟動(這是刻意的:那會把你的詞庫檔案"
-             L"換成系統管理員所有)。請在一般的視窗裡先打一個字,"
-             L"服務起來之後這個視窗也能用。";
+      return UiText(UiString::kElevatedBlocked);
     case HostElevation::kServiceAccount:
-      return L"LuminaKey:這個進程不是以使用者身分執行的,輸入法服務不會"
-             L"從這裡啟動。";
+      return UiText(UiString::kNotUserBlocked);
     case HostElevation::kUnknown:
-      return L"LuminaKey:問不出這個進程的權限狀態,保守起見沒有啟動輸入法"
-             L"服務。請執行 rime_ime_setup.exe doctor 取得診斷。";
+      return UiText(UiString::kUnknownTokenBlocked);
   }
   return nullptr;
 }

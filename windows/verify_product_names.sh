@@ -70,6 +70,23 @@ LG_FOLDER="${RS_WIN_DATA_FOLDER//${RS_PRODUCT_NAME}/${RS_LEGACY_PRODUCT_NAME}}"
 #
 # 比對的是**整段宣告**而不是只有值。只找值的話,一個躺在註解或測試裡的
 # 同名字串就能讓這一項恆綠。
+# ── ⚠ 2026-08-09:三列換了住址,一列消失了 ────────────────────────
+#
+# 使用者可見字串全部搬進 `windows/common/ui_strings.cc`(英/繁/簡三語),
+# 因為 §6.7 的掃描要求「catalog 以外命中數必須是 0」。所以帶著產品名的
+# 那幾列跟著搬:設定窗標題、系統匣提示、語言列按鈕提示。
+#
+# ⚠ **搬家不等於可以放掉。** 它們仍然是寫到畫面與系統匣上的名字,
+#   而這支腳本存在的理由是「改名改一半在編譯期、單元測試、發布關卡
+#   全部是綠的」。所以三列只是換 rel,比對的內容一樣嚴格 ——
+#   而且現在一列同時吃到繁體與簡體兩個值,比以前更嚴。
+#
+# ⚠ **「關於方塊」那一列刪掉了,而且這件事要說清楚。**
+#   舊的關於方塊印著 `LuminaKey 輸入法(Windows,x64)`。這一輪它整段
+#   換成 §4.11 的診斷區塊(永遠英文、等寬、不在地化),裡面**沒有**
+#   產品名 —— 產品名現在只出現在視窗標題上,而那是上面第一列在管的。
+#   刪掉一列本來是這種守門腳本腐爛的典型方式,所以寫在這裡:
+#   它不是「驗不到了」,是**那個位置已經沒有名字可以驗**。
 landed_rows() {
   cat <<ROWS
 使用者資料夾名(唯一決定處)|windows/winshared/winutil.cc|static const wchar_t kUserDataFolderName[] = L"${RS_WIN_DATA_FOLDER}";
@@ -81,14 +98,13 @@ landed_rows() {
 設定檔表頭|windows/common/settings.cc|"# ${RS_PRODUCT_NAME} 設定。由設定介面寫入,也可以自己改。\\n"
 候選窗類別名|windows/service/cand_window.cc|constexpr wchar_t kClassName[] = L"${RS_PRODUCT_NAME}CandidateWindow";
 設定窗類別名|windows/service/settings_window.cc|constexpr wchar_t kClass[] = L"${RS_PRODUCT_NAME}SettingsWindow";
-設定窗標題|windows/service/settings_window.cc|kClass, L"${RS_PRODUCT_NAME_ZH} 設定",
-系統匣提示|windows/service/settings_window.cc|::lstrcpynW(nid.szTip, L"${RS_PRODUCT_NAME_ZH}", 128);
-關於方塊|windows/service/settings_window.cc|L"${RS_PRODUCT_NAME_ZH}(Windows,x64)\\r\\n"
+設定窗標題|windows/common/ui_strings.cc|L"${RS_PRODUCT_NAME_ZH} 設定", L"${RS_PRODUCT_NAME_ZH_HANS} 设置")
+系統匣提示|windows/common/ui_strings.cc|X(kTrayTip, L"${RS_PRODUCT_NAME} Input Method", L"${RS_PRODUCT_NAME_ZH}",
 COM 類別描述|windows/tsf/guids.h|#define RIME_TEXT_SERVICE_DESC L"${RS_PRODUCT_NAME_ZH}"
 語言設定檔描述 zh-Hant-TW|windows/tsf/guids.cc|&GUID_RimeProfile,     L"${RS_PRODUCT_NAME_ZH}"}
 語言設定檔描述 zh-Hans-CN|windows/tsf/guids.cc|&GUID_RimeProfileHans, L"${RS_PRODUCT_NAME_ZH_HANS}"}
 語言設定檔描述 zh-Hant-HK|windows/tsf/guids.cc|&GUID_RimeProfileHK,   L"${RS_PRODUCT_NAME_ZH}"}
-語言列按鈕提示|windows/tsf/lang_bar.cc|constexpr wchar_t kTooltip[] = L"${RS_PRODUCT_NAME_ZH}設定";
+語言列按鈕提示|windows/common/ui_strings.cc|L"${RS_PRODUCT_NAME_ZH}設定", L"${RS_PRODUCT_NAME_ZH_HANS}设置")
 線路上的服務版本|windows/service/pipe_server.cc|ok.service_version = "${RS_PRODUCT_ID_ROOT}-windows/0.2";
 doctor 報告暫存檔|windows/setup/doctor.cc|L"${RS_PRODUCT_ID_ROOT}-doctor.txt"
 doctor 引擎暫存檔|windows/setup/doctor.cc|L"${RS_PRODUCT_ID_ROOT}-doctor-engine.txt"

@@ -13,19 +13,30 @@
 
 #include "guids.h"
 
+#include "../common/ui_strings.h"
+
 namespace rimewin {
 namespace {
 
-// 語言列與系統匣上顯示的字。刻意短:那一格只有幾個字寬。
-constexpr wchar_t kButtonText[] = L"設定";
-constexpr wchar_t kTooltip[] = L"LuminaKey 輸入法設定";
+// 語言列上顯示的字。刻意短:那一格只有幾個字寬。
+//
+// ⚠ 它們原本硬編在這裡,只有繁體中文。現在走 ui_strings.cc ——
+//   `windows/` 底下只有那一個檔案可以有使用者可見字串(W7)。
+//
+// ⚠ **這支 DLL 讀不到使用者的設定**(它住在每一個宿主進程裡,而設定
+//   在服務進程那一側)。所以介面語言在這裡是由**這個輸入法註冊在哪個
+//   語言設定檔底下**決定的,由 text_service.cc 在解析出 langid 之後
+//   呼叫 SetUiLang() —— 語言列上的這一格本來就屬於那一份設定檔,
+//   所以那是對的訊號,而且不必為了一顆按鈕多走一趟 IPC。
+const wchar_t* ButtonText() { return UiText(UiString::kLangBarButton); }
+const wchar_t* Tooltip() { return UiText(UiString::kLangBarTooltip); }
 
 // 服務沒有(而且不會)起來時顯示的字。
 //
 // ⚠ 一個**刻意的**拒絕不該長得跟壞掉一樣。以前它只寫進一個使用者不知道
 //   存在的記錄檔,於是「我們決定不啟動」與「它壞了」在使用者眼裡完全相同。
-//   這四個字是那個決定唯一的可見痕跡。
-constexpr wchar_t kButtonTextWarn[] = L"未啟動";
+//   這幾個字是那個決定唯一的可見痕跡。
+const wchar_t* ButtonTextWarn() { return UiText(UiString::kLangBarNotRunning); }
 
 // 這個 cookie 只要不是 TF_INVALID_COOKIE 就好。用一個固定值:
 // 我們只接受一個 sink,而 TSF 也只會掛一個。
@@ -93,7 +104,7 @@ class LangBarButton final : public ITfLangBarItemButton, public ITfSource {
     // szDescription 是固定長度陣列(TF_LBI_DESC_MAXLEN),不是指標。
     const wchar_t* warn = Warning();
     ::StringCchCopyW(info->szDescription, TF_LBI_DESC_MAXLEN,
-                     warn ? warn : kTooltip);
+                     warn ? warn : Tooltip());
     return S_OK;
   }
 
@@ -112,7 +123,7 @@ class LangBarButton final : public ITfLangBarItemButton, public ITfSource {
   STDMETHODIMP GetTooltipString(BSTR* tooltip) override {
     if (!tooltip) return E_INVALIDARG;
     const wchar_t* warn = Warning();
-    *tooltip = ::SysAllocString(warn ? warn : kTooltip);
+    *tooltip = ::SysAllocString(warn ? warn : Tooltip());
     return *tooltip ? S_OK : E_OUTOFMEMORY;
   }
 
@@ -154,7 +165,7 @@ class LangBarButton final : public ITfLangBarItemButton, public ITfSource {
   STDMETHODIMP GetText(BSTR* text) override {
     if (!text) return E_INVALIDARG;
     // 服務不會起來時,這一格是使用者唯一看得到的訊號。
-    *text = ::SysAllocString(Warning() ? kButtonTextWarn : kButtonText);
+    *text = ::SysAllocString(Warning() ? ButtonTextWarn() : ButtonText());
     return *text ? S_OK : E_OUTOFMEMORY;
   }
 

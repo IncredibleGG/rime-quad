@@ -21,8 +21,12 @@ const KnownKey kKnownKeys[] = {
     {keys::kSchemasPinnedHant, nullptr},
     {keys::kSchemasPinnedHans, nullptr},
     {keys::kAppearanceCandidateScale, "外觀"},
+    {keys::kAppearanceAppearance, nullptr},
+    {keys::kAppearanceFloatingBar, nullptr},
+    {keys::kAppearanceFloatingBarPos, nullptr},
     {keys::kTextVariant, "文字"},
     {keys::kTextPunctuation, nullptr},
+    {keys::kAdvancedLanguage, "進階"},
     {keys::kNetworkEnabled, "連網"},
     {keys::kStoreIndexUrl, nullptr},
 };

@@ -12,47 +12,64 @@
 //   · **Electron / WebView2** — 前者打包 Chromium(上百 MB,而且是一整個
 //     網路堆疊);後者相依於系統上的 Edge 執行期,那同樣是 Chromium,
 //     而且**不在我們的控制之下**(它會自己更新)。兩者都直接違反約束。
-//   · **WinUI 3 / XAML Islands** — 需要 Windows App SDK 的可轉散發套件。
-//     那是幾十 MB 的另一組 DLL,而且與我們貫穿全案的 `/MT` 靜態 CRT
-//     打架(見 README:相依到 VCRUNTIME140.dll 的話,沒裝 VC++ 執行期的
-//     機器上輸入法會在載入階段失敗,而症狀是「在某些程式裡整個不存在」)。
-//   · **WPF / WinForms** — 需要 .NET 執行期。同上,而且多一個更新來源。
-//   · **本機 HTTP + 系統瀏覽器** — 會開 socket。離線定位下這是最糟的選項:
-//     為了設定介面而讓服務進程監聽一個連接埠,等於親手推翻自己的主張。
+//   · **WinUI 3 / XAML Islands** — 需要 Windows App SDK 的可轉散發套件,
+//     而且與貫穿全案的 `/MT` 靜態 CRT 打架。
+//   · **WPF / WinForms** — 需要 .NET 執行期。
+//   · **本機 HTTP + 系統瀏覽器** — 會開 socket。離線定位下這是最糟的選項。
 //
 // 剩下的是純 Win32。代價是排版要自己算、控制項醜、無障礙要自己顧;
 // 換到的是**零額外相依、與 /MT 相容、二進位增加的大小解釋得清楚**。
 //
-// ── 為什麼在服務進程裡,而不是另一支 exe ────────────────────────
+// ── 2026-08-09:改成側欄式,並修掉四類缺陷 ──────────────────────
 //
-// 設定介面要做的事幾乎每一件都需要引擎:列出方案(rs_schema_list)、
-// 立刻套用簡繁(rs_set_option)、重新部署並回報進度(rs_deploy)。
-// 另開一支 exe 的話,這些全部要再走一次 IPC,而且「設定改了但引擎沒收到」
-// 會變成一整類新的失效。服務進程本來就是那個持有引擎的地方。
+// 版面從分頁(WC_TABCONTROLW)改成側欄(docs/ui-design.md §12.4)。
+// **判準吃的是產品的頁數,不是某一端實作了幾頁** —— 桌面端是 7 頁,
+// 所以是側欄;照今天實作的 4 頁做分頁,等市集/連網/自己加的詞上線就要整個重做。
 //
-// ⚠ **瘦 DLL 那一側一行都沒有碰。** 這個檔案不會被載入到宿主進程裡。
-//   DLL 那邊只多了一顆語言列按鈕(tsf/lang_bar.cc),它送一則單向訊息。
+// 同時修掉的:
+//   1. `dpi_scale_` 只算一次而進程是 per-monitor-v2 → 現在處理 WM_DPICHANGED。
+//   2. 無條件捨去的縮放 → 一律走 MulDivRound(common/ui_dip.h)。
+//   3. 字型走 SPI_GETNONCLIENTMETRICS(違反 §8.6.0)→ 走 ui_font.h。
+//   4. 清單每一列印著方案 id(違反 §6.7 第一層)→ 只印名字。
+//   5. MB_YESNO 做確認(按鈕字面由系統決定,必然違反 §2-C3)→ ui_confirm.h。
+//   6. 硬編的中文字面值 → common/ui_strings.h,英/繁/簡三語。
 //
-// ── 每一顆控制項都必須真的做它宣稱的事 ──────────────────────────
+// ── ⚠ 第六個「看得到但摸不到」,以及它為什麼不會再發生 ──────────
 //
-// 這個專案抓過四個「畫面完全正常、自動化全過」的鍵。所以這裡的規矩是:
-// 做不到就**不要放上去**。目前刻意沒有的:候選窗主題(規範還沒落地)、
-// 方案市集(見 README「沒有被驗證的部分」)、詞庫匯出匯入。
+// 舊版有一顆 `IDC_FOLLOW_MODE` 核取方塊:建立了、有 WM_COMMAND 處理常式、
+// 有讀寫設定的完整程式碼 —— 但它**不在任何一頁的 id 陣列裡**,
+// 而控制項是用 `WS_CHILD`(沒有 `WS_VISIBLE`)建的,只有 ShowTab 會去
+// 顯示它們。於是那顆核取方塊從來沒有被 ShowWindow 過:
+// **它在畫面上根本不存在,而程式碼看起來完全正常。**
+//
+// 這一輪的修法不是「把它加進陣列」,那只修掉這一次。
+// 改成:控制項由**一張表**(kControls)產生,表上每一列都帶著它屬於哪一頁。
+// 建立與顯示走同一份資料,所以「建了但沒有頁」在結構上不可能發生 ——
+// 一顆控制項要嘛不存在,要嘛屬於某一頁而且會被顯示。
 //
 #ifndef RIMEWIN_SERVICE_SETTINGS_WINDOW_H_
 #define RIMEWIN_SERVICE_SETTINGS_WINDOW_H_
 
 #include <windows.h>
 
+// commctrl.h 要在 windows.h 之後。⚠ 它在**標頭**裡是必要的:
+// NM_CUSTOMDRAW 的處理常式簽章帶著 NMLVCUSTOMDRAW,而那個型別在這裡。
+#include <commctrl.h>
+
 #include <string>
+#include <vector>
 
 #include "../common/schema_choice.h"
+#include "../common/ui_strings.h"
 #include "engine.h"
 #include "settings_store.h"
+#include "ui_font.h"
+#include "ui_theme.h"
 
 namespace rimewin {
 
 class CandidateWindow;
+class StatusBar;
 
 class SettingsWindow {
  public:
@@ -60,95 +77,120 @@ class SettingsWindow {
                  const std::string& shared_dir);
   ~SettingsWindow();
 
-  // 起一條有訊息迴圈的 UI 執行緒。視窗要到 Open() 才會出現。
   bool Start();
   void Stop();
 
-  // 可從任何執行緒呼叫(具名事件那條路是另一條執行緒,IPC 是連線執行緒)。
-  // 已經開著就把它帶到最前面 —— 再開一個視窗是「按了沒反應」的另一種長相。
+  // 可從任何執行緒呼叫。已經開著就把它帶到最前面。
   void Open();
+  // 開在某一頁上(懸浮狀態列的「輸入法沒有在跑」會直接帶到「進階」)。
+  void OpenAt(int page);
 
-  // 設定變更後要通知候選窗重新讀字級。可為 nullptr。
   void SetCandidateWindow(CandidateWindow* w) { cand_ = w; }
+  void SetStatusBar(StatusBar* b) { bar_ = b; }
 
   // ── 簡繁:設定視窗**以外**的入口 ────────────────────────────
-  //
-  // ⚠ 這一支是這一輪加的,而它補的是一個由別處的修正造成的缺口:
-  //   語言設定檔從三份收斂成一份之後(見 common/profile_choice.h),
-  //   使用者**再也不能用 Win + 空白鍵在簡繁之間切** —— 以前他切的其實
-  //   是 langid,而 langid 決定字集。所以那件事必須在我們自己的 UI 裡
-  //   做得到,否則這一輪等於拿走了一個他本來有的功能。
-  //
-  // 可從任何執行緒呼叫。實際的套用排到 UI 執行緒上做
-  //(PostMessage),因為它會碰控制項。
+  // 語言設定檔收斂成一份之後,使用者再也不能用 Win+空白鍵切簡繁,
+  // 所以那件事必須在我們自己的 UI 裡做得到。
   void SetVariantPref(VariantPref v);
-
-  // 目前的偏好。系統匣選單要據此打勾。
   VariantPref CurrentVariantPref();
 
+  // 懸浮狀態列要用的:目前的介面語言與外觀,好讓兩個表面長得一樣。
+  UiLang ui_lang() const { return ui_lang_; }
+
  private:
+  // ⚠ 頁的順序 = 側欄由上而下的順序。
+  enum Page : int {
+    kPageSchemas = 0,
+    kPageAppearance,
+    kPageText,
+    kPageAdvanced,
+    kPageCount,
+    // 不屬於任何一頁:永遠看得見(關閉鈕、底部狀態行)。
+    kPageAlways = 99,
+  };
+
   static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l);
   static DWORD WINAPI ThreadEntry(LPVOID self);
   void ThreadMain();
 
   void CreateUi(HWND hwnd);
   void LayoutUi();
-  void ShowTab(int index);
+  void ShowPage(int page);
   void ReloadFromSettings();
   void ReloadSchemaList();
   void OnCommand(int id, int code);
+  void OnNotify(NMHDR* nm, LRESULT* result);
   void OnDeployTick();
+  void OnPaint(HDC hdc);
+  void OnDpiChanged(UINT dpi, const RECT* suggested);
+  void RefreshTheme();
+  void ApplyFonts();
 
-  // 系統匣圖示。刻意掛在**設定視窗的**訊息迴圈上,不另外開一條執行緒:
-  // 系統匣的回呼是視窗訊息,而這裡已經有一條有訊息迴圈的執行緒了。
+  // 自繪(§12.5.3 的六類裡的四類在這個檔案)。
+  LRESULT DrawSidebar(NMLVCUSTOMDRAW* cd);
+  LRESULT DrawSchemaList(NMLVCUSTOMDRAW* cd);
+  void DrawDangerButton(DRAWITEMSTRUCT* di);
+
   void AddTray();
   void RemoveTray();
   void OnTray(WPARAM w, LPARAM l);
 
   void ApplyVariantNow();
-  // 把偏好寫進設定、存檔、對現有的每一個 session 立刻套用。
-  // ApplyVariantNow(讀下拉選單)與 SetVariantPref(外部指定)共用它 ——
-  // 兩份會漂移,而漂移的症狀是「從系統匣切有效、從設定切無效」(或反過來)。
   void CommitVariantPref(VariantPref v);
   void ApplyPunctNow();
-  void ApplyDefaultSchemaNow();
+  void ApplyAppearancePref();
+  void ApplyUiLanguage();
+  void ApplyScaleNow();
+  void ApplyStatusBarVisibility();
+  void DoResetSettings();
   bool ApplyOrderAndPageSize(std::string* error);
-  void StartRedeploy(const wchar_t* why);
+  void StartRedeploy(UiString why);
   void SetStatus(const std::wstring& text);
+  void SetStatus(UiString s) { SetStatus(UiText(s)); }
+  // 成功訊息 4 秒後自己清掉(§12.5.3:不做浮層,成功不值得一個新表面)。
+  void SetTransientStatus(UiString s);
+
+  int SelectedSchemaRow() const;
+  std::wstring SchemaDisplayName(size_t index) const;
+  Script script() const;
 
   Engine* engine_;
   SettingsStore* store_;
   std::string shared_dir_;
   CandidateWindow* cand_ = nullptr;
+  StatusBar* bar_ = nullptr;
 
   HANDLE thread_ = nullptr;
   DWORD thread_id_ = 0;
   HANDLE ready_ = nullptr;
   HWND hwnd_ = nullptr;
-  HFONT font_ = nullptr;
-  double dpi_scale_ = 1.0;
-  int tab_ = 0;
+  HWND sidebar_ = nullptr;
+  HWND schema_list_ = nullptr;
 
-  // 部署進度
+  // ⚠ **沒有 dpi_scale_。** 那個 double 正是舊版每一項各少 0~1 px、
+  //   而誤差沿著版面累積的來源。一律 MulDivRound(dip, dpi_, 96)。
+  UINT dpi_ = 96;
+  FontSet fonts_;
+  Theme theme_;
+  UiLang ui_lang_ = UiLang::kZhHant;
+  int page_ = kPageSchemas;
+  // 鍵盤使用時才畫焦點環(§12.6.4 第 1 條)。滑鼠使用者身上到處是框,
+  // 是 Win32 自繪最常見的破綻。WM_UPDATEUISTATE 維護它。
+  bool show_focus_ = false;
+
   bool deploying_ = false;
   uint32_t deploy_seq_ = 0;
   DWORD deploy_start_ = 0;
-  std::wstring deploy_why_;
-  // 改 A 層之前的整份內容。⚠ 規範 §2:失敗時**整份還原**,
-  // 不是「套用反向的編輯」—— 反向編輯的前提是外科手術本身沒有 bug,
-  // 那正是出事當下最不該假設的事。
+  UiString deploy_why_ = UiString::kRedeployButton;
   bool has_rollback_ = false;
   std::string rollback_yaml_;
 
   bool tray_added_ = false;
-  // explorer.exe 重啟之後系統匣會清空,而它會廣播這則訊息。
-  // 沒有處理它的話,使用者的圖示在 explorer 崩過一次之後就永遠消失了 ——
-  // 而他不會把兩件事聯想在一起。
   UINT taskbar_created_ = 0;
 
   Settings settings_;
   std::vector<std::pair<std::string, std::string>> schemas_;  // id, name
-  std::vector<std::string> order_;  // 目前清單上的順序(id)
+  std::vector<std::string> order_;   // 目前清單上的順序(id)
 };
 
 }  // namespace rimewin

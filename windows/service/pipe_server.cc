@@ -1,5 +1,7 @@
 #include "pipe_server.h"
 
+#include "status_bar.h"
+
 #include <sddl.h>
 
 #include <cstdarg>
@@ -375,6 +377,9 @@ void PipeServer::ServeClient(HANDLE pipe) {
       ui_->Hide();
     else
       ui_->Update(snap, caret);
+    // 同一份快照也餵給懸浮狀態列。⚠ **同一份**是重點:兩個表面顯示
+    //   不一致的值是規範明文不允許的(§12.10.1)。
+    if (bar_) bar_->OnSnapshot(snap);
   };
 
   // librime 內建的方案切換器(Ctrl+` / F4)是引擎自己處理的,我們沒有
@@ -487,6 +492,21 @@ void PipeServer::ServeClient(HANDLE pipe) {
         const Tri punct = st.Punctuation();
         if (punct != Tri::kUnset)
           opts.push_back({"ascii_punct", punct == Tri::kTrue});
+        // ── 中英模式 ────────────────────────────────────────────
+        //
+        // ⚠ 這一行是這一輪補上的功能的另一半。使用者用懸浮狀態列切成
+        //   英文之後開一個新程式,那個程式**也**要是英文的 ——
+        //   少了它,症狀是「這個開關會自己跳回去」,而使用者不會把
+        //   「我開了一個新視窗」與那件事聯想在一起。
+        //
+        // ⚠ 放進 opts(而不是建完 session 再設一次)是刻意的:
+        //   opts 同時是備用 session 的**計畫**,而 TakeSpareSession 會比對
+        //   計畫合不合。不放進來的話,備用池裡那個照舊狀態配好的 session
+        //   會被判成「計畫相同」而直接交出去。
+        //
+        // ⚠ 與標點不同,這裡**沒有**「不干預」那一態:中英是一個模式,
+        //   不是一個三態偏好,而它的預設(false = 中文)就是 librime 的預設。
+        opts.push_back({"ascii_mode", engine_->AsciiMode()});
 
         // ── 有沒有預先建好的可以直接拿 ────────────────────────
         //

@@ -595,6 +595,39 @@ void Engine::SetOptionAll(const char* option, bool value) {
   });
 }
 
+void Engine::SetAsciiModeAll(bool on) {
+  // 先記下來:新的 session 由 pipe_server 從這裡讀(它在 options 裡),
+  // 而備用 session 的計畫比對也吃同一個值。
+  ascii_mode_.store(on);
+  Post("對所有 session 設中英", [&] {
+    for (const auto& kv : sessions_) rs_set_option(kv.second, "ascii_mode", on);
+  });
+  // ⚠ 預先建好的備用 session 是照**舊**狀態配的,現在不合了。
+  //   留著的話,使用者切成英文之後開的第一個程式會拿到一個中文的 session
+  //   —— 而那種錯誤是靜默的。直接讓計畫比對去淘汰它(options 變了),
+  //   這裡不必動它,但要把 spare 也一起設,免得它被判成「計畫相同」。
+  {
+    std::lock_guard<std::mutex> lock(spare_mu_);
+    for (auto& kv : spare_) {
+      bool found = false;
+      for (OptionAssign& a : kv.second.options) {
+        if (std::string(a.option) == "ascii_mode") {
+          a.value = on;
+          found = true;
+        }
+      }
+      if (!found) kv.second.options.push_back({"ascii_mode", on});
+    }
+  }
+  Post("對備用 session 設中英", [&] {
+    std::lock_guard<std::mutex> lock(spare_mu_);
+    for (const auto& kv : spare_) {
+      const uintptr_t sess = Find(kv.second.session);
+      if (sess) rs_set_option(sess, "ascii_mode", on);
+    }
+  });
+}
+
 void Engine::SetSessionLangId(uint64_t id, uint32_t langid) {
   Post("記下 session 的語言", [&] { session_lang_[id] = langid; });
 }

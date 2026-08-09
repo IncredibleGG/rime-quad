@@ -21,6 +21,7 @@
 
 #include "../common/cand_layout.h"
 #include "../common/protocol.h"
+#include "ui_font.h"
 
 namespace rimewin {
 
@@ -88,7 +89,9 @@ class CandidateWindow : public CandidateUi {
   RECT caret_{};
   CandidateStyle style_;
   WindowLayout layout_;
-  double dpi_scale_ = 1.0;
+  // ⚠ 沒有 dpi_scale_ 那個 double 了 —— 字型與版面各自用該螢幕的整數 DPI。
+  UINT dpi_ = 96;
+  FontSet fonts_;
 };
 
 }  // namespace rimewin

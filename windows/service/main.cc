@@ -62,6 +62,7 @@
 #include "rime_shell.h"
 #include "settings_store.h"
 #include "settings_window.h"
+#include "status_bar.h"
 
 namespace {
 
@@ -644,6 +645,13 @@ static int RunService(int argc, wchar_t** argv) {
   // 在使用者眼裡是同一件事。系統匣圖示也掛在它的訊息迴圈上。
   rimewin::SettingsStore settings_store(user);
   rimewin::SettingsWindow settings(&engine, &settings_store, shared);
+  // ── 懸浮狀態列 ──────────────────────────────────────────────
+  //
+  // ⚠ 它不是裝飾。在這一輪之前,Windows 端**完全沒有中英切換** ——
+  //   `ascii_mode` 從來沒有被設定過,使用者要在句子中間打一個英文字,
+  //   唯一的辦法是按 Win+空白鍵把整個輸入法換掉。
+  //   這一橫是那個功能唯一的家,所以它預設是開的(見 status_bar.h)。
+  rimewin::StatusBar status_bar(&engine, &settings_store);
   HANDLE settings_event = nullptr;
   if (!no_ui) {
     settings.SetCandidateWindow(&window);
@@ -659,6 +667,14 @@ static int RunService(int argc, wchar_t** argv) {
       if (scale > 0) window.SetTextScale(scale / 100.0);
       settings_event = ::CreateEventW(
           nullptr, FALSE, FALSE, rimewin::RimeSettingsEventName().c_str());
+      // 兩個表面互相認識:狀態列要開設定視窗,設定視窗改了外觀/語言/
+      // 顯示與否要通知狀態列。
+      if (status_bar.Start()) {
+        status_bar.SetSettingsWindow(&settings);
+        settings.SetStatusBar(&status_bar);
+      } else {
+        Err("懸浮狀態列建立失敗 —— 這一輪沒有中英切換的入口。\n");
+      }
     }
   }
 
@@ -687,6 +703,8 @@ static int RunService(int argc, wchar_t** argv) {
   }
 
   rimewin::PipeServer server(&engine, ui, &settings_store);
+  // 每一份快照也要餵給那一橫(見 pipe_server.h 的說明)。
+  server.SetStatusBar(no_ui ? nullptr : &status_bar);
   server.SetOpenSettingsHandler([&settings]() { settings.Open(); });
   // 監聽迴圈非預期死掉時,讓這支服務結束。
   //
