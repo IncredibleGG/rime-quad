@@ -67,8 +67,10 @@ final class RepoConformanceTests: XCTestCase {
     /// 規範與程式碼不得漂移：`DiagnosticCode` 的每一個字面值都必須出現在
     /// docs/theme-format.md 的碼表裡（§6.5）。
     ///
-    /// 這條的價值在於**反向**也成立的那一半：規範裡列了一個碼但實作沒有，
-    /// 或實作加了一個碼但沒寫進規範，兩種都會紅。
+    /// ⚠ 這是**單向**的檢查：實作有、規範沒有 → 紅。反向不檢查，而且**不該**檢查 ——
+    /// §6.5.1 裡有行動端專屬的碼（`syllables_*` 三則的輸入是佈局與當前方案，
+    /// 桌面端連 `core/layouts/` 都不消費，§8.6.6.3.2），它們不在 `DiagnosticCode` 裡
+    /// 是正確的，不是漂移。
     func testEveryDiagnosticCodeIsDocumented() throws {
         let spec = try String(contentsOf: Repo.specFile, encoding: .utf8)
         XCTAssertTrue(spec.contains("## 6.5") || spec.contains("### 6.5"),
@@ -78,6 +80,36 @@ final class RepoConformanceTests: XCTestCase {
             missing.append(code.rawValue)
         }
         XCTAssertEqual(missing, [], "這些診斷碼沒有寫進 docs/theme-format.md §6.5")
+    }
+
+
+    /// §10 檢核第 39 條：`intl-ios-*` 宣告了 `candidates.syllables`，而桌面端
+    /// **不渲染**它 —— 但那不表示可以不解析。零 WARNING、零 INFO，且值原樣留著。
+    ///
+    /// 這條是這一輪 `main` 紅燈的迴歸測試：主題檔先用了欄位、解析器不認得，
+    /// `testEveryShippedThemeParsesCleanly` 就在 `unknown_field(syllables)` 上紅。
+    func testShippedIosThemesDeclareSyllablesAndDesktopStaysSilent() {
+        for id in ["intl-ios-light", "intl-ios-dark"] {
+            let r = ThemeLoader.load(id: id, source: source(), platform: .macos)
+            XCTAssertEqual(r.diagnostics.count, 0,
+                           "\(id)：\(r.diagnostics.map(\.developerMessage))")
+            XCTAssertEqual(r.value?.syllables.placement, .aboveCandidates,
+                           "\(id) 宣告的是 above_candidates（dark 由 inherits 拿到）")
+        }
+    }
+
+    /// 規範宣告的消歧欄欄位必須全部被綁定，否則主題作者寫了沒作用。
+    /// （§8.6.6.3.5 第 1 點：桌面端不渲染，但必須完整解析。）
+    func testDocumentedSyllableFieldsAreAllBound() throws {
+        let spec = try String(contentsOf: Repo.specFile, encoding: .utf8)
+        XCTAssertTrue(spec.contains("8.6.6.3"), "規範裡找不到 §8.6.6.3")
+        for field in ["placement", "trigger", "max_items", "height"] {
+            XCTAssertTrue(ThemeParser.syllablesKeys.contains(field),
+                          "candidates.syllables.\(field) 不在 syllablesKeys —— 會被當成未知欄位")
+        }
+        XCTAssertFalse(ThemeParser.syllablesKeys.contains("orientation"),
+                       "§8.6.6.3：orientation 是由 placement 推導的，不是欄位")
+        XCTAssertTrue(ThemeParser.candidatesKeys.contains("syllables"))
     }
 
     /// 規範宣告的桌面候選窗欄位必須全部被綁定（否則主題作者寫了沒作用）。

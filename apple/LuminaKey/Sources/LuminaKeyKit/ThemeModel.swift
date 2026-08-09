@@ -5,6 +5,9 @@
 //    也完全不碰 core/layouts/。這不是偷懶，是規範裡結構性的分野。
 //    「不消費」不等於「可以刪」—— 使用者的行動端設定必須原樣搬運。
 //
+//  ⚠ `candidates.syllables`（§8.6.6.3）是**例外**：桌面端建立它的模型、
+//    但不渲染它。理由見 `SyllableBar` 的註解 —— 那不是「準備要畫」。
+//
 
 import Foundation
 
@@ -169,6 +172,40 @@ public struct CandidateWindow: Sendable {
     public var overflow = Overflow.shrink
 }
 
+/// §8.6.6.3：逐音節消歧欄畫在哪。
+public enum SyllablePlacement: String, Sendable {
+    case none
+    case aboveCandidates = "above_candidates"
+    case keyboardSlot = "keyboard_slot"
+}
+
+/// §8.6.6.3：什麼時候出現。
+/// ⚠ `onDemand` **尚未有任何一端實作**（§8.6.6.3.4）—— 解析得出來不等於畫得出來。
+public enum SyllableTrigger: String, Sendable {
+    case whileComposing = "while_composing"
+    case onDemand = "on_demand"
+}
+
+/// §8.6.6.3 逐音節消歧欄（九宮格上「MG 是 mi 還是 ni」那一欄）。
+///
+/// ⚠ **桌面端解析它、但不渲染它**（§8.6.6.3.5）。這個型別存在於桌面端的模型裡，
+///   **不是**因為「快要畫了」，而是因為 §10 第 9 條要求四端對同一份壞主題報出
+///   同一串診斷：桌面端若像 `candidates.bar` 那樣把整個區塊當成「已知但不進入」，
+///   `candidates.syllables.placemnt` 這種拼字錯誤在手機上是一則、在電腦上是零則。
+///
+/// 桌面端沒有軟鍵盤，所以 `keyboardSlot` 在這一端是**形態上不存在**
+///（同 §9.5.1 的 `hide_keyboard`）；`none` 與 `aboveCandidates` 不是 —— 候選窗
+/// 完全有地方畫一橫排讀音，只是 v1 沒做。真的要做時形狀已經寫死在 §8.6.6.3.5，
+/// 不要另外發明；擋在前面的也不是 UI 而是 ABI（`rs_snapshot` 只給一頁候選）。
+public struct SyllableBar: Sendable {
+    public var placement = SyllablePlacement.keyboardSlot
+    public var trigger = SyllableTrigger.whileComposing
+    /// 一次最多列幾個讀音；`0` = 有多少畫多少。
+    public var maxItems = 0
+    /// `above_candidates` 那一排的高度（dp）。`keyboard_slot` 不佔額外高度。
+    public var height = 40.0
+}
+
 /// §8.12（本輪新增）狀態列項目的來源。
 public enum StatusSource: String, Sendable {
     case schemaName = "schema_name"
@@ -273,6 +310,8 @@ public struct Theme: Sendable {
     public var metrics = Metrics()
     public var candidates = CandidateStyle()
     public var window = CandidateWindow()
+    /// §8.6.6.3。桌面端解析但**不渲染** —— 見 `SyllableBar` 的註解。
+    public var syllables = SyllableBar()
     public var statusBar = StatusBar()
     public var preedit = Preedit()
     public var accessibility = AccessibilitySpec()

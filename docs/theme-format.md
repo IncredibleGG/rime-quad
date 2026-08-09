@@ -30,7 +30,7 @@
 | | 行動端（Android / iOS） | 桌面端（macOS / Windows） |
 |---|---|---|
 | UI 型態 | 整塊自繪軟鍵盤 + 上方候選列 | 懸浮候選窗，無軟鍵盤 |
-| 消費 `core/themes/` | 全部 | 除 `keyboard` 與 `feedback` 之外全部 |
+| 消費 `core/themes/` | 全部 | 除 `keyboard`、`feedback`、`candidates.bar` 之外全部**解析**；`candidates.syllables` 解析但**不渲染**（§8.6.6.3.5） |
 | 消費 `core/layouts/` | 全部 | **完全不消費** |
 
 主題檔案是四端共用的；佈局檔案只有行動端消費。這個分野在格式裡是**結構性**的，
@@ -512,6 +512,9 @@ YAML 路徑（如 `keyboard.key_styles.default.background`）、以及**行號**
 | `bad_action_argument` | §9.5 已知 verb 但參數缺失或不合法 | `[raw]` |
 | `toolbar_item_no_tap` | §8.6.6.1 工具列項目缺 `tap` | `[]` |
 | `status_item_no_source` | §8.12 狀態列項目缺 `source` 或 source 未知 | `[]` |
+| `syllables_no_slots` | §8.6.6.3.3 D1：`keyboard_slot` 但當前 layer 的可用格位 < 2 | `[layout-id, layer-id, count]` |
+| `syllables_slot_unknown` | §9.3.1：`syllable_slots` 的某個 id 在該 layer 找不到對應的鍵 | `[layer-id, key-id]` |
+| `syllables_toggle_missing` | §8.6.6.3.3 D3：`on_demand` 但佈局沒有 `syllables:toggle` 鍵 | `[layout-id]` |
 | `nested_platform_overrides` | §7.4 巢狀的 `platform_overrides` | `[]` |
 
 **INFO**：
@@ -1021,6 +1024,196 @@ items:
 `space_between` / `space_evenly` 與 `scroll: true` 同時成立時，
 項目總寬小於可用寬度才套用排列，否則以捲動為準（排列失去意義）。
 
+##### 8.6.6.3 `candidates.syllables` — 逐音節消歧欄
+
+九宮格（T9）上一串按鍵對應好幾個音節：`MG` 可能是 `mi` / `ni` / `m` / `n` / `o`。
+消歧欄讓使用者一個音節一個音節收斂，而不是把候選整片藏起來。
+
+**這一節只規範它畫在哪、佔多高、什麼時候出現。** 內容從哪來見 §8.6.6.3.6，
+那一半今天不在本格式的管轄範圍。
+
+**為什麼位置是「風格」。** 使用者給的截圖裡，iOS 的消歧是**候選列上方一橫排**
+（外加底列一顆「选拼音」鍵），三星與語燕是**左側直欄**。同一個功能、同一個方案、
+同一份詞庫，位置卻不同 —— 那就是風格的定義（`docs/decisions/style-schema-dictionary.md` §5.1）。
+它一度寫死在 Android 的 `keyboard/T9Syllables.kt` 裡，那個檔案自己寫著「本該住在資料檔」。
+
+| 欄位 | 型別 | 預設 | 誰消費 | 說明 |
+|---|---|---|---|---|
+| `placement` | enum `none` \| `above_candidates` \| `keyboard_slot` | `keyboard_slot` | 行動端渲染；桌面端**解析但不渲染**（§8.6.6.3.5） | `above_candidates` = iOS 慣例，不需要佈局宣告任何東西；`keyboard_slot` = 三星／語燕慣例，借用佈局宣告的格位（§9.3.1） |
+| `trigger` | enum `while_composing` \| `on_demand` | `while_composing` | 同上 | ⚠ **`on_demand` 尚未有任何一端實作**，見 §8.6.6.3.4 |
+| `max_items` | int 0–32 | `0` | 僅行動端 | 一次最多列幾個讀音；`0` = 有多少畫多少。`keyboard_slot` 底下真正的上界是格位數，本欄再夾一次 |
+| `height` | length 24–96 | `40` | 僅行動端 | **僅 `above_candidates`**。`keyboard_slot` 不佔額外高度，見 §8.6.6.3.1 |
+
+**預設值是 `keyboard_slot`，所以沒有宣告 `syllables:` 的主題行為不變。** 這是刻意的：
+預設值配上 D1 退化（§8.6.6.3.3），既有的左欄式佈局照舊，沒有左欄的佈局退化成上方橫排，
+兩邊都不會落到「什麼都不畫」。
+
+**`orientation` 是推導的，不是欄位。** `above_candidates` 恆為 `horizontal`；
+`keyboard_slot` 的方向由格位自己在鍵盤上的位置決定（宣告在左側直欄就是直的），
+本格式不另外描述。不開這個欄位，是因為兩種 placement 各自只有一種說得通的方向，
+開了就等於開一個可以寫成矛盾值的欄位。真的需要覆寫時再開（§11）。
+
+**外觀沿用 §8.6.1–8.6.5**（`text` / `item` / `separator`）。v1 **沒有**專屬的外觀子區塊，
+也**沒有** `selected.*`：「已確定的音節與待選的音節長得不一樣」需要「哪些音節已確定」
+這個執行期狀態，而它今天還不是主題看得見的東西（§11）。
+
+###### 8.6.6.3.1 高度與 §8.8.0 預算的關係（規範性）
+
+`above_candidates` 那一排**加在**鍵盤高度與候選列高度之上。§8.8.0 末尾的總高因此是：
+
+```
+total = h + candidates.bar.height
+          + （消歧欄正在顯示 ? candidates.syllables.height : 0）
+          + （honor_bottom_inset ? 系統底部 inset : 0）
+```
+
+* ⛔ **不得從 `candidates.bar.height` 裡挖。** 候選列會在組字途中忽然變矮、組完又變回來，
+  候選字跟著上下跳 —— 而使用者正在看著它們挑字。
+* ⛔ **不得吃掉鍵盤預算。** §8.8.0 第 3 步的 `budget` 與消歧欄無關，鍵高**不得**因為
+  多了一排而改變。動到它，§10 第 16 條（同一份主題下任兩份佈局總高相同）會在
+  「正在組字」這個狀態下悄悄失守，而那正是最難重現的一種。
+* `keyboard_slot` 對高度的貢獻恆為 **0**：它借用的是既有的鍵，不新增任何一列。
+* ⚠ **代價要說在明處：** 消歧欄出現與消失時，輸入法視窗的總高會變。上面兩條的代價更大，
+  所以選了這一邊。實作 **必須** 讓這個高度變化走與候選列自身出現／消失**同一條**路徑，
+  **不得** 為它另外加動畫或延遲 —— 兩條路徑會在同一幀裡打架。
+
+###### 8.6.6.3.2 解析與生效是兩個階段（規範性）
+
+這是本節最容易做錯的一段，而且它決定了 §10 第 9 條在這個區塊上成不成立。
+
+| 階段 | 輸入 | 誰做 | 產生什麼診斷 |
+|---|---|---|---|
+| **解析** | 只有主題文件 | **四端全部** | `unknown_field`、`bad_enum`、`out_of_range` 等一般欄位診斷 |
+| **生效** | （主題，當前佈局，當前方案） | 僅行動端 | §8.6.6.3.3 的 `syllables_*` 退化診斷 |
+
+* 解析階段屬於 §10 第 9 條的**共用作用域**：`candidates.syllables.placemnt: above` 這種
+  拼字錯誤，四端都**必須**恰好報一則 `unknown_field`。桌面端 **不得** 因為自己不畫這一欄
+  就整個區塊跳過 —— 那會讓同一份壞主題在手機上一則、在電腦上零則，第 9 條當場失守。
+* 生效階段的診斷**不參與**第 9 條的比對，理由與 §8.6.7.4 第 4 條相同：它們相依於主題
+  以外的東西（佈局與當前方案），而桌面端連佈局都不消費，不可能算得出來。
+* **生效階段的診斷，每一個（主題，佈局，方案）組合最多一則，不得每畫一次一則。**
+  消歧欄在組字期間每按一個鍵都會重算，發在重算路徑上等於每敲一個字母刷一則。
+  這與 §8.6.7.4 第 2 條是同一條紀律。
+
+###### 8.6.6.3.3 退化規則（規範性）
+
+**求值順序是規範的一部分，不是實作細節。** 順序寫反的話，每一份 QWERTY 佈局都會
+刷一則 D1 的 WARNING —— QWERTY 佈局當然沒有 `syllable_slots`，但它配的方案本來就
+給不出讀音，D2 早該把整條關掉了。
+
+```
+0. placement == none                    → 不顯示。結束。不產生診斷
+1. 當前方案給不出讀音                    → D2：不顯示，並隱藏觸發鍵。結束
+2. 當前這一個音節的讀音數 < 2            → 不顯示（沒有東西要消歧）。結束。
+                                          這不是退化，不產生診斷
+3. trigger == on_demand，且佈局沒有
+   任何 syllables:toggle 鍵              → D3：視為 while_composing
+4. placement == keyboard_slot，且當前
+   layer 的可用格位 < 2                  → D1：視為 above_candidates
+5. 顯示
+```
+
+| # | 情況 | **必須**怎麼做 | 診斷 |
+|---|---|---|---|
+| **D1** | `placement: keyboard_slot`，但當前 layer 的**可用格位少於 2** | **視為 `above_candidates`**。⛔ **不得什麼都不畫** | WARNING `syllables_no_slots`，args `[layout-id, layer-id, count]` |
+| **D2** | 當前方案給不出讀音（方案沒有 `spelling_hints`） | **整條不出現**，且 `syllables:toggle` 那顆鍵**必須隱藏** —— 不是變灰、不是按了沒反應。做法見下方 ⚠ | 無。方案沒有 `spelling_hints` 是它的正常狀態，不是缺陷 |
+| **D3** | `trigger: on_demand`，但當前佈局沒有任何 `syllables:toggle` 鍵 | **視為 `while_composing`**（否則使用者永遠看不到它） | WARNING `syllables_toggle_missing`，args `[layout-id]` |
+| **D4** | `syllable_slots` 裡的某個 id 在該 layer 找不到對應的 `key.id` | **丟棄該筆**，再依 D1 重新判定可用格位數。⛔ **不得默默退回** | WARNING `syllables_slot_unknown`，args `[layer-id, key-id]`（佈局解析時發，見 §9.3.1） |
+
+**為什麼 D1 的門檻是 2 而不是 1。** 讀音可能比格位多，多出來的要翻頁，而翻頁鍵自己
+要佔一格。只剩一格時：拿去當翻頁鍵就沒有讀音可點，拿去放讀音就有讀音**看得到卻翻不到**。
+一格是描述不出來的狀態，所以下界是 2。
+
+**為什麼 D1 不能「什麼都不畫」。** 沒有宣告格位時，畫面會照常顯示那三顆標點鍵 ——
+一個完全正常的九宮格，只是消歧功能整個不存在，而且沒有任何東西會叫。
+這正是本專案抓過七次的那一類缺陷。退化成上方橫排是為了讓它至少**看得見**。
+
+⚠ **D2 的「必須隱藏」與 §9.5.1 的「不得在執行期移除按鍵」會撞。** 兩條都對，
+撞的是同一顆鍵：§9.5.1 說佈局按鍵不得在執行期移除，因為鍵有寬度，少一顆整列會重排，
+使用者會看到一個位置飄移的鍵盤；D2 說觸發鍵必須隱藏，因為一顆按下去什麼都不會發生的鍵
+是這個專案已經抓過六次的形狀。裁決（規範性）：
+
+1. **工具列項目／狀態列項目**形態的 `syllables:toggle` → 照 §9.5.1，**不渲染**。
+   項目沒有固定寬度，少一項不影響其他項的幾何。
+2. **佈局按鍵**形態的 `syllables:toggle` → 該鍵的 `id` **必須**同時列在該 layer 的
+   `syllable_slots` 裡。這樣「隱藏」的意思就變成「那一格顯示它原本宣告的鍵面」——
+   鍵還在、寬度不變、按下去做的是它原本那顆鍵該做的事，§9.5.1 與 D2 同時成立。
+3. **`syllables:toggle` 按鍵不在 `syllable_slots` 裡，是佈局的錯誤**，不是渲染端的自由。
+   渲染端 **必須** 由建置期測試擋下（§9.5.1 對佈局按鍵的同一條處置），
+   **不得** 在執行期把它移除，也 **不得** 讓它留在鍵盤上按了沒反應。
+4. ⚠ **本條從未被執行過** —— 隨附的佈局沒有任何一份含 `syllables:toggle`（§8.6.6.3.4）。
+   寫在這裡是因為第一個做 `on_demand` 的人會立刻撞到，而三種想得到的解法裡有兩種是壞的。
+
+###### 8.6.6.3.4 已定義、但尚未有任何一端實作（規範性地誠實）
+
+下列東西**規範定義了，四端都還沒有做**。不要照著寫主題或佈局 —— 寫了不會生效，
+而且不會有任何訊息告訴你：
+
+| 東西 | 狀態 | 後果 |
+|---|---|---|
+| `trigger: on_demand` | **零端實作。** Android 解析得出這個值，渲染端只走 `while_composing` | 主題寫 `on_demand` 會得到 `while_composing` 的行為，**而且拿不到 D3 的 WARNING**（下一列） |
+| `syllables:toggle`（§9.5） | **零端實作。** 隨附的 12 份佈局沒有一份用它 | 它只在 `on_demand` 底下有意義，所以與上一列一起卡住 |
+| D1 / D3 的 WARNING | **Android 做了退化本身，沒有發診斷**（`keyboard/KeyboardView.kt` 的 `effectivePlacement`） | 主題作者宣告 `keyboard_slot` 卻拿到 `above_candidates` 時，今天沒有任何訊息 |
+| D4 的 WARNING | **Android 沒有做。** 那一層由建置期測試 `T9SyllablesTest` 守著（id 存在、彼此不同列、不吃底列） | 隨附佈局的使用者不會遇到（壞佈局進不了 release）；**第三方佈局沒有這道保護** |
+| 桌面端的消歧欄 | **零端實作，而且 v1 刻意不做**（§8.6.6.3.5） | 桌面使用者今天沒有逐音節消歧 |
+
+**這張表是規範的一部分。** 理由與 §9.5.1 一樣：「還沒做」與「這個形態上不存在」是
+兩件事，分不出來的人會刪掉不該刪的東西。表上的每一項做完之後 **應** 從這張表移走，
+**不是** 從規範移走。
+
+###### 8.6.6.3.5 桌面端的預期行為（規範性）
+
+桌面端（macOS / Windows）**必須**：
+
+1. **完整解析 `candidates.syllables` 的每一個欄位**，套用型別、列舉與範圍檢查，
+   並產生與行動端逐則相同的解析階段診斷（§8.6.6.3.2）。
+   ⛔ **不得**把整個區塊當成「已知但不進入」—— 那正是 §10 第 9 條在這裡會破的方式。
+2. **不渲染任何消歧欄。** v1 的桌面候選窗沒有這一列。
+3. **不產生任何 `feature_unsupported` 診斷。** `placement` 的預設值是 `keyboard_slot`，
+   所以**每一份主題**都會命中，每次載入刷一則 INFO，而主題作者沒有做錯任何事。
+   這是 §9.5.1 第二條紀律（「不得產生診斷」）的同一個理由。
+4. **不執行 §8.6.6.3.3 的任何一條退化規則。** D1、D3、D4 相依於佈局，
+   而桌面端完全不消費 `core/layouts/`（§1.1）—— 這幾條在它身上沒有輸入。
+
+**`keyboard_slot` 在桌面端是「形態上不存在」，不是「進度落後」。** 沒有軟鍵盤就沒有
+格位，這與 §9.5.1 裡 macOS 的 `hide_keyboard` 同一類。`none` 與 `above_candidates`
+則**不是** —— 桌面候選窗完全有地方畫一橫排讀音，只是 v1 還沒做。
+
+**日後桌面端要做的時候，必須是這個形狀。** 寫死在這裡是為了讓兩個桌面端不會各自發明
+（§8.12 的懸浮狀態列已經示範過一次同一個問題的兩半長成兩個東西）：
+
+* 消歧列畫在**候選窗內部**、候選項之上，與 §8.12 的 `status_bar` 在同一個窗裡。
+  **不是**螢幕上的另一條帶子 —— 理由與 §8.12 末段完全相同。
+* `placement` 的桌面語義：`none` → 不畫；`above_candidates` → 畫；
+  `keyboard_slot` → **視為 `above_candidates`**（沒有格位可借）。
+  這個視為**不產生診斷**，理由同上第 3 點。
+* `height` 在桌面端是**內容高度的下界**，不是固定高度。候選窗的高度由 §8.6.7.1
+  第 9 步算出來，多一列就多那一列的高；行動端那條「加在鍵盤之上」的公式在這裡
+  沒有意義（桌面端沒有鍵盤）。
+* 消歧列**必須**計入 §8.6.7.1 的 `window_h`，且 §8.6.7.4 第 1 條
+  （退化不得改變排版）在它身上一樣成立。
+* ⚠ **擋在前面的不是 UI，是 ABI。** 見 §8.6.6.3.6：`rs_snapshot` 的 `menu` 只有
+  **當前那一頁**，一頁之外的讀音看不到。在 `core/` 補上「不動頁碼走完整份候選」
+  的 API 之前，桌面端做出來的消歧列會與行動端一樣不完整。桌面端的「展開候選網格」
+  需要的是同一件事，兩者應該一起做。
+
+###### 8.6.6.3.6 內容從哪來（資訊性，不是規範）
+
+本節規範的是**位置與外觀**，不是內容。目前的內容來源是候選的 `comment`
+（方案 `spelling_hints` 給的原始拼寫），而它有兩個已知缺口，都在 `core/` 那一側：
+
+* **分頁。** `rs_snapshot` 的 `menu` 就是一頁（本專案 `menu/page_size: 9`），
+  所以「這串按鍵可能是哪些音節」只看得到當前頁的那幾個。
+* **選了讀音之後怎麼把高亮移過去。** 沒有 `rs_highlight_candidate` 的話，
+  篩選會讓使用者按空白鍵拿到一個他沒看過的字。
+
+列在這裡是為了讓讀規範的人知道**為什麼上面那張欄位表這麼小** —— 不是漏寫，
+是內容那一半還不歸這份文件管。細節見 `docs/coordination.md` §5 的 androidkbd 條目。
+
+###### 這一節的可驗證檢核項
+
+§10 第 34–39 條。
+
 #### 8.6.7 `candidates.window` — 桌面端候選窗（僅 macOS / Windows）
 
 | 欄位 | 型別 | 預設 | 說明 |
@@ -1343,7 +1536,10 @@ if h > avail × max_screen_ratio.<當前方向>:
              − row_spacing × (rows.count − 1)) / Σ weight
     h     = avail × max_screen_ratio
 
-total = h + candidates.bar.height + (honor_bottom_inset ? 系統底部 inset : 0)
+total = h + candidates.bar.height
+          + (消歧欄正在顯示且 placement 生效為 above_candidates
+             ? candidates.syllables.height : 0)          # §8.6.6.3.1
+          + (honor_bottom_inset ? 系統底部 inset : 0)
 ```
 
 `avail` = 當前方向下宿主視窗的可用高度（dp）。
@@ -1358,6 +1554,9 @@ total = h + candidates.bar.height + (honor_bottom_inset ? 系統底部 inset : 0
 
 **`padding` 算在 `h` 之內**（見第 6 步），`candidates.bar.height` 則是**外加**在
 `h` 之上。兩者語義不同，最容易搞混。
+`candidates.syllables.height`（§8.6.6.3.1）與 `bar.height` 同一類：**外加**，
+而且**不得**從 `bar.height` 或 `budget` 裡挖 —— 挖了會讓候選字在組字途中上下跳，
+或讓「同一份主題下任兩份佈局總高相同」只在沒有組字時成立。
 
 ##### 為什麼是這個模型（兩版錯誤的病歷）
 
@@ -1875,6 +2074,7 @@ layer：
 | `label` | localized-string | `""` | 供 UI 顯示（如層切換選單） |
 | `units` | number > 0 | 各 row `width` 總和的最大值 | 見下 |
 | `rows` | list<row> | — **必填**，空 → F10 |
+| `syllable_slots` | string-list | `[]` | 組字中讓給消歧欄的 `key.id`，見 §9.3.1 |
 
 row：
 
@@ -1926,6 +2126,45 @@ key_w[j] = unit_w * width[j]
 > 需要置中的短列（如 QWERTY 的 `asdfghjkl`）**應** 使用顯式的
 > `{ spacer: true, width: 0.5 }` 佔位鍵，而不是仰賴任何自動置中規則。
 > 自動置中是隱式行為，四端會做出四種結果。
+
+#### 9.3.1 `syllable_slots`：組字中讓出去的格位（規範性）
+
+```yaml
+layers:
+  - id: t9
+    syllable_slots: ["pu_comma", "pu_period", "pu_question"]
+```
+
+宣告這一層有哪幾顆鍵在**組字中**讓給逐音節消歧欄（主題的
+`candidates.syllables.placement: keyboard_slot`，§8.6.6.3）。值是**本層既有的 `key.id`**。
+缺席或空清單 = 這一層沒有消歧欄，照常畫它自己的鍵。
+
+**規範性條文：**
+
+1. 每一筆 id **必須**在同一個 layer 內找得到對應的 `key.id`。找不到 →
+   **丟棄該筆 + WARNING `syllables_slot_unknown`**（args `[layer-id, key-id]`），
+   ⛔ **不得**默默略過。⚠ 這是「消歧欄整欄靜靜消失、畫面只是照常顯示標點」的
+   唯一防線 —— 有人改一個 key id 就會發生，而且沒有任何東西會叫。
+2. 可用格位**少於 2** 時，該 layer 視為沒有宣告，依 §8.6.6.3.3 的 D1 退化。
+   下界為什麼是 2（翻頁鍵自己要佔一格）見該節。
+3. 格位 **不得**落在**底列**。底列是導覽列；在組字中把一顆導覽鍵換掉，
+   等於在 §9.5 的「進得去出不來」死路檢查上開一個測不到的洞 ——
+   那個檢查走的是佈局檔的**靜態**內容，看不見執行期的替換。
+4. 格位 **應**彼此落在**不同列**。同一列的多個格位不算錯，但那排出來的東西
+   會與 `above_candidates` 的橫排長得一樣卻在別的位置，使用者分不出是哪一種。
+5. 讀音**少於格位數**時，多出來的格位**必須顯示空格**。
+   ⛔ **不得**顯示它原本的鍵面：讀音只有 `ni` / `mi` 時第三格還印著「？」，
+   整欄變成「ni ／ mi ／ ？」，使用者沒有理由知道第三個不是第三個讀音 ——
+   一欄只能有一種意思。也 **不得**畫一顆沒有字的鍵，那是一顆按得到、
+   無障礙工具念得出「按鈕」、按下去沒反應的鍵。
+6. 第 1、3、4 條 **必須**由渲染端的**建置期測試**逐條守著。理由同 §9.5.1 對佈局按鍵的
+   處置：等到執行期才發現，使用者已經看著一個功能整個不存在的鍵盤了。
+
+⚠ **這份宣告曾經寫死在 Android 的 `keyboard/T9Syllables.kt`**（白名單兩個佈局 id
+＋寫死的 layer id ＋寫死的三個 key id）。搬進佈局檔是為了讓「新增一份九宮格佈局」
+不必改任何一端的程式碼 —— 漏改的樣子正是第 1 條講的那種靜靜消失。
+
+**桌面端整節不適用**：它不消費 `core/layouts/`（§1.1）。
 
 ### 9.4 `key`：送出什麼
 
@@ -2122,6 +2361,7 @@ action 是字串，語法 `<verb>` 或 `<verb>:<arg>[:<arg>]`。
 | `hide_keyboard` | 收起鍵盤 |
 | `settings` | 開啟本 App 設定 |
 | `emoji` | 開啟表情面板 |
+| `syllables:toggle` | 開關逐音節消歧欄。**只在 `trigger: on_demand` 底下有意義**（§8.6.6.3）。⚠ **零端實作**，見 §8.6.6.3.4；這顆鍵的擺放另有硬性條件，見 §8.6.6.3.3 的 ⚠ |
 
 常見的 `<option>`（librime 具名開關）：`ascii_mode`、`full_shape`、
 `simplification`、`ascii_punct`、`extended_charset`。
@@ -2209,6 +2449,8 @@ popup，所以那個什麼都不做的 emoji 一直把逗號自己的標點盤�
 | macOS | `hide_keyboard` | 桌面沒有軟鍵盤，**形態上不存在**，不是進度問題 |
 | macOS | `cursor:*` | IMKit 沒有讓輸入法移動宿主 app 游標的 API |
 | macOS | `layer` / `layer_once` / `layer_lock` / `switch_layout` | 桌面端不消費 `core/layouts/`，沒有「層」這個東西 |
+| Android | `syllables:toggle` | `trigger: on_demand` 尚未實作，這顆鍵只在它底下有意義 |
+| macOS | `syllables:toggle` | 同上；而且桌面端不渲染消歧欄（§8.6.6.3.5），在狀態列上留一顆按了沒反應的項目正是這一節要擋的事 |
 
 > ⚠ `input_mode:toggle` **不在**桌面端的清單裡。它的語義是「切模式，並且切到
 > 本佈局的 `alpha_layer`」，而規範明文規定沒宣告字母層的佈局**只切模式** ——
@@ -2493,6 +2735,8 @@ key_patches:
    | 除下列以外的一切 | **四端全部** |
    | `keyboard`、`feedback`、`candidates.bar`、以及所有佈局文件 | 僅 Android / iOS |
    | `candidates.window`、`status_bar` | 僅 macOS / Windows |
+   | `candidates.syllables` 的**欄位**診斷 | **四端全部** —— 桌面端不渲染它，但**必須解析**（§8.6.6.3.5 第 1 點） |
+   | §8.6.6.3.3 的**退化**診斷（`syllables_*`） | 僅 Android / iOS —— 它們相依於佈局與當前方案，不是主題單獨算得出來的（§8.6.6.3.2） |
 
    **所有致命錯誤（§6.2）一律屬於共用作用域**，無論它出現在哪個區塊：
    四端必須拒絕同一批文件，否則「這份主題在我的手機上壞掉，在電腦上正常」
@@ -2589,6 +2833,29 @@ key_patches:
     `candidates.label.font: "candidate"` → 標籤改用 candidate 堆疊，
     但字級仍是 `candidates.label.size`（**不是** `text.size`）。
     `candidates.label.font: "nope"` → 恰好一則 WARNING `bad_enum`，退回 `fonts.label`。
+34. **消歧欄的欄位診斷四端一致**（§8.6.6.3.2）。`candidates.syllables.placemnt: above` →
+    **四端各恰好一則** WARNING `unknown_field`，path 為 `candidates.syllables.placemnt`；
+    `placement: sideways` → 四端各恰好一則 `bad_enum`，值退回 `keyboard_slot`。
+    桌面端報零則就是不合規 —— 那表示它把整個區塊跳過了。
+35. **預設值不改變既有主題的樣子**（§8.6.6.3）。完全沒有 `candidates.syllables:` 的主題
+    解析後 `placement == keyboard_slot`、`trigger == while_composing`、`max_items == 0`、
+    `height == 40`，且**不產生任何診斷**（附錄 A 那份最小主題必須維持零診斷）。
+36. **D1 的門檻是 2**（§8.6.6.3.3、§9.3.1）。`placement: keyboard_slot` ＋ 該層
+    `syllable_slots: ["pu_comma"]`（一格）→ 效力等同 `above_candidates`，
+    **而且畫得出東西**；宣告兩格 → 維持 `keyboard_slot`。
+    宣告 `["pu_comma", "nope"]` → 恰好一則 `syllables_slot_unknown`，可用格位剩 1，
+    再依 D1 退化成 `above_candidates`（**一則診斷，不是兩則**）。
+37. **求值順序**（§8.6.6.3.3）。當前方案沒有 `spelling_hints` ＋ `placement: keyboard_slot`
+    ＋ 佈局沒有 `syllable_slots`（例：`luna_pinyin` 配 `cn-qwerty`）→ **零則診斷**。
+    D2 必須排在 D1 之前；順序寫反的話，**每一份 QWERTY 佈局**都會刷一則 D1。
+38. **高度**（§8.6.6.3.1）。`above_candidates`、`height: 40`、`bar.height: 44`：
+    消歧欄顯示時的 `total` 比不顯示時**多 40**，而鍵盤自身的 `h` 與每一列的列高
+    **兩者完全相同**。`placement: keyboard_slot` 生效時 `total` 與不顯示時**完全相同**。
+39. **桌面端不畫、也不抱怨**（§8.6.6.3.5）。`intl-ios-light`
+    （含 `candidates.syllables.placement: above_candidates`）在 macOS / Windows 鍵下解析：
+    **零則 WARNING、零則 INFO**，且解析結果的 `placement` 就是 `above_candidates`
+    —— 不得被改寫成 `none`，也不得產生 `feature_unsupported`。
+    候選窗的排版數字與第 19 條**完全相同**（多一個區塊不得動到任何一個座標）。
 
 ---
 
@@ -2626,6 +2893,16 @@ key_patches:
   `-`/`=` 翻頁，但那些是 librime 的 keybinding（方案層），不是本格式的。
   結果是「候選窗長什麼樣」由主題決定、「怎麼操作它」由方案決定，
   兩者無法互相對齊 —— 主題作者畫了上下排列的候選，方案的 keybinding 卻是左右翻頁。
+* **消歧欄的方向不能覆寫。** §8.6.6.3 由 `placement` 推導方向，主題作者沒有辦法說
+  「上方那一排改成直的」或「格位那一欄改成橫的」。今天兩種 placement 各自只有一種
+  說得通的方向，所以先不開欄位；第一個真的需要的主題出現時再開。
+* **消歧欄沒有專屬的外觀欄位。** 它沿用 `candidates` 的 §8.6.1–8.6.5，所以
+  「已確定的音節與待選的音節長得不一樣」（語燕會變色）描述不出來。缺的是 `selected.*`，
+  而它需要「哪些音節已確定」這個執行期狀態先變成主題看得見的東西。
+* **消歧欄的內容不歸本格式管。** 見 §8.6.6.3.6：讀音從候選的 `comment` 反推，
+  而 `rs_snapshot` 只給一頁。這是 `core/` 的 ABI 缺口，四端都卡在同一個地方
+  （桌面端的「展開候選網格」要的是同一個 API）。
+
 ### 本節之外：v1 實作回饋已修補的項目
 
 下列缺陷是 Android 端把 `bopomofo-dachen.yaml` 真正渲染出來時撞到的，
@@ -2656,6 +2933,16 @@ key_patches:
 資格與自動命中兩個欄位）、§9.2（`height_scale` 不再拿來補償列數）、
 §9.3（間距記在元素數上、列高用 Σweight）、§9.4（標點用 keysym 的規則
 限定在主佈局，符號面板應該用 `text`）。
+
+第五輪（Android 端把九宮格的逐音節消歧做出來之後回報的形狀）補的是：
+§1.1（桌面端「解析」與「渲染」是兩件事）、§8.6.6.3（`candidates.syllables`：欄位表、
+與 §8.8.0 預算的關係、解析／生效兩階段、四條退化規則與**求值順序**、
+**已定義但零端實作的清單**、桌面端的預期行為與日後要長成的形狀）、
+§8.8.0 的 `total`、§9.3.1（`syllable_slots`）、§9.5（`syllables:toggle`）、
+§9.5.1 兩端的宣告、§6.5.1 的三個 `syllables_*` code、
+§10 第 9 條的作用域再切一刀（欄位診斷共用、退化診斷行動端專屬）、§10 第 34–39 條。
+⚠ 這一輪補的東西裡，`on_demand`、`syllables:toggle` 與四則 `syllables_*` 診斷
+**都還沒有任何一端實作**，§8.6.6.3.4 把這件事列成一張表，不要當成已可用。
 
 ---
 

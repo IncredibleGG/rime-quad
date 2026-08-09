@@ -423,4 +423,80 @@ final class ThemeParserTests: XCTestCase {
         """]).value!
         XCTAssertEqual(t.candidates.text.highlightColor, RGBA.hex(0x102030FF))
     }
+
+    // ───────────────── §8.6.6.3 candidates.syllables ─────────────────
+
+    /// §10 檢核第 35 條：沒宣告 `syllables:` 的主題行為不變，而且零診斷。
+    func testSyllablesDefaultsAndNoDiagnostics() {
+        let r = loadTheme("minimal", ["minimal": minimal])
+        XCTAssertEqual(r.diagnostics.count, 0,
+                       "解析一個不渲染的區塊不得刷出噪音：\(r.diagnostics.map(\.developerMessage))")
+        let s = r.value!.syllables
+        XCTAssertEqual(s.placement, .keyboardSlot, "§8.6.6.3：預設 keyboard_slot（樣子不變）")
+        XCTAssertEqual(s.trigger, .whileComposing)
+        XCTAssertEqual(s.maxItems, 0)
+        XCTAssertEqual(s.height, 40)
+    }
+
+    /// §10 檢核第 34 條前半：桌面端**必須**解析這個區塊，所以拼字錯誤要看得見。
+    /// 報零則就表示整個區塊被跳過了 —— 那正是 §8.6.6.3.5 第 1 點禁止的事。
+    func testSyllablesUnknownFieldIsReportedOnDesktop() {
+        let r = loadTheme("m", ["m": """
+        format: rime-theme/1
+        id: m
+        candidates:
+          syllables:
+            placemnt: above_candidates
+        """])
+        XCTAssertEqual(r.warnings.map(\.code), [.unknownField])
+        XCTAssertEqual(r.warnings[0].path, "candidates.syllables.placemnt")
+    }
+
+    /// §10 檢核第 34 條後半：不合法的列舉值退回預設，恰好一則 `bad_enum`。
+    func testSyllablesBadEnumFallsBackToDefault() {
+        let r = loadTheme("m", ["m": """
+        format: rime-theme/1
+        id: m
+        candidates:
+          syllables:
+            placement: sideways
+        """])
+        XCTAssertEqual(r.warnings.map(\.code), [.badEnum])
+        XCTAssertEqual(r.value!.syllables.placement, .keyboardSlot)
+    }
+
+    /// 範圍夾制照 §10 第 4b 條：夾 + 恰好一則 WARNING，不得靜默。
+    func testSyllablesHeightIsClampedWithOneWarning() {
+        let r = loadTheme("m", ["m": """
+        format: rime-theme/1
+        id: m
+        candidates:
+          syllables:
+            height: 400
+        """])
+        XCTAssertEqual(r.warnings.map(\.code), [.outOfRange])
+        XCTAssertEqual(r.value!.syllables.height, 96)
+    }
+
+    /// §8.6.6.3.5 第 2–3 點：桌面端把值**原樣**留著（不得改寫成 `none`），
+    /// 而且**不得**因為自己不畫就發 `feature_unsupported`。
+    /// `placement` 的預設是 `keyboard_slot`，發了就是每一份主題每次載入刷一則。
+    func testDesktopKeepsThePlacementAndStaysSilent() {
+        let r = loadTheme("m", ["m": """
+        format: rime-theme/1
+        id: m
+        candidates:
+          syllables:
+            placement: keyboard_slot
+            trigger: on_demand
+            max_items: 5
+        """])
+        XCTAssertEqual(r.diagnostics.count, 0,
+                       "桌面端不渲染消歧欄，但那不是主題作者的錯，不得產生診斷")
+        let s = r.value!.syllables
+        XCTAssertEqual(s.placement, .keyboardSlot, "不得因為桌面端畫不出來就改寫成 none")
+        XCTAssertEqual(s.trigger, .onDemand, "on_demand 尚未實作，但解析結果必須忠於文件")
+        XCTAssertEqual(s.maxItems, 5)
+    }
+
 }

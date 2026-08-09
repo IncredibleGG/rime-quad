@@ -78,6 +78,12 @@ MUTATIONS=(
   "Sources/LuminaKeyKit/CandidateLayout.swift|let itemHeight = measured.map(\\.height).max() ?? 0|let itemHeight = measured.map(\\.height).min() ?? 0|CandidateLayoutTests"
   "Sources/LuminaKeyKit/CommitPolicy.swift|if s.menuCount > 0 { return .keepComposing }|if s.menuCount > 99 { return .keepComposing }|CommitPolicyTests"
   "Sources/LuminaKeyKit/ThemeParser.swift|w.lines = c.child(\"lines\").int(1, min: 0, max: 16)|w.lines = c.child(\"lines\").int(2, min: 0, max: 16)|ThemeParserTests"
+  # 這一格就是這一輪 main 紅燈的迴歸釘:主題檔先用了 candidates.syllables,
+  # 而解析器不認得 —— 症狀是 intl-ios-* 兩份各刷一則 unknown_field(syllables)。
+  # 把 syllables 從 candidatesKeys 拿掉就重演一次,RepoConformanceTests 必須紅。
+  # ⚠ 這不只是「多認一個欄位」:規範 §8.6.6.3.5 第 1 點要求桌面端**完整解析**
+  #   這個它不渲染的區塊,少解析就是 §10 第 9 條在這裡無聲地破掉。
+  "Sources/LuminaKeyKit/ThemeParser.swift|candidateStyleKeys.union([\"bar\", \"window\", \"syllables\"])|candidateStyleKeys.union([\"bar\", \"window\"])|RepoConformanceTests"
   "Sources/LuminaKeyKit/StatusFace.swift|public static let latin = \"En\"|public static let latin = \"英\"|StatusFaceTests"
   # ⚠ 這一格原本指向 InputModeBinding.simplificationOption,而變異測試
   #   自己抓到了那個錯:紅的是 InputModeBindingTests,不是 SessionOptionsTests。
