@@ -508,7 +508,12 @@ public enum DesktopRemap {
             return .failure(RemapNotice(.keyNotOnThisKeyboard, [String(bad)]))
         }
         let compiled = compile(doc)
-        guard compiled.editable else { return .failure(RemapNotice(.cannotShowHere)) }
+        // 把**編譯時真正的那一則**傳出去,而不是一律回「在別的地方調的」。
+        // §7.10 要的是「每一種問題都有對應的白話」——回錯一句的話,
+        // 那條規則只做了一半:畫面上有話說,但說的不是真正發生的事。
+        guard compiled.editable else {
+            return .failure(compiled.notices.first ?? RemapNotice(.cannotShowHere))
+        }
 
         var (lower, upper) = permutations(of: doc)
         // 兩層各自套同一個對調。**不是**把上層直接設成下層的副本 ——

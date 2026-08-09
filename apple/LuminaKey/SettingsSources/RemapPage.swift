@@ -57,12 +57,6 @@ final class RemapPage: NSView {
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         let compiled = store.compiled
 
-        stack.addArrangedSubview(UI.label(
-            T("點兩顆鍵,下面就會問你要不要對調。對調之後,按下左邊那顆鍵打出來的就是右邊那顆的字。",
-              "点两颗键,下面就会问你要不要对调。对调之后,按下左边那颗键打出来的就是右边那颗的字。",
-              "Tap two keys and you will be asked whether to swap them. After swapping, pressing the first key types what the second one used to type.")[lang],
-            size: 12, colour: .secondaryLabelColor))
-
         for notice in compiled.notices {
             stack.addArrangedSubview(UI.notice(title: notice.title[lang],
                                                body: notice.bodyText(lang)))
@@ -184,23 +178,36 @@ final class RemapPage: NSView {
         hairline.translatesAutoresizingMaskIntoConstraints = false
         hairline.widthAnchor.constraint(equalToConstant: 520).isActive = true
 
-        let button = UI.button(
-            T("全部還原成原本的樣子", "全部还原成原本的样子", "Put every key back")[lang]) {
+        // 按鈕上的字取自目錄,不是另外寫一份 —— 目錄裡那句白話有 CI 在守,
+        // 而沒有人顯示的白話等於那條斷言在守空氣。
+        let title = SettingsCatalog.item(id: "remap.resetAll")?.title
+            ?? T("全部還原成原本的樣子", "全部还原成原本的样子", "Put every key back")
+        let button = UI.button(title[lang]) {
             [weak self] in
             guard let self else { return }
             self.write(DesktopRemap.clearing(in: self.store.document))
         }
         button.contentTintColor = .systemRed
 
+        // ⚠ 三種情況三句話。唯讀那一種最容易寫錯:cycles 是空的,所以很自然
+        //   會落到「這台電腦上的換鍵」那一句 —— 但那時被清掉的正是**別的地方**
+        //   設的那些。使用者失去的東西與句子講的不是同一件事,而他不會知道。
         let count = compiled.cycles.count
-        let what = count > 0
-            ? T("你換過的 {0} 處會消失。你打出來的字、你自己加的詞都不受影響。",
-                "你换过的 {0} 处会消失。你打出来的字、你自己加的词都不受影响。",
-                "The {0} change(s) above will be undone. What you type and the words you added are not affected.")
+        let what: String
+        if !compiled.notices.isEmpty {
+            what = T("這個鍵盤上換過的鍵會全部清掉,包括在別的地方設的那些。你打出來的字、你自己加的詞都不受影響。",
+                     "这个键盘上换过的键会全部清掉,包括在别的地方设的那些。你打出来的字、你自己加的词都不受影响。",
+                     "Every key change for this keyboard will be cleared, including the ones made elsewhere. What you type and the words you added are not affected.")[lang]
+        } else if count > 0 {
+            what = T("你換過的 {0} 處會消失。你打出來的字、你自己加的詞都不受影響。",
+                     "你换过的 {0} 处会消失。你打出来的字、你自己加的词都不受影响。",
+                     "The {0} change(s) above will be undone. What you type and the words you added are not affected.")
                 .format(lang, String(count))
-            : T("這台電腦上的換鍵會全部清掉。你打出來的字、你自己加的詞都不受影響。",
-                "这台电脑上的换键会全部清掉。你打出来的字、你自己加的词都不受影响。",
-                "Every key change on this computer will be cleared. What you type and the words you added are not affected.")[lang]
+        } else {
+            what = T("這台電腦上的換鍵會全部清掉。你打出來的字、你自己加的詞都不受影響。",
+                     "这台电脑上的换键会全部清掉。你打出来的字、你自己加的词都不受影响。",
+                     "Every key change on this computer will be cleared. What you type and the words you added are not affected.")[lang]
+        }
 
         let box = NSStackView(views: [hairline, button, UI.label(what, size: 11.5,
                                                                 colour: .secondaryLabelColor)])

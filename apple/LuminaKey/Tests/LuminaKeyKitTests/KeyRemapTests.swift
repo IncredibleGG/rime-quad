@@ -251,6 +251,22 @@ final class KeyRemapTests: XCTestCase {
         XCTAssertEqual(c.notices.first?.args.first, "comma")
     }
 
+    /// 唯讀時傳給使用者的必須是**真正發生的那一則**。
+    /// 一律回「在別的地方調的」也有話說,但說的不是真的 ——
+    /// 「每一種問題都有一句白話」那條規則就只做了一半,而且是看不出來的那一半。
+    func testTheReasonGivenIsTheRealOne() {
+        let d = doc("""
+        {"layouts": [{"id": "qwerty", "ops": [
+          {"op": "swap", "layer": "lower", "a": "comma", "b": "enter"}
+        ]}]}
+        """)
+        guard case .failure(let n) = DesktopRemap.swapping("a", "s", in: d) else {
+            return XCTFail("唯讀狀態下不該寫得進去")
+        }
+        XCTAssertEqual(n.code, .keyNotOnThisKeyboard)
+        XCTAssertEqual(n.args.first, "comma")
+    }
+
     /// 桌面端不消費的層 → 同樣是整份不套用。
     func testUnknownLayerStopsTheWholeLayout() {
         let d = doc("""
