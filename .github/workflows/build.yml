@@ -34,6 +34,7 @@ on:
     branches:
       - main
       - fix-publish
+      - fix-gates
   pull_request:
     branches:
       - main
@@ -159,6 +160,36 @@ jobs:
       # 每次 push 都逼它對著假清單表演一次。不需要 APK、不連網,~2 秒。
       - name: 發布關卡的反向測試(publish_apk.sh --self-check,28 條)
         run: ./scripts/publish_apk.sh --self-check
+      # ── 消歧欄關卡的反向測試(不需要模擬器的那兩個)────────────────
+      # verify_syllables.sh 的檔頭從第一天就宣告了三種 --plant「證明它會紅」,
+      # 而這個 workflow 一次都沒有呼叫過 —— 專案裡其他每一支守門的反向測試
+      # 都接上了,只有這一支沒有,而「宣告了」與「在跑」在日誌上長得一模一樣。
+      #
+      # 分兩條車道:stale-schema / narrow-scope 只讀主機上的檔案(第 0/1 關),
+      # 一秒跑完,放這裡;bad-slot-ids 斷言的是畫面像素,只能跟著模擬器那條跑。
+      # 三種都有跑,沒有靜靜地少驗哪一個 —— 而下面那一關就是在盯這件事。
+      # `cmd | grep -q P` 在 pipefail 之下,命中時的退出碼可能是 141
+      # (grep -q 一命中就結束 → 上游 SIGPIPE),於是「有命中」被判成「沒命中」。
+      # 它是機率性的:小輸出永遠正常,`adb logcat -d` / `dumpsys` 這種大輸出才發作,
+      # 而症狀是「等不到就緒訊號」—— 看起來像產品沒起來,不像關卡自己壞了。
+      # 這個專案已經在四支腳本的註解裡各自寫過一次「不可以這樣寫」,
+      # 四次都是撞到之後才補的。註解攔不住第五次。
+      - name: 就緒判斷不會被 SIGPIPE 判成「沒命中」(自帶自我測試)
+        run: |
+          ./scripts/verify_no_sigpipe_probe.sh --self-test
+          ./scripts/verify_no_sigpipe_probe.sh
+
+      - name: 消歧欄反向測試的接線檢查(自帶自我測試)
+        run: |
+          # 先證明這一關會紅(拆掉一條接線),再問實際的接線齊不齊。
+          ./scripts/verify_syllables.sh --check-ci --self-test
+          ./scripts/verify_syllables.sh --check-ci
+
+      - name: 消歧欄反向測試:方案漂移(第 0 關必須紅)
+        run: ./scripts/verify_syllables.sh --plant stale-schema
+
+      - name: 消歧欄反向測試:掃描範圍變窄(第 1 關必須紅)
+        run: ./scripts/verify_syllables.sh --plant narrow-scope
 
       - name: 發布關卡(不需要模擬器的部分)
         run: ./scripts/release_check.sh --skip-emu --strict
@@ -222,9 +253,15 @@ jobs:
     needs: fast
     # 每次 push 都開模擬器太慢,會逼人繞過 CI。推上 main 與手動觸發時跑,
     # 而 publish 掛在它後面 —— 所以「發布前沒驗過」做不到。
+    # ⚠ fix-gates 暫時列在這裡,而且**合併回 main 之後就該拿掉**。
+    #   理由:這一輪在慢車道新增了 `--plant bad-slot-ids`(消歧欄關卡的第三個
+    #   反向測試,它斷言的是畫面像素,只有模擬器跑得了)。開發機沒有 tesseract,
+    #   那一條在本機驗不了 —— 而「沒驗過的新關卡直接進 main」正好是這一輪
+    #   在修的那類問題。所以讓它在自己的分支上先真的跑一次。
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+      (github.event_name == 'push' &&
+       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/fix-gates'))
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
@@ -326,6 +363,13 @@ jobs:
             #   所以行末的 `\` 會原樣變成一個參數,腳本收到之後回「未知參數: \」
             #   然後以 2 結束。YAML 是合法的,命令是壞的 —— 驗 YAML 驗不到這件事。
             bash ./scripts/verify_syllables.sh --apk android/app/build/outputs/apk/debug/app-debug.apk
+            # 反向測試:把佈局的 syllable_slots 指到不存在的 key id(「有人把
+            # pu_comma 改名」的真實形狀),格位替換就不會發生,畫面照常顯示標點
+            # —— 第 2 關必須紅。三種植入裡只有這一種斷言的是畫面像素,
+            # 所以只有它非得在模擬器上跑不可。帶 --plant 時退出碼是反的,
+            # 而且腳本會確認紅的是**指名的那一條**(踩紅別條照樣算失敗)。
+            # ⚠ 一行寫完,理由同上面那一行(這個 action 逐行交給 sh -c)。
+            bash ./scripts/verify_syllables.sh --plant bad-slot-ids --out build/verify-syllables-plant
             # 匯出/匯入的完整往返。**這一支以前沒有被任何 workflow 呼叫過**,
             # 而 docs/backup-format.md §343 把它當成「整條往返實跑過」的證據 ——
             # 那句話在它被跑的那一天是真的,之後沒有任何東西讓它保持為真。
@@ -349,6 +393,7 @@ jobs:
           path: |
             build/release-check/
             build/verify-syllables/
+            build/verify-syllables-plant/
             build/verify-backup/
           if-no-files-found: ignore
 

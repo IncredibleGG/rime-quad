@@ -68,6 +68,10 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # 產品識別碼的唯一來源,見 scripts/lib/product.env。
 # shellcheck source=lib/product.sh
 . "$SCRIPT_DIR/lib/product.sh"
+# ⚠ 就緒判斷不可以寫成 `logcat | grep -q`:pipefail 之下命中會變成 141
+#   (grep -q 一命中就結束 → 上游 SIGPIPE),於是「有命中」被判成「沒命中」。
+#   改用 lib/logmatch.sh 的 log_has / log_matches —— 它們先收進變數再用內建比對。
+. "$SCRIPT_DIR/lib/logmatch.sh"
 
 ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}"
 ADB="$ANDROID_SDK_ROOT/platform-tools/adb"
@@ -114,6 +118,38 @@ done
 
 [ -n "$LAYOUT" ] || { echo "缺 --layout" >&2; exit 2; }
 [ -n "$KEYS" ]   || { echo "缺 --keys" >&2; exit 2; }
+
+# ⚠ 這裡以前只強制 --layout 與 --keys。**沒有 --expect 一樣跑得完,而且全綠** ——
+#   每一步都判 SKIP,SKIP 不進 FAILURES,結尾照樣印「✓ 全部 N 鍵通過」。
+#   再加上 --no-composing-check 可以把唯一剩下的斷言關掉,於是
+#   「點了 N 下、一個字都沒有比對過」與「N 鍵全部正確」在輸出上一模一樣。
+#   所以:--expect 必填,而且**至少要有一個格子不是 `-`**。
+[ -n "$EXPECT_CSV" ] || {
+  echo "缺 --expect。沒有預期值就沒有斷言,那不是驗證,是點一遍。" >&2
+  echo "  想跳過某幾步的比對,那幾格寫 '-';但不能整條都是 '-'。" >&2
+  exit 2
+}
+_N_KEYS=0; _N_EXPECT=0; _N_REAL=0
+IFS=',' read -r -a _KA <<< "$KEYS"
+IFS=',' read -r -a _EA <<< "$EXPECT_CSV"
+_N_KEYS="${#_KA[@]}"; _N_EXPECT="${#_EA[@]}"
+for _e in ${_EA[@]+"${_EA[@]}"}; do
+  [ "$_e" = "-" ] || _N_REAL=$((_N_REAL + 1))
+done
+if [ "$_N_EXPECT" -ne "$_N_KEYS" ]; then
+  # 少寫幾格 = 後面那幾鍵靜靜地不比對。要跳過就明寫 '-',不要用「沒寫」表示。
+  echo "--keys 有 $_N_KEYS 個,--expect 只有 $_N_EXPECT 個。" >&2
+  echo "  數目必須相同 —— 「沒寫」與「刻意不比對」要分得出來,寫 '-' 表示不比對。" >&2
+  exit 2
+fi
+if [ "$_N_REAL" -eq 0 ]; then
+  echo "--expect 整條都是 '-',一鍵都不會比對到。這樣的綠燈沒有意義。" >&2
+  exit 2
+fi
+if [ "$CHECK_COMPOSING" -eq 0 ] && [ "$_N_REAL" -eq 0 ]; then
+  echo "--no-composing-check 加上零個實際比對 = 零斷言。拒絕。" >&2
+  exit 2
+fi
 OUT_DIR="${OUT_DIR:-$PROJECT_ROOT/build/layoutverify/$LAYOUT}"
 mkdir -p "$OUT_DIR"
 
@@ -122,6 +158,9 @@ GEOM="$PROJECT_ROOT/scripts/layout_geom.py"
 [ -f "$GEOM" ] || { echo "找不到 $GEOM" >&2; exit 2; }
 
 fail() { echo "✗ $*" >&2; }
+# 比對過幾鍵 / 明寫 '-' 略過幾鍵。結尾的分母用 COMPARED,不用點過的鍵數。
+COMPARED=0
+SKIPPED=0
 info() { echo "  $*"; }
 
 # ─────────────────────────────────────────────── 裝置幾何 ───────────────────
@@ -228,7 +267,7 @@ adbs shell am start -n "$TARGET_ACT" --es field "$FIELD" >/dev/null 2>&1
 
 # 等測試靶自己說 READY，再點一下輸入框把鍵盤叫出來。
 for i in $(seq 1 20); do
-  adbs logcat -d -s "$TAG:I" 2>/dev/null | grep -qF "READY $FIELD" && break
+  log_has "READY $FIELD" adbs logcat -d -s "$TAG:I" && break
   sleep 0.5
 done
 FIELD_XY="$(adbs shell "uiautomator dump /sdcard/rime_bounds.xml >/dev/null 2>&1; cat /sdcard/rime_bounds.xml" \
@@ -250,11 +289,11 @@ sleep 1.5
 wait_ready() {
   local i
   for i in $(seq 1 "${RIME_READY_TRIES:-40}"); do
-    if adbs logcat -d -s RimeRuntime:I 2>/dev/null | tr -d '\r' | grep -q "phase → READY"; then
+    if log_has "phase → READY" adbs logcat -d -s RimeRuntime:I; then
       info "librime 已就緒（RimeRuntime phase → READY，第 $i 次輪詢）"
       return 0
     fi
-    if adbs logcat -d -s RimeRuntime:I 2>/dev/null | tr -d '\r' | grep -q "phase → FAILED"; then
+    if log_has "phase → FAILED" adbs logcat -d -s RimeRuntime:I; then
       fail "RimeRuntime 進入 FAILED，部署失敗"
       adbs logcat -d -s RimeRuntime:I RimeIME:I 2>/dev/null | tail -40 > "$OUT_DIR/rime-fail.log"
       return 1
@@ -277,9 +316,24 @@ info "裝置回報：佈局=${ACTIVE_LAYOUT:-<未知>} 方案=${ACTIVE_SCHEMA:-<
 
 # 沒驗到就別假裝驗過了。這一關比什麼都重要：測到別份佈局卻報綠燈，
 # 比沒有測試更糟 —— 它會說謊。
-if [ -n "$ACTIVE_LAYOUT" ] && [ "$ACTIVE_LAYOUT" != "$LAYOUT" ]; then
+if [ -z "$ACTIVE_LAYOUT" ]; then
+  # ⚠ 這一條以前是「有回報才比」——裝置沒回報的時候,整道關卡連跑都沒跑,
+  #   而輸出上看不出差別。**「不知道驗的是哪一份」與「驗的是對的那一份」
+  #   不是同一件事**,而前者正是這道關卡存在的理由。
+  fail "裝置沒有回報載入了哪一份佈局(logcat 裡找不到「佈局 → …」)。"
+  fail "  不知道驗的是哪一份,就不能把結果當成 $LAYOUT 的結果。中止。"
+  adbs logcat -d -s LayoutHost:I RimeIME:I 2>/dev/null | tail -60 > "$OUT_DIR/no-layout-report.log"
+  adbs exec-out screencap -p > "$OUT_DIR/fail-no-layout-report.png" 2>/dev/null
+  exit 2
+fi
+if [ "$ACTIVE_LAYOUT" != "$LAYOUT" ]; then
   fail "要驗的是 $LAYOUT，裝置上實際載入的卻是 $ACTIVE_LAYOUT。中止。"
   adbs exec-out screencap -p > "$OUT_DIR/fail-wrong-layout.png" 2>/dev/null
+  exit 2
+fi
+# --schema 有指定的話,方案也要對得上 —— 佈局對、方案不對照樣是在驗別的東西。
+if [ -n "$SCHEMA" ] && [ -n "$ACTIVE_SCHEMA" ] && [ "$ACTIVE_SCHEMA" != "$SCHEMA" ]; then
+  fail "要驗的方案是 $SCHEMA，裝置上載入的卻是 $ACTIVE_SCHEMA。中止。"
   exit 2
 fi
 
@@ -365,11 +419,16 @@ for KID in "${KEY_ARR[@]}"; do
   [ "$EXP" = "<empty>" ] && EXP=""
 
   if [ -z "${EXP_ARR[$STEP]+x}" ] || [ "$EXP" = "-" ]; then
+    # 略過要自己有一個計數,而且結尾的分母要用「**比對過**幾鍵」,
+    # 不能用「點過幾鍵」—— 後者把沒比對的也算成通過了。
     VERDICT="SKIP"
+    SKIPPED=$((SKIPPED + 1))
   elif [ "$ACTUAL" = "$EXP" ]; then
     VERDICT="OK"
+    COMPARED=$((COMPARED + 1))
   else
     VERDICT="DIFF"
+    COMPARED=$((COMPARED + 1))
     FAILURES=$((FAILURES + 1))
   fi
   printf '%-3s %-16s %9s %9s  %-16s %-16s %s\n' \
@@ -415,7 +474,17 @@ if [ "$FAILURES" -gt 0 ]; then
   exit 1
 fi
 
-echo "✓ $LAYOUT 全部 ${#KEY_ARR[@]} 鍵通過（座標由 $LAYOUT.yaml 算出，非寫死）"
+# ⚠ 分母以前用的是 ${#KEY_ARR[@]}(**點過**幾鍵),而不是實際比對過幾鍵。
+#   於是「點了 8 下、比對了 0 下」也會印「全部 8 鍵通過」。
+if [ "$COMPARED" -eq 0 ]; then
+  fail "一鍵都沒有比對到（$SKIPPED 鍵標記為不比對）—— 這不是通過。"
+  [ "$KEEP" -eq 1 ] || adbs shell am force-stop "$TARGET_PKG" >/dev/null 2>&1
+  exit 1
+fi
+if [ "$SKIPPED" -gt 0 ]; then
+  echo "  註:$SKIPPED 鍵在 --expect 裡明寫 '-'，這一輪沒有比對它們。"
+fi
+echo "✓ $LAYOUT：比對過 $COMPARED/${#KEY_ARR[@]} 鍵，全數相符（座標由 $LAYOUT.yaml 算出，非寫死）"
 echo "   鍵位圖：$OUT_DIR/keymap.txt   截圖：$OUT_DIR/final.png"
 [ "$KEEP" -eq 1 ] || adbs shell am force-stop "$TARGET_PKG" >/dev/null 2>&1
 exit 0

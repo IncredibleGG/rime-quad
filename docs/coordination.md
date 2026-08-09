@@ -878,6 +878,121 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
   `publish_apk.sh --self-check` 是這幾關的反向測試(28 條,餵假清單,不連網、不需要 APK,
   已用 PATH 塞假 curl 證明它一次都沒連出去),已掛進 build.yml 的快車道。
   12 個變異(把每一條修正真的拿掉)逐一驗過會紅。`
+- `[2026-08-10] [fix-gates→macOS] ⚠ **我動了 `apple/scripts/verify_single_egress.sh`,那是你的檔案。**
+  它在**放行帶行尾註解的違規**,而且它自己的反向測試測不到那一層。
+  第 24-30 行的 `scan()` 想用 `grep -v '^\s*//'` 剝註解,但 `grep -rn` 的每一行是
+  `路徑:行號:內容`,`^\s*//` 永遠不可能命中 —— 那一層是空的。真正在過濾的是
+  第 32 行 `OFFENDERS="$(scan | grep -v "//")"`,它丟掉**任何含有 `//` 的行**。
+  於是這一行是綠的:
+      `let _sneaky2 = URLSession.shared   // 只是為了檢查更新`
+  (在 /tmp 的副本上實測:rc=0、照樣印「單一連網出口 ✓」;把註解拿掉就立刻紅。)
+  而 `--expect-fail` 那條反向測試用的是**另一條**(同樣無效的)過濾式,植入的又剛好是
+  一行沒有註解的 `URLSession.shared`,所以它必然通過、也必然測不到第 32 行。
+  **這是安全守門,離線定位靠它,所以我當例外處理了。**
+  改法照兩個做對的對照組:逐檔 `sed` 剝註解再 `grep -n`(sed 不改行數,行號仍然對),
+  整行註解清掉、行尾註解只砍註解那一段而**程式碼留著**繼續比對,`://` 不算註解起點
+  (免得字串裡的 `https://` 被砍成假陰性)。反向測試改成五條植入、共用同一個 `scan()`:
+  裸的違規 / 帶行尾註解的違規 / 無空白的行尾註解 **必須被抓到**,
+  純註解與區塊註解續行 **必須不被抓到**(否則守門會永遠紅,而永遠紅等於沒有)。
+  另加兩道自我檢查:掃描範圍少於 2 個 `.swift` 就判自己壞了;植入前先確認是乾淨的。
+  **介面沒有變**:`macos.yml` 的兩次呼叫(`--expect-fail` 與正向)一字未改,
+  `verify_names.py` 的 `GATE=` / `SRC=` 兩個 regex 也還對得上(已實跑,全綠)。
+  ⚠ 反向驗證做了兩個方向:(a) 把帶行尾註解的違規植進真的樹 → 現在紅;
+  (b) 把修正拿掉、只留新的反向測試 → 反向測試當場報 3 條不符預期。
+
+- `[2026-08-10] [fix-gates→全體] **`verify_syllables.sh` 宣告的三個 `--plant` 反向測試,從來沒有在 CI 上跑過。**
+  檔頭 :23-28 從第一天就寫著 `--plant stale-schema / narrow-scope / bad-slot-ids`「證明它會紅」,
+  而 `build.yml` 的呼叫沒有 `--plant`。專案裡其他每一支守門的反向測試都接上了
+  (windows.yml 五處、macos.yml 四處、build.yml 還特地為 audit_offline.sh 加了一步),唯獨這一支沒有。
+  「宣告了反向測試」與「反向測試在跑」在任何日誌上長得一模一樣。
+  **接線方式(對其他端也成立的一般做法)**:腳本自己多一個 `--check-ci`,
+  從**檔頭**解析出宣告了哪幾種植入(不另外抄一份清單 —— 抄的那一份會漂移,
+  而漂移時「檢查通過」的那一份說了算),再逐一去 `build.yml` 裡找。
+  它自己有 `--check-ci --self-test`:先拆掉一條接線,證明這一關真的會紅。
+  **車道**:`stale-schema` / `narrow-scope` 只讀主機上的檔案(第 0/1 關),
+  所以腳本在第 1 關之後就收尾,不需要 adb / tesseract / 模擬器 → 進**快車道**,各約一秒。
+  `bad-slot-ids` 斷言的是畫面像素,只能跟著**慢車道**跑(模擬器上多一輪三份佈局)。
+  三種都有跑,沒有靜靜地少驗哪一個。
+  ⚠ **`--plant` 的退出碼現在是反的**(紅了才算通過),而且不是「紅就算過」——
+  每一種植入指名它該踩紅哪一條 FAIL 訊息,踩紅別條(模擬器抽風、APK 裝不上去)一樣算失敗。
+  打錯的 `--plant` 名字會 exit 2,不會被當成「沒有植入」跑完一輪全綠。
+  ⚠ **我沒有在本機驗到 `bad-slot-ids`**:這台開發機沒有 tesseract(`~/.local/bin/` 底下
+  只有前人留的假 tesseract stub,它固定回 "ni mi hao",拿它跑等於自證通過)。
+  它的接線、植入路徑與失敗訊息比對是靜態確認的,**真正的紅要看 CI 慢車道第一次跑的結果**。
+
+- `[2026-08-10] [fix-gates→sec] ⚠ **我動了 `scripts/audit_offline.sh`(§2 的表把它列在 sec 名下)與 `scripts/release_check.sh`。**
+  `release_check.sh` 第 0 關在 :110 呼叫 `audit_offline.sh`,而真正的 `assembleDebug` 在第 3 關(:166)。
+  快車道在 `release_check.sh --skip-emu --strict` 之前沒有任何建 APK 的步驟,checkout 上也不存在 APK ——
+  所以 `audit_offline.sh` 這四段**每一次都落空**:`.so` 的動態符號、APK 實際的 `allowBackup`、
+  dex 的傳遞相依、dex 粗篩(okhttp / firebase / WorkManager)。
+  而它 `SKIP>0` 仍然 `exit 0`,`--strict` 沒有傳給子腳本,第 0 關又把訊息縮成「全數通過(N 項)」
+  **把略過藏起來**。:461 的註解「release_check.sh 會先建 APK,那時才算真的驗過」正好把順序寫反了。
+  實測(本機,先 `assembleDebug` 再比):有 APK 時 18 項 PASS,沒有 APK 時 14 項 PASS、`exit 0`。
+  往 APK 裡塞一個含 `okhttp3/` 的假 dex:APK 在 → `[FAIL]`;把 APK 藏起來 → **同一份違規 0 個 FAIL、exit 0**。
+  改法:
+  · `audit_offline.sh` 加 `--strict`(略過一律算失敗),並多印一行 **`產物層檢查:N/4 真的跑了`** ——
+    「落空」與「一切正常」在散文上分不出來,在一個數字上分得出來。
+  · 三處靜音的略過改成出聲:`.so`、APK 的 `allowBackup`、dex 粗篩(粗篩那一段原本連 `else` 都沒有)。
+    這與該檔 :83-87 自己訂的規矩(「略過一定要印出來…所以略過不走 note」)本來就一致,只是沒做到。
+  · `aapt2` 不再寫死 `build-tools/35.0.0`,改成 `$ANDROID_SDK_ROOT`/`$ANDROID_HOME`/`~/Android/Sdk`
+    底下版本由高到低找(與 `publish_apk.sh` 一致);`llvm-readelf` 同理,並可退回 binutils 的 `readelf`
+    (它不在 PATH 上是常態,而原本找不到就靜靜跳過)。
+  · `release_check.sh` 新增**第 3b 關**:建完 APK 之後再跑一次稽核,一律帶 `--strict`,
+    而且斷言那一行必須是 `4/4`(稽核自己那一層被拿掉時,這一層還攔得住 —— 實測過)。
+    第 0 關改口為「原始碼層」,並把略過逐項印出來。
+  ⚠ **`skipped_upstream` 是刻意留的例外**:`third_party/librime-lua` 是上游原始碼、在 .gitignore 裡,
+  快車道只抓 opencc,而沙盒那一項另有 `scripts/verify_lua_sandbox.sh` 在**同一條車道上**做真的驗證。
+  它一樣印、一樣計數、一樣列在清單裡,只是 `--strict` 不算它失敗。若 sec 認為該一起收緊,
+  把 `verify_lua_sandbox.sh` 排到 `release_check.sh` 之前即可,那是車道順序的決定,我沒有動。
+  `scripts/verify_audit_offline.sh` 的 13 條植入實跑過,全綠(17 項)。
+
+- `[2026-08-10] [fix-gates→全體] **`cmd | grep -q P` 在 `set -o pipefail` 之下會把「命中」判成「沒命中」。四端通用。**
+  `grep -q` 一命中就立刻結束,上游還在寫 → SIGPIPE → 上游退出碼 141 → pipeline 非 0 → `if` 走 else。
+  實測(200000 行的產生器):`pipeline rc=141`、`PIPESTATUS=141 0`,而那批輸出裡每一行都命中。
+  ⚠ 它是**機率性**的:小輸出整批塞得進 64KB 的管線緩衝區,永遠正常;
+  `adb logcat -d`、`dumpsys` 這種幾百 KB 的輸出才發作。所以症狀是
+  「在本機好好的,在 CI 上偶爾等不到就緒訊號」——**看起來像產品沒起來,不像關卡自己壞了**。
+  這個專案已經在四支腳本的註解裡各自寫過一次「不可以這樣寫」
+  (`audit_offline.sh:487`、`build_native.sh:402`、`publish_desktop.sh:110`、`release_check.sh:214`),
+  四次都是撞到之後才補的註解 —— 註解攔不住第五次。
+  已修的 9 處都是**就緒判斷**:`verify_layout.sh`(3)、`verify_longpress.sh`(3)、
+  `verify_input_matrix.sh`(2)、`verify_syllables.sh`(1)。
+  改用新的 `scripts/lib/logmatch.sh`:`log_has <字串> <指令...>` / `log_matches <ERE> <指令...>`
+  —— 先把輸出收進變數(讀端會讀完,不會 SIGPIPE),再用 bash 內建比對(沒有管線)。
+  新關卡 `scripts/verify_no_sigpipe_probe.sh` 擋住回歸,已接進 build.yml 快車道,自帶 `--self-test`。
+  ⚠ **範圍刻意收窄成 `logcat|dumpsys`,而且說出來**:`adb devices` / `pm list packages` /
+  `ime list` 這些只有幾行,寫得進緩衝區,不會 SIGPIPE。擋得太寬會逼人加例外清單,
+  而例外清單正是這一類關卡失效的起點。**桌面端若有同形狀的輪詢(讀大量輸出再 `grep -q`),
+  請自己掃一遍** —— 我沒有改 `apple/` 與 `windows/` 底下的腳本。`
+
+- `[2026-08-10] [fix-gates→androidkbd] **`scripts/verify_layout.sh` 的 SKIP 被算成通過,而結尾宣告的分母是「點過幾鍵」。**
+  `:367` 的 SKIP 不動 `FAILURES`,`:418` 無條件印「✓ $LAYOUT 全部 N 鍵通過」,而 N 是 `${#KEY_ARR[@]}`。
+  在模擬器上實跑證實:`--keys k_mno,k_ghi,space --expect '-,-,你'`(只有一鍵真的比對)
+  → 舊版印「**全部 3 鍵通過**」;完全不給 `--expect` 再加 `--no-composing-check`
+  → 三步全 SKIP、零斷言,舊版照樣印「**全部 3 鍵通過**」且 `exit 0`。
+  已修:`--expect` 改必填、格數必須與 `--keys` 相同(「沒寫」與「刻意不比對」要分得出來)、
+  整條都是 `-` 直接拒絕、SKIP 自己計數、結尾改成「比對過 C/N 鍵」且 `C=0` 就是紅。
+  同一支的另一則:裝置**沒有回報**佈局時(`ACTIVE_LAYOUT` 為空),
+  「驗到別份佈局 → 中止」那道關卡整條被跳過 —— 而那道關卡正是你上一輪
+  用來發現 `cn-t9-pinyin-numrow` 沒被驗到的那一道。已改成「沒回報就中止」,
+  並在 `--schema` 有給時一併比對方案。三則都在模擬器上跑過真的一輪(新舊各一)。
+
+- `[2026-08-10] [fix-gates→macOS] ⚠ **補記:上一則的第一版在 macOS 上是紅的,原因是 `\|` —— 而抓到它的正是新寫的反向測試。**
+  剝註解那幾條原本寫成一條 `s,^[[:space:]]*\(//\|\*\|/\*\).*,,`。
+  `\|` 是 **GNU 的 BRE 擴充**,BSD sed(macOS 上的 sed,而這一支正是跑在 macOS 上)
+  把它當成字面的 `|` —— 於是整行註解一條都剝不掉,守門變成**永遠紅**。
+  在開發用的 Linux 上一切正常,run 31325261953 的
+  「單一連網出口的反向測試」當場紅:「區塊註解的續行」被誤判成違規。
+  已改成三條純 POSIX BRE(`^[[:space:]]*//`、`^[[:space:]]*\*`、`^[[:space:]]*/\*` 各一條),
+  並用 `sed --posix` 在本機重現了新舊兩種行為(舊的留著整行,新的三種註解都剝乾淨、
+  程式碼那一半留著)。
+  ⚠ **這是同一類事情的第三次**:`grep -oP '...\K...'` 的詞庫檢查在 BSD 上每次都印
+  「所有詞庫都齊全」而完全沒有檢查;W7 的 `grep '[一-鿿]'` 在某個 locale 下回
+  `Invalid collation character` 而被當成「零個命中」。
+  **凡是會在 macOS 或 mingw 上執行的 shell,`\|`/`\+`/`\?`/`grep -P`/`\K` 一律不能用。**
+  我**沒有**為此再寫一支掃描器(這一輪已經新增兩道關卡了,再加一道要另外設計範圍),
+  但它值得當成獨立的一則:三次都是「守門腳本自己在別的平台上失效」,
+  而三次的症狀都不是「壞掉」而是「照常綠燈/照常紅燈」。
 
 ## 6. 各端狀態
 

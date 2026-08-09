@@ -70,6 +70,10 @@ ADB="$SDK/platform-tools/adb"
 # 產品識別碼的唯一來源,見 scripts/lib/product.env。
 # shellcheck source=lib/product.sh
 . "$HERE/lib/product.sh"
+# ⚠ 就緒判斷不可以寫成 `logcat | grep -q`:pipefail 之下命中會變成 141
+#   (grep -q 一命中就結束 → 上游 SIGPIPE),於是「有命中」被判成「沒命中」。
+#   改用 lib/logmatch.sh 的 log_has / log_matches —— 它們先收進變數再用內建比對。
+. "$HERE/lib/logmatch.sh"
 # 「把測試靶叫到前景並確認它真的有焦點」那一整套,與 verify_rime_compose.sh
 # 共用同一份。為什麼需要它,見 scripts/lib/testtarget.sh 的檔頭。
 # shellcheck source=lib/testtarget.sh
@@ -285,7 +289,7 @@ pass "鍵盤已顯示,綁定正確"
 if [ -n "$READY_LOG" ]; then
   READY=0
   for i in $(seq 1 "$DEPLOY_TIMEOUT"); do
-    adbs logcat -d 2>/dev/null | grep -Eq "$READY_LOG" && { READY=1; break; }
+    log_matches "$READY_LOG" adbs logcat -d && { READY=1; break; }
     sleep 1
   done
   [ "$READY" -eq 1 ] && pass "引擎就緒" || echo "  [INFO] 沒等到就緒訊息($READY_LOG),繼續"
@@ -312,7 +316,7 @@ FF=0; tt_focus_field || FF=$?
 [ "$FF" -eq 0 ] || { tt_focus_report refocus; fail "重啟之後輸入框拿不到游標(座標 ${TT_FIELD_XY:-未量到})。"; }
 SHOWN=0
 for i in $(seq 1 "$DEPLOY_TIMEOUT"); do
-  adbs shell dumpsys input_method 2>/dev/null | grep -q "mIsInputViewShown=true" && { SHOWN=1; break; }
+  log_has "mIsInputViewShown=true" adbs shell dumpsys input_method && { SHOWN=1; break; }
   # 每 10 秒補點一次:只點一次的話,錯過那一下就再也沒有人去叫鍵盤了。
   # 座標是量出來的,不是寫死的 540 300。
   [ $((i % 10)) -eq 5 ] && tt_nudge_field || true
@@ -327,7 +331,7 @@ if [ "$SHOWN" -ne 1 ]; then
 fi
 if [ -n "$READY_LOG" ]; then
   for i in $(seq 1 "$DEPLOY_TIMEOUT"); do
-    adbs logcat -d 2>/dev/null | grep -Eq "$READY_LOG" && break
+    log_matches "$READY_LOG" adbs logcat -d && break
     sleep 1
   done
 fi
