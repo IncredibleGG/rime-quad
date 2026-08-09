@@ -60,9 +60,16 @@ verify_payload() {
   local root="$1"
   local missing=0 f
 
-  # 二進位三件。少 rime_ime_setup.exe 的話安裝程式會在註冊那一步失敗;
+  # 二進位四件。少 rime_ime_setup.exe 的話安裝程式會在註冊那一步失敗;
   # 少 rime_service.exe 的話輸入法註冊得上但每一顆鍵都不會有反應。
-  for f in rime_tsf.dll rime_service.exe rime_ime_setup.exe; do
+  #
+  # ⚠ rime_console.exe 這一輪從「驗證工具」變成**要出貨的東西**。
+  #   理由是分層診斷:它完全不經過 TSF、不經過管道,直接驅動 librime + 資料。
+  #   使用者說「不能用」的時候,第一刀就是問它 —— 它打得出「你好」就代表
+  #   引擎、詞庫、方案都是好的,問題必定在 TSF 或 IPC 那一側,反過來也一樣。
+  #   `rime_ime_setup.exe doctor` 的第 7 節就是呼叫它。
+  #   少了它,那一刀就切不下去,而我們又回到「來回好幾輪才問得出資訊」。
+  for f in rime_tsf.dll rime_service.exe rime_ime_setup.exe rime_console.exe; do
     if [ -f "${root}/${f}" ]; then
       printf '    ✓ %s (%s bytes)\n' "${f}" "$(stat -c%s "${root}/${f}" 2>/dev/null || echo ?)"
     else
@@ -307,7 +314,7 @@ if [ "${LINT}" -eq 1 ]; then
   rm -rf "${LINT_DIR}"
   mkdir -p "${LINT_DIR}/payload/data/shared/opencc" "${LINT_DIR}/payload/data/user" \
            "${LINT_DIR}/out"
-  for f in rime_tsf.dll rime_service.exe rime_ime_setup.exe; do
+  for f in rime_tsf.dll rime_service.exe rime_ime_setup.exe rime_console.exe; do
     : > "${LINT_DIR}/payload/${f}"
   done
   : > "${LINT_DIR}/payload/data/shared/default.yaml"
@@ -335,8 +342,17 @@ cp "${BIN}/rime_tsf.dll"       "${PAYLOAD}/"
 cp "${BIN}/rime_service.exe"   "${PAYLOAD}/"
 cp "${BIN}/rime_ime_setup.exe" "${PAYLOAD}/"
 
-# rime_probe.exe / rime_tests.exe **刻意不裝**:那是驗證用的東西,
-# 不是使用者機器上該有的。安裝目錄裡多一支執行檔就多一個要解釋的東西。
+# rime_console.exe 建在 console/bin,不在 ime/bin(它是 build.sh console 那一步的
+# 產物)。路徑寫死在這裡而不是猜:找不到就明確地死,不要靜靜地出一個
+# 少了診斷工具的安裝包。
+CONSOLE_EXE="${BUILD_ROOT}/console/bin/rime_console.exe"
+[ -f "${CONSOLE_EXE}" ] || die "找不到 ${CONSOLE_EXE};先跑 windows/build.sh console
+  它現在是要出貨的東西(使用者的分層自我診斷靠它),不再只是 CI 的驗證工具。"
+cp "${CONSOLE_EXE}" "${PAYLOAD}/"
+
+# rime_probe.exe / rime_tests.exe / rime_tsf_host.exe **刻意不裝**:
+# 那些是驗證用的東西,不是使用者機器上該有的。
+# 安裝目錄裡多一支執行檔就多一個要解釋的東西。
 cp -r "${ROOT}/core/data/shared" "${PAYLOAD}/data/shared"
 cp -r "${ROOT}/core/data/user"   "${PAYLOAD}/data/user"
 

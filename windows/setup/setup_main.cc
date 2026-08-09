@@ -6,6 +6,7 @@
 //   enable-user / disable-user  目前使用者的啟用(HKCU)
 //   check                    「真的註冊好了嗎」,CI 靠它斷言
 //   stop-service             停掉 rime_service.exe(升級與解除安裝前)
+//   doctor                   一頁式自我診斷(給使用者用的,見 setup/doctor.h)
 //
 // ── 為什麼是一支獨立的 exe,而不是叫 regsvr32 ──────────────────
 //
@@ -34,6 +35,7 @@
 #include "../tsf/registration.h"
 #include "../tsf/registration_check.h"
 #include "../winshared/winutil.h"
+#include "doctor.h"
 
 using namespace rimewin;
 
@@ -70,7 +72,13 @@ void Usage() {
       "                             (剛註冊完的當下 CTF 還看不到,見標頭說明)\n"
       "  paths                      印出所有會被寫到的登錄檔路徑與 GUID\n"
       "  stop-service [--dir <目錄>]  停掉 rime_service.exe\n"
-      "  dump                       印出登錄檔實況(診斷用)\n");
+      "  dump                       印出登錄檔實況(診斷用)\n"
+      "  doctor [--report] [--no-engine] [--no-scan]\n"
+      "                             一頁式自我診斷:檔案、註冊、目前的語言設定檔、\n"
+      "                             鍵盤佈局、服務進程、管道、誰載入了 DLL、\n"
+      "                             引擎層、以及瘦 DLL 的除錯記錄。\n"
+      "                             有任何一格 FAIL 就以非零結束。\n"
+      "                             --report:另存一份並用記事本打開\n");
 }
 
 std::wstring DefaultDllPath() {
@@ -202,6 +210,7 @@ static int Run(int argc, wchar_t** argv) {
   std::wstring dir = ModuleDirectory(nullptr);
   bool want_user = false;
   bool want_enum = true;
+  DoctorOptions doctor;
 
   for (int i = 2; i < argc; ++i) {
     const std::wstring a = argv[i];
@@ -209,6 +218,9 @@ static int Run(int argc, wchar_t** argv) {
     else if (a == L"--dir" && i + 1 < argc) dir = argv[++i];
     else if (a == L"--user") want_user = true;
     else if (a == L"--no-enum") want_enum = false;
+    else if (a == L"--report") doctor.open_report = true;
+    else if (a == L"--no-engine") doctor.check_engine = false;
+    else if (a == L"--no-scan") doctor.scan_processes = false;
     else {
       Say("未知參數: %s\n", WideToUtf8(a).c_str());
       Usage();
@@ -290,6 +302,17 @@ static int Run(int argc, wchar_t** argv) {
   if (verb == L"dump") {
     DumpRegistration();
     return 0;
+  }
+
+  if (verb == L"doctor") {
+    // 結束碼 = 失敗的格數。0 = 全綠。
+    //
+    // ⚠ 這一點讓 doctor 變成一個**可以被 CI 斷言**的東西,而不是一份
+    //   只會印綠字的報告。windows/verify_installer.sh 對它有正反兩面的
+    //   斷言:安裝前必須紅、安裝後必須綠、把服務停掉之後必須再度紅。
+    //   一支只會印綠字的診斷工具比沒有更糟 —— 它讓人以為有人在看。
+    const int fails = RunDoctor(doctor);
+    return fails == 0 ? 0 : 1;
   }
 
   if (verb == L"stop-service") return StopService(dir);

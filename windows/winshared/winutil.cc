@@ -70,6 +70,12 @@ std::wstring RimeServiceQuitEventName() {
   return L"Local\\RimeQuadServiceQuit." + sid;
 }
 
+std::wstring RimeServiceMutexName() {
+  std::wstring sid = CurrentUserSidString();
+  if (sid.empty()) sid = L"unknown";
+  return L"Local\\RimeQuadService." + sid;
+}
+
 std::wstring RimeSettingsEventName() {
   return L"Local\\RimeQuadSettings." + CurrentUserSidString();
 }

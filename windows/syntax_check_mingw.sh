@@ -65,6 +65,7 @@ SRCS=(
   "${SCRIPT_DIR}"/setup/*.cc
   "${SCRIPT_DIR}/tests/probe_main.cc"
   "${SCRIPT_DIR}/tests/test_win32_layouts.cc"
+  "${SCRIPT_DIR}/tests/tsf_host_main.cc"
 )
 
 # ── 檢查不了的檔案 ───────────────────────────────────────────────

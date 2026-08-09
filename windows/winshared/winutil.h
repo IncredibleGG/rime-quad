@@ -37,6 +37,17 @@ std::wstring RimePipeName();
 // 名字裡帶 SID 的理由同管道名 —— 同一台機器上的兩個人不可以互相關掉對方的服務。
 std::wstring RimeServiceQuitEventName();
 
+// 服務的「單一實例」互斥鎖名稱。
+//
+// 定義在這裡而不是 service/main.cc,是因為現在有**三個**呼叫者:
+//   · 服務自己(建立它,藉此擋掉第二支服務)
+//   · 瘦 DLL(ActivateEx 時要判斷「服務在不在」,不能靠開管道 ——
+//     服務剛啟動、詞庫還在編譯的那幾分鐘裡管道還沒開,而那時它明明在跑,
+//     再啟動一支只會被單一實例擋掉,白花一次 CreateProcess)
+//   · rime_ime_setup.exe doctor(要回答「服務在不在」這一格)
+// 三個地方各抄一份名字的話,漂移的症狀是「DLL 每次都以為服務沒在跑」。
+std::wstring RimeServiceMutexName();
+
 // 「把設定視窗叫出來」的具名事件。服務進程建立並等待它;語言列按鈕與
 // 系統匣圖示在管道還沒連上時走這一條。
 //

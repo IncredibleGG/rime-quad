@@ -88,11 +88,12 @@ UninstallDisplayIcon={app}\rime_service.exe
 
 ; 不去關使用者正在用的程式。TSF 的 DLL 會被載入到每一個接受文字輸入的
 ; 進程裡,讓 Inno 的重新啟動管理員去關它們等於「安裝輸入法會關掉你的 Word」。
-; 檔案被佔用的情況由下面 [Files] 的 restartreplace 承接。
+; 檔案被佔用的情況由下面 [Files] 段的 restartreplace 承接。
 CloseApplications=no
 SetupMutex=RimeQuadSetupMutex
 
-; 安裝完成頁不推銷任何東西,也不建捷徑(沒有可以按的 GUI 程式)。
+; 安裝完成頁不推銷任何東西。程式集資料夾裡只放兩個捷徑(見 [Icons]),
+; 所以不必讓使用者選資料夾名字。
 DisableProgramGroupPage=yes
 
 ; 歡迎頁要顯示。Inno 6 的 modern 樣式**預設把它藏起來**,但這裡它有實際用途:
@@ -105,6 +106,15 @@ DisableWelcomePage=no
 ; 少一個頁面,也少一種弄壞它的方法。
 DisableDirPage=yes
 
+[Icons]
+; 只有兩個,而且兩個都真的做事。
+;
+; ⚠ 「診斷」那一個是這一輪加的,而且它是**修「使用者只能說不能用」這件事
+;   本身**的一半:另一半是 doctor 那支程式,這一半是「他找得到它」。
+;   一個要開命令列才跑得起來的診斷工具,對絕大多數使用者等於不存在。
+Name: "{group}\輸入法設定"; Filename: "{app}\rime_service.exe"; Parameters: "--settings"; Comment: "開啟 RIME 輸入法的設定視窗"
+Name: "{group}\診斷:輸入法為什麼不能用"; Filename: "{app}\rime_ime_setup.exe"; Parameters: "doctor --report"; Comment: "檢查安裝、註冊、服務、引擎,並把結果用記事本打開"
+
 [Files]
 ; restartreplace + uninsrestartdelete:
 ;   rime_tsf.dll 在升級的當下可能正被宿主進程載入著而換不掉。
@@ -112,6 +122,12 @@ DisableDirPage=yes
 Source: "{#PayloadDir}\rime_tsf.dll";       DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
 Source: "{#PayloadDir}\rime_service.exe";   DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
 Source: "{#PayloadDir}\rime_ime_setup.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
+; ⚠ rime_console.exe 是**給使用者的診斷工具**,不是開發者的東西。
+;   它完全不經過 TSF、不經過管道,直接驅動 librime + 資料 —— 也就是
+;   「引擎層通不通」那一刀。`rime_ime_setup.exe doctor` 的第 7 節呼叫它。
+;   使用者回報「不能用」時,有沒有這一刀,決定我們是一次問清楚
+;   還是來回五輪。
+Source: "{#PayloadDir}\rime_console.exe";    DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
 
 ; ⚠ 執行期資料。**少了這一段,前面每一步都會成功,服務起得來、輸入法
 ;   註冊得上,然後一個字都打不出來,而且沒有任何錯誤訊息。**
@@ -164,7 +180,7 @@ StatusExtractFiles=正在解開檔案…
 StatusRunProgram=正在完成安裝…
 FinishedHeadingLabel=[name] 安裝完成
 FinishedLabelNoIcons=[name] 已安裝在您的電腦上。
-FinishedLabel=[name] 已安裝在您的電腦上。%n%n用法:按 Win + 空白鍵切換輸入法,選擇「RIME 四端輸入法」。%n%n若清單裡沒有出現,請到「設定 → 時間與語言 → 語言與地區」把「中文(繁體,台灣)」加入語言清單,再試一次。%n%n首次使用時輸入法會在背景編譯詞庫,可能需要一到數分鐘;在那之前打出來的是英文,這是正常的。
+FinishedLabel=[name] 已安裝在您的電腦上。%n%n用法:按 Win + 空白鍵切換輸入法,選擇「RIME 四端輸入法」。%n%n若清單裡沒有出現,請到「設定 → 時間與語言 → 語言與地區」把「中文(繁體,台灣)」加入語言清單,再試一次。%n%n首次使用時輸入法會在背景編譯詞庫,可能需要一到數分鐘;在那之前打出來的是英文,這是正常的。%n%n若打不出中文或看不到設定視窗,請執行「開始」功能表裡的「診斷:輸入法為什麼不能用」,它會把原因寫成一份報告並用記事本打開。
 ExitSetupTitle=結束安裝
 ExitSetupMessage=安裝尚未完成。現在結束的話,本輸入法不會被安裝。%n%n要結束安裝嗎?
 ConfirmUninstall=您確定要完整移除 %1 嗎?

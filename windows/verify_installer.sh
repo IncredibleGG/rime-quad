@@ -37,18 +37,23 @@ set -euo pipefail
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
 
-SETUP=""; PROBE=""; TOOL=""
+SETUP=""; PROBE=""; TOOL=""; HOST=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --setup) SETUP="$2"; shift 2 ;;
     --probe) PROBE="$2"; shift 2 ;;
     --tool)  TOOL="$2";  shift 2 ;;
+    # rime_tsf_host.exe。給了就多做一件事:**經由真的 TSF** 打一次字
+    # (見底下 §6c)。刻意做成可選的 —— 這支腳本在只有安裝程式的環境下
+    # 仍然要跑得動。
+    --host)  HOST="$2";  shift 2 ;;
     *) die "未知參數: $1" ;;
   esac
 done
 [ -f "${SETUP}" ] || die "找不到安裝程式: ${SETUP}"
 [ -f "${PROBE}" ] || die "找不到 rime_probe.exe: ${PROBE}"
 [ -f "${TOOL}" ]  || die "找不到 rime_ime_setup.exe: ${TOOL}"
+[ -z "${HOST}" ] || [ -f "${HOST}" ] || die "找不到 rime_tsf_host.exe: ${HOST}"
 
 command -v cygpath >/dev/null 2>&1 || die "必須在 Git Bash / MSYS2 下執行"
 w() { cygpath -w "$1"; }
@@ -155,6 +160,33 @@ if "${TOOL}" check > "${WORK}/check-before.log" 2>&1; then
   die "什麼都還沒裝,check 竟然通過 —— 這道檢查沒有在檢查"
 fi
 ok "未安裝時 check 以非零結束"
+
+# ── doctor 的反向測試 ─────────────────────────────────────────────
+#
+# `rime_ime_setup.exe doctor` 是這一輪要交給**使用者**的東西:他只要跑一次、
+# 把輸出貼過來,我們就知道是九種「不能用」裡的哪一種。
+#
+# ⚠ 一支只會印綠字的診斷工具比沒有更糟 —— 它讓人以為有人在看。
+#   所以它在這裡有正反兩面的斷言,而反面這一條放在最前面:
+#   **什麼都還沒裝的時候,它必須是紅的,而且必須指出是註冊那一格。**
+#   --no-engine / --no-scan:這一步只驗「它會不會紅」,
+#   跑引擎與掃進程要好幾十秒,而那兩格在裝好之後才有意義。
+set +e
+"${TOOL}" doctor --no-engine --no-scan > "${WORK}/doctor-before.log" 2>&1
+rc_doc=$?
+set -e
+if [ "${rc_doc}" -eq 0 ]; then
+  tr -d '\r' < "${WORK}/doctor-before.log"
+  die "什麼都還沒裝,doctor 竟然以 0 結束 —— 這支診斷工具沒有在診斷"
+fi
+if tr -d '\r' < "${WORK}/doctor-before.log" | grep -q '^  \[FAIL\] 全機註冊不完整'; then
+  ok "未安裝時 doctor 以 ${rc_doc} 結束,並指出「全機註冊不完整」"
+else
+  echo "--- doctor 的輸出 ---"
+  tr -d '\r' < "${WORK}/doctor-before.log"
+  note_fail "doctor 紅了,但沒有指出是註冊那一格 —— 它紅得沒有指向性,
+     而「不知道為什麼紅」與「不知道為什麼壞」一樣沒有用。"
+fi
 
 # ══════════════════════════════════════════════════════════════════
 #  2. 靜默安裝
@@ -521,6 +553,121 @@ else
   fi
 fi
 
+# ══════════════════════════════════════════════════════════════════
+#  6c. **經由真的 TSF** 打一次字
+# ══════════════════════════════════════════════════════════════════
+#
+# ⚠ 上面 §6 走的是具名管道 —— 它**繞過 TSF**。它證明的是
+#   「引擎 + 資料 + IPC」是好的,完全沒有經過
+#     登錄檔 → CoCreateInstance → 把 rime_tsf.dll 載入宿主進程
+#           → ActivateEx → key event sink → edit session → 組字 → 上屏
+#   而使用者實際回報的「切過去、一個字都打不出來、也沒有任何 UI」,
+#   撞到的正是這一段。
+#
+# rime_tsf_host.exe 是一個假的文字編輯器,它逼系統走完那一整條。
+# 這裡用的是**安裝程式裝好並註冊好的那一份 DLL**,以及上面那支已經
+# 預熱完的服務 —— 也就是使用者機器上的狀態。
+if [ -n "${HOST}" ]; then
+  log "6c. 經由真的 TSF:ActivateEx → 按鍵 → 組字 → 上屏"
+  TRACE_LOG="${WORK}/tsf-trace.log"
+  rm -f "${TRACE_LOG}"
+  set +e
+  "${HOST}" --langid 0x0404 --require-activate --require-eaten \
+            --keys nihao1 --expect 你好 \
+            --trace "$(w "${TRACE_LOG}")" --wait-ms 4000 \
+            > "${WORK}/tsf-host.log" 2>&1
+  rc=$?
+  set -e
+  tr -d '\r' < "${WORK}/tsf-host.log" | sed 's/^/    /'
+  host_out="$(tr -d '\r' < "${WORK}/tsf-host.log")"
+  case "${host_out}" in
+    *"系統把 rime_tsf.dll 載入了這個進程"*)
+      ok "系統把裝好的 rime_tsf.dll 載入了宿主進程" ;;
+    *) note_fail "裝好、註冊好,但系統**沒有**把 rime_tsf.dll 載入宿主進程" ;;
+  esac
+  case "${host_out}" in
+    *"ActivateEx 被呼叫了"*) ok "ActivateEx 被呼叫了" ;;
+    *) note_fail "ActivateEx **沒有**被呼叫 —— 使用者切過去之後什麼都不會發生" ;;
+  esac
+  case "${host_out}" in
+    *"文件裡真的是「你好」"*)
+      ok "**經由真的 TSF**把「你好」寫進了文件(這一格從本輪之前一直是紙上的)" ;;
+    *) note_fail "沒有經由 TSF 打出「你好」(結束碼 ${rc})。
+     照除錯記錄裡的 keysym 判斷是哪一段:
+       keysym=0x0 → 鍵盤佈局問不出字
+       keysym!=0  → 連不上服務(記錄裡會有一行「連線失敗」)" ;;
+  esac
+  if [ -f "${TRACE_LOG}" ]; then
+    echo "    --- 瘦 DLL 的除錯記錄 ---"
+    tr -d '\r' < "${TRACE_LOG}" | sed 's/^/      /'
+  else
+    note_fail "瘦 DLL 完全沒有留下除錯記錄 —— 落地記錄機制本身壞了,
+     而那正是使用者回報問題時唯一的線索來源。"
+  fi
+else
+  log "6c. (沒有給 --host,跳過「經由真的 TSF」那一段)"
+fi
+
+# ══════════════════════════════════════════════════════════════════
+#  6b. doctor:服務跑著的時候必須全綠,停掉之後必須指出是服務那一格
+# ══════════════════════════════════════════════════════════════════
+#
+# 這是這一輪要交給使用者的那支工具的**正面**斷言。它跑在這裡是刻意的:
+# 上面那一段剛好讓服務處於「起來了、詞庫也部署完了」的狀態 ——
+# 也就是使用者機器上正常時的樣子。
+log "6b. doctor(裝好、服務跑著)"
+set +e
+"${INSTALL_DIR}/rime_ime_setup.exe" doctor --no-engine \
+  > "${WORK}/doctor-after.log" 2>&1
+rc_doc=$?
+set -e
+doctor_after="$(tr -d '\r' < "${WORK}/doctor-after.log")"
+printf '%s\n' "${doctor_after}" | sed 's/^/    /'
+if [ "${rc_doc}" -eq 0 ]; then
+  ok "裝好而且服務跑著的時候,doctor 以 0 結束"
+else
+  note_fail "裝好之後 doctor 仍然以 ${rc_doc} 結束 —— 見上面的 [FAIL] 行"
+fi
+# 逐格點名。只看結束碼的話,「九格都沒在看」也會以 0 結束。
+for want in \
+  "[PASS] rime_tsf.dll" \
+  "[PASS] rime_service.exe 在跑" \
+  "[PASS] 連得上、握手過了、session 建得起來" \
+  "[PASS] 全機註冊完整"
+do
+  case "${doctor_after}" in
+    *"${want}"*) ok "doctor 有這一格:${want}" ;;
+    *) note_fail "doctor 沒有印出「${want}」——那一格沒有在看" ;;
+  esac
+done
+
+# ── 反向:把服務停掉,doctor 必須指出來 ──────────────────────────
+#
+# 沒有這一條的話,「服務在跑」那一格可能是恆真的(例如判斷寫反、
+# 或它其實什麼都沒查),而那正是它最該說話的時候。
+"${INSTALL_DIR}/rime_ime_setup.exe" stop-service --dir "${INSTALL_DIR_W}" \
+  > "${WORK}/stop-for-doctor.log" 2>&1 || true
+sleep 2
+set +e
+"${INSTALL_DIR}/rime_ime_setup.exe" doctor --no-engine --no-scan \
+  > "${WORK}/doctor-nosvc.log" 2>&1
+rc_doc=$?
+set -e
+doctor_nosvc="$(tr -d '\r' < "${WORK}/doctor-nosvc.log")"
+if [ "${rc_doc}" -eq 0 ]; then
+  printf '%s\n' "${doctor_nosvc}" | sed 's/^/    /'
+  note_fail "服務已經停掉了,doctor 竟然還以 0 結束 —— 服務那一格是恆真的"
+elif printf '%s\n' "${doctor_nosvc}" \
+       | grep -q '^  \[FAIL\] rime_service.exe 沒有在跑'; then
+  ok "服務停掉之後,doctor 指出「rime_service.exe 沒有在跑」"
+else
+  printf '%s\n' "${doctor_nosvc}" | sed 's/^/    /'
+  note_fail "服務停掉之後 doctor 紅了,但沒有指出是服務那一格"
+fi
+
+# 後面的「安裝目錄一個位元都沒變」需要服務是停的 —— 剛好已經停了。
+# 但為了不讓兩段互相依賴,下面那一步仍然會自己再停一次(冪等)。
+
 # ── 使用者詞典去了哪裡 ────────────────────────────────────────────
 [ -d "${USER_DIR}" ] && ok "使用者資料目錄已建立: ${USER_DIR}" \
                      || note_fail "沒有建立 ${USER_DIR}"
@@ -629,6 +776,12 @@ if "${TOOL}" check > "${WORK}/check-uninstalled.log" 2>&1; then
   note_fail "解除安裝之後 check 竟然還通過"
 else
   ok "解除安裝之後 check 以非零結束"
+fi
+if "${TOOL}" doctor --no-engine --no-scan > "${WORK}/doctor-uninstalled.log" 2>&1; then
+  tr -d '\r' < "${WORK}/doctor-uninstalled.log"
+  note_fail "解除安裝之後 doctor 竟然還以 0 結束"
+else
+  ok "解除安裝之後 doctor 以非零結束"
 fi
 
 # ── ⚠ 使用者詞典必須還在 ─────────────────────────────────────────

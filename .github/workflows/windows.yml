@@ -16,10 +16,18 @@ name: Windows (核心驗證 + TSF)
 #             組字政策、候選窗排版、fail-open 狀態機、
 #             以及**經由真的具名管道**驅動服務打出「你好」。
 #
-#   CI 驗不到:regsvr32 註冊、TSF 的 Activate/組字/edit session、
-#             候選窗的樣子與位置、在記事本或瀏覽器裡真的打得出字、
+#   ⚠ 這一輪從「驗不到」搬走了一大塊:**TSF 那一整條現在驗得到了。**
+#     windows/verify_tsf.sh 用 rime_tsf_host.exe(一個假的文字編輯器)
+#     建 ITfThreadMgr、給 ITextStoreACP 焦點、啟用我們的語言設定檔、
+#     用 ITfKeystrokeMgr 送按鍵,於是系統會真的去讀登錄檔、
+#     CoCreateInstance、把 rime_tsf.dll 載進來、呼叫 ActivateEx。
+#     使用者回報的「切過去、一個字都打不出來、也沒有任何 UI」撞的正是這一段,
+#     而在這之前 CI 從來沒有走過它(verify_ime.sh 走的是具名管道,繞過 TSF)。
+#
+#   CI 仍然驗不到:候選窗的樣子與位置、高 DPI、在**真的**記事本/瀏覽器/
+#             Office/市集 App 裡的行為、語言列按鈕與系統匣圖示長什麼樣、
 #             以及「每一顆鍵是不是都真的做了它宣稱的事」。
-#             這些只有人在真 Windows 上跑得到,清單見 windows/README.md。
+#             清單見 windows/README.md。
 #
 #   這個專案吃過「編得出來不等於能用」的虧:編譯成功、單元測試全過、
 #   發布關卡全綠,而使用者一裝就按鍵永久變灰。**不要因為這裡綠了就說做完了。**
@@ -94,6 +102,22 @@ jobs:
       # 離線稽核。Android 端的 scripts/audit_offline.sh 在原始碼層面守
       # 「整個 app 只有一個檔案碰得到網路」,這一支是 Windows 端的對應物。
       # 目前的主張更強:**一個檔案都沒有**。
+      # ⚠ 這一步是這一輪加的,而且它補的是**使用者實際撞到的那一段**。
+      #
+      # 在它之前,「切到這個輸入法之後 ActivateEx 有沒有被呼叫」整條是紙上的:
+      # CI 驗得到註冊、驗得到引擎、驗得到經由具名管道打出「你好」,
+      # 就是沒有一格經過「系統把 DLL 載入宿主進程」這件事。
+      #
+      # 它會**動到這台機器的登錄檔**(全機註冊),所以腳本裡有 trap 保證
+      # 反註冊;沒有的話,同一台快取機器上的下一個 job 會在
+      # verify_installer.sh 的第一條斷言(「安裝之前 check 必須紅」)失敗,
+      # 而那個失敗看起來與這裡完全無關。
+      #
+      # 快速 job 裡沒有服務也沒有詞庫,所以只要求走到 ActivateEx 與
+      # 「按鍵映得出 keysym」。真的打出字那一段在 install-x64 裡(--full)。
+      - name: 真的經過 TSF（載入 DLL → ActivateEx → 送按鍵）
+        run: ./windows/verify_tsf.sh --bin third_party/build/windows-x64/logic/bin
+
       - name: 離線稽核（原始碼層面:沒有任何檔案碰網路 API）
         run: ./windows/audit_offline_win.sh
 
@@ -137,6 +161,7 @@ jobs:
           path: |
             third_party/build/windows-x64/logic/bin/
             third_party/build/windows-x64/*.log
+            third_party/build/windows-x64/logic/bin/tsf-verify/
           if-no-files-found: warn
 
   # ────────────────────────────────────────────────────────────────
@@ -313,6 +338,7 @@ jobs:
             third_party/build/windows-x64/ime/bin/rime_service.exe
             third_party/build/windows-x64/ime/bin/rime_ime_setup.exe
             third_party/build/windows-x64/ime/bin/rime_probe.exe
+            third_party/build/windows-x64/ime/bin/rime_tsf_host.exe
             third_party/build/windows-x64/console/bin/rime_console.exe
           if-no-files-found: error
 
@@ -410,6 +436,7 @@ jobs:
             echo "SETUP_EXE=dist/RimeQuad-Setup-x64.exe"
             echo "PROBE_EXE=$(locate_one rime_probe.exe)"
             echo "TOOL_EXE=$(locate_one rime_ime_setup.exe)"
+            echo "HOST_EXE=$(locate_one rime_tsf_host.exe)"
           } >> "$GITHUB_ENV"
 
       # runner 本身就是系統管理員,所以靜默安裝跑得動。
@@ -418,7 +445,8 @@ jobs:
           ./windows/verify_installer.sh \
             --setup "$SETUP_EXE" \
             --probe "$PROBE_EXE" \
-            --tool  "$TOOL_EXE"
+            --tool  "$TOOL_EXE" \
+            --host  "$HOST_EXE"
 
       - name: 上傳安裝驗證日誌
         if: always()

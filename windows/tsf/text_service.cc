@@ -8,6 +8,7 @@
 #include "../winshared/winutil.h"
 #include "guids.h"
 #include "lang_bar.h"
+#include "trace.h"
 
 // DllMain 存下來的模組控制代碼。用來找到與 DLL 同目錄的 rime_service.exe。
 extern HMODULE g_rime_module;
@@ -86,6 +87,74 @@ KeyEvent BuildKeyEvent(WPARAM w, LPARAM l, bool key_up) {
   return e;
 }
 
+// ── 背景把服務叫起來 ──────────────────────────────────────────────
+//
+// ⚠ 這條路徑修的是使用者實際回報的「**沒有任何 UI**」。
+//
+// 系統匣圖示與設定視窗都住在**服務進程**裡,而在這之前,服務唯一的啟動
+// 時機是「第一顆按鍵走到 EnsureReady()」。於是只要按鍵那條路上任何一段
+// 斷掉(例如佈局問不出 keysym,見 win32_oracle.h 檔頭),服務就**永遠不會
+// 被啟動** —— 使用者看到的是「打不出字」**加上**「沒有任何 UI」,
+// 兩個看起來無關的症狀,同一個根因。
+//
+// 把啟動搬到 ActivateEx(使用者切到這個輸入法的當下)之後:
+//   · 系統匣圖示與設定視窗在切過去幾秒內就會出現,不必先打字;
+//   · 首次部署(要編譯詞庫,好幾分鐘)提早開始,而不是等到使用者
+//     第一次按鍵才開始 —— 那時他會以為輸入法壞了;
+//   · 而「打不出字」如果還在,就**只剩**按鍵那條路可以查了。
+//     把兩個症狀解耦,比同時修兩件事重要。
+//
+// ⚠ 一定要在**背景執行緒**上做。ActivateEx 跑在宿主的 UI 執行緒上,
+//   在那裡 CreateProcess(甚至只是開一次登錄檔)都會讓切換輸入法卡一下,
+//   而那是使用者每天做很多次的動作。
+//
+// ⚠ 執行緒活著的期間必須抓住 DLL 的參考計數(g_rime_dll_refs)。
+//   少了它,宿主可能在 DllCanUnloadNow 回 S_OK 之後把 DLL 卸載掉,
+//   而執行緒還在那段已經不存在的程式碼裡 —— 症狀是「切換輸入法時偶爾當掉」。
+DWORD WINAPI ServiceStarterThread(LPVOID param) {
+  std::wstring* path = static_cast<std::wstring*>(param);
+  if (path) {
+    if (!ServiceIsRunning()) {
+      Trace("ActivateEx:服務沒在跑,背景啟動");
+      LaunchService(*path);
+    } else {
+      Trace("ActivateEx:服務已經在跑");
+    }
+    delete path;
+  }
+  ::InterlockedDecrement(&g_rime_dll_refs);
+  return 0;
+}
+
+// 每個宿主進程只做一次。
+//
+// 不是節流,是**正確性**:一個宿主裡可以有很多個 TextService 實例
+// (每一條有輸入焦點的執行緒一個),而它們會在使用者每次切回這個輸入法時
+// 各自 Activate 一遍。沒有這個旗標的話,瀏覽器切幾次分頁就會排出幾十條
+// 執行緒,每一條都去問一次「服務在不在」。
+LONG g_service_start_once = 0;
+
+void StartServiceInBackground(const std::wstring& service_path) {
+  if (service_path.empty()) return;
+  if (::InterlockedCompareExchange(&g_service_start_once, 1, 0) != 0) return;
+  // 提權的宿主一律不啟動(理由見 ipc_client.h 的 LaunchService)。
+  // 在這裡就先擋掉,連執行緒都不必開。
+  if (IsProcessElevated()) {
+    Trace("ActivateEx:宿主是提權的,不啟動服務(刻意)");
+    return;
+  }
+  std::wstring* copy = new (std::nothrow) std::wstring(service_path);
+  if (!copy) return;
+  ::InterlockedIncrement(&g_rime_dll_refs);
+  HANDLE th = ::CreateThread(nullptr, 0, &ServiceStarterThread, copy, 0, nullptr);
+  if (!th) {
+    ::InterlockedDecrement(&g_rime_dll_refs);
+    delete copy;
+    return;
+  }
+  ::CloseHandle(th);
+}
+
 HRESULT RunSyncSession(ITfContext* ctx, TfClientId id, FnEditSession::Fn fn) {
   if (!ctx) return E_FAIL;
   FnEditSession* s = new (std::nothrow) FnEditSession(std::move(fn));
@@ -105,7 +174,14 @@ HRESULT RunSyncSession(ITfContext* ctx, TfClientId id, FnEditSession::Fn fn) {
 TextService::TextService() {
   ::InterlockedIncrement(&g_rime_dll_refs);
   const std::wstring dir = ModuleDirectory(g_rime_module);
-  if (!dir.empty()) ipc_.SetServicePath(dir + L"\\rime_service.exe");
+  if (dir.empty()) {
+    // 走到這裡的話,連服務執行檔的位置都算不出來 —— 輸入法必定完全沒作用,
+    // 而且沒有任何其他跡象。一定要留一行。
+    Trace("!! 算不出模組目錄,服務永遠不會被啟動");
+  } else {
+    service_path_ = dir + L"\\rime_service.exe";
+    ipc_.SetServicePath(service_path_);
+  }
 }
 
 TextService::~TextService() {
@@ -153,8 +229,15 @@ STDMETHODIMP TextService::Activate(ITfThreadMgr* mgr, TfClientId id) {
 }
 
 STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* mgr, TfClientId id,
-                                     DWORD /*flags*/) {
+                                     DWORD flags) {
   RIME_GUARD_BEGIN
+  // ⚠ 這一行是「使用者切到我們的輸入法之後,系統到底有沒有把我們叫起來」
+  //   唯一的答案。在這之前,整條路徑完全是紙上的 ——
+  //   CI 驗得到註冊、驗得到引擎,就是驗不到這一格。
+  //   (現在 windows/verify_tsf.sh 也驗得到了,靠的就是這一行。)
+  Trace("ActivateEx 被呼叫 clientid=%lu flags=0x%lX 執行緒=%lu",
+        static_cast<unsigned long>(id), static_cast<unsigned long>(flags),
+        static_cast<unsigned long>(::GetCurrentThreadId()));
   if (!mgr) return E_INVALIDARG;
   thread_mgr_ = mgr;
   thread_mgr_->AddRef();
@@ -200,15 +283,42 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* mgr, TfClientId id,
     ReleaseLangBarButton(lang_bar_);
     lang_bar_ = nullptr;
   }
+  Trace("語言列按鈕:%s", lang_bar_ ? "已加入" : "加不上(宿主沒有語言列?)");
 
-  // 刻意**不**在這裡連線服務。Activate 發生在使用者切到這個輸入法的當下,
-  // 在宿主的 UI 執行緒上;那時去開管道(甚至啟動服務)會讓切換卡住。
-  // 連線是第一次真的有按鍵時才做,而且有逾時與退避。
+  // 順手把目前的鍵盤佈局問一遍,結果寫進記錄。
+  //
+  // ⚠ 這一格是這一輪查到的關鍵。文字服務啟用時 GetKeyboardLayout(0) 拿到的
+  //   不保證是一份真的鍵盤佈局(見 win32_oracle.h 檔頭),而它若問不出字,
+  //   **每一顆按鍵都會被原樣放行、引擎一顆都收不到**,連線也永遠不會建立。
+  //   在這裡問一次,是為了讓那件事在記錄裡是一行明確的話,
+  //   而不是「使用者說不能打字」。
+  {
+    const Win32KeyboardOracle& w = Oracle();
+    Trace("鍵盤佈局 hkl=0x%08llX%s%s altgr=%d",
+          static_cast<unsigned long long>(
+              reinterpret_cast<UINT_PTR>(w.requested_hkl())),
+          w.used_fallback() ? " (問不出字,已改問 real hkl)" : "",
+          w.blind() ? " **完全問不出字 —— 按鍵一顆都進不了引擎**" : "",
+          w.HasAltGr() ? 1 : 0);
+    if (w.used_fallback())
+      Trace("  改用的佈局 hkl=0x%08llX",
+            static_cast<unsigned long long>(reinterpret_cast<UINT_PTR>(w.hkl())));
+  }
+
+  // 刻意**不**在這裡連線服務:開管道與握手要在宿主的 UI 執行緒上等,
+  // 那會讓切換輸入法卡住。連線仍然是第一次真的有按鍵時才做。
+  //
+  // 但**啟動**服務要在這裡做(而且是在背景執行緒上)——
+  // 系統匣圖示與設定視窗住在服務進程裡,等到第一顆按鍵才啟動的話,
+  // 按鍵那條路一斷,使用者就同時失去輸入與全部 UI。見上面
+  // StartServiceInBackground 的說明。
+  StartServiceInBackground(service_path_);
   return S_OK;
   RIME_GUARD_END_HR
 }
 
 STDMETHODIMP TextService::Deactivate() {
+  Trace("Deactivate 被呼叫");
   if (lang_bar_) {
     RemoveLangBarButton(thread_mgr_, lang_bar_);
     ReleaseLangBarButton(lang_bar_);
@@ -303,8 +413,23 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* ctx, WPARAM w, LPARAM l,
   // 回 TRUE 但稍後 OnKeyDown 回 FALSE 是合法的 —— TSF 會把那顆鍵交回宿主。
   // 反過來(這裡回 FALSE)則 OnKeyDown 根本不會被呼叫,那顆鍵就永遠進不到引擎。
   // 所以這裡寧可寬鬆。
-  if (MapKey(BuildKeyEvent(w, l, false), Oracle()).keysym == 0) return S_OK;
-  if (!ipc_.EnsureReady()) return S_OK;
+  const MappedKey mapped = MapKey(BuildKeyEvent(w, l, false), Oracle());
+  const bool ready = mapped.keysym != 0 && ipc_.EnsureReady();
+  if (key_trace_budget_ > 0) {
+    --key_trace_budget_;
+    // 三個欄位就足以指出斷在哪一段:
+    //   keysym == 0        → 佈局那一段(按鍵根本沒進引擎,見 win32_oracle.h)
+    //   keysym != 0, !ready → IPC 那一段(上面 EnsureReady 已經記了原因)
+    //   兩者都好           → 這一顆真的進了引擎
+    Trace("按鍵 vk=0x%02X scan=0x%02X keysym=0x%X mods=0x%X 吃掉=%d",
+          static_cast<unsigned>(w),
+          static_cast<unsigned>((l >> 16) & 0xFF),
+          static_cast<unsigned>(mapped.keysym),
+          static_cast<unsigned>(mapped.modifiers), ready ? 1 : 0);
+    if (key_trace_budget_ == 0)
+      Trace("(按鍵記錄額度用完,之後不再記 —— 它在宿主的 UI 執行緒上)");
+  }
+  if (!ready) return S_OK;
   *eaten = TRUE;
   (void)ctx;
   return S_OK;
@@ -356,7 +481,7 @@ STDMETHODIMP TextService::OnCompositionTerminated(TfEditCookie /*ec*/,
 
 // ──────────────────── 內部 ────────────────────
 
-const KeyboardOracle& TextService::Oracle() {
+const Win32KeyboardOracle& TextService::Oracle() {
   // ⚠ 每次都問一次目前執行緒的 HKL。使用者可以在任何時候切換鍵盤佈局
   //   (Win+空白鍵),而快取住第一次看到的那個,等於從此用錯的佈局解讀按鍵。
   const HKL hkl = ::GetKeyboardLayout(0);
@@ -580,6 +705,9 @@ STDMETHODIMP TextService::OnActivated(DWORD /*profile_type*/, LANGID langid,
   // 而且會讓「他上次用哪個方案」被別人的切換覆蓋掉。
   if (!IsEqualCLSID(clsid, CLSID_RimeTextService)) return S_OK;
   if (!(flags & TF_IPSINK_FLAG_ACTIVE)) return S_OK;
+  // 這條通知是「使用者從繁體切到簡體」唯一的管道(三份設定檔共用一個 CLSID,
+  // 所以 TSF 不會重新 Activate)。在這之前它整條是紙上的。
+  Trace("profile sink:啟用 langid=0x%04X", static_cast<unsigned>(langid));
   ipc_.SetProfile(static_cast<uint32_t>(langid), GuidToUtf8(guid_profile));
   return S_OK;
   RIME_GUARD_END_HR
@@ -600,12 +728,18 @@ void TextService::RefreshProfile() {
     const HKL hkl = ::GetKeyboardLayout(0);
     const uint32_t lang =
         static_cast<uint32_t>(reinterpret_cast<UINT_PTR>(hkl) & 0xFFFFu);
+    Trace("語言設定檔:第3層(HKL 低位字)langid=0x%04X —— "
+          "連 CLSID_TF_InputProcessorProfiles 都建不出來",
+          static_cast<unsigned>(lang));
     ipc_.SetProfile(lang, std::string());
     return;
   }
 
   uint32_t langid = 0;
   std::string guid;
+  // 走到哪一層。README 記著「三層退路一層都沒被執行過一次」——
+  // 少了這一行,那句話下一輪還是一樣。
+  const char* layer = "?";
   ITfInputProcessorProfileMgr* mgr = nullptr;
   if (SUCCEEDED(profiles->QueryInterface(IID_ITfInputProcessorProfileMgr,
                                          (void**)&mgr)) &&
@@ -615,6 +749,7 @@ void TextService::RefreshProfile() {
         IsEqualCLSID(prof.clsid, CLSID_RimeTextService)) {
       langid = static_cast<uint32_t>(prof.langid);
       guid = GuidToUtf8(prof.guidProfile);
+      layer = "第1層 ProfileMgr::GetActiveProfile";
     }
     mgr->Release();
   }
@@ -623,21 +758,29 @@ void TextService::RefreshProfile() {
     // Activate 的當下是可能的,系統的快取還沒更新(見 README:
     // 註冊完 0.12 秒時列舉不到自己,22 秒後才看得到)。
     LANGID cur = 0;
-    if (SUCCEEDED(profiles->GetCurrentLanguage(&cur)))
+    if (SUCCEEDED(profiles->GetCurrentLanguage(&cur))) {
       langid = static_cast<uint32_t>(cur);
+      layer = "第2層 GetCurrentLanguage(啟用的還不是我們 / CTF 快取沒跟上)";
+    }
   }
   profiles->Release();
   if (langid == 0) {
     const HKL hkl = ::GetKeyboardLayout(0);
     langid = static_cast<uint32_t>(reinterpret_cast<UINT_PTR>(hkl) & 0xFFFFu);
+    layer = "第3層 HKL 低位字";
   }
+  Trace("語言設定檔:%s langid=0x%04X guid=%s", layer,
+        static_cast<unsigned>(langid), guid.empty() ? "(沒有)" : guid.c_str());
   ipc_.SetProfile(langid, guid);
 }
 
 void TextService::OpenSettings() {
   // 路 1:管道已經連上 → 走 IPC。UWP / 市集 App 的宿主跑在 AppContainer 裡,
   // 開不了 Local\ 底下別人建立的具名物件,那時只有這一條走得通。
-  if (ipc_.SendOpenSettings()) return;
+  if (ipc_.SendOpenSettings()) {
+    Trace("設定按鈕:路1(IPC)");
+    return;
+  }
 
   // 路 2:具名事件。使用者還沒打過任何一個字時管道沒連,只有這一條走得通。
   HANDLE ev = ::OpenEventW(EVENT_MODIFY_STATE, FALSE,
@@ -645,8 +788,10 @@ void TextService::OpenSettings() {
   if (ev) {
     ::SetEvent(ev);
     ::CloseHandle(ev);
+    Trace("設定按鈕:路2(具名事件)");
     return;
   }
+  Trace("設定按鈕:路3(CreateProcess)");
 
   // 路 3:服務根本沒在跑 → 把它叫起來,直接開設定視窗。
   // ⚠ 提權的宿主不可以啟動服務(見 ipc_client.cc 的說明:那會產生一支
