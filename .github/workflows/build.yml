@@ -35,6 +35,7 @@ on:
       - main
       - fix-publish
       - fix-gates
+      - fix-android-ui
   pull_request:
     branches:
       - main

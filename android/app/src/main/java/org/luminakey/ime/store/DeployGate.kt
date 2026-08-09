@@ -26,7 +26,11 @@ object DeployGate {
 
     private const val TAG = "DeployGate"
 
-    /** 實測：三本詞庫加 5.7MB 語言模型在模擬器上 7.2 秒。大方案數十秒起跳。 */
+    /**
+     * 上限刻意放到遠大於 [org.luminakey.ime.core.DeployEstimate] 的量級：
+     * 那個估計值講的是隨附的三本詞庫，而使用者裝了大方案之後可以久得多。
+     * 這個常數要擋的是「回呼永遠不來」，不是「跑得比預期久」。
+     */
     const val DEFAULT_TIMEOUT_MS = 10 * 60 * 1000L
 
     sealed class Outcome {

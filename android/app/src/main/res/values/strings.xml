@@ -66,9 +66,10 @@
 
     <string name="preparing_title">Still sorting out words</string>
     <string name="preparing_failed_title">Sorting the words did not work</string>
-    <string name="preparing_body">Only ever happens once, and takes about ten seconds.\nPick one you like while you wait — or pick nothing, and you get the first one.</string>
+    <!-- %1$d = 預期秒數，來自 core/DeployEstimate.kt。全專案只有那裡有這個數字。 -->
+    <string name="preparing_body">Only ever happens once, and takes about %1$d seconds.\nPick one you like while you wait — or pick nothing, and you get the first one.</string>
     <!-- %1$s = 引擎給的原因。刻意放在最後，前面先講他能做什麼。 -->
-    <string name="preparing_failed_body">The keyboard still opens, but it may not produce any characters. Go to “More &amp; reporting a problem” and tap “Sort the words again” — that usually fixes it.\n\n%1$s</string>
+    <string name="preparing_failed_body">The keyboard still opens, but it may not produce any characters. Sorting the words again usually fixes it.\n\n%1$s</string>
     <string name="preparing_no_keyboards">The list of keyboards is not readable yet. Once the words are sorted you can also pick one under Settings › Keyboard.</string>
     <string name="preparing_pick">Pick a keyboard</string>
     <string name="preparing_more_hint">There are more keyboards than these. Later you can change without coming back here: while typing, tap the ⚙ at the right end of the candidate row.</string>
@@ -89,7 +90,16 @@
     <!-- %1$s = 目前那個輸入法的顯示名。 -->
     <string name="not_ready_not_default_body_current">Right now you are using “%1$s”.</string>
     <string name="not_ready_not_default_body">Pick it from your phone\'s keyboard list.</string>
-    <string name="not_ready_preparing_body">Only ever happens once, and takes about ten seconds. Typing may not respond until it is done.</string>
+    <!-- %1$d = 預期秒數，來自 core/DeployEstimate.kt。 -->
+    <string name="not_ready_preparing_body">Only ever happens once, and takes about %1$d seconds. Typing may not respond until it is done.</string>
+    <!--
+      「失敗」與「準備中」在首頁必須分得出來，而且失敗那一格一定要有出路。
+      合成一格的版本出過貨：部署一失敗，首頁就停在「正在整理字詞」而且沒有
+      任何按鈕，使用者看著一句永遠不會結束的請稍候。
+    -->
+    <string name="not_ready_failed">Sorting the words did not work</string>
+    <string name="not_ready_failed_body">The keyboard opens, but it may not produce any characters. Sorting them again usually fixes it.</string>
+    <string name="not_ready_refresh_words">Sort the words again</string>
     <string name="not_ready_open_settings">Open system settings</string>
     <string name="not_ready_switch">Switch to this keyboard</string>
 
@@ -327,7 +337,8 @@
         <item quantity="one">%1$d dependency is already installed and will not be downloaded again: %2$s</item>
         <item quantity="other">%1$d dependencies are already installed and will not be downloaded again: %2$s</item>
     </plurals>
-    <string name="store_confirm_footnote">Each download is checked against its sha256 before anything is unpacked; then the words are sorted again, which can take a few seconds to a minute. If that fails it rolls itself back.</string>
+    <!-- %1$d = 預期秒數，來自 core/DeployEstimate.kt。 -->
+    <string name="store_confirm_footnote">Each download is checked against its sha256 before anything is unpacked; then the words are sorted again, which takes about %1$d seconds — longer if you have many keyboards. If that fails it rolls itself back.</string>
     <string name="store_confirm_install_enable">Download and turn on</string>
     <string name="store_confirm_download_only">Download only</string>
 
@@ -347,8 +358,8 @@
     <string name="job_preflight">Checking what it needs</string>
     <string name="job_preflight_detail">Making sure the dictionaries and settings files are all there</string>
     <string name="job_deploying">Sorting out words</string>
-    <!-- %1$d = 已耗時秒數。 -->
-    <string name="job_deploying_detail">%1$d seconds so far. Three input methods took about 7 seconds when we measured; bigger ones take longer.</string>
+    <!-- %1$d = 已耗時秒數，%2$d = 預期秒數（core/DeployEstimate.kt）。 -->
+    <string name="job_deploying_detail">%1$d seconds so far. Usually about %2$d seconds; bigger ones take longer.</string>
     <string name="job_rolling_back">Putting it back</string>
     <string name="job_rolling_back_detail">Sorting the words failed, so the change is being undone: %1$s</string>
     <string name="job_enable">Turning it on</string>
@@ -390,7 +401,8 @@
     <string name="advanced_import_sub">A keyboard package you prepared yourself (.zip)</string>
     <string name="advanced_redeploy">Sort the words again</string>
     <string name="advanced_redeploy_busy">Sorting…</string>
-    <string name="advanced_redeploy_sub">For when typing goes strange. Takes about ten seconds.</string>
+    <!-- %1$d = 預期秒數，來自 core/DeployEstimate.kt。 -->
+    <string name="advanced_redeploy_sub">For when typing goes strange. Takes about %1$d seconds.</string>
     <string name="advanced_reset">Reset everything</string>
     <string name="advanced_reset_pristine">Everything is already at its default</string>
     <string name="advanced_reset_sub">Throw away every setting and go back to the values it shipped with</string>
@@ -500,6 +512,15 @@
     <string name="keyboard_stub_notice">⟦STUB⟧ librime is not wired up; these candidates are fake</string>
     <string name="keyboard_no_schema">No input schemas available (rs_schema_list came back empty)</string>
     <string name="keyboard_layout_not_loaded">Layout has not loaded yet</string>
+
+    <!--
+      RimeInputMethodService.onPhase() 推上候選列的三句話。原本是 Kotlin 字面值
+      的中文，而預設語系是英文 —— 全世界的使用者都會在鍵盤上看到中文。
+      %1$d = 預期秒數，來自 core/DeployEstimate.kt。
+    -->
+    <string name="ime_notice_preparing">Getting the keyboard data ready…</string>
+    <string name="ime_notice_deploying">First time: sorting out words, about %1$d seconds…</string>
+    <string name="ime_notice_failed">The keyboard could not start</string>
 
 
     <!-- ─────────────────────── 無障礙朗讀名稱 ─────────────────────── -->

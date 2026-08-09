@@ -46,6 +46,7 @@ import androidx.compose.ui.text.font.FontWeight
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.luminakey.ime.R
+import org.luminakey.ime.core.DeployEstimate
 import org.luminakey.ime.core.RimeRuntime
 import org.luminakey.ime.keyboard.KeyboardType
 import org.luminakey.ime.prefs.PrefsStore
@@ -62,9 +63,9 @@ import org.luminakey.ime.prefs.PrefsStore
  * 隔天再回來，畫面永遠反映當下的真實狀態。
  *
  * ── 等待藏在人的動作後面 ────────────────────────────────────────────────
- * 首次部署實測 8.0 秒（模擬器）／12.5 秒（三星 S24U）。這段藏不掉，但可以
- * 跟人的動作**並行**：字詞整理在 App 一打開就開始跑，而使用者這時要去系統
- * 設定按兩趟 —— 人走這兩趟的時間本來就超過那十幾秒。
+ * 首次部署的實測耗時見 [org.luminakey.ime.core.DeployEstimate]。這段藏不掉，
+ * 但可以跟人的動作**並行**：字詞整理在 App 一打開就開始跑，而使用者這時要去
+ * 系統設定按兩趟 —— 人走這兩趟的時間本來就超過那十幾秒。
  *
  * **這個前提是實測過的**：App 被切到背景（使用者人在系統的輸入法設定頁）
  * 期間，部署照樣跑完，phase 從 DEPLOYING 走到 READY 全程發生在背景。
@@ -80,6 +81,16 @@ import org.luminakey.ime.prefs.PrefsStore
 fun OnboardingScreen(
     stage: SetupStage,
     system: ImeSystemState,
+    /**
+     * ⚠ 與 [stage] 重複了一部分，但**不能省**：[stage] 在整段準備期間都是
+     * `PREPARING`，看不出 EXTRACTING → DEPLOYING 的轉換；而 [PreparingBody] 需要
+     * 那個轉換來重讀鍵盤清單。把它當參數傳下去，也正是讓那個 Composable
+     * **不會被 Compose 跳過重組**的手段（見 [PreparingBody] 的註解）。
+     */
+    phase: RimeRuntime.Phase,
+    /** 整理字詞失敗的原因。見 [rememberRimeInitError]。 */
+    initError: String?,
+    onRefreshWords: () -> Unit,
     onFinished: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -90,7 +101,13 @@ fun OnboardingScreen(
     // 落在哪一頁，絕不代表「輸入法可以用」。寫入時機是「第一次觀察到系統
     // 說我們已經是預設輸入法」，而不是「使用者按了完成」—— 以系統事實為準。
     LaunchedEffect(stage) {
-        if (stage == SetupStage.READY || stage == SetupStage.PREPARING) {
+        // FAILED 也算「兩步都做完了」：那一格的前提就是系統那兩步已經成立，
+        // 只是引擎出了事。下次冷啟落在設定頁是對的 —— 首頁的那條橫幅會誠實地
+        // 說失敗，而且給得出「重新整理字詞」；把他丟回引導頁反而繞遠路。
+        if (stage == SetupStage.READY ||
+            stage == SetupStage.PREPARING ||
+            stage == SetupStage.FAILED
+        ) {
             val store = PrefsStore.get(context)
             if (store.current.onboardingDone != true) {
                 store.update { it.copy(onboardingDone = true) }
@@ -129,7 +146,18 @@ fun OnboardingScreen(
         SetupStage.PREPARING ->
             Column(base.verticalScroll(rememberScrollState())) {
                 Spacer(Modifier.height(Space.s8))
-                PreparingBody()
+                PreparingBody(phase = phase)
+                Spacer(Modifier.height(Space.s8))
+            }
+
+        SetupStage.FAILED ->
+            Column(base.verticalScroll(rememberScrollState())) {
+                Spacer(Modifier.height(Space.s8))
+                FailedBody(
+                    error = initError,
+                    onRefreshWords = onRefreshWords,
+                    onFinished = onFinished,
+                )
                 Spacer(Modifier.height(Space.s8))
             }
 
@@ -340,41 +368,37 @@ private fun StepRow(
  * 這是這一屏不算「多一步」的關鍵。
  */
 @Composable
-private fun PreparingBody() {
+private fun PreparingBody(phase: RimeRuntime.Phase) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val failed = RimeRuntime.phase == RimeRuntime.Phase.FAILED
-    val error = RimeRuntime.initError
 
     Text(
-        text = stringResource(
-            if (failed) R.string.preparing_failed_title else R.string.preparing_title
-        ),
+        text = stringResource(R.string.preparing_title),
         fontSize = TypeScale.t1,
         fontWeight = FontWeight.SemiBold,
         modifier = Modifier.semantics { heading() },
     )
     Spacer(Modifier.height(Space.s1))
     Text(
-        text = if (failed) {
-            stringResource(R.string.preparing_failed_body, error.orEmpty())
-        } else {
-            stringResource(R.string.preparing_body)
-        },
+        // 秒數只有一個來源，見 [DeployEstimate]。
+        text = stringResource(R.string.preparing_body, DeployEstimate.TYPICAL_SECONDS),
         fontSize = TypeScale.t3,
         lineHeight = TypeScale.t3Line,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 
-    if (!failed) {
-        Spacer(Modifier.height(Space.s5))
-        DeployBar()
-    }
+    Spacer(Modifier.height(Space.s5))
+    DeployBar()
 
     Spacer(Modifier.height(Space.s7))
 
     // 部署完成的那一刻方案清單會從檔案旁路換成引擎的清單，所以要跟著 phase 重算。
-    val all = remember(RimeRuntime.phase) { starterKeyboards(availableKeyboards(context)) }
+    //
+    // ⚠ [phase] **一定要是參數**，不可以在這裡直接讀 `RimeRuntime.phase`。
+    // 那是一個普通的 `@Volatile` 欄位，不是 Compose 狀態：讀它不會登記任何讀取
+    // 關係；而一個沒有參數的 Composable 是可跳過的，上層重組時 Compose 會直接
+    // 略過它。上一版的「整理字詞失敗」那句文案就是這樣一輩子畫不出來的。
+    val all = remember(phase) { starterKeyboards(availableKeyboards(context)) }
     var picked by remember { mutableStateOf<KeyboardType?>(currentKeyboardOf(context, all)) }
     val selectedKey = picked?.key ?: all.firstOrNull()?.key
     if (all.isEmpty()) {
@@ -401,6 +425,60 @@ private fun PreparingBody() {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
+}
+
+/* ─────────────────────── 狀態 3b：失敗 ─────────────────────── */
+
+/**
+ * 整理字詞失敗。
+ *
+ * ── 為什麼它是一個帶參數的獨立 Composable ───────────────────────────────
+ * 上一版把這件事寫在 [PreparingBody] 裡面，用 `RimeRuntime.phase == FAILED`
+ * 分岔。那是**畫不出來的**：[PreparingBody] 當時沒有參數（可跳過），
+ * 而 `RimeRuntime.phase` / `initError` 是普通的 `@Volatile` 欄位（讀了不登記）。
+ * 兩件事湊在一起，等於這段分支永遠停在第一次組合時的值。
+ *
+ * 現在失敗是 [SetupStage.FAILED] 這一格，由上層的 `stage` 換屏、訊息由參數
+ * 帶進來 —— 兩者都是 Compose 追得到的東西。
+ *
+ * ── 為什麼這一屏一定要有按鈕 ────────────────────────────────────────────
+ * 引導頁只有 [ReadyBody] 那條路會呼叫 `onFinished`。所以在加這一屏之前，
+ * 首次啟動一旦部署失敗，使用者就被**關在引導頁裡**：出不去、也走不到
+ * 「進階與問題回報 → 重新整理字詞」。
+ */
+@Composable
+private fun FailedBody(
+    error: String?,
+    onRefreshWords: () -> Unit,
+    onFinished: () -> Unit,
+) {
+    Text(
+        text = stringResource(R.string.preparing_failed_title),
+        fontSize = TypeScale.t1,
+        fontWeight = FontWeight.SemiBold,
+        modifier = Modifier.semantics { heading() },
+    )
+    Spacer(Modifier.height(Space.s1))
+    Text(
+        // %1$s = 引擎給的原因（英文的故障載荷，見 RimeRuntime 的註解）。
+        text = stringResource(R.string.preparing_failed_body, error.orEmpty()),
+        fontSize = TypeScale.t3,
+        lineHeight = TypeScale.t3Line,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(Space.s7))
+    // 這一屏唯一的實心按鈕。按的是首頁那顆同一個 redeploy()，進度與結果由
+    // StoreOverlays 統一畫（它畫在引導頁之外，所以這裡看得到）。
+    Button(
+        onClick = onRefreshWords,
+        modifier = Modifier.fillMaxWidth().heightIn(min = Dimens.touchTarget),
+    ) { Text(stringResource(R.string.not_ready_refresh_words), fontSize = TypeScale.t4) }
+    Spacer(Modifier.height(Space.s4))
+    // 第二條路：不想在這裡耗，就直接進設定 —— 首頁那條橫幅會把同一件事再說一次。
+    TextButton(
+        onClick = onFinished,
+        modifier = Modifier.heightIn(min = Dimens.touchTarget),
+    ) { Text(stringResource(R.string.ready_more_settings), fontSize = TypeScale.t4) }
 }
 
 /* ─────────────────────── 狀態 4：好了 ─────────────────────── */
@@ -438,9 +516,6 @@ private fun ReadyBody(onFinished: () -> Unit) {
 }
 
 /* ─────────────────────── 進度 ─────────────────────── */
-
-/** 首次部署的估計耗時。實測：模擬器 8.0 秒、三星 S24U 12.5 秒。 */
-private const val DEPLOY_ESTIMATE_MS = 12_500f
 
 @Composable
 private fun DeployLine(hint: String) {
@@ -492,7 +567,8 @@ private fun DeployBar() {
     val fraction = when {
         RimeRuntime.phase == RimeRuntime.Phase.READY -> 1f
         elapsed < 0 -> 0.04f
-        else -> (elapsed / DEPLOY_ESTIMATE_MS).coerceIn(0.04f, 0.95f)
+        // 分母只有一個來源，見 [DeployEstimate]（量測來源也記在那裡）。
+        else -> (elapsed / DeployEstimate.TYPICAL_MS.toFloat()).coerceIn(0.04f, 0.95f)
     }
     Box(
         Modifier

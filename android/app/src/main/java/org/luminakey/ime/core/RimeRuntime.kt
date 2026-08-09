@@ -26,7 +26,7 @@ import java.util.concurrent.CopyOnWriteArrayList
  *
  * ── 為什麼要非同步 ──────────────────────────────────────────────────────
  * 隨附資料有 13MB / 54 個檔案，解壓在模擬器上要好幾秒；接著 librime 首次
- * 部署要編三本詞庫加 5.7MB 語言模型，實測要一到兩分鐘。這些如果壓在
+ * 部署要編三本詞庫加 5.7MB 語言模型，實測耗時見 [DeployEstimate]。這些如果壓在
  * InputMethodService.onCreate() 上，鍵盤根本來不及出現。
  *
  * 所以拆成兩段：

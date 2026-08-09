@@ -12,7 +12,8 @@ import java.io.File
  *   已啟用 = 出現在 default.custom.yaml 的 schema_list（[SchemaListPatch] 記錄）
  *
  * 理由是部署成本：librime 每次部署會編譯 schema_list 上的**每一個**方案。
- * 實測三個方案 7.2 秒，而且是累加的。使用者裝十個方案卻只用兩個，
+ * 而且成本是**累加**的（單次量級見 [org.luminakey.ime.core.DeployEstimate]）。
+ * 使用者裝十個方案卻只用兩個，
  * 若「安裝」等於「啟用」，他往後每一次部署都在替八個用不到的方案編詞庫。
  *
  * 因此：

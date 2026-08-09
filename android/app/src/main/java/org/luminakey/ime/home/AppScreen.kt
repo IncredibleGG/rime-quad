@@ -29,6 +29,7 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import org.luminakey.ime.R
+import org.luminakey.ime.core.DeployEstimate
 import org.luminakey.ime.net.FirstRunNoticeHost
 import org.luminakey.ime.net.NetworkSwitchCard
 import org.luminakey.ime.prefs.PrefsStore
@@ -70,6 +71,9 @@ fun RimeAppScreen(
     val store = remember { StoreController(context.applicationContext) }
     val system = rememberImeSystemState(focusEpoch)
     val phase = rememberRimePhase()
+    // 失敗訊息要跟著 phase 走；直接讀 RimeRuntime.initError 是畫不出來的，
+    // 見 [rememberRimeInitError]。
+    val initError = rememberRimeInitError(phase)
     val stage = stageOf(system, phase)
 
     var onboarding by remember { mutableStateOf(startInOnboarding && !openStore) }
@@ -85,6 +89,9 @@ fun RimeAppScreen(
             OnboardingScreen(
                 stage = stage,
                 system = system,
+                phase = phase,
+                initError = initError,
+                onRefreshWords = { store.redeploy() },
                 onFinished = { onboarding = false },
             )
         } else {
@@ -94,6 +101,10 @@ fun RimeAppScreen(
                 Route.HOME -> HomeScreen(
                     stage = stage,
                     system = system,
+                    initError = initError,
+                    // 失敗態那顆按鈕按的是同一個 redeploy()：進度、成功／失敗
+                    // 由 StoreOverlays 統一畫（它畫在所有頁面之外）。
+                    onRefreshWords = { store.redeploy() },
                     onNavigate = { route = it },
                 )
 
@@ -142,6 +153,8 @@ fun RimeAppScreen(
 fun HomeScreen(
     stage: SetupStage,
     system: ImeSystemState,
+    initError: String?,
+    onRefreshWords: () -> Unit,
     onNavigate: (Route) -> Unit,
 ) {
     val context = LocalContext.current
@@ -170,7 +183,12 @@ fun HomeScreen(
         // 那時 App 該開在設定（他已經是老手了），但這裡必須誠實地說出來，
         // 並給一顆一鍵切回去的按鈕。
         if (stage != SetupStage.READY) {
-            NotReadyStrip(stage = stage, system = system)
+            NotReadyStrip(
+                stage = stage,
+                system = system,
+                initError = initError,
+                onRefreshWords = onRefreshWords,
+            )
             Spacer(Modifier.height(Space.s5))
         }
 
@@ -225,8 +243,26 @@ fun HomeScreen(
     }
 }
 
+/**
+ * 「你現在還不能打字，原因是這個，該做的是這個。」
+ *
+ * ⚠ 這一條橫幅有五種狀態，其中兩種長得像但完全不同：**準備中**是等就會好，
+ * **失敗**是等下去不會好。上一版把兩者併成同一格（見 [stageOf] 的註解），
+ * 結果部署一失敗，首頁就永遠停在「正在整理字詞」而且一顆按鈕都沒有。
+ *
+ * 所以這裡有兩件事是硬規定：
+ *   1. 哪一格給按鈕由 [actionOf] 決定，不由這裡的 `if` 決定 ——
+ *      寫在這裡的 `if` 沒有人驗得到，那正是上一版的漏法。
+ *   2. 失敗時要把 [initError] 帶出來。它是英文的**故障載荷**（見 RimeRuntime
+ *      的註解），讀者是收到問題回報的我們，所以它排在「你可以做什麼」後面。
+ */
 @Composable
-private fun NotReadyStrip(stage: SetupStage, system: ImeSystemState) {
+private fun NotReadyStrip(
+    stage: SetupStage,
+    system: ImeSystemState,
+    initError: String?,
+    onRefreshWords: () -> Unit,
+) {
     val context = LocalContext.current
     PlainCard {
         Column(Modifier.fillMaxWidth().padding(Space.s5)) {
@@ -235,6 +271,7 @@ private fun NotReadyStrip(stage: SetupStage, system: ImeSystemState) {
                     SetupStage.NOT_ENABLED -> stringResource(R.string.not_ready_not_enabled)
                     SetupStage.ENABLED_NOT_DEFAULT -> stringResource(R.string.not_ready_not_default)
                     SetupStage.PREPARING -> stringResource(R.string.not_ready_preparing)
+                    SetupStage.FAILED -> stringResource(R.string.not_ready_failed)
                     SetupStage.READY -> ""
                 },
                 fontSize = TypeScale.t3,
@@ -248,7 +285,13 @@ private fun NotReadyStrip(stage: SetupStage, system: ImeSystemState) {
                             ?.let { stringResource(R.string.not_ready_not_default_body_current, it) }
                             ?: stringResource(R.string.not_ready_not_default_body)
 
-                    SetupStage.PREPARING -> stringResource(R.string.not_ready_preparing_body)
+                    // 秒數只有一個來源，見 [DeployEstimate]。
+                    SetupStage.PREPARING -> stringResource(
+                        R.string.not_ready_preparing_body,
+                        DeployEstimate.TYPICAL_SECONDS,
+                    )
+
+                    SetupStage.FAILED -> stringResource(R.string.not_ready_failed_body)
                     SetupStage.READY -> ""
                 },
                 fontSize = TypeScale.t5,
@@ -257,19 +300,38 @@ private fun NotReadyStrip(stage: SetupStage, system: ImeSystemState) {
                 // s1：標題與它正下方的副標。s2 以上會讓那兩行看起來不像同一組。
                 modifier = Modifier.padding(top = Space.s1),
             )
+            // 引擎給的原因。刻意排在使用者能做的事後面：他先知道自己該做什麼，
+            // 這一行是給問題回報用的。
+            if (stage == SetupStage.FAILED && !initError.isNullOrBlank()) {
+                Text(
+                    text = initError,
+                    fontSize = TypeScale.t5,
+                    lineHeight = TypeScale.t5Line,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = Space.s3),
+                )
+            }
             // PREPARING 沒有按鈕（沒有人能加速它），所以那一格不要留一段空白 ——
             // 空白在別的狀態下是「按鈕在這裡」的預告，留著會讓人以為少畫了東西。
-            if (stage == SetupStage.NOT_ENABLED || stage == SetupStage.ENABLED_NOT_DEFAULT) {
+            // ⚠ 這個判斷**不寫在這裡**，見 [actionOf]。
+            val action = actionOf(stage)
+            if (action != NotReadyAction.NONE) {
                 Spacer(Modifier.height(Space.s4))
                 // 本屏唯一的實心按鈕（A1）：不必讀字就知道該點哪裡。
                 PrimaryWide(
                     text = stringResource(
-                        if (stage == SetupStage.NOT_ENABLED) R.string.not_ready_open_settings
-                        else R.string.not_ready_switch
+                        when (action) {
+                            NotReadyAction.OPEN_IME_SETTINGS -> R.string.not_ready_open_settings
+                            NotReadyAction.SWITCH_IME -> R.string.not_ready_switch
+                            else -> R.string.not_ready_refresh_words
+                        }
                     ),
                 ) {
-                    if (stage == SetupStage.NOT_ENABLED) openImeSettings(context)
-                    else showImePicker(context)
+                    when (action) {
+                        NotReadyAction.OPEN_IME_SETTINGS -> openImeSettings(context)
+                        NotReadyAction.SWITCH_IME -> showImePicker(context)
+                        else -> onRefreshWords()
+                    }
                 }
             }
         }

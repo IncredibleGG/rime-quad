@@ -22,11 +22,19 @@ import org.luminakey.ime.core.RimeRuntime
  *
  * ── 為什麼是四種狀態而不是三種 ──────────────────────────────────────────
  * 直覺上是三種：沒啟用 / 啟用了但不是預設 / 好了。實測推翻了這個直覺 ——
- * 首次啟動時 librime 要編三本詞庫加一份 5.7MB 語言模型，模擬器實測 8.0 秒、
- * 使用者的 S24U 上 12.5 秒。也就是說「已啟用 + 已是預設」**不等於**「能打字」。
+ * 首次啟動時 librime 要編三本詞庫加一份 5.7MB 語言模型，耗時見
+ * [org.luminakey.ime.core.DeployEstimate]（量測來源也記在那裡）。也就是說
+ * 「已啟用 + 已是預設」**不等於**「能打字」。
  *
- * 少了 [SetupStage.PREPARING] 這一格，使用者會在那八到十三秒裡點進試打框、
+ * 少了 [SetupStage.PREPARING] 這一格，使用者會在那段時間裡點進試打框、
  * 打字沒反應，然後認定它壞了。**這一格的存在本身就是這一版最重要的修正之一。**
+ *
+ * ── 為什麼「失敗」是第五格，而不是併進「準備中」──────────────────────
+ * 併進去的版本出貨過，後果是：部署一失敗，首頁就永遠停在「正在整理字詞」，
+ * 而那一格**刻意不給按鈕**（理由寫在原始碼裡：「沒有人能加速它」——
+ * 這句話對準備中成立，對已經失敗是錯的）。使用者看著一句永遠不會結束的
+ * 請稍候，唯一的自救路徑藏在首頁最底下的灰字列裡。
+ * **等待與壞掉必須長得不一樣，而且壞掉必須看得見出路。**
  *
  * ── 為什麼完成狀態不存旗標 ──────────────────────────────────────────────
  * 兩步的完成與否都可以即時從系統問到，兩者都不需要任何權限。競品的三步精靈
@@ -43,8 +51,16 @@ enum class SetupStage {
     /** 在清單裡了，但現在打字用的是別人。 */
     ENABLED_NOT_DEFAULT,
 
-    /** 兩步都完成了，但詞庫還在整理 —— **還不能打字**。 */
+    /** 兩步都完成了，但詞庫還在整理 —— **還不能打字**，而且等就會好。 */
     PREPARING,
+
+    /**
+     * 整理字詞失敗了 —— **等下去不會變好**。
+     *
+     * 與 [PREPARING] 的差別不在文案，在**有沒有出路**：這一格一定要給一顆
+     * 看得見的「重新整理字詞」，並把 `RimeRuntime.initError` 一起帶出來。
+     */
+    FAILED,
 
     /** 真的可以打字了。 */
     READY,
@@ -81,17 +97,56 @@ internal fun isEnabledPackage(enabledImePackages: List<String>, myPackage: Strin
     enabledImePackages.contains(myPackage)
 
 /**
- * 兩個系統事實 + 引擎階段 → 四種狀態。
+ * 兩個系統事實 + 引擎階段 → 五種狀態。
  *
- * [RimeRuntime.Phase.FAILED] 也落在 [SetupStage.PREPARING]：畫面上該說的話由
- * `RimeRuntime.initError` 決定（「準備中」還是「出事了」），但**都不是**
- * 「可以用了」。把失敗當成可用是最不能犯的錯。
+ * [RimeRuntime.Phase.FAILED] 自己一格。它與 [SetupStage.PREPARING] 唯一的共通點
+ * 是「都不能打字」，而畫面上該說的話、該不該給按鈕完全相反 ——
+ * 上一版把兩者併在一起，於是失敗的人被畫成還在等。把失敗當成可用是最不能犯的
+ * 錯；把失敗畫成等待是第二不能犯的。
+ *
+ * ⚠ 系統那兩步仍然排在最前面：沒啟用／不是預設的時候先講那兩步，因為它們是
+ * **前置條件** —— 字詞整理好了他還是打不了字。他做完那兩步之後，下一次輪詢
+ * 就會看到 [SetupStage.FAILED]。
  */
 fun stageOf(system: ImeSystemState, phase: RimeRuntime.Phase): SetupStage = when {
     !system.enabled -> SetupStage.NOT_ENABLED
     !system.isDefault -> SetupStage.ENABLED_NOT_DEFAULT
+    phase == RimeRuntime.Phase.FAILED -> SetupStage.FAILED
     phase != RimeRuntime.Phase.READY -> SetupStage.PREPARING
     else -> SetupStage.READY
+}
+
+/**
+ * 首頁那條「還不能用」的橫幅上，**該給哪一顆按鈕**。
+ *
+ * ── 為什麼要一個純函式，而不是寫在 Composable 裡的一個 if ────────────────
+ * 因為原本的缺陷就是寫在 Composable 裡的那一行：
+ * `if (stage == NOT_ENABLED || stage == ENABLED_NOT_DEFAULT)`。它安靜地把失敗態
+ * 排除在外，而**沒有任何一條測試看得見它** —— UI 的分支不是可以斷言的東西，
+ * 純函式才是。搬到這裡之後，「失敗態有沒有出路」變成一行就能驗的事實。
+ */
+enum class NotReadyAction {
+    /** 不給按鈕。 */
+    NONE,
+
+    /** 開系統的輸入法設定（第 1 步）。 */
+    OPEN_IME_SETTINGS,
+
+    /** 叫出系統的輸入法選擇器（第 2 步）。 */
+    SWITCH_IME,
+
+    /** 重新整理字詞（`StoreController.redeploy()`）。 */
+    REFRESH_WORDS,
+}
+
+fun actionOf(stage: SetupStage): NotReadyAction = when (stage) {
+    SetupStage.NOT_ENABLED -> NotReadyAction.OPEN_IME_SETTINGS
+    SetupStage.ENABLED_NOT_DEFAULT -> NotReadyAction.SWITCH_IME
+    // 失敗態唯一的出路。原本它只存在於「進階與問題回報」頁最底下的灰字列裡。
+    SetupStage.FAILED -> NotReadyAction.REFRESH_WORDS
+    // 準備中真的沒有人能加速它，給一顆按鈕只會讓人按了以為有用。
+    SetupStage.PREPARING -> NotReadyAction.NONE
+    SetupStage.READY -> NotReadyAction.NONE
 }
 
 /* ───────────────────────── Android 查詢 ───────────────────────── */
@@ -179,6 +234,19 @@ fun rememberImeSystemState(refreshKey: Any = Unit): ImeSystemState {
     }
     return state
 }
+
+/**
+ * 失敗訊息，跟著 [rememberRimePhase] 一起更新。
+ *
+ * ⚠ `RimeRuntime.initError` 是一個普通的 `@Volatile` 欄位，**不是 Compose 狀態**：
+ * 在 Composable 裡直接讀它不會登記任何讀取關係，Compose 也就沒有任何理由因為
+ * 它變了而重組。所以這裡拿 `phase` 當 `remember` 的鍵 —— `RimeRuntime` 的每一條
+ * 失敗路徑都是**先寫 initError 再 setPhase(FAILED)**（見該檔），
+ * 所以 phase 一到手，訊息一定已經寫好了。
+ */
+@Composable
+fun rememberRimeInitError(phase: RimeRuntime.Phase): String? =
+    remember(phase) { RimeRuntime.initError }
 
 /** librime 的初始化階段，會自己跟上。 */
 @Composable
