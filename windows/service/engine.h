@@ -137,11 +137,15 @@ class Engine {
 
  private:
   void ThreadMain();
-  void Post(std::function<void()> fn);  // 丟工作並**等它做完**
-  // 丟工作就走,不等。⚠ 與 Post 不同,這一支必須把 fn **複製**進佇列:
-  // Post 之所以可以捕捉參考,是因為它會在原地等到工作跑完;這一支不等,
-  // 呼叫端的堆疊在工作執行之前就已經不在了。
-  void PostAsync(std::function<void()> fn);
+  // 丟工作並**等它做完**。
+  //
+  // ⚠ label 不是裝飾。引擎只有一條執行緒,所以「我的請求為什麼慢」的答案
+  //   幾乎一定是「**別人**擋在前面」,而以前記錄裡完全看不出那個別人是誰:
+  //   2026-08-09 CI 上有一次 SESSION_NEW 花了 1328 ms(建 session 1234 ms),
+  //   旁邊那幾次是 15~47 ms,而沒有任何線索指出那 1.2 秒引擎在做什麼。
+  //   現在每一件慢工作都會自己report:等了多久、跑了多久、叫什麼名字。
+  void Post(const char* label, std::function<void()> fn);
+  void Post(std::function<void()> fn) { Post("(沒有標籤)", std::move(fn)); }
 
   // 以下三個只在引擎執行緒上呼叫。
   Snapshot TakeSnapshot(uint64_t id);
@@ -151,7 +155,14 @@ class Engine {
   std::thread thread_;
   std::mutex mu_;
   std::condition_variable cv_;
-  std::deque<std::function<void()>> queue_;
+  // 一件排隊中的工作。帶著標籤與入列時間,好把「等了多久」與「跑了多久」
+  // 分開 —— 那兩個數字要修的地方完全不同(前者是別人擋著,後者是自己慢)。
+  struct Job {
+    std::function<void()> fn;
+    const char* label = "(沒有標籤)";  // 一律是字面值,不必管生命週期
+    int64_t enqueued_ms = 0;
+  };
+  std::deque<Job> queue_;
   // 「有空再收」的 session。與 queue_ 分開,而且**優先權比它低** ——
   // 收掉一個已經走掉的 session 沒有人在等,建立一個新的才有人在等。
   // 完整的理由見 ThreadMain。

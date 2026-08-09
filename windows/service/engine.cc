@@ -17,6 +17,21 @@ namespace {
 // 沒有任何人在等。
 constexpr int64_t kLowPriorityIdleMs = 400;
 
+// 一件工作慢到多少毫秒就值得記一行。
+//
+// 40 毫秒是刻意訂在**按鍵預算(50ms)之下**的:任何一件慢到 40 毫秒的
+// 工作,都已經有能力讓下一顆按鍵逾時。記多一點沒關係 —— 這幾行只在
+// 出事時才有人看,而出事時它們是唯一的線索。
+constexpr int64_t kSlowJobMs = 40;
+
+void ReportSlowJob(const char* label, int64_t waited_ms, int64_t ran_ms) {
+  if (waited_ms + ran_ms < kSlowJobMs) return;
+  std::fprintf(stderr, "[engine] 慢工作 %s 等待=%lld ms 執行=%lld ms\n", label,
+               static_cast<long long>(waited_ms),
+               static_cast<long long>(ran_ms));
+  std::fflush(stderr);
+}
+
 int64_t NowSteadyMs() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
              std::chrono::steady_clock::now().time_since_epoch())
@@ -163,6 +178,8 @@ void Engine::Stop() {
 void Engine::ThreadMain() {
   for (;;) {
     std::function<void()> job;
+    const char* job_label = "(沒有標籤)";
+    int64_t job_enqueued = 0;
     uint64_t destroy_id = 0;
     bool done_all = false;
     {
@@ -199,7 +216,9 @@ void Engine::ThreadMain() {
       }
       if (done_all) break;
       if (!queue_.empty()) {
-        job = std::move(queue_.front());
+        job = std::move(queue_.front().fn);
+        job_label = queue_.front().label;
+        job_enqueued = queue_.front().enqueued_ms;
         queue_.pop_front();
       } else {
         // ── ⚠ 收 session 只在**沒有別的事**的時候做 ────────────────
@@ -224,21 +243,33 @@ void Engine::ThreadMain() {
       }
     }
     if (job) {
+      const int64_t t_start = NowSteadyMs();
       job();
+      const int64_t t_end = NowSteadyMs();
+      // ⚠ 「等了多久」與「跑了多久」一定要分開報。
+      //   等很久 = **別人擋在前面**(去看上一行是誰);
+      //   跑很久 = 這件事本身就慢(去看它做了什麼)。
+      //   併成一個數字的話,兩種完全不同的問題長得一模一樣 ——
+      //   而引擎只有一條執行緒,所以前者才是常態。
+      ReportSlowJob(job_label, t_start - job_enqueued, t_end - t_start);
       // 「引擎最後一次忙於**有人在等的**工作」是什麼時候。低優先的工作
       // 靠它決定要不要再等一下(見上面)。收 session 不算忙 ——
       // 不然一串連續的收尾會讓自己一直看起來很忙。
       {
         std::lock_guard<std::mutex> lock(mu_);
-        last_normal_ms_ = NowSteadyMs();
+        last_normal_ms_ = t_end;
       }
     } else if (destroy_id != 0) {
+      const int64_t t_start = NowSteadyMs();
       auto it = sessions_.find(destroy_id);
       if (it != sessions_.end()) {
         rs_session_destroy(it->second);
         sessions_.erase(it);
         session_lang_.erase(destroy_id);
       }
+      // 收 session 是低優先的,但它一旦開始就擋得住下一個人 ——
+      // 所以它慢的時候更要說出來。
+      ReportSlowJob("收 session(低優先)", 0, NowSteadyMs() - t_start);
     }
     cv_.notify_all();
   }
@@ -248,16 +279,20 @@ void Engine::ThreadMain() {
   sessions_.clear();
 }
 
-void Engine::Post(std::function<void()> fn) {
+void Engine::Post(const char* label, std::function<void()> fn) {
   bool done = false;
   {
     std::unique_lock<std::mutex> lock(mu_);
     if (stop_) return;
-    queue_.push_back([&fn, &done, this] {
+    Job j;
+    j.label = label;
+    j.enqueued_ms = NowSteadyMs();
+    j.fn = [&fn, &done, this] {
       fn();
       std::unique_lock<std::mutex> l2(mu_);
       done = true;
-    });
+    };
+    queue_.push_back(std::move(j));
   }
   cv_.notify_all();
   std::unique_lock<std::mutex> lock(mu_);
@@ -267,17 +302,6 @@ void Engine::Post(std::function<void()> fn) {
   cv_.wait(lock, [&] { return done; });
 }
 
-void Engine::PostAsync(std::function<void()> fn) {
-  {
-    std::unique_lock<std::mutex> lock(mu_);
-    if (stop_) return;
-    // ⚠ **移動進佇列,不可以捕捉參考。** Post 捕捉參考是安全的,因為它
-    //   會站在原地等到工作跑完;這一支丟了就走,呼叫端的堆疊在工作真正
-    //   執行之前就已經不存在了。這兩支長得很像,而差別是一個懸空參考。
-    queue_.push_back(std::move(fn));
-  }
-  cv_.notify_all();
-}
 
 bool Engine::WaitDeploy(int seconds) {
   for (int i = 0; i < seconds * 10 && deploy_state_.load() == 0; ++i)
@@ -292,7 +316,7 @@ uintptr_t Engine::Find(uint64_t id) const {
 
 uint64_t Engine::NewSession() {
   uint64_t id = 0;
-  Post([&] {
+  Post("建 session", [&] {
     const rs_session s = rs_session_create();
     if (s == RS_INVALID_SESSION) return;
     id = next_id_++;
@@ -302,7 +326,7 @@ uint64_t Engine::NewSession() {
 }
 
 void Engine::EndSession(uint64_t id) {
-  Post([&] {
+  Post("收 session", [&] {
     auto it = sessions_.find(id);
     if (it == sessions_.end()) return;
     rs_session_destroy(it->second);
@@ -359,7 +383,7 @@ Snapshot Engine::TakeSnapshot(uint64_t id) {
 
 Result Engine::ProcessKey(uint64_t id, int32_t keysym, uint32_t mods) {
   Result r;
-  Post([&] {
+  Post("按鍵", [&] {
     const uintptr_t sess = Find(id);
     if (!sess) return;
     // 部署還沒完成時 librime 給不出任何候選。這時**立刻**回「沒處理」,
@@ -378,7 +402,7 @@ Result Engine::ProcessKey(uint64_t id, int32_t keysym, uint32_t mods) {
 
 Result Engine::SelectCandidate(uint64_t id, int32_t index) {
   Result r;
-  Post([&] {
+  Post("選候選", [&] {
     const uintptr_t sess = Find(id);
     if (!sess) return;
     r.handled = rs_select_candidate(sess, index);
@@ -389,7 +413,7 @@ Result Engine::SelectCandidate(uint64_t id, int32_t index) {
 
 Result Engine::CommitComposition(uint64_t id) {
   Result r;
-  Post([&] {
+  Post("上屏", [&] {
     const uintptr_t sess = Find(id);
     if (!sess) return;
     r.handled = rs_commit_composition(sess);
@@ -400,7 +424,7 @@ Result Engine::CommitComposition(uint64_t id) {
 
 Result Engine::Clear(uint64_t id) {
   Result r;
-  Post([&] {
+  Post("清除組字", [&] {
     const uintptr_t sess = Find(id);
     if (!sess) return;
     r.handled = rs_clear_composition(sess);
@@ -411,7 +435,7 @@ Result Engine::Clear(uint64_t id) {
 
 Result Engine::ChangePage(uint64_t id, bool backward) {
   Result r;
-  Post([&] {
+  Post("翻頁", [&] {
     const uintptr_t sess = Find(id);
     if (!sess) return;
     r.handled = rs_change_page(sess, backward);
@@ -422,7 +446,7 @@ Result Engine::ChangePage(uint64_t id, bool backward) {
 
 Result Engine::SelectSchema(uint64_t id, const std::string& schema_id) {
   Result r;
-  Post([&] {
+  Post("換方案", [&] {
     const uintptr_t sess = Find(id);
     if (!sess) return;
     r.handled = rs_select_schema(sess, schema_id.c_str());
@@ -433,7 +457,7 @@ Result Engine::SelectSchema(uint64_t id, const std::string& schema_id) {
 
 std::vector<std::pair<std::string, std::string>> Engine::SchemaList() {
   std::vector<std::pair<std::string, std::string>> out;
-  Post([&] {
+  Post("列方案", [&] {
     const int32_t n = rs_schema_list(nullptr, nullptr, 0);
     if (n <= 0) return;
     std::vector<const char*> ids(static_cast<size_t>(n), nullptr);
@@ -448,7 +472,7 @@ std::vector<std::pair<std::string, std::string>> Engine::SchemaList() {
 
 bool Engine::SetOption(uint64_t id, const char* option, bool value) {
   bool ok = false;
-  Post([&] {
+  Post("設選項", [&] {
     const uintptr_t sess = Find(id);
     if (!sess) return;
     ok = rs_set_option(sess, option, value);
@@ -457,17 +481,17 @@ bool Engine::SetOption(uint64_t id, const char* option, bool value) {
 }
 
 void Engine::SetOptionAll(const char* option, bool value) {
-  Post([&] {
+  Post("對所有 session 設選項", [&] {
     for (const auto& kv : sessions_) rs_set_option(kv.second, option, value);
   });
 }
 
 void Engine::SetSessionLangId(uint64_t id, uint32_t langid) {
-  Post([&] { session_lang_[id] = langid; });
+  Post("記下 session 的語言", [&] { session_lang_[id] = langid; });
 }
 
 void Engine::ApplyVariantAll(const SchemaPreference& pref) {
-  Post([&] {
+  Post("對所有 session 套簡繁", [&] {
     for (const auto& kv : sessions_) {
       auto it = session_lang_.find(kv.first);
       const uint32_t lang = (it == session_lang_.end()) ? 0u : it->second;
@@ -482,14 +506,14 @@ void Engine::ApplyVariantAll(const SchemaPreference& pref) {
 }
 
 void Engine::SelectSchemaAll(const std::string& schema_id) {
-  Post([&] {
+  Post("對所有 session 換方案", [&] {
     for (const auto& kv : sessions_) rs_select_schema(kv.second, schema_id.c_str());
   });
 }
 
 std::string Engine::SchemaOfSession(uint64_t id) {
   std::string out;
-  Post([&] {
+  Post("問 session 的方案", [&] {
     const uintptr_t sess = Find(id);
     if (!sess) return;
     const rs_snapshot* s = rs_snapshot_acquire(sess);
@@ -505,7 +529,7 @@ std::string Engine::SchemaOfSession(uint64_t id) {
 std::string Engine::ApplyChoice(uint64_t id, const std::string& schema_id,
                                 const std::vector<OptionAssign>& options) {
   std::string chosen;
-  Post([&] {
+  Post("套用方案與選項", [&] {
     const uintptr_t sess = Find(id);
     if (!sess) return;
     if (!schema_id.empty() && rs_select_schema(sess, schema_id.c_str()))
