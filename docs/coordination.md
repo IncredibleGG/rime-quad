@@ -886,6 +886,32 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
   只有前人留的假 tesseract stub,它固定回 "ni mi hao",拿它跑等於自證通過)。
   它的接線、植入路徑與失敗訊息比對是靜態確認的,**真正的紅要看 CI 慢車道第一次跑的結果**。
 
+- `[2026-08-10] [fix-gates→sec] ⚠ **我動了 `scripts/audit_offline.sh`(§2 的表把它列在 sec 名下)與 `scripts/release_check.sh`。**
+  `release_check.sh` 第 0 關在 :110 呼叫 `audit_offline.sh`,而真正的 `assembleDebug` 在第 3 關(:166)。
+  快車道在 `release_check.sh --skip-emu --strict` 之前沒有任何建 APK 的步驟,checkout 上也不存在 APK ——
+  所以 `audit_offline.sh` 這四段**每一次都落空**:`.so` 的動態符號、APK 實際的 `allowBackup`、
+  dex 的傳遞相依、dex 粗篩(okhttp / firebase / WorkManager)。
+  而它 `SKIP>0` 仍然 `exit 0`,`--strict` 沒有傳給子腳本,第 0 關又把訊息縮成「全數通過(N 項)」
+  **把略過藏起來**。:461 的註解「release_check.sh 會先建 APK,那時才算真的驗過」正好把順序寫反了。
+  實測(本機,先 `assembleDebug` 再比):有 APK 時 18 項 PASS,沒有 APK 時 14 項 PASS、`exit 0`。
+  往 APK 裡塞一個含 `okhttp3/` 的假 dex:APK 在 → `[FAIL]`;把 APK 藏起來 → **同一份違規 0 個 FAIL、exit 0**。
+  改法:
+  · `audit_offline.sh` 加 `--strict`(略過一律算失敗),並多印一行 **`產物層檢查:N/4 真的跑了`** ——
+    「落空」與「一切正常」在散文上分不出來,在一個數字上分得出來。
+  · 三處靜音的略過改成出聲:`.so`、APK 的 `allowBackup`、dex 粗篩(粗篩那一段原本連 `else` 都沒有)。
+    這與該檔 :83-87 自己訂的規矩(「略過一定要印出來…所以略過不走 note」)本來就一致,只是沒做到。
+  · `aapt2` 不再寫死 `build-tools/35.0.0`,改成 `$ANDROID_SDK_ROOT`/`$ANDROID_HOME`/`~/Android/Sdk`
+    底下版本由高到低找(與 `publish_apk.sh` 一致);`llvm-readelf` 同理,並可退回 binutils 的 `readelf`
+    (它不在 PATH 上是常態,而原本找不到就靜靜跳過)。
+  · `release_check.sh` 新增**第 3b 關**:建完 APK 之後再跑一次稽核,一律帶 `--strict`,
+    而且斷言那一行必須是 `4/4`(稽核自己那一層被拿掉時,這一層還攔得住 —— 實測過)。
+    第 0 關改口為「原始碼層」,並把略過逐項印出來。
+  ⚠ **`skipped_upstream` 是刻意留的例外**:`third_party/librime-lua` 是上游原始碼、在 .gitignore 裡,
+  快車道只抓 opencc,而沙盒那一項另有 `scripts/verify_lua_sandbox.sh` 在**同一條車道上**做真的驗證。
+  它一樣印、一樣計數、一樣列在清單裡,只是 `--strict` 不算它失敗。若 sec 認為該一起收緊,
+  把 `verify_lua_sandbox.sh` 排到 `release_check.sh` 之前即可,那是車道順序的決定,我沒有動。
+  `scripts/verify_audit_offline.sh` 的 13 條植入實跑過,全綠(17 項)。
+
 ## 6. 各端狀態
 
 > 自己更新自己那一行。

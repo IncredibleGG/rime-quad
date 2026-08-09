@@ -23,7 +23,7 @@
 # 那等於沒有。所以拆開:快的每次 push 跑,慢的推上 main 或手動觸發時跑。
 #
 # **拆開不等於拿掉。** 兩條車道加起來必須仍是原本那 16 項:
-#   --skip-emu → 第 0–4 關      --emu-only → 第 5–7 關
+#   --skip-emu → 第 0–4 關(含 3b)  --emu-only → 第 5–7 關
 # 而且 --emu-only 會在結尾明白列出它**沒有**驗的那幾關,免得有人拿慢車道
 # 的綠燈當成「發布關卡通過」。發布必須兩條都綠(見 .github/workflows/build.yml
 # 的 publish job 的 needs:)。
@@ -101,14 +101,25 @@ fi
 
 if [ "$EMU_ONLY" -eq 0 ]; then
 
-step "0. 離線稽核（產品定位）"
+step "0. 離線稽核（產品定位・原始碼層）"
 # 放在第 1 關之前,而且是**不需要模擬器**的一關 —— 它擋的不是「會不會壞」,
 # 是「我們對使用者講的話還算不算數」。無審查、離線為預設、經得起審計,
 # 這些是這個 app 存在的理由;功能壞了可以下一版補,定位破了補不回來。
 #
+# ⚠ 但這一關跑在**建 APK 之前**(assembleDebug 在第 3 關),所以
+#   audit_offline.sh 裡四段只看得到產物的檢查必然落空:.so 的動態符號、
+#   APK 實際打進去的 allowBackup、dex 的傳遞相依、dex 粗篩。
+#   而它 SKIP>0 仍然 exit 0,這裡原本又把訊息縮成「全數通過(N 項)」——
+#   於是「使用者手上那份 APK 裡有沒有第二個出口」從來沒有在快車道上被問過。
+#   **這一關現在只宣稱原始碼層**,產物層由第 3b 關負責,而那一關帶 --strict。
+#
 # 檢查項目與每一項的理由見 scripts/audit_offline.sh 的檔頭。
 if "$ROOT/scripts/audit_offline.sh" > "$OUT/audit-offline.log" 2>&1; then
-  ok "離線稽核全數通過（$(grep -c '\[PASS\]' "$OUT/audit-offline.log") 項）"
+  _AP="$(grep -c '\[PASS\]' "$OUT/audit-offline.log")"
+  _AS="$(grep -c '\[SKIP\]' "$OUT/audit-offline.log")"
+  # 略過的項數要說出來。藏起來的話,這一行的綠燈會被當成「全部驗過了」。
+  ok "離線稽核（原始碼層）通過 $_AP 項，另有 $_AS 項要等 APK 建好（見第 3b 關）"
+  [ "$_AS" -gt 0 ] && grep '\[SKIP\]' "$OUT/audit-offline.log" | sed 's/^/    /'
 else
   bad "離線稽核未通過 —— 這份建置不符合本專案對外的承諾，不要發布"
   grep -A2 '\[FAIL\]' "$OUT/audit-offline.log" | head -20 >&2
@@ -167,6 +178,35 @@ if (cd android && nohup ./gradlew --console=plain assembleDebug > "$OUT/build.lo
   ok "assembleDebug 成功（$(stat -c%s "$APK") bytes）"
 else
   bad "建置失敗，見 $OUT/build.log"; tail -20 "$OUT/build.log"
+fi
+
+step "3b. 離線稽核（產品定位・產物層）"
+# 第 0 關跑在 assembleDebug 之前,所以那四段只看得到產物的檢查一定是空的。
+# 這一關在 APK 建好之後再跑一次,而且**一律帶 --strict**(略過算失敗)——
+# 「這一輪沒有掃過傳遞相依」在 CI 上沒有人會去讀,綠燈就是綠燈。
+# --strict 不是從呼叫端傳下來的:呼叫端沒帶 --strict 也不表示產物層可以不驗,
+# 那是這一關存在的理由。(上游原始碼沒抓下來造成的略過除外,見 audit_offline.sh
+# 的 skipped_upstream —— 沙盒那一項由同一條車道的 verify_lua_sandbox.sh 真的驗。)
+if [ -f "$APK" ]; then
+  if "$ROOT/scripts/audit_offline.sh" --strict > "$OUT/audit-offline-apk.log" 2>&1; then
+    # ⚠ 綠燈不夠。要問的是「產物層那四段**跑了幾段**」——
+    #   落空的時候輸出裡少的那幾行,和一切正常長得一模一樣,
+    #   而這正是這一輪要修的東西,不能修完又留一個同型的洞。
+    _ART="$(sed -n 's/^ 產物層檢查:\([0-9]*\/[0-9]*\) .*/\1/p' "$OUT/audit-offline-apk.log")"
+    if [ "$_ART" = "4/4" ]; then
+      ok "離線稽核（含產物層）通過 $(grep -c '\[PASS\]' "$OUT/audit-offline-apk.log") 項，產物層 $_ART 都真的跑了"
+    else
+      bad "離線稽核沒紅，但產物層只跑了「${_ART:-讀不到}」段 —— 這不是通過，是沒驗到"
+      grep -E '\[SKIP\]|產物層檢查' "$OUT/audit-offline-apk.log" | head -10 >&2
+    fi
+  else
+    bad "離線稽核在**產物層**沒過 —— 原始碼寫對不等於打包出來是對的"
+    grep -A2 '\[FAIL\]' "$OUT/audit-offline-apk.log" | head -25 >&2
+  fi
+else
+  # 走到這裡代表第 3 關沒建出 APK。那已經是 FAIL 了,但這一關要自己說一句,
+  # 否則「產物層沒驗」會被第 3 關的紅燈蓋過去而沒有人記得補驗。
+  skip "APK 不在，產物層的離線稽核（.so 符號 / APK 的 allowBackup / dex）沒有跑"
 fi
 
 step "4. APK 內容"

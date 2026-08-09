@@ -73,7 +73,17 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/product.sh
 . "$ROOT/scripts/lib/product.sh"
 VERBOSE=0
-[ "${1:-}" = "--verbose" ] && VERBOSE=1
+# --strict:略過一律算失敗。呼叫端(release_check.sh)有 --strict 卻**沒有傳下來**,
+# 於是這支腳本在還沒建 APK 的時候被呼叫,四段產物層的檢查全部落空、
+# SKIP>0 仍然 exit 0,而呼叫端把訊息縮成「全數通過(N 項)」把略過藏起來。
+STRICT=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --verbose) VERBOSE=1; shift ;;
+    --strict)  STRICT=1; shift ;;
+    *) echo "未知參數: $1" >&2; exit 2 ;;
+  esac
+done
 
 PASS=0; FAIL=0
 ok()   { echo "  [PASS] $*"; PASS=$((PASS+1)); }
@@ -84,7 +94,33 @@ note() { [ "$VERBOSE" -eq 1 ] && echo "         $*"; return 0; }
 # 這個專案已經被「測試安靜地跳過自己」咬過三次(升級測試、LayoutEscapeTest、
 # grep -oP 的詞庫檢查),所以略過不走 note。
 SKIP=0
-skipped() { echo "  [SKIP] $*"; SKIP=$((SKIP+1)); }
+SKIPPED=""
+# ⚠ 產物層(只看得到 APK / .so 的那四段)另外計數。
+#   「跑了幾段」必須是一個**數字**,呼叫端才問得出「這一輪產物層到底驗了沒」——
+#   靠讀散文或數 [PASS] 是問不出來的:落空的時候輸出裡少的那幾行,
+#   和「一切正常」長得一模一樣。
+ART_TOTAL=4
+ART_RAN=0
+artifact_ran() { ART_RAN=$((ART_RAN+1)); }
+# ⚠ 有一類略過在**快車道跑到這裡的時候**是預期的:third_party/ 是上游原始碼、
+#   在 .gitignore 裡,而快車道只抓 opencc。沙盒那一項另有
+#   scripts/verify_lua_sandbox.sh 在**同一條車道上**做真的驗證(39 條探針 x 3 階段
+#   + 4 個變異測試),不是沒人在看。所以它走 skipped_upstream:
+#   一樣印出來、一樣列進清單、一樣計數,但 --strict 下不算失敗。
+#   **其餘每一種略過在 --strict 下都會紅** —— 尤其是產物層那四段。
+skipped_upstream() {
+  echo "  [SKIP] $*"; SKIP=$((SKIP+1)); SKIPPED="$SKIPPED
+    · $*(上游原始碼未取得;--strict 不計)"
+  return 0
+}
+skipped() {
+  if [ "$STRICT" -eq 1 ]; then
+    echo "  [FAIL] $* ←(--strict:略過不算通過)" >&2; FAIL=$((FAIL+1))
+  else
+    echo "  [SKIP] $*"; SKIP=$((SKIP+1)); SKIPPED="$SKIPPED
+    · $*"
+  fi
+}
 
 # 把命中的行印出來(最多 N 行),讓失敗訊息可以直接動手修而不必再 grep 一次。
 show() { printf '%s\n' "$1" | sed -n "1,${2:-10}p" | sed 's/^/         /' >&2; }
@@ -196,16 +232,39 @@ fi
 # 進階(有 .so 才做):直接看最終產物的動態符號。這比 grep 原始碼強,
 # 因為它連「靜態連進來的第三方函式庫偷偷帶了 socket」都抓得到。
 SO="$(find "$ROOT/android/app/build/intermediates" -name 'librime_jni.so' 2>/dev/null | head -1)"
-if [ -n "$SO" ] && command -v llvm-readelf >/dev/null 2>&1; then
-  SYMS="$(llvm-readelf --dyn-syms "$SO" 2>/dev/null | grep -E ' UND .*(socket|connect|getaddrinfo|gethostbyname)$' || true)"
+# ⚠ 不要只找 llvm-readelf。它不在 PATH 上是常態(它住在 NDK 裡),而原本
+#   `command -v llvm-readelf` 失敗的後果是走 note() —— 一個字都不印。
+#   binutils 的 readelf 讀 ELF 的 .dynsym 同樣可靠,ubuntu runner 上一定有。
+find_readelf() {
+  local c ndk d
+  for c in llvm-readelf readelf eu-readelf; do
+    command -v "$c" >/dev/null 2>&1 && { command -v "$c"; return 0; }
+  done
+  for ndk in "${ANDROID_NDK_ROOT:-}" "${ANDROID_NDK_HOME:-}" \
+             "${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}"/ndk/*; do
+    [ -n "$ndk" ] || continue
+    d="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+    [ -x "$d" ] && { printf '%s' "$d"; return 0; }
+  done
+  return 1
+}
+READELF="$(find_readelf || true)"
+if [ -n "$SO" ] && [ -n "$READELF" ]; then
+  SYMS="$("$READELF" --dyn-syms "$SO" 2>/dev/null | grep -E ' UND .*(socket|connect|getaddrinfo|gethostbyname)$' || true)"
+  artifact_ran
   if [ -z "$SYMS" ]; then
-    ok ".so 的動態符號裡沒有 socket/connect/getaddrinfo($(basename "$SO"))"
+    ok ".so 的動態符號裡沒有 socket/connect/getaddrinfo($(basename "$SO");$(basename "$READELF"))"
   else
     bad ".so 需要網路相關的 libc 符號"
     show "$SYMS" 10
   fi
+elif [ -z "$SO" ]; then
+  # ⚠ 這裡以前走 note() —— 不加 --verbose 一個字都不印,與本檔 :83-87
+  #   自己訂的規矩(「略過一定要印出來…所以略過不走 note」)直接牴觸。
+  #   而快車道呼叫這支腳本的時候 APK 與 .so 都還沒建,所以它**每一次都靜靜略過**。
+  skipped "找不到 librime_jni.so —— **這一輪沒有看過最終產物的動態符號**(先建 APK)"
 else
-  note "略過 .so 符號檢查(找不到 librime_jni.so 或 llvm-readelf)"
+  skipped "有 .so 但找不到 readelf(llvm-readelf / readelf / NDK 裡那一份都沒有)—— 沒有驗到動態符號"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -230,8 +289,25 @@ fi
 # APK 在的話連編出來的結果一起驗 —— 「原始碼寫對」和「使用者手上那份是對的」
 # 是兩件事,manifest 合併、build type 覆寫都可能讓它們不一致。
 APK="$ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
-AAPT="${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}/build-tools/35.0.0/aapt2"
-if [ -f "$APK" ] && [ -x "$AAPT" ]; then
+# ⚠ build-tools 的版本不能寫死。35.0.0 只在那一台 Ubuntu 上成立,CI runner 上
+#   不保證有 —— 而找不到的後果原本是走 note()(不加 --verbose 一個字都不印),
+#   於是「APK 實際打進去的 allowBackup」在 CI 上從來沒有被看過。
+#   找法與 publish_apk.sh / release_check.sh 一致:三個 SDK 位置,版本由高到低。
+find_build_tool() {
+  local tool="$1" sdk d
+  for sdk in "${ANDROID_SDK_ROOT:-}" "${ANDROID_HOME:-}" "$HOME/Android/Sdk"; do
+    [ -n "$sdk" ] && [ -d "$sdk/build-tools" ] || continue
+    for d in $(ls -1 "$sdk/build-tools" 2>/dev/null | sort -Vr); do
+      if [ -x "$sdk/build-tools/$d/$tool" ]; then
+        printf '%s' "$sdk/build-tools/$d/$tool"; return 0
+      fi
+    done
+  done
+  return 1
+}
+AAPT="${RIME_AAPT2:-$(find_build_tool aapt2 || true)}"
+if [ -f "$APK" ] && [ -n "$AAPT" ] && [ -x "$AAPT" ]; then
+  artifact_ran
   X="$("$AAPT" dump xmltree --file AndroidManifest.xml "$APK" 2>/dev/null || true)"
   AB="$(printf '%s\n' "$X" | grep -o 'allowBackup([^)]*)=[a-z]*' | head -1)"
   case "$AB" in
@@ -239,8 +315,10 @@ if [ -f "$APK" ] && [ -x "$AAPT" ]; then
     "")      bad "APK 的 manifest 裡沒有 allowBackup(等於預設 true)" ;;
     *)       bad "APK 實際打進去的是 $AB" ;;
   esac
+elif [ ! -f "$APK" ]; then
+  skipped "APK 還沒建 —— **這一輪沒有驗到產物裡實際的 allowBackup**(原始碼寫對與打包出來對是兩件事)"
 else
-  note "略過 APK 檢查(還沒編或找不到 aapt2)"
+  skipped "找不到 aapt2(找過 \$ANDROID_SDK_ROOT / \$ANDROID_HOME / ~/Android/Sdk 的 build-tools)—— 沒有驗到產物裡的 allowBackup"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -340,7 +418,10 @@ fi
 check_tokens() {   # check_tokens <檔案> <說明> <token...>
   local f="$1" what="$2"; shift 2
   if [ ! -f "$f" ]; then
-    note "$f 不在,略過"
+    # ⚠ 這裡以前是 note() + return 0 —— 檔案不在就無聲通過。沙盒的兩層
+    #   都在 third_party/ 底下,而 third_party 是 gitignore 的,所以在
+    #   沒抓過上游的機器上(含 CI 快車道)這幾條**每一次都無聲跳過**。
+    skipped_upstream "$what:$f 不在,沒有驗到"
     return 0
   fi
   local missing="" tok
@@ -360,7 +441,7 @@ LUA_CC="$LUA_SRC/src/lib/lua.cc"
 MODULES_CC="$LUA_SRC/src/modules.cc"
 GEARS_H="$LUA_SRC/src/lua_gears.h"
 if [ ! -f "$LUA_CC" ]; then
-  skipped "third_party/librime-lua 還沒抓下來 —— 只驗了 patch 檔本身,沒有驗到套用後的原始碼"
+  skipped_upstream "third_party/librime-lua 還沒抓下來 —— 只驗了 patch 檔本身,沒有驗到套用後的原始碼(同一條車道上的 verify_lua_sandbox.sh 才是真的驗)"
 else
   # 第一層:允許清單。三個 pairs 迴圈缺一個,就有一整組標準庫是全開的。
   check_tokens "$LUA_CC" "第一層(lua.cc)的允許清單完整" \
@@ -464,7 +545,7 @@ elif [ ! -f "$DEXREFS" ]; then
 else
   DEXOUT="$(python3 "$DEXREFS" "$APK_FOR_DEX" 2>&1)"; DEXRC=$?
   case "$DEXRC" in
-    0) printf '%s\n' "$DEXOUT"; PASS=$((PASS+1)) ;;
+    0) printf '%s\n' "$DEXOUT"; PASS=$((PASS+1)); artifact_ran ;;
     2) skipped "dex 掃描跑不起來(缺 dexdump?)—— 沒有驗到傳遞相依"
        printf '%s\n' "$DEXOUT" | sed 's/^/         /' >&2 ;;
     *) bad "APK 裡碰得到網路的類別與釘死的清單不一致"
@@ -474,10 +555,16 @@ fi
 
 # 另外一條 fail-fast 的粗篩:整包函式庫等級的東西(crash reporter、HTTP 客戶端、
 # WorkManager)出現在 dex 裡就是紅,不必等引用者比對。
-if [ -n "$APK_FOR_DEX" ] && command -v unzip >/dev/null 2>&1; then
+if [ -z "$APK_FOR_DEX" ]; then
+  # 這一段以前連 else 都沒有:沒有 APK 就整段不執行,而且一個字都不印。
+  skipped "找不到已建置的 APK —— **這一輪沒有跑 dex 粗篩**(okhttp / firebase / WorkManager)"
+elif ! command -v unzip >/dev/null 2>&1; then
+  skipped "沒有 unzip —— 沒有跑 dex 粗篩"
+else
   DEXTMP="$(mktemp -d)"
   unzip -q -o "$APK_FOR_DEX" 'classes*.dex' -d "$DEXTMP" 2>/dev/null || true
   DEXN="$(ls "$DEXTMP"/classes*.dex 2>/dev/null | wc -l)"
+  artifact_ran
   if [ "$DEXN" -eq 0 ]; then
     bad "APK 裡抽不出任何 classes.dex —— 粗篩沒有真的執行,不能算通過"
   else
@@ -500,9 +587,22 @@ fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 echo
+# ⚠ 要在印總數**之前**判,否則印出來的 FAIL 數與退出碼會對不上。
+if [ "$ART_RAN" -lt "$ART_TOTAL" ] && [ "$STRICT" -eq 1 ]; then
+  bad "產物層只跑了 ${ART_RAN}/${ART_TOTAL} 段 —— --strict 下這不算通過(先建 APK 再跑)"
+fi
 echo "============================================"
 echo " 離線稽核:通過 $PASS 項,失敗 $FAIL 項,略過 $SKIP 項"
+# 這一行是給呼叫端讀的。落空與正常在散文上分不出來,在這裡分得出來。
+echo " 產物層檢查:${ART_RAN}/${ART_TOTAL} 真的跑了"
 echo "============================================"
+if [ "$SKIP" -gt 0 ]; then
+  # 略過要逼人看見。「通過 14 項」與「通過 14 項、略過 4 項」是兩件事,
+  # 而只有後者說得出「哪四件事這一輪沒有查」。
+  echo "⚠ 這一輪**沒有查**下面這 $SKIP 項:"
+  printf '%s\n' "$SKIPPED" | sed '/^$/d'
+  echo "  要它們真的跑,先建 APK 再跑一次(release_check.sh 第 3b 關就是為此)。"
+fi
 if [ "$FAIL" -gt 0 ]; then
   echo "「離線為預設、無審查、經得起審計」這句話現在不成立。修好再發布。" >&2
   exit 1
