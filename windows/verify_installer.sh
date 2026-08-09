@@ -870,6 +870,38 @@ if [ -n "${HOST}" ]; then
   else
     note_fail "按鍵矩陣有格子沒過 —— 詳見上面,以及 ${WORK}/inputmatrix/"
   fi
+
+  # ── 大量輸入之後,服務要**回得到可服務的狀態** ────────────────
+  #
+  # ⚠ 這不是「睡一下讓它過」。矩陣剛剛讓 18 個宿主進程接連連上、打字、
+  #   上屏、離線,而服務的引擎是**單一一條執行緒**(service.log 的
+  #   「rs_init OK,啟動引擎執行緒」),所有請求都排在那一條上。
+  #   最後那幾個 EndSession 與上屏造成的使用者詞典寫入還在排隊時,
+  #   下一個 SESSION_NEW 就會逾時 —— 實測就是這樣:矩陣結束後 0.33 秒
+  #   跑 doctor,第 5 節報「連上也握手了,但建不出 session」。
+  #
+  #   所以這裡斷言的是**恢復**:在有限的時間內,服務必須重新接得起
+  #   一個新的 session。回不來就是真的壞了,紅在這裡。
+  #   (rime_probe --connect-only 會走完 連線 → 握手 → 建 session,
+  #    所以它問的正是這件事,不是只有「管道開得起來」。)
+  log "  等服務從剛才那一輪輸入裡回過神(引擎是單執行緒的)"
+  SETTLED=0
+  for i in $(seq 1 60); do
+    if "${PROBE}" --connect-only --attempts 1 \
+         > "${WORK}/settle-probe.log" 2>&1; then
+      SETTLED=1
+      break
+    fi
+    sleep 1
+  done
+  if [ "${SETTLED}" -eq 1 ]; then
+    ok "大量輸入之後,服務在 ${i} 秒內又接得起新的 session"
+  else
+    tr -d '\r' < "${WORK}/settle-probe.log" | sed 's/^/    /'
+    note_fail "18 個宿主打完字之後,服務**60 秒內都建不出新的 session**。
+     使用者的樣子會是:在好幾個程式裡打過字之後,下一個程式切過去
+     打不出東西。引擎執行緒卡住了,或有東西沒有被收掉。"
+  fi
 else
   note_fail "沒有給 --host,按鍵矩陣驗不到。退格鍵那一類缺陷只有這一條路
      抓得到(單元測試驗的是政策,不是政策有沒有接到 TSF 上)。"
