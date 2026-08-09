@@ -62,6 +62,10 @@ fi
 
 # ---------------------------------------------------------------- 變異
 # 格式: <檔案>|<原字串>|<替換>|<這個變異該打紅哪一組>
+# ⚠ **原字串與替換字串裡不可以出現 `|`。** 分隔字元就是它,而 Swift 的 `||`
+#   正好是兩個 —— 那一列會被拆成六段,group 變成一段程式碼碎片,
+#   而症狀是 verify_names.py 說「測試裡沒有 XxxTests」,看起來像測試不見了。
+#   已經踩過一次(換鍵那一條)。要變異含 `||` 的判斷,先把它拆成兩行。
 # ⚠ **不要把 printf 接進會提早結束的指令(grep -q / head)。**
 #   本腳本開了 `pipefail`,而 `grep -q` 找到第一個符合就結束 ——
 #   輸出一大(207 項測試之後就夠大了)printf 就會吃到 SIGPIPE,
@@ -88,7 +92,7 @@ MUTATIONS=(
   # 改名之後的資料搬遷。把排除清單換成「只看名字完全相符的那幾個」——
   # `*.userdb` 與 `build/` 就會被搬過去,而那是這一組存在的理由:
   # 複製一個舊版正開著的 LevelDB = 一份壞掉但看起來正常的使用者詞典。
-  "Sources/LuminaKeyKit/KeyRemap.swift|if mods.contains(.control) || mods.contains(.super_) { return stroke }|if false { return stroke }|KeyRemapTests"
+  "Sources/LuminaKeyKit/KeyRemap.swift|if mods.contains(.super_) { return stroke }    // ⌘A 是全選,不是儲存|if false { return stroke }                     // ⌘A 是全選,不是儲存|KeyRemapTests"
   "Sources/LuminaKeyKit/KeyRemap.swift|        exchangeAtPositions(position(of: a), position(of: b))|        exchangeAtPositions(a, b)|KeyRemapTests"
   "Sources/LuminaKeyKit/LegacyDataMigration.swift|for name in names where !shouldSkip(name) {|for name in names where !skippedNames.contains(name) {|LegacyDataMigrationTests"
 )

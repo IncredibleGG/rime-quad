@@ -349,7 +349,12 @@ public struct KeyRemapTable: Equatable, Sendable {
     /// 而且可能是不可逆的。Shift / Caps / Option 照常換：那些是打字的一部分。
     public func apply(to stroke: KeyStroke) -> KeyStroke {
         let mods = RSModifier(rawValue: stroke.modifiers)
-        if mods.contains(.control) || mods.contains(.super_) { return stroke }
+        // 兩個修飾鍵刻意分兩行寫,不用 `||`:變異表的欄位分隔字元是 `|`,
+        // 而 `||` 會把那一列拆成六段,於是「這個變異該打紅哪一組」變成一段
+        // 程式碼碎片 —— 症狀是守門腳本說「測試裡沒有 KeyRemapTests」,
+        // 看起來像測試不見了,其實是分隔字元撞了。
+        if mods.contains(.super_) { return stroke }    // ⌘A 是全選,不是儲存
+        if mods.contains(.control) { return stroke }   // ⌃` 是 librime 的方案選單
         guard let to = map[stroke.keysym] else { return stroke }
         return KeyStroke(keysym: to, modifiers: mods)
     }

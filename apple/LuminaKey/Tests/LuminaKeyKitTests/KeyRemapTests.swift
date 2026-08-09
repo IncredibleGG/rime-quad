@@ -431,6 +431,42 @@ final class KeyRemapTests: XCTestCase {
         XCTAssertEqual(KeyRemapStore.legacyFileName, "rimequad-layouts.json")
     }
 
+    /// ⚠ **直接去讀 Android 那一份原始碼。**
+    ///
+    /// 四端共用的是同一個檔名與同一批欄位名。任何一端改了名字,使用者在
+    /// 另一端調好的鍵位就會**靜靜消失** —— 而且不會有錯誤訊息,因為兩端
+    /// 都只會覺得「這台裝置上還沒有人換過鍵」。那正是這一節最該被擋下的事,
+    /// 而它靠人記得是擋不住的:兩份原始碼在不同的目錄、不同的語言、
+    /// 由不同的會話維護。
+    ///
+    /// 這一條紅掉時**不要**改這裡的字面值去配合對方,先去 `docs/coordination.md`
+    /// §5 說一聲 —— 改名字這件事本身要兩端同時做,而且要處理已經在磁碟上的檔案。
+    func testFileNamesAndFieldsMatchTheAndroidSource() throws {
+        let src = Repo.root.appendingPathComponent(
+            "android/app/src/main/java/org/luminakey/ime/keyboard/UserLayoutStore.kt")
+        guard let text = try? String(contentsOf: src, encoding: .utf8) else {
+            return XCTFail("讀不到 Android 的 UserLayoutStore.kt:\(src.path)")
+        }
+        XCTAssertTrue(text.contains("\"\(KeyRemapStore.fileName)\""),
+                      "Android 端的檔名不是 \(KeyRemapStore.fileName) 了")
+        XCTAssertTrue(text.contains("\"\(KeyRemapStore.legacyFileName)\""),
+                      "Android 端不再認得 \(KeyRemapStore.legacyFileName)")
+        // 解碼端讀的鍵。少一個,對應的那種操作在對面就會被當成「看不懂」而丟掉。
+        //
+        // ⚠ 刻意**不**檢查 `format_version`:Android 端只寫它、從來不讀
+        //   (`LayoutRemapJson.decode` 完全沒有碰它)。這其實是好消息 ——
+        //   方案市集索引那邊踩過的「`format_version != 1` 就整份拒收,於是
+        //   任何一次 major 遞增都讓所有已出貨的版本同時失去整份資料」在這裡
+        //   不存在。它在那份原始碼裡唯一的出處是檔頭的範例,拿註解當斷言
+        //   會在對方重排註解時變成一個查不出原因的紅燈。
+        for field in ["\"op\"", "\"layer\"", "\"layouts\"", "\"ops\"", "\"id\"",
+                      "\"swap\"", "\"move\"", "\"key\"", "\"before\"",
+                      "\"a\"", "\"b\""] {
+            XCTAssertTrue(text.contains(field),
+                          "Android 的檔案格式裡找不到 \(field),兩端已經對不起來了")
+        }
+    }
+
     /// 改名前的舊檔讀得到 —— 漏掉這一條的下場是升級之後鍵位全部回到原樣,
     /// 檔案還在磁碟上,只是沒有人再去讀它。
     func testLegacyFileIsPickedUp() throws {
