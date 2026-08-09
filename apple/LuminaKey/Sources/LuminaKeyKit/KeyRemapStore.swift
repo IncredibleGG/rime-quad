@@ -9,7 +9,7 @@
 //  就該得到 s。兩端各存各的話，這件事永遠不會發生，而且**不會有任何錯誤
 //  訊息** —— 畫面上只是「電腦沒有照我調的做」，他會以為是自己記錯了。
 //
-//  ⚠ 改名前的舊檔名 `rimequad-layouts.json` **讀得到就接手**。漏掉這一條的
+//  ⚠ 改名前的舊名檔名 `rimequad-layouts.json` **讀得到就接手**。漏掉這一條的
 //    下場是升級之後使用者調過的鍵位全部回到原樣：檔案還躺在磁碟上，
 //    只是沒有人再去讀它。Android 端有同一條（`LEGACY_FILE_NAME`）。
 //
@@ -32,7 +32,7 @@ public final class KeyRemapStore {
     public static let fileName = "luminakey-layouts.json"
 
     /// 產品改名前的檔名。**只讀不寫。**
-    public static let legacyFileName = "rimequad-layouts.json"
+    public static let legacyFileName = "rimequad-layouts.json"  // 舊名
 
     /// 換鍵改了 → 輸入法本體立刻重讀。
     public static let changedNotification = "org.luminakey.layouts.changed"

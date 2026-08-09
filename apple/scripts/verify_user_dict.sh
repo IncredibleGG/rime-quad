@@ -77,11 +77,17 @@ write_phrases() {  # $1 = 編碼
   } > "${PHRASES}"
 }
 
+# 掛載檔開頭的那一行標記。**只准有這一份字面值** ——
+# scripts/verify_product_ids.sh §6 的反向測試靠「把唯一的那一次變異掉」來確認
+# 這一列真的在守東西;出現兩次的話它會判定「需要 1 次」而**整列不跑**,
+# 也就是那道閘安靜地停止覆蓋掛載標記,而總表照樣是綠的。
+MOUNT_MARK="# luminakey-managed: custom_phrase v1"
+
 # 內建方案用的掛載檔:方案自己已經有 table_translator@custom_phrase,
 # 我們只覆寫參數。**多接一個的話,沒有 uniquifier 的方案會出現兩筆一樣的候選。**
 write_mount_params_only() {
-  cat > "${MOUNT}" <<'YAML'
-# luminakey-managed: custom_phrase v1
+  printf '%s\n' "${MOUNT_MARK}" > "${MOUNT}"
+  cat >> "${MOUNT}" <<'YAML'
 patch:
   custom_phrase:
     dictionary: ""
@@ -95,8 +101,8 @@ YAML
 
 # 沒有自帶翻譯器的方案(市集下載的多半是這種)用的掛載檔。
 write_mount_with_translator() {
-  cat > "${MOUNT}" <<'YAML'
-# luminakey-managed: custom_phrase v1
+  printf '%s\n' "${MOUNT_MARK}" > "${MOUNT}"
+  cat >> "${MOUNT}" <<'YAML'
 patch:
   "engine/translators/@next": table_translator@custom_phrase
   custom_phrase:
