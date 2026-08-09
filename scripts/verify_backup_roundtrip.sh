@@ -35,7 +35,7 @@
 # ── 這支跑的是 debug 建置,而使用者拿到的是 release ──────────────────────
 #
 # 2026-08-10 起發布的是 release,而驅動這支腳本的
-# `org.luminakey.ime.devtools.BackupHarnessReceiver` 住在 `src/debug/` ——
+# `<套件名>.devtools.BackupHarnessReceiver`(見上面的 $RECEIVER)住在 `src/debug/` ——
 # 它**不在** release 裡,而且**不可以**為了讓這支好跑而搬進 `src/main`:
 # 那是一個 exported 的廣播入口,一條 `am broadcast` 就能叫 app 把整份詞庫
 # 匯出到指定路徑。留在 release 裡等於留一個後門。

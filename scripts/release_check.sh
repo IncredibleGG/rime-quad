@@ -258,7 +258,7 @@ step "3c. 要發的那一份不是 debuggable，也不含開發用的 harness"
 # 這一關擋的是 2026-08-10 之前一直在發生的事:發給使用者的是 debug 建置。
 # 後果不是「開發者方便」——
 #   · debuggable=true → 任何拿得到 adb(或把裝置解鎖)的人都能
-#     `run-as org.luminakey.ime` 把詞庫與輸入歷史整包讀走,並對輸入法進程
+#     `run-as <套件名>` 把詞庫與輸入歷史整包讀走,並對輸入法進程
 #     掛除錯器。而輸入法看得到使用者打的每一個字。
 #   · src/debug 的 BackupHarnessReceiver 是一個 exported 的廣播入口,
 #     一條 `am broadcast` 就能叫 app 匯出整份詞庫到指定路徑。留在 release
@@ -555,10 +555,10 @@ if [ "$SKIP_EMU" -eq 0 ]; then
 
       # ── 為什麼這裡不再用 run-as ────────────────────────────────────────
       # 這一關現在蓋上去的是 **release**,而 release 不是 debuggable ——
-      # `run-as org.luminakey.ime` 會直接回 `package not debuggable` 並失敗。
+      # `run-as $PKG` 會直接回 `package not debuggable` 並失敗。
       # 那正是這一輪要的結果:使用者手上那份不該讓任何人讀得到資料目錄。
       # (實測 2026-08-10,emulator-5554,即使 ro.debuggable=1:
-      #    release → run-as: package not debuggable: org.luminakey.ime
+      #    release → run-as: package not debuggable: <套件名>
       #    debug   → cache code_cache files shared_prefs)
       #
       # 所以要看「使用者的東西還在不在」,只剩 root shell 一條路,而模擬器
