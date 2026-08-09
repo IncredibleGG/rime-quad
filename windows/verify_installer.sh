@@ -65,9 +65,18 @@ die()  { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
 #
 #   這一支刻意做成「讀 stdin、吐 stdout」的純文字函式 —— 它才驗得到。
 #   `--self-check-pending` 在任何一台機器上都跑得動(見底下)。
+# ⚠ **不要用 `awk -v dir="$1"`。** -v 的值會被 awk 再做一次跳脫處理,而安裝
+#   目錄裡全是反斜線:gawk(Git Bash / windows-latest 上的 awk)把 `\N`
+#   當成 plain `N`,於是 `C:\Program Files\X` 變成 `C:Program FilesX`,
+#   比對**永遠不命中** —— 也就是這一整條判準在真的 runner 上會安靜地
+#   回「零個違規」。本機的 mawk 不做那個處理,所以本機是全綠的。
+#   (實際發生過:CI run 31332458753,而且是被下面那個自檢抓到的。)
+#   環境變數不經過跳脫處理,所以走 ENVIRON。
 pending_filter() {  # $1 = 安裝目錄(Windows 路徑);讀 stdin
-  awk -v dir="$1" '
-    BEGIN { d = tolower(dir) }
+  # ⚠ RIME_AWK 刻意**不預設**在這裡:下面的自檢靠「它是不是空的」
+  #   分辨自己是外圈(要對每一種 awk 各跑一次)還是內圈。
+  RIME_PENDING_DIR="$1" "${RIME_AWK:-awk}" '
+    BEGIN { d = tolower(ENVIRON["RIME_PENDING_DIR"]) }
     {
       line = $0
       sub(/\r$/, "", line)
@@ -82,6 +91,32 @@ pending_filter() {  # $1 = 安裝目錄(Windows 路徑);讀 stdin
 
 # ── 反向測試:證明這條判準真的抓得到「不是 rime_tsf.dll」的那些 ──
 if [ "${1:-}" = "--self-check-pending" ]; then
+  # ⚠ 對**這台機器上找得到的每一種 awk** 都跑一次。
+  #   上面那個 -v 的坑就是「本機 mawk 綠、runner gawk 全 0」——
+  #   只跑一種 awk 的自檢看不到它。busybox awk 與 gawk 在這一點上同族,
+  #   所以在開發機上它就是 runner 的替身。
+  if [ -z "${RIME_AWK:-}" ]; then
+    _awk_dir="$(mktemp -d)"
+    _awks=""
+    for _c in awk mawk nawk gawk original-awk; do
+      command -v "${_c}" >/dev/null 2>&1 || continue
+      printf '#!/bin/sh\nexec %s "$@"\n' "${_c}" > "${_awk_dir}/${_c}"
+      chmod +x "${_awk_dir}/${_c}"
+      _awks="${_awks} ${_awk_dir}/${_c}"
+    done
+    if command -v busybox >/dev/null 2>&1; then
+      printf '#!/bin/sh\nexec busybox awk "$@"\n' > "${_awk_dir}/busybox-awk"
+      chmod +x "${_awk_dir}/busybox-awk"
+      _awks="${_awks} ${_awk_dir}/busybox-awk"
+    fi
+    _rc=0
+    for _a in ${_awks}; do
+      printf '\033[1;34m==>\033[0m awk = %s\n' "$(basename "${_a}")"
+      RIME_AWK="${_a}" "$0" --self-check-pending || _rc=1
+    done
+    rm -rf "${_awk_dir}"
+    exit "${_rc}"
+  fi
   # ⚠ 刻意用一個**不存在的假目錄**,不是真的安裝目錄:
   #   (a) 這一支驗的是判準本身,目錄只是它的參數;
   #   (b) 產品識別碼在腳本裡寫死是被 scripts/verify_product_ids.sh 擋的

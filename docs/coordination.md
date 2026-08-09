@@ -114,6 +114,18 @@ Windows 端的 `ScrollPlaceControlDip()` 是後者的樣本:捲動量、裁切�
 「捲出去不准藏」三件事從 `service/settings_window.cc`(Ubuntu 上編不起來、
 單元測試看不到)搬進 `common/ui_layout.cc`。
 
+**同一支工具在別台機器上不是同一支工具,而失敗的樣子會是「零個違規」。**
+這一輪被咬兩次,兩次都是「本機全綠、runner 全綠但什麼都沒驗到」:
+(a) `awk -v dir="C:\Program Files\X"` —— `-v` 的值會被 awk 再做一次跳脫處理,
+gawk(Git Bash / windows-latest 上的 awk)把 `\N` 當成 plain `N`,目錄變成
+`C:Program FilesX`,比對永遠不命中;本機的 mawk 不做那個處理。走 `ENVIRON[]`
+就沒有這個問題。開發機上的 busybox awk 與 gawk 同族,可以拿它當 runner 的替身,
+所以自檢對**找得到的每一種 awk** 各跑一次。
+(b) python 的 `print` 在 windows runner 上吐 CRLF,而 bash 的 `$(...)` 只剝末尾的
+`\n` —— 逐行比對就全部對不上。助手一律 `sys.stdout.reconfigure(newline='')`,
+bash 端再剝一次 `\r`。(同一個檔案早就為了 cp1252 的 stdout 編碼踩過一次,
+而那次的症狀更難查:去註解的輸出被截斷,後面每一條 grep 都掃到殘缺的檔案。)
+
 **反向測試自己也會靜靜地不做事。** 植入違規的那段程式如果**沒有植入成功**
 (錨點對不上、跳脫寫錯),樹是沒改過的,守門當然是綠的 —— 而報表上寫的是
 「那一條守門不算數」,讀起來像守門有問題。植入之後要斷言**檔案真的變了**,
