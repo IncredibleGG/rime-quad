@@ -24,6 +24,16 @@ import os
 import re
 import sys
 
+# ⚠ Windows runner 上 python 的 stdout 預設是 cp1252,而這支腳本印的是中文。
+#   不設這個的話它會在**印出結論的那一行**丟 UnicodeEncodeError ——
+#   也就是說,檢查全部做完、全部通過,然後死在 print 上。
+#   (實測:CI run #71 就是這樣紅的,而且紅得像是 GUID 對不上。)
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 ROOT = os.path.abspath(sys.argv[1])
 ISS_REL = sys.argv[2]
 

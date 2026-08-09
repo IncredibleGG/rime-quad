@@ -340,6 +340,9 @@ step "6. GUID 的三份寫法是同一個值"
 if python3 "${SCRIPT_DIR}/guid_cross.py" "$ROOT" "$RS_WIN_ISS_REL" > "$TMP/guid.txt" 2>&1; then
   sed -n '2,$p' "$TMP/guid.txt" | sed 's/^/         /'
   ok "$(head -1 "$TMP/guid.txt" | sed 's/^  //')"
+elif grep -q 'Traceback' "$TMP/guid.txt"; then
+  bad "guid_cross.py 崩了(這**不是**「GUID 對不上」,是那支腳本本身壞了):"
+  sed 's/^/         /' "$TMP/guid.txt" >&2
 else
   bad "GUID 的三份寫法對不上:"
   sed 's/^/         /' "$TMP/guid.txt" >&2
@@ -351,10 +354,25 @@ cp "$ROOT/windows/tsf/guids.cc"     "$TMP/guidprobe/windows/tsf/"
 cp "$ROOT/$RS_WIN_ISS_REL_FULL"     "$TMP/guidprobe/windows/$RS_WIN_ISS_REL"
 sed 's/^EXPECT_CLSID=.*/EXPECT_CLSID=\x27{00000000-0000-0000-0000-000000000000}\x27/' \
   "$ROOT/windows/verify_installer.sh" > "$TMP/guidprobe/windows/verify_installer.sh"
-if python3 "${SCRIPT_DIR}/guid_cross.py" "$TMP/guidprobe" "$RS_WIN_ISS_REL" >/dev/null 2>&1; then
+#
+# ⚠ 這裡比對的是**輸出的內容**,不是只看結束碼。
+#   只看結束碼的話,一個在 print 上崩掉的 guid_cross.py 也會「通過」反向測試
+#   —— 實測:CI run #71 正是如此,正向那一項因為 UnicodeEncodeError 整個
+#   死掉,而這一行照樣印綠字說「它真的在比對」。
+#   一個會被崩潰滿足的反向測試,等於沒有反向測試。
+python3 "${SCRIPT_DIR}/guid_cross.py" "$TMP/guidprobe" "$RS_WIN_ISS_REL" \
+  > "$TMP/guidprobe.out" 2>&1
+PROBE_RC=$?
+if [ "$PROBE_RC" -eq 0 ]; then
   bad "把第二意見的 CLSID 改成全零,這一項竟然沒抓到 —— 它本身壞了"
+elif grep -q 'Traceback' "$TMP/guidprobe.out"; then
+  bad "反向測試是靠 guid_cross.py **崩潰**才紅的,不是靠它比對出差異:"
+  sed 's/^/         /' "$TMP/guidprobe.out" >&2
+elif grep -q '00000000-0000-0000-0000-000000000000' "$TMP/guidprobe.out"; then
+  ok "改掉第二意見的 CLSID 會被指名(這一項真的在比對)"
 else
-  ok "改掉第二意見的 CLSID 會被抓到(這一項真的在比對)"
+  bad "反向測試紅了,但輸出裡沒有指出是哪一個 GUID 對不上:"
+  sed 's/^/         /' "$TMP/guidprobe.out" >&2
 fi
 
 echo

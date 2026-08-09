@@ -679,6 +679,45 @@ do
   esac
 done
 
+# ── 除錯記錄檔的預設路徑(這一段 CI 別的地方都走不到)────────────
+#
+# ⚠ 瘦 DLL 的記錄檔路徑有兩條分支:環境變數 RIME_TSF_TRACE,與預設的
+#   `%LOCALAPPDATA%\<資料夾名>\diagnostics\tsf.log`。**CI 走的一律是
+#   前者** —— rime_tsf_host 自己會把環境變數設成一個它指定的路徑,
+#   為的是把那一輪的記錄撈出來。於是預設那條分支從來沒有被求值過。
+#
+#   而預設那條分支正是改名時最危險的一段:它原本自己抄了一份資料夾名
+#   (見 tsf/trace.cc 與 winshared/winutil.h)。抄的那一份漏改的話,
+#   記錄會寫進一個叫舊名字的資料夾,而使用者看到的是 doctor 說
+#   「記錄檔不存在 = 這台機器從來沒有載入過 rime_tsf.dll」——
+#   一句**完全誤導**的診斷,指向註冊那一段。
+#
+#   doctor 第 8 節會把算出來的路徑印出來。這裡把那一行接住。
+trace_line="$(printf '%s\n' "${doctor_after}" | sed -n 's/^.*記錄檔: //p' | head -1)"
+if [ -z "${trace_line}" ]; then
+  note_fail "doctor 第 8 節沒有印出記錄檔路徑 —— 那一格沒有在看
+     (若它印的是「除錯記錄是關掉的」,代表這個 shell 裡 RIME_TSF_TRACE
+      被設過了,那樣這條斷言就驗不到預設分支。)"
+else
+  # 兩件事分開問,因為它們壞掉的原因不一樣:
+  #   結尾  → 資料夾名對不對(tsf/trace.cc 有沒有收斂到 winshared 那一份)
+  #   開頭  → 寫在哪一個側寫檔目錄底下(不可以掉到安裝目錄或 %APPDATA%)
+  want_tail="\\${RS_WIN_DATA_FOLDER}\\diagnostics\\tsf.log"
+  case "${trace_line}" in
+    *"${want_tail}") ok "除錯記錄檔在 ${trace_line}" ;;
+    *) note_fail "doctor 算出來的記錄檔是「${trace_line}」,結尾應該是「${want_tail}」
+     資料夾名在 tsf/trace.cc 那一側漏改了(它應該問 RimeUserDataFolderName())。" ;;
+  esac
+  # $LOCALAPPDATA 在 Git Bash 底下本來就是 Windows 形式,直接比前綴 ——
+  # 繞一趟 cygpath 只會多出大小寫與結尾反斜線兩種與本題無關的失敗方式。
+  if [ -n "${LOCALAPPDATA:-}" ]; then
+    case "${trace_line}" in
+      "${LOCALAPPDATA}\\"*) ok "而且它在 %LOCALAPPDATA% 底下" ;;
+      *) note_fail "記錄檔不在 %LOCALAPPDATA%(${LOCALAPPDATA})底下:${trace_line}" ;;
+    esac
+  fi
+fi
+
 # ── 反向:把服務停掉,doctor 必須指出來 ──────────────────────────
 #
 # 沒有這一條的話,「服務在跑」那一格可能是恆真的(例如判斷寫反、
