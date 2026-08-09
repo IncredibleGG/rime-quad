@@ -172,11 +172,21 @@ step "0. 離線稽核（產品定位・原始碼層）"
 #
 # 檢查項目與每一項的理由見 scripts/audit_offline.sh 的檔頭。
 if "$ROOT/scripts/audit_offline.sh" > "$OUT/audit-offline.log" 2>&1; then
-  _AP="$(grep -c '\[PASS\]' "$OUT/audit-offline.log")"
-  _AS="$(grep -c '\[SKIP\]' "$OUT/audit-offline.log")"
+  # ⚠ `grep -c` 一個都沒數到時**回 1**,而 `set -e` 之下,
+  #   `x="$(grep -c … )"` 這種賦值會讓整支腳本當場消失 ——
+  #   而且是在「一項都沒略過」也就是**一切正常**的時候消失。
+  #   `|| true` 不會多印一行:`grep -c` 自己已經印了 0。
+  #   (寫成 `|| echo 0` 才會得到 "0\n0",那是這個專案踩過的另一個坑。)
+  #   CI 上第 0 關跑在建 APK 之前,略過數必然 >0,所以那裡永遠看不到這件事;
+  #   本機把 APK 建起來之後就必然踩到。**只在成功時發作的猝死最難查。**
+  _AP="$(grep -c '\[PASS\]' "$OUT/audit-offline.log" || true)"
+  _AS="$(grep -c '\[SKIP\]' "$OUT/audit-offline.log" || true)"
   # 略過的項數要說出來。藏起來的話,這一行的綠燈會被當成「全部驗過了」。
   ok "離線稽核（原始碼層）通過 $_AP 項，另有 $_AS 項要等 APK 建好（見第 3b 關）"
-  [ "$_AS" -gt 0 ] && grep '\[SKIP\]' "$OUT/audit-offline.log" | sed 's/^/    /'
+  # 同一個理由:不可以寫成 `[ "$_AS" -gt 0 ] && grep …`,那個 [ ] 回 1 一樣會猝死。
+  if [ "$_AS" -gt 0 ]; then
+    grep '\[SKIP\]' "$OUT/audit-offline.log" | sed 's/^/    /'
+  fi
 else
   bad "離線稽核未通過 —— 這份建置不符合本專案對外的承諾，不要發布"
   grep -A2 '\[FAIL\]' "$OUT/audit-offline.log" | head -20 >&2
@@ -730,9 +740,45 @@ if [ "$SKIP_EMU" -eq 0 ]; then
 fi
 
 FINISHED=1   # 走到這裡代表每一關都跑完了 —— 上面的 EXIT 陷阱不必再說話。
+
+# ── 關卡數的下界 ────────────────────────────────────────────────────────
+#
+# ⚠ 這一段不是潔癖,是實測出來的洞。覆核者把整個 step 3c(release 建置不得是
+#   debuggable)從這支腳本裡刪掉,對一份 **debuggable 的 APK** 跑
+#   `--skip-emu --strict`,它印的是:
+#
+#       通過 12 項，失敗 0 項，略過 0 項
+#       可以發布：./scripts/publish_apk.sh
+#
+#   一整關消失,而輸出跟一切正常長得一模一樣。這正是這個專案反覆吃虧的
+#   「測試在該紅的時候安靜地不跑」,只是這次不跑的是**整關**。
+#
+#   publish_apk.sh 早就有 `SC_N -ne 36` 這種保護,這支沒有。補上。
+#
+#   數字是下界不是等號:新增關卡不該逼人改這裡,刪掉關卡才要。
+#   刪關卡是合法的(例如某一關被更好的取代),但**必須是有人動手把下界改小**,
+#   而不是刪完之後沒有任何東西提起這件事。
+MIN_EMU_ONLY=3       # 第 5–7 關
+MIN_SKIP_EMU=11      # 第 0–4 關(含 3b/3c)
+MIN_FULL=14
+
+_min=$MIN_FULL
+_lane="完整"
+if [ "$EMU_ONLY" -eq 1 ]; then _min=$MIN_EMU_ONLY; _lane="--emu-only"
+elif [ "$SKIP_EMU" -eq 1 ]; then _min=$MIN_SKIP_EMU; _lane="--skip-emu"
+fi
+_ran=$((PASS + FAIL + SKIP))
+if [ "$_ran" -lt "$_min" ]; then
+  echo >&2
+  echo "這一輪($_lane)只跑了 $_ran 關,少於下界 $_min 關。" >&2
+  echo "有關卡被刪掉或整段沒有執行到 —— 而那不會讓任何一項變紅,只會讓總數變小。" >&2
+  echo "確定要刪關卡的話,把 release_check.sh 裡的下界一起改小,並在 commit 訊息裡說為什麼。" >&2
+  FAIL=$((FAIL+1))
+fi
+
 echo
 echo "============================================"
-echo " 通過 $PASS 項，失敗 $FAIL 項，略過 $SKIP 項"
+echo " 通過 $PASS 項，失敗 $FAIL 項，略過 $SKIP 項（下界 $_min，$_lane）"
 echo "============================================"
 if [ "$SKIP" -gt 0 ]; then
   echo "以下這幾關沒有驗到,發布前自己決定能不能接受:$SKIPPED"

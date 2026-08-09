@@ -164,7 +164,7 @@ class NotReadyUiWiringTest {
             if (stage == SetupStage.FAILED && !initError.isNullOrBlank()) {
                 Text(text = initError)
             }
-            val action = actionOf(stage)
+            val action = actionOf(stage, failure)
             NotReadyAction.SWITCH_IME -> R.string.not_ready_switch
             else -> R.string.not_ready_refresh_words
             else -> onRefreshWords()
@@ -317,7 +317,12 @@ class NotReadyUiWiringTest {
         private val PRINTS_INIT_ERROR = Regex("""text\s*=\s*initError\b""")
         private val GUARDS_INIT_ERROR =
             Regex("""stage\s*==\s*SetupStage\.FAILED\s*&&\s*!initError\.isNullOrBlank\(\)""")
-        private val ASKS_ACTION_OF = Regex("""=\s*actionOf\(\s*stage\s*\)""")
+        // ⚠ 併版時改過:實作端是 actionOf(stage, failure) —— 兩個引數那一版比
+        //   單引數那一版嚴(它把「哪一種失敗」也納入「該不該給按鈕」),所以留
+        //   實作、改判準。第二個引數**必須是變數 failure**,寫死成某一種失敗
+        //   (覆核者的 P2)就不算數。
+        private val ASKS_ACTION_OF =
+            Regex("""=\s*actionOf\(\s*stage\s*,\s*failure\s*\)""")
         private val CLICK_CALLS_REFRESH = Regex("""else\s*->\s*onRefreshWords\(\)""")
         private val LABEL_REFRESH = Regex("""else\s*->\s*R\.string\.not_ready_refresh_words""")
 
@@ -335,6 +340,7 @@ class NotReadyUiWiringTest {
         private val FAILED_BODY_CALL = """
             |                FailedBody(
             |                    error = initError,
+            |                    failure = failure,
             |                    onRefreshWords = onRefreshWords,
             |                    onFinished = onFinished,
             |                )
