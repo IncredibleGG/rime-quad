@@ -57,7 +57,7 @@ extern "C" {
 /* 任何破壞相容性的變更都必須遞增此值。前端啟動時應以 rs_abi_version()
  * 比對自身編譯期的常數，不符即拒絕載入 —— 行動端熱更新資料檔時，
  * 這是唯一能擋下 so/dylib 與上層不同步的關卡。 */
-#define RIME_SHELL_ABI_VERSION 2
+#define RIME_SHELL_ABI_VERSION 3
 
 typedef uintptr_t rs_session;
 #define RS_INVALID_SESSION ((rs_session)0)
@@ -208,6 +208,31 @@ bool rs_clear_composition(rs_session s);
  * 會在 commit_text 拿到它。
  */
 bool rs_commit_composition(rs_session s);
+
+/* 直接改寫「目前正在打的那一串輸入」,並讓引擎重新計算候選。
+ *
+ * ⚠ **為什麼需要這一支:九宮格的音節消歧只能這樣做。**
+ *   一顆鍵三四個字母,「MG」可能是 ni 也可能是 mi。使用者點了 ni 之後,
+ *   引擎必須知道「第一個音節確定是 ni,後面仍然模糊」。
+ *
+ *   librime **沒有**「選擇某個拼寫」的 API —— 上游作者明講過(rime/librime#123):
+ *   這是前端的工作,做法是**把輸入串改寫掉**(把那一段數字碼換成精確的拼音),
+ *   而這要求方案是**雙編碼**的:精確拼音與模糊碼共存於同一個 prism。
+ *
+ *   rs_select_candidate() 做不到這件事:它確定的是**字**,不是**音節**。
+ *
+ * ⚠ 這是「重打一次」而不是「附加」:引擎會把整串重新切分。呼叫端要自己保證
+ *   新的字串在方案的 alphabet 裡,否則會被靜靜地丟掉一部分。
+ *
+ * 回傳 false 代表引擎拒絕(session 無效,或字串裡有 alphabet 不認得的字元)。 */
+bool rs_set_input(rs_session s, const char* input);
+
+/* 取得引擎目前持有的輸入串(不是 preedit —— preedit 是顯示用的,
+ * 可能已經被 speller 加了分隔符或轉寫過)。永不為 NULL;
+ * 指標在下一次 API 呼叫前有效。
+ *
+ * 沒有這一支的話 rs_set_input() 很難用對:改寫之前要先知道現在是什麼。 */
+const char* rs_get_input(rs_session s);
 
 /* ───────────────────────── 狀態快照 ───────────────────────── */
 

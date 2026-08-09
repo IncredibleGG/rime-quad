@@ -156,6 +156,15 @@ bool rs_sync_user_data(void) {
 
 const char* rs_sync_dir(void) { return ""; }
 
+bool rs_set_input(rs_session, const char*) {
+  // stub 沒有引擎,改寫輸入串沒有意義。**刻意回 false** —— 回 true 會讓
+  // 消歧欄以為改寫成功、然後畫出一個與引擎狀態不符的畫面。
+  g_last_error = "rs_set_input: stub 沒有 librime";
+  return false;
+}
+
+const char* rs_get_input(rs_session) { return ""; }
+
 const char* rs_last_error(void) { return g_last_error.c_str(); }
 
 rs_session rs_session_create(void) {
