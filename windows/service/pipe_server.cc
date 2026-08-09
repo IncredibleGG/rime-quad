@@ -543,17 +543,25 @@ void PipeServer::ServeClient(HANDLE pipe) {
           //   看到的第一份快照就是答案,不必再問引擎一次。
           schema_seeded = false;
         }
-        if (!send(EncodeSessionOk(seq, ok))) goto done;
+        // ⚠⚠ **記錄一定要在 send 之前。**
+        //
+        //   慢到讓用戶端放棄的那幾次,用戶端已經把管道關掉了,於是這裡的
+        //   send 會失敗並 goto done —— 記錄若排在 send 後面,
+        //   **正好就是失敗的那幾次沒有留下數字**,而 §6e 只會看到成功的那些。
+        //   一道只量得到成功案例的關卡等於沒在量(實測:CI run 31313134953
+        //   有一個宿主逾時,而 §6e 報「最久 203ms、0 次超過」)。
+        //
+        //   這一行是使用者回報「有時候不能打中文」時唯一量得到的數字。
+        //   300 是用戶端的預算(ipc_client.cc 的 kConnectTimeoutMs)——
+        //   超過它就代表那個宿主會 fail-open 成打英文。
         {
           const DWORD t_done = ::GetTickCount();
-          // 這一行是給 CI 斷言用的(windows/verify_installer.sh 會讀它),
-          // 也是使用者回報「有時候不能打中文」時唯一量得到的數字。
-          // 300 是用戶端的預算 —— 超過它就代表有宿主會 fail-open。
           Log("[pipe] SESSION_NEW_MS=%lu(建 session %lu ms)%s\n",
               static_cast<unsigned long>(t_done - t_begin),
               static_cast<unsigned long>(t_created - t_begin),
               (t_done - t_begin) >= 300 ? "  ** 超過用戶端 300ms 的預算 **" : "");
         }
+        if (!send(EncodeSessionOk(seq, ok))) goto done;
         break;
       }
       case Op::kSessionEnd: {
