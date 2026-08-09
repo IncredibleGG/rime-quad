@@ -123,6 +123,37 @@ verify_payload() {
   return "${missing}"
 }
 
+# ---------------------------------------------------------------- .iss 的區段標籤
+#
+# ⚠ ISCC 是**逐行**判斷區段標籤的,而且它會先去掉行首的空白。
+#
+# 也就是說 [Code] 裡一行縮排之後以 `[` 開頭 —— 例如把陣列參數斷行寫成
+#
+#       SuppressibleMsgBox(FmtMessage(CustomMessage('X'),
+#                                     [SomeVar]), mbInformation, MB_OK, IDOK);
+#
+# —— 那個 `[SomeVar]),` 會被當成一個區段標籤,而錯誤訊息是
+#   「PreprocessingError ... Invalid section tag」,**而且它指的行號還是別的地方**。
+#
+# 實測:CI run #62 就是這樣紅的。ISCC 只在 Windows 上跑得動,所以這個純文字
+# 檢查是**唯一一個在 Linux 開發機上就抓得到它**的關卡 —— 那是它存在的理由。
+# (--lint 那一步四分鐘,已經比二十分鐘的正式建置好很多;這一支是零秒。)
+KNOWN_SECTIONS='Setup|Types|Components|Tasks|Dirs|Files|Icons|INI|InstallDelete|Languages|Messages|CustomMessages|LangOptions|Registry|Run|UninstallDelete|UninstallRun|Code'
+check_iss_section_tags() {
+  local iss="$1"
+  local bad
+  # 去掉行首空白之後以 [ 開頭、但不是已知區段名的行。
+  bad="$(grep -nE '^[[:space:]]*\[' "${iss}" \
+         | grep -vE "^[0-9]+:\[(${KNOWN_SECTIONS})\][[:space:]]*$" || true)"
+  if [ -n "${bad}" ]; then
+    echo "  !! .iss 裡有幾行去掉縮排之後以 [ 開頭,ISCC 會把它們當成區段標籤:" >&2
+    printf '%s\n' "${bad}" | sed 's/^/     /' >&2
+    echo "     把那個 [ 挪到不在行首的位置(例如先把值存進一個變數)。" >&2
+    return 1
+  fi
+  return 0
+}
+
 # ---------------------------------------------------------------- 反向測試
 #
 # 「測試是綠的,因為它沒在測」是這個專案抓過最多次的失敗模式。
@@ -172,6 +203,24 @@ self_check() {
 
   rm -rf "${tmp}"
   log "反向測試通過:payload 檢查會在該紅的時候紅、該綠的時候綠 ✓"
+
+  # ⚠ 這一項與 payload 無關,但它掛在這裡是刻意的:--self-check 是本腳本
+  #   唯一**不需要 Windows** 的入口,而這個檢查也不需要 Windows。
+  #   掛在這裡,開發機上一行指令就驗得到。
+  log "檢查 .iss 的區段標籤"
+  check_iss_section_tags "${SCRIPT_DIR}/installer/rimequad.iss" \
+    || die ".iss 的區段標籤有問題,見上。ISCC 會以一個指向別處的行號失敗。"
+  log "  ✓ 沒有會被誤認成區段標籤的行"
+
+  # 反向測試的反向測試:植入一行,要求上面那個檢查真的紅。
+  local probe="${WORK}/iss-probe.iss"
+  cp "${SCRIPT_DIR}/installer/rimequad.iss" "${probe}"
+  printf '    [ThisLineLooksLikeASectionTag]\n' >> "${probe}"
+  if check_iss_section_tags "${probe}" > /dev/null 2>&1; then
+    die "植入了一行縮排的 [ ,區段標籤檢查竟然通過 —— 它沒有在檢查"
+  fi
+  rm -f "${probe}"
+  log "  ✓ 植入一行縮排的 [ 之後它會紅"
 }
 
 mkdir -p "${WORK}"
@@ -250,6 +299,8 @@ log "ISCC = ${ISCC_EXE}"
 ISS_SRC="${SCRIPT_DIR}/installer/rimequad.iss"
 ISS="${WORK}/rimequad.iss"
 [ -f "${ISS_SRC}" ] || die "找不到 ${ISS_SRC}"
+check_iss_section_tags "${ISS_SRC}" \
+  || die ".iss 的區段標籤有問題,見上。"
 printf '\xEF\xBB\xBF' > "${ISS}"
 cat "${ISS_SRC}" >> "${ISS}"
 head -c 3 "${ISS}" | od -An -tx1 | tr -d ' \n' | grep -q 'efbbbf' \

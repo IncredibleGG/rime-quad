@@ -432,8 +432,17 @@ begin
 end;
 
 // 問產品自己:使用者資料目錄在哪裡。
+//
 // 走 ExecAsOriginalUser 優先 —— %APPDATA% 是**登入者的**,而解除安裝程式
 // 可能跑在另一個(提權的)帳號底下。拿不到就退回提權那一側。
+//
+// ⚠ 用「另一個帳號提權」解除安裝時,退回的那一條會拿到**提權帳號的**路徑,
+//   與登入者的不同。要說清楚這件事的後果:
+//     · 真正的刪除**不受影響** —— DoPurge 叫的是 rime_ime_setup.exe,
+//       那支程式自己算它所在身分的 %APPDATA%,所以刪的一定是「跑它的那個人」的。
+//     · 受影響的只有(a)對話框裡顯示的路徑,與(b)刪完之後的 DirExists 檢查。
+//   兩者都往保守的方向偏(顯示別人的路徑、或報「沒刪乾淨」),
+//   而不會往「刪掉不該刪的東西」偏。這是刻意接受的取捨。
 function QueryUserDataDir(Exe: String): String;
 var
   Tmp: String;
@@ -513,6 +522,8 @@ begin
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  Msg: String;
 begin
   if CurUninstallStep = usUninstall then begin
     // 順序是刻意的:
@@ -529,17 +540,27 @@ begin
   end;
   if CurUninstallStep <> usPostUninstall then Exit;
   if UninstallSilent then Exit;
+  // ⚠ 底下這幾行刻意先把訊息組進一個變數,而不是把 [GUserDataDir] 直接
+  //   斷行寫在 FmtMessage 的參數位置。
+  //
+  //   ISCC 是**逐行**判斷區段標籤的,而且它會先去掉行首的空白 ——
+  //   所以一行縮排之後以 `[` 開頭(例如續行的 `[GUserDataDir]),`)
+  //   會被當成一個區段標籤,錯誤訊息是
+  //     「PreprocessingError ... Invalid section tag」
+  //   而它指的行號還是**別的地方**。實測:CI run #62 就是這樣紅的,
+  //   而 windows/make_installer.sh --lint 那一步四分鐘就抓到了
+  //   (真正的安裝程式建置在二十分鐘之後)。
   if GPurge then begin
     if GPurgeOk then
-      SuppressibleMsgBox(FmtMessage(CustomMessage('UninstallPurgeDone'),
-                                    [GUserDataDir]), mbInformation, MB_OK, IDOK)
+      Msg := FmtMessage(CustomMessage('UninstallPurgeDone'), [GUserDataDir])
     else
-      SuppressibleMsgBox(FmtMessage(CustomMessage('UninstallPurgeFailed'),
-                                    [GUserDataDir]), mbInformation, MB_OK, IDOK);
+      Msg := FmtMessage(CustomMessage('UninstallPurgeFailed'), [GUserDataDir]);
+    SuppressibleMsgBox(Msg, mbInformation, MB_OK, IDOK);
     Exit;
   end;
   // 明著告訴使用者他的詞典還在、在哪裡。悄悄留下一個資料夾跟悄悄刪掉一樣糟。
-  if (GUserDataDir <> '') and DirExists(GUserDataDir) then
-    SuppressibleMsgBox(FmtMessage(CustomMessage('UninstallKeptUserData'),
-                                  [GUserDataDir]), mbInformation, MB_OK, IDOK);
+  if (GUserDataDir <> '') and DirExists(GUserDataDir) then begin
+    Msg := FmtMessage(CustomMessage('UninstallKeptUserData'), [GUserDataDir]);
+    SuppressibleMsgBox(Msg, mbInformation, MB_OK, IDOK);
+  end;
 end;

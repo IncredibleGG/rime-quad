@@ -97,13 +97,6 @@ long long FileSize(const std::wstring& p) {
   return (static_cast<long long>(d.nFileSizeHigh) << 32) | d.nFileSizeLow;
 }
 
-std::wstring EnvW(const wchar_t* name) {
-  wchar_t buf[32768];
-  const DWORD n = ::GetEnvironmentVariableW(name, buf, 32768);
-  if (n == 0 || n >= 32768) return std::wstring();
-  return std::wstring(buf, n);
-}
-
 // ── 1. 檔案 ───────────────────────────────────────────────────────
 void SectionFiles(Report& r, const std::wstring& dir) {
   r.Head("1. 安裝的檔案");
@@ -484,8 +477,12 @@ void SectionEngine(Report& r, const std::wstring& dir) {
 
   const std::wstring console = dir + L"\\rime_console.exe";
   const std::wstring shared = dir + L"\\data\\shared";
-  std::wstring user = EnvW(L"APPDATA");
-  if (!user.empty()) user += L"\\RimeQuad";
+  // ⚠ **不要**在這裡拼 %APPDATA% + 資料夾名。唯一的決定處是
+  //   winshared/winutil.cc 的 RimeUserDataDir() —— 這裡自己拼一份的話,
+  //   產品改名時這一格會去讀一個不存在的目錄,然後 rime_console 會在
+  //   一棵空的使用者目錄上重新部署一次(要好幾分鐘),而報告會說
+  //   「引擎層逾時」。診斷工具給出錯的診斷,比沒有診斷更糟。
+  const std::wstring user = RimeUserDataDir();
 
   if (!FileExists(console)) {
     r.Info("這個安裝裡沒有 rime_console.exe,跳過引擎層檢查");
