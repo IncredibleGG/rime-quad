@@ -162,6 +162,62 @@ stale_list() {
 }
 stale_count() { stale_list | wc -l | tr -d ' '; }
 
+# ── 建立 session 有沒有超過用戶端的預算 ───────────────────────────
+#
+# 這一格把「有時候不能打中文」變成一個**數字**。
+#
+#   建立 session 的往返預算是 300 毫秒(ipc_client.cc 的 kConnectTimeoutMs),
+#   而那一趟跑在**宿主的 UI 執行緒**上 —— 調大等於讓使用者按下第一顆鍵時
+#   整個程式卡住那麼久,所以它不能調大。超過預算的下場是 fail-open:
+#   那個宿主整個工作階段都打不出中文,而使用者只看到英文、沒有錯誤訊息。
+#
+# ⚠ 這一條刻意**不是**「平均值」或「95 百分位」。只要有**一次**超過,
+#   就有一個使用者的某一個程式打不出中文,而他不會知道為什麼。
+#
+# ⚠ 掃**所有**服務記錄:
+#     ${WORK}/*.log        本腳本啟動的那幾支(§6、以及 §13 的 p13-svc-*)
+#     diagnostics/service.log  **瘦 DLL 啟動的**那一支(§5c/§5d 冷啟動走的,
+#                          也是使用者機器上真正跑的那一支;它是
+#                          DETACHED_PROCESS,以前印的每個字都掉進黑洞)
+#   只掃一部分的下場是實際發生過的:2026-08-09 那一輪最慢的三次全在
+#   §13 的服務裡(250/297/**328**),而 §6e 只讀 §6 那一份,
+#   於是報告「最久 109 ms、0 次超過」,隔壁的 §13 正因為那個 328 紅著。
+DIAG_SVC_LOG="$(cygpath -u "${LOCALAPPDATA}")/${RS_WIN_DATA_FOLDER}/diagnostics/service.log"
+assert_session_new_budget() {   # $1 = 這一次掃描的標籤
+  local lines max n over
+  lines="$( (grep -ahao 'SESSION_NEW_MS=[0-9]*' \
+               "${WORK}"/*.log "${DIAG_SVC_LOG}" 2>/dev/null || true) \
+            | sed 's/.*=//')"
+  if [ -z "${lines}" ]; then
+    note_fail "$1:服務記錄裡一行 SESSION_NEW_MS= 都沒有 —— 這一格沒有在量任何東西。
+     (是 pipe_server.cc 那一行不見了,還是記錄檔不在預期的位置?)"
+    return
+  fi
+  max="$(printf '%s\n' "${lines}" | sort -n | tail -1)"
+  n="$(printf '%s\n' "${lines}" | wc -l | tr -d ' ')"
+  over="$(printf '%s\n' "${lines}" | awk '$1 >= 300' | wc -l | tr -d ' ')"
+  log "  $1:SESSION_NEW ${n} 次,最久 ${max} ms,超過 300ms 的有 ${over} 次"
+  if [ "${over}" -eq 0 ]; then
+    ok "$1:**沒有任何一次建立 session 超過用戶端 300ms 的預算**(最久 ${max} ms)
+     —— 也就是沒有宿主會因此 fail-open 成「打不出中文」。"
+  else
+    (grep -ah 'SESSION_NEW_MS=\|SESSION_NEW 失敗' "${WORK}"/*.log \
+       "${DIAG_SVC_LOG}" 2>/dev/null || true) | tail -20 | sed 's/^/      /'
+    note_fail "$1:有 ${over} 次建立 session 超過 300ms(最久 ${max} ms)。
+     每一次都代表一個宿主進程 fail-open —— 使用者在那個程式裡打不出中文,
+     而且沒有任何錯誤訊息。這正是「選了輸入法之後有時候不能打中文」。
+     ⚠ 修的方向**不是**把預算調大、也不是加重試(那只會讓它更難查)。
+     ⚠ 也**不是**把貴的工作丟到佇列裡非同步做 —— 那個已經試過而且量到
+       更糟:成本不會消失,只會搬進按鍵那條 50 毫秒的預算,於是第一顆鍵
+       變成「TestKeyDown 說吃、KeyDown 說不吃」,在真的宿主裡直接消失。
+     ⚠ 也**不是**在測試裡多等一會 —— 那只是讓關卡變綠。
+     量到的成因(2026-08-09):引擎只有一條執行緒,而前一個宿主離開時的
+     rs_session_destroy(寫回使用者詞典)一旦**開始**就停不下來,
+     下一個宿主的 SESSION_NEW 只能等。見 service/engine.cc 的
+     kLowPriorityIdleMs。"
+  fi
+}
+
 reg_value() {
   # $1 = 鍵, $2 = 值名(空字串代表預設值)
   local out
@@ -968,6 +1024,52 @@ if [ "$(count_service)" -ne 0 ]; then
   note_fail "5c 結束時還有 rime_service.exe 在跑 —— §6 那一支會被單一實例
      的互斥鎖擋掉,然後安靜地以 0 結束,而 §6 會變成在驗這一支。"
 fi
+
+# ══════════════════════════════════════════════════════════════════
+#  5d. 第三種「冷」:服務被結束掉之後,由瘦 DLL 重新拉起
+# ══════════════════════════════════════════════════════════════════
+#
+# ⚠ 「冷」有三種,而在這一節之前 CI 只驗了第一種:
+#
+#     1. 首次安裝          → §5c(空的使用者目錄 + 首次部署)
+#     2. 升級之後          → §13(安裝程式停掉舊服務、起一支新的)
+#     3. **使用者重新開機** → 就是這一節
+#
+#   第三種在使用者機器上**每天都會發生**:他開機、登入、切到這個輸入法,
+#   而服務進程並不會自己隨開機啟動 —— 它是被瘦 DLL 在 ActivateEx 時拉起來的。
+#   也就是說,每一天的第一次打字走的都是這條路,而在這之前沒有人在守它。
+#
+#   與 §5c 的差別:使用者目錄**已經部署好了**(詞庫編過了),所以這一節
+#   驗的不是「等得夠不夠久」,而是「服務重新起來之後,建 session 有沒有
+#   在預算之內」—— 那正是 2026-08-09 一路追下來的那個東西。
+log "5d. 第三種冷:服務被結束之後由瘦 DLL 重新拉起(= 使用者每天開機)"
+[ "$(count_service)" -eq 0 ] \
+  && ok "現在沒有服務在跑(與使用者剛登入時一樣)" \
+  || note_fail "5d 開始前還有服務在跑 —— 這一節驗不到「由 DLL 重新拉起」"
+
+set +e
+"${HOST}" --langid "${ACTIVE_LANGID}" --require-activate --require-eaten \
+          --keys nihao1 --expect 你好 \
+          --trace "$(w "${WORK}/relaunch-trace.log")" --wait-ms 20000 \
+          > "${WORK}/relaunch-type.log" 2>&1
+rc=$?
+set -e
+tr -d '\r' < "${WORK}/relaunch-type.log" | sed 's/^/    /'
+if [ "${rc}" -eq 0 ]; then
+  ok "**服務被結束之後,瘦 DLL 自己把它拉起來,而且第一次打字就打得出「你好」**
+     —— 這是使用者每天開機之後的第一次打字。"
+else
+  note_fail "服務被結束之後重新拉起,第一次打字失敗(結束碼 ${rc})。
+     使用者每天開機切過來打的第一串字就會是英文,而且沒有任何錯誤訊息。
+     ⚠ 這一格與 §5c 的差別是:詞庫**已經編好了**,所以慢的不會是部署。
+       去看 ${DIAG_SVC_LOG} 裡的 SESSION_NEW_MS 與預熱耗時。"
+fi
+
+# 場地還原:§6 要自己啟動一支服務。
+coldstart_stop_service
+if [ "$(count_service)" -ne 0 ]; then
+  note_fail "5d 結束時還有 rime_service.exe 在跑 —— §6 那一支會被單一實例擋掉"
+fi
 fi  # -n "${HOST}"
 
 
@@ -1138,35 +1240,11 @@ if [ -n "${HOST}" ]; then
     note_fail "按鍵矩陣有格子沒過 —— 詳見上面,以及 ${WORK}/inputmatrix/"
   fi
 
-  # ── ⚠ 6e. SESSION_NEW 有沒有超過用戶端的預算 ─────────────────
+  # ── 6e. 建 session 有沒有超過預算(實作在上面的 assert_session_new_budget)──
   #
-  # 這一格把「有時候不能打中文」變成一個**數字**。
-  #
-  #   建立 session 的往返預算是 300 毫秒(ipc_client.cc 的
-  #   kConnectTimeoutMs),而那一趟跑在**宿主的 UI 執行緒**上 ——
-  #   調大等於讓使用者按下第一顆鍵時整個程式卡住那麼久,所以它不能調大。
-  #   超過預算的下場是 fail-open:那個宿主整個工作階段都打不出中文,
-  #   而使用者只看到英文,沒有任何錯誤訊息。
-  #
-  #   2026-08-09 的 main:18 個宿主裡 8 個卡在這裡。當時看不到這個數字,
-  #   只看得到 7 格紅字 + 10 格恆真的綠字。
-  #
-  # ⚠ 這一條刻意**不是**「平均值」或「95 百分位」。只要有**一次**超過,
-  #   就有一個使用者的某一個程式打不出中文,而他不會知道為什麼。
-  # ⚠ 要**兩份記錄都讀**。
-  #
-  #   ${WORK}/service.log  是這支腳本自己啟動的那一支(`rime_service.exe >
-  #                        service.log`),也就是 §6 用的那一支。
-  #   diagnostics/service.log 是**瘦 DLL 啟動的**那一支 —— §5c 冷啟動走的
-  #                        就是它,而那是每一個新使用者真正走的路。
-  #
-  #   那一支是 DETACHED_PROCESS 而且沒有任何重導向,所以它印的每個字本來
-  #   都掉進黑洞:2026-08-09 §5c 紅掉時,唯一會寫下「建 session 花了多久」
-  #   的那一支,輸出根本不存在。現在服務會在偵測到 stdout/stderr 沒有去處時
-  #   自己接到那個檔案上(service/main.cc 的 RedirectStdIoIfDetached)。
-  #
-  #   只讀第一份的話,這一格就永遠看不到冷啟動 —— 而冷啟動正是出事的那一格。
-  DIAG_SVC_LOG="$(cygpath -u "${LOCALAPPDATA}")/${RS_WIN_DATA_FOLDER}/diagnostics/service.log"
+  # 這裡掃的是「到目前為止」:§5c 冷啟動(瘦 DLL 啟動的那一支)與 §6/§6d。
+  # ⚠ §13 的升級還沒跑,所以腳本**最後**還會再掃一次 —— 那一次才涵蓋得到
+  #   升級之後那幾支,而 2026-08-09 最慢的三次全在那裡。
   if [ -f "${DIAG_SVC_LOG}" ]; then
     ok "瘦 DLL 啟動的那一支服務有留下記錄:${DIAG_SVC_LOG}"
     echo "    --- 它的預熱 ---"
@@ -1176,35 +1254,7 @@ if [ -n "${HOST}" ]; then
      「印出來的東西掉進黑洞」了,而那正是使用者機器上跑的那一支。
      下一次冷啟動再出事,我們一樣查不到原因。"
   fi
-  MS_LINES="$( (grep -ahao 'SESSION_NEW_MS=[0-9]*' "${WORK}/service.log" \
-                  "${DIAG_SVC_LOG}" 2>/dev/null || true) | sed 's/.*=//')"
-  if [ -z "${MS_LINES}" ]; then
-    note_fail "服務記錄裡一行 SESSION_NEW_MS= 都沒有 —— 這一格沒有在量任何東西。
-     (是 pipe_server.cc 那一行不見了,還是 service.log 不是這一支服務的?)"
-  else
-    MS_MAX="$(printf '%s\n' "${MS_LINES}" | sort -n | tail -1)"
-    MS_N="$(printf '%s\n' "${MS_LINES}" | wc -l | tr -d ' ')"
-    MS_OVER="$(printf '%s\n' "${MS_LINES}" | awk '$1 >= 300' | wc -l | tr -d ' ')"
-    log "  6e. SESSION_NEW:${MS_N} 次,最久 ${MS_MAX} ms,超過 300ms 的有 ${MS_OVER} 次"
-    if [ "${MS_OVER}" -eq 0 ]; then
-      ok "**沒有任何一次建立 session 超過用戶端 300ms 的預算**(最久 ${MS_MAX} ms)
-     —— 也就是沒有宿主會因此 fail-open 成「打不出中文」。"
-    else
-      grep -a 'SESSION_NEW_MS=\|SESSION_NEW 失敗' "${WORK}/service.log" \
-        | tail -20 | sed 's/^/      /'
-      note_fail "有 ${MS_OVER} 次建立 session 超過 300ms(最久 ${MS_MAX} ms)。
-     每一次都代表一個宿主進程 fail-open —— 使用者在那個程式裡打不出中文,
-     而且沒有任何錯誤訊息。這正是「選了輸入法之後有時候不能打中文」。
-     ⚠ 修的方向**不是**把預算調大、也不是加重試(那只會讓它更難查)。
-       ⚠ 也**不是**把 rs_select_schema 丟到佇列裡非同步做 —— 那個已經
-         試過而且量到更糟:成本不會消失,只會從這 300 毫秒的預算搬進
-         按鍵那條 50 毫秒的預算,於是第一顆鍵變成「TestKeyDown 說吃、
-         KeyDown 說不吃」,在真的宿主裡直接消失(見 pipe_server.cc
-         kSessionNew 那一段的量測記錄)。
-       正確的方向是讓方案在**服務暖機時**就載好(service/main.cc 的
-       WarmUpEngine),讓這條路徑上本來就沒有貴的工作。"
-    fi
-  fi
+  assert_session_new_budget "6e"
 
   # ── 大量輸入之後,服務要**回得到可服務的狀態** ────────────────
   #
@@ -2433,6 +2483,18 @@ if [ -n "${HOST}" ]; then
 else
   log "14. (沒有給 --host,跳過反向測試 —— 這也表示 §13 沒有擔保)"
 fi
+
+# ══════════════════════════════════════════════════════════════════
+#  15. 最後再掃一次「建 session 有沒有超過預算」
+# ══════════════════════════════════════════════════════════════════
+#
+# ⚠ 這一次才涵蓋得到 §13(升級)自己起的那幾支服務。
+#   §6e 那一次跑在 §13 之前,看不到它們 —— 而 2026-08-09 那一輪最慢的
+#   三次(250 / 297 / 328)**全部**在那裡,於是 §6e 報「最久 109 ms、
+#   0 次超過」,而隔壁的 §13 正因為那個 328 紅著。
+#   一道只掃部分記錄的關卡,與一道只量成功案例的關卡是同一種錯。
+log "15. 全部跑完之後,再掃一次所有服務記錄"
+assert_session_new_budget "15"
 
 echo
 [ "${fail}" -eq 0 ] || die "安裝程式驗證失敗,見上。"

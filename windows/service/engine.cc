@@ -9,6 +9,20 @@
 namespace rimewin {
 namespace {
 
+// 低優先的工作(收 session)在引擎閒下來多久之後才做。
+//
+// 挑 400 毫秒的理由:它要明顯大於「一個宿主離開、下一個宿主連上來」
+// 那個間隔的**下限**(使用者關掉一個程式再切到另一個,中間至少也有
+// 幾百毫秒),同時遠小於任何人會察覺到的東西 —— 詞典寫回晚 0.4 秒,
+// 沒有任何人在等。
+constexpr int64_t kLowPriorityIdleMs = 400;
+
+int64_t NowSteadyMs() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
 std::atomic<int>* g_deploy_slot = nullptr;
 std::atomic<uint32_t>* g_deploy_seq = nullptr;
 
@@ -150,12 +164,40 @@ void Engine::ThreadMain() {
   for (;;) {
     std::function<void()> job;
     uint64_t destroy_id = 0;
+    bool done_all = false;
     {
       std::unique_lock<std::mutex> lock(mu_);
-      cv_.wait(lock, [&] {
-        return stop_ || !queue_.empty() || !pending_destroy_.empty();
-      });
-      if (stop_ && queue_.empty() && pending_destroy_.empty()) break;
+      for (;;) {
+        if (stop_ && queue_.empty() && pending_destroy_.empty()) {
+          done_all = true;
+          break;
+        }
+        if (!queue_.empty()) break;
+        if (!pending_destroy_.empty()) {
+          // ── ⚠ 低優先的工作還要「等引擎閒下來一段時間」才做 ──────────
+          //
+          // 只把它排到後面是不夠的:排序只在工作**還沒開始**時有用。
+          // 量到的實況(CI run 31313794449,§13):
+          //     SESSION_NEW_MS=250(建 session 141 ms)
+          //     SESSION_NEW_MS=297(建 session 141 ms)
+          //     SESSION_NEW_MS=328(建 session 219 ms)  ← 超過預算
+          // 而同一輪 §6 那一支服務是 94~110 ms(建 session 16~47 ms)。
+          // 差別在於:前一個宿主剛離開,引擎一空下來就**開始**寫回它的
+          // 使用者詞典,而下一個宿主的 SESSION_NEW 正好撞在那中間 ——
+          // 一旦開始就停不下來,它只能等。
+          //
+          // 所以低優先的工作要再等一小段安靜期。使用者關掉一個程式、
+          // 再打開另一個,中間的間隔遠大於這個值;而詞典寫回晚幾百毫秒
+          // **沒有任何人在等**。
+          const int64_t idle_ms = NowSteadyMs() - last_normal_ms_;
+          if (stop_ || idle_ms >= kLowPriorityIdleMs) break;
+          cv_.wait_for(lock, std::chrono::milliseconds(
+                                 kLowPriorityIdleMs - idle_ms));
+          continue;
+        }
+        cv_.wait(lock);
+      }
+      if (done_all) break;
       if (!queue_.empty()) {
         job = std::move(queue_.front());
         queue_.pop_front();
@@ -183,6 +225,13 @@ void Engine::ThreadMain() {
     }
     if (job) {
       job();
+      // 「引擎最後一次忙於**有人在等的**工作」是什麼時候。低優先的工作
+      // 靠它決定要不要再等一下(見上面)。收 session 不算忙 ——
+      // 不然一串連續的收尾會讓自己一直看起來很忙。
+      {
+        std::lock_guard<std::mutex> lock(mu_);
+        last_normal_ms_ = NowSteadyMs();
+      }
     } else if (destroy_id != 0) {
       auto it = sessions_.find(destroy_id);
       if (it != sessions_.end()) {
