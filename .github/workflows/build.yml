@@ -52,10 +52,20 @@ on:
         default: ''
 
 concurrency:
-  group: android-${{ github.ref }}
-  # 手動觸發的那一輪可能正在發布。被後來的 push 取消掉會留下一個傳到一半的
-  # R2:rime-latest.apk 換了、version.json 還沒換,而使用者的 app 讀的是後者。
-  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+  # 手動觸發(可能正在發布)與 push 分屬**不同的併發群組**。
+  #
+  # ⚠ 這裡原本是同一個群組,只靠 cancel-in-progress 區分,而那個判斷式問的是
+  #   「**我**是不是 workflow_dispatch」—— 它擋住了「發布去取消 push」,
+  #   卻擋不住「push 去取消發布」。方向是反的。
+  #   實際踩到:發布跑到一半,我推了一個 commit,發布**當場被取消**,
+  #   而 R2 上的 Android 還是舊版 —— 沒有任何東西紅,只是那件事沒發生。
+  #
+  #   註解本身寫的意圖是對的(「被後來的 push 取消掉會留下一個傳到一半的 R2」),
+  #   實作沒有做到。分群組之後,兩邊互不干涉。
+  group: android-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'ci' }}
+  # 同群組內仍然取消舊的:連續推兩次時,前一次的 CI 沒有意義。
+  # 但發布那一組刻意也留著 —— 連按兩次發布,後面那次才是他要的。
+  cancel-in-progress: true
 
 env:
   R2_BASE_URL: https://pub-d6a54d2e5f5947e2b0b23fb8e27ce0a5.r2.dev
