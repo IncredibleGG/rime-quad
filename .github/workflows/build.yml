@@ -33,6 +33,7 @@ on:
     # 單行陣列 [main, a, b] 會讓每一條都改同一行 = 必然衝突。
     branches:
       - main
+      - fix-gates
   pull_request:
     branches:
       - main
@@ -246,9 +247,15 @@ jobs:
     needs: fast
     # 每次 push 都開模擬器太慢,會逼人繞過 CI。推上 main 與手動觸發時跑,
     # 而 publish 掛在它後面 —— 所以「發布前沒驗過」做不到。
+    # ⚠ fix-gates 暫時列在這裡,而且**合併回 main 之後就該拿掉**。
+    #   理由:這一輪在慢車道新增了 `--plant bad-slot-ids`(消歧欄關卡的第三個
+    #   反向測試,它斷言的是畫面像素,只有模擬器跑得了)。開發機沒有 tesseract,
+    #   那一條在本機驗不了 —— 而「沒驗過的新關卡直接進 main」正好是這一輪
+    #   在修的那類問題。所以讓它在自己的分支上先真的跑一次。
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+      (github.event_name == 'push' &&
+       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/fix-gates'))
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
