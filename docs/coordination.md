@@ -440,6 +440,48 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
 
 ---
 
+- `[2026-08-09] [dictfix] ⚠ **給所有端:使用者自己加的詞,編碼欄是「按鍵」不是「音節」——
+  `docs/settings-model.md` §5 上一版是錯的,照它做會做出一個完全沒有作用的功能。**
+  正確的是 `黃小明<TAB>huangxiaoming`,**不是** `huang xiao ming`。librime 的
+  `TableTranslator::Query()` 把使用者按出來的原始字串直接拿去查 stabledb,
+  而 stabledb 的鍵是 `編碼 + " \t" + 詞`(`dict/table_db.cc`),命中條件是逐字元相等
+  (`dict/user_dictionary.cc` 的 `key[len] == ' '`)。中間有空格就永遠查不到,
+  **而且沒有任何錯誤訊息**:檔案讀得進去、詞條也載入了,只是查不到。
+  §5 已改寫,`apple/scripts/verify_user_dict.sh` 每次 CI 硬跑。
+  Android 的 task #39(詞庫匯出匯入)如果已經在寫這個格式,請對一下第二欄。`
+
+- `[2026-08-09] [dictfix] ⚠ **給所有端:掛載 custom_phrase 之前要先問「這個方案是不是本來就有」。**
+  RIME 的 patch 只有「接上去」(`@next`),沒有「沒有才接」。而本專案打包的
+  luna_pinyin / bopomofo / terra_pinyin **本來就自帶** `table_translator@custom_phrase`
+  (t9_pinyin 與 stroke 沒有)。對已經有的方案再接一次,同一個詞會在選字窗裡出現兩次 ——
+  內建方案剛好有 `uniquifier` 會收掉所以看不見,實測把 `uniquifier` 拿掉之後
+  立刻變成第 1、2 名兩筆,而市集裡的方案沒有人保證有 `uniquifier`。
+  判斷方式與兩個陷阱(判斷不出來時要照接;**不可以把自己寫的掛載檔當成證據**,
+  否則第二次掛載會把自己的那一行當成方案自帶的、於是拿掉它)寫在 §5.3。`
+
+- `[2026-08-09] [dictfix] **`rs_sync_user_data()` 這一輪沒有用到,而且原因值得記下來。**
+  它是為了「剛學到的詞還在記憶體裡」那個問題加的,而那個問題是**真的**,
+  只是與「加了詞打不出來」無關:我們這條路徑寫的是純文字 TSV,由
+  `StableDb::Open()` 唯讀載入,整條路徑不經過 leveldb 的 WriteBatch,
+  也就沒有待落地的交易。⚠ **但備份/匯出那條路徑仍然需要它** ——
+  那裡碰的是 `*.userdb/`(librime 自己學到的詞),`docs/backup-format.md` §8.2
+  講的就是這件事。兩件事共用「詞庫」兩個字,但機制完全不同,不要混。`
+
+- `[2026-08-09] [dictfix] ⚠ **給 macOS 端(不是我改的,我只動詞庫那一頁):
+  `SchemaPreflight` 可能會對 `luna_pinyin_tw.schema.yaml` 誤報缺檔。**
+  它的 `collect()` 對 `__patch:` 底下的每一個序列項都套 `includeTarget()`,
+  而那份方案的 `__patch` 第一項是 `switches/@2/reset: 3` —— 那是一個
+  **節點路徑,不是檔名**,會被算成要找 `switches/@2/reset.yaml`。
+  我沒有實測(這台建置機沒有 swift),也沒有動它,因為那是部署路徑不是詞庫路徑。
+  請確認一下 `checkAll` 有沒有跑在內建方案上;如果有,誤報會擋下正常的部署,
+  而 `SchemaPreflight` 的檔頭自己寫著「誤判比漏判更糟」。`
+
+- `[2026-08-09] [dictfix] **`docs/ui-design.md` §5.3 那一列我改了一格**(「我的詞庫 / ⏸ 未上架」
+  → 「自己加的詞 / ✅ 已上架」),因為 §5.3 自己寫著「兩張表不一致時以 settings-model §1 為準,
+  並回來修這一張」。⚠ **給設計線:§7 的九張版面草圖沒有這一頁**(當時它不在線上),
+  桌面端現在是七頁不是六頁。頁名依 §6.2 的對照表取「自己加的詞」而不是「詞庫」。
+  這一頁目前的樣子只照了 §6(文案)與 §4(元件),**沒有**照著草圖擺 —— 因為還沒有草圖。`
+
 ## 6. 各端狀態
 
 > 自己更新自己那一行。

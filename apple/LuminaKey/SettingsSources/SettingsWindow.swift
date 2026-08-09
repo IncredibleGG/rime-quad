@@ -434,7 +434,7 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
         ]
     }
 
-    // MARK: - 詞庫
+    // MARK: - 自己加的詞
 
     private var newWordField: NSTextField?
     private var newCodeField: NSTextField?
@@ -447,15 +447,17 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
         let word = NSTextField(string: "")
         word.placeholderString = T("詞,例如:黃小明", "词,例如:黄小明", "Word, e.g. Anthropic")[lang]
         let code = NSTextField(string: "")
-        code.placeholderString = T("怎麼打,例如:huang xiao ming",
-                                   "怎么打,例如:huang xiao ming",
+        // ⚠ 這個範例本來寫的是「huang xiao ming」—— **帶空格的範例是錯的**,
+        //   照著填的每一個詞都永遠打不出來。這一頁被拿下來一輪就是為了這件事。
+        code.placeholderString = T("怎麼打,例如:huangxiaoming",
+                                   "怎么打,例如:huangxiaoming",
                                    "How you type it, e.g. anthropic")[lang]
         word.setContentHuggingPriority(.defaultLow, for: .horizontal)
         code.setContentHuggingPriority(.defaultLow, for: .horizontal)
         newWordField = word
         newCodeField = code
 
-        let add = UI.button(T("加進詞庫", "加进词库", "Add")[lang]) { [weak self] in
+        let add = UI.button(T("加這個詞", "加这个词", "Add")[lang]) { [weak self] in
             self?.addPhrase()
         }
         let entry = NSStackView(views: [word, code, add])
@@ -517,6 +519,21 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
         return out
     }
 
+    /// 找方案檔的順序必須與 librime 一致:先使用者目錄,再隨附目錄。
+    private var schemaSearchDirs: [URL] { [SettingsPaths.userDir, SettingsPaths.sharedDir] }
+
+    /// 讓每一個已啟用的方案都讀得到使用者加的詞。
+    ///
+    /// ⚠ 加詞與匯入**兩條路都要走這裡**。只有加詞走的話,一個從別台機器
+    /// 匯入了一整份詞、自己一個都沒加過的使用者,會拿到一頁滿滿的詞
+    /// 和一個什麼都打不出來的鍵盤。
+    private func mountPhrasesToEnabledSchemas() {
+        for id in model.engine.enabledSchemas {
+            _ = UserPhrases.mount(schemaId: id, userDir: SettingsPaths.userDir,
+                                  searchDirs: schemaSearchDirs)
+        }
+    }
+
     private func addPhrase() {
         guard let w = newWordField?.stringValue.trimmingCharacters(in: .whitespaces),
               let c = newCodeField?.stringValue.trimmingCharacters(in: .whitespaces),
@@ -527,13 +544,19 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
                     "The left box is the word; the right box is how you type it.")[lang])
             return
         }
+        // ⚠ **擋在這裡,不要等到使用者回去打字才發現。**
+        // 最常見的是兩欄填反(把「黃小明」填進右邊)。那一筆會安靜地存進去、
+        // 出現在下面的清單裡、然後永遠不會被打出來 —— 而使用者只會覺得
+        // 是自己哪裡做錯了。
+        if let problem = UserPhrases.codeProblem(c) {
+            alert(T("右邊那一欄填不對", "右边那一栏填不对",
+                    "That won't work as a spelling")[lang], problem[lang])
+            return
+        }
         let (list, _) = UserPhrases.adding(UserPhrase(text: w, code: c), to: model.phrases)
         model.phrases = list
         try? UserPhrases.write(list, userDir: SettingsPaths.userDir)
-        // 掛載點:讓每一個已啟用的方案都讀得到這份詞庫。
-        for id in model.engine.enabledSchemas {
-            _ = UserPhrases.mount(schemaId: id, userDir: SettingsPaths.userDir)
-        }
+        mountPhrasesToEnabledSchemas()
         newWordField?.stringValue = ""
         newCodeField?.stringValue = ""
         refresh()
@@ -562,6 +585,7 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
         let merged = UserPhrases.merging(parsed.phrases, into: model.phrases)
         model.phrases = merged.list
         try? UserPhrases.write(merged.list, userDir: SettingsPaths.userDir)
+        mountPhrasesToEnabledSchemas()
         refresh()
         alert(T("匯入完成", "导入完成", "Import finished")[lang],
               T("新增 \(merged.added) 筆,更新 \(merged.updated) 筆,略過 \(merged.skipped) 筆。"

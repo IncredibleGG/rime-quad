@@ -610,7 +610,7 @@ N ≥ 5  或  M ≥ 7   →  側欄（sidebar）
 | 外觀 | `appearance` | ✅ | ✅ | 桌面只管候選窗 |
 | 手感 | `feel` | ✅ | ❌ **整頁拿掉** | 震動、按鍵音、長按延遲都是軟鍵盤專屬 |
 | 文字 | `text` | ✅ | ✅ | |
-| 我的詞庫 | `dictionary` | ❌ 未實作 | ⏸ **未上架** | 格式尚未驗證通過（`settings-model.md` §5） |
+| 自己加的詞 | `dictionary` | ❌ 未實作 | ✅ 已上架 | 格式已用真的 librime 驗過（`settings-model.md` §5） |
 | 方案市集 | `store` | ✅ | ✅ | |
 | 連網 | `network` | ✅ | ✅ | |
 | 進階 | `advanced` | ✅ | ✅ | |
