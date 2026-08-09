@@ -70,6 +70,10 @@ ADB="$SDK/platform-tools/adb"
 # 產品識別碼的唯一來源,見 scripts/lib/product.env。
 # shellcheck source=lib/product.sh
 . "$HERE/lib/product.sh"
+# 「把測試靶叫到前景並確認它真的有焦點」那一整套,與 verify_rime_compose.sh
+# 共用同一份。為什麼需要它,見 scripts/lib/testtarget.sh 的檔頭。
+# shellcheck source=lib/testtarget.sh
+. "$HERE/lib/testtarget.sh"
 
 IME_ID=""
 APKS=()
@@ -111,7 +115,10 @@ dump_logcat_on_fail() {
   adbs shell dumpsys input_method > "$OUT_DIR/input_method.txt" 2>/dev/null || true
   grep -Ei "rime|$RS_PRODUCT_NAME|${IME_PKG:-$RS_ANDROID_APP_ID}|deploy|ANR|FATAL|died" \
     "$OUT_DIR/logcat.txt" > "$OUT_DIR/logcat-rime.txt" 2>/dev/null || true
+  # 焦點現場也要留 —— 見 verify_rime_compose.sh 同一段的理由。
+  tt_dump_forensics fail
   echo "  [INFO] 已存 logcat:$OUT_DIR/logcat.txt" >&2
+  echo "  [INFO] 已存失敗當下的視窗現場:$OUT_DIR/${TT_LAST_DUMP_TAG}-window.txt、${TT_LAST_DUMP_TAG}-activities.txt、${TT_LAST_DUMP_TAG}-focus.txt、${TT_LAST_DUMP_TAG}-screen.xml、${TT_LAST_DUMP_TAG}-screen.png" >&2
 }
 fail() { echo "  [FAIL] $*" >&2; dump_logcat_on_fail; echo >&2; echo "artifact 在:$OUT_DIR" >&2; exit 1; }
 step() { echo; echo "=== $* ==="; }
@@ -190,11 +197,34 @@ done
 [ "$SET_OK" -eq 1 ] || fail "ime set 沒有生效:目前的預設輸入法是 $CUR,不是 $IME_ID"
 pass "已啟用並設為預設(讀回 secure default_input_method 確認)"
 
-step "2. 開啟輸入目標並等待鍵盤"
-adbs shell monkey -p dev.rime.imetest -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 \
-  || fail "無法啟動 dev.rime.imetest,先跑 scripts/build_testapp.sh"
-sleep 2
+# ⚠ 「啟動了」不等於「在前景」,更不等於「拿到焦點」。
+#   上一輪(CI run 31310612204)第 6b 關報的是「鍵盤在 120s 內沒有出現」,
+#   而真正發生的事是測試靶的視窗從頭到尾沒有輸入焦點 —— 焦點在桌面身上。
+#   細節與證據見 scripts/lib/testtarget.sh 的檔頭。
+step "2. 開啟輸入目標,確認它有焦點,再等鍵盤"
+# 沒裝就別談焦點了 —— 見 verify_rime_compose.sh 同一段。
+adbs shell pm list packages 2>/dev/null | tr -d "\r" | grep -qx "package:$TT_PKG" \
+  || fail "裝置上沒有 $TT_PKG。先跑 scripts/build_testapp.sh,再 adb install 那個 APK。"
+if ! tt_acquire_foreground; then
+  tt_focus_report focus
+  fail "測試靶 $TT_PKG 沒有拿到視窗焦點,焦點在 ${TT_FOCUS_NOW:-<沒有任何視窗有焦點>}。
+       這不是鍵盤的問題:視窗沒有焦點,IMM 就沒有 served view,
+       showSoftInput 會被整個丟掉,鍵盤當然不會出現。
+       看 $OUT_DIR/focus-screen.png 與 focus-window.txt:是誰蓋在上面。"
+fi
+pass "測試靶在前景且視窗有焦點($TT_FOCUS_NOW)"
+FF=0; tt_focus_field || FF=$?   # set -e:不能寫成 `cmd; FF=$?`,那會先中止
+case "$FF" in
+  0) pass "輸入框拿到游標(uiautomator focused=true),實際座標 $TT_FIELD_XY" ;;
+  1) tt_focus_report focus
+     fail "畫面的節點樹裡找不到 $TT_PKG 的輸入框 —— 前景報的是測試靶,畫面上卻不是它。
+       看 $OUT_DIR/focus-screen.png。" ;;
+  *) tt_focus_report focus
+     fail "點了三次 $TT_FIELD_XY(輸入框的實際中心)之後,uiautomator 仍然說它沒有游標。
+       焦點進不去欄位,鍵盤就不會被叫起來。看 $OUT_DIR/focus-screen.xml。" ;;
+esac
 SHOWN=0
+LOST_FOCUS=0
 for i in $(seq 1 "$DEPLOY_TIMEOUT"); do
   adbs shell dumpsys input_method > "$OUT_DIR/input_method.txt" 2>/dev/null || true
   # 「有鍵盤」不等於「是我們的鍵盤」—— 兩個條件要一起成立。
@@ -205,11 +235,49 @@ for i in $(seq 1 "$DEPLOY_TIMEOUT"); do
     [ "$CUR_BOUND" = "$IME_ID" ] && { SHOWN=1; break; }
   fi
   # 每 10 秒補點一次:只點一次的話,錯過那一下就再也沒有人去叫鍵盤了。
-  # 見 verify_rime_compose.sh 裡同一段的註解。
-  [ $((i % 10)) -eq 5 ] && adbs shell input tap 540 300 >/dev/null 2>&1 || true
+  # 座標是量出來的(輸入框的實際中心),不是寫死的 540 300。
+  [ $((i % 10)) -eq 5 ] && tt_nudge_field || true
+  # 每 15 秒確認焦點還在測試靶身上。提早停損,而且指對方向 —— 焦點掉了
+  # 之後再等下去,等到的一定是逾時,而逾時那句話會把人帶去查輸入法。
+  if [ $((i % 15)) -eq 0 ]; then
+    if tt_has_focus; then
+      LOST_FOCUS=0
+    else
+      LOST_FOCUS=$((LOST_FOCUS + 1))
+      echo "  [INFO] 焦點不在測試靶身上(第 $LOST_FOCUS 次):$TT_FOCUS_NOW"
+      if [ "$LOST_FOCUS" -eq 1 ]; then
+        adbs shell input keyevent KEYCODE_BACK >/dev/null 2>&1 || true
+        tt_start
+      elif [ "$LOST_FOCUS" -ge 3 ]; then
+        tt_focus_report focus
+        fail "測試靶在等鍵盤的期間失去了視窗焦點(連續 3 次都不是它),焦點在 $TT_FOCUS_NOW。
+       有東西蓋到測試靶上面了 —— 不是鍵盤沒出現,是根本沒有人在等鍵盤。
+       看 $OUT_DIR/focus-screen.png 與 focus-activities.txt。"
+      fi
+    fi
+  fi
   sleep 1
 done
-[ "$SHOWN" -eq 1 ] || fail "鍵盤在 ${DEPLOY_TIMEOUT}s 內沒有出現"
+if [ "$SHOWN" -ne 1 ]; then
+  # 先問焦點,再談鍵盤。順序反過來就會把人帶錯方向 —— 這個專案已經
+  # 因為這種訊息浪費過好幾輪。
+  if ! tt_has_focus; then
+    tt_focus_report focus
+    fail "焦點不在測試靶身上,焦點在 ${TT_FOCUS_NOW:-<沒有任何視窗有焦點>}(應該是 $TT_PKG)。
+       鍵盤沒出現是這件事的結果,不是輸入法的問題。看 $OUT_DIR/focus-screen.png。"
+  fi
+  adbs logcat -d > "$OUT_DIR/logcat.txt" 2>/dev/null || true
+  WINFOCUS_LOG="$(grep -c "RimeImeTest.*windowFocus=true" "$OUT_DIR/logcat.txt" 2>/dev/null)" || WINFOCUS_LOG=0
+  IME_TGT="$(tt_ime_target_pkg "$OUT_DIR/input_method.txt")"
+  if [ "${WINFOCUS_LOG:-0}" -eq 0 ] || { [ -n "$IME_TGT" ] && [ "$IME_TGT" != "$TT_PKG" ]; }; then
+    tt_focus_report focus
+    fail "測試靶的視窗**從來沒有拿到過**輸入焦點:它自己回報 windowFocus=true 的次數是 ${WINFOCUS_LOG:-0},
+       輸入法框架最後一次 startInput 的目標是 '${IME_TGT:-<一筆都沒有>}'(應該是 $TT_PKG)。
+       沒有焦點就沒有 served view,showSoftInput 全部被丟掉。這不是鍵盤的問題。"
+  fi
+  fail "測試靶有焦點、輸入框有游標,鍵盤仍然在 ${DEPLOY_TIMEOUT}s 內沒有出現。
+       宿主端該做的都做了,這一次的嫌疑才真的在輸入法。"
+fi
 CUR_ID="$(grep -o 'mCurId=[^ ]*' "$OUT_DIR/input_method.txt" | head -1 | cut -d= -f2)"
 [ "$CUR_ID" = "$IME_ID" ] || fail "目前綁定的是 $CUR_ID,不是待測的 $IME_ID"
 pass "鍵盤已顯示,綁定正確"
@@ -232,16 +300,31 @@ step "2b. 重啟輸入法,把鍵盤打回已知狀態"
 adbs shell am force-stop "$IME_PKG" >/dev/null 2>&1 || true
 adbs logcat -c >/dev/null 2>&1 || true
 sleep 1
-adbs shell monkey -p dev.rime.imetest -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || true
+# 重啟輸入法會把宿主的視窗焦點也攪動一次,所以這裡不能只是「再 launch 一下」,
+# 一樣要確認焦點真的回到測試靶身上,否則後面的校準會在別人的畫面上量座標。
+if ! tt_acquire_foreground; then
+  tt_focus_report refocus
+  fail "重啟輸入法之後,測試靶沒有回到前景,焦點在 ${TT_FOCUS_NOW:-<沒有任何視窗有焦點>}。
+       這不是鍵盤壞了 —— 後面的座標校準會量到別人的畫面,所以在這裡就停。
+       看 $OUT_DIR/refocus-screen.png。"
+fi
+FF=0; tt_focus_field || FF=$?
+[ "$FF" -eq 0 ] || { tt_focus_report refocus; fail "重啟之後輸入框拿不到游標(座標 ${TT_FIELD_XY:-未量到})。"; }
 SHOWN=0
 for i in $(seq 1 "$DEPLOY_TIMEOUT"); do
   adbs shell dumpsys input_method 2>/dev/null | grep -q "mIsInputViewShown=true" && { SHOWN=1; break; }
   # 每 10 秒補點一次:只點一次的話,錯過那一下就再也沒有人去叫鍵盤了。
-  # 見 verify_rime_compose.sh 裡同一段的註解。
-  [ $((i % 10)) -eq 5 ] && adbs shell input tap 540 300 >/dev/null 2>&1 || true
+  # 座標是量出來的,不是寫死的 540 300。
+  [ $((i % 10)) -eq 5 ] && tt_nudge_field || true
   sleep 1
 done
-[ "$SHOWN" -eq 1 ] || fail "重啟後鍵盤沒有再出現"
+if [ "$SHOWN" -ne 1 ]; then
+  if ! tt_has_focus; then
+    tt_focus_report refocus
+    fail "重啟輸入法之後測試靶又失去焦點,焦點在 $TT_FOCUS_NOW。鍵盤沒再出現是這件事的結果。"
+  fi
+  fail "重啟後鍵盤沒有再出現(測試靶有焦點、輸入框有游標,所以嫌疑在輸入法)"
+fi
 if [ -n "$READY_LOG" ]; then
   for i in $(seq 1 "$DEPLOY_TIMEOUT"); do
     adbs logcat -d 2>/dev/null | grep -Eq "$READY_LOG" && break
@@ -372,17 +455,21 @@ sleep 3
 #   拍到的是別的畫面,比出來的 100% 差異看起來像重大缺陷而其實不是。
 SHOWN2=0
 for i in $(seq 1 20); do
-  FG="$(adbs shell dumpsys window 2>/dev/null | grep -m1 'mCurrentFocus' || true)"
   SHOWNV="$(adbs shell dumpsys input_method 2>/dev/null | grep -c 'mIsInputViewShown=true' || true)"
-  case "$FG" in
-    *dev.rime.imetest*)
-      [ "${SHOWNV:-0}" -ge 1 ] && { SHOWN2=1; break; } ;;
-  esac
-  adbs shell monkey -p dev.rime.imetest -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || true
+  if tt_has_focus && [ "${SHOWNV:-0}" -ge 1 ]; then SHOWN2=1; break; fi
+  tt_start
   sleep 2
 done
-[ "$SHOWN2" -eq 1 ] || fail "按住之後畫面沒有回到測試靶+鍵盤(前景是 '${FG:-未知}')。
-       按住把使用者帶離了輸入的畫面 —— 這本身就值得看一眼。"
+if [ "$SHOWN2" -ne 1 ]; then
+  tt_focus_report afterhold
+  if tt_has_focus; then
+    fail "按住之後測試靶還在前景,但鍵盤沒有回來(mIsInputViewShown 一直是 false)。
+       焦點沒問題,所以嫌疑在輸入法:按住可能把鍵盤自己弄掉了。"
+  fi
+  fail "按住把畫面帶離了測試靶:焦點跑到 ${TT_FOCUS_NOW:-<沒有任何視窗有焦點>}(應該是 $TT_PKG)。
+       按住把使用者帶離了輸入的畫面 —— 這本身就值得看一眼。
+       看 $OUT_DIR/afterhold-screen.png:被帶去哪裡了。"
+fi
 sleep 2
 pass "已清空,測試靶與鍵盤都還在"
 

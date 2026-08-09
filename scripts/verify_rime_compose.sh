@@ -28,6 +28,9 @@ EMU="$HERE/emu.sh"
 # 讀進來是為了 logcat 的過濾字樣(拿產品名去撈 log 的那一行)。
 # shellcheck source=lib/product.sh
 . "$HERE/lib/product.sh"
+# 「把測試靶叫到前景並確認它真的有焦點」那一整套。檔頭寫了為什麼需要它。
+# shellcheck source=lib/testtarget.sh
+. "$HERE/lib/testtarget.sh"
 SDK="${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}"
 ADB="$SDK/platform-tools/adb"
 
@@ -112,7 +115,12 @@ dump_logcat_on_fail() {
   # 部署訊息單獨抽一份出來,免得在幾萬行裡找。
   grep -Ei "rime|$RS_PRODUCT_NAME|${IME_PKG:-$RS_ANDROID_APP_ID}|deploy|ANR|FATAL|died" \
     "$OUT_DIR/logcat.txt" > "$OUT_DIR/logcat-rime.txt" 2>/dev/null || true
+  # ⚠ 焦點現場也要留。上一輪(CI run 31310612204)查不出原因,就是因為
+  #   artifact 裡只有 logcat 與 input_method,沒有 dumpsys window ——
+  #   「那一刻前景到底是誰」只能猜,於是又浪費一輪。任何一種失敗都存。
+  tt_dump_forensics fail
   echo "  [INFO] 已存 logcat:$OUT_DIR/logcat.txt($(wc -l < "$OUT_DIR/logcat.txt" 2>/dev/null || echo 0) 行)、logcat-rime.txt" >&2
+  echo "  [INFO] 已存失敗當下的視窗現場:$OUT_DIR/${TT_LAST_DUMP_TAG}-window.txt、${TT_LAST_DUMP_TAG}-activities.txt、${TT_LAST_DUMP_TAG}-focus.txt、${TT_LAST_DUMP_TAG}-screen.xml、${TT_LAST_DUMP_TAG}-screen.png" >&2
 }
 fail() { echo "  [FAIL] $*" >&2; dump_logcat_on_fail; echo >&2; echo "驗證失敗。artifact 在:$OUT_DIR" >&2; exit 1; }
 step() { echo; echo "=== $* ==="; }
@@ -261,26 +269,63 @@ done
 pass "已設為預設輸入法(讀回 secure default_input_method 確認)"
 
 # --- 4. 開啟輸入目標 ---------------------------------------------------------
-step "4. 開啟輸入目標"
+# ⚠ 「啟動了」不等於「在前景」,更不等於「拿到焦點」。這三件事必須分開驗。
+#
+#   上一輪(CI run 31310612204)就死在這裡:測試靶啟動了、畫出來了、進程活著,
+#   但視窗從頭到尾沒有輸入焦點(dumpsys input_method 的 mStartInputHistory 裡
+#   一筆 dev.rime.imetest 都沒有,焦點一直在桌面 nexuslauncher 身上)。
+#   沒有焦點 → IMM 沒有 served view → showSoftInput 直接被丟掉 →
+#   120 秒後報「鍵盤沒有出現」,而那句話指向的是部署與輸入法,完全錯的方向。
+#
+#   所以這一關現在**先把焦點驗出來**,失敗就在這裡紅,並且說出焦點在誰身上。
+step "4. 開啟輸入目標,並確認它真的在前景、真的有焦點"
 case "$TARGET" in
   testapp)
-    adbs shell monkey -p dev.rime.imetest -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 \
-      || fail "無法啟動 dev.rime.imetest,先跑 scripts/build_testapp.sh"
+    # 沒裝就別談焦點了。舊版是 monkey 失敗才報這句,改用 am start 之後
+    # 「沒裝」與「叫不到前景」會長得一樣,所以先分開問。
+    adbs shell pm list packages 2>/dev/null | tr -d "\r" | grep -qx "package:$TT_PKG" \
+      || fail "裝置上沒有 $TT_PKG。先跑 scripts/build_testapp.sh,再 adb install 那個 APK。"
+    if ! tt_acquire_foreground; then
+      tt_focus_report focus
+      fail "測試靶 $TT_PKG 沒有拿到視窗焦點,焦點在 ${TT_FOCUS_NOW:-<沒有任何視窗有焦點>}。
+       這**不是**輸入法或首次部署的問題:視窗沒有焦點,IMM 就沒有 served view,
+       showSoftInput 會被整個丟掉(logcat 裡是 ImeTracker onFailed at
+       PHASE_CLIENT_VIEW_SERVED),鍵盤當然不會出現。
+       先看 $OUT_DIR/focus-screen.png 與 focus-window.txt:是誰蓋在上面。"
+    fi
+    pass "測試靶在前景且視窗有焦點($TT_FOCUS_NOW)"
+
+    # 視窗有焦點還不夠 —— 游標必須真的在那個輸入框裡,IMM 才會有 served view。
+    # 座標從 uiautomator 的節點樹量(不是寫死的 540 300),點完再讀回來確認
+    # focused=true。點了不確認等於沒點。
+    FF=0; tt_focus_field || FF=$?   # set -e:不能寫成 `cmd; FF=$?`,那會先中止
+    case "$FF" in
+      0) pass "輸入框拿到游標(uiautomator focused=true),實際座標 $TT_FIELD_XY" ;;
+      1) tt_focus_report focus
+         fail "畫面的節點樹裡找不到 $TT_PKG 的輸入框 —— 前景視窗雖然報是測試靶,
+       畫面上卻不是它(可能有東西蓋在上面)。看 $OUT_DIR/focus-screen.png。" ;;
+      *) tt_focus_report focus
+         fail "點了三次 $TT_FIELD_XY(輸入框的實際中心)之後,uiautomator 仍然說它沒有游標。
+       焦點進不去欄位,鍵盤就不會被叫起來。看 $OUT_DIR/focus-screen.xml。" ;;
+    esac
     ;;
   settings)
+    # 這條路徑 release_check.sh 沒有在用,維持原樣(它的靶是系統設定,
+    # 不是我們的測試靶,tt_* 那一套的假設在這裡不成立)。
     adbs shell am start -a android.settings.SETTINGS >/dev/null 2>&1 || true
     sleep 2
     adbs shell input tap 540 300 >/dev/null 2>&1 || true
+    sleep 2
     ;;
   *) fail "不支援的 --target '$TARGET'" ;;
 esac
-sleep 2
 pass "已開啟"
 
 # --- 5. 等待鍵盤(含首次部署)------------------------------------------------
 # 首次啟動時 librime 要編譯 schema,可能要一分鐘以上,不能沿用 20 秒的等待。
 step "5. 等待鍵盤出現(上限 ${DEPLOY_TIMEOUT}s,含首次 schema 部署)"
 SHOWN=0
+LOST_FOCUS=0
 for i in $(seq 1 "$DEPLOY_TIMEOUT"); do
   adbs shell dumpsys input_method > "$OUT_DIR/input_method.txt" 2>/dev/null || true
   # ⚠ 「有鍵盤彈出來」不等於「彈出來的是我們的鍵盤」。
@@ -302,7 +347,30 @@ for i in $(seq 1 "$DEPLOY_TIMEOUT"); do
   fi
   # 每 10 秒補點一次輸入框。只點一次不夠:視窗剛開時點下去可能還沒 layout 完,
   # 而那一次錯過就再也沒有人去叫鍵盤了。
-  [ $((i % 10)) -eq 5 ] && adbs shell input tap 540 300 >/dev/null 2>&1 || true
+  # 座標用第 4 關量到的那一組(輸入框的實際中心),不是寫死的 540 300。
+  [ $((i % 10)) -eq 5 ] && tt_nudge_field || true
+  # 每 15 秒確認焦點還在測試靶身上。
+  # ⚠ 這不是「多等一會兒」,是**提早停損並指對方向**:焦點掉了之後再等下去,
+  #   等到的一定是逾時,而逾時那句話會把人帶去查部署。連續三次(45 秒)
+  #   都不在才算數,中途先自己搶救一次 —— 焦點在視窗動畫期間會短暫是別人的。
+  if [ "$TARGET" = "testapp" ] && [ $((i % 15)) -eq 0 ]; then
+    if tt_has_focus; then
+      LOST_FOCUS=0
+    else
+      LOST_FOCUS=$((LOST_FOCUS + 1))
+      echo "  [INFO] 焦點不在測試靶身上(第 $LOST_FOCUS 次):$TT_FOCUS_NOW"
+      if [ "$LOST_FOCUS" -eq 1 ]; then
+        adbs shell input keyevent KEYCODE_BACK >/dev/null 2>&1 || true
+        tt_start
+      elif [ "$LOST_FOCUS" -ge 3 ]; then
+        tt_focus_report focus
+        fail "測試靶在等鍵盤的期間失去了視窗焦點(連續 3 次都不是它),焦點在 $TT_FOCUS_NOW。
+       有東西蓋到測試靶上面了。這不是鍵盤沒出現,是根本沒有人在等鍵盤 ——
+       沒有焦點就沒有 served view,showSoftInput 一定被丟掉。
+       看 $OUT_DIR/focus-screen.png 與 focus-activities.txt。"
+      fi
+    fi
+  fi
   # 順便盯著預設輸入法有沒有被系統換掉。被換掉的話再等下去是浪費 —— 而且
   # 最後那句「鍵盤沒有出現」會把人帶去查部署,方向完全錯。
   if [ $((i % 20)) -eq 10 ]; then
@@ -343,10 +411,35 @@ if [ "$SHOWN" -ne 1 ]; then
     echo "  [INFO] 每一次請求都失敗、而且輸入法進程從沒被啟動 —— 指向宿主/測試靶沒把鍵盤叫起來,不是輸入法本身"
   fi
   LAST_BOUND="$(grep -o "mCurId=[^ ]*" "$OUT_DIR/input_method.txt" | head -1 | cut -d= -f2)"
+
+  # ⚠ 順序很重要:**先問焦點,再談鍵盤**。
+  #   「鍵盤沒有出現」是結果,不是原因。上一輪就是先講結果,於是所有人
+  #   都跑去查部署與綁定 —— 而那一輪的部署與引擎都是好的(第 5 關 PASS)。
+  if [ "$TARGET" = "testapp" ]; then
+    IME_TGT="$(tt_ime_target_pkg "$OUT_DIR/input_method.txt")"
+    WINFOCUS_LOG="$(grep -c "RimeImeTest.*windowFocus=true" "$OUT_DIR/logcat.txt" 2>/dev/null)" || WINFOCUS_LOG=0
+    if ! tt_has_focus; then
+      tt_focus_report focus
+      fail "焦點不在測試靶身上,焦點在 ${TT_FOCUS_NOW:-<沒有任何視窗有焦點>}(應該是 $TT_PKG)。
+       所以鍵盤當然沒出現 —— 這是**宿主端**的問題,不是輸入法、不是部署、
+       也不是綁定。看 $OUT_DIR/focus-screen.png:誰蓋在上面。"
+    fi
+    if [ "${WINFOCUS_LOG:-0}" -eq 0 ] || { [ -n "$IME_TGT" ] && [ "$IME_TGT" != "$TT_PKG" ]; }; then
+      tt_focus_report focus
+      fail "測試靶的視窗**從來沒有拿到過**輸入焦點:
+       它自己回報 windowFocus=true 的次數是 ${WINFOCUS_LOG:-0},
+       輸入法框架最後一次 startInput 的目標是 '${IME_TGT:-<一筆都沒有>}'(應該是 $TT_PKG)。
+       視窗沒拿過焦點,IMM 就沒有 served view,showSoftInput 全部被丟掉
+       (logcat:ImeTracker onFailed at PHASE_CLIENT_VIEW_SERVED)。
+       這不是鍵盤的問題,是有東西擋著測試靶。看 $OUT_DIR/focus-screen.png。"
+    fi
+  fi
+
   if grep -q "mIsInputViewShown=true" "$OUT_DIR/input_method.txt"; then
     fail "有鍵盤,但綁定的一直是 $LAST_BOUND,不是待測的 $IME_ID —— 系統沒有切換到我們的輸入法"
   fi
-  fail "鍵盤在 ${DEPLOY_TIMEOUT}s 內沒有出現(最後綁定:$LAST_BOUND)。若是首次部署卡住,查 $OUT_DIR/logcat.txt 中 rime 的部署訊息"
+  fail "測試靶有焦點、輸入框有游標、也叫了 ${REQ:-?} 次 showSoftInput,鍵盤仍然在 ${DEPLOY_TIMEOUT}s 內沒有出現(最後綁定:$LAST_BOUND)。
+       宿主端該做的都做了,這一次的嫌疑才真的在輸入法:查 $OUT_DIR/logcat.txt 中 rime 的部署訊息"
 fi
 pass "鍵盤已顯示"
 
