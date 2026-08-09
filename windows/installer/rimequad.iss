@@ -147,10 +147,19 @@ Source: "{#PayloadDir}\data\*"; DestDir: "{app}\data"; Flags: ignoreversion recu
 ;   (實測過,CI run 上就是這個錯。)
 ;   搬到 [Code] 之後順序、身分、以及失敗時的記錄都在我們手上,反而更清楚。
 
-; ⚠ 沒有 [UninstallDelete] 去碰 %APPDATA%\RimeQuad,而且**不可以加**。
+; ⚠ 沒有 [UninstallDelete] 去碰使用者資料目錄,而且**不可以加**。
 ;   那裡是使用者的詞典、自訂短語與設定 —— 是使用者的資料,不是我們的檔案。
-;   解除安裝一律留下;重新安裝時使用者的詞會原封不動地回來。
-;   (CI 有一道斷言:解除安裝之後 %APPDATA%\RimeQuad 必須還在而且非空。)
+;   預設一律留下;重新安裝時使用者的詞會原封不動地回來。
+;
+;   使用者真的不想要了的話,有一條**明確的**路:解除安裝時會問一次
+;   (預設「否」),或靜默解除安裝時傳 /PURGEUSERDATA。見底下 [Code] 的
+;   DecidePurge / DoPurge。用 [UninstallDelete] 做不到「預設不刪、
+;   問過才刪」,而且它也沒辦法在刪之前向產品確認路徑。
+;
+;   CI 兩條路都驗:
+;     · 不帶旗標的靜默解除安裝 → %APPDATA% 底下的檔案必須還在(§9)
+;     · 帶 /PURGEUSERDATA 的   → 必須整個消失(§10)
+;   只驗一條等於沒驗到這個功能。
 
 [Messages]
 ; Inno 6 沒有隨附繁體中文的 .isl(官方只帶二十幾個語言,中文在非官方那一份)。
@@ -194,6 +203,9 @@ OnlyOnTheseArchitectures=本輸入法只提供 64 位元版本,無法安裝在�
 [CustomMessages]
 RegisterFailed=註冊輸入法失敗(rime_ime_setup.exe %1,結束碼 %2)。%n%n輸入法沒有被系統接受,現在就算裝完了也不會出現在輸入法清單上。%n安裝已中止,不會留下一個裝了卻用不了的狀態。
 UninstallKeptUserData=您的詞典與設定保留在:%n%n%1%n%n那是您自己的資料(學過的詞、自訂短語),移除輸入法時刻意不刪。%n重新安裝時會原封不動地回來;確定不要了再自行刪除該資料夾。
+UninstallAskPurge=要順便刪除您的詞典與設定嗎?%n%n%1%n%n那裡面是您使用期間學會的詞、自訂短語與設定。%n%n⚠ 刪除之後**無法復原** —— 重新安裝也救不回來。%n%n選「否」會保留它(建議);之後改變主意再自行刪除該資料夾即可。%n選「是」會立刻永久刪除。
+UninstallPurgeDone=您的詞典與設定已刪除:%n%n%1
+UninstallPurgeFailed=有部分資料沒有刪掉(可能有檔案正被使用):%n%n%1%n%n重新開機後手動刪除該資料夾即可。
 
 [Code]
 
@@ -370,18 +382,164 @@ begin
     Log('RimeQuad: unregister 啟動失敗 —— 登錄檔會留下殘骸');
 end;
 
-procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+// ══════════════════════════════════════════════════════════════════
+//  「連我的資料一起刪」
+// ══════════════════════════════════════════════════════════════════
+//
+// 使用者的要求:真的不用了的人,要能一次清乾淨,不必自己去翻 AppData。
+//
+// ⚠ 這是整個安裝程式裡**唯一一個不可回復**的動作,所以每一條規則都往
+//   「寧可少刪」那一邊倒:
+//
+//   1. **預設保留。** 對話框的預設按鈕是「否」(MB_DEFBUTTON2),
+//      而且被 /SUPPRESSMSGBOXES 壓掉時的答案也是 IDNO。
+//      也就是說「什麼都不做」是每一條路徑的預設。
+//   2. **靜默解除安裝永遠不刪**,除非明確傳 /PURGEUSERDATA。
+//      這一條不是潔癖:windows/verify_installer.sh 第 9 步斷言
+//      「解除安裝後 %APPDATA% 底下的檔案還在」,那道關卡守的是
+//      「移除輸入法不會順手毀掉使用者的東西」。靜默模式若預設會刪,
+//      那道斷言就會開始紅 —— 而最糟的情況是有人為了讓它變綠去改斷言。
+//   3. **路徑向產品要,不自己拼。** GUserDataDir 來自
+//      `rime_ime_setup.exe user-data-path`。這裡若寫死
+//      {userappdata}\<資料夾名>,產品改名時就會漏掉這一處,
+//      結果是「刪了一個不存在的資料夾然後回報成功」。
+//   4. **在檔案還沒被刪掉之前就把路徑問出來。** usPostUninstall 的時候
+//      {app}\rime_ime_setup.exe 已經不在了,問不到任何東西。
 var
-  UserDir: String;
+  GUserDataDir: String;
+  GPurge: Boolean;
+  GPurgeOk: Boolean;
+
+// ⚠ 兩種找法都做。
+//
+// Inno 的解除安裝程式會**把自己複製到暫存目錄再跑一次**(_iu*.tmp),
+// 而那一次的參數列是它自己組出來的(會多一個 /SECONDPHASE=...)。
+// 只看 ParamStr 的話,旗標有可能在第二階段就不見了 —— 而症狀是
+// 「帶了 /PURGEUSERDATA 卻沒有刪」,看起來像刪除功能壞掉。
+// GetCmdTail 拿的是原始命令列字串,兩種都查一次是零成本的保險。
+function CmdLineParamExists(const Value: String): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+    if CompareText(ParamStr(I), Value) = 0 then begin
+      Result := True;
+      Exit;
+    end;
+  if Pos(Uppercase(Value), Uppercase(GetCmdTail)) > 0 then
+    Result := True;
+end;
+
+// 問產品自己:使用者資料目錄在哪裡。
+// 走 ExecAsOriginalUser 優先 —— %APPDATA% 是**登入者的**,而解除安裝程式
+// 可能跑在另一個(提權的)帳號底下。拿不到就退回提權那一側。
+function QueryUserDataDir(Exe: String): String;
+var
+  Tmp: String;
+  Rc: Integer;
+  Lines: TArrayOfString;
+begin
+  Result := '';
+  Tmp := ExpandConstant('{tmp}\rimequad-userdir.txt');
+  // cmd /C 才能做輸出重導向。Exec 本身不會解析 > 。
+  try
+    if not ExecAsOriginalUser(ExpandConstant('{cmd}'),
+         '/C ""' + Exe + '" user-data-path > "' + Tmp + '""',
+         '', SW_HIDE, ewWaitUntilTerminated, Rc) then
+      Rc := -1;
+  except
+    Rc := -1;
+  end;
+  if (Rc <> 0) or (not FileExists(Tmp)) then
+    Exec(ExpandConstant('{cmd}'),
+         '/C ""' + Exe + '" user-data-path > "' + Tmp + '""',
+         '', SW_HIDE, ewWaitUntilTerminated, Rc);
+  if FileExists(Tmp) and LoadStringsFromFile(Tmp, Lines) and
+     (GetArrayLength(Lines) > 0) then
+    Result := Trim(Lines[0]);
+  DeleteFile(Tmp);
+end;
+
+procedure DecidePurge;
+begin
+  GPurge := CmdLineParamExists('/PURGEUSERDATA');
+  if GPurge then begin
+    Log('RimeQuad: /PURGEUSERDATA —— 明確要求刪除使用者資料');
+    Exit;
+  end;
+  // 靜默解除安裝時**不問也不刪**。沒有旗標就是不刪。
+  if UninstallSilent then Exit;
+  if (GUserDataDir = '') or (not DirExists(GUserDataDir)) then Exit;
+  // MB_DEFBUTTON2:預設按鈕是「否」。
+  // 最後那個 IDNO 是 /SUPPRESSMSGBOXES 之下採用的答案 —— 同樣是不刪。
+  GPurge := SuppressibleMsgBox(
+              FmtMessage(CustomMessage('UninstallAskPurge'), [GUserDataDir]),
+              mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES;
+  if GPurge then Log('RimeQuad: 使用者選擇「連資料一起刪」');
+end;
+
+procedure DoPurge(Exe: String);
+var
+  Rc: Integer;
+begin
+  GPurgeOk := False;
+  if GUserDataDir = '' then begin
+    Log('RimeQuad: 算不出使用者資料目錄,不刪');
+    Exit;
+  end;
+  // ⚠ 身分很重要:要刪的是**登入者的** %APPDATA%。
+  //   ExecAsOriginalUser 是正確的那一條;它在沒有互動式 shell 的環境
+  //   (例如 CI runner)上拿不到權杖,那時才退回提權那一側 ——
+  //   而提權那一側刪的是執行解除安裝那個帳號的資料夾,對「自己就是
+  //   管理員」的一般情況正好也是對的。
+  Rc := -1;
+  try
+    if not ExecAsOriginalUser(Exe,
+         'purge-user-data --yes-delete-my-dictionary', '', SW_HIDE,
+         ewWaitUntilTerminated, Rc) then
+      Rc := -1;
+  except
+    Rc := -1;
+  end;
+  if Rc <> 0 then begin
+    Log('RimeQuad: purge(登入者)rc=' + IntToStr(Rc) + ',改走提權那一條');
+    if not Exec(Exe, 'purge-user-data --yes-delete-my-dictionary', '',
+                SW_HIDE, ewWaitUntilTerminated, Rc) then
+      Rc := -1;
+  end;
+  Log('RimeQuad: purge-user-data rc=' + IntToStr(Rc));
+  GPurgeOk := (Rc = 0) and (not DirExists(GUserDataDir));
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then begin
+    // 順序是刻意的:
+    //   1. 先把路徑問出來(這時 {app}\rime_ime_setup.exe 還在)
+    //   2. 再問使用者要不要刪(問的時候路徑已經是真的,能顯示給他看)
+    //   3. 停服務 / 反註冊(UninstallCleanup)—— 服務還握著詞庫時刪不掉
+    //   4. 最後才刪資料
+    GUserDataDir := QueryUserDataDir(ExpandConstant('{app}\' + SetupExeName));
+    Log('RimeQuad: 使用者資料目錄 = ' + GUserDataDir);
+    DecidePurge;
     UninstallCleanup;
+    if GPurge then DoPurge(ExpandConstant('{app}\' + SetupExeName));
     Exit;
   end;
   if CurUninstallStep <> usPostUninstall then Exit;
+  if UninstallSilent then Exit;
+  if GPurge then begin
+    if GPurgeOk then
+      SuppressibleMsgBox(FmtMessage(CustomMessage('UninstallPurgeDone'),
+                                    [GUserDataDir]), mbInformation, MB_OK, IDOK)
+    else
+      SuppressibleMsgBox(FmtMessage(CustomMessage('UninstallPurgeFailed'),
+                                    [GUserDataDir]), mbInformation, MB_OK, IDOK);
+    Exit;
+  end;
   // 明著告訴使用者他的詞典還在、在哪裡。悄悄留下一個資料夾跟悄悄刪掉一樣糟。
-  UserDir := ExpandConstant('{userappdata}\RimeQuad');
-  if DirExists(UserDir) and (not UninstallSilent) then
-    SuppressibleMsgBox(FmtMessage(CustomMessage('UninstallKeptUserData'), [UserDir]),
-                       mbInformation, MB_OK, IDOK);
+  if (GUserDataDir <> '') and DirExists(GUserDataDir) then
+    SuppressibleMsgBox(FmtMessage(CustomMessage('UninstallKeptUserData'),
+                                  [GUserDataDir]), mbInformation, MB_OK, IDOK);
 end;

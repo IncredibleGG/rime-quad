@@ -68,6 +68,26 @@ bool IsProcessElevated();
 // 本模組(DLL 或 exe)所在的目錄,結尾不含反斜線。
 std::wstring ModuleDirectory(HMODULE module);
 
+// ── 使用者資料目錄:**唯一的決定處** ──────────────────────────────
+//
+// `%APPDATA%\<資料夾名>`。取不到 %APPDATA% 時回傳空字串。
+//
+// ⚠ 這一格必須只有一份。呼叫者有三個,而且會越來越多:
+//     · rime_service.exe    —— 詞典、設定、librime 的編譯產物都在那裡
+//     · rime_ime_setup.exe  —— doctor 的引擎層檢查、以及「解除安裝時
+//                              連我的資料一起刪」那個選項
+//     · 安裝程式(Inno)      —— 它**不自己拼**這個路徑,而是問上面那支
+//                              (`rime_ime_setup.exe user-data-path`)
+//
+//   各自拼一份的下場很具體:資料夾名一改(例如產品改名),漏掉的那一處
+//   會去刪 / 去讀一個不存在的資料夾,然後**回報成功** ——
+//   使用者以為資料刪乾淨了,其實原封不動;或以為設定存好了,其實沒有。
+std::wstring RimeUserDataDir();
+
+// 上面那個路徑的最後一段(資料夾名)。刪除前的安全檢查要用它比對,
+// 而比對用的值當然不可以是另外抄的一份。
+const wchar_t* RimeUserDataFolderName();
+
 }  // namespace rimewin
 
 #endif  // RIMEWIN_WINSHARED_WINUTIL_H_

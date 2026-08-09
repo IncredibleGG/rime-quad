@@ -142,9 +142,12 @@ std::string DefaultSeedDir() {
 // 代價是編譯產物(<user>\build)也跟著漫遊,在有漫遊設定檔的網域環境裡會變重。
 // 那是已知的取捨,不是沒想過。
 std::string DefaultUserDir() {
-  const std::string appdata = EnvUtf8(L"APPDATA");
-  if (appdata.empty()) return std::string();
-  return appdata + "\\RimeQuad";
+  // ⚠ 路徑本身由 winshared/winutil.cc 的 RimeUserDataDir() 決定,
+  //   **這裡不再自己拼**。呼叫者已經有三個(服務、rime_ime_setup 的
+  //   doctor 與「解除安裝時一起刪資料」、以及安裝程式),
+  //   各拼一份的話,資料夾名一改就會漏掉一處 ——
+  //   而那一處會去讀 / 去刪一個不存在的資料夾然後回報成功。
+  return rimewin::WideToUtf8(rimewin::RimeUserDataDir());
 }
 
 bool DirExists(const std::string& utf8) {

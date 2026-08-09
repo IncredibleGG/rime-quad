@@ -147,6 +147,10 @@ self_check() {
   : > "${tmp}/rime_tsf.dll"
   : > "${tmp}/rime_service.exe"
   : > "${tmp}/rime_ime_setup.exe"
+  # ⚠ 這一行忘了加的話,反向測試的第 3 步(「補齊之後必須轉綠」)會紅,
+  #   而錯誤訊息是「這道檢查恆假」—— 指向完全錯的地方。
+  #   實測:rime_console.exe 變成必需品的那一輪,CI 就紅在這裡。
+  : > "${tmp}/rime_console.exe"
   local f
   for f in default.yaml luna_pinyin_tw.schema.yaml bopomofo_tw.schema.yaml \
            luna_pinyin.schema.yaml t9_pinyin.schema.yaml luna_pinyin.dict.yaml \

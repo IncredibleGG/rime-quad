@@ -329,6 +329,15 @@ void SectionService(Report& r, const std::wstring& dir) {
     for (DWORD p : pids) ids += Fmt("%lu ", static_cast<unsigned long>(p));
     r.Pass(Fmt("rime_service.exe 在跑(pid %s)", ids.c_str()));
     if (!path.empty()) r.Info("  執行檔: " + W(path));
+    // ⚠ 服務在跑 ≠ 使用者看得到系統匣圖示。
+    //
+    // Windows 11 **預設把新出現的系統匣圖示收進溢位區**(工作列上那個 `^`)。
+    // 也就是說「沒有系統匣圖示」這個回報,有一部分其實是「它在 ^ 裡面」。
+    // 這一句放在這裡是因為:能看到這一行的人,他的服務是真的在跑 ——
+    // 那麼圖示就一定被加過(它在 WM_CREATE 裡加,見 settings_window.cc)。
+    r.Note("服務在跑就代表系統匣圖示已經加過了。Windows 11 預設把新的圖示");
+    r.Note("收進工作列的溢位區(那個 `^`)—— 看不到的話先點開它看看,");
+    r.Note("或到「設定 → 個人化 → 工作列 → 其他系統匣圖示」把它打開。");
     if (pids.size() > 1)
       r.Warn("同時有多支服務在跑 —— 它們會爭同一份使用者詞庫。請重新登入一次。");
   } else {
@@ -574,10 +583,25 @@ void SectionEngine(Report& r, const std::wstring& dir) {
   }
   ::DeleteFileW(out_path.c_str());
 
+  const bool inited = text.find("rs_init OK") != std::string::npos;
+
   if (wait == WAIT_TIMEOUT) {
-    r.Warn("引擎層檢查超過 180 秒沒有結束");
-    r.Note("首次安裝時 librime 要編譯詞庫,那本來就要一到數分鐘。");
-    r.Note("過幾分鐘再跑一次;一直如此的話,才是真的有問題。");
+    // ⚠ 逾時要分成兩種說法,不可以併成一句「逾時」。
+    //
+    //   rs_init 都沒過去   → 引擎層是真的壞的(資料缺、路徑不對)
+    //   rs_init 過了       → 引擎起得來,只是還在等部署回報。
+    //                        rime_console 自己會等 600 秒,而 librime 在
+    //                        **已經部署過**的目錄上不一定會再發一次通知 ——
+    //                        那時它就是坐在那裡等,而引擎其實好得很。
+    if (!inited) {
+      r.Fail("引擎層連 rs_init 都沒有完成(等了 180 秒)",
+             "librime 起不來。多半是 data\\shared 缺東西或路徑不對。\n"
+             "         重新安裝一次;仍然如此的話請把這份報告整份回報。");
+    } else {
+      r.Warn("引擎層起得來,但這一次沒有打完(180 秒)");
+      r.Note("rs_init 過了,所以 librime 與資料是好的 —— 它在等部署回報。");
+      r.Note("首次安裝時編譯詞庫要一到數分鐘;過幾分鐘再跑一次。");
+    }
     return;
   }
 
@@ -596,11 +620,18 @@ void SectionEngine(Report& r, const std::wstring& dir) {
   if (rc == 0 && commit_ok) {
     r.Pass("引擎層打得出「你好」—— librime、資料、方案全部正常");
     r.Note("所以問題必定在 TSF(第 2/3/6 節)或管道(第 5 節)那一側。");
-  } else {
-    r.Fail(Fmt("引擎層打不出「你好」(結束碼 %lu)",
+  } else if (inited) {
+    // 起得來但沒打出字:仍然是壞的,但壞在別的地方(方案、詞庫、選字),
+    // 而不是「librime 根本起不來」。這兩者要查的東西不同。
+    r.Fail(Fmt("引擎層起得來,但打不出「你好」(結束碼 %lu)",
                static_cast<unsigned long>(rc)),
-           "問題在引擎或資料本身,不在 TSF。重新安裝一次;\n"
-           "         若重裝之後仍然如此,請連同下面這幾行一起回報。");
+           "librime 起來了,所以問題在方案或詞庫那一層,不在路徑。\n"
+           "         請連同下面這幾行一起回報。");
+  } else {
+    r.Fail(Fmt("引擎層連 rs_init 都沒有完成(結束碼 %lu)",
+               static_cast<unsigned long>(rc)),
+           "librime 起不來。多半是 data\\shared 缺東西或路徑不對。\n"
+           "         重新安裝一次;仍然如此的話請把這份報告整份回報。");
     // 只挑我們自己的輸出。glog 的部署警告有好幾百行,貼過來只會把
     // 真正的訊息淹掉。
     size_t pos = 0;

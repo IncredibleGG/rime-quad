@@ -677,15 +677,33 @@ fi
 # 引擎層那一格。斷言的是它真的跑了 rime_console 並拿到「你好」——
 # 而不是安靜地跳過(「這個安裝裡沒有 rime_console.exe」也是 [INFO],
 # 印出來長得跟通過很像)。
+#
+# ⚠ 接受**兩種**結果,而且只接受這兩種:
+#
+#   [PASS] 引擎層打得出「你好」        —— 最好的情形
+#   [WARN] 引擎層起得來,但這一次沒有打完 —— rs_init 過了,只是沒等到部署回報
+#
+# 第二種不是我們放水,是一個真實而且無法在這裡消除的時序:
+# rime_console 會等最多 600 秒的部署通知,而 librime 在**已經部署過**的
+# 目錄上不一定會再發一次 —— 而這裡的使用者目錄剛好在 §6 就部署完了。
+# doctor 的預算是 180 秒(它是給使用者跑的,不能等十分鐘)。
+#
+# 關鍵是這兩種以外的一律紅,包括:
+#   · 「連 rs_init 都沒有完成」   —— 引擎層真的壞了
+#   · 「起得來,但打不出你好」     —— 方案或詞庫那一層壞了
+#   · 「沒有 rime_console.exe」    —— 分層診斷的第一刀切不下去
+#     (那一格會安靜地變成 [INFO],而 [INFO] 印出來跟通過很像)
 case "${doctor_nosvc}" in
   *"[PASS] 引擎層打得出「你好」"*)
     ok "doctor 的引擎層那一格真的跑了 rime_console 並拿到「你好」" ;;
+  *"[WARN] 引擎層起得來,但這一次沒有打完"*)
+    ok "doctor 的引擎層那一格跑了,rs_init 過了(沒等到部署回報,見上面的說明)" ;;
   *"沒有 rime_console.exe"*)
     note_fail "安裝包裡沒有 rime_console.exe —— 分層診斷的第一刀切不下去。
      那一格會安靜地變成 [INFO],而 [INFO] 印出來跟通過很像。" ;;
   *)
     printf '%s\n' "${doctor_nosvc}" | sed -n '/7. 引擎層/,/^$/p' | sed 's/^/    /'
-    note_fail "doctor 的引擎層那一格沒有通過 —— 見上" ;;
+    note_fail "doctor 的引擎層那一格既不是 PASS 也不是那個已知的 WARN —— 見上" ;;
 esac
 
 # 後面的「安裝目錄一個位元都沒變」需要服務是停的 —— 剛好已經停了。
@@ -854,6 +872,115 @@ else
     note_fail "安裝目錄還留著 ${ours} 個**我們的**檔案:$( (find "${INSTALL_DIR}" -type f ! -name 'unins*' | head -5 | tr '\n' ' ') )"
   fi
 fi
+
+# ══════════════════════════════════════════════════════════════════
+#  10. 「連我的資料一起刪」那條路
+# ══════════════════════════════════════════════════════════════════
+#
+# ⚠ 這一節與第 9 節是**一對**,兩條都要驗。
+#
+#   第 9 節:不帶旗標的靜默解除安裝 → 使用者的詞典必須還在
+#   第 10 節:帶 /PURGEUSERDATA 的  → 必須整個消失
+#
+# 只驗第 9 節的話,「刪除」這個功能等於沒有被驗過;只驗第 10 節的話,
+# 更糟 —— 那會讓「靜默解除安裝順手毀掉使用者資料」變成綠燈。
+# 這個專案抓過太多次「測試是綠的,因為它沒在測」。
+log "10. 「連我的資料一起刪」"
+
+# ── 10a. 反向:不帶確認參數時,那支工具必須什麼都不做 ─────────────
+#
+# 這一條擋的是「參數被忽略」。忽略了的話,上面每一條「預設保留」的斷言
+# 都還是會綠(因為安裝程式那一側沒有叫它),而真正的地雷埋在工具裡。
+n_before="$( (find "${USER_DIR}" -type f 2>/dev/null || true) | wc -l | tr -d ' ')"
+if [ "${n_before}" -eq 0 ]; then
+  note_fail "第 10 節開始時使用者目錄是空的 —— 後面的斷言不算數"
+fi
+set +e
+"${TOOL}" purge-user-data > "${WORK}/purge-noflag.log" 2>&1
+rc=$?
+set -e
+tr -d '\r' < "${WORK}/purge-noflag.log" | sed 's/^/    /'
+if [ "${rc}" -eq 0 ]; then
+  note_fail "purge-user-data 沒有帶確認參數竟然以 0 結束 —— 那個參數沒有作用"
+else
+  ok "purge-user-data 不帶確認參數時以 ${rc} 結束,什麼都不做"
+fi
+n_now="$( (find "${USER_DIR}" -type f 2>/dev/null || true) | wc -l | tr -d ' ')"
+[ "${n_now}" -eq "${n_before}" ] \
+  && ok "資料一個檔案都沒少(${n_now} 個)" \
+  || note_fail "不帶確認參數卻少了檔案:${n_before} -> ${n_now}"
+
+# ── 10b. 路徑是向產品要的,不是腳本自己拼的 ──────────────────────
+#
+# 安裝程式靠 `user-data-path` 拿路徑(見 .iss 的 QueryUserDataDir)。
+# 那一條若壞掉,刪除會去刪一個不存在的目錄然後回報成功 ——
+# 使用者以為清乾淨了,其實原封不動。
+claimed="$("${TOOL}" user-data-path 2>/dev/null | tr -d '\r' | head -1)"
+claimed_u="$(cygpath -u "${claimed}" 2>/dev/null || true)"
+if [ -n "${claimed}" ] && [ "${claimed_u}" = "${USER_DIR}" ]; then
+  ok "user-data-path 說的是 ${claimed}"
+else
+  note_fail "user-data-path 說「${claimed}」,而實際的使用者目錄是 ${USER_DIR}
+     安裝程式就是靠這一行決定要刪哪裡的。"
+fi
+
+# ── 10c. 重裝一次,然後帶旗標靜默解除安裝 ────────────────────────
+#
+# 重裝很快(詞庫已經編好了,這一步不啟動服務)。要重裝是因為
+# 解除安裝程式本身已經在第 8 節被移除了。
+log "  重新安裝一次(不啟動服務)"
+set +e
+"${SETUP}" //VERYSILENT //SUPPRESSMSGBOXES //NORESTART \
+           "//LOG=$(w "${WORK}/install2.log")"
+rc=$?
+set -e
+[ "${rc}" -eq 0 ] || { tail -40 "${WORK}/install2.log"; die "第二次安裝以 ${rc} 結束"; }
+ok "第二次安裝完成"
+
+UNINST2="$(reg_value "${ARP}" UninstallString | tr -d '"')"
+[ -n "${UNINST2}" ] || die "第二次安裝之後 ARP 裡沒有 UninstallString"
+UNINST2_U="$(cygpath -u "${UNINST2}")"
+
+n_before="$( (find "${USER_DIR}" -type f 2>/dev/null || true) | wc -l | tr -d ' ')"
+[ "${n_before}" -gt 0 ] \
+  && ok "重裝之後使用者的詞典還在(${n_before} 個檔案)—— 重裝不會弄丟資料" \
+  || note_fail "重裝之後使用者目錄空了"
+
+log "  帶 /PURGEUSERDATA 靜默解除安裝"
+set +e
+"${UNINST2_U}" //VERYSILENT //SUPPRESSMSGBOXES //NORESTART //PURGEUSERDATA
+rc=$?
+set -e
+for i in $(seq 1 120); do
+  reg_key_exists "${ARP}" || break
+  sleep 1
+done
+[ "${rc}" -eq 0 ] || note_fail "帶旗標的解除安裝以 ${rc} 結束"
+
+# 給刪檔一點時間收尾。
+for i in $(seq 1 30); do
+  [ -d "${USER_DIR}" ] || break
+  sleep 1
+done
+
+if [ ! -d "${USER_DIR}" ]; then
+  ok "**使用者資料已完全刪除** —— /PURGEUSERDATA 真的做了它宣稱的事"
+else
+  left="$( (find "${USER_DIR}" -type f 2>/dev/null || true) | wc -l | tr -d ' ')"
+  if [ "${left}" -eq 0 ]; then
+    ok "使用者資料已刪除(目錄殼還在,裡面 0 個檔案)"
+  else
+    (find "${USER_DIR}" -type f | head -10 | sed 's/^/      /') || true
+    note_fail "帶了 /PURGEUSERDATA,使用者目錄裡卻還有 ${left} 個檔案。
+     使用者按了「連我的資料一起刪」,而它其實沒刪乾淨 ——
+     那比不提供這個選項更糟。"
+  fi
+fi
+
+# 產品本身也必須清乾淨(這一次沒有第 8 節那些斷言,至少確認 ARP 沒了)。
+reg_key_exists "${ARP}" \
+  && note_fail "帶旗標解除安裝之後,「新增或移除程式」裡那一筆還在" \
+  || ok "新增或移除程式:那一筆已消失"
 
 echo
 [ "${fail}" -eq 0 ] || die "安裝程式驗證失敗,見上。"
