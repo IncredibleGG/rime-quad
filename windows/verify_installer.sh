@@ -1153,8 +1153,31 @@ if [ -n "${HOST}" ]; then
   #
   # ⚠ 這一條刻意**不是**「平均值」或「95 百分位」。只要有**一次**超過,
   #   就有一個使用者的某一個程式打不出中文,而他不會知道為什麼。
-  MS_LINES="$(grep -ao 'SESSION_NEW_MS=[0-9]*' "${WORK}/service.log" 2>/dev/null \
-              | sed 's/.*=//' || true)"
+  # ⚠ 要**兩份記錄都讀**。
+  #
+  #   ${WORK}/service.log  是這支腳本自己啟動的那一支(`rime_service.exe >
+  #                        service.log`),也就是 §6 用的那一支。
+  #   diagnostics/service.log 是**瘦 DLL 啟動的**那一支 —— §5c 冷啟動走的
+  #                        就是它,而那是每一個新使用者真正走的路。
+  #
+  #   那一支是 DETACHED_PROCESS 而且沒有任何重導向,所以它印的每個字本來
+  #   都掉進黑洞:2026-08-09 §5c 紅掉時,唯一會寫下「建 session 花了多久」
+  #   的那一支,輸出根本不存在。現在服務會在偵測到 stdout/stderr 沒有去處時
+  #   自己接到那個檔案上(service/main.cc 的 RedirectStdIoIfDetached)。
+  #
+  #   只讀第一份的話,這一格就永遠看不到冷啟動 —— 而冷啟動正是出事的那一格。
+  DIAG_SVC_LOG="$(cygpath -u "${LOCALAPPDATA}")/${RS_WIN_DATA_FOLDER}/diagnostics/service.log"
+  if [ -f "${DIAG_SVC_LOG}" ]; then
+    ok "瘦 DLL 啟動的那一支服務有留下記錄:${DIAG_SVC_LOG}"
+    echo "    --- 它的預熱 ---"
+    (grep -a '預熱' "${DIAG_SVC_LOG}" || true) | tail -8 | sed 's/^/      /'
+  else
+    note_fail "找不到 ${DIAG_SVC_LOG} —— 瘦 DLL 啟動的那一支服務又變回
+     「印出來的東西掉進黑洞」了,而那正是使用者機器上跑的那一支。
+     下一次冷啟動再出事,我們一樣查不到原因。"
+  fi
+  MS_LINES="$( (grep -ahao 'SESSION_NEW_MS=[0-9]*' "${WORK}/service.log" \
+                  "${DIAG_SVC_LOG}" 2>/dev/null || true) | sed 's/.*=//')"
   if [ -z "${MS_LINES}" ]; then
     note_fail "服務記錄裡一行 SESSION_NEW_MS= 都沒有 —— 這一格沒有在量任何東西。
      (是 pipe_server.cc 那一行不見了,還是 service.log 不是這一支服務的?)"

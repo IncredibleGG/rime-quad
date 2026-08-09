@@ -40,6 +40,15 @@ bool Contains(const std::vector<std::string>& v, const std::string& s) {
 
 const char* const kVariantOptions[4] = {kZhHant, kZhHans, kZhHantHK, kZhHantTW};
 
+// 說明見標頭。這四個要涵蓋 CharSetOfLangId 的每一種結果,
+// **以及** PlanVariant 會分岔的每一種字形(臺灣 / 香港 / 簡體)。
+const uint32_t kWarmUpLangIds[4] = {
+    0u,       // 還沒表明語言的宿主(v1 的 DLL,或系統問不出來)
+    0x0404u,  // 繁體(臺灣字形)
+    0x0804u,  // 簡體
+    0x0C04u,  // 繁體(香港字形)
+};
+
 CharSet CharSetOfLangId(uint32_t langid) {
   // LANGID = (SUBLANG << 10) | PRIMARYLANG,LANG_CHINESE = 0x04。
   if ((langid & 0x3FFu) != 0x04u) return CharSet::kUnspecified;

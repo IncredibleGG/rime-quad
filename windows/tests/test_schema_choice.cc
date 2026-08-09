@@ -256,3 +256,78 @@ TEST(LangIdName_is_only_for_logs) {
   CHECK_STR(LangIdName(0x0404), "zh-Hant-TW");
   CHECK_STR(LangIdName(0x0409), "?");
 }
+
+// ══════════════════════════════════════════════════════════════════
+//  預熱要暖的是「方案 + 選項」那一整組
+// ══════════════════════════════════════════════════════════════════
+//
+// ⚠ 這兩則守的是一個**已經發生過、而且打到每一個新使用者**的缺陷。
+//
+// 服務的預熱原本只用 langid 0 暖一次,註解寫著「三份語言設定檔選到的
+// 都是同一個方案,所以涵蓋得到全部三種使用者」。那句話**是對的,
+// 但它不相干** —— 貴的東西不在方案那一格,在選項:
+// simplification / zh_hans 這一組要載入 OpenCC 的 .ocd2 字典,
+// 而那是第一次用到才發生的檔案載入。
+//
+// 於是每一個新使用者的第一次打字,都在 SESSION_NEW 的 300 毫秒預算裡
+// 付那筆錢 —— 逾時、fail-open、打出一串英文,而且沒有任何錯誤訊息。
+// (2026-08-09,CI §5c 冷啟動。)
+
+// 本專案實際打包的 schema_list(core/data/user/default.custom.yaml)。
+static std::vector<std::string> ShippedSchemas() {
+  return {"luna_pinyin_tw", "bopomofo_tw", "luna_pinyin", "t9_pinyin"};
+}
+
+TEST(warming_up_with_langid_zero_alone_does_not_cover_a_real_user) {
+  const std::vector<std::string> shipped = ShippedSchemas();
+  SchemaPreference pref;  // 全新安裝:follow_input_mode = true,什麼都沒釘
+
+  const SchemaChoice warm = ChooseSchema(0, shipped, pref);
+  const SchemaChoice real = ChooseSchema(0x0804, shipped, pref);
+
+  // 方案 id **一樣** —— 舊版的註解就是看到這一點才說「涵蓋得到」。
+  CHECK_STR(warm.schema_id.c_str(), real.schema_id.c_str());
+
+  // 而選項完全不同,那才是要載檔的那一格。
+  CHECK(!warm.set_variant);  // langid 0 → kUnspecified → 一個選項都不套
+  CHECK(real.set_variant);   // 0x0804  → kHans        → 要套 simplification
+  CHECK(real.simplified);
+}
+
+// 暖的那一組,必須涵蓋真的使用者會帶進來的每一種選項計畫。
+//
+// ⚠ 這一則是上面那一則的「正面」版本:上面說明為什麼一個不夠,
+//   這一則要求**現在這份清單真的夠**。有人把 kWarmUpLangIds 砍短、
+//   或新增一種語言設定檔而忘了加進去時,它會紅。
+TEST(warm_up_langids_cover_every_real_users_option_plan) {
+  const std::vector<std::string> shipped = ShippedSchemas();
+  SchemaPreference pref;
+
+  // 使用者真的可能帶進來的 langid:三份註冊的語言設定檔,加上「問不出來」。
+  const uint32_t kReal[] = {0u, 0x0404u, 0x0804u, 0x0C04u};
+  for (uint32_t langid : kReal) {
+    const SchemaChoice want = ChooseSchema(langid, shipped, pref);
+    std::vector<OptionAssign> want_opts;
+    if (want.set_variant) want_opts = PlanVariant(want.simplified, langid);
+
+    bool covered = false;
+    for (int i = 0; i < kWarmUpLangIdCount; ++i) {
+      const uint32_t w = kWarmUpLangIds[i];
+      const SchemaChoice got = ChooseSchema(w, shipped, pref);
+      if (got.schema_id != want.schema_id) continue;
+      std::vector<OptionAssign> got_opts;
+      if (got.set_variant) got_opts = PlanVariant(got.simplified, w);
+      if (got_opts.size() != want_opts.size()) continue;
+      bool same = true;
+      for (size_t k = 0; k < got_opts.size(); ++k)
+        if (std::string(got_opts[k].option) != std::string(want_opts[k].option) ||
+            got_opts[k].value != want_opts[k].value)
+          same = false;
+      if (same) {
+        covered = true;
+        break;
+      }
+    }
+    CHECK(covered);
+  }
+}

@@ -149,14 +149,48 @@ void Engine::Stop() {
 void Engine::ThreadMain() {
   for (;;) {
     std::function<void()> job;
+    uint64_t destroy_id = 0;
     {
       std::unique_lock<std::mutex> lock(mu_);
-      cv_.wait(lock, [&] { return stop_ || !queue_.empty(); });
-      if (stop_ && queue_.empty()) break;
-      job = std::move(queue_.front());
-      queue_.pop_front();
+      cv_.wait(lock, [&] {
+        return stop_ || !queue_.empty() || !pending_destroy_.empty();
+      });
+      if (stop_ && queue_.empty() && pending_destroy_.empty()) break;
+      if (!queue_.empty()) {
+        job = std::move(queue_.front());
+        queue_.pop_front();
+      } else {
+        // ── ⚠ 收 session 只在**沒有別的事**的時候做 ────────────────
+        //
+        // rs_session_destroy 要把使用者詞典寫回去,而引擎只有一條執行緒。
+        // 照先進先出排的話,某個宿主一離開,**下一個宿主的 SESSION_NEW
+        // 就排在那筆寫回後面** —— 而 SESSION_NEW 只有 300 毫秒的預算,
+        // 超過就 fail-open,那個程式整個工作階段打不出中文。
+        //
+        // 2026-08-09 量到的:按鍵矩陣 18 個宿主接連進出,而排在別人
+        // 離開後面的那幾個就是這樣逾時的。
+        //
+        // 但「收掉一個已經走掉的 session」**不是延遲敏感的事**,
+        // 沒有任何人在等它;「建立一個新 session」才是。所以把它降級:
+        // 佇列空了才做。這既不動任何預算,也不會把成本推進按鍵那條
+        // 50 毫秒的路徑(上一輪已經證明那樣更糟)。
+        //
+        // ⚠ 不會被餓死:只要沒有新工作就會做,而收尾時下面那個迴圈
+        //   會把剩下的全部收乾淨。
+        destroy_id = pending_destroy_.front();
+        pending_destroy_.pop_front();
+      }
     }
-    job();
+    if (job) {
+      job();
+    } else if (destroy_id != 0) {
+      auto it = sessions_.find(destroy_id);
+      if (it != sessions_.end()) {
+        rs_session_destroy(it->second);
+        sessions_.erase(it);
+        session_lang_.erase(destroy_id);
+      }
+    }
     cv_.notify_all();
   }
   // session 的銷毀必須在建立它的那條執行緒上 —— 也就是這裡。
@@ -229,14 +263,15 @@ void Engine::EndSession(uint64_t id) {
 }
 
 void Engine::EndSessionAsync(uint64_t id) {
-  // ⚠ 按值捕捉。這一支不等工作跑完,呼叫端的堆疊會先消失。
-  PostAsync([this, id] {
-    auto it = sessions_.find(id);
-    if (it == sessions_.end()) return;
-    rs_session_destroy(it->second);
-    sessions_.erase(it);
-    session_lang_.erase(id);
-  });
+  // ⚠ **不進一般佇列。** 進去的話它就排在下一個宿主的 SESSION_NEW 前面,
+  //   而那正是要修的東西(理由寫在 ThreadMain 裡)。這裡放的是一份
+  //   「有空再收」的清單,引擎執行緒沒有別的事時才處理。
+  {
+    std::unique_lock<std::mutex> lock(mu_);
+    if (stop_) return;
+    pending_destroy_.push_back(id);
+  }
+  cv_.notify_all();
 }
 
 Snapshot Engine::TakeSnapshotLocked(uintptr_t sess) {

@@ -73,6 +73,56 @@ namespace {
 //   2. 在同一個 FILE* 上混用寬字元與窄字元 I/O 是未定義行為,而 librime
 //      與 glog 用的是窄字元。我們先 fwprintf 過的話,之後它們寫同一條串流
 //      的行為就沒有保證了。
+// ── ⚠ 服務進程的記錄要落地,不能只寫 stderr ──────────────────────
+//
+// 瘦 DLL 啟動服務時用的是 CREATE_NO_WINDOW | DETACHED_PROCESS,而且**沒有**
+// 重導向 stdout/stderr(見 tsf/ipc_client.cc 的 LaunchService)。也就是說:
+// **使用者機器上跑的那一支服務,它印的每一個字都掉進黑洞。**
+//
+// 代價是實際付過的:2026-08-09 冷啟動那一格紅了,而它是 fail-open,
+// 使用者只看到英文。要查「為什麼建 session 花了 300 毫秒以上」時,
+// 唯一會寫下答案的那一支的輸出**根本不存在** —— 只有 CI 用
+// `rime_service.exe > service.log` 自己啟動的那一支看得到,
+// 而那正好不是使用者走的那條路。
+//
+// 所以這裡多寫一份到 %LOCALAPPDATA%\<資料夾名>\diagnostics\service.log,
+// 與瘦 DLL 的 tsf.log 放在一起(doctor 已經會去看那個目錄)。
+// 失敗一律安靜:記錄壞掉不該讓輸入法跟著壞掉。
+// 只有在 stdout/stderr **真的沒有去處**時才接到檔案上。
+//
+// ⚠ 條件寫成這樣是刻意的:CI 用 `rime_service.exe > service.log` 啟動時
+//   控制代碼是有效的,那一條路必須原封不動 —— §6e 靠它讀 SESSION_NEW_MS。
+//   要補的只有「瘦 DLL 啟動的那一支」,而它是 DETACHED_PROCESS、
+//   沒有任何重導向,所以控制代碼是空的。
+//
+// 走 freopen 而不是自己包一層 tee,是為了**連 pipe_server.cc 的 Log()
+// 也一起接住** —— SESSION_NEW_MS 那一行正是它印的。自己包一層的話,
+// 那一行還是會掉進黑洞,而它就是最需要看到的那一行。
+void RedirectStdIoIfDetached() {
+  const HANDLE herr = ::GetStdHandle(STD_ERROR_HANDLE);
+  if (herr != nullptr && herr != INVALID_HANDLE_VALUE) return;
+
+  wchar_t local[MAX_PATH] = {0};
+  const DWORD n = ::GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
+  if (n == 0 || n >= MAX_PATH) return;
+  std::wstring dir = std::wstring(local) + L"\\" +
+                     rimewin::RimeUserDataFolderName();
+  ::CreateDirectoryW(dir.c_str(), nullptr);
+  dir += L"\\diagnostics";
+  ::CreateDirectoryW(dir.c_str(), nullptr);
+  const std::wstring path = dir + L"\\service.log";
+
+  // 超過 1 MiB 就從頭來過 —— 舊的是更舊的故障,而診斷要看最近這一次。
+  // (與 tsf/trace.cc 同一個規矩,不做輪替:兩個檔案只會讓「最近那次在
+  //  哪一個裡面」變成一個新問題。)
+  WIN32_FILE_ATTRIBUTE_DATA fad{};
+  const bool too_big =
+      ::GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad) &&
+      fad.nFileSizeHigh == 0 && fad.nFileSizeLow > (1u << 20);
+  if (!::_wfreopen(path.c_str(), too_big ? L"w" : L"a", stderr)) return;
+  ::_wfreopen(path.c_str(), L"a", stdout);
+}
+
 void Say(const char* fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
@@ -230,25 +280,73 @@ int SeedUserDir(const std::string& seed_utf8, const std::string& user_utf8) {
 // 涵蓋範圍要講清楚:這裡只預熱**預設方案**。使用者手動切到別的方案
 // (Ctrl+`)時仍然會付一次載入成本,但那條路不在連線的關鍵路徑上,
 // 超時了也只是那一顆鍵沒作用,不會讓整條連線被丟掉。
+// ⚠⚠ 預熱要暖的是**「方案 + 選項」那一整組**,不是只有方案。
+//
+// 舊版只用 langid 0 暖一次,理由寫的是「三份語言設定檔選到的都是同一個
+// 方案,所以涵蓋得到全部三種使用者」。**那句話是對的,但它不相干** ——
+// 貴的東西不在方案那一格:
+//
+//   langid 0     → CharSetOfLangId(0) = kUnspecified
+//                → DecideVariant 直接回 false → set_variant = false
+//                → ApplyChoice(sess, "luna_pinyin_tw", **{}**)  ← 一個選項都沒有
+//
+//   langid 0x0804 → kHans → set_variant = true, simplified = true
+//                → PlanVariant → { simplification:true, zh_hans:true, … }
+//
+// 方案 id 一樣,但**選項完全不同**。而 simplification / zh_hant / zh_hans
+// 這一組要載入 OpenCC 的 .ocd2 字典,那是第一次用到才發生的檔案載入 ——
+// 於是真正的第一個使用者在 SESSION_NEW 的 300 毫秒預算裡付掉那筆錢,
+// 逾時、fail-open,打出一串英文。
+//
+// **這就是 2026-08-09 §5c 冷啟動那一格紅掉的原因**,而冷啟動 = 每一個新
+// 使用者的第一次。它不是隨機的,是第一次一定會發生。
+//
+// 所以現在對**每一種使用者真的會帶進來的 langid** 各暖一組。
+// 涵蓋的是 CharSetOfLangId 的每一種結果,以及 PlanVariant 會分岔的每一種
+// 字形(臺灣 / 香港 / 簡體)—— 也就是 ChooseSchema + PlanVariant 的整個值域。
+//
+// ⚠ 那份 langid 清單在 common/schema_choice.h(純邏輯層),不在這裡 ——
+//   放在那裡,tests/test_schema_choice.cc 才驗得到「暖的那一組與真的用的
+//   那一組是同一組」,而那是 Ubuntu 上跑得動的純邏輯,不必等一輪 CI。
 void WarmUpEngine(rimewin::Engine* engine, rimewin::SettingsStore* store) {
   const ULONGLONG t0 = ::GetTickCount64();
   std::vector<std::string> ids;
   for (const auto& kv : engine->SchemaList()) ids.push_back(kv.first);
-  // langid 0 = 「沒有意見」,與一個還沒表明語言的宿主連上來時走的是
-  // 同一條 ChooseSchema。目前三份語言設定檔(0x0404 / 0x0804 / 0x0C04)
-  // 選到的都是同一個方案,所以這一次預熱涵蓋得到全部三種使用者。
   const rimewin::Settings st = store ? store->Load() : rimewin::Settings();
-  const rimewin::SchemaChoice choice =
-      rimewin::ChooseSchema(0, ids, st.SchemaPref());
-  const uint64_t sess = engine->NewSession();
-  if (sess == 0) {
-    Err("[service] 預熱:建不出 session,跳過(第一個連上來的宿主會慢一點)\n");
-    return;
+  const rimewin::SchemaPreference pref = st.SchemaPref();
+  const rimewin::Tri punct = st.Punctuation();
+
+  int warmed = 0;
+  for (int wi = 0; wi < rimewin::kWarmUpLangIdCount; ++wi) {
+    const uint32_t langid = rimewin::kWarmUpLangIds[wi];
+    // ⚠ 這一段必須與 pipe_server.cc 的 kSessionNew 逐字相同 ——
+    //   暖的與真的用的不是同一組,等於沒暖。
+    const rimewin::SchemaChoice choice =
+        rimewin::ChooseSchema(langid, ids, pref);
+    std::vector<rimewin::OptionAssign> opts;
+    if (choice.set_variant)
+      opts = rimewin::PlanVariant(choice.simplified, langid);
+    if (punct != rimewin::Tri::kUnset)
+      opts.push_back({"ascii_punct", punct == rimewin::Tri::kTrue});
+
+    const ULONGLONG t1 = ::GetTickCount64();
+    const uint64_t sess = engine->NewSession();
+    if (sess == 0) {
+      Err("[service] 預熱 langid=0x%04X:建不出 session,跳過\n",
+          static_cast<unsigned>(langid));
+      continue;
+    }
+    const std::string chosen = engine->ApplyChoice(sess, choice.schema_id, opts);
+    engine->EndSession(sess);
+    ++warmed;
+    Say("[service] 預熱 langid=0x%04X 方案=%s 選項=%d 個 耗時=%llu ms\n",
+        static_cast<unsigned>(langid),
+        chosen.empty() ? "(沒有選到)" : chosen.c_str(),
+        static_cast<int>(opts.size()),
+        static_cast<unsigned long long>(::GetTickCount64() - t1));
   }
-  const std::string chosen = engine->ApplyChoice(sess, choice.schema_id, {});
-  engine->EndSession(sess);
-  Say("[service] 預熱完成:方案 %s,耗時 %llu ms\n",
-      chosen.empty() ? "(沒有選到)" : chosen.c_str(),
+  Say("[service] 預熱完成:%d / %d 組,總耗時 %llu ms\n", warmed,
+      rimewin::kWarmUpLangIdCount,
       static_cast<unsigned long long>(::GetTickCount64() - t0));
 }
 
@@ -290,6 +388,9 @@ int main(int /*narrow_argc*/, char** /*narrow_argv*/) {
 
 static int RunService(int argc, wchar_t** argv) {
   ::SetUnhandledExceptionFilter(&CrashFilter);
+  // ⚠ 第一件事。在這之前印的任何東西,對「瘦 DLL 啟動的那一支」來說
+  //   都是掉進黑洞的 —— 而那正是使用者機器上跑的那一支。
+  RedirectStdIoIfDetached();
 
 #ifdef _MSC_VER
   // 上面那段註解說的事,在這裡變成一道會講人話的檢查。

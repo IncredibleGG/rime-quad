@@ -152,6 +152,10 @@ class Engine {
   std::mutex mu_;
   std::condition_variable cv_;
   std::deque<std::function<void()>> queue_;
+  // 「有空再收」的 session。與 queue_ 分開,而且**優先權比它低** ——
+  // 收掉一個已經走掉的 session 沒有人在等,建立一個新的才有人在等。
+  // 完整的理由見 ThreadMain。
+  std::deque<uint64_t> pending_destroy_;
   bool stop_ = false;
   bool started_ = false;
 

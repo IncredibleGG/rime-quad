@@ -136,6 +136,26 @@ std::vector<OptionAssign> PlanVariant(bool simplified, uint32_t langid_hint);
 extern const char* const kVariantOptions[4];
 constexpr int kVariantOptionCount = 4;
 
+// ── 服務暖機要各暖一組的 langid ──────────────────────────────────
+//
+// ⚠ 這份清單放在**純邏輯層**是刻意的,而理由是一次真的缺陷:
+//
+//   舊版的預熱只用 langid 0 暖一次,註解寫著「三份語言設定檔選到的都是
+//   同一個方案,所以涵蓋得到全部三種使用者」。那句話**是對的,但不相干**:
+//   貴的東西不在方案那一格,在**選項**。langid 0 走到 CharSet::kUnspecified,
+//   DecideVariant 直接回 false,於是一個選項都不套;而真的使用者
+//   (0x0804)會套上 simplification / zh_hans 那一組,那一組要載入
+//   OpenCC 的 .ocd2 字典 —— 第一次用到才載。
+//
+//   結果是:**每一個新使用者的第一次打字**都在 SESSION_NEW 的 300 毫秒
+//   預算裡付那筆錢,逾時、fail-open,打出一串英文,而且沒有任何錯誤訊息。
+//   (2026-08-09,CI 的 §5c 冷啟動那一格。)
+//
+//   放在這裡,tests/test_schema_choice.cc 才驗得到「暖的那一組與真的用的
+//   那一組是同一組」—— 而那是 Ubuntu 上跑得動的純邏輯,不必等一輪 CI。
+extern const uint32_t kWarmUpLangIds[4];
+constexpr int kWarmUpLangIdCount = 4;
+
 // 給日誌用的短名,例如 0x0804 → "zh-Hans-CN"。認不得回傳 "?"。
 const char* LangIdName(uint32_t langid);
 
