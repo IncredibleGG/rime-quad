@@ -478,16 +478,40 @@ done
 [ -f "${READY}" ] || { tr -d '\r' < "${WORK}/service.log"; die "服務在 1200 秒內沒有就緒"; }
 ok "服務就緒"
 
+# ⚠ --attempts 1:「ready 檔存在」必須等於「立刻連得上」。
+#
+#   這一步曾經間歇性地紅在一句「連不上服務或握手失敗」上,而服務的日誌
+#   乾乾淨淨。當時 probe 寫的是「重試 100 次、每次睡 100ms」,看起來很有
+#   耐心 —— 實際上連線狀態機的退避會把那 100 次吃到只剩幾次(握手不合的
+#   退避是 30 秒,於是只剩**一次**),所以那個迴圈既沒有真的重試,
+#   也把「服務其實沒在監聽」蓋成了「大概是版本不合」。
+#
+#   現在兩件事都被修在正確的那一側:服務寫 ready 檔之前,管道確定已經
+#   接得起連線、引擎也預熱過了。所以第一次就該成功,而失敗時 probe 會
+#   說出是哪一步(開管道 / 握手 / 建 session)以及對方回了什麼。
 set +e
 "${PROBE}" --keys nihao --select 1 --schema luna_pinyin_tw --expect 你好 \
-  > "${WORK}/probe.log" 2>&1
+  --attempts 1 > "${WORK}/probe.log" 2>&1
 rc=$?
 set -e
 tr -d '\r' < "${WORK}/probe.log"
 if [ "${rc}" -ne 0 ]; then
-  echo "--- service.log ---"
+  # ⚠ 先把 [pipe] 那幾行單獨挑出來。監聽迴圈非預期結束時只會留下這幾行,
+  #   而它們會淹沒在幾百行 glog 的詞庫編譯警告裡 —— 那正是上一次查這個
+  #   缺陷時,最該被看到卻沒被看到的東西。
+  echo "--- service.log:管道監聽迴圈 ---"
+  if tr -d '\r' < "${WORK}/service.log" | grep -a '^\[pipe\]'; then
+    echo "  ↑ 監聽迴圈有話要說 —— 問題在服務端,不在協議。"
+  else
+    echo "  (沒有 [pipe] 行:監聽迴圈沒有回報任何問題)"
+  fi
+  echo "--- service.log:預熱 ---"
+  tr -d '\r' < "${WORK}/service.log" | grep -a '預熱' \
+    || echo "  (沒有預熱那一行 —— 引擎沒有預熱過,第一次建 session 會很慢)"
+  echo "--- service.log(其餘,已濾掉 glog)---"
   tr -d '\r' < "${WORK}/service.log" | grep -v -E '^[WIEF][0-9]{4,8} ' || true
-  note_fail "probe 以 ${rc} 結束"
+  note_fail "probe 以 ${rc} 結束 —— 診斷見上面 probe 的輸出(它會指出是
+     開管道 / 握手 / 建 session 哪一步失敗,不要再猜)"
 else
   # 錨定整行精確比對。只用 grep -q 你好 是不夠的:上屏成「你好嗎」一樣會過。
   if grep -qE '^>>> COMMIT: "你好"$' <(tr -d '\r' < "${WORK}/probe.log"); then

@@ -46,6 +46,8 @@
 // CommandLineToArgvW。
 #include <shellapi.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -198,6 +200,53 @@ int SeedUserDir(const std::string& seed_utf8, const std::string& user_utf8) {
   } while (::FindNextFileW(h, &fd));
   ::FindClose(h);
   return copied;
+}
+
+// ── 引擎預熱 ────────────────────────────────────────────────────────
+//
+// ⚠ 這個函式存在的理由,是一個會讓使用者說「有時候打不出字」的缺陷。
+//
+// 第一次 rs_select_schema() 不是幾毫秒的事:它要開詞典(Table / Prism 的
+// mmap)、開使用者詞庫(LevelDB)、載入文法。冷的時候是**幾百毫秒到幾秒**。
+//
+// 而 DLL 那一側建 session 的預算只有 300ms(tsf/ipc_client.cc 的
+// kConnectTimeoutMs),因為 EnsureReady() 是在**宿主的 UI 執行緒**上跑的,
+// 不能久等 —— 等下去使用者感覺到的是整個應用程式卡住。
+//
+// 兩件事湊在一起就是:服務端處理 SESSION_NEW 時正好會做那一次昂貴的
+// rs_select_schema(替使用者的語言挑預設方案),於是**第一個連上來的宿主
+// 幾乎必定超時**。連線被丟掉、進退避、fail-open。使用者看到的是
+// 「剛開機 / 剛裝好的時候,第一個程式裡打不出中文,過一下才好」。
+// 而且每一次超時的請求仍然會在引擎執行緒上跑完(用戶端已經走了),
+// 下一次重試又排一份新的 —— 佇列會越積越長,可能一直追不上。
+//
+// 修法不是把預算調大:那只是把卡頓從「連不上」搬到「宿主的 UI 執行緒卡 3 秒」。
+// 修法是**在對外服務之前先把那一次昂貴的載入做完**,做在 server.Start()
+// 之前,所以「管道開了」就等於「答得動 SESSION_NEW」。
+//
+// 涵蓋範圍要講清楚:這裡只預熱**預設方案**。使用者手動切到別的方案
+// (Ctrl+`)時仍然會付一次載入成本,但那條路不在連線的關鍵路徑上,
+// 超時了也只是那一顆鍵沒作用,不會讓整條連線被丟掉。
+void WarmUpEngine(rimewin::Engine* engine, rimewin::SettingsStore* store) {
+  const ULONGLONG t0 = ::GetTickCount64();
+  std::vector<std::string> ids;
+  for (const auto& kv : engine->SchemaList()) ids.push_back(kv.first);
+  // langid 0 = 「沒有意見」,與一個還沒表明語言的宿主連上來時走的是
+  // 同一條 ChooseSchema。目前三份語言設定檔(0x0404 / 0x0804 / 0x0C04)
+  // 選到的都是同一個方案,所以這一次預熱涵蓋得到全部三種使用者。
+  const rimewin::Settings st = store ? store->Load() : rimewin::Settings();
+  const rimewin::SchemaChoice choice =
+      rimewin::ChooseSchema(0, ids, st.SchemaPref());
+  const uint64_t sess = engine->NewSession();
+  if (sess == 0) {
+    Err("[service] 預熱:建不出 session,跳過(第一個連上來的宿主會慢一點)\n");
+    return;
+  }
+  const std::string chosen = engine->ApplyChoice(sess, choice.schema_id, {});
+  engine->EndSession(sess);
+  Say("[service] 預熱完成:方案 %s,耗時 %llu ms\n",
+      chosen.empty() ? "(沒有選到)" : chosen.c_str(),
+      static_cast<unsigned long long>(::GetTickCount64() - t0));
 }
 
 }  // namespace
@@ -483,10 +532,48 @@ static int RunService(int argc, wchar_t** argv) {
     }
   }
 
+  // ── 預熱 ────────────────────────────────────────────────────
+  //
+  // 部署做完了才有東西可以預熱(見 WarmUpEngine 的說明)。
+  //   · --wait-deploy 走過的路徑(CI、以及第一次安裝)這裡一定是 true,
+  //     所以預熱是**同步**的:管道還沒開,ready 檔還沒寫。
+  //   · 正常啟動沒有 --wait-deploy,部署還在背景跑。那時引擎本來就給不出
+  //     候選(ProcessKey 會直接回「沒處理」),所以改用一條背景執行緒
+  //     等它做完再預熱 —— 不能為此擋住服務啟動,首次部署要好幾分鐘。
+  //
+  // ⚠ 一定要兩條都做。只做同步那一條的話,預熱就變成「只有 CI 走得到」
+  //   的程式碼 —— 綠燈驗到的是使用者永遠不會走的那條路。
+  std::thread warm_thread;
+  std::atomic<bool> warm_stop{false};
+  if (engine.deploy_ok()) {
+    WarmUpEngine(&engine, &settings_store);
+  } else {
+    warm_thread = std::thread([&]() {
+      while (!warm_stop.load() && !engine.deploy_done())
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      if (!warm_stop.load() && engine.deploy_ok())
+        WarmUpEngine(&engine, &settings_store);
+    });
+  }
+
   rimewin::PipeServer server(&engine, ui, &settings_store);
   server.SetOpenSettingsHandler([&settings]() { settings.Open(); });
+  // 監聽迴圈非預期死掉時,讓這支服務結束。
+  //
+  // ⚠ 不結束的話它會變成一具擋路的空殼:沒有管道,卻仍然佔著單一實例的
+  //   mutex,於是 DLL 想啟動一支新的也啟動不了(新的那支會判定「已經有
+  //   一支在跑」然後以 0 結束)。使用者要重開機才會好。
+  //   結束掉,DLL 的自動啟動就能接手 —— 那條路本來就在(見 ipc_client.cc
+  //   的 TryLaunchService,含節流與「提權的宿主不准啟動」那道保護)。
+  server.SetFatalHandler([&quit]() {
+    if (quit) ::SetEvent(quit);
+  });
   if (!server.Start()) {
-    Err("具名管道建立失敗(可能已經有一支服務在跑)\n");
+    // Start() 失敗的原因已經由 pipe_server.cc 印出 [pipe] 開頭的那幾行,
+    // 帶著 GetLastError()。這裡不要用一句籠統的話蓋掉它。
+    Err("具名管道沒有備妥,服務不對外開放(原因見上面的 [pipe] 行)\n");
+    warm_stop.store(true);
+    if (warm_thread.joinable()) warm_thread.join();
     return 1;
   }
   Say("[service] 管道 = %s\n",
@@ -546,6 +633,11 @@ static int RunService(int argc, wchar_t** argv) {
       for (;;) ::Sleep(60000);
   }
   Say("[service] 結束,收尾中\n");
+
+  // 預熱執行緒可能還在等部署完成(部署要好幾分鐘,而使用者可以在那段時間
+  // 裡按下解除安裝)。先叫它停,再 join —— 不然這裡會卡到部署結束。
+  warm_stop.store(true);
+  if (warm_thread.joinable()) warm_thread.join();
 
   if (settings_thread.joinable()) {
     // quit 上面一定被設起來了,所以那條執行緒會自己醒。

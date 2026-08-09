@@ -31,6 +31,39 @@ constexpr int64_t kLaunchCooldownMs = 10000;
 
 int64_t NowMs() { return static_cast<int64_t>(::GetTickCount64()); }
 
+// 這一種失敗值不值得**降級**重試一次舊版的 HELLO。
+//
+// ⚠ 分辨這件事是有代價的,所以要分辨清楚:每一次多餘的降級重試,都是
+//   在宿主的 UI 執行緒上再花一次 kConnectTimeoutMs,而且會把**真正的
+//   失敗原因蓋掉** —— 第二輪的 Connect() 會把 last_failure 覆寫成
+//   kConnectFailed,於是報表上寫「連不上」,實際發生的卻是別的事。
+//
+// 值得重試的只有「對面看不懂 / 不接受我們宣告的版本」這一類:
+//   kPeerClosed   舊服務解不開 v2 的 HELLO 時做的正是這件事:整則丟掉、
+//                 關掉連線(見 service/pipe_server.cc 的 DecodeHello 失敗路徑)。
+//   kServiceError 對面明確回了「協議版本不符」。
+//   kHandshake    對面回的 HELLO_OK 裡的版本我們不接受。
+//   kBadMessage   對面回了一則我們解不開的東西 —— 也是版本形狀的問題。
+//
+// 不值得的:
+//   kTimeout      對面只是慢。再宣告一次舊版一樣會慢。
+//   kIoError      連線本身壞了。
+//   kConnectFailed 根本沒連上,連 HELLO 都還沒送出去。
+bool WorthDowngrading(LinkFailure k) {
+  switch (k) {
+    case LinkFailure::kPeerClosed:
+    case LinkFailure::kServiceError:
+    case LinkFailure::kHandshake:
+    case LinkFailure::kBadMessage:
+      return true;
+    case LinkFailure::kTimeout:
+    case LinkFailure::kIoError:
+    case LinkFailure::kConnectFailed:
+      return false;
+  }
+  return false;
+}
+
 }  // namespace
 
 IpcClient::IpcClient() {
@@ -52,6 +85,14 @@ void IpcClient::Close() {
   reader_ = FrameReader();
 }
 
+void IpcClient::ResetLink() {
+  // 與 SetProfile 走同一套動作:收掉連線、狀態機歸零。
+  // 不呼叫 Fail() —— 這不是失敗,不該進退避。
+  Close();
+  link_ = LinkState();
+  negotiated_proto_ = 0;
+}
+
 void IpcClient::Fail(LinkFailure kind) {
   // 任何失敗都把連線整條丟掉。
   //
@@ -59,6 +100,9 @@ void IpcClient::Fail(LinkFailure kind) {
   // 讀取就會拿到它 —— 從此每一次請求都收到上一次的答案。使用者看到的是
   // 「輸入法慢一拍」,而那種錯位幾乎查不出來。關掉重來是唯一乾淨的做法。
   Close();
+  // 記進診斷。**階段**(kPipe / kHandshake / kSession)由呼叫端自己設 ——
+  // 只有它知道當下在做哪一步,而「哪一步」正是診斷裡最有用的一格。
+  diag_.failure = kind;
   link_.OnFailure(kind, NowMs());
 }
 
@@ -79,8 +123,15 @@ bool IpcClient::EnsureReady() {
   if (link_.MayEatKey() && pipe_ != INVALID_HANDLE_VALUE && session_ != 0)
     return true;
   const int64_t now = NowMs();
+  // 被退避擋掉的那些**不算一次嘗試**,所以不動 diag_.attempts ——
+  // 呼叫端(rime_probe)要能說出「我真的試了幾次」,而不是「我迴圈了幾次」。
   if (!link_.ShouldAttemptConnect(now)) return false;
   link_.OnAttempt(now);
+
+  const uint32_t attempts_so_far = diag_.attempts;
+  diag_ = ReadyDiagnosis();
+  diag_.attempts = attempts_so_far + 1;
+  diag_.my_shell_abi = static_cast<uint32_t>(RIME_SHELL_ABI_VERSION);
 
   // ── 降級重試 ────────────────────────────────────────────────
   //
@@ -92,19 +143,30 @@ bool IpcClient::EnsureReady() {
   // 第一項,輸入法照常能用。不退的話,使用者看到的是「更新到一半之後
   // 中文輸入在某些程式裡整個消失」,而且他分不出是哪一半。
   //
+  // ⚠ 但**只有版本形狀的失敗才降級**(見上面的 WorthDowngrading)。
+  //   舊版是「v2 一失敗就退 v1」,那有兩個代價,而第二個是這一輪查出來的:
+  //     1. 逾時之後再退一次,等於在宿主的 UI 執行緒上多花一份逾時預算。
+  //     2. **它會吃掉真正的錯誤訊息。** 第二輪的 Connect() 會把
+  //        link_ 的 last_failure 覆寫掉,於是「握手談不攏」被記成
+  //        「連不上」——而這兩件事要修的地方完全不同。
+  //
   // 最多退到 kMinProtocolVersion。每一輪都要重新開管道:握手失敗時
   // 連線已經被收掉了。
   bool ok = false;
-  for (uint32_t p = kProtocolVersion; p >= kMinProtocolVersion; --p) {
+  for (uint32_t p = kProtocolVersion;;) {
     if (ConnectAndHandshake(p)) {
       ok = true;
       break;
     }
-    if (p == kMinProtocolVersion) break;  // uint32_t 不能減到負的
+    if (p <= kMinProtocolVersion) break;  // uint32_t 不能減到負的
+    if (diag_.stage != ReadyStage::kHandshake) break;
+    if (!WorthDowngrading(diag_.failure)) break;
+    --p;
   }
   if (!ok) return false;
   if (!OpenSession()) return false;
   link_.OnConnected();
+  diag_.stage = ReadyStage::kNone;
   return true;
 }
 
@@ -118,12 +180,14 @@ bool IpcClient::ConnectAndHandshake(uint32_t proto) {
 
 bool IpcClient::Connect() {
   const std::wstring name = RimePipeName();
+  DWORD last_err = 0;
   for (int attempt = 0; attempt < 2; ++attempt) {
     pipe_ = ::CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
                           OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
     if (pipe_ != INVALID_HANDLE_VALUE) return true;
 
     const DWORD err = ::GetLastError();
+    last_err = err;
     if (err == ERROR_PIPE_BUSY) {
       // 服務在,只是所有實例都忙著。等一下再試。
       if (!::WaitNamedPipeW(name.c_str(), kWaitPipeMs)) break;
@@ -136,6 +200,13 @@ bool IpcClient::Connect() {
     }
     break;
   }
+  // 錯誤碼一定要留下來。ERROR_FILE_NOT_FOUND(2)= 這條管道不存在
+  // (服務沒在監聽);ERROR_ACCESS_DENIED(5)= 管道在,但這個身分開不了
+  // (提權與非提權的宿主各有一份權杖,而 DACL 只授權目前使用者)。
+  // 兩者的症狀一模一樣,修的地方完全不同。
+  diag_.stage = ReadyStage::kPipe;
+  diag_.failure = LinkFailure::kConnectFailed;
+  diag_.os_error = static_cast<unsigned long>(last_err);
   link_.OnFailure(LinkFailure::kConnectFailed, NowMs());
   return false;
 }
@@ -202,7 +273,9 @@ bool IpcClient::WriteAllTimed(const std::string& data, DWORD timeout_ms) {
   return true;
 }
 
-bool IpcClient::ReadFrameTimed(std::string* payload, DWORD timeout_ms) {
+bool IpcClient::ReadFrameTimed(std::string* payload, DWORD timeout_ms,
+                               bool* eof) {
+  if (eof) *eof = false;
   // 緩衝區裡可能已經有一則完整訊息(上一次讀多了)。
   if (reader_.Next(payload)) return true;
 
@@ -223,9 +296,18 @@ bool IpcClient::ReadFrameTimed(std::string* payload, DWORD timeout_ms) {
         ::GetOverlappedResult(pipe_, &ov, &got, TRUE);
         return false;
       }
-      if (!::GetOverlappedResult(pipe_, &ov, &got, FALSE)) return false;
+      if (!::GetOverlappedResult(pipe_, &ov, &got, FALSE)) {
+        // ERROR_BROKEN_PIPE = 對面把它那一端關掉了。這不是逾時。
+        if (eof && ::GetLastError() == ERROR_BROKEN_PIPE) *eof = true;
+        return false;
+      }
     }
-    if (got == 0) return false;  // 對面關了
+    if (got == 0) {
+      // 對面乾淨地關了。**這不是逾時** —— 舊服務解不開新版的 HELLO 時
+      // 做的正是這件事,而那是唯一值得降級重試 v1 的情形。
+      if (eof) *eof = true;
+      return false;
+    }
     if (!reader_.Feed(buf, got)) return false;
     if (reader_.Next(payload)) return true;
     if (::GetTickCount() >= deadline) return false;
@@ -239,8 +321,9 @@ bool IpcClient::Exchange(const std::string& payload, uint32_t seq,
     Fail(LinkFailure::kIoError);
     return false;
   }
-  if (!ReadFrameTimed(reply, timeout_ms)) {
-    Fail(LinkFailure::kTimeout);
+  bool eof = false;
+  if (!ReadFrameTimed(reply, timeout_ms, &eof)) {
+    Fail(eof ? LinkFailure::kPeerClosed : LinkFailure::kTimeout);
     return false;
   }
   Op op = Op::kError;
@@ -263,6 +346,12 @@ bool IpcClient::Exchange(const std::string& payload, uint32_t seq,
 }
 
 bool IpcClient::Handshake(uint32_t proto) {
+  // 從這裡開始的失敗都算在「握手」這一步上。管道已經開起來了,
+  // 所以任何失敗都不該被報成「連不上服務」。
+  diag_.stage = ReadyStage::kHandshake;
+  diag_.tried_proto = proto;
+  diag_.peer_replied = false;
+  diag_.peer = HelloOk();
   Hello h;
   h.proto = proto;
   h.shell_abi = static_cast<uint32_t>(RIME_SHELL_ABI_VERSION);
@@ -286,6 +375,10 @@ bool IpcClient::Handshake(uint32_t proto) {
     Fail(LinkFailure::kBadMessage);
     return false;
   }
+  // 對方說了什麼一定要留著,**包含版本不合的時候** ——
+  // 那正是唯一有用的線索:「它說它是 proto=1 / abi=1」直接指出誰是舊的。
+  diag_.peer_replied = true;
+  diag_.peer = ok;
   // 版本協商。rime_shell.h 檔頭要求「不符即拒絕載入」,只是這裡跨了進程。
   // 拒絕的方式是永遠不吃按鍵 —— 使用者打得出英文,只是中文輸入沒作用。
   if (ok.proto != proto ||
@@ -297,8 +390,20 @@ bool IpcClient::Handshake(uint32_t proto) {
 }
 
 bool IpcClient::OpenSession() {
+  // 握手已經過了 —— 從這裡開始的失敗與「版本不合」無關,
+  // 報成「握手失敗」會把人往完全錯的方向送。
+  diag_.stage = ReadyStage::kSession;
   const uint32_t seq = ++seq_;
   std::string reply;
+  // ⚠ 這一趟往返的預算與握手同一個(300ms),而服務端在 SESSION_NEW 裡
+  //   會替使用者的語言選預設方案 —— 第一次選方案要載入詞典,冷的時候
+  //   是幾百毫秒到幾秒。所以服務端**必須在開管道之前先預熱**
+  //   (見 service/main.cc 的 WarmUpEngine)。少了那一步,第一個連上來的
+  //   宿主必定在這裡逾時,而使用者看到的是「剛開機時第一個程式打不出中文」。
+  //
+  //   為什麼不乾脆把預算調大:EnsureReady() 跑在宿主的 UI 執行緒上
+  //   (text_service.cc 的 OnTestKeyDown / HandleKey)。調大等於讓使用者
+  //   按下第一顆鍵時整個程式卡住那麼久 —— 那不是修好,是換一種壞法。
   if (!Exchange(EncodeSessionNew(seq), seq, &reply, kConnectTimeoutMs))
     return false;
   uint32_t rseq = 0;
