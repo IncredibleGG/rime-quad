@@ -80,8 +80,9 @@ void Usage() {
       "                             不給 --lang 就依使用者既有的語言清單自動選。\n"
       "  disable-user               全部停用\n"
       "  user-profiles              印出目前啟用了哪幾份、以及自動判斷會選哪一份\n"
-      "  find-window --class <類別名>\n"
+      "  find-window --class <類別名> [--visible]\n"
       "                             那個視窗類別現在存不存在。找到 = 0,沒找到 = 1\n"
+      "                             --visible:還要求它是**顯示中**的\n"
       "                             (CI 用:斷言「設定視窗真的開出來了」)\n"
       "  check [--dll <路徑>] [--user] [--no-enum]\n"
       "                             斷言註冊狀態;不通過就以非零結束\n"
@@ -442,11 +443,13 @@ static int Run(int argc, wchar_t** argv) {
   bool purge_confirmed = false;
   uint32_t explicit_langid = 0;
   std::wstring window_class;
+  bool require_visible = false;
   DoctorOptions doctor;
 
   for (int i = 2; i < argc; ++i) {
     const std::wstring a = argv[i];
     if (a == L"--class" && i + 1 < argc) window_class = argv[++i];
+    else if (a == L"--visible") require_visible = true;
     else if (a == L"--lang" && i + 1 < argc) explicit_langid = ParseLangId(argv[++i]);
     else if (a == L"--dll" && i + 1 < argc) dll = argv[++i];
     else if (a == L"--dir" && i + 1 < argc) dir = argv[++i];
@@ -643,14 +646,21 @@ static int Run(int argc, wchar_t** argv) {
       return 2;
     }
     const HWND h = ::FindWindowW(window_class.c_str(), nullptr);
+    const bool visible = h && ::IsWindowVisible(h);
     Say("類別「%s」:%s\n", WideToUtf8(window_class).c_str(),
-        h ? "找到了" : "找不到");
+        h ? (visible ? "找到了(顯示中)" : "找到了(隱藏)") : "找不到");
     if (h) {
       DWORD pid = 0;
       ::GetWindowThreadProcessId(h, &pid);
       Say("  hwnd=%p pid=%lu visible=%d\n", static_cast<void*>(h),
-          static_cast<unsigned long>(pid), ::IsWindowVisible(h) ? 1 : 0);
+          static_cast<unsigned long>(pid), visible ? 1 : 0);
     }
+    // ⚠ --visible 不是可有可無的。設定視窗在**服務一啟動時就被建好但不顯示**
+    //   (見 service/settings_window.cc:按下去要立刻看到窗,不能等它建)。
+    //   所以「視窗存在」對任何一支跑著的服務都恆真 —— 拿它當斷言的話,
+    //   「按下去有反應」與「按下去沒反應」會一起通過。使用者看得到的是
+    //   **顯示出來**,不是存在。
+    if (require_visible) return visible ? 0 : 1;
     return h ? 0 : 1;
   }
 

@@ -171,16 +171,21 @@ user_language_list() {
 # 類別名的唯一來源仍然是 product.env(見 verify_product_names.sh 的
 # 「設定窗類別名」那一列),由這裡推導後傳進去。
 SETTINGS_CLASS="${RS_PRODUCT_NAME}SettingsWindow"
+# ⚠ **一定要 --visible。** 設定視窗在服務一啟動時就被建好但不顯示
+#   (service/settings_window.cc:按下去要立刻看到窗,不能等它建)。
+#   所以「視窗存在」對任何一支跑著的服務都恆真 —— CI run #87 就是這樣:
+#   12b 兩秒就「通過」了,而 12c 立刻發現「第一支不帶 --settings 的服務
+#   也把視窗開出來了」。使用者看得到的是**顯示出來**,不是存在。
 settings_window_present() {
-  "${INSTALL_DIR}/rime_ime_setup.exe" find-window --class "${SETTINGS_CLASS}" \
-    >/dev/null 2>&1
+  "${INSTALL_DIR}/rime_ime_setup.exe" find-window \
+    --class "${SETTINGS_CLASS}" --visible >/dev/null 2>&1
 }
 
 # ── 捷徑(.lnk)指到哪裡、帶什麼參數 ──────────────────────────────
 #
 # ⚠ 這是這一輪非加不可的一項,而它**第一次跑就抓到一個一直存在的缺陷**:
 #   捷徑名字裡的冒號是半形的,而 NTFS 把「名字:something」解讀成交替資料流,
-#   於是磁碟上長出來的是一個叫「LuminaKey 診斷」的空檔案 ——
+#   於是磁碟上長出來的是一個名字被截斷的**空檔案** ——
 #   「開始」功能表裡那一項什麼都不會做。那正是我們叫使用者去點的診斷入口。
 #
 # ⚠ **不要在命令列上傳中文給 PowerShell。** Git Bash → powershell.exe 會經過
@@ -275,7 +280,7 @@ ok "CLSID 與 ${PROFILE_COUNT} 份語言設定檔的 GUID 都與預期一致"
 #
 # 這一份是本輪唯一能回答「**啟用一份語言設定檔會不會替使用者新增一個語言**」
 # 的東西。那個問題微軟沒有文件(EnableLanguageProfile 那一頁只有簽章與
-# 兩個回傳碼,沒有 Remarks),而使用者截圖上那兩欄只掛著 LuminaKey 的
+# 兩個回傳碼,沒有 Remarks),而使用者截圖上那兩欄只掛著本輸入法的
 # 繁體中文,強烈指向「是我們加上去的」。與其猜,不如量。
 LANGS_BEFORE="$(user_language_list)"
 log "安裝前的使用者語言清單:${LANGS_BEFORE:-(讀不到)}"
@@ -506,11 +511,11 @@ fi
 #
 # ⚠ 這一節是這一輪的主題。使用者的截圖:
 #
-#     简体中文(中国大陆)            LuminaKey 輸入法
+#     简体中文(中国大陆)            <本輸入法>
 #     简体中文(中国大陆)            微软拼音
 #     简体中文(中国大陆)            小狼毫
-#     繁体中文(中国台湾)            LuminaKey 輸入法
-#     繁体中文(中国香港特别行政区)   LuminaKey 輸入法
+#     繁体中文(中国台湾)            <本輸入法>
+#     繁体中文(中国香港特别行政区)   <本輸入法>
 #
 # 微软拼音與小狼毫各佔一格,我們佔三格。他的話:「輸入法不應該顯示那麼多。」
 #
@@ -543,7 +548,7 @@ if [ "${ENABLED_COUNT}" = "1" ]; then
   ok "這個使用者啟用了 1 份(${ENABLED_LANGS})—— 清單上只有一格"
 else
   note_fail "這個使用者啟用了 ${ENABLED_COUNT:-?} 份(${ENABLED_LANGS})。
-     預期正好 1 份。使用者的 Win + 空白鍵清單上會出現 ${ENABLED_COUNT:-?} 格 LuminaKey,
+     預期正好 1 份。使用者的 Win + 空白鍵清單上會出現 ${ENABLED_COUNT:-?} 格本輸入法,
      而微软拼音、小狼毫各只佔一格 —— 這正是他回報的問題。"
 fi
 
@@ -570,7 +575,7 @@ echo "    安裝後:${LANGS_AFTER:-(讀不到)}"
 if [ "${LANGS_BEFORE}" != "${LANGS_AFTER}" ]; then
   echo "    → 使用者的語言清單**被改動了**。runner 上沒有任何中文,"
   echo "      所以啟用一份中文設定檔確實會替他新增那個語言。"
-  echo "      這也就解釋了截圖上那兩欄只掛著 LuminaKey 的繁體中文是怎麼來的。"
+  echo "      這也就解釋了截圖上那兩欄只掛著本輸入法的繁體中文是怎麼來的。"
 else
   echo "    → 語言清單沒有變。"
 fi
@@ -1350,48 +1355,62 @@ if [ ! -s "${LNK_TSV}" ]; then
      (不是產品的問題,是這段測試自己壞了;但**不可以**因此當成通過。)"
 else
   echo "  「開始」功能表裡與我們有關的捷徑:"
-  grep -i 'LuminaKey\|rime_' "${LNK_TSV}" | sed 's/^/    /' || true
+  grep -i "${RS_PRODUCT_NAME}"'\|rime_' "${LNK_TSV}" | sed 's/^/    /' || true
 fi
 
-# 名字、目標、參數三者都要對。三者的來源是 installer/luminakey.iss 的 [Icons]。
+# 名字、目標、參數三者都要對。三者的來源是 .iss 的 [Icons]。
+#
+# ⚠ **目標與參數直接讀 .lnk 的位元組,不問 WScript.Shell。**
+#   前一版用 PowerShell 的 CreateShortcut().TargetPath,而它在 runner 上
+#   對每一個捷徑都回傳**空字串**(CI run #87)—— 檔案明明在、名字也對。
+#   沒有查清楚為什麼,但那不重要:一個回傳空字串的探針,會把
+#   「捷徑指到錯的地方」與「探針壞了」變成同一個紅燈,而那正是要避免的。
+#
+#   .lnk 裡的路徑與參數是 UTF-16LE 的字串。把 NUL 去掉之後,
+#   `rime_service.exe` 與 `--settings` 這種純 ASCII 的字串就直接搜得到 ——
+#   不需要 COM、不需要 PowerShell、不經過任何代碼頁。
+#   (代價:這是子字串比對,不是欄位解析。配上「檔案本身要在對的名字下」
+#    這一條之後仍然擋得住「指到錯的執行檔」與「參數打錯」這兩種真實的失敗。)
+lnk_contains() {  # $1 = .lnk 路徑, $2 = 要找的 ASCII 字串
+  tr -d '\000' < "$1" 2>/dev/null | grep -aqF "$2"
+}
+
 check_lnk() {
   local name="$1" want_exe="$2" want_args="$3"
-  local row target args
-  # TSV 的第一欄是**不含副檔名**的檔名。名字含中文,但這裡是檔案內容的比對
-  # (UTF-8 進、UTF-8 出),不經過命令列,所以中文是安全的。
-  row="$(awk -F'\t' -v n="${name}" '$1 == n { print; exit }' "${LNK_TSV}" 2>/dev/null || true)"
-  if [ -z "${row}" ]; then
-    note_fail "缺少捷徑「${name}」。
-     ⚠ 名字裡有半形冒號的話,NTFS 會把它當成交替資料流 ——
+  local path="${START_MENU}/${name}.lnk"
+  if [ ! -f "${path}" ]; then
+    note_fail "缺少捷徑「${name}」(${path})。
+     ⚠ 名字裡有**半形**冒號的話,NTFS 會把它當成交替資料流 ——
      磁碟上長出來的是一個截斷的空檔案,而「開始」功能表裡那一項
-     什麼都不會做。用全形冒號。"
+     什麼都不會做。用全形冒號。(2026-08-09 實際抓到過一次。)"
     return
   fi
-  target="$(printf '%s' "${row}" | cut -f2)"
-  args="$(printf '%s' "${row}" | cut -f3)"
-  echo "    ${name}"
-  echo "      → ${target} ${args}"
-  case "${target}" in
-    *"\\${want_exe}") ok "捷徑「${name}」指到 ${want_exe}" ;;
-    *) note_fail "捷徑「${name}」指到「${target}」,預期以 ${want_exe} 結尾。
-     症狀會是「點了沒反應」或跑錯程式。" ;;
-  esac
-  if [ "${args}" = "${want_args}" ]; then
-    ok "捷徑「${name}」的參數 = ${want_args}"
+  echo "    ${name}(${path})"
+  if lnk_contains "${path}" "${want_exe}"; then
+    ok "捷徑「${name}」指到 ${want_exe}"
   else
-    note_fail "捷徑「${name}」的參數是「${args}」,預期「${want_args}」。
+    echo "      .lnk 裡的可讀字串:"
+    tr -d '\000' < "${path}" | tr -c '[:print:]' '\n' | grep -a '\.exe\|--' \
+      | head -8 | sed 's/^/        /' || true
+    note_fail "捷徑「${name}」裡找不到 ${want_exe}。
+     症狀會是「點了沒反應」或跑錯程式。"
+  fi
+  if [ -z "${want_args}" ] || lnk_contains "${path}" "${want_args}"; then
+    ok "捷徑「${name}」帶著參數 ${want_args}"
+  else
+    note_fail "捷徑「${name}」裡找不到參數「${want_args}」。
      參數錯掉的症狀正是「點了沒反應」—— 這個專案抓過四次那種鍵。"
   fi
 }
 check_lnk "${RS_PRODUCT_NAME} 設定" "rime_service.exe" "--settings"
 check_lnk "${RS_PRODUCT_NAME} 診斷：輸入法為什麼不能用" "rime_ime_setup.exe" "doctor --report"
 
-# 反向測試:上面那個比對真的會在名字不對時紅嗎?
-# 沒有這一條的話,「awk 永遠比不到東西」與「捷徑都在」在報表上分不出來。
-if awk -F'\t' '$1 == "LuminaKey 這個捷徑不存在"' "${LNK_TSV}" 2>/dev/null | grep -q .; then
-  note_fail "一個不存在的捷徑名竟然比對得到 —— 上面兩條斷言不算數"
+# 反向測試:上面那個比對真的會在該紅的時候紅嗎?
+# 沒有這一條的話,「lnk_contains 永遠回真」與「捷徑都對」在報表上分不出來。
+if lnk_contains "${START_MENU}/${RS_PRODUCT_NAME} 設定.lnk" "這個字串不可能在裡面"; then
+  note_fail "一個不可能存在的字串竟然比對得到 —— 上面幾條斷言不算數"
 else
-  ok "反向測試通過:不存在的捷徑名比對不到"
+  ok "反向測試通過:.lnk 裡不存在的字串比對不到"
 fi
 
 # ── 12b. 捷徑真的按得下去嗎(冷:服務沒在跑)──────────────────────
