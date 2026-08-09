@@ -186,8 +186,16 @@ fi
 # 取的是「搜尋路徑裡最先找到的那一份」。把目標佈局複製一份到
 # files/rime/user/layouts/ 就贏得這場競賽 —— t9_pinyin 同時被 cn-t9-pinyin 與
 # t9-pinyin 宣告，不釘就只能賭 listFiles() 的順序。
-# 複本只改 `for_schema` 一行（用 sed，不重排 YAML，避免踩到 §3.2 的 RTS 限制），
-# 其餘逐字照抄 —— 幾何與鍵位是**原檔**的，這正是要驗的東西。
+# 複本只改 `for_schema` 與 `auto_for_schema` 兩行（用 sed，不重排 YAML，避免踩到
+# §3.2 的 RTS 限制），其餘逐字照抄 —— 幾何與鍵位是**原檔**的，這正是要驗的東西。
+#
+# ⚠ **`auto_for_schema` 也得改，否則有一整類佈局根本釘不住。** §9.1.1 把「資格」
+#   與「自動命中」拆成兩個欄位之後，`cn-t9-pinyin-numrow` 這種「有資格但把自動
+#   命中讓出去」的佈局（`auto_for_schema: []`）永遠贏不了讓給它的那一份：
+#   只改 `for_schema` 的話，裝置上載入的仍然是 `cn-t9-pinyin`。
+#   下面那道「要驗的是 X，實際載入的卻是 Y」的檢查會擋下來並中止 —— 它沒有說謊，
+#   但結果是**那份佈局一次都沒被驗過**，而清單裡不會有任何紅字提醒你。
+#   （發現於九宮格消歧欄那一輪：改了 numrow 卻驗不到它。）
 if [ -n "$SCHEMA" ]; then
   info "釘住方案 $SCHEMA…"
   adbs shell "run-as $IME_PKG mkdir -p shared_prefs" >/dev/null 2>&1
@@ -200,9 +208,11 @@ fi
 
 SRC_LAYOUT="$PROJECT_ROOT/core/layouts/$LAYOUT.yaml"
 if [ -n "$SCHEMA" ] && [ -f "$SRC_LAYOUT" ]; then
-  info "釘住佈局 $LAYOUT（複製到 user_data_dir 並把 for_schema 綁到 $SCHEMA）…"
+  info "釘住佈局 $LAYOUT（複製到 user_data_dir，for_schema 與 auto_for_schema 都綁到 $SCHEMA）…"
   adbs shell "run-as $IME_PKG mkdir -p files/rime/user/layouts" >/dev/null 2>&1
-  sed "s/^for_schema:.*/for_schema: [\"$SCHEMA\"]/" "$SRC_LAYOUT" \
+  # `^for_schema:` 不會誤中 `auto_for_schema:`（後者不以 for_schema 開頭）。
+  sed -e "s/^for_schema:.*/for_schema: [\"$SCHEMA\"]/" \
+      -e "s/^auto_for_schema:.*/auto_for_schema: [\"$SCHEMA\"]/" "$SRC_LAYOUT" \
     | adbs shell "run-as $IME_PKG sh -c 'cat > files/rime/user/layouts/$LAYOUT.yaml'" >/dev/null 2>&1
 fi
 

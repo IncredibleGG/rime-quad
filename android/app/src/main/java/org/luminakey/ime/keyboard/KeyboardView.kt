@@ -126,19 +126,74 @@ fun RimeKeyboard(
         system = LocalDensity.current.fontScale,
     )
 
+    /* ── 拼音消歧欄的狀態（見 [T9Syllables]）──────────────────────────────
+     *
+     * 刻意**整組留在 UI 這一層**，不進 [KeyboardUiState]、不經過 IME service：
+     * 「使用者釘住了哪個讀音」不會改變 librime 的任何狀態，它純粹是候選列的
+     * 一個檢視條件。放進服務層只會多一條要維護的同步線。
+     *
+     * ⚠ 組字內容一變，釘住的讀音就過期了 —— 讀音集合是**這一串按鍵**的性質。
+     * 不清掉的話，使用者按了下一鍵、候選全換了，畫面卻還照著上一串的讀音篩。
+     */
+    var pinnedSyllable by remember { mutableStateOf<String?>(null) }
+    var syllableOffset by remember { mutableStateOf(0) }
+    LaunchedEffect(state.preedit) {
+        pinnedSyllable = null
+        syllableOffset = 0
+    }
+    val readings = remember(state.candidates) { T9Syllables.readingsOf(state.candidates) }
+    val slotIds = T9Syllables.slotKeys(state.layout?.id, state.layerId)
+    // 只有一個讀音時**不換掉標點**：那一格點下去什麼都不會發生，而
+    // 「看得到摸不到」正是這個專案抓過六次的那一類缺陷。
+    val disambiguating = slotIds.size >= T9Syllables.MIN_SLOTS && readings.size >= 2
+    val pin = if (disambiguating) T9Syllables.resolvePin(readings, pinnedSyllable) else null
+    val slotCells: Map<String, T9Syllables.Cell> =
+        if (!disambiguating) {
+            emptyMap()
+        } else {
+            slotIds.zip(T9Syllables.cells(readings, slotIds.size, syllableOffset)).toMap()
+        }
+
     Column(
         modifier = modifier
             .fillMaxWidth()
             .background(Color(theme.keyboard.background))
             .padding(bottom = bottomInsetDp(theme.keyboard.honorBottomInset)),
     ) {
-        CandidateBar(state = state, theme = theme, scaler = scaler, onEvent = onEvent)
+        CandidateBar(
+            state = state,
+            theme = theme,
+            scaler = scaler,
+            onEvent = onEvent,
+            pinnedSyllable = pin,
+        )
         // 面板一律是**浮層**，不是取代品：底下那一列鍵仍然露出來、仍然按得動。
         // 抄的是三星的處理（docs/reference/samsung/photo_5）。理由不是好看 ——
         // 一個把整個鍵盤蓋掉的面板，只要它自己的關閉鍵出了任何差錯，
         // 使用者就沒有第二條路可走。出口永遠看得見，這條規矩對每一個面板都適用。
         Box {
-            KeyGrid(state = state, theme = theme, scaler = scaler, onEvent = onEvent)
+            KeyGrid(
+                state = state,
+                theme = theme,
+                scaler = scaler,
+                onEvent = onEvent,
+                slotCells = slotCells,
+                pinnedSyllable = pin,
+                onSlot = { cell ->
+                    when (cell) {
+                        // 再點一次同一個讀音 = 取消篩選。不另外做一顆「全部」鍵：
+                        // 開關就在使用者剛剛按過的那一格上，找得回來。
+                        is T9Syllables.Cell.Reading ->
+                            pinnedSyllable =
+                                if (pinnedSyllable == cell.syllable) null else cell.syllable
+                        T9Syllables.Cell.More ->
+                            syllableOffset =
+                                T9Syllables.nextOffset(readings, slotIds.size, syllableOffset)
+                        // 空格是 spacer，收不到點擊。
+                        T9Syllables.Cell.Empty -> Unit
+                    }
+                },
+            )
             if (state.panel != PanelRoute.NONE) {
                 KeyboardPanelHost(state = state, theme = theme, scaler = scaler, onEvent = onEvent)
             }
@@ -393,6 +448,8 @@ private fun CandidateBar(
     theme: Theme,
     scaler: Scaler,
     onEvent: (KeyboardEvent) -> Unit,
+    /** 使用者在消歧欄釘住的讀音；null = 不篩。見 [T9Syllables]。 */
+    pinnedSyllable: String? = null,
 ) {
     val bar = theme.candidates.bar
     val style = bar.style
@@ -491,16 +548,25 @@ private fun CandidateBar(
                 return@Row
             }
 
+            // 消歧欄釘住讀音時只留該讀音的候選。清單裡放的是**引擎的頁內索引**,
+            // 不是畫面位置 —— 選字走 rs_select_candidate(index_on_page),兩者一旦
+            // 脫鉤,使用者點第二個卻選到第五個,而畫面完全正常。見 [T9Syllables]。
+            val shown = remember(state.candidates, pinnedSyllable, state.highlighted) {
+                T9Syllables.visibleIndices(state.candidates, pinnedSyllable, state.highlighted)
+            }
             LazyRow(
                 modifier = Modifier.weight(1f).fillMaxHeight(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(style.item.spacing.dp),
                 contentPadding = PaddingValues(horizontal = 4.dp),
             ) {
-                itemsIndexed(state.candidates) { index, candidate ->
+                itemsIndexed(shown) { _, index ->
+                    val candidate = state.candidates[index]
                     val highlighted = index == state.highlighted
                     // 候選字本身念得出來,但少了序號使用者無從說「我要第三個」;
                     // 而「現在停在哪一個」走 stateDescription,選字移動時會重念。
+                    // 序號用**引擎索引**而不是畫面位置:篩選之後畫面上的第二個
+                    // 仍然是引擎的第五個,念錯的話使用者說出來的指令會落在別處。
                     val candDesc = stringResource(
                         R.string.a11y_candidate, index + 1, candidate.text
                     )
@@ -819,6 +885,10 @@ private fun KeyGrid(
     theme: Theme,
     scaler: Scaler,
     onEvent: (KeyboardEvent) -> Unit,
+    /** 組字中被消歧欄接管的格位（key.id → 要畫什麼）。空 map = 照佈局畫。 */
+    slotCells: Map<String, T9Syllables.Cell> = emptyMap(),
+    pinnedSyllable: String? = null,
+    onSlot: (T9Syllables.Cell) -> Unit = {},
 ) {
     val layout = state.layout
     val layer: LayoutLayer? = state.layer
@@ -876,18 +946,43 @@ private fun KeyGrid(
                     horizontalArrangement = Arrangement.spacedBy(keySpacing.dp),
                 ) {
                     for (key in row.keys) {
-                        if (key.spacer) {
-                            Spacer(Modifier.weight(key.width).fillMaxHeight())
+                        // 拼音消歧欄：只換鍵面與行為，幾何一格都不動 ——
+                        // 組字途中自己重排的鍵盤比看不到讀音更糟。
+                        // ⚠ 替換要在 spacer 判斷**之前**：讀音比格位少時，多出來的
+                        // 格子變成 spacer（見 T9Syllables.Cell.Empty），順序寫反
+                        // 就會畫出一顆沒有字的鍵。
+                        val cell = if (key.spacer) null else slotCells[key.id]
+                        val pinnedHere =
+                            cell is T9Syllables.Cell.Reading && cell.syllable == pinnedSyllable
+                        val shownKey =
+                            if (cell == null) key else T9Syllables.slotKey(key, cell, pinnedHere)
+                        if (shownKey.spacer) {
+                            Spacer(Modifier.weight(shownKey.width).fillMaxHeight())
                         } else {
                             KeyView(
-                                key = key,
+                                key = shownKey,
                                 theme = theme,
                                 scaler = scaler,
                                 status = state.status,
                                 layerLabels = layerLabels,
-                                onEvent = onEvent,
+                                // 消歧欄不是 §9.5 的動作動詞（它沒有 YAML 表示法），
+                                // 所以行為由這一層包起來，而不是發明一個動詞。
+                                onEvent = if (cell == null) onEvent else ({ onSlot(cell) }),
+                                descriptionOverride = if (cell == null) {
+                                    null
+                                } else {
+                                    syllableDescription(cell)
+                                },
+                                stateOverride = if (pinnedHere) {
+                                    stringResource(R.string.a11y_syllable_pinned)
+                                } else {
+                                    null
+                                },
                                 onPopup = { left, top, w ->
-                                    val p = key.popup
+                                    // 被消歧欄接管的格位沒有長按盤（slotKey 清掉了
+                                    // popup），這裡一併寫明，免得日後有人以為
+                                    // 「，」的長按盤在組字中還開得出來。
+                                    val p = if (cell != null) null else key.popup
                                     if (p != null) {
                                         val originDp = with(density) {
                                             Offset(
@@ -930,6 +1025,21 @@ private fun KeyGrid(
             )
         }
     }
+}
+
+/**
+ * 消歧欄那幾格念出來是什麼。
+ *
+ * 與 [KeyA11y] 分開，是因為那一支是**純函式**（它要能被單元測試掃過十二份
+ * 佈局的每一顆鍵，不能扛 Robolectric），而這幾顆鍵根本不在佈局裡 ——
+ * 它們是執行期依候選讀音長出來的。規則與資源仍然分兩層：這裡只有資源。
+ */
+@Composable
+private fun syllableDescription(cell: T9Syllables.Cell): String? = when (cell) {
+    is T9Syllables.Cell.Reading -> stringResource(R.string.a11y_syllable, cell.syllable)
+    T9Syllables.Cell.More -> stringResource(R.string.a11y_syllable_more)
+    // 空格是 spacer，根本不會被畫成鍵，這裡到不了；留著讓 when 維持窮盡。
+    T9Syllables.Cell.Empty -> null
 }
 
 private fun dispatchSubKey(sub: SubKey, onEvent: (KeyboardEvent) -> Unit) {
@@ -1012,6 +1122,16 @@ private fun KeyView(
     onEvent: (KeyboardEvent) -> Unit,
     onPopup: (left: Float, top: Float, width: Float) -> Unit,
     modifier: Modifier = Modifier,
+    /**
+     * 蓋掉 [KeyA11y] 算出來的朗讀名。
+     *
+     * 只給執行期合成的鍵用（目前只有拼音消歧欄）：那些鍵不在任何佈局檔裡，
+     * [KeyA11y.nameOf] 只能退回鍵面 —— 「⋯」念成「⋯」，「ni」念成「ni」，
+     * 使用者聽不出那是一顆做什麼的鍵。
+     */
+    descriptionOverride: String? = null,
+    /** 同上，蓋掉 stateDescription（例如「已選取」）。 */
+    stateOverride: String? = null,
 ) {
     val view = LocalView.current
     val density = LocalDensity.current
@@ -1117,8 +1237,8 @@ private fun KeyView(
     // 所以 onClick 直接呼叫同一個 fire(),長按同理。用 clearAndSetSemantics
     // 而不是 semantics:鍵面上的「⌫」若留在語意樹裡,TalkBack 會把那個字元
     // 連同名字一起念出來。
-    val description = keyDescription(key, layerLabels)
-    val spokenState = a11yStateText(key.labelFrom, status)
+    val description = descriptionOverride ?: keyDescription(key, layerLabels)
+    val spokenState = stateOverride ?: a11yStateText(key.labelFrom, status)
     val typeLabel = stringResource(R.string.a11y_action_type)
     val moreLabel = stringResource(R.string.a11y_action_more)
     val hasLongPress = longPress != null || popup != null

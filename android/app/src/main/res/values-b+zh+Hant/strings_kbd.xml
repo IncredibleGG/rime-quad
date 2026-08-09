@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    九宮格鍵盤本身的字串 —— 繁體。key 與 placeholder 必須與 values/strings_kbd.xml
+    完全一致（由 keyboard/KbdStringsTest.kt 釘住）。
+-->
+<resources>
+
+    <string name="a11y_syllable">拼音 %1$s</string>
+
+    <string name="a11y_syllable_more">更多拼音讀音</string>
+
+    <string name="a11y_syllable_pinned">已選取</string>
+
+</resources>
