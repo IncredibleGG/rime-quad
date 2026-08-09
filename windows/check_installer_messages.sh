@@ -227,6 +227,27 @@ done < "${tmp}/ours.kv"
 [ "${bad_tokens}" -eq 0 ] \
   && log "每一句的 %1 / [name] 都與原文一致,而且沒有弄丟換行 ✓"
 
+# ── 4. 訊息值裡不可以有 Markdown ──────────────────────────────────
+#
+# 這些字串是**直接畫在對話框上**的。`**強調**` 在使用者眼裡就是四個星號,
+# 而這份 .iss 的註解裡到處都是那種寫法 —— 寫著寫著就會滑進訊息值裡。
+# (實測:第一版的 UninstalledAndNeedsRestart 與 UninstallAskPurge
+#  就各帶了一組。)
+#
+# 兩個區段都查:[Messages] 與 [CustomMessages] 都會被畫出來。
+md=0
+for sec in Messages CustomMessages; do
+  while IFS=$'\t' read -r id val; do
+    [ -z "${id}" ] && continue
+    case "${val}" in
+      *'**'*)
+        echo "  !! ${id} 的值裡有 Markdown 的 ** —— 對話框上會顯示成星號" >&2
+        md=1; fail=1 ;;
+    esac
+  done < <(extract_kv "${ISS}" "${sec}")
+done
+[ "${md}" -eq 0 ] && log "訊息值裡沒有 Markdown ✓"
+
 # ── 反向測試 ──────────────────────────────────────────────────────
 #
 # 一支只會印綠字的檢查比沒有更糟。這裡拿一份動過手腳的 .iss 跑同一段邏輯,
@@ -242,7 +263,15 @@ if [ "${SELF_CHECK}" -eq 1 ]; then
     die "刪掉一句翻譯,檢查竟然還通過"
   fi
   log "  ✓ 少一句會紅"
-  echo "  (註:上面那一次是用改過的複本跑的,不影響版控裡那一份)"
+
+  # (b) 植入一組 Markdown → 必須報 Markdown
+  sed 's/^ButtonOK=.*/ButtonOK=**確定**/' "${ISS}" > "${probe}"
+  if ISS_OVERRIDE="${probe}" REFERENCE_ISL="${ISL}" \
+     bash "${BASH_SOURCE[0]}" >/dev/null 2>&1; then
+    die "訊息值裡植入了 Markdown,檢查竟然還通過"
+  fi
+  log "  ✓ 訊息值裡有 ** 會紅"
+  echo "  (註:上面那兩次是用改過的複本跑的,不影響版控裡那一份)"
 fi
 
 echo

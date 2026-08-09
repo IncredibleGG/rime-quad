@@ -178,8 +178,12 @@ Source: "{#PayloadDir}\data\*"; DestDir: "{app}\data"; Flags: ignoreversion recu
 ;   · %n 比原文少 → 紅(少掉的換行會把兩句話黏在一起)
 ;
 ; 順序照 Default.isl,方便日後 Inno 升版時逐行對照。
-; 產品名一律用 [name] / [name/ver],**不要寫死** —— 那是 Inno 從
+; 產品名一律用 [name] / [name/ver],不要寫死 —— 那是 Inno 從
 ; [Setup] 的 AppName 展開的,改名時只要改那一處。
+;
+; ⚠ 這裡面**不可以有 Markdown**。這些字串是直接畫在對話框上的,
+;   `**強調**` 在使用者眼裡就是四個星號。本檔的註解裡用得很兇,
+;   訊息值裡一個都不准有 —— windows/check_installer_messages.sh 會擋。
 SetupAppTitle=安裝
 SetupWindowTitle=安裝 - %1
 UninstallAppTitle=移除
@@ -291,7 +295,7 @@ FullInstallation=完整安裝
 CompactInstallation=精簡安裝
 CustomInstallation=自訂安裝
 NoUninstallWarningTitle=元件已存在
-NoUninstallWarning=安裝程式偵測到這台電腦上已經裝了下列元件:%n%n%1%n%n取消勾選它們**不會**把它們移除。%n%n仍然要繼續嗎?
+NoUninstallWarning=安裝程式偵測到這台電腦上已經裝了下列元件:%n%n%1%n%n取消勾選它們並不會把它們移除。%n%n仍然要繼續嗎?
 ComponentSize1=%1 KB
 ComponentSize2=%1 MB
 ComponentsDiskSpaceGBLabel=目前的選擇至少需要 [gb] GB 的磁碟空間。
@@ -336,7 +340,7 @@ ArchiveIsCorrupted=壓縮檔已損毀
 ArchiveUnsupportedFormat=不支援這種壓縮格式
 WizardPreparing=準備中
 PreparingDesc=安裝程式正在準備安裝 [name]。
-PreviousInstallNotCompleted=上一次安裝或移除程式的動作還沒有完成,必須重新啟動電腦才能把它做完。%n%n重新啟動之後,請再執行一次安裝程式,把 [name] 裝完。
+PreviousInstallNotCompleted=上一次的安裝或移除還沒有做完 —— 有幾個檔案正在等待重新啟動之後才會被換掉或刪掉。%n%n在那之前不能安裝,否則等到下次開機,系統會把剛裝好的檔案一起清掉。%n%n請先重新啟動電腦,然後再執行一次安裝程式,把 [name] 裝完。
 CannotContinue=安裝無法繼續,請按「取消」結束。
 ApplicationsFound=下列程式正在使用安裝程式需要更新的檔案。建議讓安裝程式自動關閉它們。
 ApplicationsFound2=下列程式正在使用安裝程式需要更新的檔案。建議讓安裝程式自動關閉它們;安裝完成後,安裝程式會試著把它們重新開啟。
@@ -447,7 +451,7 @@ OnlyAdminCanUninstall=這份安裝只能由具有系統管理員權限的使用�
 UninstallStatusLabel=請稍候,正在從您的電腦移除 %1…
 UninstalledAll=%1 已從您的電腦順利移除。
 UninstalledMost=%1 移除完成。%n%n有部分項目無法移除,重新啟動電腦後會自動清除。
-UninstalledAndNeedsRestart=%1 已經移除完成,只剩安裝資料夾裡幾個檔案還刪不掉。%n%n【為什麼】這個輸入法要能用,就必須被載入到每一個可以打字的程式裡。您現在還開著的程式(檔案總管、瀏覽器、Office…)仍然握著那幾個檔案,所以它們現在刪不掉。%n%n【不重新啟動會怎樣】輸入法本身已經完全停用了 —— 它不會再出現在輸入法清單裡,也不會再被任何程式載入。留下的只是幾個佔幾 MB 的檔案,而且系統已經排好在下次開機時自動清掉它們。%n%n【可以晚點再重新啟動嗎】可以。現在選「否」不會有任何問題,下次您正常關機或重新啟動時就會清乾淨。登出再登入**不夠** —— 那份清單只有在開機時才會被處理。%n%n要現在重新啟動嗎?
+UninstalledAndNeedsRestart=%1 已經移除完成,只剩安裝資料夾裡幾個檔案還刪不掉。%n%n【為什麼】這個輸入法要能用,就必須被載入到每一個可以打字的程式裡。您現在還開著的程式(檔案總管、瀏覽器、Office…)仍然握著那幾個檔案,所以它們現在刪不掉。這不是安裝程式出錯。%n%n【不重新啟動會怎樣】輸入法本身已經完全停用了 —— 它不會再出現在輸入法清單裡,也不會再被任何程式載入。留下的只是幾個佔幾 MB 的檔案,系統已經排好在下次開機時自動清掉。但在重新啟動之前您裝不回來:再執行一次安裝程式時它會擋下來,請您先重新啟動。%n%n【可以晚點再重新啟動嗎】可以,現在選「否」不會有任何問題,下次您正常關機或重新啟動時就會清乾淨。但請注意:登出再登入是不夠的,那份清單只有在開機時才會被處理。%n%n要現在重新啟動嗎?
 UninstallDataCorrupted=檔案「%1」已損毀,無法移除
 ConfirmDeleteSharedFileTitle=要移除共用檔案嗎?
 ConfirmDeleteSharedFile2=系統顯示下面這個共用檔案已經沒有任何程式在使用。要讓移除程式把它刪掉嗎?%n%n如果還有程式在用它而它被刪掉,那些程式可能會不正常。不確定的話請選「否」——把它留在系統上不會造成任何問題。
@@ -461,7 +465,7 @@ ShutdownBlockReasonUninstallingApp=正在移除 %1。
 [CustomMessages]
 RegisterFailed=註冊輸入法失敗(rime_ime_setup.exe %1,結束碼 %2)。%n%n輸入法沒有被系統接受,現在就算裝完了也不會出現在輸入法清單上。%n安裝已中止,不會留下一個裝了卻用不了的狀態。
 UninstallKeptUserData=您的詞典與設定保留在:%n%n%1%n%n那是您自己的資料(學過的詞、自訂短語),移除輸入法時刻意不刪。%n重新安裝時會原封不動地回來;確定不要了再自行刪除該資料夾。
-UninstallAskPurge=要順便刪除您的詞典與設定嗎?%n%n%1%n%n那裡面是您使用期間學會的詞、自訂短語與設定。%n%n⚠ 刪除之後**無法復原** —— 重新安裝也救不回來。%n%n選「否」會保留它(建議);之後改變主意再自行刪除該資料夾即可。%n選「是」會立刻永久刪除。
+UninstallAskPurge=要順便刪除您的詞典與設定嗎?%n%n%1%n%n那裡面是您使用期間學會的詞、自訂短語與設定。%n%n⚠ 刪除之後無法復原 —— 重新安裝也救不回來。%n%n選「否」會保留它(建議);之後改變主意再自行刪除該資料夾即可。%n選「是」會立刻永久刪除。
 UninstallPurgeDone=您的詞典與設定已刪除:%n%n%1
 UninstallPurgeFailed=有部分資料沒有刪掉(可能有檔案正被使用):%n%n%1%n%n重新開機後手動刪除該資料夾即可。
 
