@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# windows/make_installer.sh — 產生 RimeQuad-Setup-x64.exe
+# windows/make_installer.sh — 產生安裝程式(檔名見 product.env 的
+#                             CI_ARTIFACT_WINDOWS_SETUP)
 #
 # ── 這支腳本在做什麼 ──────────────────────────────────────────────
 #
@@ -8,7 +9,7 @@
 #   2. **逐項點名檢查那棵樹**  ← 這一步是重點,見下
 #   3. 呼叫 Inno Setup 的 ISCC 把它壓成一個 .exe
 #
-# 打包工具選 Inno Setup 而不是 WiX 的理由寫在 windows/installer/rimequad.iss 檔頭。
+# 打包工具選 Inno Setup 而不是 WiX 的理由寫在 .iss 檔頭。
 #
 # ── 為什麼第 2 步是重點 ───────────────────────────────────────────
 #
@@ -26,7 +27,7 @@
 #   windows/make_installer.sh --self-check 只驗「檢查會紅」,不產生安裝程式
 #
 # 產出:
-#   third_party/build/windows-x64/installer/RimeQuad-Setup-x64.exe
+#   third_party/build/windows-x64/installer/<CI_ARTIFACT_WINDOWS_SETUP>.exe
 #
 set -euo pipefail
 
@@ -36,12 +37,21 @@ die()  { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# 產品識別:值的唯一來源是 scripts/lib/product.env。
+# ⚠ 這支腳本裡不准出現產品名的字面值 —— 見 windows/product_win.sh 檔頭。
+# shellcheck disable=SC1091
+. "${SCRIPT_DIR}/product_win.sh"
+
 ARCH="${ARCH:-x64}"
 BUILD_ROOT="${ROOT}/third_party/build/windows-${ARCH}"
 BIN="${BUILD_ROOT}/ime/bin"
 WORK="${BUILD_ROOT}/installer"
 PAYLOAD="${WORK}/payload"
-OUT_NAME="RimeQuad-Setup-${ARCH}.exe"
+# ⚠ 產物名 = CI 的 artifact 名 = scripts/publish_desktop.sh 要抓的名字。
+#   三者各寫一份的話,改名之後發布會**安靜地**抓不到東西(下載頁上那個
+#   版本就是不會更新,而 CI 全綠)。所以一律從 product.env 來。
+#   ${ARCH} 不參與:artifact 名本身已經帶了架構。
+OUT_NAME="${RS_WIN_SETUP_EXE}"
 
 SELF_CHECK=0
 LINT=0
@@ -208,13 +218,13 @@ self_check() {
   #   唯一**不需要 Windows** 的入口,而這個檢查也不需要 Windows。
   #   掛在這裡,開發機上一行指令就驗得到。
   log "檢查 .iss 的區段標籤"
-  check_iss_section_tags "${SCRIPT_DIR}/installer/rimequad.iss" \
+  check_iss_section_tags "${SCRIPT_DIR}/${RS_WIN_ISS_REL}" \
     || die ".iss 的區段標籤有問題,見上。ISCC 會以一個指向別處的行號失敗。"
   log "  ✓ 沒有會被誤認成區段標籤的行"
 
   # 反向測試的反向測試:植入一行,要求上面那個檢查真的紅。
   local probe="${WORK}/iss-probe.iss"
-  cp "${SCRIPT_DIR}/installer/rimequad.iss" "${probe}"
+  cp "${SCRIPT_DIR}/${RS_WIN_ISS_REL}" "${probe}"
   printf '    [ThisLineLooksLikeASectionTag]\n' >> "${probe}"
   if check_iss_section_tags "${probe}" > /dev/null 2>&1; then
     die "植入了一行縮排的 [ ,區段標籤檢查竟然通過 —— 它沒有在檢查"
@@ -296,8 +306,8 @@ log "ISCC = ${ISCC_EXE}"
 #   使用者看到的是一整個亂碼的安裝精靈。
 #   版控裡那一份保持乾淨的 UTF-8(不帶 BOM,免得每個編輯器都要處理它),
 #   BOM 在這裡加。
-ISS_SRC="${SCRIPT_DIR}/installer/rimequad.iss"
-ISS="${WORK}/rimequad.iss"
+ISS_SRC="${SCRIPT_DIR}/${RS_WIN_ISS_REL}"
+ISS="${WORK}/$(basename "${RS_WIN_ISS_REL}")"
 [ -f "${ISS_SRC}" ] || die "找不到 ${ISS_SRC}"
 check_iss_section_tags "${ISS_SRC}" \
   || die ".iss 的區段標籤有問題,見上。"
@@ -319,6 +329,10 @@ iscc_once() {
     "//DAppVersion=${APP_VERSION}" \
     "//DVersionInfo=${VERSION_INFO}" \
     "//DArchDirective=$1" \
+    "//DProductName=${RS_PRODUCT_NAME}" \
+    "//DProductNameZh=${RS_PRODUCT_NAME_ZH}" \
+    "//DProductIdRoot=${RS_PRODUCT_ID_ROOT}" \
+    "//DSetupBaseName=${RS_WIN_SETUP_BASE}" \
     "//O$(w "$3")" \
     "$(w "${ISS}")" \
     > "$4" 2>&1
@@ -379,7 +393,7 @@ if [ "${LINT}" -eq 1 ]; then
   log "lint:用假的 payload 編一次,只驗 .iss 本身"
   compile_installer "${LINT_DIR}/payload" "${LINT_DIR}/out" "${WORK}/iscc-lint" \
     || die "安裝程式腳本編不過,見上。
-  (這一步用的是假的 payload —— 錯的是 windows/installer/rimequad.iss 本身,
+  (這一步用的是假的 payload —— 錯的是 ${RS_WIN_ISS_REL} 本身,
    不是要裝的內容。)"
   [ -f "${LINT_DIR}/out/${OUT_NAME}" ] \
     || die "lint 編過了卻沒有產生 ${OUT_NAME} —— OutputBaseFilename 或 //O 不對"

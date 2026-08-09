@@ -23,7 +23,7 @@
 //
 //   shared  <安裝目錄>\data\shared    唯讀。方案、詞庫、opencc 詞典。
 //   seed    <安裝目錄>\data\user      唯讀**範本**,首次執行時複製過去。
-//   user    %APPDATA%\RimeQuad        可寫。使用者詞典、設定、編譯產物。
+//   user    %APPDATA%\LuminaKey       可寫。使用者詞典、設定、編譯產物。
 //
 // 三件必須講清楚的事:
 //
@@ -134,7 +134,7 @@ std::string DefaultSeedDir() {
   return rimewin::WideToUtf8(dir + L"\\data\\user");
 }
 
-// %APPDATA%\RimeQuad(Roaming)。
+// %APPDATA%\LuminaKey(Roaming)。
 //
 // 為什麼是 Roaming 而不是 Local:這裡放的是**使用者的資料** —— 自訂短語、
 // 學習過的詞、設定。跟著人走是對的,而 RIME 生態(Weasel 用 %APPDATA%\Rime)
@@ -351,9 +351,9 @@ static int RunService(int argc, wchar_t** argv) {
     // 見上面 UserDirInsideInstallDir 的說明。寧可現在就大聲停下來,
     // 也不要讓使用者用了三天才發現輸入法從來沒記住過任何東西。
     Err("使用者資料目錄落在安裝目錄底下: %s\n"
-        "  安裝目錄(通常是 C:\\Program Files\\RimeQuad)對一般權限的進程是唯讀的,\n"
+        "  安裝目錄(通常是 C:\\Program Files\\LuminaKey)對一般權限的進程是唯讀的,\n"
         "  而 librime 寫不進去時**不會報錯**,只是一個學過的詞都留不住。\n"
-        "  使用者資料應該在 %%APPDATA%%\\RimeQuad。\n",
+        "  使用者資料應該在 %APPDATA%\\LuminaKey。\n",
         user.c_str());
     return 1;
   }

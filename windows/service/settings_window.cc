@@ -13,7 +13,7 @@
 namespace rimewin {
 namespace {
 
-constexpr wchar_t kClass[] = L"RimeQuadSettingsWindow";
+constexpr wchar_t kClass[] = L"LuminaKeySettingsWindow";
 constexpr UINT WM_RIME_OPEN = WM_APP + 1;
 constexpr UINT WM_RIME_TRAY = WM_APP + 2;
 constexpr UINT kTrayId = 1;
@@ -183,7 +183,7 @@ void SettingsWindow::ThreadMain() {
   // 一開始就建好但不顯示。使用者按下語言列按鈕時要**立刻**看到窗,
   // 而建視窗 + 讀設定 + 問方案清單要花一點時間 ——
   // 「按了之後過一秒才出現」與「按了沒反應」在使用者眼裡是同一件事。
-  hwnd_ = ::CreateWindowExW(0, kClass, L"RIME 四端輸入法 設定",
+  hwnd_ = ::CreateWindowExW(0, kClass, L"LuminaKey 輸入法 設定",
                             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU |
                                 WS_MINIMIZEBOX,
                             CW_USEDEFAULT, CW_USEDEFAULT, 100, 100, nullptr,
@@ -283,7 +283,7 @@ void SettingsWindow::AddTray() {
   //   而看不到的圖示等於沒有這個入口。要換成自己的圖示得加一份 .rc,
   //   那會把資源編譯器拉進建置,留給有美術資源的時候再做。
   nid.hIcon = ::LoadIconW(nullptr, IDI_APPLICATION);
-  ::lstrcpynW(nid.szTip, L"RIME 四端輸入法", 128);
+  ::lstrcpynW(nid.szTip, L"LuminaKey 輸入法", 128);
   tray_added_ = ::Shell_NotifyIconW(NIM_ADD, &nid) != FALSE;
 }
 
@@ -634,7 +634,7 @@ void SettingsWindow::ReloadFromSettings() {
   {
     wchar_t buf[512];
     ::swprintf(buf, 512,
-               L"RIME 四端輸入法(Windows,x64)\r\n"
+               L"LuminaKey 輸入法(Windows,x64)\r\n"
                L"引擎門面 ABI %d,線路版本 %u\r\n"
                L"\r\n"
                L"這個版本**完全不連網**:兩個二進位都沒有相依任何網路 DLL,\r\n"

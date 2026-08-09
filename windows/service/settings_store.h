@@ -11,7 +11,8 @@
 //      兩邊都會讀寫。
 //   3. **失敗不丟例外。** 這支進程崩了使用者就沒有輸入法。
 //
-// ⚠ 路徑一律是 `%APPDATA%\RimeQuad` 底下。不可以寫進安裝目錄 ——
+// ⚠ 路徑一律是 `%APPDATA%\LuminaKey` 底下(由 winshared 的
+//   RimeUserDataDir() 決定,那是唯一的決定處)。不可以寫進安裝目錄 ——
 //   理由見 service/main.cc 檔頭(librime 寫不進去時不會停下來)。
 #ifndef RIMEWIN_SERVICE_SETTINGS_STORE_H_
 #define RIMEWIN_SERVICE_SETTINGS_STORE_H_

@@ -35,7 +35,7 @@ namespace rimewin {
 // HKCU\SOFTWARE\Classes 的合併檢視,寫進去時落在哪一邊取決於權限與
 // 呼叫者的身分。安裝程式是全機安裝,就該明著寫 HKLM ——
 // 而且 CI 要斷言的那個路徑也必須是確定的,不能「看情況」。
-std::wstring ClsidString();          // "{E94B9FC2-…}"
+std::wstring ClsidString();          // "{7D02992E-…}"
 std::wstring ClsidRegPath();         // HKLM 底下:SOFTWARE\Classes\CLSID\{…}
 std::wstring InprocRegPath();        // …\InprocServer32
 std::wstring CtfTipRegPath();        // HKLM 底下:SOFTWARE\Microsoft\CTF\TIP\{…}

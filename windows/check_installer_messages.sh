@@ -6,7 +6,7 @@
 #
 # 使用者走完整個解除安裝流程,在**最後一個對話框**撞到一句英文:
 #
-#   To complete the uninstallation of RIME 四端輸入法, your computer must be
+#   To complete the uninstallation of <產品名>, your computer must be
 #   restarted. Would you like to restart now?
 #
 # 而標題與按鈕是中文。原因是我們只覆寫了自己想得到的那幾句
@@ -42,8 +42,13 @@ log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 產品識別:值的唯一來源是 scripts/lib/product.env(.iss 的檔名也是從
+# PRODUCT_ID_ROOT 推出來的,所以下一次改名時這一行不必動)。
+# shellcheck disable=SC1091
+. "${SCRIPT_DIR}/product_win.sh"
+
 # ISS_OVERRIDE 只給下面的反向測試用:它要拿一份動過手腳的複本跑同一段邏輯。
-ISS="${ISS_OVERRIDE:-${SCRIPT_DIR}/installer/rimequad.iss}"
+ISS="${ISS_OVERRIDE:-${SCRIPT_DIR}/${RS_WIN_ISS_REL}}"
 [ -f "${ISS}" ] || die "找不到 ${ISS}"
 
 SELF_CHECK=0
@@ -182,7 +187,7 @@ fi
 #   **換行 %n** —— 只要求**不少於**原文。
 #     Inno 自己的翻譯守則說不要增減 %n,那是為了讓各語言版面一致。
 #     但我們有一句是刻意寫長的:解除安裝完的重新啟動提示要回答
-#     「為什麼 / 不重啟會怎樣 / 可不可以晚點」三件事(見 rimequad.iss)。
+#     「為什麼 / 不重啟會怎樣 / 可不可以晚點」三件事(見 .iss)。
 #     少掉 %n 會把兩句話黏在一起(真的壞掉),多幾個只是分段更清楚。
 #     所以這裡擋的是「翻譯時弄丟了換行」,不是「排版與英文不同」。
 # ⚠ 兩個 `|| true` 不是裝飾。沒有佔位符的句子(大多數)會讓 grep 以 1 結束,

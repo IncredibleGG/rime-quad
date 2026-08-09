@@ -61,23 +61,23 @@ std::wstring CurrentUserSidString() {
 std::wstring RimePipeName() {
   std::wstring sid = CurrentUserSidString();
   if (sid.empty()) sid = L"unknown";
-  return L"\\\\.\\pipe\\rime-quad." + sid + L".v1";
+  return L"\\\\.\\pipe\\luminakey." + sid + L".v1";
 }
 
 std::wstring RimeServiceQuitEventName() {
   std::wstring sid = CurrentUserSidString();
   if (sid.empty()) sid = L"unknown";
-  return L"Local\\RimeQuadServiceQuit." + sid;
+  return L"Local\\LuminaKeyServiceQuit." + sid;
 }
 
 std::wstring RimeServiceMutexName() {
   std::wstring sid = CurrentUserSidString();
   if (sid.empty()) sid = L"unknown";
-  return L"Local\\RimeQuadService." + sid;
+  return L"Local\\LuminaKeyService." + sid;
 }
 
 std::wstring RimeSettingsEventName() {
-  return L"Local\\RimeQuadSettings." + CurrentUserSidString();
+  return L"Local\\LuminaKeySettings." + CurrentUserSidString();
 }
 
 std::string GuidToUtf8(const GUID& g) {
@@ -102,7 +102,7 @@ bool IsProcessElevated() {
 // ⚠ 資料夾名寫在這一個地方,而且只有這一個地方。
 //   產品改名時改這裡;改別處等於製造一個「刪了一個不存在的資料夾然後
 //   回報成功」的缺陷。
-static const wchar_t kUserDataFolderName[] = L"RimeQuad";
+static const wchar_t kUserDataFolderName[] = L"LuminaKey";
 
 const wchar_t* RimeUserDataFolderName() { return kUserDataFolderName; }
 

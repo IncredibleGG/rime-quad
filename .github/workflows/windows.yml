@@ -166,6 +166,22 @@ jobs:
       - name: 安裝程式腳本必須編得過（快速把關）
         run: ./windows/make_installer.sh --lint
 
+      # ── 產品識別碼逐列對帳 ──────────────────────────────────────
+      #
+      # 寫進使用者磁碟與登錄檔的名字(資料夾、設定檔、視窗類別、COM 描述、
+      # 具名管道…)必須逐字等於 scripts/lib/product.env 推出來的值。
+      #
+      # ⚠ 為什麼這是一個**獨立**的關卡而不是靠編譯期:改名改一半在
+      #   編譯期、單元測試、發布關卡全部是綠的。Windows 端更安靜,因為
+      #   這裡的名字有一半是目錄名 —— 解除安裝去刪一個不存在的資料夾時,
+      #   它會回報成功。
+      #
+      # 這一步含**逐列反向測試**:每一列都會被真的改回舊名一次,
+      # 要求它只紅在自己那一行。放在快速 job 是刻意的:它不需要
+      # librime、不需要 Windows 的任何東西,幾秒鐘就有答案。
+      - name: 產品識別碼逐列對帳（含逐列反向測試）
+        run: ./windows/verify_product_names.sh
+
       - name: 上傳瘦 DLL 與測試執行檔
         if: always()
         uses: actions/upload-artifact@v4
@@ -321,11 +337,30 @@ jobs:
       - name: 端到端 IPC 驗證（經由具名管道:nihao → 你好）
         run: ./windows/verify_ime.sh
 
+      # ── 安裝程式的檔名 ──────────────────────────────────────────
+      #
+      # 檔名 = CI 的 artifact 名 = scripts/publish_desktop.sh 要抓的名字。
+      # 三者的唯一來源是 scripts/lib/product.env 的 CI_ARTIFACT_WINDOWS_SETUP。
+      #
+      # ⚠ 為什麼不直接把名字寫在 yml 裡:改名的時候,寫死的那一份與
+      #   product.env 的那一份會分岔,而分岔的症狀是**發布安靜地抓不到東西**
+      #   —— CI 三個 job 全綠、安裝程式也真的建出來了,只是下載頁上那個版本
+      #   永遠停在舊的。上一次改名就是這樣被發現的(見 product.env 檔頭)。
+      - name: 讀出安裝程式的檔名（唯一來源:scripts/lib/product.env）
+        run: |
+          . windows/product_win.sh
+          echo "  artifact = ${RS_WIN_SETUP_BASE}"
+          echo "  檔名     = ${RS_WIN_SETUP_EXE}"
+          {
+            echo "SETUP_ARTIFACT=${RS_WIN_SETUP_BASE}"
+            echo "SETUP_FILE=${RS_WIN_SETUP_EXE}"
+          } >> "$GITHUB_ENV"
+
       # ── 安裝程式 ────────────────────────────────────────────────
-      # 打包工具是 Inno Setup(理由見 windows/installer/rimequad.iss 檔頭)。
+      # 打包工具是 Inno Setup(理由見 .iss 檔頭)。
       # 這一步同時會逐項點名檢查要裝進去的東西 —— 尤其是 core/data/shared,
       # 少了它會裝出一個「註冊得上但一個字都打不出來」的輸入法。
-      - name: 建置安裝程式（RimeQuad-Setup-x64.exe）
+      - name: 建置安裝程式（${{ env.SETUP_FILE }}）
         run: ./windows/make_installer.sh
 
       - name: 上傳建置與驗證日誌
@@ -356,13 +391,14 @@ jobs:
           if-no-files-found: error
 
       # ⚠ 名字是固定的(不帶 sha)。協調端的發布流程會照這個名字來抓。
-      #   改名字等於讓發布流程安靜地抓不到東西。
+      #   改名字等於讓發布流程安靜地抓不到東西 —— 所以它不寫在這裡,
+      #   而是上面那一步從 scripts/lib/product.env 讀出來的。
       - name: 上傳安裝程式
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: RimeQuad-Setup-x64
-          path: third_party/build/windows-x64/installer/RimeQuad-Setup-x64.exe
+          name: ${{ env.SETUP_ARTIFACT }}
+          path: third_party/build/windows-x64/installer/${{ env.SETUP_FILE }}
           if-no-files-found: error
 
   # ────────────────────────────────────────────────────────────────
@@ -401,6 +437,26 @@ jobs:
       - name: 取出原始碼
         uses: actions/checkout@v4
 
+      # ── 安裝程式的檔名 ──────────────────────────────────────────
+      #
+      # 檔名 = CI 的 artifact 名 = scripts/publish_desktop.sh 要抓的名字。
+      # 三者的唯一來源是 scripts/lib/product.env 的 CI_ARTIFACT_WINDOWS_SETUP。
+      #
+      # ⚠ 為什麼不直接把名字寫在 yml 裡:改名的時候,寫死的那一份與
+      #   product.env 的那一份會分岔,而分岔的症狀是**發布安靜地抓不到東西**
+      #   —— CI 三個 job 全綠、安裝程式也真的建出來了,只是下載頁上那個版本
+      #   永遠停在舊的。上一次改名就是這樣被發現的(見 product.env 檔頭)。
+      - name: 讀出安裝程式的檔名（唯一來源:scripts/lib/product.env）
+        run: |
+          . windows/product_win.sh
+          echo "  artifact = ${RS_WIN_SETUP_BASE}"
+          echo "  檔名     = ${RS_WIN_SETUP_EXE}"
+          {
+            echo "SETUP_ARTIFACT=${RS_WIN_SETUP_BASE}"
+            echo "SETUP_FILE=${RS_WIN_SETUP_EXE}"
+          } >> "$GITHUB_ENV"
+
+
       # ── 這兩包**必須**是同一次建置的產物 ────────────────────────
       #
       # 不是的話,症狀會是「連上了但握手不合」—— 而那與「服務根本沒在監聽」
@@ -410,7 +466,7 @@ jobs:
       #   · 這個 job `needs: core-x64`,兩包都是那個 job 在**同一個 run**
       #     裡上傳的。
       #   · download-artifact@v4 不帶 run-id 時只看目前這個 run,
-      #     所以 `RimeQuad-Setup-x64` 這個不帶 sha 的固定名字不會撈到別輪的。
+      #     所以那個不帶 sha 的固定 artifact 名(見上一步)不會撈到別輪的。
       #
       # 而且現在線路上也驗得到:rime_probe 握手成功時會印出協商到的線路
       # 版本與服務回報的 shell ABI,失敗時會印出雙方各自宣稱的值。
@@ -418,7 +474,7 @@ jobs:
       - name: 下載安裝程式
         uses: actions/download-artifact@v4
         with:
-          name: RimeQuad-Setup-x64
+          name: ${{ env.SETUP_ARTIFACT }}
           path: dist
 
       - name: 下載驗證工具（probe、setup）
@@ -443,10 +499,10 @@ jobs:
             [ -n "$hit" ] || { echo "!! artifact 裡找不到 $name" >&2; exit 1; }
             echo "$hit"
           }
-          [ -f dist/RimeQuad-Setup-x64.exe ] \
-            || { echo "!! 缺少 dist/RimeQuad-Setup-x64.exe" >&2; exit 1; }
+          [ -f "dist/${SETUP_FILE}" ] \
+            || { echo "!! 缺少 dist/${SETUP_FILE}" >&2; exit 1; }
           {
-            echo "SETUP_EXE=dist/RimeQuad-Setup-x64.exe"
+            echo "SETUP_EXE=dist/${SETUP_FILE}"
             echo "PROBE_EXE=$(locate_one rime_probe.exe)"
             echo "TOOL_EXE=$(locate_one rime_ime_setup.exe)"
             echo "HOST_EXE=$(locate_one rime_tsf_host.exe)"

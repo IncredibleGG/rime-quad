@@ -426,7 +426,7 @@ void PipeServer::ServeClient(HANDLE pipe) {
         // 回報的是**實作端**的 ABI(rs_abi_version()),不是編譯期常數:
         // rime_shell.h 檔頭要的就是「實作端 vs 呼叫端」的比對。
         ok.shell_abi = static_cast<uint32_t>(rs_abi_version());
-        ok.service_version = "rime-quad-windows/0.2";
+        ok.service_version = "luminakey-windows/0.2";
         // ⚠ 不是「等於最新版」,是「在支援的區間裡」。
         //   DLL 與服務可能來自不同的建置(瀏覽器可以開好幾天,
         //   它握著的 DLL 就是那麼舊)。舊 DLL 連上新服務時,

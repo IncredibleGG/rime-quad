@@ -126,7 +126,7 @@ Settings Settings::Parse(const std::string& text) {
 
 std::string Settings::Serialize() const {
   std::string out =
-      "# RimeQuad 設定。由設定介面寫入,也可以自己改。\n"
+      "# LuminaKey 設定。由設定介面寫入,也可以自己改。\n"
       "# 規則:**沒有的鍵 = 沒設過 = 跟隨預設**。想回到預設就把那一行刪掉,\n"
       "#       不要寫一個「預設值」進來 —— 那兩件事在這裡是不同的意思。\n";
   // 分區標題只在該區真的有東西時才印 —— 空的標題會讓使用者以為
