@@ -88,8 +88,10 @@ fun OnboardingScreen(
      * **不會被 Compose 跳過重組**的手段（見 [PreparingBody] 的註解）。
      */
     phase: RimeRuntime.Phase,
-    /** 整理字詞失敗的原因。見 [rememberRimeInitError]。 */
+    /** 整理字詞失敗的原因。見 [rememberRimeStatus]。 */
     initError: String?,
+    /** 哪一種失敗 —— 決定失敗那一屏給不給按鈕，見 [actionOf]。 */
+    failure: RimeRuntime.Failure,
     onRefreshWords: () -> Unit,
     onFinished: () -> Unit,
     modifier: Modifier = Modifier,
@@ -155,6 +157,7 @@ fun OnboardingScreen(
                 Spacer(Modifier.height(Space.s8))
                 FailedBody(
                     error = initError,
+                    failure = failure,
                     onRefreshWords = onRefreshWords,
                     onFinished = onFinished,
                 )
@@ -441,40 +444,63 @@ private fun PreparingBody(phase: RimeRuntime.Phase) {
  * 現在失敗是 [SetupStage.FAILED] 這一格，由上層的 `stage` 換屏、訊息由參數
  * 帶進來 —— 兩者都是 Compose 追得到的東西。
  *
- * ── 為什麼這一屏一定要有按鈕 ────────────────────────────────────────────
+ * ── 為什麼這一屏一定要有出路 ────────────────────────────────────────────
  * 引導頁只有 [ReadyBody] 那條路會呼叫 `onFinished`。所以在加這一屏之前，
  * 首次啟動一旦部署失敗，使用者就被**關在引導頁裡**：出不去、也走不到
  * 「進階與問題回報 → 重新整理字詞」。
+ *
+ * ⚠ **出路不等於那顆實心按鈕。** 五條失敗路徑裡有四條（.so 載不起來、
+ * ABI 不符、隨附資料解不開、`rs_init` 回 false）根本按不動「重新整理字詞」
+ * —— 那顆按鈕走 `DeployGate`，而它的第一行就會因為 `RimeCore.isInitialized`
+ * 是 false 而回頭。所以按鈕由 [actionOf] 決定畫不畫，說明文字由
+ * [failedBodyRes] 決定講什麼；那四條路上留下的是「進設定」這條真的走得通的路。
  */
 @Composable
 private fun FailedBody(
     error: String?,
+    failure: RimeRuntime.Failure,
     onRefreshWords: () -> Unit,
     onFinished: () -> Unit,
 ) {
     Text(
-        text = stringResource(R.string.preparing_failed_title),
+        text = stringResource(failedTitleRes(failure)),
         fontSize = TypeScale.t1,
         fontWeight = FontWeight.SemiBold,
         modifier = Modifier.semantics { heading() },
     )
     Spacer(Modifier.height(Space.s1))
     Text(
-        // %1$s = 引擎給的原因（英文的故障載荷，見 RimeRuntime 的註解）。
-        text = stringResource(R.string.preparing_failed_body, error.orEmpty()),
+        // 每一種失敗講的是使用者做得到的那一件事，見 [failedBodyRes]。
+        text = stringResource(failedBodyRes(failure)),
         fontSize = TypeScale.t3,
         lineHeight = TypeScale.t3Line,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
+    // 引擎給的原因（英文的故障載荷，見 RimeRuntime 的註解）。排在使用者
+    // 做得到的事後面 —— 他先知道自己該做什麼，這一行是給問題回報用的。
+    if (!error.isNullOrBlank()) {
+        Spacer(Modifier.height(Space.s3))
+        Text(
+            text = error,
+            fontSize = TypeScale.t5,
+            lineHeight = TypeScale.t5Line,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
     Spacer(Modifier.height(Space.s7))
-    // 這一屏唯一的實心按鈕。按的是首頁那顆同一個 redeploy()，進度與結果由
-    // StoreOverlays 統一畫（它畫在引導頁之外，所以這裡看得到）。
-    Button(
-        onClick = onRefreshWords,
-        modifier = Modifier.fillMaxWidth().heightIn(min = Dimens.touchTarget),
-    ) { Text(stringResource(R.string.not_ready_refresh_words), fontSize = TypeScale.t4) }
-    Spacer(Modifier.height(Space.s4))
-    // 第二條路：不想在這裡耗，就直接進設定 —— 首頁那條橫幅會把同一件事再說一次。
+    // ⚠ 畫不畫這顆按鈕**不是寫在這裡的 if**，是 [actionOf] 的結論 ——
+    // 寫在 Composable 裡的 if 沒有人驗得到，那正是上一版的漏法。
+    if (actionOf(SetupStage.FAILED, failure) == NotReadyAction.REFRESH_WORDS) {
+        // 這一屏唯一的實心按鈕。按的是首頁那顆同一個 redeploy()，進度與結果由
+        // StoreOverlays 統一畫（它畫在引導頁之外，所以這裡看得到）。
+        Button(
+            onClick = onRefreshWords,
+            modifier = Modifier.fillMaxWidth().heightIn(min = Dimens.touchTarget),
+        ) { Text(stringResource(R.string.not_ready_refresh_words), fontSize = TypeScale.t4) }
+        Spacer(Modifier.height(Space.s4))
+    }
+    // 另一條路：不想在這裡耗（或那顆按鈕根本按不動），就直接進設定 ——
+    // 首頁那條橫幅會把同一件事再說一次，而且那裡有診斷與問題回報。
     TextButton(
         onClick = onFinished,
         modifier = Modifier.heightIn(min = Dimens.touchTarget),

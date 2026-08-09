@@ -6,6 +6,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import org.luminakey.ime.R
 import org.junit.rules.TemporaryFolder
 import java.io.File
 
@@ -105,8 +106,14 @@ class InstalledRegistryTest {
         val r = s.importLocal(StoreFixtures.malicious("evil-traversal.zip"), "evil.zip") {}
         assertTrue(r is SchemaStore.Outcome.Failed)
         val failed = r as SchemaStore.Outcome.Failed
-        assertTrue(failed.message.contains("整包拒絕"))
-        assertTrue(failed.details.any { it.contains("路徑") })
+        // ⚠ 比對的是**資源 id**，不是譯文。訊息現在是 UiMessage（id + 參數），
+        // 比對譯文等於把這條測試綁死在中文上 —— 而重點正好是它不該是中文。
+        assertEquals(R.string.store_err_import_rejected, failed.message.id)
+        assertEquals("被拒絕的檔名要帶到訊息裡", listOf<Any>("evil.zip"), failed.message.args)
+        assertTrue(
+            "拒絕理由要指名是路徑問題，否則使用者不知道自己收到的是什麼",
+            failed.details.any { it.id == R.string.archive_err_path },
+        )
         assertEquals(0, user.listFiles()?.size ?: 0)
         assertFalse(File(user.parentFile, "evil.yaml").exists())
     }

@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  失敗路徑上使用者看得到的每一句話。
+
+  ⚠ 這一份是**回落語系（英文）**。找不到使用者語系時 Android 用的就是它，
+  所以這裡一個漢字都不能有（`KbdStringsTest.英文預設裡不出現漢字` 會掃到本檔）。
+
+  為什麼這些字在資源裡而不在 Kotlin 裡：引擎層（RimeRuntime / DeployGate /
+  SchemaStore / ArchiveGuard / SchemaPreflight）沒有 Context，於是「順手寫一句
+  中文字面值」是阻力最小的路 —— 而那些字會原樣上畫面。守門見
+  `ImeNoticeStringsTest`（掃 Kotlin 的漢字字面值）與 `KbdStringsTest`
+  （掃每一份 strings 檔三種語系的形狀，本檔自動被它涵蓋）。
+-->
+<resources>
+
+    <!-- ── 引擎起不來時的那一屏（home/AppScreen.kt、home/Onboarding.kt）── -->
+
+    <!--
+      這四種失敗**不是**「字詞整理沒成功」：詞根本還沒開始整理，引擎就沒起來。
+      標題必須跟部署失敗那一種分開，否則使用者拿著一台空間滿了的手機，
+      看到的是一句與他的處境無關的話。
+    -->
+    <string name="not_ready_failed_engine">The keyboard did not start</string>
+    <string name="not_ready_failed_unsupported">This copy of the app does not run on this device. Install the build that matches your device, or try another device.</string>
+    <string name="not_ready_failed_reinstall">The installed files do not match each other, so the app cannot start. Remove it and install it again from where you downloaded it.</string>
+    <string name="not_ready_failed_storage">The bundled data could not be unpacked. This is almost always a full device: free some space, then open the app again.</string>
+    <string name="not_ready_failed_restart">The typing engine did not start. Close the app completely and open it again. If it keeps happening, send us the line below.</string>
+
+    <!-- ── DeployGate 的「沒有開始」 ─────────────────────────────────── -->
+
+    <string name="deploy_not_started_engine">The typing engine has not started, so there is nothing to sort yet. Close the app completely and open it again.</string>
+    <string name="deploy_not_started_busy">Another round of sorting is already running. Wait for it to finish, then try again.</string>
+
+    <!-- ── 方案市集引擎（store/SchemaStore.kt）───────────────────────── -->
+
+    <string name="store_err_download">Could not download %1$s: %2$s</string>
+    <string name="store_detail_url">URL: %1$s</string>
+    <string name="store_err_sha_mismatch">The checksum of %1$s does not match. The whole download was thrown away and nothing was unpacked.</string>
+    <string name="store_detail_sha_declared">Listed in the index: %1$s</string>
+    <string name="store_detail_sha_actual">Actually downloaded: %1$s</string>
+    <string name="store_err_archive_rejected">%1$s did not pass the archive safety checks and was rejected as a whole.</string>
+    <string name="store_err_extract_failed">Could not unpack %1$s: %2$s</string>
+    <string name="store_ok_installed">Installed %1$d packages</string>
+    <string name="store_detail_kept">Packages that arrived before the problem are kept on the device, switched off: %1$s</string>
+
+    <string name="store_ok_nothing_to_change">Nothing to change</string>
+    <string name="store_err_schema_file_missing">Cannot find %1$s on this device — that keyboard is not installed.</string>
+    <string name="store_err_missing_deps">Some required files are missing, so nothing was changed. Your keyboard list is untouched.</string>
+    <string name="store_ok_already_enabled">Those keyboards are already switched on</string>
+    <string name="store_ok_already_disabled">Those keyboards were not switched on</string>
+    <string name="store_ok_enabled">Switched on, and the words are sorted (%1$d ms)</string>
+    <string name="store_ok_disabled">Switched off, and the words are sorted (%1$d ms)</string>
+
+    <string name="store_err_deploy_failed">Sorting the words failed, and the engine gave no reason.</string>
+    <string name="store_err_deploy_failed_reason">Sorting the words failed: %1$s</string>
+    <string name="store_err_deploy_timeout_ms">Sorting the words timed out (%1$d ms)</string>
+    <string name="store_err_unknown">Unknown problem</string>
+
+    <string name="store_detail_list_restored">Your keyboard list has been put back the way it was: %1$s</string>
+    <string name="store_detail_rollback_failed">Sorting the words after the rollback did not succeed either, so the keyboard may not work. Please restart the app.</string>
+    <string name="store_detail_files_kept">The files stay on the device, installed but switched off. Once the missing pieces are there you can switch it on without downloading again.</string>
+
+    <string name="store_err_not_installed">%1$s is not in the installed list</string>
+    <string name="store_err_has_dependents">%1$s is needed by other installed packages, so it cannot be removed</string>
+    <string name="store_detail_dependent">%1$s (%2$s) needs it</string>
+    <string name="store_ok_uninstalled">Removed %1$s (%2$d files deleted)</string>
+
+    <string name="store_err_import_rejected">%1$s did not pass the archive safety checks and was rejected as a whole. Nothing was written.</string>
+    <string name="store_err_too_big">%1$s is %2$s, which is over the %3$s limit for a single file</string>
+    <string name="store_err_unsafe_name">The file name of %1$s is not safe: %2$s</string>
+    <string name="store_err_bad_file">%1$s is not a file this app accepts: %2$s</string>
+    <string name="store_err_escapes_dir">%1$s points outside your data folder once the path is resolved, so it was rejected</string>
+    <string name="store_err_bad_type">Only .zip and .yaml are accepted; this one is %1$s</string>
+    <string name="store_ok_imported_no_schema">Imported %1$d files, but none of them defines a keyboard, so there is nothing new to switch on. It may be a dictionary-only or settings-only package.</string>
+    <string name="store_ok_imported">Imported %1$d files. Keyboards you can switch on: %2$s</string>
+
+    <!-- ── 壓縮檔安全檢查（store/ArchiveGuard.kt）────────────────────── -->
+
+    <string name="archive_err_malformed">The archive is damaged or is not a valid zip: %1$s</string>
+    <string name="archive_err_path">The archive contains the path %1$s, which would write outside the target folder. The whole archive was rejected.</string>
+    <string name="archive_err_symlink">The archive contains the symbolic link %1$s. The whole archive was rejected.</string>
+    <string name="archive_err_bomb">The archive is over the unpacking limits: %1$s</string>
+    <string name="archive_err_extension">The archive contains a file that is not allowed, %1$s: %2$s</string>
+    <string name="archive_err_empty">The archive contains no usable file</string>
+
+    <!--
+      ── 相依預檢（store/SchemaPreflight.kt）──────────────────────────
+      `preflight_block_*` 是「不讓你啟用」，`preflight_warn_*` 是「照樣能打字」。
+      措辭刻意不同，使用者要能一眼看出哪一條擋得住他。
+      資源名的前綴就是嚴重度，`SchemaPreflightTest` 用反射比對欄位名。
+      參數固定是 %1$s = 方案名稱、%2$s = 檔名。
+    -->
+    <string name="preflight_block_dictionary">%1$s needs the dictionary %2$s, and it is in neither of your data folders. Import the package that provides it as well.</string>
+    <string name="preflight_block_schema">%1$s says it depends on %2$s, which cannot be found.</string>
+    <string name="preflight_block_config">%1$s uses the settings file %2$s, which cannot be found.</string>
+    <string name="preflight_block_grammar">%1$s needs the language model %2$s, which cannot be found.</string>
+    <string name="preflight_warn_dictionary">%1$s is missing its secondary dictionary %2$s. You can type as usual, but whatever uses that dictionary (usually looking a character up by another code) will not work.</string>
+    <string name="preflight_warn_schema">%1$s says it depends on %2$s, which is not installed. It is skipped, and the main keyboard still works.</string>
+    <string name="preflight_warn_config">%1$s uses the settings file %2$s, which is not there.</string>
+    <string name="preflight_warn_grammar">%1$s is missing its language model %2$s. Whole-sentence ordering will be a little worse; everything else is unaffected.</string>
+
+</resources>

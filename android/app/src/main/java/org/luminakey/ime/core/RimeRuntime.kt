@@ -86,8 +86,53 @@ object RimeRuntime {
         /** 可以建立 session、可以輸入。 */
         READY,
 
-        /** 出事了，看 [initError]。 */
+        /** 出事了，看 [initError] 與 [failure]。 */
         FAILED,
+    }
+
+    /**
+     * [Phase.FAILED] 是**哪一種**失敗。
+     *
+     * ── 為什麼非有不可 ──────────────────────────────────────────────────────
+     * 首頁與引導頁的失敗態只有一顆實心按鈕：「重新整理字詞」，它按下去走的是
+     * `StoreController.redeploy()` → [org.luminakey.ime.store.DeployGate]。
+     * 而 `DeployGate` 的第一行就是 `if (!RimeCore.isInitialized) return NotStarted(…)`。
+     *
+     * 五條走到 FAILED 的路裡，只有 [DEPLOY] 那一條 `nativeInit()` 成功過
+     * （`RimeCore.isInitialized == true`）。另外四條 —— .so 載不起來、ABI 不符、
+     * 隨附資料解不開、`rs_init` 回 false —— `nativeInit()` 要嘛沒被呼叫、要嘛
+     * 回 false，所以那顆按鈕**必然**立刻失敗，而且失敗之後沒有第二條路。
+     * 使用者按下畫面上唯一的按鈕，得到的是一句他無能為力的話。
+     *
+     * 有了這個欄位，[org.luminakey.ime.home.actionOf] 才有辦法在那四條路上
+     * **不畫那顆按鈕**，改講他真正做得到的事（換裝置／重裝／清空間／重開）。
+     *
+     * ⚠ 只能由 [fail] 設定 —— 那是本檔唯一會呼叫 `setPhase(Phase.FAILED)` 的地方，
+     * 所以「新增一條失敗路徑卻忘了標種類」在結構上就不可能發生。
+     */
+    enum class Failure {
+        /** 沒有失敗。 */
+        NONE,
+
+        /** `librime_jni.so` 載不起來 —— 多半是這個 APK 沒有這台裝置的 ABI。 */
+        LIBRARY_LOAD,
+
+        /** `.so` 與這份 Kotlin 對不上 —— 安裝檔是壞的／混到別版的 so。 */
+        ABI_MISMATCH,
+
+        /** 隨附資料解壓失敗 —— 實務上最常見的原因是儲存空間滿了。 */
+        UNPACK,
+
+        /** `rs_init` 回 false —— librime 起不來。 */
+        RIME_INIT,
+
+        /**
+         * librime 起來了，但部署（編詞庫）失敗。
+         *
+         * **五條路裡唯一一條「再部署一次」真的做得到事的**：`rs_deploy()` 可以呼叫，
+         * 而且失敗常常是可修的（方案缺檔、上一次被中斷）。
+         */
+        DEPLOY,
     }
 
     @Volatile
@@ -97,6 +142,34 @@ object RimeRuntime {
     @Volatile
     var initError: String? = null
         private set
+
+    /** 見 [Failure]。[Phase.FAILED] 以外一律是 [Failure.NONE]。 */
+    @Volatile
+    var failure: Failure = Failure.NONE
+        private set
+
+    /**
+     * 三個欄位的**一次性快照**。
+     *
+     * ── 為什麼要有這個型別 ──────────────────────────────────────────────────
+     * UI 那一側原本是 `remember(phase) { RimeRuntime.initError }`，也就是拿 `phase`
+     * 當快取鍵。**第二次失敗時那個鍵不會變**：[onDeployStatus] 的 RUNNING 分支
+     * 只在 `phase == READY || phase == DEPLOYING` 時才轉 DEPLOYING，所以已經是
+     * FAILED 的時候整輪重試 phase 從頭到尾都是 FAILED；`setPhase(Phase.FAILED)`
+     * 送出去的是同一個列舉值，而 `mutableStateOf` 用的是 structural equality，
+     * 寫入相同的值**不會**觸發重組（已用 `Snapshot.registerApplyObserver` 實測）。
+     * 結果是畫面上那行原因停在上一次的錯誤，使用者按了重試、看到的還是舊訊息。
+     *
+     * 把三個欄位一起裝進一個 data class 之後，「訊息變了」本身就會讓
+     * structural equality 不成立，重組自然發生；而三個都沒變時不重組是對的。
+     */
+    data class Status(
+        val phase: Phase,
+        val initError: String?,
+        val failure: Failure,
+    )
+
+    fun status(): Status = Status(phase, initError, failure)
 
     /** 解壓耗時（毫秒），-1 代表這次啟動沒有解壓（已是最新版本）。 */
     @Volatile
@@ -193,6 +266,22 @@ object RimeRuntime {
     }
 
     /**
+     * 進入 [Phase.FAILED] 的**唯一**入口。
+     *
+     * 走這裡而不是各自 `initError = …; setPhase(FAILED)`，是為了讓「失敗的種類」
+     * 變成參數而不是紀律：新增一條失敗路徑時，編譯器會逼你回答「這是哪一種」，
+     * 而那個答案直接決定畫面上要不要給「重新整理字詞」那顆按鈕（見 [Failure]）。
+     *
+     * 這也讓守門可以用結構驗：本檔案裡 `setPhase(Phase.FAILED)` 只有一處，
+     * 而且就在這個函式裡（見 `RimeFailureKindTest`）。
+     */
+    private fun fail(kind: Failure, message: String) {
+        initError = message
+        failure = kind
+        setPhase(Phase.FAILED)
+    }
+
+    /**
      * 啟動初始化。可重複呼叫，只有第一次會真的動作。
      * 必須在主執行緒呼叫。
      */
@@ -209,14 +298,18 @@ object RimeRuntime {
         logDir = File(root, "log")
 
         if (!RimeCore.libraryLoaded) {
-            initError = "librime_jni.so failed to load: ${RimeCore.libraryLoadError}"
-            setPhase(Phase.FAILED)
+            fail(
+                Failure.LIBRARY_LOAD,
+                "librime_jni.so failed to load: ${RimeCore.libraryLoadError}",
+            )
             return
         }
         if (!RimeCore.abiCompatible()) {
-            initError = "ABI mismatch: the .so reports ${RimeCore.abiVersion()}, " +
-                "this build expects ${RimeCore.EXPECTED_ABI_VERSION}"
-            setPhase(Phase.FAILED)
+            fail(
+                Failure.ABI_MISMATCH,
+                "ABI mismatch: the .so reports ${RimeCore.abiVersion()}, " +
+                    "this build expects ${RimeCore.EXPECTED_ABI_VERSION}",
+            )
             return
         }
 
@@ -234,8 +327,7 @@ object RimeRuntime {
             mainHandler.post {
                 result.onFailure {
                     Log.e(TAG, "準備資料目錄失敗", it)
-                    initError = "could not unpack the bundled data: ${it.message}"
-                    setPhase(Phase.FAILED)
+                    fail(Failure.UNPACK, "could not unpack the bundled data: ${it.message}")
                     return@post
                 }
                 extractMillis = if (result.getOrDefault(false)) elapsed else -1
@@ -255,11 +347,11 @@ object RimeRuntime {
             appName = APP_NAME,
         )
         if (!ok) {
-            initError = "rs_init failed: ${RimeCore.lastError()}"
-            setPhase(Phase.FAILED)
+            fail(Failure.RIME_INIT, "rs_init failed: ${RimeCore.lastError()}")
             return
         }
         initError = null
+        failure = Failure.NONE
         // rs_init 內部已經呼叫 start_maintenance(True)，首次啟動一定會進部署。
         // 真正可用要等 RS_DEPLOY_SUCCESS。
         setPhase(if (RimeCore.lastDeployStatus == RimeDeployStatus.SUCCESS) Phase.READY else Phase.DEPLOYING)
@@ -289,13 +381,13 @@ object RimeRuntime {
                     // 遷移加進去的方案編得起來 → 這次遷移正式成立，快照可以丟了。
                     migrationSnapshot = null
                     initError = null
+                    failure = Failure.NONE
                     setPhase(Phase.READY)
                 }
             }
 
             RimeDeployStatus.FAILURE -> {
-                initError = "deploy failed: ${RimeCore.lastError()}"
-                setPhase(Phase.FAILED)
+                fail(Failure.DEPLOY, "deploy failed: ${RimeCore.lastError()}")
                 rollbackMigrationIfNeeded()
             }
 
@@ -344,7 +436,7 @@ object RimeRuntime {
     private fun prepareDataDirs(context: Context): Boolean {
         listOf(sharedDataDir, userDataDir, logDir).forEach {
             if (!it.exists() && !it.mkdirs()) {
-                throw IllegalStateException("建立目錄失敗: $it")
+                throw IllegalStateException("could not create directory $it")
             }
         }
 
@@ -431,7 +523,7 @@ object RimeRuntime {
             return
         }
         if (!target.exists() && !target.mkdirs()) {
-            throw IllegalStateException("建立目錄失敗: $target")
+            throw IllegalStateException("could not create directory $target")
         }
         for (child in children) {
             copyAssetTree(context, "$assetPath/$child", File(target, child), overwrite)

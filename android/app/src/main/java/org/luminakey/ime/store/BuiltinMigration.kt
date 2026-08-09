@@ -137,13 +137,19 @@ object BuiltinMigration {
      * 用的是市集導入同一支 [SchemaPreflight]，理由見它的檔頭：
      * 檢查在**修改 schema_list 之前**跑，缺東西時根本不會去動檔案。
      */
+    /**
+     * ⚠ 回傳的字串**只進 log**（見 [org.luminakey.ime.core.RimeRuntime] 的
+     * `result.skipped.forEach { Log.w(...) }`），使用者看不到，所以刻意維持
+     * 英文並直接用 `Missing` 的 `toString()` —— 讀者是收到問題回報的我們。
+     * 一旦哪天要把它畫到畫面上，這裡要改成 [UiMessage]，跟其他路徑一樣。
+     */
     internal fun unavailableReasons(schemaId: String, searchDirs: List<File>): List<String> {
         if (searchDirs.isEmpty()) return emptyList()   // 無從檢查就別亂擋
         val file = searchDirs.map { File(it, "$schemaId.schema.yaml") }.firstOrNull { it.isFile }
-            ?: return listOf("裝置上找不到 $schemaId.schema.yaml")
+            ?: return listOf("$schemaId.schema.yaml not found on this device")
         // 只看 blocking：次要詞典/dependencies 不在不會讓部署失敗，
         // 拿它擋下內建方案的補寫，等於使用者升級後少一個能用的方案。
-        return SchemaPreflight.check(file, searchDirs).blocking.map { it.humanMessage() }
+        return SchemaPreflight.check(file, searchDirs).blocking.map { it.toString() }
     }
 
     /**

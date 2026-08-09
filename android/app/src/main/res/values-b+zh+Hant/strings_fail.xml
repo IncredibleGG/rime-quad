@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 繁體中文。key 集合與 placeholder 必須與 values/strings_fail.xml 完全一致。 -->
+<resources>
+
+    <string name="not_ready_failed_engine">鍵盤沒有啟動</string>
+    <string name="not_ready_failed_unsupported">這一份 app 跑不動這台裝置。請改裝與你的裝置相符的版本，或換一台裝置試試。</string>
+    <string name="not_ready_failed_reinstall">安裝好的檔案彼此對不上，app 起不來。請先移除，再從你下載的地方重新安裝一次。</string>
+    <string name="not_ready_failed_storage">隨附的資料展不開。這幾乎都是裝置空間滿了：清出一些空間，再打開一次這個 app。</string>
+    <string name="not_ready_failed_restart">輸入引擎沒有啟動。請完全關掉這個 app 再打開一次。若一再發生，把下面那一行一起回報給我們。</string>
+
+    <string name="deploy_not_started_engine">輸入引擎還沒啟動，現在沒有東西可以整理。請完全關掉這個 app 再打開一次。</string>
+    <string name="deploy_not_started_busy">已經有一輪整理在進行中。等它跑完再試一次。</string>
+
+    <string name="store_err_download">下載「%1$s」失敗：%2$s</string>
+    <string name="store_detail_url">URL：%1$s</string>
+    <string name="store_err_sha_mismatch">「%1$s」的檢查碼不符。整包已丟棄，沒有解開任何檔案。</string>
+    <string name="store_detail_sha_declared">索引宣告：%1$s</string>
+    <string name="store_detail_sha_actual">實際下載：%1$s</string>
+    <string name="store_err_archive_rejected">「%1$s」沒有通過壓縮檔安全檢查，已整包拒絕。</string>
+    <string name="store_err_extract_failed">「%1$s」解不開：%2$s</string>
+    <string name="store_ok_installed">已安裝 %1$d 個套件</string>
+    <string name="store_detail_kept">出問題之前已經裝好的套件留在裝置上，維持關閉：%1$s</string>
+
+    <string name="store_ok_nothing_to_change">沒有要變更的項目</string>
+    <string name="store_err_schema_file_missing">裝置上找不到 %1$s —— 這個鍵盤並未安裝。</string>
+    <string name="store_err_missing_deps">少了必要的檔案，已停止。你的鍵盤清單沒有被動過。</string>
+    <string name="store_ok_already_enabled">這些鍵盤已經是開啟狀態</string>
+    <string name="store_ok_already_disabled">這些鍵盤本來就沒有開啟</string>
+    <string name="store_ok_enabled">已開啟，字詞也整理好了（%1$d ms）</string>
+    <string name="store_ok_disabled">已關閉，字詞也整理好了（%1$d ms）</string>
+
+    <string name="store_err_deploy_failed">字詞整理失敗，而且引擎沒有給原因。</string>
+    <string name="store_err_deploy_failed_reason">字詞整理失敗：%1$s</string>
+    <string name="store_err_deploy_timeout_ms">字詞整理逾時（%1$d ms）</string>
+    <string name="store_err_unknown">不明的問題</string>
+
+    <string name="store_detail_list_restored">你的鍵盤清單已還原成先前的樣子：%1$s</string>
+    <string name="store_detail_rollback_failed">還原之後那次整理也沒成功，鍵盤可能無法使用。請重新啟動這個 app。</string>
+    <string name="store_detail_files_kept">檔案仍留在裝置上（已安裝但沒開啟）。缺的東西補齊之後可以直接開啟，不必重新下載。</string>
+
+    <string name="store_err_not_installed">「%1$s」不在已安裝清單裡</string>
+    <string name="store_err_has_dependents">「%1$s」被其他已安裝的套件用到，不能移除</string>
+    <string name="store_detail_dependent">%1$s（%2$s）需要它</string>
+    <string name="store_ok_uninstalled">已移除「%1$s」（刪掉 %2$d 個檔案）</string>
+
+    <string name="store_err_import_rejected">「%1$s」沒有通過壓縮檔安全檢查，已整包拒絕，沒有寫出任何檔案。</string>
+    <string name="store_err_too_big">「%1$s」有 %2$s，超過單檔 %3$s 的上限</string>
+    <string name="store_err_unsafe_name">「%1$s」的檔名不安全：%2$s</string>
+    <string name="store_err_bad_file">「%1$s」不是這個 app 收得下的檔案：%2$s</string>
+    <string name="store_err_escapes_dir">「%1$s」的路徑解出來會跳出你的資料目錄，已拒絕</string>
+    <string name="store_err_bad_type">只接受 .zip 與 .yaml，這個是「%1$s」</string>
+    <string name="store_ok_imported_no_schema">已匯入 %1$d 個檔案，但裡面沒有任何一個是鍵盤定義，所以沒有新的可以開啟。它可能是純詞典或純設定的套件。</string>
+    <string name="store_ok_imported">已匯入 %1$d 個檔案。可以開啟的鍵盤：%2$s</string>
+
+    <string name="archive_err_malformed">壓縮檔損毀，或根本不是合法的 zip：%1$s</string>
+    <string name="archive_err_path">壓縮檔裡有路徑「%1$s」，會寫到目標目錄之外，已整包拒絕。</string>
+    <string name="archive_err_symlink">壓縮檔裡有符號連結「%1$s」，已整包拒絕。</string>
+    <string name="archive_err_bomb">壓縮檔超出解壓上限：%1$s</string>
+    <string name="archive_err_extension">壓縮檔裡有不允許的檔案「%1$s」：%2$s</string>
+    <string name="archive_err_empty">壓縮檔裡沒有任何可用的檔案</string>
+
+    <string name="preflight_block_dictionary">「%1$s」需要詞典 %2$s，但兩個資料目錄裡都沒有。請把提供這本詞典的套件一起導入。</string>
+    <string name="preflight_block_schema">「%1$s」宣告相依於 %2$s，目前找不到。</string>
+    <string name="preflight_block_config">「%1$s」用到設定檔 %2$s，目前找不到。</string>
+    <string name="preflight_block_grammar">「%1$s」需要語言模型 %2$s，目前找不到。</string>
+    <string name="preflight_warn_dictionary">「%1$s」少了次要詞典 %2$s。可以照常打字，但用到這本詞典的功能（多半是用另一種碼反查）不會有作用。</string>
+    <string name="preflight_warn_schema">「%1$s」宣告相依於 %2$s，目前沒安裝。它會被略過，主要鍵盤照常可用。</string>
+    <string name="preflight_warn_config">「%1$s」用到的設定檔 %2$s 不在。</string>
+    <string name="preflight_warn_grammar">「%1$s」少了語言模型 %2$s。整句輸入的排序會差一些，其餘照常。</string>
+
+</resources>

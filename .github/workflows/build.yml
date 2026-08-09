@@ -36,6 +36,7 @@ on:
       - fix-publish
       - fix-gates
       - fix-android-ui
+      - fix2-deadend
   pull_request:
     branches:
       - main

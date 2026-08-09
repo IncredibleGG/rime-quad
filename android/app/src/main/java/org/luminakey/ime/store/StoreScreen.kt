@@ -174,7 +174,10 @@ fun StoreScreen(controller: StoreController, modifier: Modifier = Modifier) {
 fun StoreOverlays(controller: StoreController) {
     controller.job?.let { JobOverlay(it) }
     controller.confirm?.let { plan -> ConfirmDialog(controller, plan) }
-    // 只剩失敗才會走到這裡（見 StoreController.ResultUi 的註解）。
+    // 失敗，**以及「成功但有話要說」**，都走這裡（見 [finishUi] 的註解：
+    // 預檢的 warning 就是成功但有話要說）。這一行的註解上一版寫的是
+    // 「只剩失敗才會走到這裡」，而同一版的重點正好是讓帶警告的成功也走 result
+    // —— 程式是對的，註解變成反話。這個專案靠註解傳遞為什麼，留著會誤導。
     controller.result?.let { r -> ResultDialog(controller, r) }
     controller.toast?.let { t -> ToastBar(t) { controller.dismissToast() } }
 }
