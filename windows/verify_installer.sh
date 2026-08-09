@@ -1634,6 +1634,50 @@ ok "重新註冊之後 check 又通過了"
 if [ -n "${HOST}" ]; then
 log "13. 升級不得要求重新啟動(舊 DLL 還被握著的時候裝新版)"
 
+# ── ⚠ 誰在前景、誰在背景,是這一節唯一難寫對的地方 ────────────────
+#
+#   TSF 只把按鍵交給**擁有前景**的那一條執行緒(README 的「學到的兩件事」
+#   第 1 點:沒有前景時 KeyDown 回 S_OK、pfEaten=FALSE,一顆鍵都不會到達
+#   文字服務,而且不報錯)。
+#
+#   第一版把兩階段宿主丟到背景跑,好讓腳本騰出手去裝新版 —— 結果它搶不到
+#   前景(實測:`前景視窗 = ...0600A0(我們的是 ...070052)`、
+#   `IsThreadFocus = 0`),六顆按鍵一顆都沒到,於是第二階段量到的
+#   「連不回服務」**完全是假的** —— 它根本沒機會連。
+#
+#   所以現在反過來:**宿主在前景**(與 §6c 同一種跑法),
+#   而「等它就緒 → 裝新版 → 起新服務 → 放行」那一串在背景的子 shell 裡。
+p13_stop_service() {
+  "${INSTALL_DIR}/rime_ime_setup.exe" stop-service --dir "${INSTALL_DIR_W}" \
+    > "${WORK}/p13-stop.log" 2>&1 || true
+  for _ in $(seq 1 30); do
+    [ "$(count_service)" -eq 0 ] && break
+    sleep 1
+  done
+}
+
+# 起一支服務並等它**真的**就緒(ready 檔是服務自己在管道接得起連線、
+# 引擎也預熱過之後才寫的)。回傳 pid;失敗回空字串。
+#
+# ⚠ 為什麼不讓瘦 DLL 自己去啟動它(那條路 §5c 已經驗過了):
+#   這一節要問的是「舊的 DLL 映像跟新的服務談不談得攏」,
+#   而不是「服務要多久才部署完」。把部署延遲混進來的話,
+#   一次逾時會被記成「舊 DLL 連不回去」—— 而那兩件事要修的地方完全不同。
+p13_start_service() {   # $1 = ready 檔  $2 = 記錄檔
+  rm -f "$1"
+  "${INSTALL_DIR}/rime_service.exe" --no-ui --wait-deploy 1200 \
+    --ready-file "$(w "$1")" --quit-after 1800 > "$2" 2>&1 &
+  local pid=$!
+  local i
+  for i in $(seq 1 1200); do
+    [ -f "$1" ] && { echo "${pid}"; return 0; }
+    kill -0 "${pid}" 2>/dev/null || { echo ""; return 1; }
+    sleep 1
+  done
+  echo ""
+  return 1
+}
+
 # 起點必須乾淨,不然後面「多了一顆 .old-」的斷言不算數。
 "${INSTALL_DIR}/rime_ime_setup.exe" sweep-stale-dlls --dir "${INSTALL_DIR_W}" \
   > "${WORK}/p13-sweep0.log" 2>&1 || true
@@ -1652,56 +1696,77 @@ else
   printf '\033[1;33m    「.old- 出現了」與「沒有排進開機佇列」兩條間接證據。\033[0m\n' >&2
 fi
 
-# ── 13a. 讓一個**真的 TSF 宿主**載入舊版並打出「你好」,然後停在那裡 ──
-#
-# ⚠ 這裡刻意不用 --hold-dll。那個模式只是 LoadLibrary + 睡覺,證不了
-#   「升級之後還能打字」—— 而那正是這一節第一件要驗的事。
-#   這一支走的是真的 TSF:CoCreateInstance、ActivateEx、ITfKeystrokeMgr。
-RDY="${WORK}/p13-ready"
-GO="${WORK}/p13-go"
-rm -f "${RDY}" "${GO}"
-log "  13a. 開一個真的 TSF 宿主,載入舊版、打出「你好」,然後等升級"
-"${HOST}" --langid "${ACTIVE_LANGID}" --require-activate --require-eaten \
-          --keys nihao1 --expect 你好 \
-          --phase2-ready-file "$(w "${RDY}")" \
-          --phase2-go-file "$(w "${GO}")" \
-          --phase2-timeout-ms 600000 --phase2-relink-ms 240000 \
-          --trace "$(w "${WORK}/p13-oldhost-trace.log")" --wait-ms 5000 \
-          > "${WORK}/p13-oldhost.log" 2>&1 &
-OLD_HOST_PID=$!
-p13_cleanup() { kill "${OLD_HOST_PID}" 2>/dev/null || true; }
-trap p13_cleanup EXIT
-
-OLD_READY=0
-for _ in $(seq 1 300); do
-  [ -f "${RDY}" ] && { OLD_READY=1; break; }
-  kill -0 "${OLD_HOST_PID}" 2>/dev/null || break
-  sleep 1
-done
-if [ "${OLD_READY}" -ne 1 ]; then
-  tr -d '\r' < "${WORK}/p13-oldhost.log" | sed 's/^/    /'
-  note_fail "舊版的 TSF 宿主沒有走到「打完字、等升級」那一步 ——
-     這一節後面每一條都驗不到。"
-  # ⚠ 一定要收掉。它還握著 rime_tsf.dll,留著的話後面 §8 的解除安裝
-  #   會在一個「有人握著檔案」的狀態下跑,而 §8 的斷言假設的是沒有人握著
-  #   —— 那會變成一個與這裡完全無關的紅字。
-  p13_cleanup
+# ── 前置:自己起一支**升級前**的服務,並等它就緒 ────────────────
+log "  起一支升級前的服務(等它真的就緒)"
+p13_stop_service
+# ⚠ `|| true` 不是裝飾:服務起不來時這個函式以非零結束,而它的結果拿去做
+#   變數指派 —— 配上 set -e,整支腳本會在這一行當場死掉,而訊息完全不會
+#   提到服務。空字串就是「起不來」,下面那個 if 會好好地說出來。
+SVC_OLD_PID="$(p13_start_service "${WORK}/p13-ready-svc-old" "${WORK}/p13-svc-old.log" || true)"
+if [ -z "${SVC_OLD_PID}" ]; then
+  tr -d '\r' < "${WORK}/p13-svc-old.log" | tail -20 | sed 's/^/    /'
+  note_fail "升級前的服務起不來 —— 這一節後面每一條都驗不到"
 else
-  ok "舊版的宿主已經載入 DLL、打出「你好」,現在握著它等升級"
-  LOADED_OLD="$(tr -d '\r' < "${WORK}/p13-oldhost.log" \
-                | sed -n 's/^ *LOADED_TSF_DLL=//p' | head -1)"
-  log "    它載入的是:${LOADED_OLD:-(沒印出來)}"
+  ok "升級前的服務已就緒(pid ${SVC_OLD_PID})"
 
-  # ── 13b. 不重啟、不關那個宿主,直接裝新版 ──────────────────────
-  log "  13b. 在這個狀態下安裝新版(不重啟、不關那個宿主)"
+  RDY="${WORK}/p13-ready"
+  GO="${WORK}/p13-go"
+  rm -f "${RDY}" "${GO}" "${WORK}/p13-upgrade.rc"
+
+  # ── 背景:等宿主就緒 → 裝新版 → 起新服務並等它就緒 → 放行 ──────
+  (
+    for _ in $(seq 1 600); do
+      [ -f "${RDY}" ] && break
+      sleep 1
+    done
+    if [ ! -f "${RDY}" ]; then
+      echo "no-ready" > "${WORK}/p13-upgrade.rc"
+    else
+      set +e
+      "${SETUP}" //VERYSILENT //SUPPRESSMSGBOXES //NORESTART \
+                 "//LOG=$(w "${WORK}/p13-upgrade.log")"
+      echo "$?" > "${WORK}/p13-upgrade.rc"
+      set -e
+      # 安裝程式在複製檔案之前把舊服務停掉了。起一支**新的**,
+      # 並且等它真的就緒 —— 放行之後宿主才不會撞上「還在部署」。
+      #
+      # ⚠ `|| true`:起不來也一定要往下走到那個 `: > "${GO}"`。
+      #   少了它,子 shell 會被 set -e 帶走,而前景那支宿主會傻等到逾時 ——
+      #   然後回報「連不回服務」,把一個「服務根本沒起來」講成別的故事。
+      p13_start_service "${WORK}/p13-ready-svc-new" "${WORK}/p13-svc-new.log" \
+        > "${WORK}/p13-svc-new.pid" 2>/dev/null || true
+    fi
+    : > "${GO}"
+  ) &
+  UPGRADER_PID=$!
+
+  # ── 13a/13c:兩階段宿主,**在前景跑** ────────────────────────
+  log "  13a. 前景開一個真的 TSF 宿主:載入舊版、打出「你好」,然後等升級"
   set +e
-  "${SETUP}" //VERYSILENT //SUPPRESSMSGBOXES //NORESTART \
-             "//LOG=$(w "${WORK}/p13-upgrade.log")"
-  rc=$?
+  "${HOST}" --langid "${ACTIVE_LANGID}" --require-activate --require-eaten \
+            --keys nihao1 --expect 你好 \
+            --phase2-ready-file "$(w "${RDY}")" \
+            --phase2-go-file "$(w "${GO}")" \
+            --phase2-timeout-ms 900000 --phase2-relink-ms 300000 \
+            --trace "$(w "${WORK}/p13-oldhost-trace.log")" --wait-ms 5000 \
+            > "${WORK}/p13-oldhost.log" 2>&1
+  OLD_RC=$?
   set -e
-  [ "${rc}" -eq 0 ] || { tail -40 "${WORK}/p13-upgrade.log"; note_fail "升級以 ${rc} 結束"; }
+  wait "${UPGRADER_PID}" 2>/dev/null || true
+  tr -d '\r' < "${WORK}/p13-oldhost.log" | sed 's/^/    /'
 
+  UPRC="$(cat "${WORK}/p13-upgrade.rc" 2>/dev/null || echo missing)"
   UPLOG="$(tr -d '\r' < "${WORK}/p13-upgrade.log" 2>/dev/null || true)"
+
+  # ── 13b. 升級本身:機制有沒有跑、有沒有留下重啟的理由 ────────
+  log "  13b. 升級的結果(檔案、檔案 id、開機佇列)"
+  case "${UPRC}" in
+    0) ok "升級以 0 結束(而且是在有進程握著舊 DLL 的狀態下)" ;;
+    no-ready) note_fail "宿主沒有走到「打完字、等升級」那一步,升級根本沒跑" ;;
+    missing)  note_fail "背景那一段沒有留下結束碼 —— 升級沒跑到" ;;
+    *)        printf '%s' "${UPLOG}" | tail -40 | sed 's/^/    /'
+              note_fail "升級以 ${UPRC} 結束" ;;
+  esac
 
   # 機制真的跑了嗎。**不要只看結果** —— 結果可能因為別的原因剛好是對的
   # (例如 runner 上根本沒有人握著檔案),而那時這一關就沒在測東西。
@@ -1712,7 +1777,7 @@ else
     note_fail "安裝記錄裡沒有「已改名挪開」—— 不重啟就生效的機制沒有跑到。
      可能是 PrepareToInstall 沒被呼叫,或改名失敗退回了 restartreplace。"
   fi
-  if printf '%s' "${UPLOG}" | grep -q '改名挪開\*\*失敗\*\*\|改名挪開.*失敗'; then
+  if printf '%s' "${UPLOG}" | grep -q '改名挪開.*失敗'; then
     printf '%s' "${UPLOG}" | grep '改名挪開' | sed 's/^/    /'
     note_fail "改名挪開失敗,退回了 restartreplace —— 這一次升級會要求重新啟動。"
   fi
@@ -1721,7 +1786,7 @@ else
   [ -f "${DLL_U}" ] || note_fail "升級之後 ${DLL_U} 不見了"
   n_stale="$(stale_count)"
   if [ "${n_stale}" -eq 1 ]; then
-    ok "舊檔被挪到 $(stale_list | sed 's|.*/||')(仍被宿主握著,無害)"
+    ok "舊檔被挪到 $(stale_list | sed 's|.*/||')(升級當下仍被宿主握著,無害)"
   else
     stale_list | sed 's/^/    /'
     note_fail "預期正好 1 個 rime_tsf.dll.old-*,實際 ${n_stale} 個"
@@ -1757,39 +1822,39 @@ else
     ok "**升級沒有把任何東西排進開機佇列**(也就不會問要不要重新啟動)"
   fi
 
-  # ── 13c. 舊的 DLL + 新的服務 ─────────────────────────────────
+  # ── 13c. 舊的 DLL 映像 + 新的服務 ────────────────────────────
   #
-  # 使用者機器上**現在**的狀態。走不通的話,他看到的是
-  # 「有些程式能打字、有些不能」。
-  log "  13c. 放行舊宿主:它手上是舊的 DLL,服務已經換成新的"
-  : > "${GO}"
-  OLD_RC=1
-  for _ in $(seq 1 400); do
-    if ! kill -0 "${OLD_HOST_PID}" 2>/dev/null; then break; fi
-    sleep 1
-  done
-  if kill -0 "${OLD_HOST_PID}" 2>/dev/null; then
-    note_fail "舊宿主在 400 秒內沒有結束 —— 它多半卡在重新連線那一段"
-    p13_cleanup
-  else
-    set +e
-    wait "${OLD_HOST_PID}"
-    OLD_RC=$?
-    set -e
-  fi
-  tr -d '\r' < "${WORK}/p13-oldhost.log" | sed 's/^/    /'
+  # 使用者機器上**現在**的狀態(他實測回報「我沒重啟也能用」的那一台)。
+  # 走不通的話,他看到的是「有些程式能打字、有些不能」。
+  log "  13c. 舊的 DLL 映像 + 新的服務"
   if [ "${OLD_RC}" -eq 0 ]; then
     ok "**舊的 DLL 映像在升級之後照樣打得出「你好」**(重新連上了新的服務)
      —— 這是使用者升級之後那些沒關掉的程式(檔案總管、瀏覽器)的處境。"
   else
-    note_fail "舊的 DLL 在升級之後不能用了(結束碼 ${OLD_RC})。
+    note_fail "舊的 DLL 在升級之後不能用了(宿主結束碼 ${OLD_RC})。
      症狀會是「有些程式能打字、有些不能」,而使用者無法理解為什麼。"
   fi
-  printf '%s\n' "$(tr -d '\r' < "${WORK}/p13-oldhost.log" | grep -a 'PHASE2_' || true)" \
+  (tr -d '\r' < "${WORK}/p13-oldhost.log" | grep -a 'PHASE2_' || true) \
     | sed 's/^/    /'
 
   # ── 13d. 新開的進程必須拿到新版 ──────────────────────────────
   log "  13d. 升級之後新開一個宿主(它應該載入新裝的那一份)"
+  # ⚠ 先等服務接得起新的 session。引擎是單執行緒的,上一個宿主剛離開時
+  #   它的 EndSession 還排在佇列上 —— 那時 SESSION_NEW 會逾時,
+  #   而那與「新的 DLL 有問題」在結果上長得一模一樣(見 §6d 的同款說明)。
+  SETTLED13=0
+  for i in $(seq 1 120); do
+    if "${PROBE}" --connect-only --attempts 1 \
+         > "${WORK}/p13-settle.log" 2>&1; then
+      SETTLED13=1
+      break
+    fi
+    sleep 1
+  done
+  [ "${SETTLED13}" -eq 1 ] \
+    && ok "升級後的服務接得起新的 session(等了 ${i} 秒)" \
+    || note_fail "升級後的服務 120 秒內建不出新的 session —— 下面那一格會跟著紅,
+     但真正的原因在這裡。"
   set +e
   "${HOST}" --langid "${ACTIVE_LANGID}" --require-activate --require-eaten \
             --keys nihao1 --expect 你好 \
@@ -1819,7 +1884,7 @@ else
   # (真實世界裡對應的是「使用者下次登入,服務啟動時掃一遍」。)
   #
   # ⚠ 這一條同時擋兩種相反的錯:
-  #   · 清不掉 → 舊檔會一年一年堆積下去
+  #   · 清不掉 → 舊檔會一次升級留一顆,幾年之後累積成幾十顆
   #   · 清了不該清的 → 那就是把正在用的 DLL 刪掉
   #   所以掃完之後**兩件事都要驗**:.old- 沒了,而 rime_tsf.dll 還在。
   log "  13e. 沒有人握著之後,舊檔必須清得掉"
@@ -1836,8 +1901,10 @@ else
   [ -f "${DLL_U}" ] \
     && ok "而且**還在用的那一顆沒有被掃掉**" \
     || note_fail "掃描把 ${DLL_U} 也刪了 —— 那是正在用的那一顆!"
+
+  # 場地還原:§8 要解除安裝,身上不該還掛著我們起的服務。
+  p13_stop_service
 fi
-trap - EXIT
 fi  # -n "${HOST}"
 
 # ══════════════════════════════════════════════════════════════════

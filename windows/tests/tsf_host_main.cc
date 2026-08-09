@@ -1101,6 +1101,36 @@ static int Run(int argc, wchar_t** argv) {
       } else {
         Say("  收到訊號:新版已經裝好,而這個進程手上的 DLL 映像還是舊的。\n");
 
+        // ── ⚠ 先把前景搶回來 ──────────────────────────────────
+        //
+        // 等升級的那幾分鐘裡,別的東西可能拿走了前景(安裝程式、服務、
+        // 系統的通知)。而 TSF 只把按鍵交給**擁有前景**的那條執行緒:
+        // 沒有前景時 KeyDown 回 S_OK、pfEaten=FALSE,一顆鍵都不會到達
+        // 文字服務,**而且不報錯**。
+        //
+        // 少了這一段,一次前景被搶走會被記成「舊的 DLL 連不回新的服務」——
+        // 一個把人送去查版本協商、而其實那一段完全是好的的結論。
+        // (實測過:第一版把這支宿主丟到背景跑,量到的正是那個假結論。)
+        if (hwnd) {
+          ::ShowWindow(hwnd, SW_SHOWNORMAL);
+          ::SetForegroundWindow(hwnd);
+          ::SetActiveWindow(hwnd);
+          ::SetFocus(hwnd);
+        }
+        if (docmgr) thread_mgr->SetFocus(docmgr);
+        Pump(300);
+        {
+          BOOL tf = FALSE;
+          thread_mgr->IsThreadFocus(&tf);
+          const HWND fg = ::GetForegroundWindow();
+          Say("  PHASE2_THREAD_FOCUS=%d(前景視窗 %p,我們的是 %p)\n",
+              tf ? 1 : 0, static_cast<void*>(fg), static_cast<void*>(hwnd));
+          if (!tf)
+            Fail("第二階段拿不到執行緒焦點 —— TSF 不會把任何按鍵交給文字服務,\n"
+                 "     所以下面量到的東西**不能拿來判斷相容性**。\n"
+                 "     這是測試台的問題,不是產品的問題。");
+        }
+
         // ── 重新連上服務 ────────────────────────────────────────
         //
         // 升級把舊的服務進程停掉了。舊的 DLL 必須自己:
