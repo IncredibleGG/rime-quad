@@ -221,6 +221,21 @@ int ScrollMaxDip(int page, int window_w_dip, int window_h_dip,
   return std::max(0, pl.content_h_dip - ContentViewportHeightDip(window_h_dip));
 }
 
+ScrolledPlacement ScrollPlaceControlDip(const RectI& content_rect,
+                                        int scroll_dip, int viewport_h_dip) {
+  ScrolledPlacement p;
+  p.y_dip = content_rect.y - scroll_dip;
+  // ⚠ 只裁不藏。這一行就是整個捲動能不能給鍵盤使用者用的分界。
+  p.visible = true;
+  p.clip_h_dip = -1;
+  // 子視窗本來就會被父視窗的 client 矩形裁掉,所以**上方**不必處理。
+  // 要處理的只有下方那 54 DIP:底部固定列與它上面那條 hairline ——
+  // 那一塊仍然在 client 裡面,捲到一半的控制項會畫在「關閉」鈕上面。
+  if (!content_rect.empty() && p.y_dip + content_rect.h > viewport_h_dip)
+    p.clip_h_dip = std::max(0, viewport_h_dip - p.y_dip);
+  return p;
+}
+
 std::vector<HitTarget> ClickableTargetsDip(int window_w_dip, int window_h_dip,
                                            int page, bool schema_list_empty) {
   std::vector<HitTarget> out;

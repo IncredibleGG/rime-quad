@@ -50,6 +50,131 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
 
+# ── 開機佇列的純文字判準(可以在 Linux 上自我驗證)────────────────
+#
+# ⚠ §13 那一節的結論寫的是「升級沒有把**任何東西**排進開機佇列」,
+#   而它實際上只問了**一個檔名**:rime_tsf.dll。安裝目錄底下還有
+#   rime_service.exe、rime_ime_setup.exe、data\shared 的四十份 yaml、
+#   opencc 的 .ocd2 —— 任何一個被排進佇列,使用者都會在安裝程式最後一頁
+#   被問要不要重新啟動,而磁碟上那一份仍然是舊的。也就是說,那一節宣稱
+#   的事情比它驗的大很多,而中間的差距全部是綠的。
+#
+#   所以現在問的是**整個安裝目錄**。唯一的例外是我們自己排的
+#   rime_tsf.dll.old-<時間戳> 清理:那是刻意排的,刪掉一個沒有人會載入的
+#   舊檔不會讓安裝程式要求重開機。
+#
+#   這一支刻意做成「讀 stdin、吐 stdout」的純文字函式 —— 它才驗得到。
+#   `--self-check-pending` 在任何一台機器上都跑得動(見底下)。
+# ⚠ **不要用 `awk -v dir="$1"`。** -v 的值會被 awk 再做一次跳脫處理,而安裝
+#   目錄裡全是反斜線:gawk(Git Bash / windows-latest 上的 awk)把 `\N`
+#   當成 plain `N`,於是 `C:\Program Files\X` 變成 `C:Program FilesX`,
+#   比對**永遠不命中** —— 也就是這一整條判準在真的 runner 上會安靜地
+#   回「零個違規」。本機的 mawk 不做那個處理,所以本機是全綠的。
+#   (實際發生過:CI run 31332458753,而且是被下面那個自檢抓到的。)
+#   環境變數不經過跳脫處理,所以走 ENVIRON。
+pending_filter() {  # $1 = 安裝目錄(Windows 路徑);讀 stdin
+  # ⚠ RIME_AWK 刻意**不預設**在這裡:下面的自檢靠「它是不是空的」
+  #   分辨自己是外圈(要對每一種 awk 各跑一次)還是內圈。
+  RIME_PENDING_DIR="$1" "${RIME_AWK:-awk}" '
+    BEGIN { d = tolower(ENVIRON["RIME_PENDING_DIR"]) }
+    {
+      line = $0
+      sub(/\r$/, "", line)
+      if (line == "") next
+      l = tolower(line)
+      # 我們自己排的舊 DLL 清理不算 —— 它不會讓安裝程式要求重開機。
+      if (l ~ /rime_tsf\.dll\.old-/) next
+      if (index(l, d) > 0) print line
+    }
+  '
+}
+
+# ── 反向測試:證明這條判準真的抓得到「不是 rime_tsf.dll」的那些 ──
+if [ "${1:-}" = "--self-check-pending" ]; then
+  # ⚠ 對**這台機器上找得到的每一種 awk** 都跑一次。
+  #   上面那個 -v 的坑就是「本機 mawk 綠、runner gawk 全 0」——
+  #   只跑一種 awk 的自檢看不到它。busybox awk 與 gawk 在這一點上同族,
+  #   所以在開發機上它就是 runner 的替身。
+  if [ -z "${RIME_AWK:-}" ]; then
+    _awk_dir="$(mktemp -d)"
+    _awks=""
+    for _c in awk mawk nawk gawk original-awk; do
+      command -v "${_c}" >/dev/null 2>&1 || continue
+      printf '#!/bin/sh\nexec %s "$@"\n' "${_c}" > "${_awk_dir}/${_c}"
+      chmod +x "${_awk_dir}/${_c}"
+      _awks="${_awks} ${_awk_dir}/${_c}"
+    done
+    if command -v busybox >/dev/null 2>&1; then
+      printf '#!/bin/sh\nexec busybox awk "$@"\n' > "${_awk_dir}/busybox-awk"
+      chmod +x "${_awk_dir}/busybox-awk"
+      _awks="${_awks} ${_awk_dir}/busybox-awk"
+    fi
+    _rc=0
+    for _a in ${_awks}; do
+      printf '\033[1;34m==>\033[0m awk = %s\n' "$(basename "${_a}")"
+      RIME_AWK="${_a}" "$0" --self-check-pending || _rc=1
+    done
+    rm -rf "${_awk_dir}"
+    exit "${_rc}"
+  fi
+  # ⚠ 刻意用一個**不存在的假目錄**,不是真的安裝目錄:
+  #   (a) 這一支驗的是判準本身,目錄只是它的參數;
+  #   (b) 產品識別碼在腳本裡寫死是被 scripts/verify_product_ids.sh 擋的
+  #       (唯一來源是 scripts/lib/product.env)—— 這個自檢跑在
+  #       product_win.sh 被 source 之前,所以它不該去碰真的名字。
+  DIR='Z:\NotAProduct\FakeInstallDir'
+  sc_fail=0
+  sc() {  # 名稱 期望命中數 佇列內容
+    local name="$1" want="$2" body="$3" got
+    got="$(printf '%s\n' "${body}" | pending_filter "${DIR}" | grep -c . || true)"
+    if [ "${got}" -eq "${want}" ]; then
+      printf '  \033[1;32mok\033[0m   %s(命中 %s)\n' "${name}" "${got}"
+    else
+      printf '\033[1;31m  !! %s:預期命中 %s,實際 %s\033[0m\n' "${name}" "${want}" "${got}" >&2
+      sc_fail=1
+    fi
+  }
+  # 舊版的判準,拿來對照 —— 用它跑同一批,證明差距真的存在。
+  old_rule() { grep -ciE 'rime_tsf\.dll$' || true; }
+
+  sc "空佇列" 0 ""
+  sc "只有我們自己排的舊 DLL 清理(不算)" 0 \
+     'Z:\NotAProduct\FakeInstallDir\rime_tsf.dll.old-20260810120000'
+  sc "rime_tsf.dll 被排進去" 1 \
+     'Z:\NotAProduct\FakeInstallDir\rime_tsf.dll'
+  sc "rime_service.exe 被排進去" 1 \
+     'Z:\NotAProduct\FakeInstallDir\rime_service.exe'
+  sc "詞典被排進去" 1 \
+     'Z:\NotAProduct\FakeInstallDir\data\shared\luna_pinyin.dict.yaml'
+  sc "別人的檔案(不在安裝目錄底下)不算" 0 \
+     'C:\Windows\System32\somebody_else.dll'
+  sc "混在一起:兩個我們的 + 一個清理 + 一個別人的" 2 \
+     'Z:\NotAProduct\FakeInstallDir\rime_service.exe
+Z:\NotAProduct\FakeInstallDir\rime_tsf.dll.old-20260810120000
+C:\Windows\System32\somebody_else.dll
+Z:\NotAProduct\FakeInstallDir\data\shared\essay.txt'
+
+  # 舊判準漏掉的那幾種,逐一指名 —— 這就是這次修的東西。
+  for entry in \
+      'Z:\NotAProduct\FakeInstallDir\rime_service.exe' \
+      'Z:\NotAProduct\FakeInstallDir\data\shared\luna_pinyin.dict.yaml' \
+      'Z:\NotAProduct\FakeInstallDir\rime_ime_setup.exe'
+  do
+    n_old="$(printf '%s\n' "${entry}" | old_rule)"
+    n_new="$(printf '%s\n' "${entry}" | pending_filter "${DIR}" | grep -c . || true)"
+    if [ "${n_old}" -eq 0 ] && [ "${n_new}" -eq 1 ]; then
+      printf '  \033[1;32mok\033[0m   舊判準漏掉、新判準抓到:%s\n' "${entry##*\\}"
+    else
+      printf '\033[1;31m  !! %s:舊=%s 新=%s(預期 舊=0 新=1)\033[0m\n' \
+             "${entry}" "${n_old}" "${n_new}" >&2
+      sc_fail=1
+    fi
+  done
+  [ "${sc_fail}" -eq 0 ] || { printf '\033[1;31m開機佇列判準的反向測試沒過\033[0m\n' >&2; exit 1; }
+  printf '\033[1;32m開機佇列判準的反向測試全部通過\033[0m\n'
+  exit 0
+fi
+
 SETUP=""; PROBE=""; TOOL=""; HOST=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -60,6 +185,8 @@ while [ $# -gt 0 ]; do
     # (見底下 §6c)。刻意做成可選的 —— 這支腳本在只有安裝程式的環境下
     # 仍然要跑得動。
     --host)  HOST="$2";  shift 2 ;;
+    # 已經在上面處理掉了;留在這裡只是為了讓 --help 之類的讀者看得到。
+    --self-check-pending) shift ;;
     *) die "未知參數: $1" ;;
   esac
 done
@@ -139,6 +266,14 @@ pending_entries() {
 #   結尾是 .old-<時間戳> 的那些是我們自己排的清理,無害,不算數。
 pending_targets_live_dll() {
   pending_entries | grep -qiE 'rime_tsf\.dll$'
+}
+
+# ⚠ §13 的紅線用的是**這一支**,不是上面那一支。理由見檔案上方
+#   pending_filter 的說明:那一節宣稱「沒有把任何東西排進開機佇列」,
+#   而只問一個檔名的話,rime_service.exe / 四十份 yaml / .ocd2 全部
+#   落在宣稱與驗證之間的空隙裡。
+pending_in_install_dir() {
+  pending_entries | pending_filter "${INSTALL_DIR_W}"
 }
 
 # ── 升級那幾節共用的小工具 ────────────────────────────────────────
@@ -1979,14 +2114,19 @@ else
   fi
 
   # ── ⚠ 這一條是整節的核心斷言 ────────────────────────────────
-  if pending_targets_live_dll; then
-    echo "  --- PendingFileRenameOperations ---"
-    pending_entries | sed 's/^/    /'
-    note_fail "升級把 rime_tsf.dll **排進了開機佇列**。
-     那代表磁碟上那一顆還是舊的、新開的程式也拿到舊的,而且安裝程式
-     會在最後一頁問使用者要不要重新啟動 —— 這一整輪要修的就是這件事。"
+  queued13="$(pending_in_install_dir)"
+  if [ -n "${queued13}" ]; then
+    echo "  --- PendingFileRenameOperations(落在安裝目錄底下的)---"
+    printf '%s\n' "${queued13}" | sed 's/^/    /'
+    note_fail "升級把安裝目錄底下的東西**排進了開機佇列**(上面那幾筆)。
+     那代表磁碟上那幾個還是舊的、新開的程式也拿到舊的,而且安裝程式
+     會在最後一頁問使用者要不要重新啟動 —— 這一整輪要修的就是這件事。
+     ⚠ 這裡問的是**整個安裝目錄**,不是只有 rime_tsf.dll:
+       rime_service.exe 或 data\\shared 底下任何一份被排進去,
+       症狀一樣是「裝完要重開機,而且沒重開之前用的是舊的」。"
   else
-    ok "**升級沒有把任何東西排進開機佇列**(也就不會問要不要重新啟動)"
+    ok "**升級沒有把任何東西排進開機佇列**(整個 ${INSTALL_DIR_W} 都問過了,
+     不是只問 rime_tsf.dll;我們自己排的 .old- 清理不算)"
   fi
 
   # ── 13c. 舊的 DLL 映像 + 新的服務 ────────────────────────────

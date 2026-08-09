@@ -283,6 +283,35 @@ int ContentViewportHeightDip(int window_h_dip);
 int ScrollMaxDip(int page, int window_w_dip, int window_h_dip,
                  bool schema_list_empty);
 
+// ── 捲動之後,一顆內容區控制項該擺在哪、露出多少、藏不藏 ─────────
+//
+// ⚠ 這一支存在的理由只有一個:**讓那三件事變成測得到的東西**。
+//   在它之前,三件事都寫在 service/settings_window.cc::LayoutUi() 裡,
+//   而那個檔案在 Ubuntu 上編不起來 —— 於是覆核者把
+//   `y = p->rect.y - scroll_` 改成 `y = p->rect.y`(捲軸拖得動、
+//   內容一動也不動,也就是這一輪剛修掉的那個 BLOCKER 原封不動回來)
+//   之後,206 個單元測試與 check_ui_spec.sh 全綠。
+//
+//   所以現在:決定權在這裡,LayoutUi 只負責把結果接到 Win32 上,
+//   而 W25 驗的是**那三條接線**(y 從哪來、clip 從哪來、
+//   ShowWindow 的引數從哪來),不是「檔案裡有沒有 scroll_ 這個字」。
+struct ScrolledPlacement {
+  // 視窗座標 = 內容座標 - 捲動量。**捲動量一定要參與**,
+  // 否則捲軸會動而內容不動。
+  int y_dip = 0;
+  // <0 = 不裁;>=0 = 只露出這麼高。0 = 一個像素都看不到 ——
+  // 但**仍然存在、仍然在 Tab 順序上**(見 visible)。
+  int clip_h_dip = -1;
+  // ⚠ 永遠 true,而且**這是規定,不是實作細節**:捲出可視範圍的控制項
+  //   只裁不藏。ShowWindow(SW_HIDE) 會讓它退出 Tab 順序,於是鍵盤
+  //   使用者再也走不到它 —— 而捲動的存在正是為了讓那些控制項碰得到。
+  //   呼叫端必須把這個欄位接到 ShowWindow 的引數上(而不是寫死
+  //   SW_SHOW/SW_HIDE),這樣「藏起來」才會是一個測得到的行為改變。
+  bool visible = true;
+};
+ScrolledPlacement ScrollPlaceControlDip(const RectI& content_rect,
+                                        int scroll_dip, int viewport_h_dip);
+
 // ── W18 的取材面 ────────────────────────────────────────────────
 //
 // 「所有可點矩形 ≥ 28×28 DIP」與「每一個都碰得到」要驗得到,前提是

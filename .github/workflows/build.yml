@@ -34,6 +34,7 @@ on:
     branches:
       - main
       - fix-publish
+      - fix2-gates
       - fix-gates
       - fix-android-ui
       - fix2-release

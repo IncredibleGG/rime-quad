@@ -145,8 +145,10 @@ class SettingsWindow {
   void EnsureFocusVisible();
   // 把控制項裁掉伸進底部固定列的那一截(子視窗只會被父視窗的 client
   // 矩形裁掉,而底部那 54 DIP 仍在 client 裡面)。
-  void ClipToViewport(int index, HWND c, const RectI& r, int y_dip,
-                      int viewport_h_dip);
+  // 裁掉底部固定列蓋到的那一截。**clip_h_dip < 0 = 不裁**;
+  // 它由 ScrollPlaceControlDip() 算出來,這裡不再自己判斷 ——
+  // 自己判斷的那一版單元測試看不到。
+  void ClipToViewport(int index, HWND c, int w_dip, int clip_h_dip);
 
   // 自繪(§12.5.3 的六類裡的四類在這個檔案)。
   LRESULT DrawSidebar(NMLVCUSTOMDRAW* cd);

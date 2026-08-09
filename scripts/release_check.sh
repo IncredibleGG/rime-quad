@@ -109,7 +109,38 @@ skip() {
     · $*"
   fi
 }
-step() { echo; echo "=== $* ==="; }
+CURRENT_STEP=""
+step() { CURRENT_STEP="$*"; echo; echo "=== $* ==="; }
+
+# ── 腳本自己猝死時要說得出來 ────────────────────────────────
+#
+# ⚠ `set -e` + `pipefail` 之下,任何一個沒被 `|| true` 兜住的非零結束都會讓
+#   這支腳本**當場消失** —— 連 [FAIL] 與最後那三行統計都不印。實際發生過:
+#   第 6c 關的 vc_of 是一條管線,release/ 底下有一個讀不出版本號的 .apk,
+#   於是整支腳本從那一行起就不存在了,而呼叫端看到的只有一個非零結束碼。
+#   **那與「某一項驗證失敗」在結果上長得一模一樣,而原因完全不同。**
+#
+#   所以掛一個 EXIT 陷阱:不管怎麼結束,統計一定印得出來,而且非預期的
+#   結束要**指名它是非預期的**,不要偽裝成一次正常的失敗。
+#   (陷阱正常返回時不會改動結束碼。)
+FINISHED=0
+on_abrupt_exit() {
+  local rc=$?
+  [ "$FINISHED" -eq 1 ] && return 0
+  echo
+  echo "============================================"
+  echo " ⚠ 這支腳本在跑完之前就結束了(結束碼 $rc)"
+  echo "   在此之前:通過 $PASS 項,失敗 $FAIL 項,略過 $SKIP 項"
+  echo "   最後開始的那一關:${CURRENT_STEP:-(還沒進到任何一關)}"
+  echo "============================================"
+  {
+    echo "這**不是**「某一項驗證失敗」。set -e 之下,任何沒被兜住的非零結束"
+    echo "都會讓本腳本從那一行起消失 —— 上面那一關的最後幾行輸出就是現場。"
+    echo "把它讀成關卡失敗會讓所有人去查錯的地方(這件事已經發生過一次)。"
+  } >&2
+  return 0
+}
+trap on_abrupt_exit EXIT
 
 if [ "$EMU_ONLY" -eq 1 ]; then
   echo
@@ -488,8 +519,24 @@ if [ "$SKIP_EMU" -eq 0 ]; then
   #   .github/workflows/build.yml 下載進 release/）。那一份是在別的機器上、
   #   用同一把金鑰簽的。所以這一關同時是「CI 的簽章真的和本機同一條鏈嗎」
   #   的決定性驗收：裝得上去 = 使用者升得上來；裝不上去 = 使用者只能移除重裝。
-  vc_of() { "$AAPT2" dump badging "$1" 2>/dev/null \
-              | grep -oE "versionCode='[0-9]+'" | head -1 | tr -dc '0-9'; }
+  # ⚠ **這兩支不可以做成管線。**
+  #   舊版是 `"$AAPT2" dump badging | grep -oE ... | head -1 | tr -dc '0-9'`,
+  #   而 `set -e` + `pipefail` 之下:release/ 底下只要有一個 .apk 讀不出
+  #   版本號(aapt2 失敗、或 grep 沒命中就以 1 結束),整條管線就是失敗 ——
+  #   而它的結果直接拿去做變數指派,於是**整支腳本在這一行當場消失,
+  #   連 [FAIL] 與最後的統計都不印**。呼叫端(CI、publish job)只看得到一個
+  #   非零結束碼,看不到「哪一關失敗、通過幾項」,而那看起來像關卡失敗。
+  #
+  #   「讀不出版本號」是正常情形,不是這支腳本該死掉的理由。正確的行為是
+  #   回空字串,由呼叫端決定怎麼辦(下面那個迴圈本來就會跳過空的)。
+  #   所以這裡一律用 bash 內建的字串運算,一條管線都不用。
+  vc_of() {
+    local out rest vc=""
+    out="$("$AAPT2" dump badging "$1" 2>/dev/null)" || out=""
+    rest="${out#*versionCode=\'}"
+    [ "$rest" != "$out" ] && vc="${rest%%\'*}"
+    printf '%s' "${vc//[^0-9]/}"
+  }
   NEW_VC="$(vc_of "$APK")"
   PREV=""
   for cand in $(ls -t "$ROOT"/release/*.apk 2>/dev/null); do
@@ -502,8 +549,14 @@ if [ "$SKIP_EMU" -eq 0 ]; then
   # 「前一版」的套件名可能跟現在不一樣 —— 改 applicationId 等於換一個 app。
   # 那種時候 `run-as <新套件>` 在舊版身上看不到任何檔案,這一關必然失敗,
   # 而失敗訊息會是「舊版跑了 180s 還沒種出資料」—— 完全指錯方向。
-  pkg_of() { "$AAPT2" dump badging "$1" 2>/dev/null \
-               | grep -oE "package: name='[^']+'" | head -1 | cut -d"'" -f2; }
+  # 同上:沒有管線,讀不出來回空字串。
+  pkg_of() {
+    local out rest
+    out="$("$AAPT2" dump badging "$1" 2>/dev/null)" || out=""
+    rest="${out#*package: name=\'}"
+    [ "$rest" = "$out" ] && return 0
+    printf '%s' "${rest%%\'*}"
+  }
   PREV_PKG=""
   [ -n "$PREV" ] && PREV_PKG="$(pkg_of "$PREV")"
   if [ -z "$PREV" ]; then
@@ -676,6 +729,7 @@ if [ "$SKIP_EMU" -eq 0 ]; then
   fi
 fi
 
+FINISHED=1   # 走到這裡代表每一關都跑完了 —— 上面的 EXIT 陷阱不必再說話。
 echo
 echo "============================================"
 echo " 通過 $PASS 項，失敗 $FAIL 項，略過 $SKIP 項"
