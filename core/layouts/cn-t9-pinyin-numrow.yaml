@@ -11,6 +11,11 @@
 #  本檔＝`cn-t9-pinyin` 加上這條數字列。九宮格的 5 欄結構、hint 上標、
 #  分詞／重輸／0 鍵一字不改，只是整體往下移一列。
 #
+#  ⚠ 鍵的顏色規則、以及組字中左欄變成**拼音消歧欄**這件事，都與
+#  `cn-t9-pinyin.yaml` 完全相同，說明只寫在那一份（本檔的 `t9` 層同樣被
+#  `T9Syllables.SLOTS` 接管 `pu_comma` / `pu_period` / `pu_question` 三格，
+#  底列的 `!@#` 一樣不動）。兩份要一起改。
+#
 #  ── 多一列不會讓鍵盤長高（曾經需要 `height_scale: 0.80` 來補償）──────────
 #
 #  量使用者的 S24U 實機截圖：
@@ -116,7 +121,10 @@ layers:
                 - { label: "、", send: { text: "、" } }
                 - { label: "；", send: { keysym: "semicolon" } }
                 - { label: "：", send: { keysym: "colon" } }
-          - { id: "delim", label: "分詞", hint: "1", width: 2.2, style: modifier, send: { keysym: "apostrophe" } }
+          # ⚠ 沒有 `style`（＝ default，白色），與 cn-t9-pinyin 同步：分詞送的是
+          # 音節分隔符，屬於打字而不是操作鍵盤，且它坐在中間 3×3 裡面。
+          # 完整規則見 cn-t9-pinyin.yaml 檔頭「鍵的顏色代表什麼」。
+          - { id: "delim", label: "分詞", hint: "1", width: 2.2, send: { keysym: "apostrophe" } }
           - { id: "k_abc", label: "abc", hint: "2", width: 2.2, send: { keysym: "A" } }
           - { id: "k_def", label: "def", hint: "3", width: 2.2, send: { keysym: "D" } }
           - id: "backspace"

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    九宮格鍵盤本身的字串（目前只有拼音消歧欄的朗讀名）。
+
+    ⚠ **開新檔而不是加進 strings.xml。** Android 會把 values/ 底下所有 xml 併起來，
+    分檔不影響行為，但省掉同一個檔案被多條支線同時改的必然衝突。
+
+    ⚠ **這一份是回落語系，必須是英文。** 找不到使用者語系時 Android 用它。
+    繁簡兩份在 values-b+zh+Hant / values-b+zh+Hans。三份的 key 與 placeholder
+    由 keyboard/KbdStringsTest.kt 釘住 —— 專案既有的 StringCatalogTest 把檔名
+    寫死成 `strings.xml`，看不到這一份（同一個坑已由 store/DictStringsTest.kt
+    記錄並回報 coordination §5）。
+
+    ⚠ 鍵面上的字（「⋯」與音節本身）**不在這裡**。那些不是介面文案，是 §9.4 的
+    鍵面 —— 一顆中文輸入法的鍵在法文系統上印的仍然是同樣的字。見 T9Syllables。
+-->
+<resources>
+
+    <!-- 消歧欄的一格。%1$s 是音節，例如 ni。 -->
+    <string name="a11y_syllable">Pinyin %1$s</string>
+
+    <!-- 消歧欄的「⋯」：讀音多於格位時捲到下一批。 -->
+    <string name="a11y_syllable_more">More pinyin readings</string>
+
+    <!-- 走 stateDescription：狀態變了 TalkBack 會重念，塞進名字就聽不到回饋。 -->
+    <string name="a11y_syllable_pinned">selected</string>
+
+</resources>
