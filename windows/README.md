@@ -472,12 +472,24 @@ MSI 唯一贏的是網域 GPO 派送,那不是這一輪的目標。
 簡體/繁體/香港/兩種都有的使用者,只有 `windows/run_logic_tests.sh` 那一邊
 走得到 —— 那是這個決定真正的驗證所在。
 
-**啟用走微軟指名的那一支。** 「IME requirements」那一頁把這件事拆成兩步:
-註冊用 `RegisterProfile`(並且「不要自己寫登錄檔」),而
-「若要讓輸入法裝完立刻可用,呼叫 `InstallLayoutOrTip` 把它加進使用者已啟用
-的輸入法」。所以 `KeepOnlyProfileEnabled` **兩條都走**(`InstallLayoutOrTip`
-+ `EnableLanguageProfile`):兩者寫的東西不一樣,少做一邊就可能落在
-「登錄檔對了但清單上沒有」或反過來。
+**`InstallLayoutOrTip` 試過了,退回來了。** 微軟的「IME requirements」指名
+它作為第二步(「若要讓輸入法裝完立刻可用,呼叫它把 IME 加進使用者已啟用的
+輸入法」),Mozc 走的也是這條。我照著接了一版,結果 CI 上壞得比原來更嚴重:
+跑完 `enable-user` 之後 `rime_tsf_host` **連 DLL 都載不進來**(落地記錄檔
+根本沒被建出來),而在那之前它至少走得到 `ActivateEx`。唯一新增的、
+會動到那台機器的呼叫就是 `ILOT_UNINSTALL`。⚠ **沒有查清楚它動了什麼** ——
+那要在真 Windows 上逐鍵比對登錄檔。所以退回只用 `EnableLanguageProfile`,
+並把這段經過記在 `tsf/user_langs.cc` 的檔頭,免得下一個人再照文件接一次。
+
+**`bEnabledByDefault` 留著 `TRUE`,而那也是量出來的。** 它是三格的另一個
+嫌疑人,我試著改成 `FALSE`,`verify_tsf.sh` 當場紅了 —— 症狀是
+`ActivateProfile` 回 S_OK、`ActivateEx` 被呼叫、語言列按鈕加得上,
+**只有按鍵一顆都沒有到達**。也就是說「沒有被啟用」的症狀是
+**輸入法看起來活著但打不出字**。而它真正的代價在使用者那裡:同一台機器上
+第二個使用者會拿到一個註冊了但不能用的輸入法。所以留 `TRUE`
+(上游 Weasel 也是),三格交給啟用那一條處理 —— 而 `§4b` **會量它**:
+安裝完之後 TSF 回報的啟用份數必須是 1。若 `TRUE` 本身就會讓三份都讀成
+啟用,那一條會紅,我們就知道推論錯了。把猜測交給關卡,不是交給下一次回報。
 
 **`TF_RP_HIDDENINSETTINGUI`(0x2)刻意不用。** 它存在(`msctf.h`),但
 微軟對它的全部說明只有一句「不會出現在設定 UI 裡」—— 沒有 Remarks、

@@ -41,71 +41,32 @@ std::vector<std::wstring> SplitMultiSz(const std::vector<wchar_t>& buf) {
 }  // namespace
 
 // ══════════════════════════════════════════════════════════════════
-//  InstallLayoutOrTip —— 微軟指定的「把輸入法加進使用者的清單」那一支
+//  InstallLayoutOrTip —— 試過了,退回來了。這一段是那次的紀錄。
 // ══════════════════════════════════════════════════════════════════
 //
-// 「IME requirements」那一頁把這件事拆成兩步,而且明著說第二步要用這一支:
+// 微軟的「IME requirements」把這件事拆成兩步,而且指名第二步用這一支:
+// 註冊用 RegisterProfile(並且「不要自己寫登錄檔」),而
+// 「若要讓輸入法裝完立刻可用,呼叫 InstallLayoutOrTip 把它加進使用者
+// 已啟用的輸入法」,psz 格式 `<LangID>:{CLSID}{profileGUID}`。
+// Mozc 走的就是這條。它沒有匯入庫也不在公開標頭裡,要 LoadLibrary
+// ("input.dll") + GetProcAddress,旗標(ILOT_UNINSTALL=0x1 …)自己定義。
 //
-//   · 安裝時用 ITfInputProcessorProfileMgr::RegisterProfile 註冊
-//     (並且「不要自己寫登錄檔」);
-//   · **「若要讓輸入法裝完立刻可用,呼叫 InstallLayoutOrTip 把它加進
-//     使用者已啟用的輸入法」**,psz 格式 `<LangID>:{CLSID}{profileGUID}`。
+// 我照著接了一版:啟用時 InstallLayoutOrTip + EnableLanguageProfile 兩條都走,
+// 停用時 ILOT_UNINSTALL + EnableLanguageProfile(false)。
 //
-// 也就是說:「清單上出現幾格」由**這一支**決定,而不是由註冊決定。
-// Mozc 走的就是這條(InstallLayoutOrTip → SetDefaultLayoutOrTip)。
+// **CI 上當場壞得比原來更嚴重**:跑完 enable-user 之後,rime_tsf_host
+// 連 rime_tsf.dll 都載不進來了(落地記錄檔根本沒被建出來),
+// 而在那之前它至少還走得到 ActivateEx。唯一新增的、會動到這台機器的
+// 呼叫就是 ILOT_UNINSTALL 那一支 —— 它顯然不只是「從使用者的清單裡拿掉」。
 //
-// ⚠ 它沒有匯入庫,也不在任何公開標頭裡 —— 必須 LoadLibrary("input.dll")
-//   + GetProcAddress,旗標也要自己定義。這不是走偏門:微軟自己的文件
-//   就是這樣寫的,而它是唯一被文件指名的做法。
+// ⚠ 我**沒有**查清楚它到底動了什麼(那要在真 Windows 上逐鍵比對登錄檔,
+//   而這一輪的目標是讓使用者的清單只剩一格,不是把 input.dll 的行為
+//   逆向出來)。所以這裡誠實地記下:**試過、壞了、退回 EnableLanguageProfile**。
+//   下一個人要再碰它的話,請從「ILOT_UNINSTALL 之後 HKLM 的 CTF\TIP
+//   子樹還剩什麼」開始量,不要從文件開始猜。
 //
-// ⚠ 拿不到這支函式時(理論上不會,但這支 DLL 的存在不是我們保證得了的)
-//   **不可以就這樣算了** —— 退回 EnableLanguageProfile,並且讓呼叫端看得到
-//   走的是哪一條。兩條路寫的東西不完全一樣(前者動使用者的語言清單與
-//   已啟用的輸入法,後者動 CTF 的 Enable 旗標),所以啟用時**兩條都做**:
-//   少做任何一邊,都可能落在「登錄檔看起來對了,清單上卻沒有」那種狀態,
-//   而那正是這個專案最貴的失敗形狀。
-namespace {
-
-// input.dll 的旗標。公開標頭裡沒有,照文件與 Mozc 的用法定義。
-constexpr DWORD kIlotUninstall = 0x00000001;
-
-using InstallLayoutOrTipFn = BOOL(WINAPI*)(LPCWSTR, DWORD);
-
-InstallLayoutOrTipFn LoadInstallLayoutOrTip() {
-  static InstallLayoutOrTipFn fn = nullptr;
-  static bool tried = false;
-  if (!tried) {
-    tried = true;
-    HMODULE m = ::LoadLibraryW(L"input.dll");
-    if (m)
-      fn = reinterpret_cast<InstallLayoutOrTipFn>(
-          ::GetProcAddress(m, "InstallLayoutOrTip"));
-    // 刻意不 FreeLibrary:函式指標要留著用。這支程式活不過幾秒。
-  }
-  return fn;
-}
-
-// "0804:{7D02992E-…}{84420A61-…}"
-std::wstring ProfileSpec(int index) {
-  wchar_t lang[8] = {0};
-  ::wsprintfW(lang, L"%04x",
-              static_cast<unsigned>(kRimeProfiles[index].langid));
-  wchar_t clsid[64] = {0};
-  wchar_t guid[64] = {0};
-  ::StringFromGUID2(CLSID_RimeTextService, clsid, 64);
-  ::StringFromGUID2(*kRimeProfiles[index].guid, guid, 64);
-  return std::wstring(lang) + L":" + clsid + guid;
-}
-
-}  // namespace
-
-bool InstallOrRemoveLayoutOrTip(int index, bool install) {
-  if (index < 0 || index >= kRimeProfileCount) return false;
-  InstallLayoutOrTipFn fn = LoadInstallLayoutOrTip();
-  if (!fn) return false;
-  const std::wstring spec = ProfileSpec(index);
-  return fn(spec.c_str(), install ? 0 : kIlotUninstall) != FALSE;
-}
+// 退回去之後的做法就是 EnableLanguageProfile 一條路，而它是這一輪
+// **量得到**的那一條(§4b 的「正好一份」)。
 
 std::vector<std::wstring> CurrentUserLanguageTags() {
   std::vector<std::wstring> out;
@@ -198,11 +159,6 @@ HRESULT KeepOnlyProfileEnabled(int keep_index, int* enabled, int* disabled) {
   HRESULT last_bad = S_OK;
 
   // 1. 先開要留的那一份。順序見標頭。
-  //    **兩條路都走**:InstallLayoutOrTip 動的是使用者的語言清單與
-  //    已啟用的輸入法(= 清單上看得到),EnableLanguageProfile 動的是
-  //    CTF 的 Enable 旗標(= IsEnabledLanguageProfile 讀得到)。
-  //    只做其中一邊,可能落在「登錄檔對了但清單上沒有」或反過來。
-  InstallOrRemoveLayoutOrTip(keep_index, true);
   const HRESULT hr_on = SetProfileEnabledForCurrentUser(keep_index, true);
   if (SUCCEEDED(hr_on)) {
     if (enabled) *enabled = 1;
@@ -217,7 +173,6 @@ HRESULT KeepOnlyProfileEnabled(int keep_index, int* enabled, int* disabled) {
   //    但清單上還是三格」。
   for (int i = 0; i < kRimeProfileCount; ++i) {
     if (i == keep_index) continue;
-    InstallOrRemoveLayoutOrTip(i, false);
     const HRESULT hr = SetProfileEnabledForCurrentUser(i, false);
     if (SUCCEEDED(hr)) {
       if (disabled) ++*disabled;

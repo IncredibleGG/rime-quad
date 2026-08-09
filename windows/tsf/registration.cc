@@ -155,45 +155,52 @@ HRESULT RegisterTextService(const std::wstring& dll_path) {
   // 每一個中文語言各註冊一份。少了這個迴圈的第二圈,系統語言是簡體中文的
   // 使用者會在「繁体中文(中国台湾)」底下看到這個輸入法 —— 或者根本找不到。
   //
-  // ══ 2026-08-09:bEnabledByDefault 由 TRUE 改成 FALSE ═══════════
+  // ══ 2026-08-09:bEnabledByDefault 留著 TRUE,而這是**量出來的**決定 ══
   //
-  // 倒數第二個參數。它的意思是「**替所有使用者**把這一份預設設成啟用」
+  // 倒數第二個參數的意思是「替所有使用者把這一份預設設成啟用」
   // (對照組:EnableLanguageProfileByDefault 的文件寫的是 for all users,
   //  EnableLanguageProfile 才是 for the current user)。
   //
-  // 為什麼非改不可:使用者回報他的 Win + 空白鍵清單上我們佔三格,
-  // 而微软拼音、小狼毫各佔一格。三格的來源只可能是「有三份是啟用的」,
-  // 而這一輪之前有**兩條**路會讓它們變成啟用:
-  //   1. 這個 TRUE(全機、對每一個使用者、三份全開);
-  //   2. 安裝程式的 enable-user 對三份各呼叫一次 EnableLanguageProfile。
-  // 只堵第 2 條而留著第 1 條,等於修了一半 —— 而修一半的症狀與沒修
-  // 完全一樣(清單上還是三格),只是要再等一輪使用者回報才知道。
+  // 使用者回報清單上我們佔三格時,它是兩個嫌疑人之一(另一個是
+  // enable-user 對三份各啟用一次)。我**試著把它改成 FALSE**,
+  // 而 CI 當場告訴我那條路不能走:
   //
-  // 改成 FALSE 之後,「這台機器上這個使用者看到幾格」只由**一條**路決定:
-  // rime_ime_setup.exe enable-user(見 tsf/user_langs.cc)。
-  // 一條路才斷言得了,而 CI 現在斷言的正是「正好一份」。
+  //   · verify_tsf.sh 紅了,症狀是 ActivateProfile 回 S_OK、
+  //     ActivateEx 被呼叫、語言列按鈕加上了,**只有按鍵一顆都沒到達**,
+  //     而 GetActiveProfile 回報的是另一個 langid。
+  //   · 也就是說「沒有被啟用」的症狀是**輸入法看起來活著但打不出字** ——
+  //     而那正是這個專案最貴的那種失敗。
   //
-  // ⚠ 代價寫在這裡:同一台機器上**第二個使用者**登入時不會自動拿到
-  //   這個輸入法 —— 因為沒有人替他跑過 enable-user。這是刻意的取捨:
-  //   自動給他的話,給的會是三份(我們無從得知他的語言清單),
-  //   而那正是要修的問題。他要用的話,「開始」功能表裡的
-  //   「LuminaKey 設定」旁邊那支 rime_ime_setup.exe enable-user 補得回來。
-  //   (參考:上游 Weasel 也不把 HK / MO / SG 設成 enabled-by-default。)
+  // 而 FALSE 真正的代價不在 CI 上,在使用者那裡:同一台機器上**第二個
+  // 使用者**登入時會拿到一個註冊了但不能用的輸入法,因為沒有人替他跑過
+  // enable-user。TRUE 讓他自動拿到(上游 Weasel 也是 TRUE)。
+  //
+  // 那三格怎麼辦?**證據指向另一個嫌疑人。** 使用者截圖上那兩欄繁體中文
+  // 底下**只掛著 LuminaKey** —— 他若真的自己裝過那兩個語言,微软注音
+  // 之類的東西會跟著出現在同一欄。是 enable-user 那三次
+  // EnableLanguageProfile 把那兩個語言加進他清單裡的,而 bEnabledByDefault
+  // 只影響「他**已經有**的語言底下要不要自動出現我們」——那件事是我們要的。
+  //
+  // ⚠ 這個推論不是憑空的,verify_installer.sh §4b 會**量**它:
+  //   安裝完之後問 TSF「這個使用者啟用了幾份」,答案必須是 1。
+  //   如果 TRUE 本身就會讓三份都讀成啟用,那一條會紅,而我們就知道
+  //   推論錯了 —— 這正是把猜測交給關卡而不是交給下一次使用者回報。
   //
   // 最後一個參數 dwFlags 仍然是 0。TF_RP_HIDDENINSETTINGUI(0x2)是存在的,
   // 但**刻意不用**:微軟對它的全部說明只有一句「不會出現在設定 UI 裡」,
-  // 沒有 Remarks、沒有說「設定 UI」涵蓋哪幾個介面、TF_INPUTPROCESSORPROFILE
-  // 也讀不回這個旗標(它只露出 ACTIVE / ENABLED / SUBSTITUTEDBY…),
-  // 而且找不到任何一個公開的輸入法在用它(Weasel、Mozc、chewing 都沒有)。
-  // 拿一個沒有人走過、而且驗證不了的旗標去修一個我們已經知道怎麼修的問題,
-  // 是把「清單上有幾格」交給一個猜測。所以走啟用那一條 —— 那一條量得到。
+  // 沒有 Remarks、沒有說「設定 UI」涵蓋哪幾個介面,TF_INPUTPROCESSORPROFILE
+  // 也**讀不回這個旗標**(它只露出 ACTIVE / ENABLED / SUBSTITUTEDBY…),
+  // 所以連「有沒有設成功」都驗不到;而且找不到任何一個公開的輸入法在用它
+  // (Weasel、Mozc、chewing 都是 dwFlags=0)。拿一個沒有人走過、而且
+  // 驗證不了的旗標,去修一個我們已經知道怎麼修的問題,是把「清單上有幾格」
+  // 交給猜測。啟用那一條量得到。
   for (int i = 0; i < kRimeProfileCount && SUCCEEDED(hr); ++i) {
     const std::wstring desc = kRimeProfiles[i].description;
     hr = profiles->RegisterProfile(
         CLSID_RimeTextService, kRimeProfiles[i].langid, *kRimeProfiles[i].guid,
         desc.c_str(), static_cast<ULONG>(desc.size()), dll_path.c_str(),
         static_cast<ULONG>(dll_path.size()), 0, nullptr, 0,
-        /*bEnabledByDefault=*/FALSE, /*dwFlags=*/0);
+        /*bEnabledByDefault=*/TRUE, /*dwFlags=*/0);
   }
   profiles->Release();
   if (FAILED(hr)) return hr;

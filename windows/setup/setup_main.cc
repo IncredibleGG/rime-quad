@@ -550,7 +550,6 @@ static int Run(int argc, wchar_t** argv) {
       //   它不會出現在 Usage 裡,安裝程式也不會呼叫它。
       int okc = 0;
       for (int i = 0; i < ProfileCount(); ++i) {
-        InstallOrRemoveLayoutOrTip(i, true);
         const HRESULT hr = SetProfileEnabledForCurrentUser(i, true);
         Say("  0x%04X -> %s (hr=0x%08lX)\n",
             static_cast<unsigned>(ProfileLangId(i)),

@@ -60,11 +60,6 @@ std::vector<int> EnabledProfileIndexesForCurrentUser();
 //   我們打字(升級時服務會被停掉,但 TSF 那一側的選擇是系統記著的)。
 //   那一瞬間過後系統可能已經把輸入法切到別的地方去了。
 //
-// 微軟指定的「把輸入法加進 / 移出使用者已啟用的輸入法」那一支
-// (input.dll 的 InstallLayoutOrTip)。拿不到那支函式時回 false ——
-// 呼叫端要能看得出走的是哪一條路。詳見 .cc 的說明。
-bool InstallOrRemoveLayoutOrTip(int index, bool install);
-
 // keep_index 是 kRimeProfiles 的索引。回傳最後一個失敗的 HRESULT
 // (全部成功則 S_OK);*enabled / *disabled 回填實際成功的數量,可為 nullptr。
 HRESULT KeepOnlyProfileEnabled(int keep_index, int* enabled, int* disabled);
