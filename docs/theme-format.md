@@ -5,7 +5,7 @@
 > 請提 issue 而非各自發明。
 >
 > 對應檔案：`core/themes/*.yaml`、`core/layouts/*.yaml`
-> 參考實作：`android/app/src/main/java/org/rimequad/ime/theme/`
+> 參考實作：`android/app/src/main/java/org/luminakey/ime/theme/`
 
 ---
 

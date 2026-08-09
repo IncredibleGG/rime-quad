@@ -35,19 +35,19 @@
 #
 #   adb shell bmgr enable true
 #   adb shell bmgr transport com.android.localtransport/.LocalTransport
-#   adb shell monkey -p org.rimequad.ime -c android.intent.category.LAUNCHER 1
+#   adb shell monkey -p <套件名> -c android.intent.category.LAUNCHER 1
 #     # ⚠ 一定要先啟動 app。被 force-stop 過的 app 會被判定
 #     #   "Backup is not allowed",那是**假的通過**,不是我們的設定生效。
-#   adb shell bmgr backupnow org.rimequad.ime
-#   adb shell cat /data/data/com.android.localtransport/files/1/_full/org.rimequad.ime > b.tar
+#   adb shell bmgr backupnow <套件名>
+#   adb shell cat /data/data/com.android.localtransport/files/1/_full/<套件名> > b.tar
 #   tar tvf b.tar
 #
 # allowBackup=true 時,實測(2026-08-08,emulator-5578,Android 35)tar 裡有:
-#   apps/org.rimequad.ime/f/rime/user/luna_pinyin.userdb/*   使用者詞庫
-#   apps/org.rimequad.ime/f/rime/user/installation.yaml      跨重裝穩定的 UUID
-#   apps/org.rimequad.ime/f/rime/user/user.yaml              何時用過哪個方案
-#   apps/org.rimequad.ime/f/rime/user/rimequad-store.json    裝了哪些第三方方案
-#   apps/org.rimequad.ime/f/net/                             連網紀錄本身
+#   apps/<套件名>/f/rime/user/luna_pinyin.userdb/*   使用者詞庫
+#   apps/<套件名>/f/rime/user/installation.yaml      跨重裝穩定的 UUID
+#   apps/<套件名>/f/rime/user/user.yaml              何時用過哪個方案
+#   apps/<套件名>/f/rime/user/<安裝帳本>.json    裝了哪些第三方方案
+#   apps/<套件名>/f/net/                             連網紀錄本身
 # allowBackup=false 之後,同樣的指令回的是 "Backup is not allowed"。
 #
 # ═══════════════════════════════════════════════════════════════════════════
@@ -67,6 +67,11 @@
 set -uo pipefail   # 刻意不用 -e:要跑完全部檢查再一次回報,而不是第一項就中斷
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# 產品識別碼與稽核樣式的唯一來源,見 scripts/lib/product.env 檔頭。
+# ⚠ 第 7 項的 UA 樣式尤其要從這裡讀。改名之後守門的還在擋舊名,是這種腳本
+#   最典型的失效方式:它照樣全綠,擋的東西卻已經不存在了。
+# shellcheck source=lib/product.sh
+. "$ROOT/scripts/lib/product.sh"
 VERBOSE=0
 [ "${1:-}" = "--verbose" ] && VERBOSE=1
 
@@ -85,9 +90,32 @@ skipped() { echo "  [SKIP] $*"; SKIP=$((SKIP+1)); }
 show() { printf '%s\n' "$1" | sed -n "1,${2:-10}p" | sed 's/^/         /' >&2; }
 
 SRC="$ROOT/android/app/src"
-GATE_REL="main/java/org/rimequad/ime/net/NetworkGate.kt"
+GATE_REL="$RS_NETWORK_GATE_REL"
 MANIFEST="$SRC/main/AndroidManifest.xml"
 NETSEC="$SRC/main/res/xml/network_security_config.xml"
+
+# ⚠ 套件路徑是從 product.env 的 ANDROID_APP_ID 推出來的。**對不上時第 1 項會
+#   說謊**:它把「不在 GATE_REL 這個路徑上」當成「第二個連網出口」,於是把
+#   真的那一個 NetworkGate.kt 整份列出來,訊息指的方向正好相反 —— 有人會照著
+#   那個訊息去找一個不存在的第二出口。這個專案已經有過同型的案例
+#   (verify_layout.sh 的組字區判準指控了相反的事實,見 docs/coordination.md §5)。
+#   所以先問檔案在不在,答案是否定時講**真正的**原因,而不是繼續往下驗。
+if [ ! -f "$SRC/$GATE_REL" ]; then
+  step "0. 前置:套件路徑對得上嗎"
+  bad "找不到 $SRC/$GATE_REL"
+  echo "         scripts/lib/product.env 說套件是 $RS_ANDROID_APP_ID,"  >&2
+  echo "         但 android/ 底下沒有對應的目錄。"                        >&2
+  FOUND_GATE="$(find "$SRC" -name NetworkGate.kt 2>/dev/null | head -3)"
+  if [ -n "$FOUND_GATE" ]; then
+    echo "         它實際上在:" >&2
+    printf '%s\n' "$FOUND_GATE" | sed 's|^|           |' >&2
+  fi
+  echo "         **這不是「多了一個連網出口」**,是識別碼改名還沒在 android/ 落地。" >&2
+  echo "         第 1 項與第 7 項在這種狀態下驗不了 —— 驗不了就不要往下報結果。" >&2
+  echo >&2
+  echo "  通過 0 項,失敗 1 項(前置條件不成立,其餘各項這一輪一項都沒有跑)" >&2
+  exit 1
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 step "1. 連網出口唯一(java.net 只能出現在 NetworkGate.kt)"
@@ -242,7 +270,7 @@ fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 step "7. User-Agent 不自報家門"
-# 在有審查的網路環境下,一個 rimequad-android 的 UA 就足以讓使用者被標記為
+# 在有審查的網路環境下,一個帶著產品名的 UA 就足以讓使用者被標記為
 # 「正在使用這個輸入法」,被動觀察者連解密都不必。
 GATE="$SRC/$GATE_REL"
 if [ ! -f "$GATE" ]; then
@@ -252,7 +280,7 @@ else
   if [ -z "$UA" ]; then
     note "NetworkGate.kt 沒有 USER_AGENT 常數"
     ok "沒有自訂 User-Agent"
-  elif printf '%s' "$UA" | grep -qiE 'rime|quad|ime'; then
+  elif printf '%s' "$UA" | grep -qiE "$RS_SELF_ID_UA_PATTERN"; then
     bad "User-Agent 含有本專案的名字,等於向網路自報家門: $UA"
   else
     ok "User-Agent 不含專案名稱: $UA"
@@ -295,7 +323,7 @@ fi
 # (CI 的快車道就是這樣),這一項仍然在檢查東西,而不是整段略過。
 if [ -f "$SANDBOX_PATCH" ]; then
   PATCH_MISSING=""
-  for tok in 'kRimeQuadSandbox' 'kRimeQuadPathSandbox' 'rimequad_lua_ensure_init'; do
+  for tok in "$RS_LUA_SANDBOX_SYM_STAGE1" "$RS_LUA_SANDBOX_SYM_STAGE2" "$RS_LUA_SANDBOX_INIT"; do
     grep -q "$tok" "$SANDBOX_PATCH" || PATCH_MISSING="$PATCH_MISSING $tok"
   done
   if [ -z "$PATCH_MISSING" ]; then
@@ -336,25 +364,25 @@ if [ ! -f "$LUA_CC" ]; then
 else
   # 第一層:允許清單。三個 pairs 迴圈缺一個,就有一整組標準庫是全開的。
   check_tokens "$LUA_CC" "第一層(lua.cc)的允許清單完整" \
-    'kRimeQuadSandbox' 'for k in pairs\(os\) do' 'for k in pairs\(io\) do' \
+    "$RS_LUA_SANDBOX_SYM_STAGE1" 'for k in pairs\(os\) do' 'for k in pairs\(io\) do' \
     'for k in pairs\(debug\) do' 'package\.loadlib = nil' \
     'package\.searchers\[3\] = nil' 'package\.path = ""' 'chunkname, "t"'
   # 第二層:路徑收斂 + 搜尋器 + 延後
   check_tokens "$MODULES_CC" "第二層(modules.cc)的路徑收斂與延後都在" \
-    'kRimeQuadPathSandbox' 'package\.searchers\[2\] = function' \
-    'is_write\(mode\)' 'rimequad_lua_ensure_init' 'rimequad_lua_nuke'
-  check_tokens "$GEARS_H" "延後的掛勾接在元件建立處" '::rimequad_lua_ensure_init\(\);'
+    "$RS_LUA_SANDBOX_SYM_STAGE2" 'package\.searchers\[2\] = function' \
+    'is_write\(mode\)' "$RS_LUA_SANDBOX_INIT" "$RS_LUA_SANDBOX_NUKE"
+  check_tokens "$GEARS_H" "延後的掛勾接在元件建立處" "::$RS_LUA_SANDBOX_INIT\(\);"
 
   # 順序:第一層必須在 luaL_openlibs 之後。順序錯了等於沒做。
   L_OPEN="$(grep -n 'luaL_openlibs' "$LUA_CC" | head -1 | cut -d: -f1)"
-  L_SBOX="$(grep -n 'luaL_dostring(L, kRimeQuadSandbox' "$LUA_CC" | head -1 | cut -d: -f1)"
+  L_SBOX="$(grep -n "luaL_dostring(L, $RS_LUA_SANDBOX_SYM_STAGE1" "$LUA_CC" | head -1 | cut -d: -f1)"
   if [ -n "$L_OPEN" ] && [ -n "$L_SBOX" ] && [ "$L_SBOX" -gt "$L_OPEN" ]; then
     ok "第一層裝在 luaL_openlibs 之後(第 $L_OPEN -> $L_SBOX 行)"
   else
     bad "第一層沒有裝在 luaL_openlibs 之後 —— 順序錯了等於沒做"
   fi
   # 順序:第二層必須在 rime.lua 之前。rime.lua 是第三方內容。
-  M_SBOX="$(grep -n 'kRimeQuadPathSandbox,' "$MODULES_CC" | head -1 | cut -d: -f1)"
+  M_SBOX="$(grep -n "$RS_LUA_SANDBOX_SYM_STAGE2," "$MODULES_CC" | head -1 | cut -d: -f1)"
   M_RIME="$(grep -n 'luaL_dofile(L, user_file' "$MODULES_CC" | head -1 | cut -d: -f1)"
   if [ -n "$M_SBOX" ] && [ -n "$M_RIME" ] && [ "$M_SBOX" -lt "$M_RIME" ]; then
     ok "第二層裝在 rime.lua 之前(第 $M_SBOX -> $M_RIME 行)"
@@ -369,7 +397,7 @@ step "8b. 使用者手上那顆引擎真的帶著沙盒"
 # third_party/prebuilt/<abi>/lib/librime.a,而**那個 .a 才是使用者拿到的東西**。
 # 改了 patch 卻沒重建 = 原始碼上看起來安全、出貨的引擎完全沒變,
 # 而且沒有任何測試會紅。這一項就是為了讓那件事不可能沉默地發生。
-SANDBOX_MARK='rimequad-path-sandbox'
+SANDBOX_MARK="$RS_LUA_SANDBOX_MARK"
 FOUND_A=0
 for a in "$ROOT"/third_party/prebuilt/*/lib/librime.a; do
   [ -f "$a" ] || continue

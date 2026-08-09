@@ -75,7 +75,7 @@ Android / iOS / Windows / macOS。**Android 已經是可用的產品**,其餘三
 | `core/themes/*.yaml` 的 `keyboard` 區塊 | 不用 |
 | `core/data/`(方案與詞庫) | **要用**,那是 librime 的執行期資料 |
 
-⚠ **同步時「不用」不等於「可以刪」。** 使用者的自訂佈局(`rimequad-layouts.json`)
+⚠ **同步時「不用」不等於「可以刪」。** 使用者的自訂佈局(`luminakey-layouts.json`)
 是行動端的資料,桌面端**必須原樣搬運、不得解析、不得清理**,否則跨裝置同步時
 會把使用者在手機上調好的鍵位一次洗掉。
 

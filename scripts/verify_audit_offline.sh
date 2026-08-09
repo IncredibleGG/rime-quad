@@ -29,6 +29,11 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# 產品識別碼的唯一來源,見 scripts/lib/product.env。植入的違規要用**真的**
+# 套件路徑寫進那棵樹,不能自己編一個 —— 編錯了 audit_offline.sh 只會說
+# 「找不到 NetworkGate.kt」,那是植入失敗,不是它抓到了違規。
+# shellcheck source=lib/product.sh
+. "$ROOT/scripts/lib/product.sh"
 KEEP=0
 [ "${1:-}" = "--keep" ] && KEEP=1
 
@@ -38,7 +43,7 @@ PASS=0; FAIL=0
 ok()  { echo "  [PASS] $*"; PASS=$((PASS+1)); }
 bad() { echo "  [FAIL] $*" >&2; FAIL=$((FAIL+1)); }
 
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/rimequad-auditrev.XXXXXX")"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/$RS_PRODUCT_ID_ROOT-auditrev.XXXXXX")"
 cleanup() { [ "$KEEP" -eq 1 ] || rm -rf "$TMP"; }
 trap cleanup EXIT
 [ "$KEEP" -eq 1 ] && echo "暫存目錄：$TMP"
@@ -72,6 +77,9 @@ make_tree() {   # make_tree <名字> -> 印出樹的路徑
   mkdir -p "$T/scripts" "$T/android/app" "$T/android/gradle" \
            "$T/third_party/librime-lua/src/lib" "$T/core"
   cp "$ROOT/scripts/audit_offline.sh" "$T/scripts/"
+  # audit_offline.sh 讀 scripts/lib/product.env 取識別碼與稽核樣式,少了它
+  # 基準會紅在「設定載入不了」,而那個紅看起來會像被驗的東西壞了。
+  cp -a "$ROOT/scripts/lib" "$T/scripts/lib"
   cp -a "$ROOT/android/app/src" "$T/android/app/src"
   cp "$ROOT/android/gradle/libs.versions.toml" "$T/android/gradle/" 2>/dev/null
   cp "$ROOT/android/app/build.gradle.kts" "$T/android/app/" 2>/dev/null
@@ -157,13 +165,13 @@ io.open(f, "w", encoding="utf-8").write(s.replace(old, new))
 PY
 }
 
-KT="android/app/src/main/java/org/rimequad/ime"
+KT="android/app/src/main/java/$RS_ANDROID_PKG_PATH"
 MANIFEST="android/app/src/main/AndroidManifest.xml"
 NETSEC="android/app/src/main/res/xml/network_security_config.xml"
 
 m_second_exit() {
-  cat > "$1/$KT/store/Sneaky.kt" <<'EOF'
-package org.rimequad.ime.store
+  cat > "$1/$KT/store/Sneaky.kt" <<EOF
+package $RS_ANDROID_APP_ID.store
 import java.net.HttpURLConnection
 import java.net.URL
 object Sneaky {
@@ -174,8 +182,8 @@ EOF
 expect_red "第二個連網出口（store/Sneaky.kt）" "NetworkGate.kt 以外" m_second_exit
 
 m_comment_only() {
-  cat > "$1/$KT/store/NoteOnly.kt" <<'EOF'
-package org.rimequad.ime.store
+  cat > "$1/$KT/store/NoteOnly.kt" <<EOF
+package $RS_ANDROID_APP_ID.store
 /**
  * 這個檔案沒有任何連網程式碼。註解裡提到 java.net.HttpURLConnection、
  * URL( 與 OkHttp 只是為了說明「我們刻意不用它們」。
@@ -199,8 +207,8 @@ m_crashlytics() {
 expect_red "相依裡加了 crashlytics" "相依裡出現了會自己連網" m_crashlytics
 
 m_webview() {
-  cat > "$1/$KT/home/HelpPage.kt" <<'EOF'
-package org.rimequad.ime.home
+  cat > "$1/$KT/home/HelpPage.kt" <<EOF
+package $RS_ANDROID_APP_ID.home
 import android.webkit.WebView
 import android.content.Context
 fun helpView(c: Context) = WebView(c).apply { loadUrl("https://example/help") }
@@ -229,12 +237,22 @@ m_cleartext() {
 }
 expect_red "network_security_config 開了明文" "明文例外" m_cleartext
 
+# ⚠ 這一條植入的是**現在的**產品名。改名時若只改顯示名而忘了這裡,守門的樣式
+#   會繼續擋舊名、放行新名 —— 稽核照樣全綠,而 UA 已經在對外自報家門了。
+#   舊名另立一條:我們仍然是 RIME 前端,UA 裡出現 rime/quad 一樣會暴露身分。
 m_ua() {
   sub_once "$1/$KT/net/NetworkGate.kt" \
     'private const val USER_AGENT = "Mozilla/5.0"' \
-    'private const val USER_AGENT = "rimequad-android/1.0"'
+    "private const val USER_AGENT = \"$RS_PRODUCT_ID_ROOT-android/1.0\""
 }
-expect_red "User-Agent 自報家門" "自報家門" m_ua
+expect_red "User-Agent 自報家門(現在的產品名)" "自報家門" m_ua
+
+m_ua_legacy() {
+  sub_once "$1/$KT/net/NetworkGate.kt" \
+    'private const val USER_AGENT = "Mozilla/5.0"' \
+    "private const val USER_AGENT = \"$RS_LEGACY_ID_ROOT-android/1.0\""
+}
+expect_red "User-Agent 自報家門(舊產品名)" "自報家門" m_ua_legacy
 
 m_perm() {
   # manifest 裡有三個 <uses-permission，所以不能用 sub_once（它要求正好一次）。
@@ -289,8 +307,8 @@ m_order_swapped() {
 
 m_hook_removed() {
   sub_once "$1/third_party/librime-lua/src/lua_gears.h" \
-    '    ::rimequad_lua_ensure_init();' \
-    '    // ::rimequad_lua_ensure_init();'
+    "    ::$RS_LUA_SANDBOX_INIT();" \
+    "    // ::$RS_LUA_SANDBOX_INIT();"
 }
 [ -n "$PATCHED_SRC" ] && expect_red "延後的掛勾被註解掉" "延後的掛勾" m_hook_removed
 

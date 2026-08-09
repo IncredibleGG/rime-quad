@@ -55,7 +55,7 @@
 #   要求比對器對它報紅。植入的違規沒被抓到 → 這支腳本自己判定失敗。
 #
 # 用法:
-#   ./verify_longpress.sh --ime org.rimequad.ime/.RimeInputMethodService \
+#   ./verify_longpress.sh --ime "$RS_ANDROID_IME_ID" \        # 值見 scripts/lib/product.env
 #                         [--apk <path>] [--hold-ms 150] [--out <dir>]
 #
 # 環境變數:
@@ -67,6 +67,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}"
 ADB="$SDK/platform-tools/adb"
+# 產品識別碼的唯一來源,見 scripts/lib/product.env。
+# shellcheck source=lib/product.sh
+. "$HERE/lib/product.sh"
 
 IME_ID=""
 APKS=()
@@ -106,7 +109,7 @@ dump_logcat_on_fail() {
   [ -d "${OUT_DIR:-}" ] || return 0
   adbs logcat -d > "$OUT_DIR/logcat.txt" 2>/dev/null || true
   adbs shell dumpsys input_method > "$OUT_DIR/input_method.txt" 2>/dev/null || true
-  grep -Ei "rime|RimeQuad|org.rimequad|deploy|ANR|FATAL|died" \
+  grep -Ei "rime|$RS_PRODUCT_NAME|${IME_PKG:-$RS_ANDROID_APP_ID}|deploy|ANR|FATAL|died" \
     "$OUT_DIR/logcat.txt" > "$OUT_DIR/logcat-rime.txt" 2>/dev/null || true
   echo "  [INFO] 已存 logcat:$OUT_DIR/logcat.txt" >&2
 }

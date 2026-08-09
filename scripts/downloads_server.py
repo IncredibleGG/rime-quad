@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RimeQuad 下載頁 —— 區網內開一個頁面,把三端最新版列出來。
+"""下載頁 —— 區網內開一個頁面,把三端最新版列出來。
 
 為什麼要這個:發布地址散在對話紀錄裡找不回來,而且分不出哪個是新的。
 
@@ -15,13 +15,22 @@
 import argparse
 import html
 import json
+import os
 import re
 import subprocess
+import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-REMOTE = "r2:tgapk/rime"
-PUBLIC = "https://pub-d6a54d2e5f5947e2b0b23fb8e27ce0a5.r2.dev/rime"
+# 產品名與 R2 上的檔名都從共用設定來,見 scripts/lib/product.env。
+# ⚠ 產品名改了,R2 的路徑與檔名**沒有**跟著改 —— 頁面上寫的是新名字,
+#   下載下來的檔案還叫舊名字。那不是漏改:應用內升級與已經發出去的連結
+#   都指著那些名字,改了會斷。等發布搬到 GitHub Releases 時一起換。
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import product  # noqa: E402
+
+REMOTE = product.R2_REMOTE
+PUBLIC = f"https://pub-d6a54d2e5f5947e2b0b23fb8e27ce0a5.r2.dev/{product.R2_PREFIX}"
 CACHE_SECONDS = 30
 
 _cache = {"at": 0.0, "data": None}
@@ -88,18 +97,24 @@ def _pick(files, prefix, suffix):
     return got
 
 
+# R2 上的目錄與檔名字根(刻意保留舊名,見檔頭)。
+_MAC = product.R2_MACOS_DIR
+_WIN = product.R2_WINDOWS_DIR
+_BASE = product.R2_ARTIFACT_BASE
+
+
 def snapshot():
     now = time.time()
     if _cache["data"] and now - _cache["at"] < CACHE_SECONDS:
         return _cache["data"]
     files = _rclone_list()
     data = {
-        "android": _pick(files, "rime-android-", ".apk"),
+        "android": _pick(files, product.R2_ANDROID_APK_PREFIX, ".apk"),
         # 安裝程式是主要下載;壓縮包留給想手動放的人。
-        "macos": _pick(files, "macos/RimeQuad-macos-", ".pkg"),
-        "macos_archive": _pick(files, "macos/RimeQuad-macos-", ".tar.gz"),
-        "windows": _pick(files, "windows/RimeQuad-Setup-x64-", ".exe"),
-        "windows_archive": _pick(files, "windows/RimeQuad-windows-", ".zip"),
+        "macos": _pick(files, f"{_MAC}/{_BASE}-macos-", ".pkg"),
+        "macos_archive": _pick(files, f"{_MAC}/{_BASE}-macos-", ".tar.gz"),
+        "windows": _pick(files, f"{_WIN}/{_BASE}-Setup-x64-", ".exe"),
+        "windows_archive": _pick(files, f"{_WIN}/{_BASE}-windows-", ".zip"),
         "android_version": _android_version(),
         "at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
@@ -151,12 +166,14 @@ summary{cursor:pointer;color:#6b7280;font-size:13px}
 
 INSTALL = {
     "android": None,
-    "macos": """cd ~/Downloads
-tar xzf {file}
-xattr -dr com.apple.quarantine RimeQuad.app
+    # ⚠ 這裡的 .app 名字必須是**包裡真的那個名字**,不是產品名。對不上的話
+    #   使用者做完四步、系統一聲不吭地不載入它,而且沒有任何錯誤訊息。
+    "macos": f"""cd ~/Downloads
+tar xzf {{file}}
+xattr -dr com.apple.quarantine {product.MACOS_APP_BUNDLE}
 mkdir -p ~/Library/Input\\ Methods
-mv RimeQuad.app ~/Library/Input\\ Methods/
-open ~/Library/Input\\ Methods/RimeQuad.app""",
+mv {product.MACOS_APP_BUNDLE} ~/Library/Input\\ Methods/
+open ~/Library/Input\\ Methods/{product.MACOS_APP_BUNDLE}""",
     "windows": None,
 }
 
@@ -213,18 +230,19 @@ def page():
 
     parts = [
         '<div class="wrap">',
-        "<h1>RimeQuad 下載</h1>",
-        f'<div class="sub">四端 RIME 輸入法 · 清單直接讀自 R2,{d["at"]} 更新</div>',
+        f"<h1>{html.escape(product.PRODUCT_NAME)} 下載</h1>",
+        f'<div class="sub">{html.escape(product.PRODUCT_NAME_ZH)} · 以 RIME(librime)為引擎 · '
+        f'清單直接讀自 R2,{d["at"]} 更新</div>',
         card("Android", "可用的產品", "", d["android"], extra_meta=a_meta),
         card("macOS (Apple Silicon)", "帶設定介面", "warn", d["macos"],
              note="雙擊 .pkg,下一步到底,<b>裝完登出再登入</b>。"
-                  "然後系統設定 → 鍵盤 → 輸入來源 → + → 繁體中文/簡體中文 → RimeQuad。"
+                  f"然後系統設定 → 鍵盤 → 輸入來源 → + → 繁體中文/簡體中文 → {product.PRODUCT_NAME}。"
                   "設定從選單列上的輸入法圖示打開。"
                   "ad-hoc 簽章,不是可散布的正式版本。",
              alt=("手動安裝(進階)", d["macos_archive"])),
         card("Windows x64", "帶設定介面", "warn", d["windows"],
              note="雙擊 Setup.exe,它會自己要求管理員權限。"
-                  "裝完:設定 → 時間與語言 → 語言與地區 → 中文 → 選項 → 新增鍵盤 → RimeQuad。"
+                  f"裝完:設定 → 時間與語言 → 語言與地區 → 中文 → 選項 → 新增鍵盤 → {product.PRODUCT_NAME}。"
                   "設定從語言列按鈕或系統匣圖示打開。"
                   "<b>沒有程式碼簽章</b>,SmartScreen 會攔;而 TSF 的 DLL 會被載入到"
                   "每一個接受文字輸入的程式裡。",
@@ -242,7 +260,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         body = (f"<!doctype html><html lang=zh-Hant><head><meta charset=utf-8>"
                 f'<meta name=viewport content="width=device-width,initial-scale=1">'
-                f"<title>RimeQuad 下載</title><style>{CSS}</style></head>"
+                f"<title>{product.PRODUCT_NAME} 下載</title><style>{CSS}</style></head>"
                 f"<body>{page()}</body></html>").encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")

@@ -1,8 +1,16 @@
-# Rime 四端客戶端（工作名稱，待定）
+# LuminaKey
 
-基於 [librime](https://github.com/rime/librime) 的開源輸入法客戶端，目標覆蓋 **Android / iOS / Windows / macOS** 四端。
+**LuminaKey 輸入法** —— 基於 [librime](https://github.com/rime/librime) 的開源輸入法客戶端，
+覆蓋 **Android / iOS / Windows / macOS** 四個平台。
 
 Android 為標竿實現（reference implementation），其餘三端對齊其行為。
+
+> 名字的由來與「為什麼識別碼要趁現在一起改」見 [`docs/decisions/product-name.md`](docs/decisions/product-name.md)。
+> 產品名與各平台識別碼的**唯一來源**是 [`scripts/lib/product.env`](scripts/lib/product.env)，
+> 腳本一律從那裡讀 —— 這一輪改名之所以痛，就是因為同一個 id 曾在九支腳本裡各寫死一份。
+>
+> 倉庫名仍是 `rime-quad`、R2 的發布路徑仍是 `rime/…`：兩者都被既有的推送腳本與
+> **使用者裝置上的應用內升級**指著，改了會斷。這是刻意保留，不是漏改。
 
 ---
 
@@ -135,4 +143,6 @@ Android 之外的三端**無法在目前的建置環境上編譯或驗證**。�
 
 - **授權條款**：librime 本身為 BSD-3-Clause（寬鬆），但 Weasel / Squirrel / Trime 等現成前端為 GPL 系。
   若計畫參考或移植其程式碼，需先確認相容性——這會反過來決定本專案的授權選擇。
-- **專案正式名稱**與 bundle id / package name。
+- ~~**專案正式名稱**與 bundle id / package name~~ ——
+  2026-08-09 定為 **LuminaKey**（`org.luminakey.*`），見 `docs/decisions/product-name.md`。
+- **網域與商標查核**尚未做。名字定了不等於名字是安全的。

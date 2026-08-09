@@ -57,7 +57,7 @@
 # 這支腳本會失敗並明說是自己壞了,而不是報一個沒驗到的綠。
 #
 # 用法:
-#   ./verify_insets.sh --ime org.rimequad.ime/.RimeInputMethodService \
+#   ./verify_insets.sh --ime "$RS_ANDROID_IME_ID" \           # 值見 scripts/lib/product.env
 #                      [--apk <path>]... [--out <dir>]
 #
 # 環境變數:

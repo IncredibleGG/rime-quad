@@ -15,7 +15,7 @@
 #
 # 典型用法:
 #   ./verify_rime_compose.sh \
-#       --ime org.rimequad.ime/.RimeInputMethodService \
+#       --ime "$RS_ANDROID_IME_ID" \      # 值見 scripts/lib/product.env
 #       --apk android/app/build/outputs/apk/debug/app-debug.apk \
 #       --keys nihao --select space --expect 你好
 #
@@ -24,6 +24,10 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 EMU="$HERE/emu.sh"
+# 產品識別碼的唯一來源,見 scripts/lib/product.env。這支腳本的 --ime 是必填,
+# 讀進來是為了 logcat 的過濾字樣(拿產品名去撈 log 的那一行)。
+# shellcheck source=lib/product.sh
+. "$HERE/lib/product.sh"
 SDK="${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}"
 ADB="$SDK/platform-tools/adb"
 
@@ -106,7 +110,7 @@ dump_logcat_on_fail() {
   adbs logcat -d > "$OUT_DIR/logcat.txt" 2>/dev/null || true
   adbs shell dumpsys input_method > "$OUT_DIR/input_method.txt" 2>/dev/null || true
   # 部署訊息單獨抽一份出來,免得在幾萬行裡找。
-  grep -Ei "rime|RimeQuad|org.rimequad|deploy|ANR|FATAL|died" \
+  grep -Ei "rime|$RS_PRODUCT_NAME|${IME_PKG:-$RS_ANDROID_APP_ID}|deploy|ANR|FATAL|died" \
     "$OUT_DIR/logcat.txt" > "$OUT_DIR/logcat-rime.txt" 2>/dev/null || true
   echo "  [INFO] 已存 logcat:$OUT_DIR/logcat.txt($(wc -l < "$OUT_DIR/logcat.txt" 2>/dev/null || echo 0) 行)、logcat-rime.txt" >&2
 }

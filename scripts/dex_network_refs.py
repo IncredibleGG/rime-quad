@@ -16,7 +16,8 @@ audit_offline.sh 第 1 項是對 `android/app/src` 下 grep。那擋得住**我�
   2. **改名／反射／別的語言。** dex 裡存的是型別描述子，改名改不掉。
 
 所以這支腳本直接問 APK：`java.net.HttpURLConnection` 這個型別，**整個 dex 裡
-有哪些類別引用它**？答案必須正好是 `org.rimequad.ime.net.NetworkGate`。
+有哪些類別引用它**？答案必須正好是 NetworkGate（完整類別名由
+`scripts/lib/product.env` 決定，見下面的 `GATE_DESC`）。
 
 ═══════════════════════════════════════════════════════════════════════════
  判準是**集合相等**，不是「沒有壞東西」
@@ -48,6 +49,14 @@ import sys
 import tempfile
 import zipfile
 
+# 產品識別碼的唯一來源。dex 裡存的是型別描述子（Lorg/luminakey/ime/…;），
+# 那是套件名的另一種寫法，所以由套件名推出來而不是再寫死一份 —— 改名時
+# 這裡如果沒跟著改，這支腳本會報「引用者對不上」，看起來像有人開了第二條路。
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import product  # noqa: E402
+
+GATE_DESC = "L" + product.NETWORK_GATE_CLASS.replace(".", "/") + ";"
+
 # ── 釘死的引用者表 ─────────────────────────────────────────────────────────
 # 2026-08-08 在 app-debug.apk（未經 R8 縮減，所以是**最寬**的一份）上量出來的。
 # release 建置經過 R8 之後只會更少，而「更少」在這裡同樣要紅、同樣要有人看過。
@@ -55,16 +64,16 @@ EXPECTED = {
     # ★ 這一條是「單一連網出口」在產物層的證據。整個 APK 只有一個類別
     #   引用得到 HttpURLConnection —— 就是那個檔頭寫著「請自己 grep」的檔案。
     "Ljava/net/HttpURLConnection;": {
-        "Lorg/rimequad/ime/net/NetworkGate;",
+        GATE_DESC,
     },
     "Ljava/net/URLConnection;": {
-        "Lorg/rimequad/ime/net/NetworkGate;",
+        GATE_DESC,
     },
     # java.net.URL 本身連不了線（要 openConnection，見上面兩條）。這三個
     # 非我們的引用者都不是在連網：kotlin 的 URL.readText 擴充、coroutines 的
     # ServiceLoader（讀 classpath 資源）、okio 讀 jar: 內的資源。
     "Ljava/net/URL;": {
-        "Lorg/rimequad/ime/net/NetworkGate;",
+        GATE_DESC,
         "Lkotlin/io/TextStreamsKt;",
         "Lkotlinx/coroutines/internal/FastServiceLoader;",
         "Lokio/internal/ResourceFileSystem$Companion;",
@@ -110,7 +119,7 @@ def find_dexdump():
 
 
 def collect(apk, dexdump):
-    tmp = tempfile.mkdtemp(prefix="rimequad-dexrefs.")
+    tmp = tempfile.mkdtemp(prefix=product.PRODUCT_ID_ROOT + "-dexrefs.")
     try:
         with zipfile.ZipFile(apk) as z:
             names = [n for n in z.namelist() if re.fullmatch(r"classes\d*\.dex", n)]
@@ -200,7 +209,7 @@ def main():
     print("  [PASS] %d 個 dex，%d 個網路型別的引用者與釘死的清單完全相符"
           % (ndex, total))
     print("         其中 java.net.HttpURLConnection 的引用者只有 "
-          "org.rimequad.ime.net.NetworkGate —— 單一出口在**產物**上成立")
+          "%s —— 單一出口在**產物**上成立" % product.NETWORK_GATE_CLASS)
     return 0
 
 

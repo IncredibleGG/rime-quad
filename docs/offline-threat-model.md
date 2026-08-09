@@ -30,7 +30,7 @@
 
 ## 1. 連網面：單一出口
 
-**主張：整個 app 只有 `android/app/src/main/java/org/rimequad/ime/net/NetworkGate.kt`
+**主張：整個 app 只有 `android/app/src/main/java/org/luminakey/ime/net/NetworkGate.kt`
 一個檔案碰得到網路 API。**
 
 自己查：
@@ -91,7 +91,9 @@ adb logcat -s NetworkGate
 變成「沒有 UA」**，`HttpURLConnection` 會自己補一個帶 Android 版本與裝置型號的
 `Dalvik/2.1.0 (...)`，熵更高。
 
-守門：`audit_offline.sh` 第 7 項（UA 不含 `rime|quad|ime`，且請求標頭不夾帶
+守門：`audit_offline.sh` 第 7 項（UA 不含 `SELF_ID_UA_PATTERN` 裡的任何一個詞——
+見 `scripts/lib/product.env`，**改名時那一行要跟著加新名字**，否則守門的還在
+擋舊名、新名字大搖大擺地走出去——且請求標頭不夾帶
 `Build.*`）。
 
 ---
@@ -107,7 +109,7 @@ adb logcat -s NetworkGate
 `pub-d6a54d2e5f5947e2b0b23fb8e27ce0a5.r2.dev`。這個主機名是**本專案專屬**的
 ——它出現在 DNS 查詢與 TLS 的 SNI 裡，兩者都是**明文**。
 
-也就是說：我們花力氣把 `rimequad-android` 從 User-Agent 裡拿掉，避免被動觀察者
+也就是說：我們花力氣把帶著產品名的字樣從 User-Agent 裡拿掉，避免被動觀察者
 認出使用者，**但主機名把同一件事又講了一遍**，而且講得更早（連線建立之前）。
 改 UA 改不了這件事，我們也沒有在說明裡假裝改得了
 （見 `NetworkUi.kt` 的 `NetworkRequiredCard`）。
@@ -336,8 +338,8 @@ lua 的方案 → 不可以跑（而且「你好」照樣打得出來）；選�
 
 | 型別 | 引用者 |
 |---|---|
-| `java.net.HttpURLConnection` | **只有 `org.rimequad.ime.net.NetworkGate`** |
-| `java.net.URLConnection` | **只有 `org.rimequad.ime.net.NetworkGate`** |
+| `java.net.HttpURLConnection` | **只有 `org.luminakey.ime.net.NetworkGate`** |
+| `java.net.URLConnection` | **只有 `org.luminakey.ime.net.NetworkGate`** |
 | `java.net.URL` | NetworkGate、`kotlin.io.TextStreamsKt`、`kotlinx.coroutines.internal.FastServiceLoader`、`okio.internal.ResourceFileSystem$Companion` |
 | `java.net.Socket` | `androidx.core.net.TrafficStatsCompat`、`androidx.core.net.DatagramSocketWrapper`、`okio.Okio` 等 4 個 okio 類別 |
 | `java.net.DatagramSocket` | `androidx.core.net` 的那兩組工具類 |
