@@ -53,9 +53,31 @@ namespace rimewin {
 // 不透明。定義在 lang_bar.cc 裡,見上面的說明。
 class LangBarButton;
 
+// 這顆按鈕現在該不該顯示成「有事」。
+//
+// ⚠ 這是「拒絕啟動服務」唯一一個**使用者不必知道任何檔案存在**就看得到的
+//   出口。瘦 DLL 不畫東西、不開視窗(見本檔開頭的紀律),而服務進程那一側
+//   的系統匣圖示與設定視窗在這種情況下**正是沒有起來的那個東西** ——
+//   所以能說話的只剩語言列上這一格。
+//
+//   回 nullptr = 一切正常,按鈕顯示「設定」。
+//   回非 nullptr = 按鈕顯示「未啟動」,而回傳的字串就是工具提示的內容。
+//
+// ⚠ 回傳的指標必須是**靜態儲存期**的字面值(common/elevation_policy.cc)。
+//   這個函式會在 TSF 重畫語言列時被呼叫,時機不由我們決定,
+//   回一個區域字串等於回一個懸空指標。
+//
+// ⚠ 它也**不可以阻塞**。同理:它跑在宿主的 UI 執行緒上。
+using LangBarStatusFn = std::function<const wchar_t*()>;
+
 // 建立。配置失敗回 nullptr —— 呼叫端必須容許沒有這顆按鈕
 // (系統匣那條路是獨立的入口)。初始參考計數為 1。
-LangBarButton* CreateLangBarButton(std::function<void()> on_click);
+LangBarButton* CreateLangBarButton(std::function<void()> on_click,
+                                   LangBarStatusFn status);
+
+// 狀態變了,請語言列重新問一次文字與工具提示。
+// 沒有掛 sink 的宿主上這是 no-op —— 那時 TSF 會在下一次重畫時自己問。
+void RefreshLangBarButton(LangBarButton* item);
 
 // 掛上 / 拿掉。AddLangBarButton 回傳 false 代表這個宿主沒有語言列項目
 // 管理員 —— 那不是錯誤(某些宿主就是沒有),但也代表這顆按鈕在那裡

@@ -78,7 +78,17 @@ bool ServiceIsRunning() {
 
 bool LaunchService(const std::wstring& service_path) {
   if (service_path.empty()) return false;
-  if (IsProcessElevated()) return false;
+  // 判準與理由見 windows/common/elevation_policy.h。
+  //
+  // ⚠ 這裡**一定要留下一行記錄**。舊版是一句 `if (IsProcessElevated())
+  //   return false;`,安靜地什麼都不做 —— 於是「刻意不啟動」與「壞掉」
+  //   在使用者那裡長得一模一樣。
+  const HostElevation elev = ClassifyHostElevation();
+  if (!MayStartUserService(elev)) {
+    Trace("不啟動服務(刻意):%s / %s", HostElevationTag(elev),
+          HostElevationZh(elev));
+    return false;
+  }
 
   STARTUPINFOW si{};
   si.cb = sizeof(si);

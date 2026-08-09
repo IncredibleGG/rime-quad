@@ -20,6 +20,13 @@ namespace {
 constexpr wchar_t kButtonText[] = L"設定";
 constexpr wchar_t kTooltip[] = L"LuminaKey 輸入法設定";
 
+// 服務沒有(而且不會)起來時顯示的字。
+//
+// ⚠ 一個**刻意的**拒絕不該長得跟壞掉一樣。以前它只寫進一個使用者不知道
+//   存在的記錄檔,於是「我們決定不啟動」與「它壞了」在使用者眼裡完全相同。
+//   這四個字是那個決定唯一的可見痕跡。
+constexpr wchar_t kButtonTextWarn[] = L"未啟動";
+
 // 這個 cookie 只要不是 TF_INVALID_COOKIE 就好。用一個固定值:
 // 我們只接受一個 sink,而 TSF 也只會掛一個。
 constexpr DWORD kSinkCookie = 0x52494D45;  // 'RIME'
@@ -28,8 +35,25 @@ constexpr DWORD kSinkCookie = 0x52494D45;  // 'RIME'
 
 class LangBarButton final : public ITfLangBarItemButton, public ITfSource {
  public:
-  explicit LangBarButton(std::function<void()> on_click)
-      : on_click_(std::move(on_click)) {}
+  LangBarButton(std::function<void()> on_click, LangBarStatusFn status)
+      : on_click_(std::move(on_click)), status_(std::move(status)) {}
+
+  // 現在的狀態。nullptr = 正常。呼叫端在 UI 執行緒上,見 lang_bar.h。
+  const wchar_t* Warning() const {
+    if (!status_) return nullptr;
+    try {
+      return status_();
+    } catch (...) {
+      // 例外穿過 COM 邊界 = 宿主崩潰。狀態顯示不值得那個代價。
+      return nullptr;
+    }
+  }
+
+  // 語言列重新問一次。sink 沒掛上時 TSF 會在下一次重畫時自己問。
+  void NotifyUpdate() {
+    if (!sink_) return;
+    sink_->OnUpdate(TF_LBI_TEXT | TF_LBI_TOOLTIP | TF_LBI_STATUS);
+  }
 
   // ── IUnknown ────────────────────────────────────────────────
 
@@ -67,7 +91,9 @@ class LangBarButton final : public ITfLangBarItemButton, public ITfSource {
     info->dwStyle = TF_LBI_STYLE_BTN_BUTTON | TF_LBI_STYLE_SHOWNINTRAY;
     info->ulSort = 0;
     // szDescription 是固定長度陣列(TF_LBI_DESC_MAXLEN),不是指標。
-    ::StringCchCopyW(info->szDescription, TF_LBI_DESC_MAXLEN, kTooltip);
+    const wchar_t* warn = Warning();
+    ::StringCchCopyW(info->szDescription, TF_LBI_DESC_MAXLEN,
+                     warn ? warn : kTooltip);
     return S_OK;
   }
 
@@ -85,7 +111,8 @@ class LangBarButton final : public ITfLangBarItemButton, public ITfSource {
 
   STDMETHODIMP GetTooltipString(BSTR* tooltip) override {
     if (!tooltip) return E_INVALIDARG;
-    *tooltip = ::SysAllocString(kTooltip);
+    const wchar_t* warn = Warning();
+    *tooltip = ::SysAllocString(warn ? warn : kTooltip);
     return *tooltip ? S_OK : E_OUTOFMEMORY;
   }
 
@@ -126,7 +153,8 @@ class LangBarButton final : public ITfLangBarItemButton, public ITfSource {
 
   STDMETHODIMP GetText(BSTR* text) override {
     if (!text) return E_INVALIDARG;
-    *text = ::SysAllocString(kButtonText);
+    // 服務不會起來時,這一格是使用者唯一看得到的訊號。
+    *text = ::SysAllocString(Warning() ? kButtonTextWarn : kButtonText);
     return *text ? S_OK : E_OUTOFMEMORY;
   }
 
@@ -166,14 +194,21 @@ class LangBarButton final : public ITfLangBarItemButton, public ITfSource {
 
   LONG ref_ = 1;
   std::function<void()> on_click_;
+  LangBarStatusFn status_;
   ITfLangBarItemSink* sink_ = nullptr;
   DWORD sink_cookie_ = 0;
 };
 
 // ───────────────────────── 對外的四個函式 ─────────────────────────
 
-LangBarButton* CreateLangBarButton(std::function<void()> on_click) {
-  return new (std::nothrow) LangBarButton(std::move(on_click));
+LangBarButton* CreateLangBarButton(std::function<void()> on_click,
+                                   LangBarStatusFn status) {
+  return new (std::nothrow)
+      LangBarButton(std::move(on_click), std::move(status));
+}
+
+void RefreshLangBarButton(LangBarButton* item) {
+  if (item) item->NotifyUpdate();
 }
 
 void ReleaseLangBarButton(LangBarButton* item) {

@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "../common/ime_policy.h"
+#include "../common/key_eat_policy.h"
 #include "../winshared/winutil.h"
 #include "guids.h"
 #include "lang_bar.h"
@@ -134,13 +135,32 @@ DWORD WINAPI ServiceStarterThread(LPVOID param) {
 // 執行緒,每一條都去問一次「服務在不在」。
 LONG g_service_start_once = 0;
 
+// 這個宿主可不可以啟動服務。判準與理由見 common/elevation_policy.h。
+//
+// ⚠ 進程的一生中不會變,所以問一次就好 —— 但**不要**在 DllMain 裡問
+//   (那裡是載入器鎖)。第一次呼叫發生在 ActivateEx 或語言列重畫,
+//   兩者都遠在載入器鎖之外。
+HostElevation HostElevationOnce() {
+  static const HostElevation e = ClassifyHostElevation();
+  return e;
+}
+
 void StartServiceInBackground(const std::wstring& service_path) {
   if (service_path.empty()) return;
   if (::InterlockedCompareExchange(&g_service_start_once, 1, 0) != 0) return;
-  // 提權的宿主一律不啟動(理由見 ipc_client.h 的 LaunchService)。
-  // 在這裡就先擋掉,連執行緒都不必開。
-  if (IsProcessElevated()) {
-    Trace("ActivateEx:宿主是提權的,不啟動服務(刻意)");
+  // ⚠ 這裡以前是 `if (IsProcessElevated())` —— 一句「提權就不啟動」。
+  //
+  //   理由是對的(提權的服務會把使用者詞庫的擁有者換掉),但涵蓋過頭:
+  //   內建 Administrator 帳號與關掉 UAC 的機器上,**每一個進程都是提權的**,
+  //   於是服務永遠不會被啟動 —— 沒有系統匣圖示、沒有設定視窗、打不出字,
+  //   三個症狀一個原因,而且沒有任何錯誤訊息。實測回報就是這一種。
+  //
+  //   現在問的是正確的問題:「這個使用者在這個工作階段裡,還有沒有另一份
+  //   非提權的身分會被我們弄壞?」見 common/elevation_policy.h。
+  const HostElevation elev = HostElevationOnce();
+  if (!MayStartUserService(elev)) {
+    Trace("ActivateEx:不啟動服務(刻意):%s / %s", HostElevationTag(elev),
+          HostElevationZh(elev));
     return;
   }
   std::wstring* copy = new (std::nothrow) std::wstring(service_path);
@@ -319,7 +339,21 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* mgr, TfClientId id,
 
   // 語言列上的設定按鈕。加不上去不是錯誤(某些宿主沒有語言列),
   // 系統匣那條路是獨立的。
-  lang_bar_ = CreateLangBarButton([this]() { OpenSettings(); });
+  //
+  // ⚠ 第二個參數是「拒絕啟動服務」唯一一個使用者看得到的出口。
+  //   條件是**兩個都成立**才示警:我們不會啟動它,而且它現在也沒在跑。
+  //   少了後半條的話,分裂權杖的機器上(提權視窗 + 一般視窗並存,
+  //   而服務由一般視窗那一邊帶起來了)使用者會在提權視窗裡看到一個
+  //   「未啟動」的警告,而輸入法明明好端端地能用 —— 那是在製造假警報,
+  //   而假警報會讓真警報失去意義。
+  lang_bar_ = CreateLangBarButton(
+      [this]() { OpenSettings(); },
+      []() -> const wchar_t* {
+        const HostElevation e = HostElevationOnce();
+        if (MayStartUserService(e)) return nullptr;
+        if (ServiceIsRunning()) return nullptr;
+        return HostElevationTooltipW(e);
+      });
   if (lang_bar_ && !AddLangBarButton(thread_mgr_, lang_bar_)) {
     ReleaseLangBarButton(lang_bar_);
     lang_bar_ = nullptr;
@@ -433,6 +467,9 @@ STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr* focus,
     });
     Result r;
     ipc_.SendClear(&r);
+    // 引擎手上的輸入被清掉了 —— Composing() 必須跟著回到 false,
+    // 否則退格會繼續被當成「組字中的鍵」而吃掉,使用者就刪不掉字。
+    engine_composing_ = false;
   }
   ipc_.SendFocus(focus != nullptr);
   return S_OK;
@@ -453,28 +490,40 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* ctx, WPARAM w, LPARAM l,
   RIME_GUARD_BEGIN
   if (!eaten) return E_INVALIDARG;
   *eaten = FALSE;
-  // OnTestKeyDown 不可以有副作用,所以這裡只做「有沒有可能是我們的」判斷:
-  // 映射得出 keysym,而且連線是通的。
+  // OnTestKeyDown 不可以有副作用,所以這裡只做「這顆鍵是不是我們的」判斷。
   //
-  // 回 TRUE 但稍後 OnKeyDown 回 FALSE 是合法的 —— TSF 會把那顆鍵交回宿主。
-  // 反過來(這裡回 FALSE)則 OnKeyDown 根本不會被呼叫,那顆鍵就永遠進不到引擎。
-  // 所以這裡寧可寬鬆。
+  // ⚠⚠ **這一趟說「吃」,就等於承諾了 OnKeyDown 會處理它。**
+  //
+  //   舊版的註解寫「回 TRUE 但稍後 OnKeyDown 回 FALSE 是合法的 —— TSF 會把
+  //   那顆鍵交回宿主」。**那句話是錯的。** 宿主(以及 Windows 給非 TSF
+  //   感知程式用的 CUAS 相容層)在這一趟聽到「吃」的當下就放棄了自己的
+  //   預設處理;事後改口說沒吃時,那顆鍵已經回不去了。
+  //
+  //   使用者回報的「可以打字,不能刪除」就是這樣來的:退格映得出 keysym、
+  //   連線也是通的,於是這裡說吃;引擎在沒有組字時不處理退格,於是
+  //   OnKeyDown 說不吃 —— 那顆鍵掉進兩邊中間的黑洞。
+  //
+  //   所以現在多問一個問題:**這顆鍵在目前的狀態下,真的是我們的嗎?**
+  //   規則(以及為什麼字元鍵與功能鍵的規則不一樣)在
+  //   common/key_eat_policy.h 的檔頭。
+  //
   // 走到這裡就代表 key event sink 是好的 —— 它沒掛上的話這個函式
   // 根本不會被呼叫。所以「記錄裡完全沒有按鍵行」與「按鍵行的 keysym 是 0」
   // 是兩件完全不同的事,前者要查的是 ActivateEx 那一段。
-  const MappedKey mapped = MapKey(BuildKeyEvent(w, l, false), Oracle());
-  const bool ready = mapped.keysym != 0 && ipc_.EnsureReady();
+  const KeyPlan plan = PlanKey(w, l, /*key_up=*/false);
+  const bool ready = plan.eat && ipc_.EnsureReady();
   if (key_trace_budget_ > 0) {
     --key_trace_budget_;
-    // 三個欄位就足以指出斷在哪一段:
-    //   keysym == 0        → 佈局那一段(按鍵根本沒進引擎,見 win32_oracle.h)
-    //   keysym != 0, !ready → IPC 那一段(上面 EnsureReady 已經記了原因)
-    //   兩者都好           → 這一顆真的進了引擎
-    Trace("按鍵 vk=0x%02X scan=0x%02X keysym=0x%X mods=0x%X 吃掉=%d",
+    // 五個欄位就足以指出斷在哪一段:
+    //   keysym == 0         → 佈局那一段(按鍵根本沒進引擎,見 win32_oracle.h)
+    //   族別 + 組字中 = 不吃 → 刻意放行給宿主(退格在沒有組字時就走這裡)
+    //   吃了但 !ready       → IPC 那一段(上面 EnsureReady 已經記了原因)
+    Trace("按鍵 vk=0x%02X scan=0x%02X keysym=0x%X mods=0x%X 族=%s 組字中=%d 吃掉=%d",
           static_cast<unsigned>(w),
           static_cast<unsigned>((l >> 16) & 0xFF),
-          static_cast<unsigned>(mapped.keysym),
-          static_cast<unsigned>(mapped.modifiers), ready ? 1 : 0);
+          static_cast<unsigned>(plan.mapped.keysym),
+          static_cast<unsigned>(plan.mapped.modifiers), KeyKindTag(plan.kind),
+          Composing() ? 1 : 0, ready ? 1 : 0);
     if (key_trace_budget_ == 0)
       Trace("(按鍵記錄額度用完,之後不再記 —— 它在宿主的 UI 執行緒上)");
   }
@@ -523,6 +572,9 @@ STDMETHODIMP TextService::OnCompositionTerminated(TfEditCookie /*ec*/,
     }
     Result r;
     ipc_.SendClear(&r);
+    // 引擎手上的輸入被清掉了 —— Composing() 必須跟著回到 false,
+    // 否則退格會繼續被當成「組字中的鍵」而吃掉,使用者就刪不掉字。
+    engine_composing_ = false;
   }
   return S_OK;
   RIME_GUARD_END_HR
@@ -541,19 +593,106 @@ const Win32KeyboardOracle& TextService::Oracle() {
   return *oracle_;
 }
 
+TextService::KeyPlan TextService::PlanKey(WPARAM w, LPARAM l, bool key_up) {
+  KeyPlan p;
+  p.mapped = MapKey(BuildKeyEvent(w, l, key_up), Oracle());
+  p.kind = ClassifyKeyKind(p.mapped.keysym, p.mapped.modifiers);
+  p.eat = ShouldEatKey(p.kind, Composing());
+  return p;
+}
+
+bool TextService::SelfInsertChar(ITfContext* ctx, char32_t ch) {
+  if (!ctx || ch == 0) return false;
+  // char32_t → UTF-16。BMP 以外要拆成代理對,不然使用者按出來的字會變成
+  // 一個問號 —— 而那種字元真的存在於某些佈局上。
+  std::wstring text;
+  if (ch < 0x10000) {
+    text.push_back(static_cast<wchar_t>(ch));
+  } else {
+    const char32_t v = ch - 0x10000;
+    text.push_back(static_cast<wchar_t>(0xD800 + (v >> 10)));
+    text.push_back(static_cast<wchar_t>(0xDC00 + (v & 0x3FF)));
+  }
+  RunSyncSession(ctx, client_id_,
+                 [this, ctx, &text](TfEditCookie ec) -> HRESULT {
+                   return InsertText(ec, ctx, text);
+                 });
+  return true;
+}
+
 bool TextService::HandleKey(ITfContext* ctx, WPARAM w, LPARAM l, bool key_up) {
-  const MappedKey mapped = MapKey(BuildKeyEvent(w, l, key_up), Oracle());
-  if (mapped.keysym == 0) return false;
+  // ⚠ 與 OnTestKeyDown 用**同一份**判斷。兩邊分岔 = 黑洞(見那裡的說明)。
+  const KeyPlan plan = PlanKey(w, l, key_up);
+  if (!plan.eat) return false;
 
-  if (!ipc_.EnsureReady()) return false;
-
-  Result result;
-  if (!ipc_.SendKey(mapped.keysym, mapped.modifiers, &result)) {
-    // ⚠ 這裡是「按鍵永久變灰」的分岔點。拿不到結果就**放行**,
-    //   不可以吃掉。使用者打不出中文會抱怨,打不出任何字則是電腦壞了。
+  // ⚠ 連線斷掉時一定要把 engine_composing_ 歸零。
+  //
+  //   它是「退格算不算我們的」的依據之一(見 Composing())。連線斷在
+  //   組字進行到一半的時候,這個旗標會**永遠停在 true** —— 於是使用者
+  //   從此每一顆退格都被吃掉、而引擎又收不到,那顆鍵就再也沒有作用了。
+  //   一個「暫時的連線失敗」不該留下一顆永久壞掉的鍵。
+  if (!ipc_.EnsureReady()) {
+    engine_composing_ = false;
     return false;
   }
-  if (!result.handled) return false;
+
+  Result result;
+  if (!ipc_.SendKey(plan.mapped.keysym, plan.mapped.modifiers, &result)) {
+    // ⚠ 這裡是「按鍵永久變灰」的分岔點。拿不到結果就**放行**,
+    //   不可以吃掉。使用者打不出中文會抱怨,打不出任何字則是電腦壞了。
+    engine_composing_ = false;
+    return false;
+  }
+  if (!result.handled) {
+    // 引擎不處理這顆鍵 —— 但我們在 OnTestKeyDown 已經宣告吃掉它了,
+    // 宿主不會再處理它。所以這裡必須有人負責。
+    //
+    // ── 沒有組字時:字元鍵由我們自己把字寫進文件 ─────────────────
+    //
+    //   這條路每天都會走到:英數模式底下每一顆字母、朗月拼音底下的數字,
+    //   引擎都不處理。(為什麼不乾脆不吃它們:哪些字元會起頭是**方案**
+    //   決定的,注音的 alphabet 含數字。見 key_eat_policy.h。)
+    //
+    // ── 組字進行中:吃掉並且什麼都不做 ───────────────────────────
+    //
+    //   ⚠ 這一段是刻意的,不是偷懶。組字進行中,輸入法擁有這個輸入脈絡:
+    //
+    //     · 自己插字元 → 會插進組字的 range 裡,把 preedit 弄壞。
+    //     · 放行給宿主 → 宿主會拿 Tab / 方向鍵去動**它自己的**游標,
+    //       而那個游標正壓在一段進行中的組字上。使用者看到的是組字
+    //       突然跳到別的地方、或文件裡多出半截 preedit。
+    //
+    //   兩條都比「什麼都不做」糟。而且這樣一來
+    //   「OnTestKeyDown 說吃 ⟹ OnKeyDown 也說吃」是**結構上**成立的,
+    //   不是碰運氣 —— verify_input_matrix.sh 的 MISMATCH 那一格量的就是它。
+    //   (唯一的例外是連線在兩趟之間斷掉,而那條路上面已經放行了。)
+    if (ShouldSelfInsert(plan.kind) && !composition_) {
+      const char32_t ch = CharForSelfInsert(plan.mapped.keysym);
+      if (ch != 0 && SelfInsertChar(ctx, ch)) {
+        // 這條路每天都會走到(英數模式的每一顆字母),所以額度要與按鍵那一行
+        // 共用 —— 不然它會變成一條每顆按鍵一次磁碟寫入的路徑,而這裡是
+        // 宿主的 UI 執行緒。
+        if (key_trace_budget_ > 0) {
+          --key_trace_budget_;
+          Trace("引擎不吃這顆字元鍵,由我們補進文件 keysym=0x%X",
+                static_cast<unsigned>(plan.mapped.keysym));
+        }
+        return true;
+      }
+    }
+    // 組字進行中 → 吃掉並且什麼都不做(理由見上面那段)。
+    //
+    // ⚠ 用 Composing() 而不是 composition_:引擎說它還在組字、而我們這一側
+    //   的組字沒開起來(StartComposition 失敗)時,這顆鍵在 OnTestKeyDown
+    //   已經被宣告吃掉了 —— 這裡要用**同一個**條件回答,不然那一格就是黑洞。
+    if (Composing()) return true;
+
+    // 走到這裡 = 沒有組字、而且這顆鍵不是字元鍵(或字元補不出來)。
+    // 依 key_eat_policy 的規則,功能鍵在沒有組字時根本不會被宣告吃掉,
+    // 所以正常情況到不了這裡。真的到了就放行 ——
+    // 放行最壞是「這顆鍵沒作用」,吃掉最壞是「這顆鍵永遠壞了」。
+    return false;
+  }
 
   pending_rect_ = false;
   const Snapshot snap = result.snap;
@@ -573,6 +712,11 @@ bool TextService::HandleKey(ITfContext* ctx, WPARAM w, LPARAM l, bool key_up) {
 
 HRESULT TextService::ApplyPlan(TfEditCookie ec, ITfContext* ctx,
                                const Snapshot& snap) {
+  // 引擎自己說的「我還在組字」。下一顆按鍵要靠它決定退格是誰的
+  // (見 Composing())。**一定要在這裡更新**:少了它,StartComposition
+  // 失敗的那個宿主上引擎會一直卡著上一段輸入,而使用者按退格會被放行給宿主,
+  // 於是他刪的是自己文件裡的字,而組字串原封不動。
+  engine_composing_ = (snap.status_flags & kStComposing) != 0;
   const HostPlan plan = PlanFromSnapshot(composition_ != nullptr, snap);
   const std::wstring commit = Utf8ToWide(plan.commit_text);
   const std::wstring preedit = Utf8ToWide(plan.preedit);
@@ -843,10 +987,13 @@ void TextService::OpenSettings() {
   Trace("設定按鈕:路3(CreateProcess)");
 
   // 路 3:服務根本沒在跑 → 把它叫起來,直接開設定視窗。
-  // ⚠ 提權的宿主不可以啟動服務(見 ipc_client.cc 的說明:那會產生一支
-  //   提權的服務,把使用者詞庫檔案的擁有者換掉)。所以這裡什麼都不做 ——
-  //   使用者在提權視窗裡本來就沒有輸入法。
-  if (IsProcessElevated()) return;
+  // ⚠ 判準與 ActivateEx 那一條**必須是同一個**,不然會出現「按鈕按得動
+  //   但服務起不來」或反過來。見 common/elevation_policy.h。
+  if (!MayStartUserService(HostElevationOnce())) {
+    Trace("設定按鈕:不啟動服務(刻意):%s",
+          HostElevationTag(HostElevationOnce()));
+    return;
+  }
   std::wstring exe = ModuleDirectory(g_rime_module);
   if (exe.empty()) return;
   exe += L"\\rime_service.exe";
