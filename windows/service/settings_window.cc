@@ -296,8 +296,10 @@ void SettingsWindow::ThreadMain() {
       0, kClass, UiText(UiString::kWindowTitle),
       // ⚠ WS_VSCROLL 不只是「能捲」:它是**唯一的提示**。少了那條捲軸,
       //   內容被切在底部那條 hairline 上,看起來像「這頁就這麼長」。
+      // ⚠ WS_CLIPCHILDREN:沒有它,父視窗每一次重畫都會先把每一顆控制項
+      //   底下那塊塗成背景色,子控制項再自己畫回去 —— 捲動時整頁在閃。
       WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX |
-          WS_THICKFRAME | WS_VSCROLL,
+          WS_THICKFRAME | WS_VSCROLL | WS_CLIPCHILDREN,
       CW_USEDEFAULT, CW_USEDEFAULT, 100, 100, nullptr, nullptr, wc.hInstance,
       this);
   if (ready_) ::SetEvent(ready_);
@@ -694,8 +696,11 @@ void SettingsWindow::LayoutUi() {
   const int cx = ContentXDip(W);
   const int cw = ContentWidthDip(W);
 
+  // ⚠ -2 =「不知道現在裁到哪」,-1 =「確定沒有裁」。兩個混用的話,
+  //   換 DPI 之後那些**應該解除裁切**的控制項會保留舊的區域,
+  //   而症狀是「調了縮放之後有幾顆控制項被切掉一半」。
   if (static_cast<int>(clip_h_.size()) != kControlCount)
-    clip_h_.assign(kControlCount, -1);
+    clip_h_.assign(kControlCount, -2);
 
   for (int i = 0; i < kControlCount; ++i) {
     const int id = kControls[i].id;
@@ -1085,6 +1090,8 @@ void SettingsWindow::OnDpiChanged(UINT dpi, const RECT* suggested) {
   // 字型是像素單位的 —— 不重建就是模糊或錯大小。
   fonts_.Reset(dpi_, script());
   ApplyFonts();
+  // 區域是像素單位的 —— DPI 換了就全部作廢,一律重算(見 clip_h_ 的說明)。
+  clip_h_.assign(clip_h_.size(), -2);
   if (suggested)
     ::SetWindowPos(hwnd_, nullptr, suggested->left, suggested->top,
                    suggested->right - suggested->left,
