@@ -626,6 +626,20 @@ QWERTZ 自動正確** —— 系統給的 `charactersIgnoringModifiers` 已經�
 | 端 | 狀態 |
 |---|---|
 | Android | 有(只寫 `swap`、一次一層;UI 是全專案離規範最遠的一頁,見 `ui-design.md` §7.7) |
-| macOS | 有(`apple/.../KeyRemap.swift`、`KeyRemapStore.swift`、`SettingsSources/RemapPage.swift`,34 項單元測試) |
+| macOS | 有(`apple/.../KeyRemap.swift`、`KeyRemapStore.swift`、`SettingsSources/RemapPage.swift`)。單元測試含兩條**跨端對照**:直接去讀 `android/.../UserLayoutStore.kt` 比對檔名與欄位名、去讀 `core/layouts/qwerty.yaml` 比對 §7.5 那個對照關係 —— 那兩份檔案都不是 macOS 端的,而假設破掉的症狀是**鍵被換到別顆去、畫面完全正常**。⚠ 真機上按下去的行為一項都沒驗到,見 §7.12 |
 | Windows | 無 —— 要做什麼見 `docs/coordination.md` §5 |
 | iOS | 無 |
+
+### 7.12 沒有被驗到的部分(誠實欄)
+
+CI 的 macOS runner **沒有登入的圖形工作階段**,所以下面這些一項都沒驗到。
+**不要把「CI 全綠」讀成「這個功能能用」** —— 這個專案有過編譯成功、
+單元測試全過、發布關卡全綠,而使用者一裝上去按鍵永久變灰。
+
+* 換鍵那一頁畫不畫得出來、鍵盤縮圖排不排得整齊、按鈕按不按得下去。
+* 換完之後回到文字框,按 `a` 是不是**真的**出 `s`;⌘A 是不是**真的**還是全選。
+* 手機與電腦之間真的互換一次檔案。目前只驗到「讀得懂手寫的 Android 格式」,
+  沒有拿一台真手機寫出來的檔案餵給桌面端,也沒有反過來。
+* 換鍵與方案切換、輸入模式切換、重新部署之間的交互。
+
+這些屬於 task #46(macOS 真機驗證清單)與 task #48(Windows 的同一份)。
