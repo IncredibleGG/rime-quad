@@ -82,7 +82,12 @@ pending_filter() {  # $1 = 安裝目錄(Windows 路徑);讀 stdin
 
 # ── 反向測試:證明這條判準真的抓得到「不是 rime_tsf.dll」的那些 ──
 if [ "${1:-}" = "--self-check-pending" ]; then
-  DIR='C:\Program Files\LuminaKey'
+  # ⚠ 刻意用一個**不存在的假目錄**,不是真的安裝目錄:
+  #   (a) 這一支驗的是判準本身,目錄只是它的參數;
+  #   (b) 產品識別碼在腳本裡寫死是被 scripts/verify_product_ids.sh 擋的
+  #       (唯一來源是 scripts/lib/product.env)—— 這個自檢跑在
+  #       product_win.sh 被 source 之前,所以它不該去碰真的名字。
+  DIR='Z:\NotAProduct\FakeInstallDir'
   sc_fail=0
   sc() {  # 名稱 期望命中數 佇列內容
     local name="$1" want="$2" body="$3" got
@@ -99,26 +104,26 @@ if [ "${1:-}" = "--self-check-pending" ]; then
 
   sc "空佇列" 0 ""
   sc "只有我們自己排的舊 DLL 清理(不算)" 0 \
-     'C:\Program Files\LuminaKey\rime_tsf.dll.old-20260810120000'
+     'Z:\NotAProduct\FakeInstallDir\rime_tsf.dll.old-20260810120000'
   sc "rime_tsf.dll 被排進去" 1 \
-     'C:\Program Files\LuminaKey\rime_tsf.dll'
+     'Z:\NotAProduct\FakeInstallDir\rime_tsf.dll'
   sc "rime_service.exe 被排進去" 1 \
-     'C:\Program Files\LuminaKey\rime_service.exe'
+     'Z:\NotAProduct\FakeInstallDir\rime_service.exe'
   sc "詞典被排進去" 1 \
-     'C:\Program Files\LuminaKey\data\shared\luna_pinyin.dict.yaml'
+     'Z:\NotAProduct\FakeInstallDir\data\shared\luna_pinyin.dict.yaml'
   sc "別人的檔案(不在安裝目錄底下)不算" 0 \
      'C:\Windows\System32\somebody_else.dll'
   sc "混在一起:兩個我們的 + 一個清理 + 一個別人的" 2 \
-     'C:\Program Files\LuminaKey\rime_service.exe
-C:\Program Files\LuminaKey\rime_tsf.dll.old-20260810120000
+     'Z:\NotAProduct\FakeInstallDir\rime_service.exe
+Z:\NotAProduct\FakeInstallDir\rime_tsf.dll.old-20260810120000
 C:\Windows\System32\somebody_else.dll
-C:\Program Files\LuminaKey\data\shared\essay.txt'
+Z:\NotAProduct\FakeInstallDir\data\shared\essay.txt'
 
   # 舊判準漏掉的那幾種,逐一指名 —— 這就是這次修的東西。
   for entry in \
-      'C:\Program Files\LuminaKey\rime_service.exe' \
-      'C:\Program Files\LuminaKey\data\shared\luna_pinyin.dict.yaml' \
-      'C:\Program Files\LuminaKey\rime_ime_setup.exe'
+      'Z:\NotAProduct\FakeInstallDir\rime_service.exe' \
+      'Z:\NotAProduct\FakeInstallDir\data\shared\luna_pinyin.dict.yaml' \
+      'Z:\NotAProduct\FakeInstallDir\rime_ime_setup.exe'
   do
     n_old="$(printf '%s\n' "${entry}" | old_rule)"
     n_new="$(printf '%s\n' "${entry}" | pending_filter "${DIR}" | grep -c . || true)"

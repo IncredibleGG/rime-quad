@@ -368,6 +368,12 @@ run_checks() {
   check
   local w12bad=0
   local w12out; w12out="$("${PY}" - "${CODE_DIR}" <<'PYSCRIPT'
+import sys as _s
+# ⚠ windows-latest 的 runner 上 python 的 print 吐的是 CRLF。bash 的 $(...)
+#   只剥掉末尾的 \n,於是每一行都帶著 \r —— `case "${line}" in SCOPE_OK)`
+#   就對不上,而症狀是「未知的回報:SCOPE_OK」這種看不懂的紅字。
+#   (實際發生過:CI run 31331902667 的 W12。)
+_s.stdout.reconfigure(encoding='utf-8', newline='')
 import glob, os, re, sys
 root = sys.argv[1]
 out = []
@@ -413,6 +419,7 @@ ${w12out}" ;;
   need_scope "W12 WM_SETTINGCHANGE 分支數" "${nw12}" 2 || w12bad=1
   local line12
   while IFS= read -r line12; do
+    line12="${line12%$'\r'}"   # 雙保險:助手萬一又吐 CRLF
     case "${line12}" in
       ''|SCOPE_OK|HANDLERS=*) continue ;;
       NO_COMPARE_FN) w12msg "找不到 Theme::IsColorSetChange —— 掃描範圍錯了" ;;
@@ -663,6 +670,12 @@ PYSCRIPT
   check
   local w25bad=0
   local w25out; w25out="$("${PY}" - "${sw}" "${CODE_DIR}/common/ui_layout.cc" <<'PYSCRIPT'
+import sys as _s
+# ⚠ windows-latest 的 runner 上 python 的 print 吐的是 CRLF。bash 的 $(...)
+#   只剥掉末尾的 \n,於是每一行都帶著 \r —— `case "${line}" in SCOPE_OK)`
+#   就對不上,而症狀是「未知的回報:SCOPE_OK」這種看不懂的紅字。
+#   (實際發生過:CI run 31331902667 的 W12。)
+_s.stdout.reconfigure(encoding='utf-8', newline='')
 import re, sys
 sw = open(sys.argv[1], encoding='utf-8', errors='replace').read()
 lay = open(sys.argv[2], encoding='utf-8', errors='replace').read()
@@ -749,6 +762,7 @@ ${w25out}" ;;
   esac
   local line
   while IFS= read -r line; do
+    line="${line%$'\r'}"   # 雙保險:助手萬一又吐 CRLF
     case "${line}" in
       ''|SCOPE_OK) continue ;;
       NO_MAINWIN)  w25msg "找不到 hwnd_ = ::CreateWindowExW( —— 掃描範圍錯了" ;;
@@ -842,6 +856,12 @@ PYSCRIPT
   #   所以現在對**兩格**(中/En 與 简/繁)都要求同一個形狀,而且要求
   #   順序:先寫本地狀態 → 再送出去 → 再重畫。少一步就紅。
   local w26c; w26c="$("${PY}" - "${bar}" <<'PYSCRIPT'
+import sys as _s
+# ⚠ windows-latest 的 runner 上 python 的 print 吐的是 CRLF。bash 的 $(...)
+#   只剥掉末尾的 \n,於是每一行都帶著 \r —— `case "${line}" in SCOPE_OK)`
+#   就對不上,而症狀是「未知的回報:SCOPE_OK」這種看不懂的紅字。
+#   (實際發生過:CI run 31331902667 的 W12。)
+_s.stdout.reconfigure(encoding='utf-8', newline='')
 import re, sys
 s = open(sys.argv[1], encoding='utf-8', errors='replace').read()
 out = []
@@ -888,6 +908,7 @@ ${w26c}" ;;
   esac
   local l26
   while IFS= read -r l26; do
+    l26="${l26%$'\r'}"   # 雙保險:助手萬一又吐 CRLF
     case "${l26}" in
       ''|SCOPE_OK) continue ;;
       NOFUNC)   w26msg "找不到 StatusBar::ClickCell —— 掃描範圍錯了" ;;
