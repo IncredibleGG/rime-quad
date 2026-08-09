@@ -1,5 +1,7 @@
 #include "text_service.h"
 
+#include "../common/ui_strings.h"
+
 #include <functional>
 #include <new>
 #include <vector>
@@ -902,6 +904,8 @@ STDMETHODIMP TextService::OnActivated(DWORD /*profile_type*/, LANGID langid,
   // 所以 TSF 不會重新 Activate)。在這之前它整條是紙上的。
   Trace("profile sink:啟用 langid=0x%04X", static_cast<unsigned>(langid));
   ipc_.SetProfile(static_cast<uint32_t>(langid), GuidToUtf8(guid_profile));
+  // 語言列按鈕上的字跟著這一份語言設定檔走(見 lang_bar.cc 的說明)。
+  SetUiLang(ResolveUiLang("system", static_cast<uint32_t>(langid)));
   return S_OK;
   RIME_GUARD_END_HR
 }
@@ -965,6 +969,7 @@ void TextService::RefreshProfile() {
   Trace("語言設定檔:%s langid=0x%04X guid=%s", layer,
         static_cast<unsigned>(langid), guid.empty() ? "(沒有)" : guid.c_str());
   ipc_.SetProfile(langid, guid);
+  SetUiLang(ResolveUiLang("system", langid));
 }
 
 void TextService::OpenSettings() {

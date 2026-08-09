@@ -21,9 +21,16 @@
 
 namespace rimewin {
 
+class StatusBar;
+
 class PipeServer {
  public:
   PipeServer(Engine* engine, CandidateUi* ui, SettingsStore* settings);
+
+  // ⚠ 懸浮狀態列顯示的是**引擎說的**中英／簡繁,不是我們以為的 ——
+  //   使用者用方案自己的按鍵切了模式時,那一橫必須跟著動,
+  //   否則它會變成一個說謊的指示器,而那比沒有指示器更糟。
+  void SetStatusBar(StatusBar* b) { bar_ = b; }
 
   // 收到 Op::kOpenSettings 時呼叫。可以是 nullptr(--no-ui 的 CI 模式)。
   // ⚠ 這個回呼會在**連線執行緒**上跑,實作必須只是 PostMessage。
@@ -65,6 +72,7 @@ class PipeServer {
 
   Engine* engine_;
   CandidateUi* ui_;
+  StatusBar* bar_ = nullptr;
   SettingsStore* settings_;
   std::function<void()> on_open_settings_;
   std::function<void()> on_fatal_;

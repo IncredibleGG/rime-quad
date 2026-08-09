@@ -146,6 +146,28 @@ class Engine {
   // 對**目前存在的每一個 session** 套用。設定介面改了字形之後,
   // 使用者不該還要換一個程式才看得到效果。
   void SetOptionAll(const char* option, bool value);
+
+  // ── ⚠ 中英切換:這一輪之前 Windows 端**完全沒有**這個功能 ──────
+  //
+  //   `ascii_mode` 在整個 windows/ 底下只被讀過兩次(engine.cc 的狀態
+  //   打包、protocol.h 的旗標定義),**一次都沒有被設定過**。
+  //   使用者要在句子中間打一個英文字,唯一的辦法是按 Win+空白鍵
+  //   把整個輸入法換掉。
+  //
+  //   這裡把它變成一個**行程層級**的狀態:懸浮狀態列切它,現有的每一個
+  //   session 立刻跟著變,而**新建的 session 也要跟著** ——
+  //   少了後面那一半,使用者切成英文之後開一個新程式又會變回中文,
+  //   而那看起來像「這個開關會自己跳回去」。
+  //
+  //   新 session 那一半靠 pipe_server 把它放進 options(見那裡的說明):
+  //   options 同時是備用 session 的「計畫」,所以比對自然會涵蓋它 ——
+  //   不然使用者切完中英之後拿到的第一個 session 會是照舊狀態配好的,
+  //   而那種錯誤是靜默的。
+  //
+  //   ⚠ 這是**模式**不是偏好,所以刻意**不落地**:重開機回到中文,
+  //     與每一家中文輸入法的行為一致。
+  void SetAsciiModeAll(bool on);
+  bool AsciiMode() const { return ascii_mode_.load(); }
   void SelectSchemaAll(const std::string& schema_id);
 
   // 記住這個 session 是從哪一個語言設定檔來的。
@@ -235,6 +257,8 @@ class Engine {
   uint64_t next_id_ = 1;
 
   // 0 = 還沒有結果, 1 = 成功, -1 = 失敗。只由部署回呼寫,別處只讀。
+  // 中英模式。行程層級,不落地(見 SetAsciiModeAll)。
+  std::atomic<bool> ascii_mode_{false};
   std::atomic<int> deploy_state_{0};
   // 每收到一次**終局**的部署結果就加一。見 BeginDeploy 的說明:
   // 沒有這個序號的話,上一輪的結果會被讀成這一輪的。

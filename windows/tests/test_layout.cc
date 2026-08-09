@@ -34,6 +34,39 @@ std::vector<Candidate> Items(int n) {
   return v;
 }
 
+// ── 量測寬可以指定的候選 ────────────────────────────────────────
+//
+// docs/theme-format.md §10 的第 29／30 條是**逐項驗算**的:它們說
+// 「量測寬 400 的候選」。要驗那些數字,量測寬就必須是一個我們指定的值,
+// 而不是「FakeMeasure 對某個中文字剛好算出來的東西」。
+//
+// FakeMeasure 是 bytes * size * 0.5,所以 8 個位元組的字串寬 = 4 * size。
+// 取 size = want / 4 就得到正好 want 的量測寬。
+// padding_h 一併設 0,免得它混進「格寬」裡 —— 規範的 w[i] 已含 padding,
+// 這裡讓兩者相等,驗算才對得起來。
+constexpr const char* kEightBytes = "12345678";
+
+CandidateStyle ExactWidthStyle(double want) {
+  CandidateStyle st;
+  st.metrics.padding = 6;
+  st.metrics.border_width = 0;
+  st.label.show = false;
+  st.comment.show = false;
+  st.text.size = want / 4.0;
+  st.ResolveDefaults();
+  st.item.padding_h = 0;
+  st.item.padding_v = 0;
+  st.item.min_width = 0;
+  st.window.min_width = 0;
+  return st;
+}
+
+std::vector<Candidate> ExactItems(int n) {
+  std::vector<Candidate> v;
+  for (int i = 0; i < n; ++i) v.push_back({kEightBytes, "", ""});
+  return v;
+}
+
 }  // namespace
 
 TEST(layout_metrics_defaults_are_inherited) {
@@ -74,12 +107,12 @@ TEST(layout_horizontal_geometry) {
   st.orientation = Orientation::kHorizontal;
   const WindowLayout l = ComputeLayout(Items(3), st, FakeMeasure);
   CHECK_INT(l.items.size(), 3);
-  CHECK_INT(l.dropped, 0);
-  // 由左而右,不重疊,而且間距就是 item.spacing。
+  CHECK_INT(l.truncated_count, 0);
+  // 由左而右,不重疊,而且間距就是 column_gap(預設 = item.spacing)。
   for (size_t i = 1; i < l.items.size(); ++i) {
     CHECK(l.items[i].x > l.items[i - 1].x);
     CHECK_NEAR(l.items[i].x - (l.items[i - 1].x + l.items[i - 1].w),
-               st.item.spacing, 1e-9);
+               st.window.column_gap, 1e-9);
   }
   // 同一列高度要對齊,否則高亮背景塊會參差不齊。
   CHECK_NEAR(l.items[0].h, l.items[2].h, 1e-9);
@@ -112,26 +145,130 @@ TEST(layout_window_orientation_overrides_shared_one) {
   CHECK_NEAR(l.items[1].x, l.items[0].x, 1e-9);
 }
 
-TEST(layout_max_width_truncates_and_reports) {
+// ── W15 / §8.6.7.2:不得丟棄候選 ──────────────────────────────────
+//
+// ⚠ 這一組取代了舊的 layout_max_width_truncates_and_reports 與
+//   layout_first_candidate_always_placed_even_if_too_wide。那兩個測試
+//   **斷言的正是那個 bug**:「放不下就少給幾項」。它們是綠的,而使用者
+//   按 `5` 會選到看不見的字 —— 一個測試把規範反過來寫,比沒有測試更糟。
+
+TEST(layout_never_drops_candidates_horizontal_shrink) {
   auto st = DefaultStyle();
   st.window.max_width = 120;
+  st.window.overflow = Overflow::kShrink;
   const WindowLayout l = ComputeLayout(Items(20), st, FakeMeasure);
-  CHECK(l.items.size() < 20);
-  // 沒放進去的候選數必須算得出來 —— 不然「候選少了幾個」查不出原因。
-  CHECK_INT(l.dropped, (int)(20 - l.items.size()));
+  // 規範性:輸出項數 == 輸入項數。序號標籤與數字鍵是一一對應的。
+  CHECK_INT(l.items.size(), 20);
+  CHECK(l.truncated_count > 0);   // 縮到底了,所以有項要補 `…`
+  // 每一項都必須有正的寬度:縮成 0 的候選「看得見卻讀不到」。
+  for (const auto& it : l.items) CHECK(it.w > 0);
+}
+
+TEST(layout_never_drops_candidates_horizontal_clip) {
+  auto st = DefaultStyle();
+  st.window.max_width = 120;
+  st.window.overflow = Overflow::kClip;
+  const WindowLayout l = ComputeLayout(Items(20), st, FakeMeasure);
+  CHECK_INT(l.items.size(), 20);
+  // clip 裁的是像素,不是候選 —— 被窗蓋住的項**不**算截斷。
+  CHECK_INT(l.truncated_count, 0);
   CHECK(l.width <= st.window.max_width + 1e-9);
 }
 
-TEST(layout_first_candidate_always_placed_even_if_too_wide) {
-  // 單一候選就超過 max_width 時,寧可窗變寬,也不要給一個空窗 ——
-  // 空的候選窗使用者完全無法理解,而且看起來像輸入法壞了。
+TEST(layout_never_drops_candidates_vertical_both) {
+  // §8.6.7.2 第三節:直排與橫排走同一套,orientation 不決定溢出處置。
+  for (int mode = 0; mode < 2; ++mode) {
+    auto st = DefaultStyle();
+    st.orientation = Orientation::kVertical;
+    st.window.max_width = 40;
+    st.window.overflow = mode == 0 ? Overflow::kShrink : Overflow::kClip;
+    std::vector<Candidate> v = {{"非常長的一個候選字串", "", "1"},
+                               {"也很長的另外一個候選", "", "2"},
+                               {"短", "", "3"}};
+    const WindowLayout l = ComputeLayout(v, st, FakeMeasure);
+    CHECK_INT(l.items.size(), 3);
+    for (const auto& it : l.items) CHECK(it.w > 0);
+  }
+}
+
+TEST(layout_max_width_is_not_a_hard_bound_single_item) {
+  // docs/theme-format.md §10 第 29 條前半,逐項驗算:
+  // 單一量測寬 400 的候選、max_width 300、padding 6、min_width 0、
+  // item.min_width 0。
+  auto st = ExactWidthStyle(400);
+  st.window.max_width = 300;
+
+  st.window.overflow = Overflow::kShrink;
+  const WindowLayout a = ComputeLayout(ExactItems(1), st, FakeMeasure);
+  CHECK_INT(a.items.size(), 1);
+  CHECK_NEAR(a.items[0].w, 288, 1e-9);   // 欄寬縮成 288
+  CHECK_NEAR(a.width, 300, 1e-9);        // 窗寬 300
+  CHECK(a.items[0].truncated);           // 該項被標記為需要截斷
+  CHECK_INT(a.truncated_count, 1);
+
+  st.window.overflow = Overflow::kClip;
+  const WindowLayout b = ComputeLayout(ExactItems(1), st, FakeMeasure);
+  CHECK_INT(b.items.size(), 1);
+  CHECK_NEAR(b.items[0].w, 400, 1e-9);   // 欄寬維持 400
+  CHECK_NEAR(b.width, 412, 1e-9);        // 9b 抬高了上界
+  CHECK(!b.items[0].truncated);          // clip 不標記截斷
+  CHECK_INT(b.truncated_count, 0);
+}
+
+TEST(layout_shrink_floor_widens_the_window_9a) {
+  // §10 第 29 條後半:item.min_width 150、3 個各寬 200、column_gap 4、
+  // max_width 300、padding 6。
+  // shrink 縮到 93⅓ 後被 min_width 夾回 150,content_w = 3*150 + 2*4 = 458
+  // 仍超出 avail_w(288)→ 9a 把窗寬抬成 458 + 12 = 470,
+  // 三項全部標記為需要截斷(量測寬 200 > 格寬 150)。
+  auto st = ExactWidthStyle(200);
+  st.window.max_width = 300;
+  st.window.column_gap = 4;
+  st.window.overflow = Overflow::kShrink;
+  st.item.min_width = 150;
+  const WindowLayout l = ComputeLayout(ExactItems(3), st, FakeMeasure);
+  CHECK_INT(l.items.size(), 3);
+  for (const auto& it : l.items) CHECK_NEAR(it.w, 150, 1e-9);
+  CHECK_NEAR(l.width, 470, 1e-9);
+  CHECK_INT(l.truncated_count, 3);
+
+  // 對照第 21 條:item.min_width 為 0 時同樣的輸入是窗寬 300。
+  auto st0 = st;
+  st0.item.min_width = 0;
+  const WindowLayout l0 = ComputeLayout(ExactItems(3), st0, FakeMeasure);
+  CHECK_INT(l0.items.size(), 3);
+  CHECK_NEAR(l0.width, 300, 1e-9);
+}
+
+TEST(layout_clip_keeps_the_computed_positions_case30) {
+  // §10 第 30 條:3 個各寬 200 的候選、max_width 300、overflow clip →
+  // 排版結果**必須含有三項**,落點依序 x = 0 / 204 / 408(內容區相對),
+  // 窗寬 300;需要截斷的項數為 0(它們是被窗蓋住,不是被截斷)。
+  auto st = ExactWidthStyle(200);
+  st.window.max_width = 300;
+  st.window.column_gap = 4;
+  st.window.overflow = Overflow::kClip;
+  const WindowLayout l = ComputeLayout(ExactItems(3), st, FakeMeasure);
+  const double frame = st.window.padding + st.window.border_width;
+  CHECK_INT(l.items.size(), 3);
+  CHECK_NEAR(l.items[0].x - frame, 0, 1e-9);
+  CHECK_NEAR(l.items[1].x - frame, 204, 1e-9);
+  CHECK_NEAR(l.items[2].x - frame, 408, 1e-9);
+  CHECK_NEAR(l.width, 300, 1e-9);
+  CHECK_INT(l.truncated_count, 0);
+}
+
+TEST(layout_single_over_wide_candidate_still_visible) {
+  // 舊測試斷言「第二項被丟掉」。現在改成:兩項都在,而且第一項看得見。
   auto st = DefaultStyle();
   st.window.max_width = 10;
   std::vector<Candidate> v = {{"非常長的一個候選字串", "", "1"}, {"短", "", "2"}};
-  const WindowLayout l = ComputeLayout(v, st, FakeMeasure);
-  CHECK_INT(l.items.size(), 1);
-  CHECK_INT(l.dropped, 1);
-  CHECK(l.width > st.window.max_width);
+  for (int mode = 0; mode < 2; ++mode) {
+    st.window.overflow = mode == 0 ? Overflow::kShrink : Overflow::kClip;
+    const WindowLayout l = ComputeLayout(v, st, FakeMeasure);
+    CHECK_INT(l.items.size(), 2);
+    CHECK(l.width > st.window.max_width);  // 9a 或 9b 抬高了上界
+  }
 }
 
 TEST(layout_label_can_be_hidden) {

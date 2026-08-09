@@ -1,0 +1,149 @@
+#include "ui_palette.h"
+
+#include <cmath>
+#include <cstddef>
+
+namespace rimewin {
+namespace {
+
+constexpr Rgb H(uint32_t v) {
+  return Rgb{static_cast<uint8_t>((v >> 16) & 0xFF),
+             static_cast<uint8_t>((v >> 8) & 0xFF),
+             static_cast<uint8_t>(v & 0xFF)};
+}
+
+// ── 淺色(§3.4 + §12.6.1)────────────────────────────────────────
+const Rgb kLight[kRoleCount] = {
+    H(0xF4F6F5),  // kBackground
+    H(0xFFFFFF),  // kSurface
+    H(0xF2F5F4),  // kSurfaceVariant
+    H(0x14181A),  // kOnSurface
+    H(0x454F51),  // kOnSurfaceVariant
+    H(0x1F6F63),  // kPrimary          ⚠ 焦點環也是它(§12.6.1 末列)
+    H(0xFFFFFF),  // kOnPrimary
+    H(0xD7EDE7),  // kPrimaryContainer ⚠ 清單列的「選中底」
+    H(0xB3261E),  // kError            ⚠ 危險按鈕的文字與外框
+    H(0xF9DEDC),  // kErrorContainer
+    H(0xC4CDCC),  // kOutline          ⚠ §3.4.1 規範性的改動,不是 #E6EAE9
+    H(0xECEDED),  // kRowHover
+    H(0xE3E3E4),  // kRowPressed
+    H(0xC7DCD7),  // kRowSelectedHover
+    H(0xC0D3CE),  // kRowSelectedPressed
+    H(0xB8BCBD),  // kDisabledText     ⚠ 刻意不合 4.5:1,見 §12.6.3 的豁免
+    H(0xF9EEED),  // kDangerHover
+    H(0xF6E5E4),  // kDangerPressed
+};
+
+// ── 深色(§3.4 + §12.6.2)────────────────────────────────────────
+const Rgb kDark[kRoleCount] = {
+    H(0x0D1012),  // kBackground       ⚠ 不用純黑(§3.5 第 4 條)
+    H(0x171B1D),  // kSurface
+    H(0x121618),  // kSurfaceVariant
+    H(0xECEFEE),  // kOnSurface        ⚠ 不用純白(同上)
+    H(0xB9C3C2),  // kOnSurfaceVariant
+    H(0x63C3AC),  // kPrimary
+    H(0x08110F),  // kOnPrimary        ⚠ 亮青底配白字實測只有 2.11:1
+    H(0x17322D),  // kPrimaryContainer
+    H(0xFF8A80),  // kError
+    H(0x3A1512),  // kErrorContainer
+    H(0x363E40),  // kOutline
+    H(0x2C3032),  // kRowHover
+    H(0x393D3E),  // kRowPressed
+    H(0x2C4540),  // kRowSelectedHover
+    H(0x39504C),  // kRowSelectedPressed
+    H(0x555B5C),  // kDisabledText
+    H(0x2E2627),  // kDangerHover
+    H(0x3C2D2D),  // kDangerPressed
+};
+
+static_assert(sizeof(kLight) / sizeof(kLight[0]) == kRoleCount,
+              "淺色色票少了一個角色 —— 兩份色票的鍵名集合必須完全相同(§2-F4)");
+static_assert(sizeof(kDark) / sizeof(kDark[0]) == kRoleCount,
+              "深色色票少了一個角色 —— 兩份色票的鍵名集合必須完全相同(§2-F4)");
+
+// windows.h 的 COLOR_* 數值。本檔刻意不 include windows.h(見 CMakeLists),
+// 所以在這裡寫成常數並註明來源。
+enum : int {
+  kSysWindow = 5,          // COLOR_WINDOW
+  kSysWindowText = 8,      // COLOR_WINDOWTEXT
+  kSysHighlight = 13,      // COLOR_HIGHLIGHT
+  kSysHighlightText = 14,  // COLOR_HIGHLIGHTTEXT
+  kSysBtnFace = 15,        // COLOR_BTNFACE
+  kSysGrayText = 17,       // COLOR_GRAYTEXT
+  kSysBtnText = 18,        // COLOR_BTNTEXT
+  kSysHotlight = 26,       // COLOR_HOTLIGHT
+};
+
+}  // namespace
+
+const Rgb* PaletteFor(Mode m) {
+  // ⚠ kHighContrast 不在這裡回答 —— 它的顏色來自 GetSysColor()。
+  //   呼叫端拿 SysColorFor() 自己填一份。回 kLight 是為了讓
+  //   「忘了處理高對比」的後果是「淺色」而不是一片黑,但那條路
+  //   W13 在守(必須有 SPI_GETHIGHCONTRAST 分支且走 GetSysColor)。
+  return m == Mode::kDark ? kDark : kLight;
+}
+
+int SysColorFor(Role role) {
+  switch (role) {
+    case kBackground:
+    case kSurface:
+      return kSysWindow;
+    case kSurfaceVariant:
+      return kSysBtnFace;
+    case kOnSurface:
+      return kSysWindowText;
+    case kOnSurfaceVariant:
+      return kSysBtnText;
+    // 高對比下「重點」與「選中」一律走系統的選取色 —— 使用者選的那一組
+    // 顏色本來就是為了讓選取狀態看得出來,我們的青瓷綠在這裡只會礙事。
+    case kPrimary:
+      return kSysHotlight;
+    case kOnPrimary:
+    case kRowSelectedHover:
+    case kRowSelectedPressed:
+      return kSysHighlightText;
+    case kPrimaryContainer:
+      return kSysHighlight;
+    // 高對比佈景沒有「危險色」這個概念。用一般文字色,並靠外框與
+    // 文案表達危險 —— §3.4 第 2 條本來就要求「不得只用顏色傳達資訊」。
+    case kError:
+      return kSysWindowText;
+    case kErrorContainer:
+    case kRowHover:
+    case kRowPressed:
+    case kDangerHover:
+    case kDangerPressed:
+      return kSysBtnFace;
+    case kOutline:
+      return kSysWindowText;
+    case kDisabledText:
+      return kSysGrayText;
+    case kRoleCount:
+    default:
+      return kSysWindowText;
+  }
+}
+
+// ── WCAG 2.1 相對亮度 ────────────────────────────────────────────
+
+namespace {
+double Chan(uint8_t v) {
+  const double s = v / 255.0;
+  return s <= 0.03928 ? s / 12.92 : std::pow((s + 0.055) / 1.055, 2.4);
+}
+}  // namespace
+
+double RelativeLuminance(Rgb c) {
+  return 0.2126 * Chan(c.r) + 0.7152 * Chan(c.g) + 0.0722 * Chan(c.b);
+}
+
+double ContrastRatio(Rgb a, Rgb b) {
+  const double la = RelativeLuminance(a);
+  const double lb = RelativeLuminance(b);
+  const double hi = la > lb ? la : lb;
+  const double lo = la > lb ? lb : la;
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+}  // namespace rimewin

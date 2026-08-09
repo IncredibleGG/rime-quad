@@ -41,6 +41,10 @@ SRCS=(
   "${SCRIPT_DIR}/common/elevation_policy.cc"
   "${SCRIPT_DIR}/common/key_eat_policy.cc"
   "${SCRIPT_DIR}/common/profile_choice.cc"
+  "${SCRIPT_DIR}/common/ui_palette.cc"
+  "${SCRIPT_DIR}/common/ui_layout.cc"
+  "${SCRIPT_DIR}/common/statusbar_place.cc"
+  "${SCRIPT_DIR}/common/ui_strings.cc"
   "${SCRIPT_DIR}/tests/test_main.cc"
   "${SCRIPT_DIR}/tests/test_protocol.cc"
   "${SCRIPT_DIR}/tests/test_keymap.cc"
@@ -55,6 +59,10 @@ SRCS=(
   "${SCRIPT_DIR}/tests/test_elevation_policy.cc"
   "${SCRIPT_DIR}/tests/test_key_eat_policy.cc"
   "${SCRIPT_DIR}/tests/test_profile_choice.cc"
+  "${SCRIPT_DIR}/tests/test_ui_layout.cc"
+  "${SCRIPT_DIR}/tests/test_ui_palette.cc"
+  "${SCRIPT_DIR}/tests/test_statusbar_place.cc"
+  "${SCRIPT_DIR}/tests/test_ui_strings.cc"
 )
 
 mkdir -p "${OUT}"
