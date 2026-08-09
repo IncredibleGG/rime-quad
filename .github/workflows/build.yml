@@ -257,6 +257,15 @@ jobs:
       - name: 建輸入測試靶 APK
         run: ./scripts/build_testapp.sh
 
+      - name: 建輸入矩陣 App(消歧欄關卡的輸入靶)
+        run: ./scripts/build_input_matrix_app.sh
+
+      - name: 安裝 OCR(消歧欄關卡讀的是畫面上的字,不是內部狀態)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr tesseract-ocr-eng
+          tesseract --version | head -1
+
       - name: 啟用 KVM(沒有它模擬器會慢到超時)
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
@@ -294,6 +303,15 @@ jobs:
             # release_check 的第 5–7 關。--strict:略過一律算失敗。
             # 這一條的綠燈不是「發布關卡通過」,只是它的一半 —— 腳本自己會說。
             bash ./scripts/release_check.sh --emu-only --strict
+            # 九宮格拼音消歧欄。**斷言的是畫面上的像素**(截圖 → 裁到消歧欄
+            # 該在的那一塊 → OCR),不是內部狀態:這個功能交付時只有純函式的
+            # 單元測試加上人工看的截圖,而這個專案已經吃過七次
+            # 「測試綠、使用者打開看不到」的虧。
+            # 它自己會驗三份九宮格佈局都畫得出來(§2-G:掃到的份數有下界),
+            # 並且先檢查裝置上的方案與 core/data/schemas/ 沒有漂移。
+            adb install -r -g -t build/inputmatrix/rime-inputmatrix.apk
+            bash ./scripts/verify_syllables.sh \
+              --apk android/app/build/outputs/apk/debug/app-debug.apk
 
       - name: 上傳模擬器 artifact(截圖、logcat、升級紀錄)
         if: always()
