@@ -633,10 +633,22 @@ if [ "$SKIP_EMU" -eq 0 ]; then
           # 而 root shell 讀得到資料目錄這件事,和「這份 APK 是不是 debuggable」
           # 完全無關 —— 少了這一句,把 release 悄悄改成 debuggable 之後
           # 第 6c 關會一路全綠。第 3c 關驗的是檔案,這一句驗的是**裝上去之後**。
-          RA_OUT="$("$ADB" -s "$SER" shell "run-as $PKG ls" 2>&1 | tr -d '\r' | head -3)"
+          #
+          # ⚠ 這一行的兩個坑,兩個都實際踩過(2026-08-10 本機):
+          #   1. run-as 被擋下時 adb 回非零 → `X="$(…)"` 的結束碼就是非零 →
+          #      `set -e` 當場中止整支腳本。症狀是日誌停在上一行、沒有結尾
+          #      的統計、退出碼 1 —— 看起來像「後面那幾關不存在」。
+          #      **這一關期待的正是失敗**,所以結束碼一定要吃掉。
+          #   2. 收尾不可以用 `head`:它讀夠了就關管線,上游拿到 SIGPIPE,
+          #      在 pipefail 之下整條變非零(本檔第 4 關的註解記過同一件事)。
+          #      用 tr 把換行壓成空白,它會讀到 EOF。
+          RA_OUT=""
+          RA_OUT="$("$ADB" -s "$SER" shell "run-as $PKG ls" 2>&1 | tr -d '\r' | tr '\n' ' ')" || true
           case "$RA_OUT" in
             *"not debuggable"*)
-              ok "裝上去之後 run-as 被系統擋下（$(printf '%s' "$RA_OUT" | head -1)）" ;;
+              ok "裝上去之後 run-as 被系統擋下（$RA_OUT）" ;;
+            "")
+              bad "run-as 一個字都沒有回 —— 這一句什麼都沒問到,不是通過" ;;
             *)
               bad "裝上去的這一份可以被 run-as 讀出資料目錄，回應是「$RA_OUT」—— 使用者的詞庫與輸入歷史對任何拿得到 adb 的人是敞開的。這份 APK 不該發" ;;
           esac
