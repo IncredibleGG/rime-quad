@@ -344,8 +344,8 @@ void PipeServer::ServeClient(HANDLE pipe) {
   // ⚠ 它取代的是 SESSION_NEW 裡那一趟 engine_->SchemaOfSession():
   //   我們需要知道「一開始是哪個方案」,好讓 note_schema 不要把
   //   **我們自己剛選的**方案誤判成「使用者按了 Ctrl+` 換方案」而寫進設定。
-  //   但問引擎要那個答案,會排在 ApplyChoiceAsync 後面等 ——
-  //   等於把剛移開的成本又搬回 300 毫秒的往返路徑上。
+  //   但那個答案要再跑一趟引擎佇列才問得到,而那一趟就排在 ApplyChoice
+  //   後面 —— 白白多花一次往返,而 SESSION_NEW 只有 300 毫秒的預算。
   //   看到的第一份快照就是答案,不必問。
   bool schema_seeded = false;
   RECT caret{0, 0, 0, 0};
@@ -383,7 +383,7 @@ void PipeServer::ServeClient(HANDLE pipe) {
     if (snap.schema_id.empty() || snap.schema_id == last_schema) return;
     last_schema = snap.schema_id;
     // ⚠ 第一份快照只記下來,**不當成使用者換了方案**。
-    //   那一份是 SESSION_NEW 時我們自己套上去的(ApplyChoiceAsync),
+    //   那一份是 SESSION_NEW 時我們自己套上去的(ApplyChoice),
     //   把它寫進設定等於幫使用者「釘」了一個他沒有選過的方案。
     if (!schema_seeded) {
       schema_seeded = true;
@@ -518,16 +518,29 @@ void PipeServer::ServeClient(HANDLE pipe) {
           const Tri punct = st.Punctuation();
           if (punct != Tri::kUnset)
             opts.push_back({"ascii_punct", punct == Tri::kTrue});
-          // ⚠ **不等它做完。** rs_select_schema 要載入詞典與 prism,
-          //   那是這一趟裡最貴的一步,而它完全不需要擋在回覆前面:
-          //   引擎佇列是 FIFO 的,所以這個 session 的第一顆按鍵一定排在
-          //   它後面 —— 「還沒套好方案就處理按鍵」不可能發生。
-          engine_->ApplyChoiceAsync(ok.session, choice.schema_id, opts);
+          // ⚠⚠ **這一步必須是同步的。試過非同步,而且量到它更糟。**
+          //
+          //   rs_select_schema 要載入詞典與 prism,是這一趟裡最貴的一步。
+          //   2026-08-09 我把它改成「丟進佇列就走」,想法是:佇列是 FIFO 的,
+          //   第一顆按鍵一定排在它後面,所以順序仍然正確。順序**確實**正確,
+          //   但成本沒有消失 —— 它只是從一個 300 毫秒的預算,
+          //   搬進了一個 **50 毫秒**的預算(kKeyTimeoutMs,按鍵往返)。
+          //
+          //   量到的結果(CI run 31311692114):
+          //       11:51:08.048 連線就緒 session=3
+          //       11:51:08.048 按鍵 vk=0x4E … 吃掉=1   ← TestKeyDown 說吃
+          //       11:51:08.165 按鍵 vk=0x49 … 吃掉=0   ← KeyDown 逾時,連線降級
+          //   TestKeyDown 說吃、KeyDown 說不吃 —— 那顆鍵在真的宿主裡會
+          //   **直接消失**,比原本的「打不出中文」更糟。
+          //
+          //   結論:貴的工作不能塞進任何一個客戶端還在等的往返。要修的話,
+          //   正確的方向是讓方案在**服務暖機時**就載好(service/main.cc 的
+          //   WarmUpEngine),而不是把它推到下一個更緊的預算裡。
+          engine_->ApplyChoice(ok.session, choice.schema_id, opts);
           // ⚠ 原本這裡還有一趟 engine_->SchemaOfSession(),目的只是讓
           //   note_schema 不要把「我們剛選的方案」誤判成「使用者按了
-          //   Ctrl+` 換方案」。它現在被 schema_seeded 取代 ——
-          //   留著的話,它會排在 ApplyChoiceAsync 後面等,
-          //   上面那個「不等」就完全白做了。
+          //   Ctrl+` 換方案」。那一趟現在被 schema_seeded 取代 ——
+          //   看到的第一份快照就是答案,不必再問引擎一次。
           schema_seeded = false;
         }
         if (!send(EncodeSessionOk(seq, ok))) goto done;

@@ -433,20 +433,6 @@ std::string Engine::ApplyChoice(uint64_t id, const std::string& schema_id,
   return chosen;
 }
 
-void Engine::ApplyChoiceAsync(uint64_t id, const std::string& schema_id,
-                              const std::vector<OptionAssign>& options) {
-  // ⚠ 全部按值捕捉(schema_id 與 options 都複製一份)。呼叫端是連線執行緒,
-  //   它送出 SESSION_OK 之後馬上就回到讀取迴圈,那兩個參考早就不在了。
-  PostAsync([this, id, schema_id, options] {
-    const uintptr_t sess = Find(id);
-    if (!sess) return;
-    // 空字串 = 沒有意見,**不要**呼叫 rs_select_schema(更不可以傳 nullptr)。
-    if (!schema_id.empty()) rs_select_schema(sess, schema_id.c_str());
-    // 字形要在選方案**之後**才設:換方案會重建 context,
-    // 先設的話會被換方案那一步洗掉。
-    for (const OptionAssign& a : options) rs_set_option(sess, a.option, a.value);
-  });
-}
 
 int Engine::AbiVersion() const { return rs_abi_version(); }
 

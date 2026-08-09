@@ -1172,9 +1172,14 @@ if [ -n "${HOST}" ]; then
       note_fail "有 ${MS_OVER} 次建立 session 超過 300ms(最久 ${MS_MAX} ms)。
      每一次都代表一個宿主進程 fail-open —— 使用者在那個程式裡打不出中文,
      而且沒有任何錯誤訊息。這正是「選了輸入法之後有時候不能打中文」。
-     ⚠ 修的方向**不是**把預算調大或加重試(那只會讓它更難查),
-       是把不必要的工作移出這條往返路徑 —— 見 service/engine.h 的
-       ApplyChoiceAsync / EndSessionAsync。"
+     ⚠ 修的方向**不是**把預算調大、也不是加重試(那只會讓它更難查)。
+       ⚠ 也**不是**把 rs_select_schema 丟到佇列裡非同步做 —— 那個已經
+         試過而且量到更糟:成本不會消失,只會從這 300 毫秒的預算搬進
+         按鍵那條 50 毫秒的預算,於是第一顆鍵變成「TestKeyDown 說吃、
+         KeyDown 說不吃」,在真的宿主裡直接消失(見 pipe_server.cc
+         kSessionNew 那一段的量測記錄)。
+       正確的方向是讓方案在**服務暖機時**就載好(service/main.cc 的
+       WarmUpEngine),讓這條路徑上本來就沒有貴的工作。"
     fi
   fi
 
