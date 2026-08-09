@@ -25,9 +25,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import org.luminakey.ime.R
 import org.luminakey.ime.net.FirstRunNoticeHost
 import org.luminakey.ime.net.NetworkSwitchCard
@@ -150,15 +150,17 @@ fun HomeScreen(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp),
+            .padding(horizontal = Space.s6),
     ) {
-        Spacer(Modifier.height(20.dp))
+        Spacer(Modifier.height(Space.s8))
         Text(
             text = stringResource(R.string.home_title),
-            fontSize = 27.sp,
+            fontSize = TypeScale.t1,
             fontWeight = FontWeight.SemiBold,
+            // 一頁只有一個 t1，而它就是這一頁的標題。
+            modifier = Modifier.semantics { heading() },
         )
-        Spacer(Modifier.height(18.dp))
+        Spacer(Modifier.height(Space.s7))
 
         // ⚠ 誠實條。持久化的那個布林只決定「開在哪一頁」，**不是**「輸入法
         // 可以用」的證據 —— 使用者完全可能引導完成之後又把鍵盤換回別的。
@@ -166,12 +168,15 @@ fun HomeScreen(
         // 並給一顆一鍵切回去的按鈕。
         if (stage != SetupStage.READY) {
             NotReadyStrip(stage = stage, system = system)
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(Space.s5))
         }
 
         // 離線是這個專案的招牌，所以它在第一層、在最上面，不埋在任何一層底下。
+        // 開關與「連過哪些地方」是同一組（同一件事的兩面），所以它們之間用
+        // s3，而與底下那張設定卡之間用 s7 —— 同一組的距離小於跨組的距離，
+        // 這是分組唯一可靠的手段（§3.1 規則 1）。
         NetworkSwitchCard()
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(Space.s3))
         PlainCard {
             NavRow(
                 title = stringResource(R.string.home_network_log),
@@ -181,10 +186,12 @@ fun HomeScreen(
             )
         }
 
-        Spacer(Modifier.height(20.dp))
+        Spacer(Modifier.height(Space.s7))
 
+        // 一張卡，四列。17 個設定項一項沒掉，只是收成四個問題：
+        // **用哪種打字方式 · 長什麼樣 · 按起來什麼感覺 · 打出來是什麼字**。
         PlainCard {
-            NavRow(stringResource(R.string.home_keyboard), summary.keyboard) {
+            NavRow(stringResource(R.string.home_typing_method), summary.keyboard) {
                 onNavigate(Route.KEYBOARD)
             }
             RowDivider()
@@ -197,14 +204,21 @@ fun HomeScreen(
             NavRow(stringResource(R.string.home_text), summary.text) { onNavigate(Route.TEXT) }
         }
 
-        Spacer(Modifier.height(26.dp))
+        Spacer(Modifier.height(Space.s7))
         SectionLabel(stringResource(R.string.home_try_it))
         TryField()
+        Text(
+            text = stringResource(R.string.home_try_it_hint),
+            fontSize = TypeScale.t5,
+            lineHeight = TypeScale.t5Line,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = Space.s3, start = Space.s1),
+        )
 
-        Spacer(Modifier.height(26.dp))
+        Spacer(Modifier.height(Space.s7))
         Hairline()
         QuietRow(stringResource(R.string.home_advanced)) { onNavigate(Route.ADVANCED) }
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(Space.s8))
     }
 }
 
@@ -212,7 +226,7 @@ fun HomeScreen(
 private fun NotReadyStrip(stage: SetupStage, system: ImeSystemState) {
     val context = LocalContext.current
     PlainCard {
-        Column(Modifier.fillMaxWidth().padding(16.dp)) {
+        Column(Modifier.fillMaxWidth().padding(Space.s5)) {
             Text(
                 text = when (stage) {
                     SetupStage.NOT_ENABLED -> stringResource(R.string.not_ready_not_enabled)
@@ -220,7 +234,7 @@ private fun NotReadyStrip(stage: SetupStage, system: ImeSystemState) {
                     SetupStage.PREPARING -> stringResource(R.string.not_ready_preparing)
                     SetupStage.READY -> ""
                 },
-                fontSize = 16.sp,
+                fontSize = TypeScale.t3,
                 fontWeight = FontWeight.SemiBold,
             )
             Text(
@@ -234,23 +248,26 @@ private fun NotReadyStrip(stage: SetupStage, system: ImeSystemState) {
                     SetupStage.PREPARING -> stringResource(R.string.not_ready_preparing_body)
                     SetupStage.READY -> ""
                 },
-                fontSize = 13.sp,
+                fontSize = TypeScale.t5,
+                lineHeight = TypeScale.t5Line,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 4.dp),
+                // s1：標題與它正下方的副標。s2 以上會讓那兩行看起來不像同一組。
+                modifier = Modifier.padding(top = Space.s1),
             )
-            Spacer(Modifier.height(10.dp))
-            when (stage) {
-                SetupStage.NOT_ENABLED ->
-                    PrimaryWide(stringResource(R.string.not_ready_open_settings)) {
-                        openImeSettings(context)
-                    }
-
-                SetupStage.ENABLED_NOT_DEFAULT ->
-                    PrimaryWide(stringResource(R.string.not_ready_switch)) {
-                        showImePicker(context)
-                    }
-
-                else -> Unit
+            // PREPARING 沒有按鈕（沒有人能加速它），所以那一格不要留一段空白 ——
+            // 空白在別的狀態下是「按鈕在這裡」的預告，留著會讓人以為少畫了東西。
+            if (stage == SetupStage.NOT_ENABLED || stage == SetupStage.ENABLED_NOT_DEFAULT) {
+                Spacer(Modifier.height(Space.s4))
+                // 本屏唯一的實心按鈕（A1）：不必讀字就知道該點哪裡。
+                PrimaryWide(
+                    text = stringResource(
+                        if (stage == SetupStage.NOT_ENABLED) R.string.not_ready_open_settings
+                        else R.string.not_ready_switch
+                    ),
+                ) {
+                    if (stage == SetupStage.NOT_ENABLED) openImeSettings(context)
+                    else showImePicker(context)
+                }
             }
         }
     }

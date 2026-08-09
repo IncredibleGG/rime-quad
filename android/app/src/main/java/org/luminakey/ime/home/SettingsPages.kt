@@ -15,14 +15,20 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -37,8 +43,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.font.FontWeight
 import kotlinx.coroutines.launch
 import org.luminakey.ime.R
 import org.luminakey.ime.core.RimeCore
@@ -197,13 +202,13 @@ private fun Page(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp),
+            .padding(horizontal = Space.s6),
     ) {
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(Space.s7))
         PageHeader(title = title, onBack = onBack)
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(Space.s5))
         content()
-        Spacer(Modifier.height(40.dp))
+        Spacer(Modifier.height(Space.s8))
     }
 }
 
@@ -213,19 +218,21 @@ private fun Page(
 fun KeyboardPage(onBack: () -> Unit, onOpenStore: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val groups = remember { availableKeyboardGroups(context) }
+    val store = remember { StoreController(context.applicationContext) }
+    val groups = remember(RimeRuntime.phase) { availableKeyboardGroups(context) }
     val all = remember(groups) { groups.flatMap { it.second } }
     var picked by remember { mutableStateOf(currentKeyboardOf(context, all)) }
 
-    Page(title = stringResource(R.string.page_keyboard), onBack = onBack) {
+    Page(title = stringResource(R.string.page_typing_method), onBack = onBack) {
         Text(
             text = stringResource(R.string.keyboard_page_hint),
-            fontSize = 13.sp,
+            fontSize = TypeScale.t5,
+            lineHeight = TypeScale.t5Line,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(Space.s5))
         if (all.isEmpty()) {
-            Text(stringResource(R.string.keyboard_page_empty), fontSize = 14.sp)
+            TypingEmptyState(busy = store.busy, onRefresh = { store.redeploy() })
         } else {
             for ((schemaName, types) in groups) {
                 SectionLabel(schemaName)
@@ -238,12 +245,12 @@ fun KeyboardPage(onBack: () -> Unit, onOpenStore: () -> Unit) {
                     },
                     showSubtitle = false,
                 )
-                Spacer(Modifier.height(18.dp))
+                Spacer(Modifier.height(Space.s7))
             }
         }
-        Spacer(Modifier.height(22.dp))
+        Spacer(Modifier.height(Space.s7))
         PlainCard {
-            // 想換鍵盤的人本來就在這一屏，所以市集放這裡而不是「進階」。
+            // 想換打字方式的人本來就在這一屏，所以市集放這裡而不是「進階」。
             NavRow(
                 title = stringResource(R.string.keyboard_get_more),
                 value = stringResource(R.string.keyboard_get_more_value),
@@ -251,17 +258,64 @@ fun KeyboardPage(onBack: () -> Unit, onOpenStore: () -> Unit) {
             )
         }
 
-        // 自訂鍵位。它是「我要用哪種鍵盤」這個問題的延伸，所以跟鍵盤卡片
+        // 自訂鍵位。它是「我要用哪種打字方式」這個問題的延伸，所以跟卡片
         // 放在同一頁。整塊在 prefs/KeyRemapSection.kt 裡，這裡只多一行 ——
         // 那條線自己在檔案裡寫了「這塊之後會被搬走」，這裡就是那個去處。
-        Spacer(Modifier.height(18.dp))
+        Spacer(Modifier.height(Space.s7))
         KeyRemapSection()
-        Spacer(Modifier.height(14.dp))
+        Spacer(Modifier.height(Space.s4))
         Text(
             text = stringResource(R.string.keyboard_page_footnote),
-            fontSize = 12.5.sp,
+            fontSize = TypeScale.t5,
+            lineHeight = TypeScale.t5Line,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+/**
+ * 一個打字方式都沒有時的空狀態（§4.7 / §7.3）。
+ *
+ * 三件事缺一不可：**為什麼是空的、這是不是正常、下一步按哪裡**。
+ * 這一頁的空**不正常**（安裝時就該有四種），所以第二句必須明講 ——
+ * 說成「這是正常的」會讓使用者安心地等一個永遠不會來的東西。
+ *
+ * ⚠ 整理中時這裡不是一顆按不動的按鈕，而是一段狀態文字：
+ * `redeploy()` 內部 `if (busy) return`，所以那時的按鈕會是一顆按了
+ * 什麼都不會發生的按鈕 —— 正是本專案抓過五次的那一種。
+ */
+@Composable
+private fun TypingEmptyState(busy: Boolean, onRefresh: () -> Unit) {
+    PlainCard {
+        Column(Modifier.fillMaxWidth().padding(Space.s5)) {
+            Text(
+                text = stringResource(R.string.typing_empty_title),
+                fontSize = TypeScale.t3,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = stringResource(R.string.typing_empty_body),
+                fontSize = TypeScale.t5,
+                lineHeight = TypeScale.t5Line,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = Space.s1),
+            )
+            Spacer(Modifier.height(Space.s4))
+            if (busy) {
+                Text(
+                    text = stringResource(R.string.advanced_redeploy_running),
+                    fontSize = TypeScale.t4,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            } else {
+                Button(
+                    onClick = onRefresh,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = Dimens.touchTarget),
+                ) {
+                    Text(stringResource(R.string.typing_empty_action), fontSize = TypeScale.t4)
+                }
+            }
+        }
     }
 }
 
@@ -293,9 +347,9 @@ fun AppearancePage(onBack: () -> Unit) {
         // 所以這裡不另外放一顆「未設定」晶片 —— 兩顆都叫「預設」只會讓人以為
         // 有兩個地方可以決定同一件事。
         val currentFamily = prefs.themeId?.let { familyIdOf(it) } ?: DEFAULT_THEME_FAMILY
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(Space.s3)) {
             for (chunk in families.chunked(2)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(Space.s3)) {
                     for (family in chunk) {
                         Chip(
                             label = family.name,
@@ -325,20 +379,25 @@ fun AppearancePage(onBack: () -> Unit) {
             onSelect = { v -> edit { p -> p.copy(appearanceMode = v) } },
         )
 
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(Space.s4))
         SectionLabel(stringResource(R.string.appearance_height))
         PlainCard {
-            Column(Modifier.padding(16.dp)) {
-                Text(stringResource(R.string.appearance_height_title), fontSize = 16.sp)
+            Column(Modifier.padding(Space.s5)) {
+                Text(
+                    text = stringResource(R.string.appearance_height_title),
+                    fontSize = TypeScale.t3,
+                    fontWeight = FontWeight.Medium,
+                )
                 Text(
                     // 這一項刻意**不給滑桿**：滑桿要在數值與預覽之間來回猜，
                     // 拖曳不用 —— 拖到哪裡就是哪裡，拖完就是最終樣子。
                     text = stringResource(R.string.appearance_height_body),
-                    fontSize = 12.5.sp,
+                    fontSize = TypeScale.t5,
+                    lineHeight = TypeScale.t5Line,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 2.dp),
+                    modifier = Modifier.padding(top = Space.s1),
                 )
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(Space.s4))
                 OutlinedButton(
                     onClick = {
                         KeyboardPanelRequest.request(context, KeyboardPanelRequest.HEIGHT)
@@ -346,14 +405,20 @@ fun AppearancePage(onBack: () -> Unit) {
                         focus.requestFocus()
                         keyboardController?.show()
                     },
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text(stringResource(R.string.appearance_height_action)) }
+                    modifier = Modifier.fillMaxWidth().heightIn(min = Dimens.touchTarget),
+                ) {
+                    Text(
+                        text = stringResource(R.string.appearance_height_action),
+                        fontSize = TypeScale.t4,
+                    )
+                }
                 if (askedHeight) {
                     Text(
                         text = stringResource(R.string.appearance_height_after),
-                        fontSize = 12.5.sp,
+                        fontSize = TypeScale.t5,
+                        lineHeight = TypeScale.t5Line,
                         color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(top = 8.dp),
+                        modifier = Modifier.padding(top = Space.s3),
                     )
                 }
             }
@@ -374,9 +439,12 @@ fun AppearancePage(onBack: () -> Unit) {
             options = PrefLabels.candidateCount.mapIndexed { i, s -> i to s },
             selected = PrefLevels.indexOfCandidateCount(prefs, baseCount),
             onSelect = { i -> edit { p -> PrefLevels.withCandidateCount(p, i) } },
+            // A 層設定：改了要重新整理字詞才生效，所以當場說（§4.1 最後一條）。
+            // 不說的話使用者會改完、發現沒變、再改一次，然後認定壞掉。
+            footnote = stringResource(R.string.appearance_candidate_count_note),
         )
 
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(Space.s4))
         PlainCard {
             SwitchRow(
                 title = stringResource(R.string.appearance_hints),
@@ -390,7 +458,7 @@ fun AppearancePage(onBack: () -> Unit) {
             )
         }
 
-        Spacer(Modifier.height(18.dp))
+        Spacer(Modifier.height(Space.s7))
         SectionLabel(stringResource(R.string.appearance_preview))
         TryField(focusRequester = focus)
     }
@@ -446,7 +514,8 @@ fun FeelPage(onBack: () -> Unit) {
             // 三項合成一頁是因為它們是同一個問題的三個面向：「這個鍵盤按起來
             // 的感覺」。分成三個設定項就是把一件事拆成三次操作。
             text = stringResource(R.string.feel_intro),
-            fontSize = 13.sp,
+            fontSize = TypeScale.t5,
+            lineHeight = TypeScale.t5Line,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         SettingGroup(
@@ -471,7 +540,7 @@ fun FeelPage(onBack: () -> Unit) {
             selected = PrefLevels.indexOfLongPress(prefs),
             onSelect = { i -> edit { p -> PrefLevels.withLongPress(p, i) } },
         )
-        Spacer(Modifier.height(14.dp))
+        Spacer(Modifier.height(Space.s7))
         SectionLabel(stringResource(R.string.feel_try))
         TryField(placeholder = stringResource(R.string.feel_try_placeholder))
     }
@@ -524,7 +593,7 @@ fun TextPage(onBack: () -> Unit) {
             selected = prefs.spaceBehavior.takeIf { it == SpaceBehavior.ALWAYS_SPACE },
             onSelect = { v -> edit { p -> p.copy(spaceBehavior = v) } },
         )
-        Spacer(Modifier.height(14.dp))
+        Spacer(Modifier.height(Space.s7))
         SectionLabel(stringResource(R.string.text_try))
         TryField()
     }
@@ -539,13 +608,13 @@ fun NetworkPage(onBack: () -> Unit) {
     // ——畫面不是變醜，是整個 app 當掉，使用者連返回鍵都按不到。實測踩過。
     // 所以標題與開關固定在上面，清單自己佔滿剩下的高度、自己捲。
     Column(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp),
+        modifier = Modifier.fillMaxSize().padding(horizontal = Space.s6),
     ) {
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(Space.s7))
         PageHeader(title = stringResource(R.string.page_network), onBack = onBack)
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(Space.s5))
         NetworkSwitchCard()
-        Spacer(Modifier.height(14.dp))
+        Spacer(Modifier.height(Space.s5))
         NetworkScreen(modifier = Modifier.fillMaxSize())
     }
 }
@@ -556,13 +625,13 @@ fun NetworkPage(onBack: () -> Unit) {
 fun StorePage(controller: StoreController, onBack: () -> Unit) {
     val online = rememberNetworkEnabled()
     Column(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp),
+        modifier = Modifier.fillMaxSize().padding(horizontal = Space.s6),
     ) {
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(Space.s7))
         PageHeader(title = stringResource(R.string.page_store), onBack = onBack)
         if (!online) {
             NetworkRequiredCard(what = stringResource(R.string.network_what_download_keyboards))
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(Space.s4))
         }
         StoreScreen(controller = controller, modifier = Modifier.fillMaxSize())
     }
@@ -579,59 +648,65 @@ fun AdvancedPage(controller: StoreController, onBack: () -> Unit) {
     val updates = remember { UpdateController.get(context) }
     val online = rememberNetworkEnabled()
     var copied by remember { mutableStateOf(false) }
+    var confirmReset by remember { mutableStateOf(false) }
 
     val importer = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri -> if (uri != null) controller.importLocal(uri) }
 
+    // 「曾經走完引導」不是設定，是一件**已經發生過的事實** —— 回復預設時保留它。
+    // 不保留的話，使用者按下「全部回復預設」之後，下一次冷啟動會被丟回引導頁，
+    // 而他明明早就設好了，只是想把設定歸零（§4.9 最後一條）。
+    val settingsPristine = prefs.copy(onboardingDone = null) == UserPrefs()
+
     Page(title = stringResource(R.string.page_advanced), onBack = onBack) {
 
+        Text(
+            text = stringResource(R.string.advanced_intro),
+            fontSize = TypeScale.t5,
+            lineHeight = TypeScale.t5Line,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(Space.s5))
+
         PlainCard {
+            // ⚠ 整理中時**不畫成一列可以點的東西**。
+            //   `redeploy()` 內部第一行是 `if (busy) return`，所以整理中的那一列
+            //   是一顆按了什麼都不會發生的按鈕 —— 畫面完全正常、自動化全過、
+            //   使用者按了沒反應，正是本專案抓過五次的那一種缺陷。
+            //   進行中的進度由 StoreOverlays 統一畫，這裡只誠實地說「在跑了」。
+            if (controller.busy) {
+                StatusRow(
+                    title = stringResource(R.string.advanced_redeploy),
+                    detail = stringResource(R.string.advanced_redeploy_running),
+                )
+            } else {
+                NavRow(
+                    title = stringResource(R.string.advanced_redeploy),
+                    subtitle = stringResource(R.string.advanced_redeploy_sub),
+                    onClick = { controller.redeploy() },
+                )
+            }
+            RowDivider()
             NavRow(
                 title = stringResource(R.string.advanced_import),
                 subtitle = stringResource(R.string.advanced_import_sub),
                 onClick = { importer.launch(arrayOf("application/zip", "*/*")) },
-            )
-            RowDivider()
-            NavRow(
-                title = stringResource(R.string.advanced_redeploy),
-                subtitle = stringResource(
-                    if (controller.busy) R.string.advanced_redeploy_busy
-                    else R.string.advanced_redeploy_sub
-                ),
-                onClick = { if (!controller.busy) controller.redeploy() },
-            )
-            RowDivider()
-            // 「曾經走完引導」不是設定，是一件已經發生過的事實 —— 回復預設時
-            // 保留它。不保留的話，使用者按下「全部回復預設」之後，下一次冷啟動
-            // 會被丟回引導頁，而他明明早就設好了，只是想把設定歸零。
-            val settingsPristine = prefs.copy(onboardingDone = null) == UserPrefs()
-            NavRow(
-                title = stringResource(R.string.advanced_reset),
-                subtitle = stringResource(
-                    if (settingsPristine) R.string.advanced_reset_pristine
-                    else R.string.advanced_reset_sub
-                ),
-                onClick = {
-                    if (!settingsPristine) {
-                        scope.launch { store.update { UserPrefs(onboardingDone = it.onboardingDone) } }
-                    }
-                },
             )
         }
 
         // 換手機的路徑。allowBackup=false 的代價就是這一段 —— 沒有它，
         // 使用者換手機等於從零開始。放在「更新」之前：它比更新更常被找。
         // 整塊 UI 住在 store/BackupSection.kt，這裡只留入口。
-        Spacer(Modifier.height(22.dp))
+        Spacer(Modifier.height(Space.s7))
         SectionLabel(stringResource(R.string.backup_section))
         BackupSection()
 
-        Spacer(Modifier.height(22.dp))
+        Spacer(Modifier.height(Space.s7))
         SectionLabel(stringResource(R.string.advanced_updates))
         if (!online) {
             NetworkRequiredCard(what = stringResource(R.string.network_what_check_updates))
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(Space.s4))
         }
         UpdateSection(
             controller = updates,
@@ -639,35 +714,165 @@ fun AdvancedPage(controller: StoreController, onBack: () -> Unit) {
             onAutoCheckChange = { v -> scope.launch { store.update { p -> p.copy(autoCheckUpdate = v) } } },
         )
 
-        Spacer(Modifier.height(26.dp))
+        Spacer(Modifier.height(Space.s7))
         SectionLabel(stringResource(R.string.advanced_report))
         Text(
             text = stringResource(R.string.advanced_report_sub),
-            fontSize = 12.5.sp,
+            fontSize = TypeScale.t5,
+            lineHeight = TypeScale.t5Line,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(bottom = 10.dp),
+            modifier = Modifier.padding(bottom = Space.s3),
         )
         val report = diagnosticsText(context, controller)
         PlainCard {
             Text(
                 text = report,
-                fontSize = 11.5.sp,
+                fontSize = TypeScale.t6,
                 fontFamily = FontFamily.Monospace,
-                modifier = Modifier.padding(14.dp),
+                modifier = Modifier.padding(Space.s5),
             )
         }
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(Space.s4))
+        // 本頁唯一的實心按鈕（A1）。破壞性的那一顆在最底下，而且是外框（C1）。
         Button(
             onClick = {
                 val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                cm?.setPrimaryClip(ClipData.newPlainText("rime-diagnostics", report))
+                cm?.setPrimaryClip(ClipData.newPlainText("luminakey-diagnostics", report))
                 copied = true
             },
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().heightIn(min = Dimens.touchTarget),
         ) {
-            Text(stringResource(if (copied) R.string.advanced_copied else R.string.advanced_copy))
+            Text(
+                text = stringResource(if (copied) R.string.advanced_copied else R.string.advanced_copy),
+                fontSize = TypeScale.t4,
+            )
         }
+
+        // ── 破壞性動作：該頁最後一個區塊，上面隔一條 hairline + 一個 s7（§4.9）──
+        Spacer(Modifier.height(Space.s7))
+        Hairline()
+        Spacer(Modifier.height(Space.s7))
+        OutlinedButton(
+            onClick = { confirmReset = true },
+            // ⚠ 停用態必須同時給「為什麼」（D1）。那句話就在下面的註腳裡，
+            //   會隨 settingsPristine 換成「目前全部都是預設值」。
+            enabled = !settingsPristine,
+            modifier = Modifier.fillMaxWidth().heightIn(min = Dimens.touchTarget),
+            colors = ButtonDefaults.outlinedButtonColors(
+                // 危險色**只上文字與外框，底是透明的**。實心底是「主要動作」的
+                // 視覺，會讓整頁最危險的東西看起來最該按。
+                contentColor = MaterialTheme.colorScheme.error,
+            ),
+        ) {
+            Text(stringResource(R.string.advanced_reset), fontSize = TypeScale.t4)
+        }
+        Text(
+            text = stringResource(
+                if (settingsPristine) R.string.advanced_reset_pristine
+                else R.string.advanced_reset_sub
+            ),
+            fontSize = TypeScale.t5,
+            lineHeight = TypeScale.t5Line,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = Space.s3, start = Space.s1),
+        )
     }
+
+    if (confirmReset) {
+        ResetConfirmDialog(
+            onDismiss = { confirmReset = false },
+            onConfirm = {
+                confirmReset = false
+                scope.launch { store.update { UserPrefs(onboardingDone = it.onboardingDone) } }
+            },
+        )
+    }
+}
+
+/**
+ * 一列**唯讀狀態**：長得像設定列，但沒有 `›`、不可點。
+ *
+ * 存在的理由是誠實：一個動作正在跑的時候，那一列不該還是一顆按鈕。
+ */
+@Composable
+private fun StatusRow(title: String, detail: String) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = Dimens.row)
+            .padding(horizontal = Space.s5, vertical = Space.s4),
+    ) {
+        Text(text = title, fontSize = TypeScale.t3, fontWeight = FontWeight.Medium)
+        Text(
+            text = detail,
+            fontSize = TypeScale.t5,
+            lineHeight = TypeScale.t5Line,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(top = Space.s1),
+        )
+    }
+}
+
+/**
+ * 「全部回復預設」的二次確認（§4.9 / C3–C5）。
+ *
+ * 三條規則各自對應一行程式：
+ *   · **確認鍵寫出它會做什麼**，不是「確定」—— 使用者在對話框上讀到的最後
+ *     一個詞，應該就是他即將發生的事。
+ *   · **預設焦點在取消。** 這是唯一一個「按錯了救不回來」的地方，而 Android 上
+ *     連按兩下 Enter／用實體鍵盤操作的人是真的存在的。
+ *   · **同時點名會消失的與不會消失的**，兩句都要。只講「會被刪掉」會讓使用者
+ *     以為自己加的詞也沒了，於是不敢按 —— 然後帶著一組壞掉的設定繼續用。
+ */
+@Composable
+private fun ResetConfirmDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    val cancelFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { cancelFocus.requestFocus() } }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(Radius.large),
+        title = {
+            Text(
+                text = stringResource(R.string.reset_confirm_title),
+                fontSize = TypeScale.t2,
+                fontWeight = FontWeight.SemiBold,
+            )
+        },
+        text = {
+            Column {
+                Text(
+                    text = stringResource(R.string.reset_confirm_lost),
+                    fontSize = TypeScale.t5,
+                    lineHeight = TypeScale.t5Line,
+                )
+                Spacer(Modifier.height(Space.s3))
+                Text(
+                    text = stringResource(R.string.reset_confirm_kept),
+                    fontSize = TypeScale.t5,
+                    lineHeight = TypeScale.t5Line,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onConfirm,
+                colors = ButtonDefaults.textButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error,
+                ),
+            ) {
+                Text(stringResource(R.string.reset_confirm_do), fontSize = TypeScale.t4)
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                modifier = Modifier.focusRequester(cancelFocus),
+            ) {
+                Text(stringResource(R.string.reset_confirm_cancel), fontSize = TypeScale.t4)
+            }
+        },
+    )
 }
 
 /**

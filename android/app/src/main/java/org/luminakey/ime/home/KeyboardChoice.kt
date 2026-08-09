@@ -2,7 +2,6 @@ package org.luminakey.ime.home
 
 import android.content.Context
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,6 +12,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -21,12 +22,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import org.luminakey.ime.keyboard.localized
 import org.luminakey.ime.keyboard.localizedGroupTitle
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import org.luminakey.ime.R
 import org.luminakey.ime.core.RimeCore
 import org.luminakey.ime.core.RimeRuntime
@@ -358,40 +361,53 @@ fun KeyboardCard(
     showSubtitle: Boolean = true,
 ) {
     val border = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+    // TalkBack 念的是「改用注音 · 臺灣正體」，不是「按鈕」。選中與否交給
+    // selectable 的 Role，它會自己念出「已選取」—— 不必也不該自己組那句話。
+    val pickLabel = stringResource(R.string.a11y_pick_keyboard, type.title)
     Column(
         modifier = modifier
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(Radius.medium))
             .background(
                 if (selected) MaterialTheme.colorScheme.primaryContainer
                 else MaterialTheme.colorScheme.surface
             )
-            .clickable(onClick = onClick)
-            .padding(14.dp),
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
+            .semantics(mergeDescendants = true) { contentDescription = pickLabel }
+            .padding(Space.s5),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 text = type.title,
-                fontSize = 15.5.sp,
+                fontSize = TypeScale.t3,
                 fontWeight = FontWeight.SemiBold,
                 // 兩行：鍵盤名常常是「QWERTY・常駐數字列」這種長度，一行截斷之後
                 // 兩張卡的開頭長得一模一樣，使用者只能亂猜。
                 maxLines = 2,
-                lineHeight = 19.sp,
+                lineHeight = TypeScale.t3Line,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            if (selected) Text("✓", fontSize = 15.sp, color = MaterialTheme.colorScheme.primary)
+            // 選中有**兩個訊號**：底色 + 這個勾（§3.4 規則 2）。勾本身對
+            // TalkBack 是噪音 —— 選取狀態已經由 selectable 的 Role 念出來了。
+            if (selected) {
+                Text(
+                    text = "✓",
+                    fontSize = TypeScale.t4,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.clearAndSetSemantics { },
+                )
+            }
         }
         if (showSubtitle) {
             Text(
                 text = type.subtitle,
-                fontSize = 12.5.sp,
+                fontSize = TypeScale.t5,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(Space.s4))
         ShapeThumb(columns = if (looksLikeGrid(type)) 3 else 10, tint = border)
     }
 }
@@ -408,19 +424,19 @@ private fun looksLikeGrid(type: KeyboardType): Boolean =
 
 @Composable
 private fun ShapeThumb(columns: Int, tint: androidx.compose.ui.graphics.Color) {
-    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(Space.s1)) {
         repeat(3) {
-            Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(Space.s1)) {
                 repeat(columns) {
                     Box(
                         Modifier
                             .weight(1f)
-                            .height(if (columns <= 4) 8.dp else 6.dp)
-                            .clip(RoundedCornerShape(1.5.dp))
+                            .height(if (columns <= 4) Space.s3 else Space.s2)
+                            .clip(RoundedCornerShape(Space.s1))
                             .background(tint)
                     )
                 }
-                if (columns <= 4) Spacer(Modifier.width(1.dp))
+                if (columns <= 4) Spacer(Modifier.width(Dimens.hairline))
             }
         }
     }
@@ -435,9 +451,12 @@ fun KeyboardGrid(
     modifier: Modifier = Modifier,
     showSubtitle: Boolean = true,
 ) {
-    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(
+        modifier = modifier.fillMaxWidth().selectableGroup(),
+        verticalArrangement = Arrangement.spacedBy(Space.s4),
+    ) {
         for (pair in types.chunked(2)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(Space.s4)) {
                 for (t in pair) {
                     KeyboardCard(
                         type = t,
@@ -447,7 +466,7 @@ fun KeyboardGrid(
                         showSubtitle = showSubtitle,
                     )
                 }
-                if (pair.size == 1) Spacer(Modifier.weight(1f).size(0.dp))
+                if (pair.size == 1) Spacer(Modifier.weight(1f))
             }
         }
     }

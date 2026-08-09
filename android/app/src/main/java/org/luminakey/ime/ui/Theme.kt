@@ -25,6 +25,22 @@ import androidx.compose.ui.graphics.Color
  *      實心按鈕上的字改成近黑 —— 亮青底配白字對比不足。
  *   2. 卡片與底之間只差一階（`#171B1D` vs `#0D1012`），靠 1px 分隔線切開，
  *      不靠陰影，避免深色下常見的「一坨黑」。
+ *
+ * ── 分隔線為什麼是這兩個值（docs/ui-design.md §3.4.1）──────────────────
+ * 這一組色票裡有 11 組文字／底的配對，用 WCAG 2.1 的相對亮度公式算過之後，
+ * **只有分隔線不合格**：舊值淺色 `#E6EAE9` 對卡片只有 1.21:1、深色 `#242A2C`
+ * 只有 1.19:1。1.2:1 在便宜的 LCD 上、在陽光下、在把亮度調低的夜裡是**看不見**的，
+ * 而這一版的分組同時靠間距表達（§3.1 規則 1），所以分隔線只需要「看得見但很安靜」。
+ *
+ * 現值 `#C4CDCC` / `#363E40` 的由來，以及一個**只驗一半**的教訓：
+ * 同一個 `outline` 既畫在卡片裡（列與列之間），也畫在畫面底上（區塊之間的
+ * hairline）。規範的第一版只算了對卡片的值，選了 `#D0D8D7`（對卡片 1.45:1 合格），
+ * **但它對畫面底只有 1.34:1，仍然不合格**。所以這兩個值是**同時**滿足兩個底的
+ * 最淺值 —— 淺色 1.62:1（對卡片）／1.49:1（對畫面底），深色 1.59:1／1.75:1。
+ * `ThemeContrastTest` 兩個底都算，就是為了不讓那個錯誤再犯一次。
+ *
+ * ⚠ 門檻 1.4:1 是規範提出的判斷，**沒有在任何一台實體螢幕上驗證過**。
+ * 反駁方式：拿一台便宜螢幕、亮度調到 30%，新舊值各截一張圖對照。
  */
 
 private val DarkColors = darkColorScheme(
@@ -38,8 +54,9 @@ private val DarkColors = darkColorScheme(
     onSurface = Color(0xFFECEFEE),
     surfaceVariant = Color(0xFF121618),
     onSurfaceVariant = Color(0xFFB9C3C2),
-    outline = Color(0xFF242A2C),
-    outlineVariant = Color(0xFF242A2C),
+    // ⚠ 分隔線是這一組色票裡唯一一個**實際算出來不合格**的東西，見下方註解。
+    outline = Color(0xFF363E40),
+    outlineVariant = Color(0xFF363E40),
     background = Color(0xFF0D1012),
     onBackground = Color(0xFFECEFEE),
     error = Color(0xFFFF8A80),
@@ -58,8 +75,8 @@ private val LightColors = lightColorScheme(
     onSurface = Color(0xFF14181A),
     surfaceVariant = Color(0xFFF2F5F4),
     onSurfaceVariant = Color(0xFF454F51),
-    outline = Color(0xFFE6EAE9),
-    outlineVariant = Color(0xFFE6EAE9),
+    outline = Color(0xFFC4CDCC),
+    outlineVariant = Color(0xFFC4CDCC),
     background = Color(0xFFF4F6F5),
     onBackground = Color(0xFF14181A),
     error = Color(0xFFB3261E),
