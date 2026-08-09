@@ -169,8 +169,9 @@ sys.exit(0 if ok else 1)
 
 # ── 關卡:線上服役中的套件名 vs 這次要發的套件名 ──────────────────────────
 #
-# 擋的是使用者 2026-08-09 實際撞到的那一則:改名前的 org.rimequad.ime 檢查
-# 更新 → 說有新版 → 下載 30MB → PackageInstaller 收到套件名不同的 APK 直接
+# 擋的是使用者 2026-08-09 實際撞到的那一則:裝著改名**前**那個 applicationId
+# (product.env 的 ANDROID_APP_ID_PREVIOUS)的人按下檢查更新 → 說有新版 →
+# 下載 30MB → PackageInstaller 收到套件名不同的 APK 直接
 # 拒收 → 畫面上寫「APK 檔案無效或已損毀」,而檔案完全正常。
 #
 # 為什麼是 PackageInstaller 拒收:UpdateInstaller.kt:96 建 session 時
@@ -496,56 +497,67 @@ run_self_check() {
   "latest_url": "https://pub-d6a54d2e5f5947e2b0b23fb8e27ce0a5.r2.dev/rime/rime-latest.apk",
   "notes": "九宮格"
 }'
-  local OLD='{"version_code":1,"package":"org.rimequad.ime","notes":"x"}'
-  local NEW='{"version_code":1,"package":"org.luminakey.ime","notes":"x"}'
+  # ⚠ 底下每一個套件名都從 product.env 取,**不寫死**。
+  #   scripts/verify_product_ids.sh 第 3 項會擋(而且它擋得對:寫死的那一份
+  #   會在下一次改名時安靜地變成錯的靶,而錯的靶照樣全綠)。
+  #   E1/E2 兩條已經釘住「這兩個變數真的等於 product.env 裡的值」。
+  # ⚠ 用 ${...:-} 而不是直接展開:沒 source 到 product.sh 時,直接展開會在
+  #   set -u 下當場「unbound variable」爆掉 —— 那個訊息看起來像腳本壞了,
+  #   不像「product.env 沒被讀進來」。留空字串讓 E1/E2 去指出真正的原因。
+  local MINE="${RS_ANDROID_APP_ID:-}"           # 這次要發的
+  local PREV="${RS_ANDROID_APP_ID_PREVIOUS:-}"  # 改名前的
+  local OTHER="org.example.notours"         # 誰的都不是,用來測「宣告對不上」
+  local OLD NEW
+  OLD="{\"version_code\":1,\"package\":\"$PREV\",\"notes\":\"x\"}"
+  NEW="{\"version_code\":1,\"package\":\"$MINE\",\"notes\":\"x\"}"
 
   echo "── A. 線上服役中的套件名(check_package_identity)──────────────────"
 
   sc_case "A1 (a) 線上是**實際線上那一份**(舊格式、沒有 package),而改名宣告還在 → 放行,但要說清楚舊使用者現在的處境" \
-    0 '沒有 package 欄位
+    0 "沒有 package 欄位
 APK 檔案無效或已損毀
-replaces_package=org.rimequad.ime' \
-    check_package_identity "$REAL_ONLINE" org.luminakey.ime org.rimequad.ime
+replaces_package=$PREV" \
+    check_package_identity "$REAL_ONLINE" "$MINE" "$PREV"
 
-  sc_case "A2 (b) 線上 org.rimequad.ime、這次 org.luminakey.ime、**沒有宣告** → 拒發" \
-    1 '拒絕發布
+  sc_case "A2 (b) 線上是 $PREV、這次是 $MINE、**沒有宣告** → 拒發" \
+    1 "拒絕發布
 INSTALL_FAILED_INVALID_APK
 APK 檔案無效或已損毀
-ANDROID_APP_ID_PREVIOUS=org.rimequad.ime' \
-    check_package_identity "$OLD" org.luminakey.ime ''
+ANDROID_APP_ID_PREVIOUS=$PREV" \
+    check_package_identity "$OLD" "$MINE" ''
 
   sc_case "A3 (c) 同上但**有宣告**,而且宣告的正是線上那一個 → 放行,並印出遷移路徑" \
     0 '已宣告的套件識別碼變更
 遷移路徑
 不下載那 30MB
 詞典與設定不會自動轉移' \
-    check_package_identity "$OLD" org.luminakey.ime org.rimequad.ime
+    check_package_identity "$OLD" "$MINE" "$PREV"
 
   sc_case "A4 有宣告,但宣告的不是線上服役中的那一個 → 拒發(宣告了卻不會生效)" \
     1 '拒絕發布
 declared=false' \
-    check_package_identity "$OLD" org.luminakey.ime org.someoneelse.ime
+    check_package_identity "$OLD" "$MINE" "$OTHER"
 
   sc_case "A5 線上與這次相同 → 一般升級,放行" \
     0 '一般升級' \
-    check_package_identity "$NEW" org.luminakey.ime ''
+    check_package_identity "$NEW" "$MINE" ''
 
   sc_case "A6 線上與這次相同,但宣告還留著 → 放行並提醒那份一次性宣告該刪了" \
     0 '一次性宣告可以刪掉了' \
-    check_package_identity "$NEW" org.luminakey.ime org.rimequad.ime
+    check_package_identity "$NEW" "$MINE" "$PREV"
 
   sc_case "A7 線上清單抓不到 → 不可以宣稱通過,要說「沒查」" \
     0 '沒有驗到' \
-    check_package_identity '' org.luminakey.ime org.rimequad.ime
+    check_package_identity '' "$MINE" "$PREV"
 
   sc_case "A8 線上的 package 值是數字(型別不對)→ 當成沒有,不可以據此拒發" \
     0 'package 欄位不是字串
 等同舊格式' \
-    check_package_identity '{"version_code":1,"package":123}' org.luminakey.ime ''
+    check_package_identity '{"version_code":1,"package":123}' "$MINE" ''
 
   sc_case "A9 線上的 package 是帶空白的字串 → 同樣當成沒有" \
     0 '不像套件名' \
-    check_package_identity '{"version_code":1,"package":"org rimequad ime"}' org.luminakey.ime ''
+    check_package_identity "{\"version_code\":1,\"package\":\"${PREV//./ }\"}" "$MINE" ''
 
   # ⚠ 這一條釘的是「要有 JSON 語意,不可以用 sed/grep 掃字串」。
   #   底下這份清單的**頂層** package 與這次相同(該放行),但後面還有一個
@@ -556,12 +568,12 @@ declared=false' \
   sc_case "A10 巢狀物件裡有同名的 package → 解析器不可以被騙(貪婪的 sed 會)" \
     0 '一般升級' \
     check_package_identity \
-      '{"version_code":1,"package":"org.luminakey.ime","meta":{"package":"org.rimequad.ime"}}' \
-      org.luminakey.ime ''
+      "{\"version_code\":1,\"package\":\"$MINE\",\"meta\":{\"package\":\"$PREV\"}}" \
+      "$MINE" ''
 
   sc_case "A11 線上清單不是合法 JSON → 要說「現在每台裝置的檢查更新都是壞的」,不是靜靜放行" \
     0 '解析不了' \
-    check_package_identity '{oops' org.luminakey.ime ''
+    check_package_identity '{oops' "$MINE" ''
 
   echo "── B. 線上 version_code 的抽取(manifest_num_field)────────────────"
 
@@ -659,21 +671,21 @@ declared=false' \
     local VERSION_CODE=26081000 VERSION_NAME='0.1.0-dev+x' STAMP=20260810-0000 \
           SHA=deadbee NAME=rime-android-debug-x.apk SIZE=1 SHA256=ff \
           BASE_URL=https://example.invalid REMOTE_SUBDIR=rime \
-          APK_PACKAGE=org.luminakey.ime \
+          APK_PACKAGE="$RS_ANDROID_APP_ID" \
           RS_ANDROID_APP_ID_PREVIOUS="$want_declared" PAGE_URL="$want_page" \
           NOTES='引號 " 反斜線 \ 都要活著'
-    render_version_json | python3 -c '
-import json, sys
+    render_version_json | WANT_PKG="$APK_PACKAGE" python3 -c '
+import json, os, sys
 o = json.load(sys.stdin)          # 不是合法 JSON 就在這裡爆
 assert o["notes"] == "引號 \" 反斜線 \\ 都要活著", "notes 轉義壞了:%r" % o["notes"]
-assert o["package"] == "org.luminakey.ime"
+assert o["package"] == os.environ["WANT_PKG"], o["package"]
 print("keys=" + ",".join(sorted(k for k in ("replaces_package", "page_url") if k in o)))
 '
   }
 
   sc_case "F1 有宣告 + 有 page_url → 合法 JSON,而且兩個欄位都真的寫出來了" \
     0 'keys=page_url,replaces_package' \
-    sc_render org.rimequad.ime https://example.invalid/rime/downloads/
+    sc_render "$PREV" https://example.invalid/rime/downloads/
 
   sc_case "F2 沒宣告、沒 page_url → 兩個選用欄位都不可以出現(不是寫成空字串)" \
     0 'keys=' \
@@ -681,7 +693,7 @@ print("keys=" + ",".join(sorted(k for k in ("replaces_package", "page_url") if k
 
   sc_case "F3 宣告的值等於本次套件名(宣告過期了)→ 不寫 replaces_package" \
     0 'keys=' \
-    sc_render org.luminakey.ime ''
+    sc_render "$MINE" ''
 
   echo
   # §2-G2:掃描範圍非空。這裡是「條數」—— 少一條就紅,不是「零個違規=通過」。
