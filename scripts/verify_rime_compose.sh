@@ -291,7 +291,7 @@ case "$TARGET" in
        這**不是**輸入法或首次部署的問題:視窗沒有焦點,IMM 就沒有 served view,
        showSoftInput 會被整個丟掉(logcat 裡是 ImeTracker onFailed at
        PHASE_CLIENT_VIEW_SERVED),鍵盤當然不會出現。
-       先看 $OUT_DIR/focus-screen.png 與 focus-window.txt:是誰蓋在上面。"
+       先看 $OUT_DIR/${TT_LAST_DUMP_TAG}-screen.png 與 ${TT_LAST_DUMP_TAG}-window.txt:是誰蓋在上面。"
     fi
     pass "測試靶在前景且視窗有焦點($TT_FOCUS_NOW)"
 
@@ -303,10 +303,10 @@ case "$TARGET" in
       0) pass "輸入框拿到游標(uiautomator focused=true),實際座標 $TT_FIELD_XY" ;;
       1) tt_focus_report focus
          fail "畫面的節點樹裡找不到 $TT_PKG 的輸入框 —— 前景視窗雖然報是測試靶,
-       畫面上卻不是它(可能有東西蓋在上面)。看 $OUT_DIR/focus-screen.png。" ;;
+       畫面上卻不是它(可能有東西蓋在上面)。看 $OUT_DIR/${TT_LAST_DUMP_TAG}-screen.png。" ;;
       *) tt_focus_report focus
          fail "點了三次 $TT_FIELD_XY(輸入框的實際中心)之後,uiautomator 仍然說它沒有游標。
-       焦點進不去欄位,鍵盤就不會被叫起來。看 $OUT_DIR/focus-screen.xml。" ;;
+       焦點進不去欄位,鍵盤就不會被叫起來。看 $OUT_DIR/${TT_LAST_DUMP_TAG}-screen.xml。" ;;
     esac
     ;;
   settings)
@@ -367,7 +367,7 @@ for i in $(seq 1 "$DEPLOY_TIMEOUT"); do
         fail "測試靶在等鍵盤的期間失去了視窗焦點(連續 3 次都不是它),焦點在 $TT_FOCUS_NOW。
        有東西蓋到測試靶上面了。這不是鍵盤沒出現,是根本沒有人在等鍵盤 ——
        沒有焦點就沒有 served view,showSoftInput 一定被丟掉。
-       看 $OUT_DIR/focus-screen.png 與 focus-activities.txt。"
+       看 $OUT_DIR/${TT_LAST_DUMP_TAG}-screen.png 與 ${TT_LAST_DUMP_TAG}-activities.txt。"
       fi
     fi
   fi
@@ -422,7 +422,7 @@ if [ "$SHOWN" -ne 1 ]; then
       tt_focus_report focus
       fail "焦點不在測試靶身上,焦點在 ${TT_FOCUS_NOW:-<沒有任何視窗有焦點>}(應該是 $TT_PKG)。
        所以鍵盤當然沒出現 —— 這是**宿主端**的問題,不是輸入法、不是部署、
-       也不是綁定。看 $OUT_DIR/focus-screen.png:誰蓋在上面。"
+       也不是綁定。看 $OUT_DIR/${TT_LAST_DUMP_TAG}-screen.png:誰蓋在上面。"
     fi
     if [ "${WINFOCUS_LOG:-0}" -eq 0 ] || { [ -n "$IME_TGT" ] && [ "$IME_TGT" != "$TT_PKG" ]; }; then
       tt_focus_report focus
@@ -431,7 +431,7 @@ if [ "$SHOWN" -ne 1 ]; then
        輸入法框架最後一次 startInput 的目標是 '${IME_TGT:-<一筆都沒有>}'(應該是 $TT_PKG)。
        視窗沒拿過焦點,IMM 就沒有 served view,showSoftInput 全部被丟掉
        (logcat:ImeTracker onFailed at PHASE_CLIENT_VIEW_SERVED)。
-       這不是鍵盤的問題,是有東西擋著測試靶。看 $OUT_DIR/focus-screen.png。"
+       這不是鍵盤的問題,是有東西擋著測試靶。看 $OUT_DIR/${TT_LAST_DUMP_TAG}-screen.png。"
     fi
   fi
 

@@ -210,7 +210,7 @@ if ! tt_acquire_foreground; then
   fail "測試靶 $TT_PKG 沒有拿到視窗焦點,焦點在 ${TT_FOCUS_NOW:-<沒有任何視窗有焦點>}。
        這不是鍵盤的問題:視窗沒有焦點,IMM 就沒有 served view,
        showSoftInput 會被整個丟掉,鍵盤當然不會出現。
-       看 $OUT_DIR/focus-screen.png 與 focus-window.txt:是誰蓋在上面。"
+       看 $OUT_DIR/${TT_LAST_DUMP_TAG}-screen.png 與 ${TT_LAST_DUMP_TAG}-window.txt:是誰蓋在上面。"
 fi
 pass "測試靶在前景且視窗有焦點($TT_FOCUS_NOW)"
 FF=0; tt_focus_field || FF=$?   # set -e:不能寫成 `cmd; FF=$?`,那會先中止
@@ -218,10 +218,10 @@ case "$FF" in
   0) pass "輸入框拿到游標(uiautomator focused=true),實際座標 $TT_FIELD_XY" ;;
   1) tt_focus_report focus
      fail "畫面的節點樹裡找不到 $TT_PKG 的輸入框 —— 前景報的是測試靶,畫面上卻不是它。
-       看 $OUT_DIR/focus-screen.png。" ;;
+       看 $OUT_DIR/${TT_LAST_DUMP_TAG}-screen.png。" ;;
   *) tt_focus_report focus
      fail "點了三次 $TT_FIELD_XY(輸入框的實際中心)之後,uiautomator 仍然說它沒有游標。
-       焦點進不去欄位,鍵盤就不會被叫起來。看 $OUT_DIR/focus-screen.xml。" ;;
+       焦點進不去欄位,鍵盤就不會被叫起來。看 $OUT_DIR/${TT_LAST_DUMP_TAG}-screen.xml。" ;;
 esac
 SHOWN=0
 LOST_FOCUS=0
@@ -252,7 +252,7 @@ for i in $(seq 1 "$DEPLOY_TIMEOUT"); do
         tt_focus_report focus
         fail "測試靶在等鍵盤的期間失去了視窗焦點(連續 3 次都不是它),焦點在 $TT_FOCUS_NOW。
        有東西蓋到測試靶上面了 —— 不是鍵盤沒出現,是根本沒有人在等鍵盤。
-       看 $OUT_DIR/focus-screen.png 與 focus-activities.txt。"
+       看 $OUT_DIR/${TT_LAST_DUMP_TAG}-screen.png 與 ${TT_LAST_DUMP_TAG}-activities.txt。"
       fi
     fi
   fi
@@ -264,7 +264,7 @@ if [ "$SHOWN" -ne 1 ]; then
   if ! tt_has_focus; then
     tt_focus_report focus
     fail "焦點不在測試靶身上,焦點在 ${TT_FOCUS_NOW:-<沒有任何視窗有焦點>}(應該是 $TT_PKG)。
-       鍵盤沒出現是這件事的結果,不是輸入法的問題。看 $OUT_DIR/focus-screen.png。"
+       鍵盤沒出現是這件事的結果,不是輸入法的問題。看 $OUT_DIR/${TT_LAST_DUMP_TAG}-screen.png。"
   fi
   adbs logcat -d > "$OUT_DIR/logcat.txt" 2>/dev/null || true
   WINFOCUS_LOG="$(grep -c "RimeImeTest.*windowFocus=true" "$OUT_DIR/logcat.txt" 2>/dev/null)" || WINFOCUS_LOG=0
@@ -306,7 +306,7 @@ if ! tt_acquire_foreground; then
   tt_focus_report refocus
   fail "重啟輸入法之後,測試靶沒有回到前景,焦點在 ${TT_FOCUS_NOW:-<沒有任何視窗有焦點>}。
        這不是鍵盤壞了 —— 後面的座標校準會量到別人的畫面,所以在這裡就停。
-       看 $OUT_DIR/refocus-screen.png。"
+       看 $OUT_DIR/${TT_LAST_DUMP_TAG}-screen.png。"
 fi
 FF=0; tt_focus_field || FF=$?
 [ "$FF" -eq 0 ] || { tt_focus_report refocus; fail "重啟之後輸入框拿不到游標(座標 ${TT_FIELD_XY:-未量到})。"; }
@@ -468,7 +468,7 @@ if [ "$SHOWN2" -ne 1 ]; then
   fi
   fail "按住把畫面帶離了測試靶:焦點跑到 ${TT_FOCUS_NOW:-<沒有任何視窗有焦點>}(應該是 $TT_PKG)。
        按住把使用者帶離了輸入的畫面 —— 這本身就值得看一眼。
-       看 $OUT_DIR/afterhold-screen.png:被帶去哪裡了。"
+       看 $OUT_DIR/${TT_LAST_DUMP_TAG}-screen.png:被帶去哪裡了。"
 fi
 sleep 2
 pass "已清空,測試靶與鍵盤都還在"
