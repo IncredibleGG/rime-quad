@@ -153,6 +153,26 @@ jobs:
       - name: 產品識別碼只有一份(自帶反向測試)
         run: ./scripts/verify_product_ids.sh
 
+      # ── 消歧欄關卡的反向測試(不需要模擬器的那兩個)────────────────
+      # verify_syllables.sh 的檔頭從第一天就宣告了三種 --plant「證明它會紅」,
+      # 而這個 workflow 一次都沒有呼叫過 —— 專案裡其他每一支守門的反向測試
+      # 都接上了,只有這一支沒有,而「宣告了」與「在跑」在日誌上長得一模一樣。
+      #
+      # 分兩條車道:stale-schema / narrow-scope 只讀主機上的檔案(第 0/1 關),
+      # 一秒跑完,放這裡;bad-slot-ids 斷言的是畫面像素,只能跟著模擬器那條跑。
+      # 三種都有跑,沒有靜靜地少驗哪一個 —— 而下面那一關就是在盯這件事。
+      - name: 消歧欄反向測試的接線檢查(自帶自我測試)
+        run: |
+          # 先證明這一關會紅(拆掉一條接線),再問實際的接線齊不齊。
+          ./scripts/verify_syllables.sh --check-ci --self-test
+          ./scripts/verify_syllables.sh --check-ci
+
+      - name: 消歧欄反向測試:方案漂移(第 0 關必須紅)
+        run: ./scripts/verify_syllables.sh --plant stale-schema
+
+      - name: 消歧欄反向測試:掃描範圍變窄(第 1 關必須紅)
+        run: ./scripts/verify_syllables.sh --plant narrow-scope
+
       - name: 發布關卡(不需要模擬器的部分)
         run: ./scripts/release_check.sh --skip-emu --strict
 
@@ -319,6 +339,13 @@ jobs:
             #   所以行末的 `\` 會原樣變成一個參數,腳本收到之後回「未知參數: \」
             #   然後以 2 結束。YAML 是合法的,命令是壞的 —— 驗 YAML 驗不到這件事。
             bash ./scripts/verify_syllables.sh --apk android/app/build/outputs/apk/debug/app-debug.apk
+            # 反向測試:把佈局的 syllable_slots 指到不存在的 key id(「有人把
+            # pu_comma 改名」的真實形狀),格位替換就不會發生,畫面照常顯示標點
+            # —— 第 2 關必須紅。三種植入裡只有這一種斷言的是畫面像素,
+            # 所以只有它非得在模擬器上跑不可。帶 --plant 時退出碼是反的,
+            # 而且腳本會確認紅的是**指名的那一條**(踩紅別條照樣算失敗)。
+            # ⚠ 一行寫完,理由同上面那一行(這個 action 逐行交給 sh -c)。
+            bash ./scripts/verify_syllables.sh --plant bad-slot-ids --out build/verify-syllables-plant
             # 匯出/匯入的完整往返。**這一支以前沒有被任何 workflow 呼叫過**,
             # 而 docs/backup-format.md §343 把它當成「整條往返實跑過」的證據 ——
             # 那句話在它被跑的那一天是真的,之後沒有任何東西讓它保持為真。
@@ -342,6 +369,7 @@ jobs:
           path: |
             build/release-check/
             build/verify-syllables/
+            build/verify-syllables-plant/
             build/verify-backup/
           if-no-files-found: ignore
 

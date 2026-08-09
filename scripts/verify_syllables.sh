@@ -27,6 +27,21 @@
 #                          → 格位替換不會發生,畫面照常顯示標點 → 第 2 關必須紅
 #                          (這正是「有人把 pu_comma 改名」的真實形狀)
 #
+#   帶 --plant 時**退出碼是反的**:斷言紅了才算通過(exit 0),
+#   植入了卻還是綠的就是這支腳本壞了(exit 1)。而且不是「紅就算過」——
+#   每一種植入都指名它**應該踩紅哪一條**,踩紅別條(模擬器抽風、裝不上去)
+#   一樣算失敗。exit 2 保留給工具/環境問題,不會被反轉。
+#
+#   前兩種只碰主機上的檔案,不需要裝置,所以第 1 關之後就收尾 ——
+#   這樣它們才進得了快車道(見 .github/workflows/build.yml)。
+#   bad-slot-ids 斷言的是畫面像素,只能跟著模擬器那條車道跑。
+#
+#   --check-ci    不跑任何驗證,只檢查上面宣告的每一種 --plant 都真的接進了
+#                 .github/workflows/build.yml。這一支的三個反向測試曾經
+#                 **一次都沒有在 CI 上跑過**(檔頭寫著、workflow 沒接),
+#                 而那看起來與一切正常一模一樣。--check-ci --self-test
+#                 會先把接線拆掉一條,證明這一關真的會紅。
+#
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,6 +61,25 @@ SCHEMA=t9_pinyin
 OUT_DIR="$ROOT/build/verify-syllables"
 APK=""
 PLANT=""
+CHECK_CI=0
+SELF_TEST=0
+# 每一種植入**指名**它該踩紅的那一條 FAIL 訊息。只看退出碼是不夠的:
+# 模擬器沒開、APK 裝不上去一樣是 exit 1,而那不叫「反向測試通過」。
+plant_expect_re() {
+  case "$1" in
+    stale-schema) echo '不一致|alphabet 不含小寫拼音' ;;
+    narrow-scope) echo '少於下界' ;;
+    bad-slot-ids) echo '消歧欄上讀不到 ni/mi' ;;
+    *) echo '' ;;
+  esac
+}
+# 只碰主機檔案、不需要裝置的植入。列在這裡的可以進快車道。
+plant_is_host_only() {
+  case "$1" in
+    stale-schema|narrow-scope) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 # §2-G:掃描範圍必須非空。三份九宮格佈局(cn-t9-pinyin / -numrow / t9-pinyin)
 # 少一份就代表有人刪了佈局、或這裡的判準壞了 —— 兩種都必須紅,而不是靜靜地少驗一份。
 MIN_T9_LAYOUTS="${RS_MIN_T9_LAYOUTS:-3}"
@@ -61,17 +95,61 @@ while [ $# -gt 0 ]; do
     --plant)  PLANT="$2"; shift 2 ;;
     --theme)  THEME="$2"; shift 2 ;;
     --out)    OUT_DIR="$2"; shift 2 ;;
-    -h|--help) sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --check-ci)  CHECK_CI=1; shift ;;
+    --self-test) SELF_TEST=1; shift ;;
+    -h|--help)
+      # 範圍不要寫死行號:檔頭一長,說明就會被默默截掉一半。
+      sed -n '2,/^set -uo pipefail$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "未知參數: $1" >&2; exit 2 ;;
   esac
 done
 
 mkdir -p "$OUT_DIR"
+# 打錯的 --plant 名字必須當場停。否則它會被當成「沒有植入」跑完一整輪、
+# 全綠、然後被反轉成 exit 1 或(更糟)被當成通過 —— 兩種都在說謊。
+if [ -n "$PLANT" ] && [ -z "$(plant_expect_re "$PLANT")" ]; then
+  echo "不認得的 --plant「$PLANT」。可用:stale-schema / narrow-scope / bad-slot-ids" >&2
+  exit 2
+fi
 adbs() { "$ADB" -s "$SERIAL" "$@"; }
 info() { echo "[syllables] $*" >&2; }
 pass() { echo "  [PASS] $*"; }
 FAILURES=0
-fail() { echo "  [FAIL] $*" >&2; FAILURES=$((FAILURES + 1)); }
+FAIL_LOG=""
+# ⚠ 訊息要留下來。「紅了」不等於「該紅的那一條紅了」:模擬器抽風、APK 裝不上去
+#   同樣會讓退出碼變 1,而 --plant 的斷言若只看退出碼,就會把環境故障當成
+#   「反向測試通過」—— 那正是這一支要防的假綠燈的另一個形狀。
+fail() { echo "  [FAIL] $*" >&2; FAILURES=$((FAILURES + 1)); FAIL_LOG="$FAIL_LOG
+$*"; }
+
+# 收尾。帶 --plant 時退出碼是**反的**,而且要求紅的是指名的那一條。
+finish() {
+  echo
+  if [ -n "$PLANT" ]; then
+    local want; want="$(plant_expect_re "$PLANT")"
+    if [ "$FAILURES" -eq 0 ]; then
+      echo "✗ 植入了 $PLANT,斷言卻還是全綠 —— 這一關沒有在守。artifact:$OUT_DIR"
+      return 1
+    fi
+    if ! printf '%s' "$FAIL_LOG" | grep -qE "$want"; then
+      echo "✗ 植入了 $PLANT,紅的卻不是該紅的那一條(要找的是 /$want/)。"
+      echo "  實際紅的是:"
+      printf '%s\n' "$FAIL_LOG" | sed '/^$/d; s/^/    /'
+      echo "  artifact:$OUT_DIR"
+      return 1
+    fi
+    echo "✓ 反向測試通過:植入 $PLANT 之後,該紅的那一條紅了(共 $FAILURES 項)"
+    echo "   artifact:$OUT_DIR"
+    return 0
+  fi
+  if [ "$FAILURES" -gt 0 ]; then
+    echo "✗ $FAILURES 項沒過。artifact:$OUT_DIR"
+    return 1
+  fi
+  echo "✓ $1"
+  echo "   artifact:$OUT_DIR"
+  return 0
+}
 
 step() { echo; echo "── $* ──"; }
 
@@ -98,20 +176,86 @@ if f: print(f.group(2), f.group(4))
   GRID_TOP=$((FRAME_BOT - GRID_H))
 }
 
-[ -x "$ADB" ] || { echo "找不到 adb:$ADB" >&2; exit 2; }
-if [ -z "$TESSERACT" ] || [ ! -x "$TESSERACT" ]; then
-  # ⚠ 不可以「找不到 OCR 就跳過」。跳過的關卡與綠燈長得一模一樣。
-  echo "找不到 tesseract。請安裝(apt-get install -y tesseract-ocr)或設 RIME_TESSERACT。" >&2
-  exit 2
-fi
-# ⚠ 同樣的道理,但這一條是**吃過的虧**:GitHub runner 上沒有 Pillow,
-#   裁切那段 python 每次都 ModuleNotFoundError,而腳本沒有 -e、
-#   `ocr_region` 的輸出檔就是空的 —— 於是三份佈局都報
-#   「消歧欄上讀不到 ni/mi」。**看起來像產品壞了,其實是關卡自己缺套件。**
-#   工具缺席必須在這裡就停,而且訊息要指向安裝,不要指向產品。
-if ! python3 -c "import PIL" >/dev/null 2>&1; then
-  echo "python3 缺 Pillow(裁切要用)。請安裝:pip3 install --user pillow" >&2
-  exit 2
+# 裝置與 OCR 的工具檢查。**依然不准跳過**,只是挪到真的要碰裝置之前才問 ——
+# 第 0/1 關純粹讀主機上的檔案,不需要 adb 也不需要 tesseract,而
+# stale-schema / narrow-scope 兩個植入只驗那兩關。要求它們先有一台模擬器,
+# 等於把這兩個反向測試永遠關在慢車道外面(它們至今一次都沒跑過)。
+require_device_tools() {
+  [ -x "$ADB" ] || { echo "找不到 adb:$ADB" >&2; exit 2; }
+  if [ -z "$TESSERACT" ] || [ ! -x "$TESSERACT" ]; then
+    # ⚠ 不可以「找不到 OCR 就跳過」。跳過的關卡與綠燈長得一模一樣。
+    echo "找不到 tesseract。請安裝(apt-get install -y tesseract-ocr)或設 RIME_TESSERACT。" >&2
+    exit 2
+  fi
+  # ⚠ 同樣的道理,但這一條是**吃過的虧**:GitHub runner 上沒有 Pillow,
+  #   裁切那段 python 每次都 ModuleNotFoundError,而腳本沒有 -e、
+  #   `ocr_region` 的輸出檔就是空的 —— 於是三份佈局都報
+  #   「消歧欄上讀不到 ni/mi」。**看起來像產品壞了,其實是關卡自己缺套件。**
+  #   工具缺席必須在這裡就停,而且訊息要指向安裝,不要指向產品。
+  if ! python3 -c "import PIL" >/dev/null 2>&1; then
+    echo "python3 缺 Pillow(裁切要用)。請安裝:pip3 install --user pillow" >&2
+    exit 2
+  fi
+}
+
+# ═════════════════ --check-ci:反向測試有沒有真的接進 CI ═════════════════
+#
+# 這一關擋的是這支腳本自己踩過的坑:檔頭把三種 --plant 寫得清清楚楚,
+# workflow 卻一次都沒有呼叫過。「宣告了反向測試」與「反向測試在跑」
+# 在任何日誌上看起來都一模一樣 —— 除非有人去比對這兩份檔案。
+if [ "$CHECK_CI" -eq 1 ]; then
+  WF="$ROOT/.github/workflows/build.yml"
+  SELF="${BASH_SOURCE[0]}"
+  if [ "$SELF_TEST" -eq 1 ]; then
+    # 反向測試的反向測試:把接線拆掉一條,這一關必須紅。
+    TMPWF="$(mktemp -d)/build.yml"
+    mkdir -p "$(dirname "$TMPWF")"
+    grep -v -- "--plant narrow-scope" "$WF" > "$TMPWF"
+    WF="$TMPWF"
+    info "自我測試:用一份**拿掉 narrow-scope 接線**的 build.yml"
+  fi
+  [ -f "$WF" ] || { echo "找不到 $WF" >&2; exit 2; }
+
+  # 宣告的植入種類直接從檔頭讀,不要在這裡再抄一份 —— 抄的那一份會漂移,
+  # 而漂移時「檢查通過」的那一份說了算。
+  mapfile -t DECLARED < <(sed -n 's/^#   --plant \([a-z-]\+\).*/\1/p' "$SELF" | sort -u)
+  if [ "${#DECLARED[@]}" -lt 3 ]; then
+    echo "!! 檔頭只解析出 ${#DECLARED[@]} 種 --plant —— 解析式壞了,這一關在空轉。" >&2
+    exit 1
+  fi
+  info "檔頭宣告的植入:${DECLARED[*]}"
+  MISSING=0
+  for pl in "${DECLARED[@]}"; do
+    if grep -q -- "--plant $pl" "$WF"; then
+      pass "build.yml 有跑 --plant $pl"
+    else
+      fail "build.yml 沒有跑 --plant $pl —— 檔頭宣告了「證明它會紅」,實際上沒人證明過。"
+      MISSING=$((MISSING + 1))
+    fi
+  done
+  # 正向那一次也要在,否則把正向拿掉、只留植入,一樣是全綠。
+  if grep -qE "verify_syllables\.sh --apk" "$WF"; then
+    pass "build.yml 有跑正向(--apk,不帶 --plant)"
+  else
+    fail "build.yml 找不到不帶 --plant 的正向呼叫。"
+    MISSING=$((MISSING + 1))
+  fi
+  [ "$SELF_TEST" -eq 1 ] && rm -rf "$(dirname "$WF")"
+  echo
+  if [ "$SELF_TEST" -eq 1 ]; then
+    if [ "$MISSING" -eq 0 ]; then
+      echo "✗ 自我測試失敗:接線都被拆掉一條了,--check-ci 卻還是綠的。"
+      exit 1
+    fi
+    echo "✓ 自我測試通過:拆掉接線之後 --check-ci 會紅($MISSING 條)"
+    exit 0
+  fi
+  if [ "$MISSING" -gt 0 ]; then
+    echo "✗ $MISSING 條反向測試沒有接進 CI"
+    exit 1
+  fi
+  echo "✓ 檔頭宣告的 ${#DECLARED[@]} 種植入都接進 build.yml 了,正向那一次也在"
+  exit 0
 fi
 
 # ═══════════════════════ 第 0 關:方案漂移 ═══════════════════════
@@ -175,7 +319,15 @@ fi
 # 掃不到就沒有東西可驗了,直接收尾(前面已經記了 FAIL)。
 [ "${#T9_LAYOUTS[@]}" -gt 0 ] || { echo; echo "✗ 沒有可驗的佈局"; exit 1; }
 
+# 主機端的植入到這裡就驗完了 —— 第 0/1 關只讀檔案。再往下開模擬器
+# 證明不了多一件事,卻會讓這兩個反向測試永遠上不了快車道。
+if [ -n "$PLANT" ] && plant_is_host_only "$PLANT"; then
+  info "$PLANT 只驗主機端的第 0/1 關,不需要裝置 —— 到此收尾。"
+  finish ""; exit $?
+fi
+
 # ═══════════════════════ 裝置準備 ═══════════════════════
+require_device_tools
 if [ -n "$APK" ]; then
   info "安裝 $APK"
   adbs install -r -g -t "$APK" >/dev/null 2>&1 || { echo "安裝失敗" >&2; exit 2; }
@@ -630,10 +782,4 @@ PY
   fi
 done
 
-echo
-if [ "$FAILURES" -gt 0 ]; then
-  echo "✗ $FAILURES 項沒過。artifact:$OUT_DIR"
-  exit 1
-fi
-echo "✓ 消歧欄在 ${#T9_LAYOUTS[@]} 份九宮格佈局上都畫出來了,而且選得下去(斷言的是畫面像素)"
-echo "   artifact:$OUT_DIR"
+finish "${#T9_LAYOUTS[@]} 份九宮格佈局上都畫出來了,而且選得下去(斷言的是畫面像素)"
