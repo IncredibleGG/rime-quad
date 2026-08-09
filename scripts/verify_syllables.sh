@@ -222,7 +222,7 @@ if [ "$CHECK_CI" -eq 1 ]; then
 
   # 宣告的植入種類直接從檔頭讀,不要在這裡再抄一份 —— 抄的那一份會漂移,
   # 而漂移時「檢查通過」的那一份說了算。
-  mapfile -t DECLARED < <(sed -n 's/^#   --plant \([a-z-]\+\).*/\1/p' "$SELF" | sort -u)
+  mapfile -t DECLARED < <(sed -n 's/^#   --plant \([a-z-][a-z-]*\).*/\1/p' "$SELF" | sort -u)
   if [ "${#DECLARED[@]}" -lt 3 ]; then
     echo "!! 檔頭只解析出 ${#DECLARED[@]} 種 --plant —— 解析式壞了,這一關在空轉。" >&2
     exit 1
