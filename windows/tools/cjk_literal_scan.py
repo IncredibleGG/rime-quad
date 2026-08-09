@@ -121,6 +121,13 @@ def strip_comments(src):
 
 
 def main():
+    # ⚠ windows-latest 上 python 的 stdout 預設是 cp1252,而下面會印出
+    #   違規的字面值(裡面就是中文)。不改的話那是 UnicodeEncodeError,
+    #   而錯誤訊息會蓋掉真正的違規清單。
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except AttributeError:  # Python < 3.7
+        pass
     if len(sys.argv) < 2:
         print("SCANNED=0")
         return 1

@@ -68,6 +68,13 @@ info() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 strip_comments() {
   "${PY}" - "$1" <<'PYSCRIPT'
 import sys
+# ⚠ windows-latest 的 runner 上,python 的 stdout 預設是 cp1252 ——
+#   寫一個中文字就是 UnicodeEncodeError,而**去註解的輸出會被截斷**。
+#   後果不是「腳本紅了」,是後面每一條 grep 都掃到一份殘缺的檔案:
+#   W2 少數了一個視窗類別、W8/W10/W21 命中變成 0、W17 說「找不到函式」。
+#   也就是說,**它會讓檢核用一堆看起來像真的違規的訊息失敗** ——
+#   比直接爆掉更難查。
+sys.stdout.reconfigure(encoding='utf-8', newline='')
 src = open(sys.argv[1], encoding='utf-8', errors='replace').read()
 out = []
 i = 0
@@ -130,6 +137,16 @@ trap cleanup EXIT
 hits() { grep -rn "$1" "${CODE_DIR}" ${2:+--include="$2"} 2>/dev/null || true; }
 count_of() { [ -z "$1" ] && echo 0 || printf '%s\n' "$1" | grep -c . ; }
 
+# ⚠ `x="$(grep -c ... || echo 0)"` 在沒命中時會得到 "0\n0" —— grep -c 自己
+#   已經印了一個 0,然後 `||` 又印一個。接著 `[ "$x" -lt 3 ]` 就是
+#   「integer expected」。這一支把任何輸出正規化成第一個整數。
+num() {
+  local v
+  v="$(printf '%s' "${1:-}" | tr -dc '0-9\n' | head -1)"
+  [ -z "${v}" ] && v=0
+  printf '%s' "${v}"
+}
+
 need_scope() {  # 名稱 實際 下界
   if [ "$2" -lt "$3" ]; then
     red "$1:掃描範圍太小($2 < $3)—— 範圍寫錯時的行為必須是紅,不是零個違規"
@@ -185,7 +202,7 @@ run_checks() {
     local sp; sp="$(grep -o 'constexpr int s[0-9] = [0-9]*' "${lay}" | grep -o '[0-9]*$' | sort -n | tr '\n' ' ')"
     local ra; ra="$(grep -o 'constexpr int k[A-Za-z]* = [0-9]*' "${lay}" | sed -n '/kLarge\|kMedium\|kMediumInner\|kSmall/p' | grep -o '[0-9]*$' | sort -n | tr '\n' ' ')"
     local ts; ts="$(grep -o 'constexpr int t[0-9] = [0-9]*' "${lay}" | grep -o '[0-9]*$' | sort -n | tr '\n' ' ')"
-    local nlit; nlit="$(grep -c 'constexpr int' "${lay}")"
+    local nlit; nlit="$(num "$(grep -c 'constexpr int' "${lay}" || true)")"
     need_scope "W3" "${nlit}" 20 || true
     if [ "${sp}" != "2 4 6 10 12 16 20 32 " ]; then
       red "W3:間距階梯不是 §3.1 桌面欄的八階(得到:${sp})"
@@ -242,8 +259,8 @@ run_checks() {
   local w7bad=0
   local w7out; w7out="$("${PY}" "${WIN}/tools/cjk_literal_scan.py" "${WIN}" 2>&1)"
   local nscanned; nscanned="$(printf '%s\n' "${w7out}" | sed -n 's/^SCANNED=//p')"
-  [ -z "${nscanned}" ] && nscanned=0
-  local nbad; nbad="$(printf '%s\n' "${w7out}" | grep -c '^BAD=' || true)"
+  nscanned="$(num "${nscanned}")"
+  local nbad; nbad="$(num "$(printf '%s\n' "${w7out}" | grep -c '^BAD=' || true)")"
   [ -z "${nbad}" ] && nbad=0
   need_scope "W7" "${nscanned}" 20 || w7bad=1
   if [ "${nbad}" -ne 0 ]; then
@@ -256,14 +273,13 @@ run_checks() {
   # ── W8:三個語系的陣列長度 == kUiStringCount(編譯期)────────
   check
   local cat="${CODE_DIR}/common/ui_strings.cc"
-  local nentries; nentries="$(grep -c '^ *X(k' "${cat}" 2>/dev/null || echo 0)"
+  local nentries; nentries="$(num "$(num "$(grep -c '^ *X(k' "${cat}" 2>/dev/null || true)")")"
   need_scope "W8 條目數" "${nentries}" 80 || true
   # ⚠ **只數個數是不夠的**(這一條的反向測試第一次就抓到了):把其中一個
   #   斷言換成一個恆真的東西,個數不變,而保護沒了。所以逐條點名。
   local w8bad=0 need
   for need in 'OrderMatchesEnum' 'kCount ==' 'kEnUs' 'kZhHant' 'kZhHans'; do
-    local n8; n8="$(grep 'static_assert' "${cat}" 2>/dev/null | grep -c "${need}" || true)"
-    [ -z "${n8}" ] && n8=0
+    local n8; n8="$(num "$(grep 'static_assert' "${cat}" 2>/dev/null | grep -c "${need}" || true)")"
     if [ "${n8}" -lt 1 ]; then
       red "W8:ui_strings.cc 少了守 ${need} 的 static_assert —— 少一條字串或錯一格順序就不再是編譯期錯誤"
       w8bad=1
@@ -306,9 +322,8 @@ run_checks() {
   # ── W10:狀態字面兩個方向都驗 ───────────────────────────────
   check
   local bar="${CODE_DIR}/service/status_bar.cc"
-  local in_bar; in_bar="$(grep -c 'kGlyphChinese\|kGlyphAscii\|kGlyphSimplified\|kGlyphTraditional' "${bar}" 2>/dev/null || echo 0)"
-  local in_cat; in_cat="$(grep -o 'L"中"\|L"简"\|L"繁"' "${cat}" 2>/dev/null | grep -c . || true)"
-  [ -z "${in_cat}" ] && in_cat=0
+  local in_bar; in_bar="$(num "$(num "$(grep -c 'kGlyphChinese\|kGlyphAscii\|kGlyphSimplified\|kGlyphTraditional' "${bar}" 2>/dev/null || true)")")"
+  local in_cat; in_cat="$(num "$(grep -o 'L"中"\|L"简"\|L"繁"' "${cat}" 2>/dev/null | grep -c . || true)")"
   if [ "${in_bar}" -lt 4 ]; then
     red "W10:狀態列繪製碼裡找不到四個狀態字面(命中 ${in_bar})—— 兩邊都是 0 代表掃錯檔案"
   elif [ "${in_cat}" -ne 0 ]; then
@@ -326,7 +341,7 @@ run_checks() {
       w11="${w11} ${f#${CODE_DIR}/}"
     fi
   done
-  local nroles; nroles="$(grep -c '^  k[A-Za-z]*,' "${CODE_DIR}/common/ui_palette.h" 2>/dev/null || echo 0)"
+  local nroles; nroles="$(num "$(num "$(grep -c '^  k[A-Za-z]*,' "${CODE_DIR}/common/ui_palette.h" 2>/dev/null || true)")")"
   need_scope "W11 色票角色數" "${nroles}" 11 || true
   if [ -n "${w11}" ]; then
     red "W11:版面碼裡有深淺分支:${w11}(§2-F4:深色只換色票,不動版面)"
@@ -391,8 +406,7 @@ run_checks() {
     w16bad=1
   fi
   # 確認鍵的字面不得屬於 {確定, 好, OK, 是, Yes}
-  local badword; badword="$(grep -o 'L"確定"\|L"好"\|L"OK"\|L"是"\|L"Yes"' "${cat}" 2>/dev/null | grep -c . || true)"
-  [ -z "${badword}" ] && badword=0
+  local badword; badword="$(num "$(grep -o 'L"確定"\|L"好"\|L"OK"\|L"是"\|L"Yes"' "${cat}" 2>/dev/null | grep -c . || true)")"
   if [ "${badword}" -ne 0 ]; then
     red "W16:catalog 裡有 {確定, 好, OK, 是, Yes} 這類確認鍵字面(§2-C3)"
     w16bad=1
@@ -407,7 +421,7 @@ run_checks() {
   # ── W17:清單列不得顯示 schema id ────────────────────────────
   check
   local sw="${CODE_DIR}/service/settings_window.cc"
-  local nassemble; nassemble="$(grep -c 'SchemaDisplayName' "${sw}" 2>/dev/null || echo 0)"
+  local nassemble; nassemble="$(num "$(num "$(grep -c 'SchemaDisplayName' "${sw}" 2>/dev/null || true)")")"
   need_scope "W17 列文字組裝點" "${nassemble}" 1 || true
   # 組裝函式的本體不得把 first(id)接進顯示字串,除非是「名字為空」的退路。
   local w17; w17="$("${PY}" - "${sw}" <<'PYSCRIPT'
@@ -453,7 +467,7 @@ PYSCRIPT
       fi
     fi
   done
-  nod="$(grep -c 'CDIS_FOCUS\|ODS_FOCUS' "${sw}" 2>/dev/null || echo 0)"
+  nod="$(num "$(num "$(grep -c 'CDIS_FOCUS\|ODS_FOCUS' "${sw}" 2>/dev/null || true)")")"
   if [ "${nod}" -lt 3 ]; then
     red "W21:自繪處理常式的焦點分支只有 ${nod} 處(下界 3,見上面的說明)"
     w21bad=1
