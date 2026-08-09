@@ -184,6 +184,18 @@ void Engine::Post(std::function<void()> fn) {
   cv_.wait(lock, [&] { return done; });
 }
 
+void Engine::PostAsync(std::function<void()> fn) {
+  {
+    std::unique_lock<std::mutex> lock(mu_);
+    if (stop_) return;
+    // ⚠ **移動進佇列,不可以捕捉參考。** Post 捕捉參考是安全的,因為它
+    //   會站在原地等到工作跑完;這一支丟了就走,呼叫端的堆疊在工作真正
+    //   執行之前就已經不存在了。這兩支長得很像,而差別是一個懸空參考。
+    queue_.push_back(std::move(fn));
+  }
+  cv_.notify_all();
+}
+
 bool Engine::WaitDeploy(int seconds) {
   for (int i = 0; i < seconds * 10 && deploy_state_.load() == 0; ++i)
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -208,6 +220,17 @@ uint64_t Engine::NewSession() {
 
 void Engine::EndSession(uint64_t id) {
   Post([&] {
+    auto it = sessions_.find(id);
+    if (it == sessions_.end()) return;
+    rs_session_destroy(it->second);
+    sessions_.erase(it);
+    session_lang_.erase(id);
+  });
+}
+
+void Engine::EndSessionAsync(uint64_t id) {
+  // ⚠ 按值捕捉。這一支不等工作跑完,呼叫端的堆疊會先消失。
+  PostAsync([this, id] {
     auto it = sessions_.find(id);
     if (it == sessions_.end()) return;
     rs_session_destroy(it->second);
@@ -409,6 +432,7 @@ std::string Engine::ApplyChoice(uint64_t id, const std::string& schema_id,
   });
   return chosen;
 }
+
 
 int Engine::AbiVersion() const { return rs_abi_version(); }
 

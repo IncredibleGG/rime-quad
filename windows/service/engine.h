@@ -56,6 +56,29 @@ class Engine {
   uint64_t NewSession();
   void EndSession(uint64_t id);
 
+  // ── ⚠ 引擎只有一條執行緒,而客戶端有兩個很緊的預算 ──────────
+  //
+  //   建立 session 的往返:300 毫秒(ipc_client.cc 的 kConnectTimeoutMs)
+  //   每一顆按鍵的往返  : **50 毫秒**(kKeyTimeoutMs)
+  //
+  // 兩個都跑在宿主的 UI 執行緒上,所以都不能調大 —— 調大等於讓使用者
+  // 按鍵時整個程式卡住那麼久。超過就 fail-open:那個宿主打不出中文,
+  // 而使用者只看到英文,沒有任何錯誤訊息。
+  //
+  // ⚠ **不要用「丟到佇列裡非同步做」來解這件事。** 試過,而且量到它更糟:
+  //   把 rs_select_schema 從 SESSION_NEW 移出去之後,成本並沒有消失,
+  //   它只是從 300 毫秒的預算搬進了 50 毫秒的預算,於是第一顆按鍵變成
+  //   「TestKeyDown 說吃、KeyDown 說不吃」—— 那顆鍵在真的宿主裡會直接
+  //   消失,比原本的症狀更糟。完整的量測記錄在 pipe_server.cc 的
+  //   kSessionNew 那一段。
+  //
+  //   貴的工作要嘛在**服務暖機時**做完(main.cc 的 WarmUpEngine),
+  //   要嘛就留在同步路徑上讓 §6e 量得到它。
+  //
+  // 下面這一支是安全的那一種:它移走的是**等待**,不是工作。
+  // 離開的宿主不需要陪著詞典寫回去;工作本身仍然在引擎執行緒上、順序不變。
+  void EndSessionAsync(uint64_t id);
+
   Result ProcessKey(uint64_t id, int32_t keysym, uint32_t mods);
   Result SelectCandidate(uint64_t id, int32_t index);
   Result CommitComposition(uint64_t id);
@@ -114,7 +137,11 @@ class Engine {
 
  private:
   void ThreadMain();
-  void Post(std::function<void()> fn);  // 丟工作並等它做完
+  void Post(std::function<void()> fn);  // 丟工作並**等它做完**
+  // 丟工作就走,不等。⚠ 與 Post 不同,這一支必須把 fn **複製**進佇列:
+  // Post 之所以可以捕捉參考,是因為它會在原地等到工作跑完;這一支不等,
+  // 呼叫端的堆疊在工作執行之前就已經不在了。
+  void PostAsync(std::function<void()> fn);
 
   // 以下三個只在引擎執行緒上呼叫。
   Snapshot TakeSnapshot(uint64_t id);

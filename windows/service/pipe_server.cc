@@ -339,6 +339,15 @@ void PipeServer::ServeClient(HANDLE pipe) {
   // 處理的,我們沒有攔那顆鍵)。發現了就記進設定,下一個 app 才不會被
   // 打回預設 —— 否則那顆鍵在使用者眼裡是「換了,但換到別的視窗就沒了」。
   std::string last_schema;
+  // 這個 session 的第一份快照還沒看過。
+  //
+  // ⚠ 它取代的是 SESSION_NEW 裡那一趟 engine_->SchemaOfSession():
+  //   我們需要知道「一開始是哪個方案」,好讓 note_schema 不要把
+  //   **我們自己剛選的**方案誤判成「使用者按了 Ctrl+` 換方案」而寫進設定。
+  //   但那個答案要再跑一趟引擎佇列才問得到,而那一趟就排在 ApplyChoice
+  //   後面 —— 白白多花一次往返,而 SESSION_NEW 只有 300 毫秒的預算。
+  //   看到的第一份快照就是答案,不必問。
+  bool schema_seeded = false;
   RECT caret{0, 0, 0, 0};
   char buf[8192];
 
@@ -373,6 +382,13 @@ void PipeServer::ServeClient(HANDLE pipe) {
   auto note_schema = [&](const Snapshot& snap) {
     if (snap.schema_id.empty() || snap.schema_id == last_schema) return;
     last_schema = snap.schema_id;
+    // ⚠ 第一份快照只記下來,**不當成使用者換了方案**。
+    //   那一份是 SESSION_NEW 時我們自己套上去的(ApplyChoice),
+    //   把它寫進設定等於幫使用者「釘」了一個他沒有選過的方案。
+    if (!schema_seeded) {
+      schema_seeded = true;
+      return;
+    }
     if (!settings_) return;
     const CharSet mode = CharSetOfLangId(langid);
     if (mode == CharSet::kUnspecified) return;
@@ -447,10 +463,38 @@ void PipeServer::ServeClient(HANDLE pipe) {
         break;
       }
       case Op::kSessionNew: {
+        // ⚠ 這一趟有 300 毫秒的預算(ipc_client.cc 的 kConnectTimeoutMs),
+        //   而它跑在**宿主的 UI 執行緒**上。超過就 fail-open:那個宿主
+        //   整個工作階段都打不出中文,而使用者只看到英文、沒有錯誤訊息。
+        //   2026-08-09 的按鍵矩陣 18 個宿主裡有 8 個卡在這裡。
+        //   所以下面每一步都要問一句:它非得擋在這條路徑上嗎?
+        const DWORD t_begin = ::GetTickCount();
         SessionOk ok;
         ok.session = engine_->NewSession();
         session = ok.session;
-        if (ok.session != 0) {
+        const DWORD t_created = ::GetTickCount();
+        if (ok.session == 0) {
+          // ⚠ **不可以送一則 session=0 的 SESSION_OK。**
+          //
+          //   舊版就是那樣做的,而用戶端把「session 是 0」判成
+          //   kBadMessage —— 於是診斷寫著「訊息解不開或序號錯位」,
+          //   而線路格式一個位元都沒錯。看到那句話的人會去查編解碼與分幀,
+          //   那兩段都是好的;真正的原因幾乎一定是 librime 正在部署
+          //   (那段期間 rs_session_create() 就是給不出東西)。
+          //
+          //   明著回一則 ERROR,把原因寫進去。用戶端會把這段字原樣記進
+          //   除錯記錄 —— fail-open 之下那是唯一留得下來的線索。
+          ErrorMsg e;
+          e.code = 4;
+          e.text = engine_->deploy_done()
+                       ? "引擎建不出 session"
+                       : "引擎還在部署,現在建不出 session";
+          Log("[pipe] SESSION_NEW 失敗:%s(等了 %lu ms)\n", e.text.c_str(),
+              static_cast<unsigned long>(t_created - t_begin));
+          send(EncodeError(seq, e));
+          break;
+        }
+        {
           // ── 這裡就是那個缺陷的修法(docs/settings-model.md §4)──
           //
           // 使用者從哪一份語言設定檔進來(langid = 輸入模式),決定預設
@@ -474,15 +518,48 @@ void PipeServer::ServeClient(HANDLE pipe) {
           const Tri punct = st.Punctuation();
           if (punct != Tri::kUnset)
             opts.push_back({"ascii_punct", punct == Tri::kTrue});
+          // ⚠⚠ **這一步必須是同步的。試過非同步,而且量到它更糟。**
+          //
+          //   rs_select_schema 要載入詞典與 prism,是這一趟裡最貴的一步。
+          //   2026-08-09 我把它改成「丟進佇列就走」,想法是:佇列是 FIFO 的,
+          //   第一顆按鍵一定排在它後面,所以順序仍然正確。順序**確實**正確,
+          //   但成本沒有消失 —— 它只是從一個 300 毫秒的預算,
+          //   搬進了一個 **50 毫秒**的預算(kKeyTimeoutMs,按鍵往返)。
+          //
+          //   量到的結果(CI run 31311692114):
+          //       11:51:08.048 連線就緒 session=3
+          //       11:51:08.048 按鍵 vk=0x4E … 吃掉=1   ← TestKeyDown 說吃
+          //       11:51:08.165 按鍵 vk=0x49 … 吃掉=0   ← KeyDown 逾時,連線降級
+          //   TestKeyDown 說吃、KeyDown 說不吃 —— 那顆鍵在真的宿主裡會
+          //   **直接消失**,比原本的「打不出中文」更糟。
+          //
+          //   結論:貴的工作不能塞進任何一個客戶端還在等的往返。要修的話,
+          //   正確的方向是讓方案在**服務暖機時**就載好(service/main.cc 的
+          //   WarmUpEngine),而不是把它推到下一個更緊的預算裡。
           engine_->ApplyChoice(ok.session, choice.schema_id, opts);
-          last_schema = engine_->SchemaOfSession(ok.session);
+          // ⚠ 原本這裡還有一趟 engine_->SchemaOfSession(),目的只是讓
+          //   note_schema 不要把「我們剛選的方案」誤判成「使用者按了
+          //   Ctrl+` 換方案」。那一趟現在被 schema_seeded 取代 ——
+          //   看到的第一份快照就是答案,不必再問引擎一次。
+          schema_seeded = false;
         }
         if (!send(EncodeSessionOk(seq, ok))) goto done;
+        {
+          const DWORD t_done = ::GetTickCount();
+          // 這一行是給 CI 斷言用的(windows/verify_installer.sh 會讀它),
+          // 也是使用者回報「有時候不能打中文」時唯一量得到的數字。
+          // 300 是用戶端的預算 —— 超過它就代表有宿主會 fail-open。
+          Log("[pipe] SESSION_NEW_MS=%lu(建 session %lu ms)%s\n",
+              static_cast<unsigned long>(t_done - t_begin),
+              static_cast<unsigned long>(t_created - t_begin),
+              (t_done - t_begin) >= 300 ? "  ** 超過用戶端 300ms 的預算 **" : "");
+        }
         break;
       }
       case Op::kSessionEnd: {
         uint64_t sid = 0;
-        if (DecodeSimple(payload, &seq, &sid)) engine_->EndSession(sid);
+        // 同 done: 那一段的理由 —— 不讓離開的宿主佔著連線執行緒等詞典寫完。
+        if (DecodeSimple(payload, &seq, &sid)) engine_->EndSessionAsync(sid);
         goto done;  // 單向,而且是連線的終點
       }
       case Op::kKey: {
@@ -565,7 +642,11 @@ void PipeServer::ServeClient(HANDLE pipe) {
   }
 
 done:
-  if (session != 0) engine_->EndSession(session);
+  // ⚠ 不等它做完。rs_session_destroy 要把使用者詞典寫回去,而**下一個**
+  //   宿主的 SESSION_NEW 就排在它後面 —— 那正是矩陣裡 8 個宿主逾時的
+  //   成因之一。這裡改成非同步之後,這條連線的執行緒不再陪著等;
+  //   工作本身仍然在引擎執行緒上、順序不變,詞典一樣寫得回去。
+  if (session != 0) engine_->EndSessionAsync(session);
   ui_->Hide();
   ::FlushFileBuffers(pipe);
   ::DisconnectNamedPipe(pipe);

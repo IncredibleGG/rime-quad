@@ -60,6 +60,9 @@ bool WorthDowngrading(LinkFailure k) {
     case LinkFailure::kTimeout:
     case LinkFailure::kIoError:
     case LinkFailure::kConnectFailed:
+    // 服務給不出 session 與版本無關 —— 它多半正在部署。再宣告一次舊版
+    // 只會多花一份逾時預算,而且會把「引擎沒空」蓋成「連不上」。
+    case LinkFailure::kNoSession:
       return false;
   }
   return false;
@@ -220,8 +223,10 @@ bool IpcClient::EnsureReady() {
       //   stage  = 開管道 / 握手 / 建 session,三者要修的地方完全不同
       //   os_err = 2(沒有這條管道)與 5(有,但這個身分開不了)長得一樣
       //   peer   = 版本不合時,對方報的版本是唯一有用的線索
+      // ⚠ 服務端說的話要原樣印出來。這一行是 fail-open 之下**唯一**留下的
+      //   線索 —— 使用者看到的只有「打出英文」,沒有任何錯誤訊息。
       Trace("連線失敗 第%u次 階段=%s 原因=%s os_err=%lu 宣告proto=%u abi=%u "
-            "對方%s(proto=%u abi=%u)",
+            "對方%s(proto=%u abi=%u) 服務說=%s(code=%u)",
             static_cast<unsigned>(diag_.attempts), ReadyStageName(diag_.stage),
             LinkFailureName(diag_.failure),
             static_cast<unsigned long>(diag_.os_error),
@@ -229,7 +234,9 @@ bool IpcClient::EnsureReady() {
             static_cast<unsigned>(diag_.my_shell_abi),
             diag_.peer_replied ? "回了" : "沒回",
             static_cast<unsigned>(diag_.peer.proto),
-            static_cast<unsigned>(diag_.peer.shell_abi));
+            static_cast<unsigned>(diag_.peer.shell_abi),
+            diag_.service_error.empty() ? "(沒說)" : diag_.service_error.c_str(),
+            static_cast<unsigned>(diag_.service_error_code));
     }
     return false;
   }
@@ -390,6 +397,16 @@ bool IpcClient::Exchange(const std::string& payload, uint32_t seq,
     return false;
   }
   if (op == Op::kError) {
+    // ⚠ 一定要把那則訊息讀出來再放棄。服務端**已經把原因寫在裡面了**
+    //   (「尚未握手」/「協議版本不符」/「引擎現在建不出 session」),
+    //   而丟掉它之後診斷就只剩一句「服務回了 ERROR」——
+    //   五種完全不同的原因長成同一句話,而 fail-open 讓使用者什麼都看不到。
+    uint32_t eseq = 0;
+    ErrorMsg em;
+    if (DecodeError(*reply, &eseq, &em)) {
+      diag_.service_error_code = em.code;
+      diag_.service_error = em.text;
+    }
     Fail(LinkFailure::kServiceError);
     return false;
   }
@@ -460,8 +477,22 @@ bool IpcClient::OpenSession() {
     return false;
   uint32_t rseq = 0;
   SessionOk ok;
-  if (!DecodeSessionOk(reply, &rseq, &ok) || ok.session == 0) {
+  // ⚠ 這兩件事**不可以共用一個失敗種類**,而它們曾經共用過。
+  //
+  //   · 解不開      = 線路格式或序號真的錯了 → 去查 protocol.cc 與分幀。
+  //   · session == 0 = 線路完全正常,是**引擎給不出 session**
+  //                    (librime 部署期間 rs_session_create 就是回這個)。
+  //
+  //   併成 kBadMessage 的代價是實際發生過的:診斷寫著「訊息解不開或
+  //   序號錯位」,而編解碼一個位元都沒錯,於是查的人被送去看一段好的程式碼。
+  //   新版服務會明著回一則 ERROR;這一格接住的是**舊版服務**送來的
+  //   session=0(升級之後舊 DLL 配新服務、或新 DLL 配舊服務都可能發生)。
+  if (!DecodeSessionOk(reply, &rseq, &ok)) {
     Fail(LinkFailure::kBadMessage);
+    return false;
+  }
+  if (ok.session == 0) {
+    Fail(LinkFailure::kNoSession);
     return false;
   }
   session_ = ok.session;

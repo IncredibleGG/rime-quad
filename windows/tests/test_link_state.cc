@@ -16,15 +16,21 @@ using namespace rimewin;
 
 namespace {
 
-// ⚠ 這張表要與 LinkFailure 一字不差地同步。
-//   底下的 link_failure_names_are_all_distinct 會在有人新增了列舉值
-//   卻忘了更新它時紅掉 —— 一個「漏掉一種失敗」的測試比沒有測試更糟,
-//   因為它讓人以為每一種都被走過了。
+// ⚠ 這張表要與 LinkFailure 一字不差地同步。加一個列舉值就要加進這裡一筆。
+//
+//   漏掉**不會**編譯失敗、不會有紅字 —— 底下每一則測試只是少驗一種,
+//   而報表上看起來完全一樣(還是「全過」)。一個「漏掉一種失敗」的測試
+//   比沒有測試更糟,因為它讓人以為每一種都被走過了。
+//   2026-08-09 加 kNoSession 時就漏了一次。
+//
+//   `LinkFailureName` 那個 switch 沒有 default,所以編譯器擋得住「漏了名字」;
+//   擋不住的是這一份清單 —— 所以清單自己也要有一道檢查,
+//   見底下的 link_failure_list_covers_every_enum_value。
 const LinkFailure kAllLinkFailures[] = {
     LinkFailure::kConnectFailed, LinkFailure::kHandshake,
     LinkFailure::kTimeout,       LinkFailure::kIoError,
     LinkFailure::kBadMessage,    LinkFailure::kServiceError,
-    LinkFailure::kPeerClosed,
+    LinkFailure::kPeerClosed,    LinkFailure::kNoSession,
 };
 
 }  // namespace
@@ -186,4 +192,37 @@ TEST(link_recovers_cleanly_after_service_comes_back) {
   CHECK_INT(s.backoff_ms(), 0);
   CHECK_INT(s.failures(), 0);
   CHECK(!s.ShouldAttemptConnect(0));
+}
+
+// ⚠ 這一則守的是**上面那份清單漏了一筆**,而它剛剛真的發生過。
+//
+// 2026-08-09 加 kNoSession 時漏了加進 kAllLinkFailures:名字的重複檢查
+// 照樣是綠的(它只是少驗一種),而報表上看不出任何差別。
+//
+// 「(未知的失敗種類)」是 LinkFailureName 在**值不在列舉範圍內**時的退路。
+// 拿它當探針:從第一個值往後掃,凡是叫得出名字的都必須在清單裡。
+// 這樣下一個人加一格而忘了加進清單時,這一則會紅,而不是靜靜地少驗一種。
+TEST(link_failure_list_covers_every_enum_value) {
+  const int listed = static_cast<int>(sizeof(kAllLinkFailures) /
+                                      sizeof(kAllLinkFailures[0]));
+  int named = 0;
+  // 32 是一個綽綽有餘的上界;真正的終止條件是「這個值沒有名字」。
+  for (int i = 0; i < 32; ++i) {
+    const char* n = LinkFailureName(static_cast<LinkFailure>(i));
+    if (n == nullptr || std::strcmp(n, "(未知的失敗種類)") == 0) break;
+    ++named;
+  }
+  // 叫得出名字的有幾種,清單裡就該有幾筆。
+  CHECK_INT(named, listed);
+}
+
+// 「引擎現在沒空」與「線路壞了」必須是兩件事。
+//
+// 併成同一格的代價是實際付過的:診斷寫著「訊息解不開或序號錯位」,
+// 而編解碼與分幀一個位元都沒錯 —— 查的人被送去看一段好的程式碼,
+// 而真正的原因(librime 正在部署,rs_session_create 給不出東西)沒有人看見。
+// fail-open 之下使用者只是打出英文,所以記錄裡那個名字就是全部的線索。
+TEST(no_session_is_not_the_same_as_a_broken_wire) {
+  CHECK(std::strcmp(LinkFailureName(LinkFailure::kNoSession),
+                    LinkFailureName(LinkFailure::kBadMessage)) != 0);
 }
