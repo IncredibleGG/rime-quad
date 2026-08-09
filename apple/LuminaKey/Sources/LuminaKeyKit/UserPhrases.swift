@@ -202,6 +202,19 @@ public enum UserPhrases {
         return out
     }
 
+    /// ⚠ **讀進來會正規化,但不會回頭改磁碟上那份檔案。**
+    ///
+    /// 也就是說,一份手寫的、編碼帶空格的 `custom_phrase.txt`,在清單裡會顯示成
+    /// 收斂後的樣子(`nihao`),而檔案裡仍然是 `ni hao` —— librime 讀的是檔案,
+    /// 所以那幾筆**仍然打不出來,而畫面看起來是對的**。
+    ///
+    /// 之所以還是這樣做,而不是載入時就把檔案改寫掉:
+    /// 改寫會用 `serialise()` 整份重寫,**使用者自己寫在檔案裡的註解會全部消失**。
+    /// 為了修一份「本來就從來沒有生效過」的檔案而毀掉使用者寫的東西,不划算。
+    ///
+    /// 這個窗口在下列任一動作之後就關上了,因為它們都會用正規化過的內容重寫檔案:
+    /// 加一個詞、刪一個詞、匯入。**匯入尤其重要** —— 行動端匯出的檔案
+    /// 如果照著舊規範寫成空白分隔,匯入這一步會把它接住。
     public static func read(userDir: URL) -> ParseResult {
         let url = userDir.appendingPathComponent(fileName)
         guard let data = try? Data(contentsOf: url), data.count <= maxFileBytes,
