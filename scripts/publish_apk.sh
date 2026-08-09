@@ -799,7 +799,13 @@ fi
 # 「還沒升級的人」的欄位。沒指定就取 commit 標題 —— 但 commit 標題是寫給
 # 開發者看的,而 main 上真的躺著「併入 windows」這種標題。
 # notes_default_usable() 擋的是在定義上不可能是發布說明的那幾種。
-if [ "$NOTES_SET" -eq 0 ]; then
+if [ "$NOTES_SET" -eq 0 ] && [ "$CHECK_ONLY" -eq 1 ]; then
+  # --check-only 只驗簽章與單調性,不會寫出任何 version.json,所以沒有
+  # 「使用者會看到什麼」這件事。CI 每次 push 都跑這一支,而 main 上的
+  # HEAD 常常正是「併入 xxx」——擋在這裡等於讓合併提交把 CI 弄紅,
+  # 而它擋的那個風險在這條路徑上根本不存在。
+  NOTES="(--check-only:不會發布,notes 不適用)"
+elif [ "$NOTES_SET" -eq 0 ]; then
   NOTES="$(git log -1 --format=%s 2>/dev/null || true)"
   NOTES_PARENTS="$(git log -1 --format=%p 2>/dev/null | wc -w | tr -d ' ')"
   if ! notes_default_usable "$NOTES" "${NOTES_PARENTS:-1}"; then
