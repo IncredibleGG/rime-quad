@@ -156,6 +156,8 @@ class Engine {
   // 收掉一個已經走掉的 session 沒有人在等,建立一個新的才有人在等。
   // 完整的理由見 ThreadMain。
   std::deque<uint64_t> pending_destroy_;
+  // 引擎最後一次跑「有人在等的」工作是什麼時候(steady clock,毫秒)。
+  int64_t last_normal_ms_ = 0;
   bool stop_ = false;
   bool started_ = false;
 
