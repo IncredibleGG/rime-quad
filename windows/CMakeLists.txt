@@ -107,7 +107,13 @@ add_library(rime_common STATIC
   # ⚠ 使用者看得到的每一個字。`windows/` 底下只有這一個檔案可以有
   #   使用者可見字串(W7),而它同時被 DLL、服務、安裝工具連結 ——
   #   語言列的按鈕與提權政策的說明也是使用者讀得到的字。
-  common/ui_strings.cc)
+  common/ui_strings.cc
+  # ⚠ 「現在到底怎麼了」的唯一判斷點。三種處境(還在準備 /
+  #   準備失敗 / 引擎不在)以前被壓成一個布林,於是畫面上是
+  #   同一句紅字「輸入法沒有在跑」——而第一種那句話是假的。
+  #   判斷寫成純函式是刻意的:留在繪製碼裡的話,只有真人在
+  #   Windows 上才驗得到,也就是實際上沒有人驗。
+  common/service_state.cc)
 target_include_directories(rime_common PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/common"
   "${RIME_ROOT}/core/include")
@@ -142,6 +148,7 @@ add_executable(rime_tests
   tests/test_ui_palette.cc
   tests/test_statusbar_place.cc
   tests/test_ui_strings.cc
+  tests/test_service_state.cc
   # 這一支用**真的**鍵盤佈局(LoadKeyboardLayout + ToUnicodeEx),
   # 是 CI 上唯一驗得到「有沒有真的問佈局」的地方。
   tests/test_win32_layouts.cc

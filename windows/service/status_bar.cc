@@ -26,6 +26,18 @@ constexpr UINT WM_RIME_SHOW = WM_APP + 2;
 constexpr UINT WM_RIME_QUIT = WM_APP + 3;
 constexpr UINT WM_RIME_THEME = WM_APP + 4;
 
+// ── ⚠ 為什麼要一顆計時器 ────────────────────────────────────────
+//
+// Refresh() 只在 push_ui 被呼叫時發生(按鍵、選字、上屏、選方案)。
+// 也就是說:首次安裝那 7~12 秒過完之後,那一橫**會一直停在準備中**,
+// 直到使用者跑去某個輸入框打一個字。而他不會 —— 他看到的是一句
+// 「還沒好」,所以他在等。兩邊互相等著對方先動。
+//
+// 引擎那兩個旗標是 atomic,問一次的成本是一次 load。半秒問一次,
+// 狀態一變就重排重畫;沒變就什麼都不做(不會有多餘的重繪)。
+constexpr UINT_PTR kStateTimer = 1;
+constexpr UINT kStatePollMs = 500;
+
 // §12.10.3 的尺寸(DIP)。
 constexpr int kBarH = 28;        // t4 字高 12 + 上下 padding 各 6 + 邊框 2
 constexpr int kCellMinW = metric::kMinTarget;  // 28
@@ -99,21 +111,41 @@ void StatusBar::RefreshTheme() {
 }
 
 void StatusBar::OnSnapshot(const Snapshot& snap) {
-  bool changed = false;
+  // ⚠ 線路上早就有這件事,而在這一輪之前整個 windows/ 沒有一處讀它。
+  //   引擎還沒準備好時(首次整理字詞、或使用者按了「重新整理字詞」),
+  //   protocol.h 的 kStDisabled 會被回填在每一份快照上。
+  const bool not_ready = SnapshotSaysNotReady(snap.status_flags);
+  bool changed = engine_not_ready_.exchange(not_ready) != not_ready;
   {
     std::lock_guard<std::mutex> lock(mu_);
-    const bool a = (snap.status_flags & kStAsciiMode) != 0;
-    const bool s = (snap.status_flags & kStSimplified) != 0;
-    if (a != ascii_mode_ || s != simplified_ ||
-        snap.schema_name != schema_name_ || !have_snapshot_) {
-      ascii_mode_ = a;
-      simplified_ = s;
-      if (!snap.schema_name.empty()) schema_name_ = snap.schema_name;
-      have_snapshot_ = true;
-      changed = true;
+    // ⚠ **帶著那個旗標的快照不可以拿來更新指示器。**
+    //   引擎在準備期間對每一顆按鍵回的是一份**預設建構**的快照:
+    //   除了 kStDisabled 以外全是 0。照單全收的話,使用者剛切成 En
+    //   的那一格會自己跳回「中」,而他沒有碰過任何開關 ——
+    //   那正是這個檔頭說的「說謊的指示器」。
+    if (SnapshotFlagsAreUsable(snap.status_flags)) {
+      const bool a = (snap.status_flags & kStAsciiMode) != 0;
+      const bool s = (snap.status_flags & kStSimplified) != 0;
+      if (a != ascii_mode_ || s != simplified_ ||
+          snap.schema_name != schema_name_ || !have_snapshot_) {
+        ascii_mode_ = a;
+        simplified_ = s;
+        if (!snap.schema_name.empty()) schema_name_ = snap.schema_name;
+        have_snapshot_ = true;
+        changed = true;
+      }
     }
   }
   if (changed) Refresh();
+}
+
+ServiceState StatusBar::CurrentServiceState() const {
+  EngineFacts facts;
+  facts.engine_present = engine_ != nullptr;
+  facts.deploy_done = engine_ && engine_->deploy_done();
+  facts.deploy_ok = engine_ && engine_->deploy_ok();
+  facts.engine_says_not_ready = engine_not_ready_.load();
+  return ServiceStateOf(facts);
 }
 
 void StatusBar::ThreadMain() {
@@ -163,6 +195,9 @@ void StatusBar::ThreadMain() {
 
   Relayout();  // Relayout 自己會走 ApplyPlacement(寬度是它算出來的)
   if (visible_) ::ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+  // ⚠ 少了這一行,首次安裝那一橫會一直停在「正在準備」,
+  //   直到使用者跑去某個輸入框打一個字(見上面 kStateTimer 的說明)。
+  ::SetTimer(hwnd_, kStateTimer, kStatePollMs, nullptr);
 
   MSG msg;
   while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
@@ -185,6 +220,7 @@ void StatusBar::ThreadMain() {
         }
         case WM_RIME_QUIT:
           ClosePopup();
+          ::KillTimer(hwnd_, kStateTimer);
           ::DestroyWindow(hwnd_);
           hwnd_ = nullptr;
           return;
@@ -210,14 +246,22 @@ void StatusBar::Relayout() {
     simp = simplified_;
     name = schema_name_;
   }
-  service_ready_ = engine_ && engine_->deploy_done() && engine_->deploy_ok();
+  // ⚠ 這裡以前是一個布林:
+  //     service_ready_ = engine_ && deploy_done() && deploy_ok();
+  //   於是「還在準備 / 準備失敗 / 引擎不在」三種完全不同的處境
+  //   全部畫同一句紅字「輸入法沒有在跑」—— 而第一種那句話是假的,
+  //   輸入法正在跑,只是還沒準備好。使用者第一次安裝時看到的
+  //   就是那一句,而那是這個產品最貴的一段。
+  service_state_ = CurrentServiceState();
 
   cells_.clear();
-  if (!service_ready_) {
-    // 第五種外觀:服務沒連上。四格在這個狀態下**全部不畫**
-    // (它們此刻都是假的),整條改成一句話,而且整條可點。
+  if (!StateShowsCells(service_state_)) {
+    // 四格在這三種狀態下**全部不畫**(它們此刻都是假的),
+    // 整條改成一句話,而且整條可點。
+    // ⚠ 哪一句由 common/service_state.cc 的對照表決定 —— 三種三句,
+    //   而那張表有單元測試盯著「三種不可以回同一句」。
     Cell c;
-    c.text = UiText(UiString::kBarNotRunning);
+    c.text = UiText(StatusTextFor(service_state_));
     cells_.push_back(c);
   } else {
     Cell mode;
@@ -389,9 +433,11 @@ void StatusBar::Paint(HDC hdc) {
 
   ::FillRect(mem, &client, theme_.Brush(kSurface));
 
-  // 外框:一般是 outline 色,服務沒在跑時是 error 色。
+  // 外框:一般是 outline 色,**出事的時候**才是 error 色。
+  // ⚠ 「正在準備」不是出事:輸入法在跑,只是還沒好。
+  //   把它畫成紅的,等於用顏色再說一次那句謊話。
   {
-    const Role edge = service_ready_ ? kOutline : kError;
+    const Role edge = StateIsFailure(service_state_) ? kError : kOutline;
     HPEN pen = theme_.Pen(edge, Dip(kBarBorder, dpi_));
     HGDIOBJ oldp = ::SelectObject(mem, pen);
     HGDIOBJ oldb = ::SelectObject(mem, ::GetStockObject(NULL_BRUSH));
@@ -416,8 +462,10 @@ void StatusBar::Paint(HDC hdc) {
     else if (hot)
       ::FillRect(mem, &r, theme_.Brush(kRowHover));
 
-    if (!service_ready_) {
-      ::SetTextColor(mem, theme_.Color(kError));
+    if (!StateShowsCells(service_state_)) {
+      ::SetTextColor(mem, theme_.Color(StateIsFailure(service_state_)
+                                           ? kError
+                                           : kOnSurfaceVariant));
       ::DrawTextW(mem, c.text.c_str(), -1, &r,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
       continue;
@@ -468,16 +516,20 @@ int StatusBar::HitCell(POINT pt) const {
     if (pt.x >= r.left && pt.x < r.right && pt.y >= r.top && pt.y < r.bottom)
       return static_cast<int>(i);
   }
-  // 服務沒在跑時**整條**可點(§12.10.4 末段)。
-  if (!service_ready_ && !cells_.empty()) return 0;
+  // 只有一句話的時候**整條**可點(§12.10.4 末段)。
+  if (!StateShowsCells(service_state_) && !cells_.empty()) return 0;
   return -1;
 }
 
 void StatusBar::ClickCell(int cell) {
-  if (!service_ready_) {
+  if (!StateShowsCells(service_state_)) {
     // §4.10 公式的第三段:一個**使用者做得到的動作**,
-    // 不是「請聯絡開發者」。帶他到「進階」,那裡有「重新整理字詞」。
-    if (settings_) settings_->OpenAt(3);
+    // 不是「請聯絡開發者」。而**三種處境該做的事不一樣**:
+    //   · 出事了 → 帶他到「進階」,那裡有「重新整理字詞」。
+    //   · 還在準備 → 那裡沒有他該做的事;按「重新整理字詞」只是
+    //     把剛做到一半的工作重做一次,更慢。帶他到第一頁,
+    //     那裡的空狀態會說「字詞還沒整理完」。
+    if (settings_) settings_->OpenAt(StateIsFailure(service_state_) ? 3 : 0);
     return;
   }
   switch (cell) {
@@ -788,6 +840,20 @@ LRESULT CALLBACK StatusBar::WndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
         self->SavePlacement();
       } else if (cell >= 0) {
         self->ClickCell(cell);
+      }
+      return 0;
+    }
+    case WM_TIMER: {
+      // ⚠ 部署做完之後那一橫要**自己**從一句話變回四格。
+      //   以前要等使用者去某個輸入框打一個字才會變 —— 而他看到的是
+      //   「還沒好」,所以他在等。兩邊互相等著對方先動。
+      //   ⚠ 只在狀態**真的變了**時重排重畫:每半秒無條件重繪一次
+      //     會讓一個永遠在螢幕上的視窗一直閃。
+      if (!self || w != kStateTimer) break;
+      const ServiceState now = self->CurrentServiceState();
+      if (now != self->service_state_) {
+        self->Relayout();
+        ::InvalidateRect(hwnd, nullptr, TRUE);
       }
       return 0;
     }

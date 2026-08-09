@@ -25,6 +25,10 @@ constexpr UINT WM_RIME_SET_VARIANT = WM_APP + 3;
 constexpr UINT kTrayId = 1;
 constexpr UINT_PTR kDeployTimer = 1;
 constexpr UINT_PTR kStatusTimer = 2;
+// ⚠ 側欄底部那一行要自己更新(見 OnServiceStateTick)。
+//   半秒問一次,問的是兩個 atomic,而且只有狀態真的變了才重畫。
+constexpr UINT_PTR kServiceStateTimer = 3;
+constexpr UINT kServiceStatePollMs = 500;
 
 enum : int {
   IDM_TRAY_SETTINGS = 900,
@@ -304,6 +308,7 @@ void SettingsWindow::ThreadMain() {
       this);
   if (ready_) ::SetEvent(ready_);
   if (!hwnd_) return;
+  ::SetTimer(hwnd_, kServiceStateTimer, kServiceStatePollMs, nullptr);
 
   MSG msg;
   while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
@@ -464,6 +469,7 @@ LRESULT CALLBACK SettingsWindow::WndProc(HWND hwnd, UINT msg, WPARAM w,
       return r;
     }
     case WM_TIMER:
+      if (self && w == kServiceStateTimer) self->OnServiceStateTick();
       if (self && w == kDeployTimer) self->OnDeployTick();
       if (self && w == kStatusTimer) {
         ::KillTimer(hwnd, kStatusTimer);
@@ -1059,11 +1065,15 @@ void SettingsWindow::OnPaint(HDC hdc) {
   const int top = H - Dip(metric::kSidebarStatusH, dpi_);
   RECT r1{pad, top + Dip(space::s3, dpi_), sb - pad,
           top + Dip(space::s3 + text_size::t5 + 4, dpi_)};
-  const bool ready = engine_ && engine_->deploy_done() && engine_->deploy_ok();
-  ::SetTextColor(hdc, theme_.Color(ready ? kOnSurfaceVariant : kError));
-  ::DrawTextW(hdc,
-              UiText(ready ? UiString::kNavStatusReady
-                           : UiString::kNavStatusNotRunning),
+  // ⚠ 這裡以前與那一橫犯同一個錯:一個布林,而「還在準備 /
+  //   準備失敗 / 引擎不在」三種處境共用同一句紅字「輸入法沒有在跑」。
+  //   第一種那句話是假的,而第一次安裝的人看到的就是它。
+  const ServiceState state = SidebarServiceState();
+  sidebar_state_ = state;
+  ::SetTextColor(hdc, theme_.Color(StateIsFailure(state)
+                                       ? kError
+                                       : kOnSurfaceVariant));
+  ::DrawTextW(hdc, UiText(SidebarStatusTextFor(state)),
               -1, &r1, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
   RECT r2 = r1;
   r2.top = r1.bottom + Dip(space::s1, dpi_);
@@ -1490,6 +1500,31 @@ void SettingsWindow::StartRedeploy(UiString why) {
   ::swprintf(buf, 160, UiText(UiString::kStatusRedeployRunning), 0u);
   SetStatus(buf);
   ::SetTimer(hwnd_, kDeployTimer, 200, nullptr);
+}
+
+ServiceState SettingsWindow::SidebarServiceState() const {
+  EngineFacts facts;
+  facts.engine_present = engine_ != nullptr;
+  facts.deploy_done = engine_ && engine_->deploy_done();
+  facts.deploy_ok = engine_ && engine_->deploy_ok();
+  // ⚠ 設定視窗收不到快照(那是狀態列的路),所以線路上那個旗標
+  //   這裡拿不到。它在「按下重新整理字詞之後」那一段,而**那一段
+  //   這個視窗自己知道**:底下那行狀態訊息正在數秒數。
+  facts.engine_says_not_ready = deploying_;
+  return ServiceStateOf(facts);
+}
+
+void SettingsWindow::OnServiceStateTick() {
+  const ServiceState now = SidebarServiceState();
+  if (now == sidebar_state_) return;
+  sidebar_state_ = now;
+  // ⚠ 只重畫側欄底部那一小塊。整頁 InvalidateRect 會讓一個開著的
+  //   設定視窗每次狀態變動都閃一下,而這一行本來就只佔那麼大。
+  RECT rc{};
+  ::GetClientRect(hwnd_, &rc);
+  RECT strip{0, rc.bottom - Dip(metric::kSidebarStatusH, dpi_),
+             Dip(metric::kSidebarW, dpi_), rc.bottom};
+  ::InvalidateRect(hwnd_, &strip, TRUE);
 }
 
 void SettingsWindow::OnDeployTick() {

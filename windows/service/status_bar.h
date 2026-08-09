@@ -48,6 +48,7 @@
 #include <vector>
 
 #include "../common/protocol.h"
+#include "../common/service_state.h"
 #include "../common/statusbar_place.h"
 #include "ui_font.h"
 #include "ui_theme.h"
@@ -73,6 +74,14 @@ class StatusBar {
   // 重讀狀態(簡繁、方案名、中英)並重畫。
   void Refresh();
   void RefreshTheme();
+
+  // ⚠ 現在到底怎麼了。**不是布林。**
+  //   「還在準備 / 準備失敗 / 引擎不在」以前被壓成同一個 false,
+  //   於是三種都畫同一句紅字「輸入法沒有在跑」—— 而第一種那句話
+  //   是假的:輸入法正在跑,只是還沒準備好,而使用者第一次安裝時
+  //   看到的就是那一句。判斷本身在 common/service_state.h(純函式,
+  //   單元測試驗得到),這裡只負責去問引擎拿事實。
+  ServiceState CurrentServiceState() const;
 
   // 每一次按鍵的結果都會經過這裡。⚠ 這一橫顯示的是**引擎說的**狀態,
   //   不是我們以為的狀態 —— 使用者用方案自己的按鍵切了中英時,
@@ -129,12 +138,17 @@ class StatusBar {
   BarAnchor anchor_;
   bool anchor_loaded_ = false;
   bool have_snapshot_ = false;
+  // ⚠ 引擎自己在線路上說「我還沒準備好」(protocol.h 的 kStDisabled)。
+  //   deploy_done() 只會從 false 變成 true 一次,之後永遠是 true ——
+  //   使用者按「重新整理字詞」時它不會退回去,只有這個旗標看得到。
+  //   OnSnapshot 寫、UI 執行緒讀,所以是 atomic。
+  std::atomic<bool> engine_not_ready_{false};
 
   // 只在 UI 執行緒上碰。
   std::vector<Cell> cells_;
   int hot_ = -1;
   int pressed_ = -1;
-  bool service_ready_ = true;
+  ServiceState service_state_ = ServiceState::kReady;
   bool visible_ = true;
 
   // 拖動。⚠ 不用 WM_NCHITTEST 回 HTCAPTION —— 那會讓整條都變成拖動區,
