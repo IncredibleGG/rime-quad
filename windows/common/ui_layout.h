@@ -14,6 +14,24 @@
 //   深淺的差別全部收在 ui_palette.h 的色票表裡。版面拿不到那個資訊,
 //   所以「深色模式只換色票」不是紀律,是結構上唯一做得到的事。
 //
+// ── 2026-08-10:整頁的版面搬進來,連同控制項 id ──────────────────
+//
+// 在這之前,**每一頁的實際版面住在 service/settings_window.cc 的
+// LayoutUi() 裡**,而本檔的 ClickableTargetsDip 手工造了一份
+// 「輸入方案頁」的假骨架當代表,還把 window_h_dip 整個丟掉
+// (`(void)window_h_dip;`)。後果不是「測試弱了一點」:
+//
+//   · 外觀頁的深淺三態排在 y=574/604/634,狀態列開關在 754,
+//     說明在 810(頁底 870);底部固定列在 H-48,而預設 client 高 560。
+//     也就是**那三顆單選鈕在畫面上根本不存在**,而視窗沒有捲動,
+//     150% 的 1080p 筆電拉到最大也碰不到。
+//   · W18 量的是那份假骨架 —— 一頁沒壞的頁 —— 所以它一直是綠的。
+//
+// 「守門者自己在該紅的時候安靜地不跑」只有一種結構性的修法:
+// **把被守的東西搬到守得到的地方**。現在每一頁的每一個矩形都由
+// LayoutSettingsPageDip() 產生,settings_window.cc 只負責把它們
+// 貼到 HWND 上;它自己不再有 Stack,也算不出任何一個 y。
+//
 #ifndef RIMEWIN_UI_LAYOUT_H_
 #define RIMEWIN_UI_LAYOUT_H_
 
@@ -93,7 +111,6 @@ int ContentXDip(int window_w_dip);
 // ── 側欄 ────────────────────────────────────────────────────────
 //
 // 側欄上**只列已經實作的頁**(§2-D1:做不到就整頁拿掉)。
-// 頁數由呼叫端給 —— 本檔不知道有哪幾頁,那是 ui_strings 那一側的事。
 RectI SidebarItemDip(int index);
 // 側欄底部的狀態區(兩行 t5:「可以打字」/「離線」)。
 RectI SidebarStatusDip(int window_h_dip);
@@ -123,19 +140,168 @@ class Stack {
   int x_, y_, w_, top_;
 };
 
+// ── 設定視窗的頁 ────────────────────────────────────────────────
+//
+// ⚠ 順序 = 側欄由上而下的順序。
+enum SettingsPage : int {
+  kPageSchemas = 0,
+  kPageAppearance,
+  kPageText,
+  kPageAdvanced,
+  kPageCount,
+};
+
+// ── 設定視窗的控制項 id ─────────────────────────────────────────
+//
+// ⚠ 它們住在**這裡**、不在 settings_window.cc,理由只有一個:守門。
+//   一顆控制項的位置只要有一格是在 service/ 那一側算的,單元測試就
+//   量不到它;而量不到的那一格,正好是最新、最沒被看過的那一個。
+//   本檔是唯一知道「哪一頁上有哪些控制項、各在哪裡」的地方,
+//   check_ui_spec.sh 的 W24 兩個方向都比對過 settings_window.cc
+//   的建立表與這裡的版面(多一顆、少一顆都紅)。
+enum SettingsControlId : int {
+  IDC_SIDEBAR = 100,
+  IDC_STATUS,
+  IDC_CLOSE,
+
+  // 輸入方案
+  IDC_SCHEMAS_TITLE = 200,
+  IDC_SCHEMAS_SUB,
+  IDC_SCHEMAS_LIST_HEAD,
+  IDC_SCHEMAS_LIST_BLURB,
+  IDC_SCHEMA_LIST,
+  IDC_UP,
+  IDC_DOWN,
+  IDC_APPLY_ORDER,
+  IDC_SCHEMAS_DEFAULT_LINE,
+  IDC_FOLLOW_MODE,
+  IDC_FOLLOW_BLURB,
+  IDC_SCHEMAS_EMPTY,
+
+  // 外觀
+  IDC_APPEAR_TITLE = 300,
+  IDC_APPEAR_SUB,
+  IDC_COUNT_HEAD,
+  IDC_COUNT_BLURB,
+  IDC_COUNT_0,
+  IDC_COUNT_1,
+  IDC_COUNT_2,
+  IDC_COUNT_3,
+  IDC_COUNT_4,
+  IDC_SCALE_HEAD,
+  IDC_SCALE_BLURB,
+  IDC_SCALE_0,
+  IDC_SCALE_1,
+  IDC_SCALE_2,
+  IDC_SCALE_3,
+  IDC_SCALE_4,
+  IDC_THEME_HEAD,
+  IDC_THEME_BLURB,
+  IDC_THEME_0,
+  IDC_THEME_1,
+  IDC_THEME_2,
+  IDC_BAR_HEAD,
+  IDC_BAR_BLURB,
+  IDC_BAR_SHOW,
+  IDC_APPEAR_NOTE,
+
+  // 文字
+  IDC_TEXT_TITLE = 400,
+  IDC_TEXT_SUB,
+  IDC_VARIANT_HEAD,
+  IDC_VARIANT_BLURB,
+  IDC_VARIANT_0,
+  IDC_VARIANT_1,
+  IDC_VARIANT_2,
+  IDC_PUNCT_HEAD,
+  IDC_PUNCT_BLURB,
+  IDC_PUNCT_0,
+  IDC_PUNCT_1,
+  IDC_PUNCT_2,
+
+  // 進階
+  IDC_ADV_TITLE = 500,
+  IDC_ADV_SUB,
+  IDC_REDEPLOY_HEAD,
+  IDC_REDEPLOY_BLURB,
+  IDC_REDEPLOY,
+  IDC_FILES_HEAD,
+  IDC_FILES_BLURB,
+  IDC_OPEN_USER_DIR,
+  IDC_OPEN_SETTINGS_FILE,
+  IDC_LANG_HEAD,
+  IDC_LANG_BLURB,
+  IDC_LANG_0,
+  IDC_LANG_1,
+  IDC_LANG_2,
+  IDC_LANG_3,
+  IDC_DIAG_HEAD,
+  IDC_DIAG_NOTE,
+  IDC_DIAG,
+  IDC_DIAG_COPY,
+  IDC_RESET_HEAD,
+  IDC_RESET_BLURB,
+  IDC_RESET,
+};
+
+// 底部固定列(狀態文字 + 關閉鈕)佔掉的高度,以及它上面那條 hairline。
+// 內容區的可視高度 = 視窗高度 − 這個值。
+constexpr int kBottomBarH = metric::kMinTarget + space::s7;          // 48
+constexpr int kBottomStripH = kBottomBarH + space::s3;               // 54
+// 內容欄從視窗頂端往下 s8 開始。
+constexpr int kContentTopDip = space::s8;
+// 內容底端留白:最後一個控制項與那條 hairline 之間。
+constexpr int kContentPadBottomDip = space::s7;
+
+// 一顆被擺好的控制項。⚠ y 是**內容座標**(捲動量 0 時等於視窗座標),
+// 呼叫端自己減掉捲動量。
+struct PlacedControl {
+  int id = 0;
+  RectI rect;          // 空矩形 = 這一頁上不出現(呼叫端 ShowWindow(SW_HIDE))
+  bool clickable = false;
+  const char* what = "";  // 診斷用,永遠英文(§4.11)
+};
+
+struct PageLayout {
+  std::vector<PlacedControl> items;
+  // 內容總高(含底部留白)。**捲動範圍唯一的來源** ——
+  // 所以任何一顆沒有推進堆疊的控制項都會落在捲動範圍以外。
+  int content_h_dip = 0;
+};
+
+// 一頁的完整版面。schema_list_empty 是「輸入方案」頁唯一的執行期分支
+// (清單是空的時候換成一句說明)。
+PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
+                                 bool schema_list_empty);
+
+// 內容區的可視高度。⚠ 視窗矮於底部固定列時回 0,不回負數。
+int ContentViewportHeightDip(int window_h_dip);
+
+// 捲動上限(DIP)。內容放得下時是 0。
+// ⚠ 這一支**必須**吃 window_h_dip —— 舊版的 ClickableTargetsDip 把它
+//   `(void)` 掉,於是「排到視窗底部以外」對測試而言不存在。
+int ScrollMaxDip(int page, int window_w_dip, int window_h_dip,
+                 bool schema_list_empty);
+
 // ── W18 的取材面 ────────────────────────────────────────────────
 //
-// 「所有可點矩形 ≥ 28×28 DIP」要驗得到,前提是有人說得出**哪些是可點的**。
-// 版面自己回報,而不是靠測試去猜 —— 猜的那一份會漏掉新加的控制項,
-// 而漏掉的正好是最新、最沒被看過的那一個。
+// 「所有可點矩形 ≥ 28×28 DIP」與「每一個都碰得到」要驗得到,前提是
+// 有人說得出**哪些是可點的、在哪裡**。版面自己回報,而不是靠測試去猜 ——
+// 猜的那一份會漏掉新加的控制項。
 struct HitTarget {
   const char* what;  // 診斷用,永遠英文(§4.11)
   RectI rect;
+  int id = 0;
+  // true = 在會捲動的內容區裡,rect.y 是內容座標;
+  // false = 側欄或底部固定列,rect.y 是視窗座標。
+  bool scrolls = false;
 };
 
-// 一頁上所有可點的矩形。page_count 是側欄上的頁數。
+// **某一頁**上所有可點的矩形(含側欄與底部固定列)。
+// ⚠ 第三個參數是**頁**,不是頁數 —— 舊版收的是 page_count,而那正是
+//   它從來沒有真的走過任何一頁版面的原因。
 std::vector<HitTarget> ClickableTargetsDip(int window_w_dip, int window_h_dip,
-                                           int page_count);
+                                           int page, bool schema_list_empty);
 
 }  // namespace rimewin
 

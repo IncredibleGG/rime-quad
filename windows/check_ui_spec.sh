@@ -305,7 +305,11 @@ run_checks() {
       "test_layout.cc:layout_never_drops_candidates_horizontal_shrink" \
       "test_ui_layout.cc:ui_layout_every_clickable_target_meets_the_minimum" \
       "test_ui_layout.cc:ui_layout_content_column_three_worked_cases" \
+      "test_ui_layout.cc:ui_layout_every_clickable_target_is_reachable" \
+      "test_ui_layout.cc:ui_layout_scroll_range_actually_uses_the_window_height" \
+      "test_ui_layout.cc:ui_layout_every_control_belongs_to_exactly_one_page" \
       "test_statusbar_place.cc:statusbar_falls_back_when_the_monitor_disappears" \
+      "test_statusbar_place.cc:statusbar_growing_wider_stays_inside_the_work_area" \
       "test_ui_palette.cc:palette_every_pair_meets_its_threshold_in_both_modes" ; do
     local file="${WIN}/tests/${t%%:*}"
     local name="${t##*:}"
@@ -486,6 +490,173 @@ PYSCRIPT
   else
     red "W23:停用了控制項但同一頁找不到說明(§2-D1:沒有那句話就不准停用)"
   fi
+
+  # ── W24:設定視窗的版面只能住在 common/ui_layout.cc ────────────
+  #
+  # ⚠ 這一條是「守門者自己在該紅的時候安靜地不跑」的解藥。
+  #   舊版:每一頁的版面在 service/settings_window.cc::LayoutUi() 裡算,
+  #   而那個檔案在 Ubuntu 上編不起來 —— 於是 ui_layout.cc 的
+  #   ClickableTargetsDip **手工造了一份假骨架**當代表,還把
+  #   window_h_dip `(void)` 掉。結果:外觀頁的深淺色三態排在 y=574,
+  #   可視高度 506,那三顆在畫面上不存在,而 W18 一路全綠。
+  #
+  #   兩個方向都驗:
+  #     (a) settings_window.cc 不得再自己排版(不得有 Stack / st.Push)。
+  #     (b) kControls 的 id 集合 == ui_layout.cc 版面裡的 id 集合。
+  #         多一顆(建了沒地方擺)、少一顆(擺了沒建)都紅。
+  check
+  local w24bad=0
+  local w24a; w24a="$(grep -n 'Stack [a-z]\|st\.Push(\|st\.PushDivider(\|PushDivider()' "${sw}" 2>/dev/null || true)"
+  if [ -n "${w24a}" ]; then
+    red "W24:settings_window.cc 又開始自己排版了 —— 那裡算出來的矩形單元測試看不到(外觀頁那三顆單選鈕就是這樣消失的)"
+    printf '%s\n' "${w24a}" | head -3 >&2
+    w24bad=1
+  fi
+  local w24out; w24out="$("${PY}" - "${sw}" "${CODE_DIR}/common/ui_layout.cc" <<'PYSCRIPT'
+import re, sys
+sw = open(sys.argv[1], encoding='utf-8', errors='replace').read()
+lay = open(sys.argv[2], encoding='utf-8', errors='replace').read()
+
+m = re.search(r'const ControlDef kControls\[\] = \{(.*?)\n\};', sw, re.S)
+if not m:
+    print('NOTABLE'); raise SystemExit
+table = set(re.findall(r'\{(IDC_[A-Z0-9_]+),', m.group(1)))
+
+f = re.search(r'PageLayout LayoutSettingsPageDip\(.*?\n\}\n', lay, re.S)
+if not f:
+    print('NOLAYOUT'); raise SystemExit
+laid = set(re.findall(r'(IDC_[A-Z0-9_]+)', f.group(0)))
+
+# 底部固定列不屬於任何一頁:它不捲動,由呼叫端擺。
+chrome = {'IDC_STATUS', 'IDC_CLOSE'}
+print('TABLE=%d' % len(table))
+print('LAID=%d' % len(laid))
+
+# ⚠ 只比集合擋不住「同一顆被塞進兩頁」——集合一樣,而畫面上會有一顆
+#   切了頁還留著的控制項。逐頁拆開再兩兩比。
+parts = re.split(r'case (kPage[A-Za-z]+):', f.group(0))
+pages = {}
+for i in range(1, len(parts) - 1, 2):
+    pages[parts[i]] = set(re.findall(r'(IDC_[A-Z0-9_]+)', parts[i + 1]))
+print('PAGES=%d' % len(pages))
+names = sorted(pages)
+for a in range(len(names)):
+    for b in range(a + 1, len(names)):
+        for i in sorted(pages[names[a]] & pages[names[b]]):
+            print('ON_TWO_PAGES=%s(%s,%s)' % (i, names[a], names[b]))
+for i in sorted((table - chrome) - laid):
+    print('BUILT_BUT_NOT_LAID=%s' % i)
+for i in sorted(laid - (table - chrome)):
+    print('LAID_BUT_NOT_BUILT=%s' % i)
+PYSCRIPT
+)"
+  local ntable; ntable="$(num "$(printf '%s\n' "${w24out}" | sed -n 's/^TABLE=//p')")"
+  local nlaid; nlaid="$(num "$(printf '%s\n' "${w24out}" | sed -n 's/^LAID=//p')")"
+  case "${w24out}" in
+    NOTABLE*) red "W24:找不到 kControls —— 掃描範圍錯了"; w24bad=1 ;;
+    NOLAYOUT*) red "W24:找不到 LayoutSettingsPageDip —— 掃描範圍錯了"; w24bad=1 ;;
+  esac
+  need_scope "W24 控制項表" "${ntable}" 60 || w24bad=1
+  need_scope "W24 版面 id" "${nlaid}" 60 || w24bad=1
+  local npages; npages="$(num "$(printf '%s\n' "${w24out}" | sed -n 's/^PAGES=//p')")"
+  need_scope "W24 頁數" "${npages}" 4 || w24bad=1
+  local w24dup; w24dup="$(printf '%s\n' "${w24out}" | grep '^ON_TWO_PAGES=' || true)"
+  if [ -n "${w24dup}" ]; then
+    red "W24:同一顆控制項被排進兩頁 —— 切了頁還會留一顆在畫面上"
+    printf '%s\n' "${w24dup}" | head -6 >&2
+    w24bad=1
+  fi
+  local w24diff; w24diff="$(printf '%s\n' "${w24out}" | grep '^BUILT_BUT_NOT_LAID=\|^LAID_BUT_NOT_BUILT=' || true)"
+  if [ -n "${w24diff}" ]; then
+    red "W24:kControls 與 ui_layout.cc 的版面對不上 —— 建了沒地方擺(停在 0,0)或擺了沒建"
+    printf '%s\n' "${w24diff}" | head -6 >&2
+    w24bad=1
+  fi
+  [ "${w24bad}" -eq 0 ] && ok "W24 版面全部在 common/ui_layout.cc;${ntable} 顆控制項與 ${npages} 頁的版面兩個方向都對得上,而且沒有一顆同時屬於兩頁"
+
+  # ── W25:內容區必須捲得動 ────────────────────────────────────
+  #
+  # ⚠ 外觀頁的內容高 890 DIP。150% 的 1080p 筆電 client 約 667 DIP ——
+  #   **視窗拉到最大也碰不到深淺色三態**,而那三顆是整個 UI 上唯一的入口。
+  #   所以「可以拉大視窗」不算修好;要有捲動,而且滾輪、捲軸、鍵盤焦點
+  #   三條路都要有。少任何一條,使用者就有一條路是死的。
+  check
+  local w25bad=0 need25
+  for need25 in 'WS_VSCROLL' 'WM_MOUSEWHEEL' 'WM_VSCROLL' 'SetScrollInfo' \
+                'GetScrollInfo' 'EnsureFocusVisible' 'SetWindowRgn'; do
+    if ! grep -q "${need25}" "${sw}" 2>/dev/null; then
+      red "W25:settings_window.cc 少了 ${need25} —— 內容區有 384 DIP 在視窗外面,少一條路就有一種使用者碰不到它"
+      w25bad=1
+    fi
+  done
+  # 純函式那一側:捲動範圍必須真的吃視窗高度。
+  if ! grep -q 'int ScrollMaxDip(' "${CODE_DIR}/common/ui_layout.cc" 2>/dev/null; then
+    red "W25:common/ui_layout.cc 沒有 ScrollMaxDip —— 捲動範圍不是純函式就測不到"
+    w25bad=1
+  fi
+  local w25void; w25void="$(grep -n '(void)window_h_dip' "${CODE_DIR}/common/ui_layout.cc" 2>/dev/null || true)"
+  if [ -n "${w25void}" ]; then
+    red "W25:ui_layout.cc 又把 window_h_dip 丟掉了 —— 「排到視窗底部以外」對測試而言會再一次不存在"
+    w25bad=1
+  fi
+  [ "${w25bad}" -eq 0 ] && ok "W25 內容區捲得動:捲軸 + 滾輪 + 鍵盤焦點三條路都在,捲動範圍是純函式"
+
+  # ── W26:狀態列寬度一變就要重新夾進工作區 ─────────────────────
+  #
+  # ⚠ 舊版 Relayout 用 SWP_NOMOVE:左上角釘死、只往右長。而那一橫是
+  #   右錨定的,「未就緒(1 格)→ 就緒(4 格)」多出 80~110 DIP,
+  #   扣掉 12 的邊距之後有 70~100 DIP 在螢幕外面 —— 「設定」整格點不到。
+  check
+  local w26bad=0
+  local relay; relay="$("${PY}" - "${bar}" <<'PYSCRIPT'
+import re, sys
+s = open(sys.argv[1], encoding='utf-8', errors='replace').read()
+m = re.search(r'void StatusBar::Relayout\(\) \{(.*?)\n\}\n', s, re.S)
+if not m:
+    print('NOFUNC'); raise SystemExit
+body = m.group(1)
+if 'SWP_NOMOVE' in body and 'ApplyPlacement' not in body:
+    print('NOMOVE')
+if 'ApplyPlacement' not in body:
+    print('NOPLACE')
+PYSCRIPT
+)"
+  case "${relay}" in
+    *NOFUNC*) red "W26:找不到 StatusBar::Relayout —— 掃描範圍錯了"; w26bad=1 ;;
+  esac
+  if printf '%s\n' "${relay}" | grep -q 'NOPLACE\|NOMOVE'; then
+    red "W26:Relayout 改了寬度卻沒有重走 PlaceStatusBar —— 那一橫變寬時右端會被推出螢幕,「設定」整格點不到"
+    w26bad=1
+  fi
+  # 那支純函式必須收得到寬度(而不是自己去讀視窗現在的寬度)。
+  if ! grep -q 'void StatusBar::ApplyPlacement(int w_dip)' "${bar}" 2>/dev/null; then
+    red "W26:ApplyPlacement 沒有收寬度參數 —— 從 GetWindowRect 讀回來的是舊寬度"
+    w26bad=1
+  fi
+  # 简/繁 那一格必須樂觀寫入(否則指示器要等使用者打一個字才會動,
+  # 而且再按一次送的是同一個值)。
+  local w26v; w26v="$("${PY}" - "${bar}" <<'PYSCRIPT'
+import re, sys
+s = open(sys.argv[1], encoding='utf-8', errors='replace').read()
+m = re.search(r'void StatusBar::ClickCell\(int cell\) \{(.*?)\n\}\n', s, re.S)
+if not m:
+    print('NOFUNC'); raise SystemExit
+body = m.group(1)
+cell = re.search(r'case kCellVariant: \{(.*?)\n    \}', body, re.S)
+if not cell:
+    print('NOCELL'); raise SystemExit
+if 'simplified_ = ' not in cell.group(1):
+    print('NOOPTIMISTIC')
+PYSCRIPT
+)"
+  if printf '%s\n' "${w26v}" | grep -q 'NOFUNC\|NOCELL'; then
+    red "W26:找不到 ClickCell 的 kCellVariant 分支 —— 掃描範圍錯了"
+    w26bad=1
+  elif printf '%s\n' "${w26v}" | grep -q 'NOOPTIMISTIC'; then
+    red "W26:简/繁 那一格沒有樂觀寫入 simplified_ —— 按下去畫面不動,而且再按一次送的是同一個值"
+    w26bad=1
+  fi
+  [ "${w26bad}" -eq 0 ] && ok "W26 狀態列寬度一變就重走 PlaceStatusBar,而且 简/繁 那一格按下去立刻改變"
 }
 
 # ────────────────────────────────────────────────────────────────
@@ -505,7 +676,7 @@ self_check() {
 "W4|common/ui_layout.h|s=s.replace('constexpr int t4 = 12;','constexpr int t4 = 14;',1)"
 "W5|service/cand_window.cc|s=s.replace('namespace {','namespace {\\nstatic int probe = SPI_GETNONCLIENTMETRICS;',1)"
 "W6|service/settings_window.cc|s=s.replace('void SettingsWindow::ApplyFonts() {','void SettingsWindow::ApplyFonts() { LOGFONTW lf{}; HFONT bad = ::CreateFontIndirectW(&lf); (void)bad;',1)"
-"W7|service/settings_window.cc|s=s.replace('constexpr int kAlways = 99;', 'constexpr int kAlways = 99;' + chr(10) + 'constexpr wchar_t kOops[] = L' + chr(34) + chr(28204) + chr(34) + ';', 1)"
+"W7|service/settings_window.cc|s=s.replace('constexpr UiString kNoText = UiString::kUiStringCount;', 'constexpr UiString kNoText = UiString::kUiStringCount;' + chr(10) + 'constexpr wchar_t kOops[] = L' + chr(34) + chr(28204) + chr(34) + ';', 1)"
 "W8|common/ui_strings.cc|s=s.replace('constexpr bool OrderMatchesEnum()','constexpr bool RemovedOnPurpose()',1).replace('static_assert(OrderMatchesEnum(),','static_assert(true,',1)"
 "W10|service/status_bar.cc|s=s.replace('constexpr wchar_t kGlyphChinese[] = L\\\"中\\\";','',1).replace('constexpr wchar_t kGlyphAscii[] = L\\\"En\\\";','',1).replace('constexpr wchar_t kGlyphSimplified[] = L\\\"简\\\";','',1).replace('constexpr wchar_t kGlyphTraditional[] = L\\\"繁\\\";','',1)"
 "W11|common/ui_layout.cc|s=s.replace('int ContentWidthDip(int window_w_dip) {','int ContentWidthDip(int window_w_dip) { bool is_dark = false; if (is_dark) return 0;',1)"
@@ -516,6 +687,14 @@ self_check() {
 "W17|service/settings_window.cc|s=s.replace('  return Utf8ToWide(kv.second.empty() ? kv.first : kv.second);','  return Utf8ToWide(kv.second) + L\\\" (\\\" + Utf8ToWide(kv.first) + L\\\")\\\";',1)"
 "W21|service/settings_window.cc|s=s.replace('CDIS_FOCUS','CDIS_SELECTED')"
 "W23|service/settings_window.cc|s=s.replace('kStatusRedeployRunning','kStatusApplied')"
+"W24a 版面回到 service|service/settings_window.cc|s=s.replace('void SettingsWindow::LayoutUi() {','void SettingsWindow::LayoutUi() { Stack sneaky(0, 0, 100); (void)sneaky.Push(10, 2);',1)"
+"W24b 版面上少三顆|common/ui_layout.cc|s=s.replace('      radios({IDC_THEME_0, IDC_THEME_1, IDC_THEME_2}, \"appearance_radio\");','',1)"
+"W24c 某頁多塞三顆|common/ui_layout.cc|s=s.replace('radios({IDC_THEME_0, IDC_THEME_1, IDC_THEME_2}, \"appearance_radio\");','radios({IDC_THEME_0, IDC_THEME_1, IDC_THEME_2, IDC_LANG_1, IDC_LANG_2, IDC_LANG_3}, \"appearance_radio\");',1)"
+"W24d 表上少三顆|service/settings_window.cc|s=s.replace('    {IDC_THEME_0, L\"BUTTON\", RADIO1, UiString::kThemeFollowSystem},','',1).replace('    {IDC_THEME_1, L\"BUTTON\", RADIO, UiString::kThemeLight},','',1).replace('    {IDC_THEME_2, L\"BUTTON\", RADIO, UiString::kThemeDark},','',1)"
+"W25 拿掉滾輪|service/settings_window.cc|s=s.replace('case WM_MOUSEWHEEL:','case WM_NULL + 4242:',1)"
+"W25b 又把高度丟掉|common/ui_layout.cc|s=s.replace('int ScrollMaxDip(int page, int window_w_dip, int window_h_dip,','int ScrollMaxDipRemoved(int page, int window_w_dip, int window_h_dip,',1)"
+"W26 狀態列不重擺|service/status_bar.cc|s=s.replace('  ApplyPlacement(MulDivRound(total_w, 96, static_cast<int>(dpi_)));','',1)"
+"W26b 简繁不樂觀寫入|service/status_bar.cc|s=s.replace('        now = simplified_;\n        simplified_ = !now;\n      }\n      // 走設定視窗那一支','        now = simplified_;\n      }\n      // 走設定視窗那一支',1)"
 "範圍|__SCOPE__|"
   )
 
@@ -575,7 +754,7 @@ if [ "${FAILED}" -gt 0 ]; then
   printf '\033[1;31m%d 條不合格(共檢查 %d 組)\033[0m\n' "${FAILED}" "${CHECKED}" >&2
   exit 1
 fi
-if [ "${CHECKED}" -lt 15 ]; then
+if [ "${CHECKED}" -lt 20 ]; then
   # ⚠ 「一條都沒跑卻報通過」是這張檢核表自己最可能的失效方式(§2-G)。
   printf '\033[1;31m只跑了 %d 組檢查 —— 少於下界,當作失敗\033[0m\n' "${CHECKED}" >&2
   exit 1

@@ -92,7 +92,9 @@ class StatusBar {
   void ClickCell(int cell);
   void OpenSchemaPopup();
   void ClosePopup();
-  void ApplyPlacement();
+  // ⚠ 寬度由呼叫端給(0 = 用視窗現在的寬度)。Relayout 改了寬度之後
+  //   一定要重走這一支 —— 只長寬度不重擺,右端會被推出螢幕。
+  void ApplyPlacement(int w_dip);
   void SavePlacement();
 
   struct Cell {
@@ -123,6 +125,9 @@ class StatusBar {
   bool ascii_mode_ = false;
   bool simplified_ = false;
   std::string schema_name_;
+  // 位置錨點的快取。Relayout 在使用者打字的路徑上,不可以每次去讀設定檔。
+  BarAnchor anchor_;
+  bool anchor_loaded_ = false;
   bool have_snapshot_ = false;
 
   // 只在 UI 執行緒上碰。

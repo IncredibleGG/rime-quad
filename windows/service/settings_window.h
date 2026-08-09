@@ -60,6 +60,8 @@
 #include <vector>
 
 #include "../common/schema_choice.h"
+// ⚠ 頁、控制項 id 與**每一頁的版面**都住在這裡面。本檔不再自己算矩形。
+#include "../common/ui_layout.h"
 #include "../common/ui_strings.h"
 #include "engine.h"
 #include "settings_store.h"
@@ -98,16 +100,10 @@ class SettingsWindow {
   UiLang ui_lang() const { return ui_lang_; }
 
  private:
-  // ⚠ 頁的順序 = 側欄由上而下的順序。
-  enum Page : int {
-    kPageSchemas = 0,
-    kPageAppearance,
-    kPageText,
-    kPageAdvanced,
-    kPageCount,
-    // 不屬於任何一頁:永遠看得見(關閉鈕、底部狀態行)。
-    kPageAlways = 99,
-  };
+  // ⚠ 頁的順序(kPageSchemas … kPageCount)與控制項 id 都在
+  //   common/ui_layout.h。它們**不可以**住在這裡:住在這裡就表示
+  //   版面測不到,而「外觀頁的深淺三態排到視窗外而 W18 全綠」
+  //   就是那樣發生的。
 
   static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l);
   static DWORD WINAPI ThreadEntry(LPVOID self);
@@ -125,6 +121,23 @@ class SettingsWindow {
   void OnDpiChanged(UINT dpi, const RECT* suggested);
   void RefreshTheme();
   void ApplyFonts();
+
+  // ── 內容區的捲動(§12.4 A2)────────────────────────────────
+  //
+  // ⚠ 為什麼一定要有:外觀頁的內容高 890 DIP,而 150% 的 1080p 筆電
+  //   client 高約 667 DIP —— **視窗拉到最大也碰不到深淺色三態**,
+  //   而那三顆是整個 UI 上唯一的入口。加大最小尺寸解決不了,
+  //   因為使用者的螢幕就那麼高。
+  void SetScroll(int dip);
+  void OnVScroll(int code, int track_pos);
+  void OnMouseWheel(int delta);
+  // Win32 **不會**自動把鍵盤焦點捲進可見範圍。少了這一支,Tab 走到
+  // 視窗外的控制項時畫面完全不動,使用者在盲按。
+  void EnsureFocusVisible();
+  // 把控制項裁掉伸進底部固定列的那一截(子視窗只會被父視窗的 client
+  // 矩形裁掉,而底部那 54 DIP 仍在 client 裡面)。
+  void ClipToViewport(int index, HWND c, const RectI& r, int y_dip,
+                      int viewport_h_dip);
 
   // 自繪(§12.5.3 的六類裡的四類在這個檔案)。
   LRESULT DrawSidebar(NMLVCUSTOMDRAW* cd);
@@ -177,6 +190,17 @@ class SettingsWindow {
   // 鍵盤使用時才畫焦點環(§12.6.4 第 1 條)。滑鼠使用者身上到處是框,
   // 是 Win32 自繪最常見的破綻。WM_UPDATEUISTATE 維護它。
   bool show_focus_ = false;
+
+  // 內容區的捲動量與上限,單位 DIP(不是像素 —— 換螢幕時 DPI 會變)。
+  int scroll_ = 0;
+  int scroll_max_ = 0;
+  // ⚠ SetScrollInfo 讓捲軸出現/消失時會送 WM_SIZE,而 WM_SIZE 又叫
+  //   LayoutUi。沒有這個旗標就是無限遞迴。
+  bool in_layout_ = false;
+  // 每一顆控制項目前被裁掉之後剩下的高度(DIP)。-1 = 沒有裁。
+  // ⚠ 存著是為了**只在變動時**才呼叫 SetWindowRgn:那一支會重畫,
+  //   每次 LayoutUi 都無條件呼叫的話,捲動時整頁會閃。
+  std::vector<int> clip_h_;
 
   bool deploying_ = false;
   uint32_t deploy_seq_ = 0;

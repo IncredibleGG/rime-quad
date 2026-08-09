@@ -3,6 +3,7 @@
 #include <commctrl.h>
 #include <shellapi.h>
 
+#include <algorithm>
 #include <cstdio>
 
 #include "../common/schema_choice.h"
@@ -35,90 +36,12 @@ enum : int {
 };
 
 // ── 控制項 id ───────────────────────────────────────────────────
-enum : int {
-  IDC_SIDEBAR = 100,
-  IDC_STATUS,
-  IDC_CLOSE,
-
-  // 輸入方案
-  IDC_SCHEMAS_TITLE = 200,
-  IDC_SCHEMAS_SUB,
-  IDC_SCHEMAS_LIST_HEAD,
-  IDC_SCHEMAS_LIST_BLURB,
-  IDC_SCHEMA_LIST,
-  IDC_UP,
-  IDC_DOWN,
-  IDC_APPLY_ORDER,
-  IDC_SCHEMAS_DEFAULT_LINE,
-  IDC_FOLLOW_MODE,
-  IDC_FOLLOW_BLURB,
-  IDC_SCHEMAS_EMPTY,
-
-  // 外觀
-  IDC_APPEAR_TITLE = 300,
-  IDC_APPEAR_SUB,
-  IDC_COUNT_HEAD,
-  IDC_COUNT_BLURB,
-  IDC_COUNT_0,
-  IDC_COUNT_1,
-  IDC_COUNT_2,
-  IDC_COUNT_3,
-  IDC_COUNT_4,
-  IDC_SCALE_HEAD,
-  IDC_SCALE_BLURB,
-  IDC_SCALE_0,
-  IDC_SCALE_1,
-  IDC_SCALE_2,
-  IDC_SCALE_3,
-  IDC_SCALE_4,
-  IDC_THEME_HEAD,
-  IDC_THEME_BLURB,
-  IDC_THEME_0,
-  IDC_THEME_1,
-  IDC_THEME_2,
-  IDC_BAR_HEAD,
-  IDC_BAR_BLURB,
-  IDC_BAR_SHOW,
-  IDC_APPEAR_NOTE,
-
-  // 文字
-  IDC_TEXT_TITLE = 400,
-  IDC_TEXT_SUB,
-  IDC_VARIANT_HEAD,
-  IDC_VARIANT_BLURB,
-  IDC_VARIANT_0,
-  IDC_VARIANT_1,
-  IDC_VARIANT_2,
-  IDC_PUNCT_HEAD,
-  IDC_PUNCT_BLURB,
-  IDC_PUNCT_0,
-  IDC_PUNCT_1,
-  IDC_PUNCT_2,
-
-  // 進階
-  IDC_ADV_TITLE = 500,
-  IDC_ADV_SUB,
-  IDC_REDEPLOY_HEAD,
-  IDC_REDEPLOY_BLURB,
-  IDC_REDEPLOY,
-  IDC_FILES_HEAD,
-  IDC_FILES_BLURB,
-  IDC_OPEN_USER_DIR,
-  IDC_OPEN_SETTINGS_FILE,
-  IDC_LANG_HEAD,
-  IDC_LANG_BLURB,
-  IDC_LANG_0,
-  IDC_LANG_1,
-  IDC_LANG_2,
-  IDC_LANG_3,
-  IDC_DIAG_HEAD,
-  IDC_DIAG_NOTE,
-  IDC_DIAG,
-  IDC_DIAG_COPY,
-  IDC_RESET_HEAD,
-  IDC_RESET_BLURB,
-  IDC_RESET,
-};
+//
+// ⚠ 它們**搬到 common/ui_layout.h 了**。理由不是整理:id 留在這裡的話,
+//   每一頁的版面也只能留在這裡,而這個檔案在 Ubuntu 上編不起來 ——
+//   於是「哪一顆控制項在哪裡」永遠沒有單元測試看得到。
+//   外觀頁的深淺色三態排在視窗底部以外整整一輪沒有被發現,
+//   就是因為 W18 量的是 ui_layout.cc 裡手工造的一份假骨架。
 
 // ── ⚠ 這一張表就是「第六個看得到但摸不到」的結構性修法 ────────────
 //
@@ -128,12 +51,19 @@ enum : int {
 // ShowWindow 過。畫面上根本沒有那顆核取方塊,而程式碼看起來完全正常。
 //
 // 現在「建了但不屬於任何一頁」在結構上不可能發生。
-// 不屬於任何一頁:永遠看得見。
-constexpr int kAlways = 99;
-
+//
+// ── 2026-08-10:那一格「哪一頁」也不在這裡了 ────────────────────
+//
+// 這張表原本自己帶一個 page 欄位,而**每一頁上有哪些控制項**因此有了
+// 兩份來源:這裡一份、LayoutUi() 的 switch 一份。兩份會漂移,而漂移
+// 的樣子是「頁上有一顆沒有被擺過位置的控制項,停在 (0,0) 10×10」。
+//
+// 現在頁的歸屬**只由 common/ui_layout.h 的 LayoutSettingsPageDip()
+// 決定** —— 它擺得到就顯示,擺不到就隱藏。表上只剩「怎麼建」。
+// 兩邊的 id 集合由 check_ui_spec.sh 的 W24 兩個方向比對(多一顆、
+// 少一顆都紅),所以「建了但沒有頁」與「有頁但沒有建」都會被擋下。
 struct ControlDef {
   int id;
-  int page;
   const wchar_t* cls;
   DWORD style;
   UiString label;  // kUiStringCount = 執行期才填
@@ -148,109 +78,109 @@ constexpr UiString kNoText = UiString::kUiStringCount;
 
 const ControlDef kControls[] = {
     // 永遠看得見
-    {IDC_STATUS, kAlways, L"STATIC", ST, kNoText},
-    {IDC_CLOSE, kAlways, L"BUTTON", BTN, UiString::kClose},
+    {IDC_STATUS, L"STATIC", ST, kNoText},
+    {IDC_CLOSE, L"BUTTON", BTN, UiString::kClose},
 
     // ── 輸入方案 ──
-    {IDC_SCHEMAS_TITLE, 0, L"STATIC", ST, UiString::kSchemasTitle},
-    {IDC_SCHEMAS_SUB, 0, L"STATIC", ST, UiString::kSchemasSubtitle},
-    {IDC_SCHEMAS_LIST_HEAD, 0, L"STATIC", ST, UiString::kSchemasListHeading},
-    {IDC_SCHEMAS_LIST_BLURB, 0, L"STATIC", ST, UiString::kSchemasListBlurb},
-    {IDC_SCHEMA_LIST, 0, WC_LISTVIEWW,
+    {IDC_SCHEMAS_TITLE, L"STATIC", ST, UiString::kSchemasTitle},
+    {IDC_SCHEMAS_SUB, L"STATIC", ST, UiString::kSchemasSubtitle},
+    {IDC_SCHEMAS_LIST_HEAD, L"STATIC", ST, UiString::kSchemasListHeading},
+    {IDC_SCHEMAS_LIST_BLURB, L"STATIC", ST, UiString::kSchemasListBlurb},
+    {IDC_SCHEMA_LIST, WC_LISTVIEWW,
      LVS_REPORT | LVS_SINGLESEL | LVS_NOCOLUMNHEADER | LVS_SHOWSELALWAYS |
          WS_TABSTOP | WS_BORDER,
      kNoText},
-    {IDC_UP, 0, L"BUTTON", BTN, UiString::kSchemasMoveUp},
-    {IDC_DOWN, 0, L"BUTTON", BTN, UiString::kSchemasMoveDown},
-    {IDC_APPLY_ORDER, 0, L"BUTTON", BTN, UiString::kSchemasApplyOrder},
-    {IDC_SCHEMAS_DEFAULT_LINE, 0, L"STATIC", ST, kNoText},
+    {IDC_UP, L"BUTTON", BTN, UiString::kSchemasMoveUp},
+    {IDC_DOWN, L"BUTTON", BTN, UiString::kSchemasMoveDown},
+    {IDC_APPLY_ORDER, L"BUTTON", BTN, UiString::kSchemasApplyOrder},
+    {IDC_SCHEMAS_DEFAULT_LINE, L"STATIC", ST, kNoText},
     // §12.5.2:開關 = BUTTON + BS_AUTOCHECKBOX | BS_RIGHTBUTTON。
     // BS_RIGHTBUTTON 把方塊移到**右邊**,滿足 §4.1「開關在右、標題說明在左」。
     // ⚠ **不可以** owner-draw 它:BS_OWNERDRAW 與 BS_AUTOCHECKBOX 互斥
     //   (兩者都佔 BS_TYPEMASK 的低 4 位元),自繪之後螢幕閱讀器會念成
     //   「按鈕」而不是「核取方塊,已勾選」。
-    {IDC_FOLLOW_MODE, 0, L"BUTTON",
+    {IDC_FOLLOW_MODE, L"BUTTON",
      BS_AUTOCHECKBOX | BS_RIGHTBUTTON | BS_MULTILINE | WS_TABSTOP,
      UiString::kSchemasFollowTitle},
-    {IDC_FOLLOW_BLURB, 0, L"STATIC", ST, UiString::kSchemasFollowBlurb},
-    {IDC_SCHEMAS_EMPTY, 0, L"STATIC", ST, kNoText},
+    {IDC_FOLLOW_BLURB, L"STATIC", ST, UiString::kSchemasFollowBlurb},
+    {IDC_SCHEMAS_EMPTY, L"STATIC", ST, kNoText},
 
     // ── 外觀 ──
-    {IDC_APPEAR_TITLE, 1, L"STATIC", ST, UiString::kAppearanceTitle},
-    {IDC_APPEAR_SUB, 1, L"STATIC", ST, UiString::kAppearanceSubtitle},
-    {IDC_COUNT_HEAD, 1, L"STATIC", ST, UiString::kCountHeading},
-    {IDC_COUNT_BLURB, 1, L"STATIC", ST, UiString::kCountBlurb},
+    {IDC_APPEAR_TITLE, L"STATIC", ST, UiString::kAppearanceTitle},
+    {IDC_APPEAR_SUB, L"STATIC", ST, UiString::kAppearanceSubtitle},
+    {IDC_COUNT_HEAD, L"STATIC", ST, UiString::kCountHeading},
+    {IDC_COUNT_BLURB, L"STATIC", ST, UiString::kCountBlurb},
     // ⚠ 「跟著○○」永遠是單選群組的第一格(§4.2)。
-    {IDC_COUNT_0, 1, L"BUTTON", RADIO1, UiString::kValueFollowSchema},
-    {IDC_COUNT_1, 1, L"BUTTON", RADIO, UiString::kCountThree},
-    {IDC_COUNT_2, 1, L"BUTTON", RADIO, UiString::kCountFive},
-    {IDC_COUNT_3, 1, L"BUTTON", RADIO, UiString::kCountSeven},
-    {IDC_COUNT_4, 1, L"BUTTON", RADIO, UiString::kCountNine},
-    {IDC_SCALE_HEAD, 1, L"STATIC", ST, UiString::kScaleHeading},
-    {IDC_SCALE_BLURB, 1, L"STATIC", ST, UiString::kScaleBlurb},
-    {IDC_SCALE_0, 1, L"BUTTON", RADIO1, UiString::kValueFollowSchema},
-    {IDC_SCALE_1, 1, L"BUTTON", RADIO, UiString::kScaleSmall},
-    {IDC_SCALE_2, 1, L"BUTTON", RADIO, UiString::kScaleNormal},
-    {IDC_SCALE_3, 1, L"BUTTON", RADIO, UiString::kScaleLarge},
-    {IDC_SCALE_4, 1, L"BUTTON", RADIO, UiString::kScaleHuge},
-    {IDC_THEME_HEAD, 1, L"STATIC", ST, UiString::kThemeHeading},
-    {IDC_THEME_BLURB, 1, L"STATIC", ST, UiString::kThemeBlurb},
-    {IDC_THEME_0, 1, L"BUTTON", RADIO1, UiString::kThemeFollowSystem},
-    {IDC_THEME_1, 1, L"BUTTON", RADIO, UiString::kThemeLight},
-    {IDC_THEME_2, 1, L"BUTTON", RADIO, UiString::kThemeDark},
-    {IDC_BAR_HEAD, 1, L"STATIC", ST, UiString::kStatusBarHeading},
-    {IDC_BAR_BLURB, 1, L"STATIC", ST, UiString::kStatusBarBlurb},
-    {IDC_BAR_SHOW, 1, L"BUTTON",
+    {IDC_COUNT_0, L"BUTTON", RADIO1, UiString::kValueFollowSchema},
+    {IDC_COUNT_1, L"BUTTON", RADIO, UiString::kCountThree},
+    {IDC_COUNT_2, L"BUTTON", RADIO, UiString::kCountFive},
+    {IDC_COUNT_3, L"BUTTON", RADIO, UiString::kCountSeven},
+    {IDC_COUNT_4, L"BUTTON", RADIO, UiString::kCountNine},
+    {IDC_SCALE_HEAD, L"STATIC", ST, UiString::kScaleHeading},
+    {IDC_SCALE_BLURB, L"STATIC", ST, UiString::kScaleBlurb},
+    {IDC_SCALE_0, L"BUTTON", RADIO1, UiString::kValueFollowSchema},
+    {IDC_SCALE_1, L"BUTTON", RADIO, UiString::kScaleSmall},
+    {IDC_SCALE_2, L"BUTTON", RADIO, UiString::kScaleNormal},
+    {IDC_SCALE_3, L"BUTTON", RADIO, UiString::kScaleLarge},
+    {IDC_SCALE_4, L"BUTTON", RADIO, UiString::kScaleHuge},
+    {IDC_THEME_HEAD, L"STATIC", ST, UiString::kThemeHeading},
+    {IDC_THEME_BLURB, L"STATIC", ST, UiString::kThemeBlurb},
+    {IDC_THEME_0, L"BUTTON", RADIO1, UiString::kThemeFollowSystem},
+    {IDC_THEME_1, L"BUTTON", RADIO, UiString::kThemeLight},
+    {IDC_THEME_2, L"BUTTON", RADIO, UiString::kThemeDark},
+    {IDC_BAR_HEAD, L"STATIC", ST, UiString::kStatusBarHeading},
+    {IDC_BAR_BLURB, L"STATIC", ST, UiString::kStatusBarBlurb},
+    {IDC_BAR_SHOW, L"BUTTON",
      BS_AUTOCHECKBOX | BS_RIGHTBUTTON | WS_TABSTOP, UiString::kStatusBarShow},
-    {IDC_APPEAR_NOTE, 1, L"STATIC", ST, UiString::kAppearanceHonestNote},
+    {IDC_APPEAR_NOTE, L"STATIC", ST, UiString::kAppearanceHonestNote},
 
     // ── 文字 ──
-    {IDC_TEXT_TITLE, 2, L"STATIC", ST, UiString::kTextTitle},
-    {IDC_TEXT_SUB, 2, L"STATIC", ST, UiString::kTextSubtitle},
-    {IDC_VARIANT_HEAD, 2, L"STATIC", ST, UiString::kVariantHeading},
-    {IDC_VARIANT_BLURB, 2, L"STATIC", ST, UiString::kVariantBlurb},
-    {IDC_VARIANT_0, 2, L"BUTTON", RADIO1, UiString::kVariantFollow},
-    {IDC_VARIANT_1, 2, L"BUTTON", RADIO, UiString::kVariantTraditional},
-    {IDC_VARIANT_2, 2, L"BUTTON", RADIO, UiString::kVariantSimplified},
-    {IDC_PUNCT_HEAD, 2, L"STATIC", ST, UiString::kPunctHeading},
-    {IDC_PUNCT_BLURB, 2, L"STATIC", ST, UiString::kPunctBlurb},
-    {IDC_PUNCT_0, 2, L"BUTTON", RADIO1, UiString::kPunctFollow},
-    {IDC_PUNCT_1, 2, L"BUTTON", RADIO, UiString::kPunctChinese},
-    {IDC_PUNCT_2, 2, L"BUTTON", RADIO, UiString::kPunctEnglish},
+    {IDC_TEXT_TITLE, L"STATIC", ST, UiString::kTextTitle},
+    {IDC_TEXT_SUB, L"STATIC", ST, UiString::kTextSubtitle},
+    {IDC_VARIANT_HEAD, L"STATIC", ST, UiString::kVariantHeading},
+    {IDC_VARIANT_BLURB, L"STATIC", ST, UiString::kVariantBlurb},
+    {IDC_VARIANT_0, L"BUTTON", RADIO1, UiString::kVariantFollow},
+    {IDC_VARIANT_1, L"BUTTON", RADIO, UiString::kVariantTraditional},
+    {IDC_VARIANT_2, L"BUTTON", RADIO, UiString::kVariantSimplified},
+    {IDC_PUNCT_HEAD, L"STATIC", ST, UiString::kPunctHeading},
+    {IDC_PUNCT_BLURB, L"STATIC", ST, UiString::kPunctBlurb},
+    {IDC_PUNCT_0, L"BUTTON", RADIO1, UiString::kPunctFollow},
+    {IDC_PUNCT_1, L"BUTTON", RADIO, UiString::kPunctChinese},
+    {IDC_PUNCT_2, L"BUTTON", RADIO, UiString::kPunctEnglish},
 
     // ── 進階 ──
-    {IDC_ADV_TITLE, 3, L"STATIC", ST, UiString::kAdvancedTitle},
-    {IDC_ADV_SUB, 3, L"STATIC", ST, UiString::kAdvancedSubtitle},
-    {IDC_REDEPLOY_HEAD, 3, L"STATIC", ST, UiString::kRedeployHeading},
-    {IDC_REDEPLOY_BLURB, 3, L"STATIC", ST, UiString::kRedeployBlurb},
-    {IDC_REDEPLOY, 3, L"BUTTON", BTN, UiString::kRedeployButton},
-    {IDC_FILES_HEAD, 3, L"STATIC", ST, UiString::kFilesHeading},
-    {IDC_FILES_BLURB, 3, L"STATIC", ST, UiString::kFilesBlurb},
-    {IDC_OPEN_USER_DIR, 3, L"BUTTON", BTN, UiString::kOpenUserDir},
-    {IDC_OPEN_SETTINGS_FILE, 3, L"BUTTON", BTN, UiString::kOpenSettingsFile},
-    {IDC_LANG_HEAD, 3, L"STATIC", ST, UiString::kLanguageHeading},
-    {IDC_LANG_BLURB, 3, L"STATIC", ST, UiString::kLanguageBlurb},
-    {IDC_LANG_0, 3, L"BUTTON", RADIO1, UiString::kLanguageSystem},
-    {IDC_LANG_1, 3, L"BUTTON", RADIO, UiString::kLanguageEnglish},
-    {IDC_LANG_2, 3, L"BUTTON", RADIO, UiString::kLanguageHant},
-    {IDC_LANG_3, 3, L"BUTTON", RADIO, UiString::kLanguageHans},
-    {IDC_DIAG_HEAD, 3, L"STATIC", ST, UiString::kDiagnosticsHeading},
-    {IDC_DIAG_NOTE, 3, L"STATIC", ST, UiString::kDiagnosticsNote},
+    {IDC_ADV_TITLE, L"STATIC", ST, UiString::kAdvancedTitle},
+    {IDC_ADV_SUB, L"STATIC", ST, UiString::kAdvancedSubtitle},
+    {IDC_REDEPLOY_HEAD, L"STATIC", ST, UiString::kRedeployHeading},
+    {IDC_REDEPLOY_BLURB, L"STATIC", ST, UiString::kRedeployBlurb},
+    {IDC_REDEPLOY, L"BUTTON", BTN, UiString::kRedeployButton},
+    {IDC_FILES_HEAD, L"STATIC", ST, UiString::kFilesHeading},
+    {IDC_FILES_BLURB, L"STATIC", ST, UiString::kFilesBlurb},
+    {IDC_OPEN_USER_DIR, L"BUTTON", BTN, UiString::kOpenUserDir},
+    {IDC_OPEN_SETTINGS_FILE, L"BUTTON", BTN, UiString::kOpenSettingsFile},
+    {IDC_LANG_HEAD, L"STATIC", ST, UiString::kLanguageHeading},
+    {IDC_LANG_BLURB, L"STATIC", ST, UiString::kLanguageBlurb},
+    {IDC_LANG_0, L"BUTTON", RADIO1, UiString::kLanguageSystem},
+    {IDC_LANG_1, L"BUTTON", RADIO, UiString::kLanguageEnglish},
+    {IDC_LANG_2, L"BUTTON", RADIO, UiString::kLanguageHant},
+    {IDC_LANG_3, L"BUTTON", RADIO, UiString::kLanguageHans},
+    {IDC_DIAG_HEAD, L"STATIC", ST, UiString::kDiagnosticsHeading},
+    {IDC_DIAG_NOTE, L"STATIC", ST, UiString::kDiagnosticsNote},
     // §12.5.2:唯讀資訊 = EDIT + ES_READONLY|ES_MULTILINE|WS_VSCROLL。
     // 可整段選取複製,那正是 §4.11 要的。
-    {IDC_DIAG, 3, L"EDIT",
+    {IDC_DIAG, L"EDIT",
      ES_READONLY | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | WS_TABSTOP |
          WS_BORDER,
      kNoText},
-    {IDC_DIAG_COPY, 3, L"BUTTON", BTN, UiString::kDiagnosticsCopy},
-    {IDC_RESET_HEAD, 3, L"STATIC", ST, UiString::kResetHeading},
-    {IDC_RESET_BLURB, 3, L"STATIC", ST, UiString::kResetBlurb},
+    {IDC_DIAG_COPY, L"BUTTON", BTN, UiString::kDiagnosticsCopy},
+    {IDC_RESET_HEAD, L"STATIC", ST, UiString::kResetHeading},
+    {IDC_RESET_BLURB, L"STATIC", ST, UiString::kResetBlurb},
     // ⚠ 危險鍵是這個檔案裡唯一 owner-draw 的**按鈕**。理由不是好看:
     //   啟用視覺樣式後 push button **不吃** WM_CTLCOLORBTN,文字色改不掉,
     //   而 §4.9 要的是「外框 + 危險色文字 + 透明底」。
     //   owner-draw 之後 MSAA 的角色仍然是 push button(它本來就沒有
     //   額外的狀態要維護),所以這一格是六類自繪裡最便宜的一格。
-    {IDC_RESET, 3, L"BUTTON", BS_OWNERDRAW | WS_TABSTOP,
+    {IDC_RESET, L"BUTTON", BS_OWNERDRAW | WS_TABSTOP,
      UiString::kResetButton},
 };
 constexpr int kControlCount =
@@ -364,7 +294,12 @@ void SettingsWindow::ThreadMain() {
 
   hwnd_ = ::CreateWindowExW(
       0, kClass, UiText(UiString::kWindowTitle),
-      WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_THICKFRAME,
+      // ⚠ WS_VSCROLL 不只是「能捲」:它是**唯一的提示**。少了那條捲軸,
+      //   內容被切在底部那條 hairline 上,看起來像「這頁就這麼長」。
+      // ⚠ WS_CLIPCHILDREN:沒有它,父視窗每一次重畫都會先把每一顆控制項
+      //   底下那塊塗成背景色,子控制項再自己畫回去 —— 捲動時整頁在閃。
+      WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX |
+          WS_THICKFRAME | WS_VSCROLL | WS_CLIPCHILDREN,
       CW_USEDEFAULT, CW_USEDEFAULT, 100, 100, nullptr, nullptr, wc.hInstance,
       this);
   if (ready_) ::SetEvent(ready_);
@@ -372,7 +307,13 @@ void SettingsWindow::ThreadMain() {
 
   MSG msg;
   while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
-    if (!::IsDialogMessageW(hwnd_, &msg)) {
+    if (::IsDialogMessageW(hwnd_, &msg)) {
+      // ⚠ Win32 **不會**自動把鍵盤焦點捲進可見範圍。少了這兩行,
+      //   Tab 走到視窗外的控制項時畫面完全不動 —— 焦點環在看不到的
+      //   地方,使用者在盲按。
+      if (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN)
+        EnsureFocusVisible();
+    } else {
       ::TranslateMessage(&msg);
       ::DispatchMessageW(&msg);
     }
@@ -470,6 +411,10 @@ LRESULT CALLBACK SettingsWindow::WndProc(HWND hwnd, UINT msg, WPARAM w,
       const UINT dpi = self ? self->dpi_ : 96;
       RECT r{0, 0, Dip(kWindowMinW, dpi), Dip(kWindowMinH, dpi)};
       ::AdjustWindowRectEx(&r, WS_OVERLAPPEDWINDOW, FALSE, 0);
+      // ⚠ AdjustWindowRectEx **不算捲軸**。不補這一格的話,最小尺寸下的
+      //   client 會比 kWindowMinW 少 17 DIP,而內容欄的 440 下界會開始
+      //   往左吃側欄(ContentXDip 在 W < 640 時回小於 200 的值)。
+      r.right += ::GetSystemMetrics(SM_CXVSCROLL);
       mm->ptMinTrackSize.x = r.right - r.left;
       mm->ptMinTrackSize.y = r.bottom - r.top;
       return 0;
@@ -487,6 +432,16 @@ LRESULT CALLBACK SettingsWindow::WndProc(HWND hwnd, UINT msg, WPARAM w,
       break;
     case WM_SIZE:
       if (self) self->LayoutUi();
+      return 0;
+    // ── 捲動 ────────────────────────────────────────────────
+    // ⚠ 這兩則以前**一則都沒有**,而外觀頁有 384 DIP 在視窗外面。
+    //   子控制項(STATIC / BUTTON)不處理滾輪,DefWindowProc 會把
+    //   WM_MOUSEWHEEL 轉給父視窗,所以接在這裡就夠。
+    case WM_VSCROLL:
+      if (self) self->OnVScroll(LOWORD(w), HIWORD(w));
+      return 0;
+    case WM_MOUSEWHEEL:
+      if (self) self->OnMouseWheel(GET_WHEEL_DELTA_WPARAM(w));
       return 0;
     case WM_RIME_TRAY:
       if (self) self->OnTray(w, l);
@@ -678,14 +633,48 @@ void SettingsWindow::ApplyFonts() {
 // ─────────────────────────── 版面 ───────────────────────────
 
 void SettingsWindow::LayoutUi() {
-  if (!hwnd_) return;
+  // ⚠ SetScrollInfo 讓捲軸出現/消失時會送 WM_SIZE,而 WM_SIZE 又叫這裡。
+  if (!hwnd_ || in_layout_) return;
+  in_layout_ = true;
+
   RECT rc{};
   ::GetClientRect(hwnd_, &rc);
-  const int W_px = rc.right - rc.left;
-  const int H_px = rc.bottom - rc.top;
   // 版面在 DIP 上算(純函式),最後才換成像素。
-  const int W = MulDivRound(W_px, 96, static_cast<int>(dpi_));
-  const int H = MulDivRound(H_px, 96, static_cast<int>(dpi_));
+  int W = MulDivRound(rc.right - rc.left, 96, static_cast<int>(dpi_));
+  int H = MulDivRound(rc.bottom - rc.top, 96, static_cast<int>(dpi_));
+
+  // ── 內容區:整頁的版面由 common/ui_layout.cc 算 ────────────────
+  //
+  // ⚠ 這個函式**不得**自己算任何一個 y。以前它算,而它算出來的東西
+  //   單元測試看不到 —— 外觀頁的深淺三態排在 574/604/634,
+  //   可視高度 506,那三顆在畫面上不存在而 W18 全綠。
+  //   check_ui_spec.sh 的 W24 會擋下任何一個回到這裡的 Stack。
+  const PageLayout page_layout =
+      LayoutSettingsPageDip(page_, W, order_.empty());
+  int viewport_h = ContentViewportHeightDip(H);
+  scroll_max_ = std::max(0, page_layout.content_h_dip - viewport_h);
+  if (scroll_ > scroll_max_) scroll_ = scroll_max_;
+  if (scroll_ < 0) scroll_ = 0;
+
+  {
+    // 捲軸要先設好:它出現或消失會改變 client 的寬度。
+    SCROLLINFO si{};
+    si.cbSize = sizeof(si);
+    si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+    si.nMin = 0;
+    si.nMax = page_layout.content_h_dip > 0 ? page_layout.content_h_dip - 1 : 0;
+    si.nPage = static_cast<UINT>(viewport_h > 0 ? viewport_h : 0);
+    si.nPos = scroll_;
+    // ⚠ 不加 SIF_DISABLENOSCROLL:內容放得下時捲軸要**消失**,
+    //   一條永遠灰著的捲軸會被讀成「這頁還有東西,只是壞了」。
+    ::SetScrollInfo(hwnd_, SB_VERT, &si, TRUE);
+  }
+
+  // 捲軸出現/消失之後 client 會變窄,重讀一次再擺。
+  ::GetClientRect(hwnd_, &rc);
+  W = MulDivRound(rc.right - rc.left, 96, static_cast<int>(dpi_));
+  H = MulDivRound(rc.bottom - rc.top, 96, static_cast<int>(dpi_));
+  viewport_h = ContentViewportHeightDip(H);
   const int dpi = static_cast<int>(dpi_);
 
   auto place = [&](int id, const RectI& r) {
@@ -706,121 +695,161 @@ void SettingsWindow::LayoutUi() {
 
   const int cx = ContentXDip(W);
   const int cw = ContentWidthDip(W);
-  const int t3h = text_size::t3 + space::s3;
-  const int t5h = text_size::t5 + space::s2;
-  const int btn_h = metric::kMinTarget + space::s2;
-  const int bottom_h = metric::kMinTarget + space::s7;
 
-  Stack st(cx, space::s8, cw);
+  // ⚠ -2 =「不知道現在裁到哪」,-1 =「確定沒有裁」。兩個混用的話,
+  //   換 DPI 之後那些**應該解除裁切**的控制項會保留舊的區域,
+  //   而症狀是「調了縮放之後有幾顆控制項被切掉一半」。
+  if (static_cast<int>(clip_h_.size()) != kControlCount)
+    clip_h_.assign(kControlCount, -2);
 
-  auto title_block = [&](int title_id, int sub_id) {
-    place(title_id, st.Push(text_size::t1 + space::s3, space::s1));
-    place(sub_id, st.Push(t5h, space::s7));
-  };
-  auto heading = [&](int head_id, int blurb_id, int blurb_lines) {
-    place(head_id, st.Push(text_size::t2 + space::s2, space::s1));
-    if (blurb_id) place(blurb_id, st.Push(t5h * blurb_lines, space::s3));
-  };
-  // 單選群組:一列一個(桌面欄的密度)。
-  auto radios = [&](int first, int count) {
-    for (int i = 0; i < count; ++i)
-      place(first + i, st.Push(metric::kMinTarget, space::s1));
-    st.Skip(space::s7 - space::s1);
-  };
+  for (int i = 0; i < kControlCount; ++i) {
+    const int id = kControls[i].id;
+    HWND c = Ctl(hwnd_, id);
+    if (!c) continue;
 
-  switch (page_) {
-    case kPageSchemas: {
-      title_block(IDC_SCHEMAS_TITLE, IDC_SCHEMAS_SUB);
-      heading(IDC_SCHEMAS_LIST_HEAD, IDC_SCHEMAS_LIST_BLURB, 2);
-      const bool empty = order_.empty();
-      const int list_h = 4 * metric::kSidebarItemH + space::s3;
-      if (empty) {
-        place(IDC_SCHEMA_LIST, RectI{});
-        place(IDC_SCHEMAS_EMPTY, st.Push(t5h * 4, space::s7));
-      } else {
-        place(IDC_SCHEMAS_EMPTY, RectI{});
-        place(IDC_SCHEMA_LIST, st.Push(list_h, space::s3));
-        const RectI row = st.Push(btn_h, space::s3);
-        const int bw = (cw - 2 * space::s3) / 3;
-        place(IDC_UP, RectI{row.x, row.y, bw, row.h});
-        place(IDC_DOWN, RectI{row.x + bw + space::s3, row.y, bw, row.h});
-        place(IDC_APPLY_ORDER,
-              RectI{row.x + 2 * (bw + space::s3), row.y, bw, row.h});
-        place(IDC_SCHEMAS_DEFAULT_LINE, st.Push(t5h, space::s7));
-      }
-      place(IDC_FOLLOW_MODE, st.Push(metric::kSidebarItemH, space::s1));
-      place(IDC_FOLLOW_BLURB, st.Push(t5h * 3, space::s7));
-      break;
+    // 底部固定列:不捲動,永遠看得見。
+    if (id == IDC_STATUS) {
+      place(id, RectI{cx, H - kBottomBarH, cw - 120 - space::s3,
+                      metric::kMinTarget});
+      ClipToViewport(i, c, RectI{}, 0, H);
+      ::ShowWindow(c, SW_SHOW);
+      continue;
     }
-    case kPageAppearance: {
-      title_block(IDC_APPEAR_TITLE, IDC_APPEAR_SUB);
-      heading(IDC_COUNT_HEAD, IDC_COUNT_BLURB, 2);
-      radios(IDC_COUNT_0, 5);
-      heading(IDC_SCALE_HEAD, IDC_SCALE_BLURB, 1);
-      radios(IDC_SCALE_0, 5);
-      heading(IDC_THEME_HEAD, IDC_THEME_BLURB, 1);
-      radios(IDC_THEME_0, 3);
-      heading(IDC_BAR_HEAD, IDC_BAR_BLURB, 3);
-      place(IDC_BAR_SHOW, st.Push(metric::kSidebarItemH, space::s7));
-      place(IDC_APPEAR_NOTE, st.Push(t5h * 4, 0));
-      break;
+    if (id == IDC_CLOSE) {
+      place(id, RectI{W - space::s7 - 100, H - kBottomBarH, 100,
+                      metric::kMinTarget});
+      ClipToViewport(i, c, RectI{}, 0, H);
+      ::ShowWindow(c, SW_SHOW);
+      continue;
     }
-    case kPageText: {
-      title_block(IDC_TEXT_TITLE, IDC_TEXT_SUB);
-      heading(IDC_VARIANT_HEAD, IDC_VARIANT_BLURB, 1);
-      radios(IDC_VARIANT_0, 3);
-      heading(IDC_PUNCT_HEAD, IDC_PUNCT_BLURB, 2);
-      radios(IDC_PUNCT_0, 3);
-      break;
+
+    const PlacedControl* p = nullptr;
+    for (const PlacedControl& q : page_layout.items)
+      if (q.id == id) { p = &q; break; }
+    if (!p || p->rect.empty()) {
+      ::ShowWindow(c, SW_HIDE);
+      continue;
     }
-    case kPageAdvanced: {
-      title_block(IDC_ADV_TITLE, IDC_ADV_SUB);
-      heading(IDC_REDEPLOY_HEAD, IDC_REDEPLOY_BLURB, 2);
-      place(IDC_REDEPLOY, RectI{cx, st.y(), 180, btn_h});
-      st.Skip(btn_h + space::s7);
-      heading(IDC_FILES_HEAD, IDC_FILES_BLURB, 2);
-      {
-        const RectI row = st.Push(btn_h, space::s7);
-        const int bw = (cw - space::s3) / 2;
-        place(IDC_OPEN_USER_DIR, RectI{row.x, row.y, bw, row.h});
-        place(IDC_OPEN_SETTINGS_FILE,
-              RectI{row.x + bw + space::s3, row.y, bw, row.h});
-      }
-      heading(IDC_LANG_HEAD, IDC_LANG_BLURB, 1);
-      radios(IDC_LANG_0, 4);
-      heading(IDC_DIAG_HEAD, IDC_DIAG_NOTE, 2);
-      place(IDC_DIAG, st.Push(t5h * 6, space::s3));
-      place(IDC_DIAG_COPY, RectI{cx, st.y(), 120, btn_h});
-      st.Skip(btn_h);
-      // ⚠ 危險操作一律是該頁最後一個區塊,上面隔一條 hairline + s7
-      //   (§4.9 / §2-C2)。PushDivider 就是那條線。
-      st.PushDivider();
-      heading(IDC_RESET_HEAD, IDC_RESET_BLURB, 2);
-      place(IDC_RESET, RectI{cx, st.y(), 220, btn_h});
+    const int y = p->rect.y - scroll_;
+    place(id, RectI{p->rect.x, y, p->rect.w, p->rect.h});
+    ClipToViewport(i, c, p->rect, y, viewport_h);
+    // ⚠ 捲出可視範圍的控制項**不隱藏**,只裁成空的。隱藏會讓它退出
+    //   Tab 順序,於是鍵盤使用者再也捲不到它 —— 而捲動的存在正是
+    //   為了讓那些控制項碰得到。
+    ::ShowWindow(c, SW_SHOW);
+  }
+
+  ::InvalidateRect(hwnd_, nullptr, TRUE);
+  in_layout_ = false;
+}
+
+void SettingsWindow::ClipToViewport(int index, HWND c, const RectI& r,
+                                    int y_dip, int viewport_h_dip) {
+  // 子視窗本來就會被父視窗的 client 矩形裁掉,所以**上方**不必處理。
+  // 要處理的只有下方那 54 DIP:底部固定列與它上面那條 hairline ——
+  // 那一塊仍然在 client 裡面,捲到一半的控制項會畫在「關閉」鈕上面。
+  const int dpi = static_cast<int>(dpi_);
+  int visible = -1;  // -1 = 不裁
+  if (!r.empty() && y_dip + r.h > viewport_h_dip) {
+    visible = viewport_h_dip - y_dip;
+    if (visible < 0) visible = 0;
+  }
+  if (index >= 0 && index < static_cast<int>(clip_h_.size())) {
+    // ⚠ 只在變動時才動。SetWindowRgn 會重畫,每次 LayoutUi 都無條件
+    //   呼叫的話,捲動時整頁會閃。
+    if (clip_h_[index] == visible) return;
+    clip_h_[index] = visible;
+  }
+  if (visible < 0) {
+    ::SetWindowRgn(c, nullptr, TRUE);
+    return;
+  }
+  const int w_px = Dip(r.w > 0 ? r.w : 1, dpi);
+  // CreateRectRgn 之後所有權交給視窗 —— **不可以**自己 DeleteObject。
+  ::SetWindowRgn(c, ::CreateRectRgn(0, 0, w_px, Dip(visible, dpi)), TRUE);
+}
+
+// ── 捲動 ────────────────────────────────────────────────────────
+
+void SettingsWindow::SetScroll(int dip) {
+  if (dip > scroll_max_) dip = scroll_max_;
+  if (dip < 0) dip = 0;
+  if (dip == scroll_) return;
+  scroll_ = dip;
+  LayoutUi();
+}
+
+void SettingsWindow::OnMouseWheel(int delta) {
+  UINT lines = 3;
+  if (!::SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0)) lines = 3;
+  // 0 = 使用者把滾輪捲動關掉了,那是他的選擇。
+  if (lines == 0) return;
+  // WHEEL_PAGESCROLL(0xFFFFFFFF)= 一次一頁。
+  const int line = text_size::t3 + space::s3;
+  RECT rc{};
+  ::GetClientRect(hwnd_, &rc);
+  const int H = MulDivRound(rc.bottom - rc.top, 96, static_cast<int>(dpi_));
+  const int step = lines > 100 ? std::max(1, ContentViewportHeightDip(H))
+                               : static_cast<int>(lines) * line;
+  SetScroll(scroll_ - delta * step / WHEEL_DELTA);
+}
+
+void SettingsWindow::OnVScroll(int code, int track_pos) {
+  RECT rc{};
+  ::GetClientRect(hwnd_, &rc);
+  const int H = MulDivRound(rc.bottom - rc.top, 96, static_cast<int>(dpi_));
+  const int page = std::max(1, ContentViewportHeightDip(H));
+  const int line = text_size::t3 + space::s3;
+  int v = scroll_;
+  switch (code) {
+    case SB_LINEUP: v -= line; break;
+    case SB_LINEDOWN: v += line; break;
+    case SB_PAGEUP: v -= page; break;
+    case SB_PAGEDOWN: v += page; break;
+    case SB_TOP: v = 0; break;
+    case SB_BOTTOM: v = scroll_max_; break;
+    case SB_THUMBTRACK:
+    case SB_THUMBPOSITION: {
+      // ⚠ HIWORD 只有 16 位元 —— 內容超過 65535 DIP 時會截斷。
+      //   走 SCROLLINFO 拿 32 位元的 nTrackPos。
+      SCROLLINFO si{};
+      si.cbSize = sizeof(si);
+      si.fMask = SIF_TRACKPOS;
+      v = ::GetScrollInfo(hwnd_, SB_VERT, &si) ? si.nTrackPos : track_pos;
       break;
     }
     default:
-      break;
+      return;
   }
+  SetScroll(v);
+}
 
-  // 永遠看得見的兩個。
-  place(IDC_STATUS, RectI{cx, H - bottom_h, cw - 120 - space::s3,
-                          metric::kMinTarget});
-  place(IDC_CLOSE, RectI{W - space::s7 - 100, H - bottom_h, 100,
-                         metric::kMinTarget});
-  ::InvalidateRect(hwnd_, nullptr, TRUE);
+void SettingsWindow::EnsureFocusVisible() {
+  if (!hwnd_ || scroll_max_ <= 0) return;
+  HWND f = ::GetFocus();
+  if (!f || ::GetParent(f) != hwnd_) return;
+  const int id = ::GetDlgCtrlID(f);
+  RECT rc{};
+  ::GetClientRect(hwnd_, &rc);
+  const int W = MulDivRound(rc.right - rc.left, 96, static_cast<int>(dpi_));
+  const int H = MulDivRound(rc.bottom - rc.top, 96, static_cast<int>(dpi_));
+  const int viewport_h = ContentViewportHeightDip(H);
+  const PageLayout pl = LayoutSettingsPageDip(page_, W, order_.empty());
+  for (const PlacedControl& p : pl.items) {
+    if (p.id != id || p.rect.empty()) continue;
+    if (p.rect.y < scroll_ + space::s3)
+      SetScroll(p.rect.y - space::s3);
+    else if (p.rect.bottom() > scroll_ + viewport_h - space::s3)
+      SetScroll(p.rect.bottom() - viewport_h + space::s3);
+    return;
+  }
 }
 
 void SettingsWindow::ShowPage(int page) {
   if (page < 0 || page >= kPageCount) page = 0;
   page_ = page;
-  for (int i = 0; i < kControlCount; ++i) {
-    const ControlDef& d = kControls[i];
-    const bool visible =
-        d.page == kAlways || d.page == page;
-    HWND h = Ctl(hwnd_, d.id);
-    if (h) ::ShowWindow(h, visible ? SW_SHOW : SW_HIDE);
-  }
+  // 換頁一律回到頂端。留著上一頁的捲動量,新的一頁會從半空中開始。
+  scroll_ = 0;
   if (sidebar_) {
     LVITEMW it{};
     it.mask = LVIF_STATE;
@@ -829,9 +858,10 @@ void SettingsWindow::ShowPage(int page) {
     ::SendMessageW(sidebar_, LVM_SETITEMSTATE, static_cast<WPARAM>(page),
                    reinterpret_cast<LPARAM>(&it));
   }
+  // ⚠ 這裡**不再**自己決定誰看得見。誰在這一頁上,由版面說了算 ——
+  //   兩份來源會漂移,而漂移的樣子是一顆停在 (0,0) 的控制項。
   LayoutUi();
 }
-
 
 // ─────────────────────────── 自繪 ───────────────────────────
 //
@@ -1044,10 +1074,10 @@ void SettingsWindow::OnPaint(HDC hdc) {
   ::SelectObject(hdc, oldf);
 
   // 底部狀態行上面那一條 hairline。
-  RECT bl{Dip(metric::kSidebarW, dpi_),
-          H - Dip(metric::kMinTarget + space::s7 + space::s3, dpi_), W,
-          H - Dip(metric::kMinTarget + space::s7 + space::s3, dpi_) +
-              Dip(metric::kHairline, dpi_)};
+  // ⚠ 與 ContentViewportHeightDip() 用**同一個**常數:內容就是裁在
+  //   這一條上,兩邊各寫一份的話,捲動時會露出半格。
+  RECT bl{Dip(metric::kSidebarW, dpi_), H - Dip(kBottomStripH, dpi_), W,
+          H - Dip(kBottomStripH, dpi_) + Dip(metric::kHairline, dpi_)};
   ::FillRect(hdc, &bl, theme_.Brush(kOutline));
 }
 
@@ -1060,6 +1090,8 @@ void SettingsWindow::OnDpiChanged(UINT dpi, const RECT* suggested) {
   // 字型是像素單位的 —— 不重建就是模糊或錯大小。
   fonts_.Reset(dpi_, script());
   ApplyFonts();
+  // 區域是像素單位的 —— DPI 換了就全部作廢,一律重算(見 clip_h_ 的說明)。
+  clip_h_.assign(clip_h_.size(), -2);
   if (suggested)
     ::SetWindowPos(hwnd_, nullptr, suggested->left, suggested->top,
                    suggested->right - suggested->left,
