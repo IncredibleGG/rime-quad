@@ -1348,6 +1348,15 @@ log "12. 設定的入口"
 #
 # {group} = DefaultGroupName = [Setup] 的 AppName = 產品的中文名。
 # 全機安裝,所以在 ProgramData 底下的共用「開始」功能表。
+# {group} = DefaultGroupName = [Setup] 的 AppName = 產品的中文名。
+# 全機安裝,所以在 ProgramData 底下的共用「開始」功能表。
+# ⚠ 名字從 product.env 推導,不寫死 —— 改名時這裡要跟著動,
+#   而寫死的那一份會安靜地去找一個不存在的資料夾,然後每一條
+#   「這個東西應該不在」的檢查都會通過。
+START_MENU="$(cygpath -u "${ProgramData:-C:\\ProgramData}")/Microsoft/Windows/Start Menu/Programs/${RS_PRODUCT_NAME_ZH}"
+echo "  程式集資料夾:${START_MENU}"
+[ -d "${START_MENU}" ] || note_fail "找不到程式集資料夾 —— 「開始」功能表裡什麼都沒有,
+     而那是新手唯一找得到的入口。"
 LNK_TSV="${WORK}/shortcuts.tsv"
 dump_start_menu_shortcuts "${LNK_TSV}"
 if [ ! -s "${LNK_TSV}" ]; then
