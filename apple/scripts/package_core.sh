@@ -67,7 +67,7 @@ JSON
 cat > "${DIST}/README.txt" << TXT
 ${NAME}
 
-這是 RimeQuad 的 macOS **核心層**產物,不是可以安裝的輸入法。
+這是 LuminaKey 的 macOS **核心層**產物,不是可以安裝的輸入法。
 沒有 .app、沒有候選窗、沒有 IMKit —— 那些是下一輪。
 
 內容:

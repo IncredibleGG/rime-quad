@@ -1,21 +1,22 @@
 # macOS 端
 
-RimeQuad 的 macOS 輸入法:`IMKServer` + `IMKInputController` + 自繪候選窗,
+LuminaKey 的 macOS 輸入法:`IMKServer` + `IMKInputController` + 自繪候選窗,
 外加一個**內嵌的視覺化設定介面**。
 
 ```
 apple/
-  RimeQuad/
-    Package.swift              RimeQuadKit(純邏輯層)的 SwiftPM 宣告
-    Sources/RimeQuadKit/       ⭐ 沒有 AppKit、沒有 librime、有單元測試
-    Tests/RimeQuadKitTests/    207 項
+  LuminaKey/
+    Package.swift              LuminaKeyKit(純邏輯層)的 SwiftPM 宣告
+    Sources/LuminaKeyKit/      ⭐ 沒有 AppKit、沒有 librime、有單元測試
+    Tests/LuminaKeyKitTests/   下限由 run_kit_tests.sh 的 MIN_TESTS 守住
     AppSources/                AppKit + InputMethodKit + librime 綁定
     SettingsSources/           設定視窗(AppKit,沒有自動化)
     Resources/                 Info.plist 樣板、.lproj、圖示產生器
   scripts/
     build_macos.sh             librime + 5 個依賴 + librime-lua + rime_console
-    build_app.sh               → apple/build/RimeQuad.app(含設定介面)
-    build_pkg.sh               → apple/build/dist/RimeQuad-*.pkg
+    build_app.sh               → apple/build/LuminaKey.app(含設定介面)
+    build_pkg.sh               → apple/build/dist/LuminaKey-*.pkg
+    verify_names.py            名字一致性(不編譯、不需要 macOS,CI 第一關)
     run_kit_tests.sh           單元測試 + 變異測試
     verify_app_bundle.sh       .app 結構與 IMKit 宣告
     verify_pkg.sh              真的裝一次,並問系統認不認
@@ -29,7 +30,7 @@ apple/
 
 ---
 
-## 1. 為什麼分成 RimeQuadKit 與 AppSources / SettingsSources
+## 1. 為什麼分成 LuminaKeyKit 與 AppSources / SettingsSources
 
 **因為 CI 驗不了 UI。** `macos-latest` runner 沒有登入的圖形工作階段,
 系統不會從 `~/Library/Input Methods` 載入輸入法,NSPanel 與 NSWindow
@@ -37,7 +38,7 @@ apple/
 
 所以紀律是:**凡是算得出來的都不要留在 AppKit 那一側。**
 
-| 在 `RimeQuadKit`(有測試) | 在 AppKit 那一側(沒有自動化) |
+| 在 `LuminaKeyKit`(有測試) | 在 AppKit 那一側(沒有自動化) |
 |---|---|
 | RTS YAML 讀取、主題綁定、繼承合併、診斷 | 主題檔案的實際搜尋路徑 |
 | `NSEvent` → keysym 的映射規則、修飾鍵狀態機 | 從 `NSEvent` 取值 |
@@ -68,7 +69,7 @@ AppKit 那一側剩下的東西都短到可以讀完。這不是潔癖,是唯一
 裝完之後(這一步只有人做得到):
 
 1. 系統設定 › 鍵盤 › 文字輸入 › 輸入來源 › 編輯…
-2. 左下角 **+** → 中文(繁體)或中文(簡體)→ **RimeQuad** → 加入
+2. 左下角 **+** → 中文(繁體)或中文(簡體)→ **LuminaKey** → 加入
 3. **Control + Space** 切過去
 
 **設定在選單列右上角的輸入法圖示裡**:設定 / 方案切換 / 重新整理字詞 / 關於。
@@ -77,9 +78,30 @@ CI 產出的 `.pkg` 仍然是 **CI 產物,不是可散布的版本**:
 只有跑 CI 的那一個架構、只有 ad-hoc 簽章(散布需要 Developer ID + 公證)、
 librime 的靜態庫沒有指定部署目標,實際最低系統版本可能高於宣告值。
 
-使用者資料在 `~/Library/Application Support/RimeQuad/`。
+使用者資料在 `~/Library/Application Support/LuminaKey/`。
 **刻意不用 `~/Library/Rime`** —— 那是 Squirrel 的目錄,兩個輸入法共用同一份
 使用者詞典與 `installation.yaml` 會互相踩,而使用者完全看不出是誰改的。
+
+### 從 RimeQuad 升上來的人會發生什麼
+
+產品改名之前這個目錄叫 `~/Library/Application Support/RimeQuad`。
+**bundle id 也一起改了,所以新版不會覆蓋舊版** —— 舊的 `RimeQuad.app` 還留在
+`~/Library/Input Methods/`,而且可能還在跑。第一次啟動時
+`LuminaKeyKit/LegacyDataMigration.swift` 會做一次性的搬遷:
+
+| 會搬過去 | 不搬,而且原因不只是「懶得搬」 |
+|---|---|
+| `custom_phrase.txt`(你自己加的詞) | `*.userdb`(librime 學到的字頻)—— 那是 LevelDB,舊版**可能正開著它**,複製一份開著的 LevelDB 會得到一份壞掉但看起來正常的資料庫。而 librime 部署失敗時 `rs_last_error()` 是空字串,你只會看到「部署失敗」四個字 |
+| `settings.json` | `installation.yaml`(安裝 id)、`user.yaml` —— 複製過去等於兩份安裝共用同一個 id |
+| 裝過的方案與市集的安裝紀錄(檔名一併換成 `luminakey-store.json`) | `build/`(部署快取,下次部署自己重建) |
+| 你放進 `themes/` 的自訂主題、`<schema>.custom.yaml` | |
+
+**是複製,不是搬移:舊目錄原封不動留著。** 所以就算這段整個出錯,最壞的結果
+是你得到一個乾淨的新目錄,舊版仍然照常運作;真的要救,手動複製也還來得及。
+搬遷只在「新目錄還不存在」時做一次,失敗**不會**擋住啟動。
+
+真正會失去的只有「打過的字的頻率」,它本來就會自己重新長回來。
+不要的話,把 `~/Library/Application Support/RimeQuad` 刪掉再第一次啟動就好。
 
 ---
 
@@ -89,19 +111,25 @@ librime 的靜態庫沒有指定部署目標,實際最低系統版本可能高�
 
 ### CI 驗得到的
 
-- 207 項純邏輯單元測試 + 10 個變異測試(植入違規,斷言對應的那一組會紅)
+- 200 餘項純邏輯單元測試 + 11 個變異測試(植入違規,斷言**對應的那一組**會紅)
 - `rime_console` 不經 UI 直接驅動 librime:`nihao → 你好`、`su3cl3 → 你好`
 - 四個方案都部署成功、執行期資料齊全
 - `.app` 編得起來、bundle 結構完整、`Info.plist` 的 IMKit 宣告齊全
-- 二進位裡真的有 `_OBJC_CLASS_$_RimeQuadInputController`
+- **IMKit 找不找得到 controller 類別** —— 由二進位自己照 IMKit 的作法
+  `NSClassFromString(Info.plist 裡那個字串)` 查一次(`SelfCheck.swift`)。
+  ⚠ 這裡**不是** grep 符號表:實測 `swiftc -O` 單模組編譯把
+  `_OBJC_CLASS_$_…` 設成 **local** 符號,`nm -g` 看不到它,而 `.app` 是好的 ——
+  也就是那條斷言會**在該綠的時候紅**。腳本裡只留一個不判定成敗的 `nm` 診斷。
+- bundle 驗證的 5 個反向變異,每一個都斷言紅的是**它自己那一條**
+  (含「多打包了 `core/layouts/`」這條反過來的斷言)
 - 二進位真的連上 InputMethodKit,且 librime 是**靜態**連結
-- `RimeQuad --self-check`:向真的 librime 問 keysym 表裡每一個名稱
+- `LuminaKey --self-check`:向真的 librime 問 keysym 表裡每一個名稱
 - **`.pkg` 真的裝到 `~/Library/Input Methods`**,圖示解得開,三種語言的
   顯示名都查得到(這兩項對應真機回報的「顯示成 bundle id、圖示是空白方框」)
 - **整個 app 只有一個檔案碰得到網路**,且預設拒絕(反向測試證明它會紅)
 - ⭐ **系統真的認得這個輸入法。** 裝完之後用 `TISCreateInputSourceList` 問系統,
   斷言三個 id 都在,而且**在地化名稱不等於 id**
-  (`FOUND …Hans — RimeQuad (Simplified)`)。這一條直接驗到真機回報的兩個缺陷:
+  (`FOUND …Hans — LuminaKey (Simplified)`)。這一條直接驗到真機回報的兩個缺陷:
   「輸入法沒出現在清單裡」與「清單顯示的是 bundle id」。
   ⚠ 我們原本以為這在 runner 上驗不了(TIS 應該只掃有登入的圖形工作階段),
   所以第一版把它寫成「不算失敗」的參考資訊。**實測結果相反,查得到。**
@@ -162,13 +190,13 @@ librime 的靜態庫沒有指定部署目標,實際最低系統版本可能高�
 
 ## 4. 三個必須一起改的名字
 
-`RimeQuadInputController` 同時出現在:
+`LuminaKeyInputController` 同時出現在:
 
-1. `AppSources/RimeQuadInputController.swift` 的 `@objc(RimeQuadInputController)`
+1. `AppSources/LuminaKeyInputController.swift` 的 `@objc(LuminaKeyInputController)`
 2. `Resources/Info.plist` 的 `InputMethodServerControllerClass`
 3. `scripts/verify_app_bundle.sh` 的斷言
 
-少了第 1 個,Swift 會把類別名 mangle 成 `_TtC8RimeQuad24RimeQuadInputController`,
+少了第 1 個,Swift 會把類別名 mangle 成 `_TtC9LuminaKey24LuminaKeyInputController`,
 IMKit 的 `NSClassFromString` 找不到它 —— 症狀是**輸入法裝得起來、選單裡看得到、
 但一個字都打不出來,而且完全沒有錯誤訊息**。
 
@@ -176,10 +204,30 @@ IMKit 的 `NSClassFromString` 找不到它 —— 症狀是**輸入法裝得起�
 
 1. `Resources/Info.plist` 的 `tsInputModeListKey` 的鍵與 `TISInputSourceID`
 2. `Resources/<lang>.lproj/InfoPlist.strings` 的鍵
-3. `RimeQuadKit/InputModeBinding.swift` 的 `hantSuffix` / `hansSuffix`
+3. `LuminaKeyKit/InputModeBinding.swift` 的 `hantSuffix` / `hansSuffix`
 
-第 2 項少了 → 輸入來源清單顯示的是 `org.rimequad.inputmethod.RimeQuad.Hans`
+第 2 項少了 → 輸入來源清單顯示的是 `org.luminakey.inputmethod.LuminaKey.Hans`
 這串 id(真機回報過);第 3 項對不上 → 選了簡體卻打出繁體字(也回報過)。
+
+### macOS 端的識別碼一覽(規範值,四端一致的部分見 `docs/decisions/product-name.md`)
+
+| 項目 | 值 |
+|---|---|
+| bundle id | `org.luminakey.inputmethod.LuminaKey` |
+| 設定 app 的 bundle id | `org.luminakey.inputmethod.LuminaKey.Settings`(`.Settings` 後綴是 `main.swift` 的分岔條件) |
+| `InputMethodConnectionName` | `org.luminakey.inputmethod.LuminaKey_Connection` |
+| `TISInputSourceID` | `org.luminakey.inputmethod.LuminaKey.Hant` / `.Hans`(**必須以 bundle id 為前綴**) |
+| `.pkg` 識別碼 | `org.luminakey.inputmethod.LuminaKey.pkg` |
+| 使用者資料目錄 | `~/Library/Application Support/LuminaKey` |
+| 顯示名 | en `LuminaKey` / zh-Hant `LuminaKey 輸入法` / zh-Hans `LuminaKey 输入法` |
+
+### ⚠ 「Rime」不是舊名字,不要順手取代掉
+
+底層引擎就叫 **librime**,講引擎的時候「Rime」是**正確的**:
+`RimeEngine.swift`、`rime_shell.h`、`rime_console`、`~/Library/Rime`(Squirrel 的目錄)、
+`docs/` 裡講 RIME 方案格式的地方 —— 這些都不該被改成 LuminaKey。
+另外兩個也不動:R2 的路徑仍是 `rime/…`(下載頁與應用內升級指著它),
+GitHub repo 名仍是 `rime-quad`。
 
 ---
 
@@ -189,10 +237,10 @@ macOS 的一般 app 不需要宣告網路權限就連得上網,所以我們**沒
 權限清單證明什麼。證明方式只剩「你自己查」:
 
 ```bash
-grep -rnE 'URLSession|NWConnection|CFSocket' apple/RimeQuad --include='*.swift'
+grep -rnE 'URLSession|NWConnection|CFSocket' apple/LuminaKey --include='*.swift'
 ```
 
-結果**必須**只出現在 `Sources/RimeQuadKit/NetworkGate.swift`。
+結果**必須**只出現在 `Sources/LuminaKeyKit/NetworkGate.swift`。
 `scripts/verify_single_egress.sh` 把它變成 CI 關卡,而且它自己有反向測試
 (植入一行假的 `URLSession`,斷言必須變紅)。
 
@@ -203,7 +251,7 @@ grep -rnE 'URLSession|NWConnection|CFSocket' apple/RimeQuad --include='*.swift'
 
 ## 6. 為什麼設定介面是另一個 .app
 
-`RimeQuad.app/Contents/Resources/RimeQuadSettings.app`,**同一份執行檔**,
+`LuminaKey.app/Contents/Resources/LuminaKeySettings.app`,**同一份執行檔**,
 `main.swift` 依 bundle id 分岔。
 
 理由:輸入法本體的 Info.plist 是 `LSBackgroundOnly`,那種行程照定義
@@ -215,10 +263,10 @@ grep -rnE 'URLSession|NWConnection|CFSocket' apple/RimeQuad --include='*.swift'
 分開之後,**只有輸入法本體碰 librime**:兩個行程同時寫同一個使用者目錄
 會弄壞詞庫,而且沒有錯誤訊息。設定介面負責改檔案(純檔案操作,沒有併發問題),
 改完經 `DistributedNotificationCenter` 請對方部署,對方回報進度與結果。
-協定在 `RimeQuadKit/IPC.swift`,編解碼與逾時狀態機是純邏輯、有測試。
+協定在 `LuminaKeyKit/IPC.swift`,編解碼與逾時狀態機是純邏輯、有測試。
 
 **逾時分成兩段**,因為兩者的意思完全不同,而使用者需要的下一步也不同:
-* 4 秒內連第一則回覆都沒有 → 「請先在系統設定把 RimeQuad 選成輸入來源」
+* 4 秒內連第一則回覆都沒有 → 「請先在系統設定把 LuminaKey 選成輸入來源」
 * 接上了但進度停住 90 秒 → 「請重新啟動輸入法」
 
 用同一個「逾時」訊息會讓第一種情況的使用者去做完全沒用的事。
@@ -234,9 +282,10 @@ grep -rnE 'URLSession|NWConnection|CFSocket' apple/RimeQuad --include='*.swift'
 | `core/layouts/*.yaml` | **完全不用**,也不進 bundle |
 | `core/data/` | **要用**,librime 的執行期資料 |
 
-⚠ **「不用」不等於「可以刪」。** 使用者的自訂佈局(`rimequad-layouts.json`)是
-行動端資料,桌面端**必須原樣搬運、不得解析、不得清理**,否則跨裝置同步會把
-使用者在手機上調好的鍵位洗掉。
+⚠ **「不用」不等於「可以刪」。** 使用者的自訂佈局是**行動端**資料,
+桌面端**必須原樣搬運、不得解析、不得清理**,否則跨裝置同步會把使用者
+在手機上調好的鍵位洗掉。⚠ 那個檔案的名字由 Android 端決定(改名前是
+`rimequad-layouts.json`),桌面端**不該**把它寫死在任何地方 —— 現在也沒有。
 
 設定模型(有哪些設定項、存在哪裡、輸入模式↔方案↔簡繁的優先順序、
 使用者詞庫格式)在 `docs/settings-model.md`,四端共用。

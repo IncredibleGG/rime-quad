@@ -1,0 +1,10 @@
+/* LuminaKey — 繁體中文顯示名。鍵必須與 Info.plist 的輸入模式 ID 一字不差,
+   理由見 en.lproj/InfoPlist.strings 的檔頭。 */
+/* ⚠ 中文顯示名的規範值是「LuminaKey 輸入法」(docs/decisions/product-name.md),
+   四端一致。輸入模式那兩個鍵刻意**不**加「輸入法」三個字:
+   它們顯示在「輸入來源」清單的一列裡,那一列本來就已經在講輸入法了。 */
+"CFBundleName" = "LuminaKey 輸入法";
+"CFBundleDisplayName" = "LuminaKey 輸入法";
+
+"org.luminakey.inputmethod.LuminaKey.Hant" = "LuminaKey 繁體";
+"org.luminakey.inputmethod.LuminaKey.Hans" = "LuminaKey 簡體";

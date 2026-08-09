@@ -1,7 +1,0 @@
-/* RimeQuad — 繁體中文顯示名。鍵必須與 Info.plist 的輸入模式 ID 一字不差,
-   理由見 en.lproj/InfoPlist.strings 的檔頭。 */
-"CFBundleName" = "RimeQuad";
-"CFBundleDisplayName" = "RimeQuad";
-
-"org.rimequad.inputmethod.RimeQuad.Hant" = "RimeQuad 繁體";
-"org.rimequad.inputmethod.RimeQuad.Hans" = "RimeQuad 簡體";

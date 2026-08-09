@@ -15,7 +15,7 @@
 #   3. **系統認不認得這個輸入來源**:lsregister 與 TISCreateInputSourceList。
 #      ⚠ 原本以為 runner 沒有登入的圖形工作階段所以查不到,所以寫成「不算失敗」。
 #      **實測結果相反**:TIS 在 GitHub runner 上看得到 ~/Library/Input Methods
-#      裡的輸入法,連在地化名稱都解得出來(FOUND …Hans — RimeQuad (Simplified))。
+#      裡的輸入法,連在地化名稱都解得出來(FOUND …Hans — LuminaKey (Simplified))。
 #      既然查得到,這一層就**是關卡**:它直接驗到真機回報的兩個缺陷
 #      ——「輸入法沒出現在清單裡」與「清單顯示的是 bundle id」。
 #
@@ -30,7 +30,7 @@ ok()   { printf '  \033[1;32m✓\033[0m %s\n' "$*"; }
 bad()  { printf '  \033[1;31m✗\033[0m %s\n' "$*"; FAIL=1; }
 note() { printf '  \033[1;33m·\033[0m %s\n' "$*"; }
 
-PKG="$(ls "${BUILD}/dist/"RimeQuad-*.pkg 2>/dev/null | head -1)"
+PKG="$(ls "${BUILD}/dist/"LuminaKey-*.pkg 2>/dev/null | head -1)"
 [ -n "${PKG}" ] || { echo "找不到 .pkg —— 先跑 apple/scripts/build_pkg.sh" >&2; exit 1; }
 log "受測的 pkg: ${PKG}"
 
@@ -74,40 +74,40 @@ fi
 
 # ─────────────────────────── 2. 真的裝一次 ───────────────────────────
 log "2/3 真的裝一次到這台 runner 的家目錄"
-DEST="${HOME}/Library/Input Methods/RimeQuad.app"
+DEST="${HOME}/Library/Input Methods/LuminaKey.app"
 rm -rf "${DEST}"
-if installer -pkg "${PKG}" -target CurrentUserHomeDirectory >/tmp/rimequad-install.log 2>&1; then
+if installer -pkg "${PKG}" -target CurrentUserHomeDirectory >/tmp/luminakey-install.log 2>&1; then
   ok "installer 回報成功"
 else
   bad "installer 失敗:"
-  sed 's/^/      /' /tmp/rimequad-install.log | tail -20
+  sed 's/^/      /' /tmp/luminakey-install.log | tail -20
 fi
 
 for path in \
   "${DEST}" \
-  "${DEST}/Contents/MacOS/RimeQuad" \
+  "${DEST}/Contents/MacOS/LuminaKey" \
   "${DEST}/Contents/Info.plist" \
-  "${DEST}/Contents/Resources/RimeQuad.icns" \
-  "${DEST}/Contents/Resources/RimeQuad.tiff" \
+  "${DEST}/Contents/Resources/LuminaKey.icns" \
+  "${DEST}/Contents/Resources/LuminaKey.tiff" \
   "${DEST}/Contents/Resources/en.lproj/InfoPlist.strings" \
   "${DEST}/Contents/Resources/zh-Hant.lproj/InfoPlist.strings" \
   "${DEST}/Contents/Resources/zh-Hans.lproj/InfoPlist.strings" \
-  "${DEST}/Contents/Resources/RimeQuadSettings.app/Contents/MacOS/RimeQuad" \
-  "${DEST}/Contents/Resources/RimeQuadSettings.app/Contents/Info.plist" \
+  "${DEST}/Contents/Resources/LuminaKeySettings.app/Contents/MacOS/LuminaKey" \
+  "${DEST}/Contents/Resources/LuminaKeySettings.app/Contents/Info.plist" \
 ; do
   if [ -e "${path}" ]; then ok "存在:${path#${HOME}/}"; else bad "缺少:${path#${HOME}/}"; fi
 done
 
 # 圖示真的讀得出來嗎。**這一條是為了上一輪那個「空白方框」而加的** ——
 # 檔案存在不等於 ImageIO 讀得懂(手寫的 TIFF 就是讀不懂)。
-for img in "${DEST}/Contents/Resources/RimeQuad.icns" \
-           "${DEST}/Contents/Resources/RimeQuad.tiff"; do
-  if sips -g pixelWidth -g pixelHeight "${img}" >/tmp/rimequad-sips.log 2>&1 \
-     && grep -q pixelWidth /tmp/rimequad-sips.log; then
-    ok "圖示解得開:$(basename "${img}") $(grep -E 'pixel(Width|Height)' /tmp/rimequad-sips.log | tr -d ' \n')"
+for img in "${DEST}/Contents/Resources/LuminaKey.icns" \
+           "${DEST}/Contents/Resources/LuminaKey.tiff"; do
+  if sips -g pixelWidth -g pixelHeight "${img}" >/tmp/luminakey-sips.log 2>&1 \
+     && grep -q pixelWidth /tmp/luminakey-sips.log; then
+    ok "圖示解得開:$(basename "${img}") $(grep -E 'pixel(Width|Height)' /tmp/luminakey-sips.log | tr -d ' \n')"
   else
     bad "圖示解不開(這正是「空白方框」的樣子):$(basename "${img}")"
-    sed 's/^/      /' /tmp/rimequad-sips.log
+    sed 's/^/      /' /tmp/luminakey-sips.log
   fi
 done
 
@@ -143,7 +143,7 @@ log "3/3 系統登錄層 —— 這一層是這次要問出答案的東西"
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 if [ -x "${LSREGISTER}" ]; then
   "${LSREGISTER}" -f "${DEST}" >/dev/null 2>&1
-  if "${LSREGISTER}" -dump 2>/dev/null | grep -q "org.rimequad.inputmethod.RimeQuad"; then
+  if "${LSREGISTER}" -dump 2>/dev/null | grep -q "org.luminakey.inputmethod.LuminaKey"; then
     ok "LaunchServices 登錄得到這個 bundle"
   else
     note "LaunchServices 的 dump 裡看不到它(runner 上不一定代表壞掉)"
@@ -154,21 +154,21 @@ fi
 
 PROBE="${ROOT}/apple/scripts/tis_probe.swift"
 if [ -f "${PROBE}" ] && command -v swiftc >/dev/null 2>&1; then
-  if swiftc -O -o /tmp/tis_probe "${PROBE}" >/tmp/rimequad-probe-build.log 2>&1; then
+  if swiftc -O -o /tmp/tis_probe "${PROBE}" >/tmp/luminakey-probe-build.log 2>&1; then
     OUT="$(/tmp/tis_probe 2>&1)"
     RC=$?
     printf '%s\n' "${OUT}" | sed 's/^/      /'
     case "${RC}" in
       0)
-        ok "TIS 看得到 RimeQuad,而且兩個輸入模式都有在地化名稱"
+        ok "TIS 看得到 LuminaKey,而且兩個輸入模式都有在地化名稱"
         ;;
       3)
-        bad "TIS 看得到 RimeQuad,但**在地化名稱就是 bundle id** —— "
-        bad "清單裡會顯示 org.rimequad.inputmethod.RimeQuad.Hans 而不是「RimeQuad 簡體」。"
+        bad "TIS 看得到 LuminaKey,但**在地化名稱就是 bundle id** —— "
+        bad "清單裡會顯示 org.luminakey.inputmethod.LuminaKey.Hans 而不是「LuminaKey 簡體」。"
         bad "檢查 Resources/<lang>.lproj/InfoPlist.strings 的鍵是不是就是輸入模式 id。"
         ;;
       4)
-        bad "TIS 查得到別的輸入來源,但**看不到 RimeQuad** —— 系統沒有接受這份 .app。"
+        bad "TIS 查得到別的輸入來源,但**看不到 LuminaKey** —— 系統沒有接受這份 .app。"
         bad "這正是「裝在錯的地方」會有的樣子。"
         ;;
       *)
@@ -177,7 +177,7 @@ if [ -f "${PROBE}" ] && command -v swiftc >/dev/null 2>&1; then
     esac
   else
     note "tis_probe 編不起來:"
-    tail -5 /tmp/rimequad-probe-build.log | sed 's/^/      /'
+    tail -5 /tmp/luminakey-probe-build.log | sed 's/^/      /'
   fi
 else
   note "沒有 tis_probe.swift 或沒有 swiftc,跳過"
