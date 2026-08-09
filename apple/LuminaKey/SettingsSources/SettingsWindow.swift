@@ -178,6 +178,7 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
     private func body(for page: SettingsPage) -> [NSView] {
         switch page.id {
         case "schemas": return schemasBody()
+        case "remap": return remapBody()
         case "appearance": return appearanceBody()
         case "text": return textBody()
         case "dictionary": return dictionaryBody()
@@ -189,6 +190,23 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
     }
 
     private func spec(_ id: String) -> SettingSpec { SettingsCatalog.item(id: id)! }
+
+    // MARK: - 換鍵
+    //
+    // 這一頁的互動與狀態全部在 SettingsSources/RemapPage.swift ——
+    // 它有自己的一整套互動(選兩顆鍵、確認、逐列還原),塞進這個
+    // controller 只會讓兩邊都難改。
+
+    private lazy var remapStore = KeyRemapStore(userDir: SettingsPaths.userDir)
+
+    private func remapBody() -> [NSView] {
+        // 每次進這一頁都重讀一次:輸入法本體與這裡是兩個行程,
+        // 而使用者也可能在別的裝置上改過同一份檔案再同步回來。
+        remapStore.reload()
+        return [UI.label(spec("remap.keys").blurb[lang], size: 11.5,
+                         colour: .secondaryLabelColor),
+                RemapPage(lang: lang, store: remapStore)]
+    }
 
     // MARK: - 輸入方案
 

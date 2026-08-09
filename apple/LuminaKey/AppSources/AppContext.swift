@@ -21,6 +21,8 @@ final class AppContext {
     let mapper = KeyMapper(resolver: RimeEngine.Resolver())
     let themes: ThemeStore
     let settings: SettingsStore
+    /// 換鍵。**與 Android 讀同一個檔案**(見 KeyRemapStore 檔頭)。
+    let remap: KeyRemapStore
 
     /// 隨附資料:`LuminaKey.app/Contents/Resources/SharedSupport`
     let sharedDataDir: URL
@@ -57,6 +59,7 @@ final class AppContext {
             themesDir,                                       // 隨附
         ])
         settings = SettingsStore(url: userDataDir.appendingPathComponent(SettingsStore.fileName))
+        remap = KeyRemapStore(userDir: userDataDir)
     }
 
     func start() {
@@ -131,6 +134,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DistributedNotificationCenter.default.addObserver(
             self, selector: #selector(settingsChanged),
             name: NSNotification.Name(SettingsStore.changedNotification), object: nil)
+        DistributedNotificationCenter.default.addObserver(
+            self, selector: #selector(layoutsChanged),
+            name: NSNotification.Name(KeyRemapStore.changedNotification), object: nil)
     }
 
     @objc private func appearanceChanged() {
@@ -139,6 +145,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// 設定介面改了東西。**立刻**重讀並套用 —— 使用者剛按下去,
     /// 他預期切回文字框就是新的行為,而不是「重開輸入法之後」。
+    /// 使用者剛在設定裡換了鍵。**立刻**重讀 —— 他會馬上切回文字框試按一下,
+    /// 而「要重開輸入法才生效」的功能與壞掉的功能在他眼裡沒有差別。
+    @objc private func layoutsChanged() {
+        _ = AppContext.shared.remap.reload()
+    }
+
     @objc private func settingsChanged() {
         guard AppContext.shared.settings.reload() else { return }
         AppContext.shared.themes.reload()

@@ -21,7 +21,7 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PKG="${ROOT}/apple/LuminaKey"
-MIN_TESTS="${MIN_TESTS:-150}"
+MIN_TESTS="${MIN_TESTS:-180}"
 
 cd "${PKG}" || exit 1
 
@@ -88,6 +88,8 @@ MUTATIONS=(
   # 改名之後的資料搬遷。把排除清單換成「只看名字完全相符的那幾個」——
   # `*.userdb` 與 `build/` 就會被搬過去,而那是這一組存在的理由:
   # 複製一個舊版正開著的 LevelDB = 一份壞掉但看起來正常的使用者詞典。
+  "Sources/LuminaKeyKit/KeyRemap.swift|if mods.contains(.control) || mods.contains(.super_) { return stroke }|if false { return stroke }|KeyRemapTests"
+  "Sources/LuminaKeyKit/KeyRemap.swift|        exchangeAtPositions(position(of: a), position(of: b))|        exchangeAtPositions(a, b)|KeyRemapTests"
   "Sources/LuminaKeyKit/LegacyDataMigration.swift|for name in names where !shouldSkip(name) {|for name in names where !skippedNames.contains(name) {|LegacyDataMigrationTests"
 )
 

@@ -26,6 +26,9 @@ final class LuminaKeyInputController: IMKInputController {
         super.activateServer(sender)
         tracker.reset()
         engine.openSession()
+        // 設定介面可能在我們沒有活著的 view 時改過換鍵,通知也可能沒收到。
+        // 重讀一次是幾微秒的事,漏掉的代價是「改了沒生效」。
+        _ = AppContext.shared.remap.reload()
         AppContext.shared.panel.onSelect = { [weak self] idx in
             self?.selectCandidate(index: idx, client: sender)
         }
@@ -128,9 +131,16 @@ final class LuminaKeyInputController: IMKInputController {
         //   自己畫選單 —— switcher 的選項就是一般的候選,候選窗照樣畫得出來。
         if event.modifierFlags.contains(.command) { return false }
 
-        guard let stroke = mapper.stroke(for: macEvent(event, isKeyUp: isKeyUp)) else {
+        guard let raw = mapper.stroke(for: macEvent(event, isKeyUp: isKeyUp)) else {
             return false
         }
+        // 換鍵。**在這裡,不是在上屏之後** —— 桌面端換的是送進引擎的 keysym,
+        // 所以正在打的拼音、候選、打出來的字三者一致。理由的完整版在
+        // LuminaKeyKit/KeyRemap.swift 的檔頭。
+        //
+        // 只有這一條路徑要套:processFlags 走的是修飾鍵本身(Shift_L…),
+        // 那些不是字母,查表必然落空。
+        let stroke = AppContext.shared.remap.compiled.table.apply(to: raw)
         let consumed = engine.process(keysym: stroke.keysym, modifiers: stroke.modifiers)
 
         // ⚠ **每個輸入事件只 acquire 一次。** commit 在 acquire 當下就被消費,

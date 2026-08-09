@@ -115,7 +115,7 @@ public enum SettingsCatalog {
     /// 要上架的條件只有一個:`verify_user_dict.sh` 變綠。
     /// 程式碼與測試全部留著,把這一行的 `dictionaryPage` 加回去就好。
     public static let pages: [SettingsPage] = [
-        schemasPage, appearancePage, textPage,
+        schemasPage, remapPage, appearancePage, textPage,
         storePage, networkPage, advancedPage,
     ]
 
@@ -178,6 +178,40 @@ public enum SettingsCatalog {
                 blurb: T("倉頡、五筆、粵拼、雙拼等三十多種,需要開啟連網。",
                          "仓颉、五笔、粤拼、双拼等三十多种,需要开启联网。",
                          "Cangjie, Wubi, Cantonese, double pinyin and thirty more. Requires turning networking on."),
+                storage: .none),
+        ])
+
+
+    // ── 換鍵 ─────────────────────────────────────────────
+    //
+    // 使用者的原話:「按下 a 實際上是 b」。
+    //
+    // ⚠ 這一頁是側欄裡唯一有自己一整套互動的分頁(`docs/ui-design.md` §4.5
+    //   把它與市集並列為「兩層深度」的唯二例外),所以它的兩個項目都是
+    //   `.custom` / `.action` —— 目錄記著它們只是為了讓「每一項都有白話說明」
+    //   這條規則沒有例外,畫面由 SettingsSources/RemapPage.swift 自己畫。
+    public static let remapPage = SettingsPage(
+        id: "remap",
+        title: T("換鍵", "换键", "Swap Keys"),
+        subtitle: T("讓某一顆鍵打出別的字母", "让某一颗键打出别的字母",
+                    "Make a key type a different letter"),
+        symbol: "arrow.left.arrow.right",
+        items: [
+            SettingSpec(
+                id: "remap.keys",
+                kind: .custom,
+                title: T("把兩顆鍵對調", "把两颗键对调", "Swap two keys"),
+                blurb: T("點兩顆鍵就會對調。按著 Shift 也跟著換,⌘ 和 ⌃ 的快捷鍵不受影響。",
+                         "点两颗键就会对调。按着 Shift 也跟着换,⌘ 和 ⌃ 的快捷键不受影响。",
+                         "Tap two keys to trade them. Shift follows along; ⌘ and ⌃ shortcuts are left alone."),
+                storage: .none),
+            SettingSpec(
+                id: "remap.resetAll",
+                kind: .action,
+                title: T("全部還原成原本的樣子", "全部还原成原本的样子", "Put every key back"),
+                blurb: T("這台電腦上換過的鍵全部回到原位。你打出來的字、你自己加的詞都不受影響。",
+                         "这台电脑上换过的键全部回到原位。你打出来的字、你自己加的词都不受影响。",
+                         "Every key you changed on this computer goes back. What you type and the words you added are not affected."),
                 storage: .none),
         ])
 
