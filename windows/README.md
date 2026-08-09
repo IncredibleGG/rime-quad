@@ -839,9 +839,21 @@ true;寫成「等於 true 才算開」的話,全新安裝的機器上自動挑�
   失敗,而那個失敗看起來與這裡完全無關
 
 ⚠ `ActivateProfile` 的旗標組合是**逐一試過去並把每一種的 HRESULT 都印出來**
-的,不是猜一種然後宣布結論。runner 是非互動的工作階段,走不通的時候要看得出
-卡在哪 —— 而 `rime_tsf_host` 連不出 `ITfThreadMgr` 時會以結束碼 3 明說
-「TSF 在這個工作階段裡不可用」,`verify_tsf.sh` 對那個碼**明著拒絕略過**。
+的,不是猜一種然後宣布結論 —— 動手之前我並不知道 runner 的工作階段吃不吃
+這一套。實測的答案(留在這裡免得下一輪再猜一次):
+
+| 問題 | 實測 |
+|---|---|
+| `CoCreateInstance(CLSID_TF_ThreadMgr)` | 成功 |
+| `ITfThreadMgr::Activate` | 成功 |
+| `ActivateProfile` 的哪一組旗標成立 | **第一組就成立**:`TF_IPPMF_FORPROCESS \| TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE` |
+| `SetForegroundWindow` 搶不搶得到 | **搶得到**(runner 上有可用的桌面) |
+| `ITfThreadMgr::IsThreadFocus` | `TRUE` |
+| 註冊完到 CTF 看得見要多久 | **2 秒**(安裝程式那條路實測是 0.12 秒看不到、22 秒看得到,兩者不衝突:那一次是剛註冊完就問) |
+
+而 `rime_tsf_host` 連不出 `ITfThreadMgr` 時會以結束碼 3 明說
+「TSF 在這個工作階段裡不可用」,`verify_tsf.sh` 對那個碼**明著拒絕略過** ——
+哪天換了一種 runner 映像而這一套不成立了,它會紅,而不是安靜地變綠。
 
 #### ⚠ 做這件事的過程中學到的兩件事(值得記住)
 
