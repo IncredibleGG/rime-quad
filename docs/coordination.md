@@ -594,6 +594,109 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
   桌面端現在是七頁不是六頁。頁名依 §6.2 的對照表取「自己加的詞」而不是「詞庫」。
   這一頁目前的樣子只照了 §6(文案)與 §4(元件),**沒有**照著草圖擺 —— 因為還沒有草圖。`
 
+- `[2026-08-09] [產品] **「風格 / 方案 / 詞庫」的邊界已裁決,四端共用 → `docs/decisions/style-schema-dictionary.md`。**
+  使用者原話:「風格、詞庫、方案,不相關對不?所以你不要給他們混為一談。」
+  那份文件定了三件事:(1) 每一個有爭議的設定屬於哪一個(簡繁 → 方案;候選數 → 方案,即使畫在外觀頁;
+  選字鍵 → 方案;**消歧欄的位置 → 風格**);(2) 佈局與方案的合法組合怎麼判 ——
+  **T1 佈局送出的 keysym ⊆ 方案的 `speller/alphabet`(機器驗得了)、T2 鍵面誠實(驗不了,
+  所以 `for_schema` 必須由作者宣告)**;(3) 不合法組合的四級處置與文案,
+  ⛔ **不得安靜地不生效**。動到自己那一端的欄位歸屬之前先讀 §1.2 那張表。`
+
+- `[2026-08-09] [產品] ⚠⚠ **給 macOS(`docs/theme-format.md` 的擁有者):消歧欄的位置必須變成主題欄位。**
+  使用者給的截圖:**iOS 九宮格的消歧是候選列上方一橫排 + 底列一顆「选拼音」鍵;三星是左側直欄**;
+  語燕也是左側直欄。同一個功能、同一個方案、同一份詞庫,位置卻不同 —— **那就是風格的定義**。
+  今天它寫死在 `android/.../keyboard/T9Syllables.kt` 的 `SLOTS`(白名單兩個佈局 id +
+  寫死的 layer id `"t9"` + 寫死的三個 key id),而那個檔案自己寫著「本該住在佈局 YAML 裡」。
+  **建議補三塊**(完整欄位表在 `docs/decisions/style-schema-dictionary.md` §5.4):
+  (一) 主題新開 §8.6.6.3 `candidates.syllables`:`placement`(`none`/`above_candidates`/`keyboard_slot`)、
+  `trigger`(`while_composing`/`on_demand`)、`max_items`、`orientation`、`height`、外觀子區塊;
+  ⚠ `height` 與 §8.8.0 高度預算的關係要寫明(加在鍵盤之上還是吃掉候選列)。
+  (二) 佈局 §9:layer 上一個 `syllable_slots:`(**這正是 androidkbd 2026-08-09 那條提案,
+  本文件把它從提案升級成必要欄位**)、§9.5 加動詞 `syllables:toggle` 並列入 §9.5.1 的能力宣告。
+  (三) 三條退化規則:`keyboard_slot` 但佈局沒宣告 slot → **退化成 `above_candidates` + WARNING,
+  不得什麼都不畫**;方案沒有 `spelling_hints` → 整條不出現且那顆鍵**必須隱藏**(不是變灰);
+  `on_demand` 但佈局沒有那顆鍵 → 視為 `while_composing` + WARNING。
+  ⚠ 附帶事實:`intl-ios.yaml` 是一份 `kind: alphabetic` 的 QWERTY 佈局,**不是九宮格** ——
+  我們有 iOS 的外觀,沒有 iOS 的九宮格佈局。不要當成已支援。`
+
+- `[2026-08-09] [產品] ⚠⚠ **`docs/settings-model.md` §4.5 那條「無條件設 `simplification`」不足,而 macOS 正照著它做。**
+  **隨附的四個方案(`luna_pinyin`、`luna_pinyin_tw`、`bopomofo_tw`、`t9_pinyin`)沒有一個有
+  `simplification` 開關** —— 讀碼確認,它們用的是互斥選項組 `[zh_hant, zh_hans, zh_hant_hk, zh_hant_tw]`
+  配 `simplifier@zh_hans` 等三個 filter。Android(`RimeInputMethodService.applyVariant()`)與
+  Windows(`common/schema_choice.cc`)**都已經發現並修了**:送 `simplification` **+ 整組 radio**。
+  Android 的註記還帶著模擬器實測:只送 `simplification`,打 `guojia` 仍然得到「國家」。
+  **macOS 只送 `simplification`**(`InputModeBinding.simplificationOption` → `SessionOptions`),
+  grep 全樹沒有任何一處送 `zh_hans` / `zh_hant_tw`。**(推)** 於是在 macOS 上把「文字」頁設成簡體
+  會是一個安靜的空操作 —— 而四個隨附方案沒有一個是簡體,「挑字集相符的方案」那條退路也走不通。
+  ⚠ 我沒有在真的 Mac 上跑過。**一行的驗法:設成簡體,打 `guojia`,看是「國家」還是「国家」。**
+  §4.5 那一節要補第二半(「還要設方案自己的字形選項組,同組其他的設 false」),
+  規範不在本輪的檔案範圍,由先動到的那一端補。`
+
+- `[2026-08-09] [產品] ⛔ **給 macOS:「外觀」頁七個控制項有六個是死的。**
+  `ThemeStore.preferredId` 與 `ThemeStore.followSystemAppearance` 這兩個 hook
+  **從來沒有被任何程式碼從 `settings.themeFamily` / `settings.appearance` 賦值過**
+  (grep 全樹只有宣告本身與 `ThemeStore.swift` 內部的兩處使用)。
+  同理 `CandidateScale.factor` 與 `ThemeBoolPref.resolved()` 只被單元測試引用;
+  `CandidateView` 直接讀 `theme.statusBar.show` / `st.label.show`。
+  **結果:配色、深淺、選字字大小、排列方向、號碼、狀態列 —— 六項只寫 `settings.json`,沒有人讀。**
+  唯一會動的是「一次顯示幾個候選字」,因為它走 `default.custom.yaml` + 重新部署。
+  這正是 `docs/ui-design.md` §0 那條「做不到的功能不要畫出來」,而且是整整一頁。
+  **接上去或整批下架,兩條都行,留著不行。**
+  ⚠ 順帶:「配色」的下拉列出 `core/themes/*.yaml` 全部家族(含 `intl-gboard` / `intl-ios` /
+  `intl-samsung` / `cn-compact`),顯示的是**原始 id 不是 `name`** —— 那幾份的重點是
+  桌面端整段忽略的 `keyboard:` 區塊。`
+
+- `[2026-08-09] [產品] ⚠ **給 macOS + 協調端:`t9_pinyin` 上架在一台沒有九宮格的機器上。**
+  `scripts/collect_data.sh` 產生的 `schema_list` 含 `t9_pinyin`,`apple/scripts/verify_data.sh`
+  還斷言它必須在 bundle 裡;而 `apple/scripts/build_app.sh` **刻意不打包 `core/layouts/`**
+  (`verify_app_bundle.sh` 甚至有反向斷言)。於是「九宮格拼音」出現在 macOS 的方案清單與
+  選單列切換器裡、預設啟用,**選了之後打 `nihao` 一個字都出不來**(它的 alphabet 是 `ADGJMPTW`,
+  要打 `MG GAM`)。桌面端沒有 `for_schema` 這道保護,因為桌面端沒有佈局的概念。
+  ⚠ 再配上 `LuminaKeyInputController.selectSchemaFromMenu`:輸入模式是 `.unspecified` 時
+  它會寫 `pinnedSchemaId`,而設定視窗只在 `followInputMode` 關掉時才畫那個控制項(預設開著)——
+  **使用者會造出一個他看不到也清不掉的釘,釘的還是一個打不出字的方案。**
+  處置由 macOS 端與協調端決定(`collect_data.sh` 是協調端的檔),但**不可以就這樣留著**。`
+
+- `[2026-08-09] [產品] ⛔ **給 Windows:兩個缺陷,一個是「摸不到」,一個是「一顆按鈕改兩件事」。**
+  (一) `IDC_FOLLOW_MODE`(「跟著我選的輸入法語言,自動挑方案」)在 `settings_window.cc` 裡
+  被建立(:631)、被排版(:721)、被讀回(:806)、`OnCommand` 也處理它(:1103),
+  **但它不在 `kTabPage0..kTabPage3` 任何一個陣列裡**,而 `ShowTab()` 只 `SW_SHOW` 陣列裡的 id,
+  控制項又是以 `WS_CHILD` 無 `WS_VISIBLE` 建立的。**`schemas.followInputMode` 從 GUI 完全改不了。**
+  這是這個專案抓過六次的那一類,而且是方案選擇策略的主開關。
+  (二) `ApplyOrderAndPageSize()` 同時寫 `schema_list`(方案)**和** `menu/page_size`(候選數),
+  而它從**兩個分頁**都叫得到。在「輸入方案」按「套用順序」,會順便提交「外觀」分頁上
+  那個使用者沒按過的候選數;反之亦然。回滾快照 `rollback_yaml_` 也是共用的,
+  一邊失敗會把另一邊一起還原。**兩件事就該是兩顆按鈕、兩份快照。**`
+
+- `[2026-08-09] [產品] **給 Android:`core/layouts/` 有三處要動(都是佈局檔,所有權在你)。**
+  (一) `t9-pinyin.yaml` 與 `cn-t9-pinyin.yaml` 的 `name` **一模一樣**(都是「九宮格拼音」)
+  —— 選單上是兩筆看不出差別的項目。建議前者改「九宮格(4 欄・舊版)」、後者改「九宮格」
+  (「拼音」由方案那一段講,佈局不必再說一次)。
+  (二) `cn-t9-pinyin-numrow` 的「九宮格拼音・數字列」與 `cn-qwerty-numrow` 的「全鍵盤・數字列」
+  名字裡的 `・` 與首頁現值的分隔號打架(現值格式是 `%1$s · %2$s`)。建議改成 `+`。
+  (三) ⚠ **`cn-qwerty-numrow` 的 `for_schema: ["luna_pinyin"]` 不含 `luna_pinyin_tw`,
+  於是使用者想要「鍵盤上多一列數字」這個純外觀的東西,得先把方案從臺灣正體換成原版朙月拼音
+  —— 而那會改變他打出來的字。** 那個檔案自己寫著「`for_schema` 就是把兩者綁在一起的欄位,
+  這裡是它的第一個真實用例」。加一個 id 就好。
+  另外三件在 Kotlin 那一側,理由見 `docs/decisions/style-schema-dictionary.md` §4.2 與 §6.2:
+  只改佈局時不要無條件寫 `pendingSchema`(現在「換一個 QWERTY 變體」會重設中英/簡繁/標點);
+  `for_schema` 檢查要排在「使用者釘過的佈局」之前(現在可以釘出一個渲染完美、打不出字的鍵盤);
+  「打字方式」頁改成兩段式(上段方案、下段佈局,下段的說明句要點名上段的現值)。`
+
+- `[2026-08-09] [產品] ⚠ **給 dict 支線:`custom_phrase.txt` 的編碼欄是「按鍵串」,所以使用者詞庫今天是綁在方案上的。**
+  `docs/settings-model.md` §5.2 已經寫得很清楚(而且 CI 硬驗過):第二欄 = 使用者實際按的那一串鍵。
+  後果是同一個「你好」在三個方案底下是三個編碼(`nihao` / 九宮格的 `mggam` / 注音的 `su3cl3`),
+  而 §5.3 把**同一份檔案掛到每一個已啟用的方案**底下。**使用者在拼音底下加的詞,在九宮格底下叫不出來,
+  而且不會有任何訊息** —— 檔案讀了、詞條載入了,只是查不到。
+  這件事有兩種解法,**都要你裁決,我沒有動格式**:
+  (a) **推導編碼** —— 詞 → 逐字查讀音 → 套目標方案的 `speller/algebra` → 得到該方案的按鍵串。
+  拼音家族的 `.dict.yaml` 有單字讀音,推得出來;多音字多寫幾行就好。**這是唯一能讓「詞庫是第三件獨立的事」
+  這句話成真的路。**
+  (b) **分檔** —— `custom_phrase/user_dict: custom_phrase_<schema>`,每個方案掛自己那一份。
+  RIME 原生支援。⚠ **不要用「加第四欄記方案」來解**:librime 讀 TSV 時不會依欄位過濾。
+  在 (a) 做完之前,介面**必須誠實**:詞的清單上每一筆要標它是哪個打字方式的
+  (`docs/decisions/style-schema-dictionary.md` §3.2 D 案)。`
+
 ## 6. 各端狀態
 
 > 自己更新自己那一行。
