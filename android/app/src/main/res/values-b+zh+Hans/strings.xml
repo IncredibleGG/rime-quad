@@ -13,9 +13,9 @@
 -->
 <resources>
 
-    <string name="app_name">RIME 输入法</string>
-    <string name="ime_label">RIME 四端输入法</string>
-    <string name="subtype_label_zh">RIME 中文</string>
+    <string name="app_name">LuminaKey 输入法</string>
+    <string name="ime_label">LuminaKey 输入法</string>
+    <string name="subtype_label_zh">LuminaKey 中文</string>
 
     <string name="back">‹  返回</string>
     <!-- 有方向的字元。RTL 語系請換成 ‹ 。 -->
@@ -207,7 +207,7 @@
     <string name="honesty_title">为什么权限列表上还是有「网络访问」</string>
     <string name="honesty_body">因为 Android 的网络权限是「安装时」给的，运行期取消不了。只要这个 app 带着方案市场与应用内更新，权限列表上就一定看得到它 —— 开关关掉也一样看得到。我们不会宣称自己没有网络权限，那句话一查就穿帮。</string>
     <string name="honesty_checkable_title">我们改成让你查得到</string>
-    <string name="honesty_checkable_body">· 整个 app 只有一个联网出口：源码里的 android/app/src/main/java/org/rimequad/ime/net/NetworkGate.kt。\n· 开关关闭时，那个出口直接拒绝并抛出异常，一个连接都不会开。\n· 每一次真的建立的连接都记在下面，跳转的每一跳也各记一条。\n· 记录里没有你输入的任何内容，也没有网址的路径，只有主机名与原因。</string>
+    <string name="honesty_checkable_body">· 整个 app 只有一个联网出口：源码里的 android/app/src/main/java/org/luminakey/ime/net/NetworkGate.kt。\n· 开关关闭时，那个出口直接拒绝并抛出异常，一个连接都不会开。\n· 每一次真的建立的连接都记在下面，跳转的每一跳也各记一条。\n· 记录里没有你输入的任何内容，也没有网址的路径，只有主机名与原因。</string>
     <string name="honesty_log_file">记录文件：%1$s</string>
 
     <plurals name="network_log_heading">

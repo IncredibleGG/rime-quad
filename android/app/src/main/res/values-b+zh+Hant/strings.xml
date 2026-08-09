@@ -12,9 +12,9 @@
 -->
 <resources>
 
-    <string name="app_name">RIME 輸入法</string>
-    <string name="ime_label">RIME 四端輸入法</string>
-    <string name="subtype_label_zh">RIME 中文</string>
+    <string name="app_name">LuminaKey 輸入法</string>
+    <string name="ime_label">LuminaKey 輸入法</string>
+    <string name="subtype_label_zh">LuminaKey 中文</string>
 
     <string name="back">‹  返回</string>
     <!-- 有方向的字元。RTL 語系請換成 ‹ 。 -->
@@ -207,7 +207,7 @@
     <string name="honesty_title">為什麼權限清單上還是有「網路存取」</string>
     <string name="honesty_body">因為 Android 的網路權限是「安裝時」給的，執行期取消不了。只要這個 app 帶著方案市集與應用內更新，權限清單上就一定看得到它 —— 開關關掉也一樣看得到。我們不會宣稱自己沒有網路權限，那句話一查就穿幫。</string>
     <string name="honesty_checkable_title">我們改成讓你查得到</string>
-    <string name="honesty_checkable_body">· 整個 app 只有一個連網出口：原始碼的 android/app/src/main/java/org/rimequad/ime/net/NetworkGate.kt。\n· 開關關閉時，那個出口直接拒絕並拋出例外，一個連線都不會開。\n· 每一次真的建立的連線都記在下面，轉址的每一跳也各記一筆。\n· 紀錄裡沒有你輸入的任何內容，也沒有網址的路徑，只有主機名與原因。</string>
+    <string name="honesty_checkable_body">· 整個 app 只有一個連網出口：原始碼的 android/app/src/main/java/org/luminakey/ime/net/NetworkGate.kt。\n· 開關關閉時，那個出口直接拒絕並拋出例外，一個連線都不會開。\n· 每一次真的建立的連線都記在下面，轉址的每一跳也各記一筆。\n· 紀錄裡沒有你輸入的任何內容，也沒有網址的路徑，只有主機名與原因。</string>
     <string name="honesty_log_file">紀錄檔：%1$s</string>
 
     <plurals name="network_log_heading">

@@ -25,10 +25,10 @@
 
     <!-- ─────────────────────────── 應用身分 ─────────────────────────── -->
 
-    <string name="app_name">RIME Keyboard</string>
+    <string name="app_name">LuminaKey</string>
     <!-- 系統「語言與輸入」的鍵盤清單裡看到的那一行。 -->
-    <string name="ime_label">RIME Keyboard</string>
-    <string name="subtype_label_zh">RIME Chinese</string>
+    <string name="ime_label">LuminaKey</string>
+    <string name="subtype_label_zh">LuminaKey Chinese</string>
 
     <!-- ─────────────────────────── 共用零件 ─────────────────────────── -->
 
@@ -248,7 +248,7 @@
     <string name="honesty_body">Because on Android that permission is granted at install time and cannot be taken back while the app is running. As long as this app carries a keyboard store and in-app updates, it will be in the list — switch off or not. We are not going to claim we have no network permission; that claim falls apart the moment anybody checks.</string>
     <string name="honesty_checkable_title">So we made it checkable instead</string>
     <!-- 檔案路徑刻意留原文：它是要拿去 grep 的，翻譯了就找不到。 -->
-    <string name="honesty_checkable_body">· The whole app has exactly one way out to the network: android/app/src/main/java/org/rimequad/ime/net/NetworkGate.kt in the source.\n· While the switch is off, that one way out refuses and throws. Not a single connection is opened.\n· Every connection that really got made is listed below, and each hop of a redirect gets its own line.\n· The log holds nothing you typed, and no URL paths — only host names and the reason.</string>
+    <string name="honesty_checkable_body">· The whole app has exactly one way out to the network: android/app/src/main/java/org/luminakey/ime/net/NetworkGate.kt in the source.\n· While the switch is off, that one way out refuses and throws. Not a single connection is opened.\n· Every connection that really got made is listed below, and each hop of a redirect gets its own line.\n· The log holds nothing you typed, and no URL paths — only host names and the reason.</string>
     <!-- %1$s = 紀錄檔的絕對路徑。 -->
     <string name="honesty_log_file">Log file: %1$s</string>
 

@@ -28,7 +28,7 @@
 #include "rime_shell.h"
 
 #ifndef RIME_JNI_CLASS
-#define RIME_JNI_CLASS "org/rimequad/ime/core/RimeCore"
+#define RIME_JNI_CLASS "org/luminakey/ime/core/RimeCore"
 #endif
 
 #define LOG_TAG "RimeJNI"

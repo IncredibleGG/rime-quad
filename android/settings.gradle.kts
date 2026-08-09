@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "RimeQuad"
+rootProject.name = "LuminaKey"
 include(":app")

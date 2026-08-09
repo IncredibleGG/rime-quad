@@ -49,13 +49,13 @@
           · files/rime/user/installation.yaml
                                         installation_id,一組跨重裝穩定的 UUID
           · files/rime/user/user.yaml    schema_access_time：何時用過哪個方案
-          · files/rime/user/rimequad-store.json、sp/rimequad-store.xml
+          · files/rime/user/rimequad-store.json、sp/luminakey-store.xml
                                         裝了哪些第三方方案
           · files/net/                   連網紀錄本身
 
         為什麼是全關，而不是用 dataExtractionRules 精細排除詞庫：
           1. 就算規則寫得完美、只帶走佈景偏好，Google 端仍然會留下一筆
-             「這個帳號裝了 org.rimequad.ime」。對一個以規避監控為賣點的
+             「這個帳號裝了 org.luminakey.ime」。對一個以規避監控為賣點的
              輸入法來說，那正是我們在別處(User-Agent)努力避免的自報家門。
              換來的好處只是鍵盤高度倍率跟著換機走 —— 不成比例。
           2. 排除規則是 fail-open 的：只寫 <exclude> 時，將來新增的目錄
@@ -81,7 +81,7 @@
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:networkSecurityConfig="@xml/network_security_config"
-        android:theme="@style/Theme.RimeQuad">
+        android:theme="@style/Theme.LuminaKey">
 
         <!-- 設定／診斷畫面，同時是 method.xml 的 settingsActivity -->
         <activity
