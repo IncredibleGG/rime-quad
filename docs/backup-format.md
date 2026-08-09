@@ -185,8 +185,9 @@ librime 的 `Memory::OnCommit` 在使用者上屏之後**開一個交易**再把
 
 * **桌面端（建議）**：`RimeSyncUserData()`。它會 `CleanupAllSessions()` 之後跑
   `user_dict_sync`，順便就產生 `rime-userdb-text`。一步到位。
-* **Android（現況）**：`rime_shell.h` 沒有暴露那個進入點，改用
-  **建立一個 session、立刻銷毀它**。`UserDictionaryComponent` 有一個
+* **Android（現況）**：**建立一個 session、立刻銷毀它**。
+  （`rime_shell.h` 從 ABI 2 起**已經有** `rs_sync_user_data()`，但 Android 的
+  JNI 橋還沒把它接出來 —— 見 §8.2。）`UserDictionaryComponent` 有一個
   `hash_map<string, weak<Db>> db_pool_`，同一本詞典在整個行程裡只有一個 `Db` 物件，
   所以任何 `~UserDictionary` 的提交等於替所有人提交。
   這條路徑刻意不經過 `rs_select_schema()`：`Session` 建構時走
@@ -339,7 +340,7 @@ librime 的 `Memory::OnCommit` 在使用者上屏之後**開一個交易**再把
 
 | 端 | 匯出 | 匯入 | 備註 |
 |---|---|---|---|
-| Android | ✅ `leveldb-dir` | ⚠ 只讀得動 `leveldb-dir`；碰到 `rime-userdb-text` **會指名報給使用者**（`BackupFormat.READABLE_ENCODINGS`），不會安靜地少一本 | SAF（`ACTION_CREATE_DOCUMENT` / `ACTION_OPEN_DOCUMENT`），**不要求任何儲存權限** |
+| Android | ✅ `leveldb-dir` | ⚠ 只讀得動 `leveldb-dir`；碰到 `rime-userdb-text` **會指名報給使用者**（`BackupFormat.READABLE_ENCODINGS`），不會安靜地少一本 | SAF（`ACTION_CREATE_DOCUMENT` / `ACTION_OPEN_DOCUMENT`），**不要求任何儲存權限**。整條往返 2026-08-09 在模擬器上實跑過（`scripts/verify_backup_roundtrip.sh`），含反向控制組；**SAF 的選檔對話框本身仍未被自動化驗過** |
 | macOS | 未做 | 未做 | |
 | Windows | 未做 | 未做 | |
 | iOS | 未做 | 未做 | |
@@ -350,10 +351,36 @@ librime 的 `Memory::OnCommit` 在使用者上屏之後**開一個交易**再把
 2. 匯出用 `RimeSyncUserData()` 產生 `rime-userdb-text`，一步同時解決
    「flush」與「跨端載體」兩個問題。
 
-### 8.2 待補：`rs_sync_user_data()`
+### 8.2 `rs_sync_user_data()`：ABI 已經有了，Android 還沒接
 
-`rime_shell.h` 目前沒有暴露 `RimeSyncUserData()`。少了它，Android 只能用
-§3.1 的 session 建銷法逼出交易，而且無法產生 `rime-userdb-text`。
-已寫進 `docs/coordination.md` §5 請協調端裁決（`core/` 的 ABI 不歸各端自己加）。
-加上之後 Android 端要改的只有 `UserDbSnapshot.kt` 一個檔案，格式不必動 ——
-`encoding` 欄位就是為了這一天留的。
+> **2026-08-09 更新。這一節原本寫「`rime_shell.h` 目前沒有暴露
+> `RimeSyncUserData()`」——那句話已經不成立**：協調端加了，它在
+> `core/include/rime_shell.h:131`（ABI 2）。**但 Android 這一端沒有接**：
+> `android/app/src/main/cpp/jni_bridge.cc` 的 `kMethods[]` 裡沒有對應的項目，
+> 所以 Kotlin 呼叫不到。§3.1 的 session 建銷法仍然是現況。
+
+現況是**量過的**，不是推測的（`scripts/verify_backup_roundtrip.sh`，
+2026-08-09 在模擬器上跑）：教三個詞 → 匯出（學習用的 session **刻意留著**，
+交易還掛在記憶體裡）→ `pm clear` → 匯入 → 三個詞都回到候選第一名。
+
+而且反向也驗過：把 `UserDbSnapshot.flushEngine()` 整支停掉之後，
+**最後學到的那個詞會安靜地消失**（前兩個仍在——它們被後續的查詢順手提交了），
+manifest 的 `flushed` 如實變成 `false`。也就是說 §3.1 那套 flush 是**承重的**，
+不是保險。
+
+⚠ 驗這件事的時候有一個陷阱，第一版就踩到了：**教完之後、匯出之前不可以再打
+任何字**。`UserDictionary::Query` 開頭就 `FinishSession()`，而 `db_pool_` 讓同一本
+詞典在行程內只有一個 `Db` 物件，所以**一次查詢**也會替所有人提交。把「確認它
+學到了」排在匯出之前的話，flush 停掉仍然全綠 —— 一個永遠不會紅的驗證。
+
+接上 `rs_sync_user_data()` 之後拿得到的東西（都還沒有）：
+
+* `rime-userdb-text`（`*.userdb.txt`），也就是 §3.1 那個**跨端正式載體**。
+  桌面端要跟 Android 交換詞庫的話，這是唯一該用的格式。
+* 「flush 成功了嗎」變成引擎自己回答，而不是靠 librime 的實作細節推論。
+
+要付的代價（所以它不是「加一行就好」）：`rs_sync_user_data()` **會銷毀所有
+session**（librime 的 sync 以 `cleanup_all_sessions()` 開頭），而且是**非同步**的，
+結果經由 `on_deploy` 回報、與部署共用同一支維護執行緒。所以 Android 接它的時候
+要一併處理：IME 的 session 失效後重建、以及「同一時間只能有一個維護工作」。
+`UserDbSnapshot.kt` 一個檔案改不完。

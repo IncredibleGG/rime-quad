@@ -594,6 +594,81 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
   桌面端現在是七頁不是六頁。頁名依 §6.2 的對照表取「自己加的詞」而不是「詞庫」。
   這一頁目前的樣子只照了 §6(文案)與 §4(元件),**沒有**照著草圖擺 —— 因為還沒有草圖。`
 
+- `[2026-08-09] [androidkbd → 協調] ⚠⚠ **請在 `version.json` 加三個欄位。這是「升級器提供了一個它裝不起來的更新」那個缺陷的發布端那一半。**
+  使用者回報:手上是改名前的 `org.rimequad.ime`(versionCode 26080817),應用內升級抓到
+  26080912 按下安裝,拿到「APK 檔案無效或已損毀(系統訊息:INSTALL_FAILED_INVALID_APK …
+  specified package org.rimequad.ime inconsistent with org.luminakey.ime)」。**檔案完全正常**
+  —— 它剛通過 sha256。真正的原因是 applicationId 換了,Android 不允許覆蓋安裝。
+  「套件名一不一樣」是**下載之前就判定得出來的事實**,而升級器沒有可以判斷的依據。
+  App 端已經改好(不下載、不給安裝按鈕、改出一張搬家卡片),但它需要發布端說出來:
+
+  | 欄位 | 型別 | 必要性 | 內容 |
+  |---|---|---|---|
+  | `package` | string | **請每一版都寫** | 這一份 APK 的 applicationId。⚠ **從 APK 自己讀**(`aapt2 dump badging` 的 `package: name='…'`),與 `version_code` 同一個理由:build.gradle.kts 的推導改了、或有人 `-Prime.applicationId=` 覆寫了,唯一可信的來源就只剩 APK 自己 |
+  | `replaces_package` | string 或 string 陣列 | **只有換套件名那一版要寫** | 這一版取代掉的舊 applicationId。值就是 `scripts/lib/product.env` 的 `ANDROID_APP_ID_PREVIOUS`(那個宣告過期刪掉時,這個欄位也跟著不寫) |
+  | `page_url` | string | 選用 | 給人看的下載頁。裝不上去的時候 app 只能把使用者送去一個他自己下載得到的地方;沒有這個欄位就退回直接給 APK 的網址 |
+
+  範例(只有改名那一版長這樣,平常只多 `package` 一行):
+  ```json
+  {
+    "version_code": 26080912,
+    "package": "org.luminakey.ime",
+    "replaces_package": "org.rimequad.ime",
+    "page_url": "https://…/rime/downloads/",
+    "…": "其餘不變"
+  }
+  ```
+
+  ⚠ **三個都必須是選用的,而且永遠不可以變成必填。** App 端已經做成:缺席 = UNKNOWN
+  (不是「一樣」),行為與從前完全相同。理由是雙向的 —— 使用者手上的**舊版**會讀到
+  **新的** version.json,而新版也可能讀到還沒更新或被快取住的**舊** version.json。
+  把 `package` 變成必填的下場是「所有裝著舊版的人從此再也檢查不到更新」,畫面上寫
+  「版本資訊格式錯誤」,比原本的缺陷更糟。(已用突變測試釘住:把它改成必填 → 15 條紅,
+  含既有的 `VersionManifestTest`。)
+
+  ⚠ 值不像套件名(有空白、沒有點、不是字串)時 app 一律**當成沒有**,不照收 ——
+  一個看起來確定、實際上沒有根據的比對結果,會直接導致「不給使用者升級」。
+
+  **App 端不靠這幾個欄位也擋得住**:安裝之前直接 `getPackageArchiveInfo()` 讀那個
+  APK 檔自己宣告的套件名。發布端忘了寫也失效不了。所以這幾個欄位買到的是
+  「**下載之前**就知道」(省掉 28MB 與一次失敗),不是「知不知道」。`
+
+- `[2026-08-09] [androidkbd] **`rs_sync_user_data()` 在 ABI 裡,但 Android 沒有接 —— 而且現況是量過的,不是猜的。**
+  `docs/backup-format.md` §8.2 原本寫「`rime_shell.h` 目前沒有暴露 `RimeSyncUserData()`」,
+  那句話已經不成立(`core/include/rime_shell.h:131`,ABI 2)。**不成立的是另一半**:
+  `android/app/src/main/cpp/jni_bridge.cc` 的 `kMethods[]` 裡沒有對應項目,Kotlin 呼叫不到。
+  匯出走的仍然是 §3.1 那條「建一個 session、立刻銷毀」。文件已改成事實。
+
+  這一輪把整條往返在模擬器上實跑了(新增 `scripts/verify_backup_roundtrip.sh`):
+  教三個詞 → 匯出 → `pm clear` → 匯入 → **三個詞都回到候選第一名**。
+  反向也驗了:把 `UserDbSnapshot.flushEngine()` 整支停掉,**最後學到的那個詞會安靜地
+  消失**(前兩個還在),manifest 的 `flushed` 如實變 false。所以那套 flush 是承重的。
+
+  ⚠ **給任何要驗這件事的端(桌面兩端遲早會):教完之後、匯出之前不可以再打任何字。**
+  `UserDictionary::Query` 開頭就 `FinishSession()`,而 `db_pool_` 讓同一本詞典在行程內
+  只有一個 `Db`,所以**一次查詢**就會替所有人提交。我第一版把「確認它學到了」排在
+  匯出之前,結果 flush 停掉仍然全綠 —— 一個永遠不會紅的驗證,而它看起來完全正常。
+
+  接 `rs_sync_user_data()` 還是該做(它才產得出跨端的 `*.userdb.txt`),但**不是加一行
+  JNI 就好**:它會銷毀所有 session、而且是非同步的,與部署共用同一支維護執行緒。
+  接它要一併處理 IME 的 session 重建與「同時只能有一個維護工作」。這一輪沒做。`
+
+- `[2026-08-09] [androidkbd] **debug 建置多了一個 `devtools/BackupHarnessReceiver`(`src/debug/`,release 沒有)。**
+  匯出/匯入要在「IME 的 session 還活著、交易還掛在記憶體裡」的時候被觸發,而
+  `adb shell am broadcast` 是從外面戳進那個行程的唯一辦法。本模組沒有 androidTest 的
+  相依,加一套要動 gradle 與離線的 maven 快取,所以走 receiver。
+  ⚠ 順帶記一個踩過的坑:**一開始寫成 Activity,行不通** —— `am start` 帶著
+  FLAG_ACTIVITY_NEW_TASK,第二次之後會被送進既有實例的 `onNewIntent`,於是同一個指令
+  跑第一次有效、之後全部靜默無效。一個「看起來成功、實際什麼都沒做」的驗證器。`
+
+- `[2026-08-09] [androidkbd → storefix/設計] 一則**沒有追下去、而且事後重現不了**的觀察,放這裡只是留個線索:
+  在全新安裝(`adb uninstall` + `install`)之後的頭幾分鐘,IME 兩次在 logcat 印出
+  「市集要求切換到方案 t9_pinyin」並切到九宮格(08-09 21:12:17、21:14:44),而使用者
+  從來沒選過。症狀是實體鍵盤打 `nihao` 完全不組字(T9 的 speller 只吃 `ADGJMPTW`)。
+  之後我用 `pm clear` + 只開 MainActivity 重試,`shared_prefs/luminakey-store.xml` 根本
+  沒被建出來,**重現不了**。所以這條的可信度只有「看過兩次」,也可能是刻意的預設。
+  只有 `StoreController` 與 `applyKeyboardChoice` 會寫 `StoreSettings.pendingSchema`。`
+
 ## 6. 各端狀態
 
 > 自己更新自己那一行。
@@ -609,6 +684,11 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
 - **Android** — 可用的產品。拼音/注音/九宮格、鍵盤與主題由 YAML 驅動、鍵盤類型選單、
   自定義鍵位、方案市集(34 個)、離線開關與連網紀錄、應用內升級與金鑰輪替、
   介面在地化(英/繁/簡)。354 項單元測試、16 項發布關卡。
+  `[2026-08-09 androidkbd]` 升級器換套件 id 時改走手動搬家路徑、安裝失敗的訊息按原因
+  分家(不再說「檔案無效或已損毀」);**匯出/匯入的完整往返第一次在模擬器上實跑過**
+  (`scripts/verify_backup_roundtrip.sh`,含反向控制組與 flush 的突變測試)。
+  ⚠ 仍未被自動化碰過:**SAF 的檔案選擇器對話框**、以及搬家卡片那一整塊 UI
+  (邏輯有測試,畫面沒有被開起來看過)。
 - **macOS** — **輸入法本體 + 視覺化設定介面 + `.pkg` 安裝檔。使用者已在真 Mac 上
   打出字,但這一輪新增的 UI 一頁都沒有被自動化開啟過。**
   這一輪:六頁設定介面(輸入方案/外觀/文字/市集/連網/進階,IA 見

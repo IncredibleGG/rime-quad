@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    ⚠ **只有 debug 建置有這一份。** AGP 把 src/debug/AndroidManifest.xml 併進
+    debug variant,release 完全看不到它 —— 下面那個 receiver 在出貨的 APK 裡
+    不存在(dex 裡找不到 devtools/)。
+
+    為什麼需要一個 exported 的 receiver:匯出/匯入那條路徑要在**真的 IME
+    正在跑、而且它的 session 還活著**的時候被觸發(未落地的使用者詞典交易
+    就住在那個 session 裡),而 `adb shell am broadcast` 是從外面戳進那個行程
+    的唯一辦法。細節見 devtools/BackupHarnessReceiver.kt 的檔頭。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <receiver
+            android:name="org.luminakey.ime.devtools.BackupHarnessReceiver"
+            android:exported="true" />
+    </application>
+
+</manifest>

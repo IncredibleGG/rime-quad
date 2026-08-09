@@ -35,18 +35,18 @@
     <string name="upgrade_blocked_data_warning">Your words and your settings will NOT move across on their own. Uninstalling deletes them. Do step 1 first, or they are gone.</string>
 
     <!-- %1$s = the label of the export row ("Save everything to a file"). -->
-    <string name="upgrade_step_save">1. Save everything to a file first — \"%1$s\", higher up on this page.</string>
+    <string name="upgrade_step_save">1. Save everything to a file first — “%1$s”, higher up on this page.</string>
     <string name="upgrade_step_get">2. Get the new version using one of the buttons below.</string>
     <string name="upgrade_step_uninstall">3. Uninstall this app.</string>
     <string name="upgrade_step_install">4. Open the file you downloaded and install it.</string>
     <!-- %1$s = the label of the import row ("Restore from a file"). -->
-    <string name="upgrade_step_restore">5. Open the new app and use \"%1$s\" to bring your words and settings back.</string>
+    <string name="upgrade_step_restore">5. Open the new app and use “%1$s” to bring your words and settings back.</string>
 
     <string name="upgrade_open_page">Open the download page</string>
     <string name="upgrade_copy_link">Copy the download link</string>
     <string name="upgrade_link_copied">Download link copied.</string>
     <!-- %1$s = the label of the copy button. -->
-    <string name="upgrade_no_browser">Nothing on this phone can open a link. Use \"%1$s\" instead and paste it somewhere you can download from.</string>
+    <string name="upgrade_no_browser">Nothing on this phone can open a link. Use “%1$s” instead and paste it somewhere you can download from.</string>
 
     <!-- 這一版不會自動下載,要說一次為什麼。 -->
     <string name="upgrade_not_downloaded">This version is not downloaded automatically, because it cannot be installed over the app you have.</string>
@@ -85,7 +85,7 @@
     <string name="upgrade_err_no_manifest">Could not fetch the version information: %1$s</string>
     <!-- %1$s = 下載失敗的理由。 -->
     <string name="upgrade_err_download_failed">Download failed: %1$s</string>
-    <string name="upgrade_err_install_not_permitted">Your phone has not allowed this app to install apps yet. Turn on \"install unknown apps\" first.</string>
+    <string name="upgrade_err_install_not_permitted">Your phone has not allowed this app to install apps yet. Turn on “install unknown apps” first.</string>
 
     <!--
         ⚠ 這是整條線上唯一一句可以說「檔案壞了」的話 —— 因為這裡**真的**
