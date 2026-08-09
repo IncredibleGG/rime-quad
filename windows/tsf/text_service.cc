@@ -645,17 +645,27 @@ bool TextService::HandleKey(ITfContext* ctx, WPARAM w, LPARAM l, bool key_up) {
   }
   if (!result.handled) {
     // 引擎不處理這顆鍵 —— 但我們在 OnTestKeyDown 已經宣告吃掉它了,
-    // 宿主不會再處理它。所以這裡必須有人負責:
+    // 宿主不會再處理它。所以這裡必須有人負責。
     //
-    //   · 字元鍵:由我們把那個字寫進文件。這條路每天都會走到 ——
-    //     英數模式底下每一顆字母、以及朗月拼音底下的數字,引擎都不處理。
-    //     (為什麼不乾脆不吃它們:哪些字元會起頭是**方案**決定的,
-    //      注音的 alphabet 含數字。見 key_eat_policy.h。)
-    //   · 功能鍵:只有在組字中才會走到這裡。不自己動文件 —— 那是宿主的
-    //     游標,我們動它只會把事情弄得更亂。放行,讓宿主自己決定。
+    // ── 沒有組字時:字元鍵由我們自己把字寫進文件 ─────────────────
     //
-    // ⚠ 組字進行中不自己插字:那會插進組字的 range 裡,把 preedit 弄壞。
-    //   那時放行,由宿主處理。
+    //   這條路每天都會走到:英數模式底下每一顆字母、朗月拼音底下的數字,
+    //   引擎都不處理。(為什麼不乾脆不吃它們:哪些字元會起頭是**方案**
+    //   決定的,注音的 alphabet 含數字。見 key_eat_policy.h。)
+    //
+    // ── 組字進行中:吃掉並且什麼都不做 ───────────────────────────
+    //
+    //   ⚠ 這一段是刻意的,不是偷懶。組字進行中,輸入法擁有這個輸入脈絡:
+    //
+    //     · 自己插字元 → 會插進組字的 range 裡,把 preedit 弄壞。
+    //     · 放行給宿主 → 宿主會拿 Tab / 方向鍵去動**它自己的**游標,
+    //       而那個游標正壓在一段進行中的組字上。使用者看到的是組字
+    //       突然跳到別的地方、或文件裡多出半截 preedit。
+    //
+    //   兩條都比「什麼都不做」糟。而且這樣一來
+    //   「OnTestKeyDown 說吃 ⟹ OnKeyDown 也說吃」是**結構上**成立的,
+    //   不是碰運氣 —— verify_input_matrix.sh 的 MISMATCH 那一格量的就是它。
+    //   (唯一的例外是連線在兩趟之間斷掉,而那條路上面已經放行了。)
     if (ShouldSelfInsert(plan.kind) && !composition_) {
       const char32_t ch = CharForSelfInsert(plan.mapped.keysym);
       if (ch != 0 && SelfInsertChar(ctx, ch)) {
@@ -670,6 +680,17 @@ bool TextService::HandleKey(ITfContext* ctx, WPARAM w, LPARAM l, bool key_up) {
         return true;
       }
     }
+    // 組字進行中 → 吃掉並且什麼都不做(理由見上面那段)。
+    //
+    // ⚠ 用 Composing() 而不是 composition_:引擎說它還在組字、而我們這一側
+    //   的組字沒開起來(StartComposition 失敗)時,這顆鍵在 OnTestKeyDown
+    //   已經被宣告吃掉了 —— 這裡要用**同一個**條件回答,不然那一格就是黑洞。
+    if (Composing()) return true;
+
+    // 走到這裡 = 沒有組字、而且這顆鍵不是字元鍵(或字元補不出來)。
+    // 依 key_eat_policy 的規則,功能鍵在沒有組字時根本不會被宣告吃掉,
+    // 所以正常情況到不了這裡。真的到了就放行 ——
+    // 放行最壞是「這顆鍵沒作用」,吃掉最壞是「這顆鍵永遠壞了」。
     return false;
   }
 

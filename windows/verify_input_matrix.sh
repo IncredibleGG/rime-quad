@@ -85,6 +85,11 @@ ok()        { printf '  ✓ %s\n' "$*"; }
 #
 # ⚠ 預期值裡的中文假設預設方案是拼音(與 §6c 的 nihao1 → 你好 同一份)。
 #   哪天預設方案換成注音,要改的是這裡的預期值 —— 而不是把這一格拿掉。
+#
+# 預期值寫 `-` = **這一格不比對文件內容**,只比對「沒有黑洞」。
+#   只給真的由方案決定輸出的鍵用(Enter 在組字中上屏的是原文還是轉換結果,
+#   不同方案不一樣)。⚠ 不要拿它來讓一格不好寫的斷言閉嘴 ——
+#   一格不比對內容的測試只剩半條命,而這個專案抓過「測試是綠的,因為它沒在測」。
 MATRIX=$(cat <<'CASES'
 idle_backspace_deletes_host_text|abc|{BS}|ab
 idle_backspace_twice|abc|{BS}{BS}|a
@@ -99,6 +104,11 @@ idle_digit_inserts_a_digit||5|5
 compose_backspace_edits_the_preedit||nihaoo{BS}1|你好
 compose_escape_cancels_everything||nihao{ESC}|
 compose_then_backspace_deletes_committed_text||nihao1{BS}|你
+compose_delete_then_escape||nihao{DEL}{ESC}|
+compose_arrows_then_escape||nihao{LEFT}{RIGHT}{HOME}{END}{ESC}|
+compose_pageupdown_then_escape||nihao{PGDN}{PGUP}{ESC}|
+compose_tab_then_escape||nihao{TAB}{ESC}|
+compose_enter_commits_something||nihao{ENTER}|-
 CASES
 )
 
@@ -112,13 +122,13 @@ run_case() {
   #   (以前這裡寫了一組 `set +e` / `set -e`,而那個 `set -e` 會把 errexit
   #    **打開**,於是第二格開始每一次 grep 找不到東西都會讓整支腳本消失。)
   local rc=0
-  "${HOST}" --langid "${LANGID}" \
-            --seq "${seq}" \
-            --pretext "${pretext}" \
-            --expect-doc "${expect}" \
-            --require-activate \
-            --trace "$(cygpath -w "${traf}")" \
-            --wait-ms 3000 > "${logf}" 2>&1
+  local -a args=(--langid "${LANGID}" --seq "${seq}" --pretext "${pretext}"
+                 --require-activate --trace "$(cygpath -w "${traf}")"
+                 --wait-ms 3000)
+  if [ "${expect}" != "-" ]; then
+    args+=(--expect-doc "${expect}")
+  fi
+  "${HOST}" "${args[@]}" > "${logf}" 2>&1
   rc=$?
 
   local out doc mism
@@ -127,7 +137,11 @@ run_case() {
   mism="$(printf '%s\n' "${out}" | sed -n 's/^  MISMATCH=\([0-9]*\)$/\1/p' | tail -1)"
 
   if [ "${rc}" -eq 0 ]; then
-    ok "${name}:文件 = \"${doc}\""
+    if [ "${expect}" = "-" ]; then
+      ok "${name}:文件 = \"${doc}\"(這一格只比對「沒有黑洞」)"
+    else
+      ok "${name}:文件 = \"${doc}\""
+    fi
   else
     note_fail "${name}:結束碼 ${rc}
      預期文件 = \"${expect}\"
