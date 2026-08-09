@@ -168,7 +168,8 @@ object BackupFormat {
      * （`rime-userdb-text` 要靠 librime 的 `UserDictManager::Restore` 合併，
      * 而 `rime_shell.h` 沒有那個進入點）。這個集合就是那份差距的**唯一**
      * 記載處：讀不動的會被指名報給使用者，不會安靜地少一本。
-     * 等 `rs_sync_user_data()` 進了 ABI，這裡多加一個字串就好。
+     * `rs_sync_user_data()` 已經在 ABI 裡了（ABI 2），但 JNI 還沒接出來；
+     * 接上、而且匯入端真的讀得動文字快照之後，這裡多加一個字串就好。
      */
     val READABLE_ENCODINGS: Set<String> = setOf(ENCODING_LEVELDB_DIR)
 

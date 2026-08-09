@@ -209,6 +209,24 @@ jboolean nativeCommitComposition(JNIEnv*, jclass, jlong s) {
   return rs_commit_composition(static_cast<rs_session>(s)) ? JNI_TRUE : JNI_FALSE;
 }
 
+// 九宮格的音節消歧只能靠改寫輸入串（librime 沒有「選擇某個拼寫」的 API，
+// 見 rime_shell.h 的 rs_set_input 契約與 rime/librime#123）。
+//
+// ⚠ 回傳值一定要照實傳上去。stub 的 rs_set_input() 是**刻意**回 false 的：
+//   把它當成成功，消歧欄就會畫出一個與引擎狀態不符的畫面 —— 使用者點了 ni、
+//   看到候選收斂，而引擎其實一個字元都沒改。
+jboolean nativeSetInput(JNIEnv* env, jclass, jlong s, jstring input) {
+  std::string in = FromJString(env, input);
+  return rs_set_input(static_cast<rs_session>(s), in.c_str()) ? JNI_TRUE
+                                                              : JNI_FALSE;
+}
+
+// 改寫之前要先知道現在是什麼。**不是 preedit** —— preedit 是顯示用的，
+// speller 可能已經加了分隔符或轉寫過，拿它去改寫會把分隔符也寫回引擎。
+jstring nativeGetInput(JNIEnv* env, jclass, jlong s) {
+  return ToJString(env, rs_get_input(static_cast<rs_session>(s)));
+}
+
 jobjectArray nativeSnapshot(JNIEnv* env, jclass, jlong session) {
   rs_session s = static_cast<rs_session>(session);
   const rs_snapshot* snap = rs_snapshot_acquire(s);
@@ -363,6 +381,10 @@ const JNINativeMethod kMethods[] = {
      reinterpret_cast<void*>(nativeClearComposition)},
     {"nativeCommitComposition", "(J)Z",
      reinterpret_cast<void*>(nativeCommitComposition)},
+    {"nativeSetInput", "(JLjava/lang/String;)Z",
+     reinterpret_cast<void*>(nativeSetInput)},
+    {"nativeGetInput", "(J)Ljava/lang/String;",
+     reinterpret_cast<void*>(nativeGetInput)},
     {"nativeSnapshot", "(J)[Ljava/lang/Object;",
      reinterpret_cast<void*>(nativeSnapshot)},
     {"nativeSchemaList", "()[Ljava/lang/String;",

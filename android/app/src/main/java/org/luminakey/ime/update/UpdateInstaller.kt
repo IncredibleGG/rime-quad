@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.util.Log
+import org.luminakey.ime.R
 import java.io.File
 
 /**
@@ -19,7 +20,8 @@ import java.io.File
  * 沒有任何回報管道：安裝成功、被使用者取消、還是因為簽章不符被系統拒絕，
  * app 一律收不到，只能在畫面上留一句「請稍候」然後永遠不知道下文。
  * `PackageInstaller` 會把結果送回我們自己的 receiver，失敗原因也拿得到 ——
- * 而失敗原因正是這條線最需要說清楚的東西（見 [describeStatus]）。
+ * 而失敗原因正是這條線最需要說清楚的東西（分類在 [InstallFailure]，
+ * 字面在 [UpdateController.renderInstallFailure]）。
  *
  * ── 權限 ────────────────────────────────────────────────────────────────
  * 需要 `REQUEST_INSTALL_PACKAGES`，而且**光有這個權限不夠**：使用者還得
@@ -40,7 +42,28 @@ object UpdateInstaller {
      * 都過不去。同一時間只會有一個安裝在跑，一個欄位就夠。
      */
     @Volatile
-    private var pending: ((ok: Boolean, message: String) -> Unit)? = null
+    private var pending: ((InstallOutcome) -> Unit)? = null
+
+    /**
+     * 讀一個**還沒安裝**的 APK 檔自己宣告的套件名。
+     *
+     * ══════════════════════════════════════════════════════════════════
+     *  ⚠ 這是「按下安裝之前就知道」的最後一道、也是最可靠的一道防線
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * version.json 的 `package` 欄位要靠發布端寫，而且**舊的 version.json
+     * 沒有它**。這一支不靠任何人：`getPackageArchiveInfo()` 直接剖析那個
+     * 檔案裡的 AndroidManifest，不連網、不需要任何權限、不會安裝任何東西。
+     *
+     * 所以就算版本資訊完全沒提，我們仍然在把檔案交給系統之前就知道
+     * 「它裝不上去」，而不是等系統回一句「APK 檔案無效或已損毀」。
+     *
+     * 回傳 null = 讀不出來（檔案被刪了、或系統剖析不了）。**null 不可以
+     * 當成「不一樣」**：那會讓一個讀檔失敗變成「不給使用者升級」。
+     */
+    fun packageNameOf(context: Context, apk: File): String? = runCatching {
+        context.packageManager.getPackageArchiveInfo(apk.absolutePath, 0)?.packageName
+    }.getOrNull()
 
     /** 系統是否允許本 app 安裝 APK（使用者有沒有開「安裝未知的應用程式」）。 */
     fun canInstallPackages(context: Context): Boolean =
@@ -61,7 +84,7 @@ object UpdateInstaller {
      * 呼叫端**必須**已經驗過 sha256。這裡不再驗一次，因為到這一步檔案已經
      * 落在私有 cacheDir 裡，重驗只是重讀 28MB。
      */
-    fun install(context: Context, apk: File, onResult: (ok: Boolean, message: String) -> Unit) {
+    fun install(context: Context, apk: File, onResult: (InstallOutcome) -> Unit) {
         pending = onResult
         val app = context.applicationContext
         try {
@@ -92,50 +115,44 @@ object UpdateInstaller {
             }
         } catch (e: Exception) {
             Log.w(TAG, "建立安裝 session 失敗", e)
-            dispatch(false, "無法啟動安裝：${e.message ?: e}")
+            dispatch(
+                InstallOutcome.DidNotStart(
+                    app.getString(R.string.upgrade_err_session, e.message ?: e.toString())
+                )
+            )
         }
     }
 
-    internal fun dispatch(ok: Boolean, message: String) {
+    internal fun dispatch(outcome: InstallOutcome) {
         val cb = pending
         pending = null
-        cb?.invoke(ok, message)
+        cb?.invoke(outcome)
     }
+}
+
+/**
+ * 一次安裝嘗試的結果。
+ *
+ * ⚠ **刻意把「系統拒絕」與「還沒走到系統那一關」分開。** 兩者要說的話不同：
+ * 前者的原因由 [InstallFailure] 分類、由使用者的下一步決定字面；後者是我們
+ * 自己的問題（建不出 session、開不了確認畫面），使用者只能回報。
+ * 併成一個「安裝失敗」字串正是這一輪在修的那種形狀。
+ */
+sealed class InstallOutcome {
+
+    object Success : InstallOutcome()
 
     /**
-     * 把 `PackageInstaller` 的 status 翻成使用者看得懂、而且**知道下一步做什麼**的話。
+     * 系統看過檔案之後拒絕了。
      *
-     * `STATUS_FAILURE_CONFLICT` 特別重要：那是簽章不符時最常見的回報。
-     * 使用者看到「衝突」四個字毫無頭緒，所以直說 —— 那代表這份 APK 不是
-     * 同一把金鑰簽的，除了解除安裝重裝沒有別的路，而重裝會清掉他的詞典。
+     * [raw] 是系統原文，**要原樣留著**（附在訊息末尾）—— 它是回報時唯一
+     * 有價值的東西。但它不可以是**主要**的那一句話：使用者看不懂
+     * `INSTALL_FAILED_INVALID_APK`，而照字面理解會把他帶去錯的地方。
      */
-    internal fun describeStatus(status: Int, raw: String?): String {
-        val detail = raw?.takeIf { it.isNotBlank() }?.let { "\n（系統訊息：$it）" }.orEmpty()
-        return when (status) {
-            PackageInstaller.STATUS_FAILURE_ABORTED ->
-                "安裝已取消。$detail"
+    data class Rejected(val kind: InstallFailureKind, val raw: String?) : InstallOutcome()
 
-            PackageInstaller.STATUS_FAILURE_BLOCKED ->
-                "安裝被系統或裝置管理原則擋下。$detail"
-
-            PackageInstaller.STATUS_FAILURE_CONFLICT ->
-                "系統拒絕安裝：這份 APK 與已安裝的版本衝突。\n" +
-                    "最常見的原因是**簽章不符** —— 下載到的檔案不是本專案的金鑰簽的。" +
-                    "請不要用解除安裝的方式硬裝，那會清掉你的個人詞典與所有設定。" +
-                    "先回報這個訊息。$detail"
-
-            PackageInstaller.STATUS_FAILURE_INCOMPATIBLE ->
-                "這份 APK 與本裝置不相容（ABI 或系統版本）。$detail"
-
-            PackageInstaller.STATUS_FAILURE_INVALID ->
-                "APK 檔案無效或已損毀。$detail"
-
-            PackageInstaller.STATUS_FAILURE_STORAGE ->
-                "儲存空間不足，無法安裝。$detail"
-
-            else -> "安裝失敗（status=$status）。$detail"
-        }
-    }
+    /** 還沒交給系統就失敗了。[message] 已經是在地化過的完整句子。 */
+    data class DidNotStart(val message: String) : InstallOutcome()
 }
 
 /**
@@ -157,20 +174,36 @@ class UpdateInstallReceiver : BroadcastReceiver() {
                 @Suppress("DEPRECATION")
                 val confirm = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
                 if (confirm == null) {
-                    UpdateInstaller.dispatch(false, "系統要求確認，但沒有給確認畫面。")
+                    UpdateInstaller.dispatch(
+                        InstallOutcome.DidNotStart(
+                            context.getString(R.string.upgrade_status_no_confirm_screen)
+                        )
+                    )
                     return
                 }
                 confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 runCatching { context.startActivity(confirm) }.onFailure {
-                    UpdateInstaller.dispatch(false, "打不開系統的安裝確認畫面：${it.message}")
+                    UpdateInstaller.dispatch(
+                        InstallOutcome.DidNotStart(
+                            context.getString(
+                                R.string.upgrade_status_no_confirm_open,
+                                it.message ?: it.toString(),
+                            )
+                        )
+                    )
                 }
             }
 
             PackageInstaller.STATUS_SUCCESS ->
-                UpdateInstaller.dispatch(true, "安裝完成。新版本已生效。")
+                UpdateInstaller.dispatch(InstallOutcome.Success)
 
             else ->
-                UpdateInstaller.dispatch(false, UpdateInstaller.describeStatus(status, raw))
+                // ⚠ 分類在這裡做，字面在 UpdateController 做。
+                //    receiver 是跨行程回來的，拿得到 Context 但拿不到那一版
+                //    manifest（例如檔案多大），而「空間不足」那一句需要它。
+                UpdateInstaller.dispatch(
+                    InstallOutcome.Rejected(InstallFailure.classify(status, raw), raw)
+                )
         }
     }
 }

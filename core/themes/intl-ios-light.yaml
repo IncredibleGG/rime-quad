@@ -123,6 +123,10 @@ metrics:
   elevation: 1        # ← 三套裡唯一有陰影的
 
 candidates:
+  # 九宮格拼音消歧欄的位置(§8.6.6.3)。同一個功能,iOS 畫在候選列上方
+  # 一橫排、三星與語燕畫在左側直欄 —— 位置屬於風格。
+  syllables:
+    placement: above_candidates
   bar:
     height: 44
     background: "$surface"

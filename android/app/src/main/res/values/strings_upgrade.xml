@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    應用內升級的訊息:「裝不上去」與「裝失敗了」。
+
+    ⚠ **開新檔而不是加進 strings.xml。** values/ 底下所有 xml 會被 aapt 併成
+    同一張表,分檔不影響行為,但省掉同一個檔案被多條支線同時改的必然衝突。
+    既有的 update_* 住在 strings.xml(不是這條線的檔案),所以這一份一律用
+    upgrade_ 前綴 —— 撞名的話贏的那個由檔案順序決定,而畫面看起來完全正常,
+    只是有一句話變成別人的。
+
+    ⚠ **這一份是回落語系,必須是英文。** 三份的 key 與 placeholder 由
+    keyboard/KbdStringsTest.kt 掃目錄驗(它掃 values*/strings*.xml 的每一份,
+    新開的檔案自動被涵蓋,不必再抄一支測試)。
+
+    ── 用字 ──────────────────────────────────────────────────────────────
+    使用者是麻瓜。不出現「applicationId」「套件」「簽章」這些字,只講他關心的:
+    「你打過的字」「這支 app」「你的手機不讓它裝上去」。
+    ⚠ 而且每一則失敗**都要有一句他做得到的下一步** —— 「安裝失敗」不是訊息。
+-->
+<resources>
+
+    <!-- ═══════════════ 換了 app 身分:裝不上去(按下安裝之前就知道) ═══════════════ -->
+
+    <string name="upgrade_blocked_title">This update has to be installed by hand</string>
+
+    <!--
+        %1$s = 新版的識別名稱,%2$s = 目前這一支的。
+        刻意把兩個名字都印出來:使用者要拿它去對照下載頁上的東西。
+    -->
+    <string name="upgrade_blocked_why">The new version is published under a different app identity (%1$s, where this one is %2$s). Your phone treats that as a separate app rather than an update, and will not install it on top of this one. Nothing is broken and the download is fine — Android just does not allow this change in place.</string>
+
+    <!-- 不確定它是不是「我們自己改名」時說這一句,語氣保守。 -->
+    <string name="upgrade_blocked_unverified">We cannot confirm from here that this really is the same project under a new name. If you did not expect this app to be renamed, do not install it — report what you see on this screen first.</string>
+
+    <string name="upgrade_blocked_data_warning">Your words and your settings will NOT move across on their own. Uninstalling deletes them. Do step 1 first, or they are gone.</string>
+
+    <!-- %1$s = the label of the export row ("Save everything to a file"). -->
+    <string name="upgrade_step_save">1. Save everything to a file first — “%1$s”, higher up on this page.</string>
+    <string name="upgrade_step_get">2. Get the new version using one of the buttons below.</string>
+    <string name="upgrade_step_uninstall">3. Uninstall this app.</string>
+    <string name="upgrade_step_install">4. Open the file you downloaded and install it.</string>
+    <!-- %1$s = the label of the import row ("Restore from a file"). -->
+    <string name="upgrade_step_restore">5. Open the new app and use “%1$s” to bring your words and settings back.</string>
+
+    <string name="upgrade_open_page">Open the download page</string>
+    <string name="upgrade_copy_link">Copy the download link</string>
+    <string name="upgrade_link_copied">Download link copied.</string>
+    <!-- %1$s = the label of the copy button. -->
+    <string name="upgrade_no_browser">Nothing on this phone can open a link. Use “%1$s” instead and paste it somewhere you can download from.</string>
+
+    <!-- 這一版不會自動下載,要說一次為什麼。 -->
+    <string name="upgrade_not_downloaded">This version is not downloaded automatically, because it cannot be installed over the app you have.</string>
+
+    <!-- ═══════════════ 安裝失敗:每一種原因各一句下一步 ═══════════════ -->
+
+    <!--
+        ⚠ 這一句會接在**每一則**安裝失敗後面。它存在的理由是:那份檔案剛剛
+        才通過雜湊比對,所以「檔案壞了」是我們**有證據**可以排除的。
+        使用者第一個念頭一定是「是不是下載壞了」,先替他把那條路關掉。
+    -->
+    <string name="upgrade_fail_verified">The file we downloaded matches the published fingerprint exactly, so this is not a broken download and downloading it again will not help.</string>
+
+    <string name="upgrade_fail_package_changed">Your phone refused this because the new version is published under a different app identity — to Android that is a separate app, not an update.</string>
+    <string name="upgrade_fail_signature">Your phone refused this: the file is not signed with the same key as the app you already have. Do not uninstall to force it through — that erases every word this keyboard learned from you. Please report this screen instead.</string>
+    <string name="upgrade_fail_downgrade">Your phone already has a newer version than this one, and Android never installs backwards. There is nothing for you to do here — this is a mistake on our side. Please report it.</string>
+    <!-- %1$s = how big the file is, e.g. "28.4 MB". -->
+    <string name="upgrade_fail_storage">There is not enough free space to install this. It needs about %1$s free, plus room to unpack. Clear some space and press Install again.</string>
+    <!--
+        ⚠ 不要寫 "processor" —— 那是 RIME 的元件名之一,UiBannedWordsTest 會擋。
+        寫給使用者看的話本來就不該用它,這裡說 "chip"。
+    -->
+    <string name="upgrade_fail_incompatible">This build does not fit this phone — either it was built for a different kind of chip, or your Android version is older than it needs. Nothing you do on the phone will change that. Please report which phone and Android version you have.</string>
+    <string name="upgrade_fail_blocked">Your phone blocked the install. Phones with Play Protect scanning switched on sometimes block apps that did not come from the store: try again and choose the option to install anyway, or turn that scanning off for a moment.</string>
+    <string name="upgrade_fail_cancelled">Install cancelled. Nothing on your phone changed. Press Install again whenever you are ready.</string>
+    <string name="upgrade_fail_unexplained">Your phone refused to install this file and did not say why in a way we recognise. Please report the message below — it is the only clue there is.</string>
+
+    <!-- %1$s = 系統原文。刻意保留:回報時它是唯一有用的東西。 -->
+    <string name="upgrade_fail_system_detail">(what Android said: %1$s)</string>
+
+    <!-- ═══════════════ UpdateController 原本寫死的那幾句 ═══════════════ -->
+
+    <string name="upgrade_err_network_off_check">The network switch is off, so nothing was checked. Turn it on under Network and try again.</string>
+    <string name="upgrade_err_network_off_download">The network switch is off, so nothing was downloaded. Turn it on under Network and try again.</string>
+    <!-- %1$s = 取不到的理由(來自網路層)。 -->
+    <string name="upgrade_err_no_manifest">Could not fetch the version information: %1$s</string>
+    <!-- %1$s = 下載失敗的理由。 -->
+    <string name="upgrade_err_download_failed">Download failed: %1$s</string>
+    <string name="upgrade_err_install_not_permitted">Your phone has not allowed this app to install apps yet. Turn on “install unknown apps” first.</string>
+
+    <!--
+        ⚠ 這是整條線上唯一一句可以說「檔案壞了」的話 —— 因為這裡**真的**
+        比對過雜湊而且不符。%1$s 預期值,%2$s 實際值。
+    -->
+    <string name="upgrade_err_sha_mismatch">The file we downloaded does not match the published fingerprint, so it was thrown away and nothing was installed. This is usually a download that broke on the way (or something in between changed it). Try again later; if it keeps happening, please report it.\n\nExpected: %1$s\nGot: %2$s</string>
+
+    <string name="upgrade_status_checking">Checking…</string>
+    <string name="upgrade_status_check_done">Checked.</string>
+    <string name="upgrade_status_up_to_date">You are on the latest version.</string>
+    <!-- %1$s = 線上的版本字串。 -->
+    <string name="upgrade_status_downgrade">The version on the server (%1$s) is older than the one you have, so there is nothing to update to.</string>
+    <!-- %1$s = 已下載, %2$s = 總大小。 -->
+    <string name="upgrade_status_downloading">Downloading… %1$s of %2$s</string>
+    <string name="upgrade_status_verifying">Checking the file…</string>
+    <string name="upgrade_status_ready">Downloaded and checked. You can install it now.</string>
+    <string name="upgrade_status_ready_cached">Already downloaded and checked earlier — you can install it straight away.</string>
+    <string name="upgrade_status_waiting_confirm">Waiting for your phone to ask you to confirm…</string>
+    <string name="upgrade_status_installed">Installed. The new version is running.</string>
+    <string name="upgrade_status_no_confirm_screen">Your phone asked for confirmation but did not give us a screen to show you.</string>
+    <!-- %1$s = 系統給的理由。 -->
+    <string name="upgrade_status_no_confirm_open">Could not open your phone\'s install confirmation screen: %1$s</string>
+    <!-- %1$s = 例外訊息。 -->
+    <string name="upgrade_err_session">Could not start the install: %1$s</string>
+
+</resources>

@@ -139,11 +139,12 @@ object LayoutParser {
     private val DOC_KEYS = setOf(
         "format", "id", "revision", "name", "description", "author", "license",
         "inherits", "min_client", "kind", "targets", "for_schema", "auto_for_schema",
+        "deprecated",
         "direction", "default_layer", "alpha_layer", "primary", "metrics", "layers",
         "key_patches"
     )
     private val METRICS_KEYS = setOf("row_spacing", "key_spacing", "height_scale")
-    private val LAYER_KEYS = setOf("id", "label", "units", "rows")
+    private val LAYER_KEYS = setOf("id", "label", "units", "rows", "syllable_slots")
     private val ROW_KEYS = setOf("weight", "keys")
     private val KEY_KEYS = setOf(
         "id", "label", "hint", "icon", "label_from", "width", "style", "spacer",
@@ -250,6 +251,7 @@ object LayoutParser {
             targets = c.child("targets").stringList(listOf("android", "ios")),
             forSchema = forSchema,
             autoForSchema = autoForSchema,
+            deprecated = c.child("deprecated").bool(false),
             direction = c.child("direction").enumValue(Direction.LTR),
             defaultLayer = defaultLayer,
             alphaLayer = alphaLayer,
@@ -312,7 +314,8 @@ object LayoutParser {
             id = id,
             label = c.child("label").localized(),
             units = units,
-            rows = rows
+            rows = rows,
+            syllableSlots = c.child("syllable_slots").stringList(emptyList())
         )
     }
 

@@ -127,6 +127,13 @@ data class KeyboardUiState(
     val heightDraft: Float? = null,
     /** 主題／佈局載入時累積的警示，顯示在候選列供除錯。 */
     val configProblem: String? = null,
+    /**
+     * 九宮格消歧：使用者**已經確定**的音節，依序。
+     *
+     * 由 IME service 持有（只有那裡拿得到 `rs_get_input()`），單向送到 UI。
+     * 它的長度就是「現在該問第幾個音節」，也是消歧欄要顯示哪一批讀音的依據。
+     */
+    val confirmedSyllables: List<String> = emptyList(),
 ) {
     val layer: LayoutLayer? get() = layout?.layer(layerId) ?: layout?.layers?.firstOrNull()
 }
@@ -177,4 +184,12 @@ sealed interface KeyboardEvent {
 
     /** 「全部設定 ›」：開 App。這是面板上最不顯眼的一項，因為預設就是不去 App。 */
     data object OpenAppSettings : KeyboardEvent
+
+    /**
+     * 九宮格消歧欄：使用者點了一個讀音。
+     *
+     * 這**不是**候選篩選 —— 它會把引擎的輸入串改寫掉（見 [T9Syllables] 檔尾
+     * 那一段），所以必須由 IME service 處理：只有那裡拿得到 session。
+     */
+    data class SelectSyllable(val syllable: String) : KeyboardEvent
 }

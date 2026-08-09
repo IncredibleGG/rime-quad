@@ -114,7 +114,19 @@ data class LayoutLayer(
     val id: String,
     val label: LocalizedString,
     val units: Float,
-    val rows: List<LayoutRow>
+    val rows: List<LayoutRow>,
+    /**
+     * §9：這一層要把哪幾顆鍵讓給拼音消歧欄（主題的
+     * `candidates.syllables.placement: keyboard_slot` 才會用到）。
+     *
+     * 值是本層既有的 `key.id`。空清單 = 這一層沒有消歧欄，照常畫它自己的鍵。
+     *
+     * ⚠ 這份宣告原本寫死在 `keyboard/T9Syllables.kt` 的 `SLOTS`（白名單兩個
+     * 佈局 id + 寫死的 layer id + 寫死的三個 key id）。搬過來之後，新增一份
+     * 九宮格佈局不必再改 Kotlin，而「有人把 `pu_comma` 改名」也會被
+     * `T9SyllablesTest` 當場抓到，不會靜靜地少一欄。
+     */
+    val syllableSlots: List<String> = emptyList()
 )
 
 data class LayoutMetrics(
@@ -160,6 +172,15 @@ data class KeyboardLayout(
     val primary: Boolean,
     val metrics: LayoutMetrics,
     val layers: List<LayoutLayer>,
+    /**
+     * 這份佈局還在,但**不再列進鍵盤類型選單**。
+     *
+     * 用途是「已被取代、但不想讓既有使用者掉鍵盤」的佈局:它仍然載得起來、
+     * 既有的釘選仍然有效、測試仍然拿它當夾具,只是新使用者選不到它。
+     * 直接刪檔會讓釘著它的人退回自動規則(可接受),但也會一併刪掉
+     * LayoutEscape 的死路覆蓋 —— 那是拿真實佈局的靜態內容在驗的。
+     */
+    val deprecated: Boolean = false,
     val ancestry: List<String>
 ) {
     fun layer(id: String): LayoutLayer? = layers.firstOrNull { it.id == id }

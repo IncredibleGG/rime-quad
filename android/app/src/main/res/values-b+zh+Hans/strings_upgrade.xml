@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    应用内升级的讯息(简体)。key 与 placeholder 必须与 values/strings_upgrade.xml
+    完全一致 —— 由 keyboard/KbdStringsTest.kt 扫目录验。
+-->
+<resources>
+
+    <!-- ═══════════════ 换了 app 身分:装不上去 ═══════════════ -->
+
+    <string name="upgrade_blocked_title">这个新版本要自己手动装</string>
+
+    <string name="upgrade_blocked_why">新版本用的是另一个 app 身分(%1$s,而你手上这一支是 %2$s)。你的手机会把它当成另一个 app、而不是同一支的更新,所以不让它盖上去。文件没有坏、下载也没有问题,只是 Android 不允许这样直接换。</string>
+
+    <string name="upgrade_blocked_unverified">我们在这里没有办法确认它真的是同一个项目换了名字。如果你不知道这支 app 有要改名,先不要装 —— 请先把这一页的内容回报。</string>
+
+    <string name="upgrade_blocked_data_warning">你打过的字和你的设定不会自己跟过去。卸载会把它们删掉。请务必先做第 1 步,不然就没了。</string>
+
+    <string name="upgrade_step_save">1. 先把全部存成一个文件 —— 本页上面那个「%1$s」。</string>
+    <string name="upgrade_step_get">2. 用下面的按钮拿到新版本。</string>
+    <string name="upgrade_step_uninstall">3. 卸载这一支。</string>
+    <string name="upgrade_step_install">4. 打开你刚下载的文件,把它装起来。</string>
+    <string name="upgrade_step_restore">5. 打开新的那一支,用「%1$s」把你的字和设定拿回来。</string>
+
+    <string name="upgrade_open_page">打开下载页</string>
+    <string name="upgrade_copy_link">复制下载链接</string>
+    <string name="upgrade_link_copied">下载链接已复制。</string>
+    <string name="upgrade_no_browser">这台手机上没有东西可以打开链接。改用「%1$s」,再把它贴到你下载得了的地方。</string>
+
+    <string name="upgrade_not_downloaded">这一版不会自动下载,因为它没办法盖在你现在这一支上面。</string>
+
+    <!-- ═══════════════ 安装失败 ═══════════════ -->
+
+    <string name="upgrade_fail_verified">我们下载到的文件与发布时公布的指纹完全相同,所以这不是下载坏掉,再下载一次也不会有帮助。</string>
+
+    <string name="upgrade_fail_package_changed">你的手机拒绝了:新版本用的是另一个 app 身分,对 Android 来说那是另一支 app,不是更新。</string>
+    <string name="upgrade_fail_signature">你的手机拒绝了:这个文件不是用你现在这一支的同一把钥匙签的。千万不要用卸载的方式硬装 —— 那会清掉这个键盘跟你学过的每一个字。请先把这一页回报。</string>
+    <string name="upgrade_fail_downgrade">你手机上的版本已经比这一份新,而 Android 不会往回装。这里你没有事情要做 —— 这是我们这边出的错,麻烦回报一下。</string>
+    <string name="upgrade_fail_storage">空间不够,装不下去。大约需要 %1$s 的空位,还要留一些解开的空间。清一点出来再按一次安装。</string>
+    <string name="upgrade_fail_incompatible">这个版本不合这台手机 —— 不是处理器型别不同,就是你的 Android 版本比它需要的旧。这件事在手机上做什么都不会改变。麻烦回报你用的是哪一款手机、Android 几版。</string>
+    <string name="upgrade_fail_blocked">你的手机把这次安装挡下来了。开着 Play Protect 扫描的手机有时候会挡掉不是从商店来的 app:再试一次并选「仍要安装」,或者暂时把那个扫描关掉。</string>
+    <string name="upgrade_fail_cancelled">已取消安装。你的手机上什么都没有变。想装的时候再按一次安装就好。</string>
+    <string name="upgrade_fail_unexplained">你的手机拒绝安装这个文件,而它给的理由我们认不出来。麻烦把下面那一行回报给我们 —— 那是目前唯一的线索。</string>
+
+    <string name="upgrade_fail_system_detail">(Android 说的原话:%1$s)</string>
+
+    <!-- ═══════════════ 其余 ═══════════════ -->
+
+    <string name="upgrade_err_network_off_check">联网开关是关闭的,没有检查。到「联网」分页打开开关后再试一次。</string>
+    <string name="upgrade_err_network_off_download">联网开关是关闭的,没有下载。到「联网」分页打开开关后再试一次。</string>
+    <string name="upgrade_err_no_manifest">取不到版本信息:%1$s</string>
+    <string name="upgrade_err_download_failed">下载失败:%1$s</string>
+    <string name="upgrade_err_install_not_permitted">你的手机还没允许这支 app 安装应用程序。请先打开「安装未知的应用程序」。</string>
+
+    <string name="upgrade_err_sha_mismatch">下载到的文件与发布时公布的指纹不符,已经丢弃,什么都没有安装。通常是下载途中坏掉(或中间有东西动过它)。稍后再试一次;一直这样请回报。\n\n预期:%1$s\n实际:%2$s</string>
+
+    <string name="upgrade_status_checking">检查中…</string>
+    <string name="upgrade_status_check_done">检查完成。</string>
+    <string name="upgrade_status_up_to_date">已经是最新版本。</string>
+    <string name="upgrade_status_downgrade">服务器上的版本(%1$s)比你手上的旧,没有东西可以更新。</string>
+    <string name="upgrade_status_downloading">下载中… %1$s / %2$s</string>
+    <string name="upgrade_status_verifying">检查文件中…</string>
+    <string name="upgrade_status_ready">已下载并检查完成,可以安装了。</string>
+    <string name="upgrade_status_ready_cached">先前已经下载并检查过了,可以直接安装。</string>
+    <string name="upgrade_status_waiting_confirm">等你的手机跳出确认画面…</string>
+    <string name="upgrade_status_installed">安装完成,新版本已经在跑了。</string>
+    <string name="upgrade_status_no_confirm_screen">你的手机要你确认,却没有给我们可以显示的画面。</string>
+    <string name="upgrade_status_no_confirm_open">打不开手机的安装确认画面:%1$s</string>
+    <string name="upgrade_err_session">没办法开始安装:%1$s</string>
+
+</resources>

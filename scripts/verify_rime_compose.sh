@@ -235,6 +235,18 @@ fi
 step "3. 啟用輸入法"
 if [ -n "$READY_LOG" ]; then
   # 讓 IME 從頭啟動一次,否則若它早就跑完初始化,logcat 裡不會再出現就緒訊息。
+  #
+  # ⚠ **force-stop 待測 IME 會讓系統把預設輸入法換掉,而且不會換回來。**
+  #   量到的(2026-08-09,九宮格消歧欄那一輪):
+  #     ActivityManager: Force stopping org.luminakey.ime …
+  #   之後 default_input_method 變成 com.google.android.inputmethod.latin,
+  #   我們的行程再也沒起來 —— 接下來整輪都在對著 **Gboard** 打字、截圖裡是
+  #   Gboard 的鍵盤,而腳本一路跑到底。force-stop 會把套件打進 stopped 狀態,
+  #   IMMS 於是把它從候選裡剔除。
+  #
+  #   下面的 ime enable/set 是補救,但**光是它們還不夠**:原本只 grep
+  #   `ime list -s`(已啟用清單),而「已啟用」不等於「是預設」。所以再往下
+  #   多一道 default_input_method 的斷言 —— 那才是「等一下的按鍵會送到誰身上」。
   adbs shell am force-stop "$IME_PKG" >/dev/null 2>&1 || true
   adbs logcat -c >/dev/null 2>&1 || true
   pass "已 force-stop $IME_PKG 並清空 logcat(--ready-log 模式)"
@@ -245,6 +257,19 @@ adbs shell ime list -s > "$OUT_DIR/ime_list.txt" 2>/dev/null || true
 grep -q "^$IME_ID\$" "$OUT_DIR/ime_list.txt" \
   || fail "系統看不到 $IME_ID。檢查 manifest 是否同時具備:BIND_INPUT_METHOD 權限、android.view.InputMethod intent-filter、指向含至少一個 subtype 的 method.xml 的 android.view.im meta-data"
 pass "系統看得到 $IME_ID"
+
+# 「已啟用」不等於「是預設」。這一關擋的是「整輪在對別的輸入法打字卻報綠燈」。
+IME_NOW=""
+for _try in 1 2 3 4 5 6 7 8 9 10; do
+  IME_NOW="$(adbs shell settings get secure default_input_method 2>/dev/null | tr -d '\r')"
+  [ "$IME_NOW" = "$IME_ID" ] && break
+  adbs shell ime enable "$IME_ID" >/dev/null 2>&1 || true
+  adbs shell ime set "$IME_ID" >/dev/null 2>&1 || true
+  sleep 1
+done
+[ "$IME_NOW" = "$IME_ID" ] \
+  || fail "預設輸入法不是待測的那一個(現在是 ${IME_NOW:-<空>})。接下來的按鍵會送到別的輸入法身上,測出來的東西與本專案無關。"
+pass "預設輸入法確認為 $IME_ID"
 
 # ⚠ 這一段是後來補的,而補的理由值得留著:
 #

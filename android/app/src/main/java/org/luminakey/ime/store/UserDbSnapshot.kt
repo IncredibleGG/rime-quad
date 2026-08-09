@@ -35,8 +35,9 @@ import java.util.concurrent.atomic.AtomicReference
  *
  * ── 怎麼把它逼出來（只用現有的 ABI）─────────────────────────────────────
  *
- * `rime_shell.h` 目前**沒有**暴露 `RimeSyncUserData()`（librime 自己的正解，
- * 見下方「還缺什麼」）。但有一條路，只用 `rs_session_create()` 與
+ * librime 自己的正解是 `RimeSyncUserData()`。**它從 ABI 2 起已經在
+ * `rime_shell.h` 裡了（`rs_sync_user_data()`），只是 Android 的 JNI 橋還沒接**
+ * —— 見下方「還缺什麼」。在那之前有一條路，只用 `rs_session_create()` 與
  * `rs_session_destroy()` 就走得通，關鍵是 librime 的兩個實作細節：
  *
  *   · `UserDictionaryComponent` 有一個 `hash_map<string, weak<Db>> db_pool_`
@@ -68,14 +69,32 @@ import java.util.concurrent.atomic.AtomicReference
  * 的 `GetSession()` 同時動同一個容器。行動端唯一安全的做法是：
  * **所有 session 的生死都在主執行緒**。所以這裡 post 過去再等。
  *
- * ── 還缺什麼（已寫進 docs/coordination.md §5）──────────────────────────
- * 正解是 librime 的 `RimeSyncUserData()`：它會呼叫
- * `UserDictManager::Backup()` → `LevelDb::Backup()` → 寫出
- * **`<name>.userdb.txt` 純文字快照**。那份文字檔才是四端該互通的東西
+ * ── 上面那套是**承重的**，不是保險（2026-08-09 實測）─────────────────
+ * `scripts/verify_backup_roundtrip.sh` 在模擬器上跑過完整往返：教三個詞 →
+ * 匯出（學習用的 session **刻意留著**，交易還掛在記憶體裡）→ `pm clear` →
+ * 匯入 → 三個詞都回到候選第一名。
+ *
+ * 而且把這支 [flushEngine] 整個停掉之後，**最後學到的那個詞會安靜地消失**
+ * （前兩個還在 —— 它們被後續的查詢順手提交了），`flushed` 如實變成 false。
+ * 也就是說這一段真的擋著一個會讓使用者失去資料的缺陷。
+ *
+ * ⚠ 驗它的時候有一個陷阱：**教完之後、匯出之前不可以再打任何字。**
+ * `UserDictionary::Query` 開頭就 `FinishSession()`，所以一次查詢也會替所有人
+ * 提交。第一版把「確認它學到了」排在匯出之前，於是把這支停掉仍然全綠。
+ *
+ * ── 還缺什麼 ────────────────────────────────────────────────────────────
+ * `rs_sync_user_data()` **已經在 `core/include/rime_shell.h:131`（ABI 2）**，
+ * 但 `cpp/jni_bridge.cc` 的 `kMethods[]` 沒有對應項目，所以這一層呼叫不到。
+ * 接上之後才拿得到 `UserDictManager::Backup()` 寫出的
+ * **`<name>.userdb.txt` 純文字快照** —— 那份文字檔才是四端該互通的東西
  * （`UserDictManager::Restore()` 會**合併**而不是覆蓋，跨版本、跨 db 實作
- * 都成立，而且人看得懂）。`rime_shell.h` 沒有這個進入點，而 `core/` 的
- * ABI 歸協調端，本支線不自己加。在那之前 Android 只能匯出
- * `leveldb-dir`，規範 §3.2 已經把兩種載體都定義好了。
+ * 都成立，而且人看得懂）。
+ *
+ * ⚠ 不是「加一行 JNI 就好」：`rs_sync_user_data()` **會銷毀所有 session**
+ * （librime 的 sync 以 `cleanup_all_sessions()` 開頭）而且是**非同步**的，
+ * 與部署共用同一支維護執行緒與同一組通知。接它的時候要一併處理 IME 的
+ * session 重建與「同一時間只能有一個維護工作」。已回報 coordination §5。
+ * 在那之前 Android 只能匯出 `leveldb-dir`，規範 §3.1 兩種載體都定義好了。
  */
 object UserDbSnapshot {
 

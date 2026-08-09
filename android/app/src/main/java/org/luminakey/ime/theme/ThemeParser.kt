@@ -142,7 +142,8 @@ object ThemeParser {
 
     private val CANDIDATE_STYLE_KEYS =
         setOf("orientation", "label", "text", "comment", "item", "separator", "page_indicator")
-    private val CANDIDATES_KEYS = CANDIDATE_STYLE_KEYS + setOf("bar", "window")
+    private val CANDIDATES_KEYS = CANDIDATE_STYLE_KEYS + setOf("bar", "window", "syllables")
+    private val SYLLABLES_KEYS = setOf("placement", "trigger", "max_items", "height")
     private val BAR_KEYS = CANDIDATE_STYLE_KEYS + setOf(
         "height", "background", "border_top_width", "border_top_color", "max_visible",
         "scroll", "expand_button", "show_preedit_inline", "empty_shows_toolbar", "toolbar"
@@ -230,6 +231,19 @@ object ThemeParser {
         windowCursor.warnUnknownKeys(WINDOW_KEYS)
         val window = parseWindow(windowCursor, shared, metrics)
 
+        // §8.6.6.3 消歧欄。預設 `keyboard_slot`：那是本端既有的行為（左側直欄），
+        // 沒宣告的主題不會因為這個欄位的加入而改變樣子。實際畫在哪裡還要看佈局
+        // 有沒有宣告格位 —— 見 KeyboardView 的退化規則。
+        val syllablesCursor = candidatesCursor.mapping("syllables")
+        syllablesCursor.warnUnknownKeys(SYLLABLES_KEYS)
+        val syllables = SyllableBar(
+            placement = syllablesCursor.child("placement")
+                .enumValue(SyllablePlacement.KEYBOARD_SLOT),
+            trigger = syllablesCursor.child("trigger").enumValue(SyllableTrigger.WHILE_COMPOSING),
+            maxItems = syllablesCursor.child("max_items").int(0, 0, 32),
+            height = syllablesCursor.child("height").length(40f, 24f, 96f),
+        )
+
         return Theme(
             id = id,
             revision = c.child("revision").int(1, 1, Int.MAX_VALUE),
@@ -243,7 +257,7 @@ object ThemeParser {
             palette = ctx.palette,
             typography = typography,
             metrics = metrics,
-            candidates = Candidates(shared, bar, window),
+            candidates = Candidates(shared, bar, window, syllables),
             preedit = parsePreedit(c.mapping("preedit")),
             keyboard = parseKeyboard(c.mapping("keyboard"), metrics),
             motion = parseMotion(c.mapping("motion")),

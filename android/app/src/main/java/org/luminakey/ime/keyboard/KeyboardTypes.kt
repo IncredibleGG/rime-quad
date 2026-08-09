@@ -21,6 +21,17 @@ data class LayoutBrief(
     val autoForSchema: List<String> = emptyList(),
     /** §9.1.1 的 `primary`：使用者的主要英數佈局。 */
     val primary: Boolean = false,
+    /**
+     * 這份佈局的鍵**實際送出**的字母（一律小寫化）。
+     *
+     * 這是 T1「佈局送出的 keysym ⊆ 方案的 speller/alphabet」那條可機器驗證的
+     * 判準在前端唯一拿得到的一半:我們看不到方案的 alphabet（librime 沒有這個
+     * 查詢），但看得到佈局送什麼，而**為某方案而做的佈局送什麼，就是那個方案
+     * 吃得下什麼的最好證據**。見 [KeyboardTypes.typesFor]。
+     */
+    val letters: Set<Char> = emptySet(),
+    /** §9：已被取代的佈局，不列進選單（仍然載得起來）。 */
+    val deprecated: Boolean = false,
 ) {
     /** §9.1.1 的 `"*"`：適用於全部方案。 */
     val wildcard: Boolean get() = forSchema.contains("*")
@@ -150,8 +161,33 @@ object KeyboardTypes {
         schema: RimeSchema,
         layouts: List<LayoutBrief>,
     ): List<KeyboardType> {
-        val declared = layouts.filter { !it.isAccessory && it.declares(schema.id) }
-        val generic = layouts.filter { !it.isAccessory && it.wildcard }
+        // 已被取代的佈局不進選單。它仍然載得起來 —— 釘著它的使用者不會掉鍵盤。
+        val listable = layouts.filter { !it.isAccessory && !it.deprecated }
+        val declared = listable.filter { it.declares(schema.id) }
+
+        /* ── ⚠ 泛用佈局不是「配任何方案都成立」───────────────────────────
+         *
+         * 本檔原本的註解寫著「剩下的 `"*"` 佈局(qwerty、intl-*)是真正的泛用
+         * 拉丁字母佈局，配任何方案都成立」。**那是錯的，而且是第七個
+         * 「看得到但摸不到」**:選單在 `t9_pinyin` 底下照樣提供 QWERTY，
+         * 而 `t9_pinyin` 的 `speller/alphabet` 只有 `ADGJMPTW` ——
+         * 使用者選了之後鍵盤畫得出來、**一個字也打不出來**。
+         *
+         * 判準用 T1 的可驗證那一半:為這個方案而做的佈局送出哪些字母，就是
+         * 這個方案吃得下哪些字母的最好證據。泛用佈局送出的字母若跑到那個集合
+         * 之外，它就打不出字，不該被提供。
+         *
+         * 大小寫一律正規化:九宮格送大寫 `ADGJMPTW`、QWERTY 送小寫 a–z，
+         * 若不正規化，注音大千(送 a–z)配 QWERTY 的 shift 層(送 A–Z)會被
+         * 誤判成不相容 —— 那會是把好的組合也一起殺掉。
+         *
+         * 沒有任何佈局點名這個方案時(例如 luna_pinyin)，這條規則不適用:
+         * 沒有證據就不要下判斷。
+         */
+        val allowed = declared.flatMap { it.letters }.toSet()
+        val generic = listable.filter { it.wildcard }.filter { brief ->
+            allowed.isEmpty() || brief.letters.isEmpty() || allowed.containsAll(brief.letters)
+        }
         // primary 排在泛用的最前面 —— 它是使用者的基準全鍵盤，埋在幾份
         // 長得差不多的 QWERTY 中間會讓「我只想要普通鍵盤」變成一件要找的事。
         // 點名的佈局裡，自動命中的那一份排最前面：它就是使用者不做任何事時
