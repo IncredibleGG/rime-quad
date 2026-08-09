@@ -91,11 +91,11 @@ final class UserPhrasesTests: XCTestCase {
     func testParseTsv() {
         let r = UserPhrases.parse("""
         # 註解
-        你好\tni hao\t3
-        黃小明\thuang xiao ming
+        你好\tnihao\t3
+        黃小明\thuangxiaoming
         """)
         XCTAssertEqual(r.phrases.count, 2)
-        XCTAssertEqual(r.phrases[0], UserPhrase(text: "你好", code: "ni hao", weight: 3))
+        XCTAssertEqual(r.phrases[0], UserPhrase(text: "你好", code: "nihao", weight: 3))
         XCTAssertEqual(r.phrases[1].weight, 1, "沒有第三欄時權重是 1")
         XCTAssertTrue(r.problems.isEmpty)
     }
@@ -103,7 +103,7 @@ final class UserPhrasesTests: XCTestCase {
     /// ⚠ CRLF:Windows 端匯出的檔案帶 \r,留著會讓權重欄變成「1\r」而解析失敗,
     /// 錯誤訊息看起來卻像使用者打錯字。
     func testCrlfIsHandled() {
-        let r = UserPhrases.parse("你好\tni hao\t3\r\n世界\tshi jie\t2\r\n")
+        let r = UserPhrases.parse("你好\tnihao\t3\r\n世界\tshijie\t2\r\n")
         XCTAssertEqual(r.phrases.count, 2)
         XCTAssertEqual(r.phrases[0].weight, 3)
     }
@@ -117,12 +117,42 @@ final class UserPhrasesTests: XCTestCase {
 
     func testCodeIsNormalised() {
         let r = UserPhrases.parse("你好\t NI  Hao \t1\n")
-        XCTAssertEqual(r.phrases.first?.code, "ni hao",
-                       "大小寫與多重空白要收斂,否則同一個詞會變成兩筆")
+        XCTAssertEqual(r.phrases.first?.code, "nihao",
+                       "大小寫要收斂,否則同一個詞會變成兩筆")
+    }
+
+    /// ⚠ **這一條是這一頁能不能上架的那一條。**
+    ///
+    /// 編碼欄留著空格的話,librime 那一側永遠查不到 ——
+    /// 檔案讀得進去、詞條也載入了、清單裡看得到,而使用者打字時什麼都不會發生,
+    /// 沒有任何錯誤訊息。這一頁曾經因此被下架整整一輪。
+    ///
+    /// 空白分隔是**其他 RIME 前端的碼表**與**我們自己舊版匯出的檔案**
+    /// 都可能有的寫法,所以這是匯入路徑上必須接住的東西,不是理論上的邊界情況。
+    func testSpaceSeparatedCodeIsCollapsed() {
+        for raw in ["ni hao", "ni  hao", "NI HAO", " ni hao ", "ni\u{3000}hao"] {
+            XCTAssertEqual(UserPhrases.normaliseCode(raw), "nihao", "「\(raw)」沒有收斂乾淨")
+        }
+        let r = UserPhrases.parse("你好\tni hao\t1\n")
+        XCTAssertEqual(r.phrases.first?.code, "nihao")
+        XCTAssertFalse(UserPhrases.serialise(r.phrases).contains("ni hao"),
+                       "寫出去的檔案裡不可以還留著空白分隔的編碼")
+    }
+
+    /// 兩欄填反是最容易發生、也最看不出來的一種:那一筆會安靜地存進去、
+    /// 出現在清單裡、然後永遠不會被打出來。
+    func testCodeProblemCatchesWhatCannotPossiblyMatch() {
+        XCTAssertNil(UserPhrases.codeProblem("huangxiaoming"))
+        XCTAssertNil(UserPhrases.codeProblem("su3cl3"), "注音的編碼是數字加字母")
+        XCTAssertNil(UserPhrases.codeProblem("qqq"), "打得出來的縮寫不可以被擋下來")
+        XCTAssertNil(UserPhrases.codeProblem("ni hao"), "空格會被收斂掉,不算問題")
+        XCTAssertNotNil(UserPhrases.codeProblem("黃小明"), "中文字不是你按的鍵")
+        XCTAssertNotNil(UserPhrases.codeProblem("   "))
+        XCTAssertNotNil(UserPhrases.codeProblem(String(repeating: "a", count: 65)))
     }
 
     func testRoundTrip() {
-        let list = [UserPhrase(text: "你好", code: "ni hao", weight: 3),
+        let list = [UserPhrase(text: "你好", code: "nihao", weight: 3),
                     UserPhrase(text: "안녕", code: "annyeong", weight: 1)]
         XCTAssertEqual(UserPhrases.parse(UserPhrases.serialise(list)).phrases, list)
     }
@@ -173,12 +203,14 @@ final class UserPhrasesTests: XCTestCase {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
 
-        XCTAssertEqual(UserPhrases.mount(schemaId: "luna_pinyin", userDir: dir), .written)
-        XCTAssertEqual(UserPhrases.mount(schemaId: "luna_pinyin", userDir: dir), .alreadyOurs)
+        XCTAssertEqual(UserPhrases.mount(schemaId: "luna_pinyin", userDir: dir,
+                                         searchDirs: [dir]), .written)
+        XCTAssertEqual(UserPhrases.mount(schemaId: "luna_pinyin", userDir: dir,
+                                         searchDirs: [dir]), .alreadyOurs)
 
         let mine = dir.appendingPathComponent("bopomofo.custom.yaml")
         try? "patch:\n  my: setting\n".write(to: mine, atomically: true, encoding: .utf8)
-        XCTAssertEqual(UserPhrases.mount(schemaId: "bopomofo", userDir: dir),
+        XCTAssertEqual(UserPhrases.mount(schemaId: "bopomofo", userDir: dir, searchDirs: [dir]),
                        .skippedUserOwned("bopomofo.custom.yaml"))
         XCTAssertEqual(try? String(contentsOf: mine, encoding: .utf8), "patch:\n  my: setting\n")
     }
@@ -189,6 +221,110 @@ final class UserPhrasesTests: XCTestCase {
         XCTAssertEqual(UserPhrases.fileName, "custom_phrase.txt")
         XCTAssertTrue(UserPhrases.isOurs(UserPhrases.schemaPatchText()))
         XCTAssertFalse(UserPhrases.isOurs("patch:\n  x: 1\n"))
+        // 兩種形態的差別只在接不接翻譯器,參數那一段兩邊都要在。
+        let withT = UserPhrases.schemaPatchText(mountsTranslator: true)
+        let without = UserPhrases.schemaPatchText(mountsTranslator: false)
+        XCTAssertTrue(withT.contains("engine/translators/@next"))
+        XCTAssertFalse(without.contains("engine/translators/@next"))
+        XCTAssertTrue(without.contains("db_class: stabledb"))
+    }
+
+    /// ⚠ **多接一個翻譯器 = 同一個詞在選字窗裡出現兩次。**
+    ///
+    /// 內建的朙月拼音與注音本來就自帶 `table_translator@custom_phrase`。
+    /// 實測(host 版 librime,2026-08-09):再接一次之後,編譯出來的方案裡
+    /// 有兩個;內建方案剛好有 `uniquifier` 把重複的收掉所以看不見,
+    /// 把 `uniquifier` 拿掉之後,同一個詞立刻變成第 1、2 名兩筆。
+    /// 市集下載的方案沒有人保證有 `uniquifier`。
+    func testMountDoesNotStackASecondTranslatorOnSchemasThatHaveOne() {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("luminakey-dup-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // 內建方案的形狀:繼承一個母方案,母方案的 translators 裡已經有它。
+        try? """
+        __include: base_pinyin.schema:/
+        schema:
+          schema_id: child_pinyin
+        """.write(to: dir.appendingPathComponent("child_pinyin.schema.yaml"),
+                  atomically: true, encoding: .utf8)
+        try? """
+        engine:
+          translators:
+            - punct_translator
+            - table_translator@custom_phrase
+            - script_translator
+        """.write(to: dir.appendingPathComponent("base_pinyin.schema.yaml"),
+                  atomically: true, encoding: .utf8)
+
+        XCTAssertTrue(UserPhrases.schemaAlreadyMountsPhrases(schemaId: "child_pinyin",
+                                                            searchDirs: [dir]),
+                      "要沿著 __include 追到母方案,不然每個內建方案都會被接兩次")
+        _ = UserPhrases.mount(schemaId: "child_pinyin", userDir: dir, searchDirs: [dir])
+        let written = try? String(contentsOf: dir.appendingPathComponent("child_pinyin.custom.yaml"),
+                                  encoding: .utf8)
+        XCTAssertNotNil(written)
+        XCTAssertFalse(written?.contains("engine/translators/@next") ?? true,
+                       "方案自己已經有了,不可以再接一個")
+        XCTAssertTrue(written?.contains("user_dict: custom_phrase") ?? false,
+                      "參數還是要覆寫,不然掛了等於沒掛")
+    }
+
+    /// 沒有自帶的方案(市集下載的多半是這種)一定要接,否則使用者加的詞
+    /// 對它**完全沒有作用,而且沒有任何跡象**。判斷不出來時也要接。
+    func testMountStillAttachesWhenTheSchemaHasNone() {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("luminakey-attach-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        try? """
+        engine:
+          translators:
+            - script_translator
+        """.write(to: dir.appendingPathComponent("plain.schema.yaml"),
+                  atomically: true, encoding: .utf8)
+        XCTAssertFalse(UserPhrases.schemaAlreadyMountsPhrases(schemaId: "plain", searchDirs: [dir]))
+        // 方案檔根本不在:寧可多接一個,也不要安靜地什麼都不做。
+        XCTAssertFalse(UserPhrases.schemaAlreadyMountsPhrases(schemaId: "absent", searchDirs: [dir]))
+
+        _ = UserPhrases.mount(schemaId: "plain", userDir: dir, searchDirs: [dir])
+        let written = try? String(contentsOf: dir.appendingPathComponent("plain.custom.yaml"),
+                                  encoding: .utf8)
+        XCTAssertTrue(written?.contains("engine/translators/@next") ?? false)
+    }
+
+    /// ⚠ **我們自己寫的掛載檔不算證據。**
+    ///
+    /// `luna_pinyin_tw.schema.yaml` 的 `__patch` 指向 `luna_pinyin_tw.custom.yaml` ——
+    /// 那正是我們寫的那一份。照著追下去的話,第二次掛載會看到第一次留下的
+    /// `@next`、判定「方案已經有了」、於是把它拿掉。**掛載就這樣自己消失**,
+    /// 而使用者只會看到「加了詞,但打不出來」。
+    func testOurOwnMountFileIsNotEvidence() {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("luminakey-selfref-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        try? """
+        __patch:
+          - selfref.custom:/patch?
+        engine:
+          translators:
+            - script_translator
+        """.write(to: dir.appendingPathComponent("selfref.schema.yaml"),
+                  atomically: true, encoding: .utf8)
+
+        XCTAssertEqual(UserPhrases.mount(schemaId: "selfref", userDir: dir, searchDirs: [dir]),
+                       .written)
+        // 第二次掛載必須得到跟第一次一模一樣的結果。
+        XCTAssertEqual(UserPhrases.mount(schemaId: "selfref", userDir: dir, searchDirs: [dir]),
+                       .alreadyOurs)
+        let written = try? String(contentsOf: dir.appendingPathComponent("selfref.custom.yaml"),
+                                  encoding: .utf8)
+        XCTAssertTrue(written?.contains("engine/translators/@next") ?? false,
+                      "第二次掛載把自己的那一行當成了方案自帶的,於是拿掉了它")
     }
 
     /// ⚠ 改名(RimeQuad → LuminaKey)之前寫出去的掛載檔仍然是我們的。
@@ -213,10 +349,12 @@ final class UserPhrasesTests: XCTestCase {
         try? "# rimequad-managed: custom_phrase v1\npatch:\n  old: 1\n"
             .write(to: f, atomically: true, encoding: .utf8)
 
-        XCTAssertEqual(UserPhrases.mount(schemaId: "luna_pinyin", userDir: dir), .written)
+        XCTAssertEqual(UserPhrases.mount(schemaId: "luna_pinyin", userDir: dir,
+                                         searchDirs: [dir]), .written)
         let after = try? String(contentsOf: f, encoding: .utf8)
         XCTAssertEqual(after, UserPhrases.schemaPatchText(), "就地換成新標記")
-        XCTAssertEqual(UserPhrases.mount(schemaId: "luna_pinyin", userDir: dir), .alreadyOurs)
+        XCTAssertEqual(UserPhrases.mount(schemaId: "luna_pinyin", userDir: dir,
+                                         searchDirs: [dir]), .alreadyOurs)
     }
 }
 

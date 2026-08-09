@@ -221,8 +221,17 @@ public final class StoreEngine {
         }
 
         // 使用者自己加的詞要對新啟用的方案生效,掛載點也在這裡補上。
+        //
+        // ⚠ searchDirs 的順序必須跟 librime 一致(先使用者目錄,再隨附目錄),
+        //   而且**這裡是最需要它的地方**:市集下載的方案多半沒有自帶
+        //   table_translator@custom_phrase,得靠 mount 幫它接一個;
+        //   內建的那幾個則是本來就有,再接一次會讓同一個詞出現兩次。
+        //   見 UserPhrases.schemaAlreadyMountsPhrases。
         if enabled {
-            for id in ids { _ = UserPhrases.mount(schemaId: id, userDir: userDir) }
+            for id in ids {
+                _ = UserPhrases.mount(schemaId: id, userDir: userDir,
+                                      searchDirs: [userDir, sharedDir])
+            }
         }
 
         return deployOrRollback(snapshot: snapshot, progress: progress, successMessage:

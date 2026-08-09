@@ -17,7 +17,7 @@ name: macOS (核心 + 輸入法 + 設定介面)
 
 on:
   push:
-    branches: [main, macos, rename-apple]
+    branches: [main, macos, rename-apple, dictfix]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -119,17 +119,17 @@ jobs:
       - name: 核心驗證 — 注音 su3cl3 → 你好
         run: ./apple/scripts/verify_console.sh su3cl3 bopomofo_tw 你好
 
-      # ── (a-2b) 詞庫格式:證明那份 TSV 真的會影響輸出 ────────────
+      # ── (a-2b) 使用者加的詞:證明那份 TSV 真的會影響輸出 ────────
       # 這一關驗的是 docs/settings-model.md §5 的格式。純邏輯測試只能證明
       # 我們**寫出**了正確的檔案,證明不了 librime **讀得懂**它 ——
       # 而「檔案格式其實沒生效」正是那種畫面完全正常的缺陷。
-      # ⚠ `continue-on-error` 在這裡**不是**為了讓紅的東西過關,而是因為
-      #   這一關已經給出答案了:**它是紅的,而且我們據此把那一頁下架了**
-      #   (見 SettingsCatalog.pages 的註解)。留著每次跑,是為了讓
-      #   「哪天它變綠了」被看見 —— 那一天就是把詞庫頁加回去的日子。
-      #   ⚠ 不要因為它是黃的就把它刪掉,也不要在它變綠之前把那一頁上架。
-      - name: 使用者詞庫是否生效（目前是紅的,詞庫頁因此未上架）
-        continue-on-error: true
+      #
+      # ⚠ **這一關曾經是 `continue-on-error: true`**,因為它是紅的,
+      #   而「自己加的詞」那一頁據此被下架。2026-08-09 找到原因(編碼欄的空格)
+      #   並修好之後,它變成硬失敗,那一頁也回到線上。
+      #   **它紅了就代表那一頁又變成「按得下去但什麼都不會發生」——
+      #   那時要做的是修它,或把那一頁再拿下來,不是把這裡改回 continue-on-error。**
+      - name: 使用者加的詞真的會改變輸出（綠了才准上架那一頁）
         run: ./apple/scripts/verify_user_dict.sh
 
       # ── (a-3) 輸入法本體 + 設定介面 ────────────────────────────

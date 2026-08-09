@@ -88,6 +88,11 @@ MUTATIONS=(
   "Sources/LuminaKeyKit/SettingsCatalog.swift|blurb: T(\"打勾的方案才會出現在切換清單裡。可以拖曳排序,最上面那一個是預設。\",|blurb: T(\"改 schema_list\",|SettingsCatalogTests"
   "Sources/LuminaKeyKit/ArchiveGuard.swift|\"yaml\", \"yml\", \"txt\", \"ocd2\", \"gram\", \"json\", \"md\", \"lua\",|\"yaml\", \"yml\", \"txt\", \"ocd2\", \"gram\", \"json\", \"md\", \"lua\", \"bin\",|ArchiveGuardTests"
   "Sources/LuminaKeyKit/UserPhrases.swift|out.insert(p, at: 0)|out.append(p)|UserPhrasesTests"
+  # 編碼欄的空白正規化。把「拿掉所有空白」改回「收成一個空白」——
+  # 那正是「自己加的詞」那一頁被下架一輪的那個 bug:檔案讀得進去、
+  # 清單裡看得到、而 librime 永遠查不到,**一句錯誤訊息都沒有**。
+  # 這一格在問的是:如果它再壞一次,測試會不會紅?
+  "Sources/LuminaKeyKit/UserPhrases.swift|where !CharacterSet.whitespacesAndNewlines.contains(s) {|where !CharacterSet.newlines.contains(s) {|UserPhrasesTests"
   "Sources/LuminaKeyKit/IPC.swift|if case .finished = state { return true }|if false { return true }|IPCTests"
   # 改名之後的資料搬遷。把排除清單換成「只看名字完全相符的那幾個」——
   # `*.userdb` 與 `build/` 就會被搬過去,而那是這一組存在的理由:

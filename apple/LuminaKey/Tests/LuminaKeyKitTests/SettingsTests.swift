@@ -225,21 +225,31 @@ final class SettingsCatalogTests: XCTestCase {
         XCTAssertNotNil(SettingsCatalog.page(id: "network"))
     }
 
-    /// ⚠ **「我的詞庫」還沒上架,而且這是刻意的。**
+    /// ⚠ **「自己加的詞」上架了,而上架是有條件的。**
     ///
-    /// verify_user_dict.sh 用真的 librime 證明了:我們寫出的
-    /// custom_phrase.txt 與掛載檔格式正確,但加了詞之後候選裡沒有那個詞。
-    /// 一頁按鈕都按得下去、加完還看得到、而回去打字什麼都不會發生的設定頁,
-    /// 比沒有這一頁更糟。
+    /// 這一頁曾經被刻意拿下來:`verify_user_dict.sh` 用真的 librime 證明
+    /// 「加了詞之後候選裡沒有那個詞」。一頁按鈕都按得下去、加完還看得到、
+    /// 而回去打字什麼都不會發生的設定頁,比沒有這一頁更糟。
     ///
-    /// 這條斷言釘住那個決定:**verify_user_dict.sh 綠了才可以把它加回去**,
-    /// 而加回去的那一刻這條會紅,提醒你順手把這段註解也刪掉。
-    func testDictionaryPageIsNotShippedYet() {
-        XCTAssertNil(SettingsCatalog.page(id: "dictionary"),
-                     "詞庫那一頁要等 verify_user_dict.sh 綠了才能上架")
-        // 但規格與程式碼都留著,不是刪掉。
+    /// 2026-08-09 找到原因(編碼欄的空格,見 `UserPhrases` 檔頭)並修好,
+    /// 那一關在 CI 裡也從 `continue-on-error` 改成硬失敗,所以它回到線上。
+    ///
+    /// **這條斷言現在釘的是反過來的那件事:它必須在側欄裡,而且真的有內容。**
+    /// 哪天有人又把它從 `pages` 拿掉,這條會紅,而拿掉它的正當理由只有一個 ——
+    /// `verify_user_dict.sh` 紅了。那時請連同這段註解一起改。
+    func testDictionaryPageIsShipped() {
+        XCTAssertNotNil(SettingsCatalog.page(id: "dictionary"),
+                        "「自己加的詞」那一頁不在側欄裡")
         XCTAssertEqual(SettingsCatalog.dictionaryPage.id, "dictionary")
         XCTAssertFalse(SettingsCatalog.dictionaryPage.items.isEmpty)
+        // 那一頁的三件事都要在:看清單、匯出、匯入。
+        let ids = Set(SettingsCatalog.dictionaryPage.items.map(\.id))
+        XCTAssertEqual(ids, ["dictionary.list", "dictionary.export", "dictionary.import"])
+        // ⚠ 這一頁的說明必須講到「不要空格」—— 那是使用者唯一會踩、
+        //   而且踩了完全沒有跡象的地方。少了這一句,這一頁就是在教人做錯。
+        let blurb = SettingsCatalog.dictionaryPage.items[0].blurb
+        XCTAssertTrue(blurb.hant.contains("空格"), "加詞的說明沒有提醒不要空格")
+        XCTAssertTrue(blurb.en.lowercased().contains("space"), "英文版沒有提醒不要空格")
     }
 }
 

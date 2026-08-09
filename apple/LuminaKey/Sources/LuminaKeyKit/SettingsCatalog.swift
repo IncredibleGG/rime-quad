@@ -97,25 +97,24 @@ public struct SettingsPage: Equatable, Sendable {
 
 public enum SettingsCatalog {
 
-    /// 實際會出現在側欄的分頁。
+    /// 實際會出現在側欄的分頁。順序照 `docs/ui-design.md` §5.3。
     ///
-    /// ⚠ **`dictionaryPage` 刻意不在這裡。**
+    /// ── `dictionaryPage` 的上架紀錄(2026-08-09)────────────────────
+    /// 這一頁曾經被拿下來一輪。整條路徑當時都寫好了(解析/合併/掛載、UI、
+    /// 單元測試),但 `apple/scripts/verify_user_dict.sh` 用**真的 librime**
+    /// 跑出來是:加了詞之後,打它的編碼**候選裡沒有那個詞**。
+    /// 一頁長得完全正常、按鈕按得下去、加完詞還會出現在清單裡,
+    /// 而使用者回去打字時什麼都不會發生 —— 那正是這個專案抓到過五次的
+    /// 「看得到但摸不到」,也是最難回報的一種:使用者只會覺得自己做錯了。
     ///
-    /// 「我的詞庫」的整條路徑都寫好了(UserPhrases 的解析/合併/掛載、
-    /// 那一頁的 UI、11 項單元測試),但 `apple/scripts/verify_user_dict.sh`
-    /// 用**真的 librime** 跑出來的結果是:加了詞之後,打它的編碼
-    /// **候選裡沒有那個詞**(rime_console 只給出 裝壯壯/壯壯/撞撞…)。
-    /// 也就是我們寫出的檔案格式正確,但 librime 沒有照我們以為的方式讀它。
+    /// 現在紅的原因找到了,而且**不是**當時猜的那三個 ——
+    /// 是編碼欄裡的空格(見 `UserPhrases` 檔頭)。那一關已經變綠,
+    /// 而且加了反向測試證明它對編碼格式是敏感的,所以這一頁回到線上。
     ///
-    /// 這種東西**不可以上架**:一頁長得完全正常、按鈕按得下去、
-    /// 加完詞還會出現在清單裡,而使用者回去打字時什麼都不會發生。
-    /// 那正是這個專案抓到過四次的「看得到但摸不到」,
-    /// 而且是最難回報的一種 —— 使用者只會覺得自己做錯了。
-    ///
-    /// 要上架的條件只有一個:`verify_user_dict.sh` 變綠。
-    /// 程式碼與測試全部留著,把這一行的 `dictionaryPage` 加回去就好。
+    /// ⚠ **下架的條件跟上架一樣只有一個:那一關紅了就再拿下來。**
+    /// 它在 `.github/workflows/macos.yml` 裡是硬失敗,不是 `continue-on-error`。
     public static let pages: [SettingsPage] = [
-        schemasPage, remapPage, appearancePage, textPage,
+        schemasPage, remapPage, appearancePage, textPage, dictionaryPage,
         storePage, networkPage, advancedPage,
     ]
 
@@ -351,20 +350,28 @@ public enum SettingsCatalog {
                 storage: .sessionOption, field: "shape"),
         ])
 
-    // ── 詞庫 ─────────────────────────────────────────────
+    // ── 自己加的詞 ───────────────────────────────────────
+    //
+    // ⚠ 頁名不叫「詞庫」是有理由的(ui-design §6.2 的對照表):
+    //   「詞庫」是我們的詞,不是使用者的詞。使用者想的是「我要它記住這個名字」。
     public static let dictionaryPage = SettingsPage(
         id: "dictionary",
-        title: T("我的詞庫", "我的词库", "My Words"),
-        subtitle: T("讓它記住你自己的詞", "让它记住你自己的词", "Teach it your own words"),
+        title: T("自己加的詞", "自己加的词", "Words You Add"),
+        subtitle: T("讓它記住人名、公司名、專有名詞",
+                    "让它记住人名、公司名、专有名词",
+                    "Teach it names and jargon it doesn't know"),
         symbol: "text.book.closed",
         items: [
             SettingSpec(
                 id: "dictionary.list",
                 kind: .custom,
-                title: T("自己加的詞", "自己加的词", "Words you added"),
-                blurb: T("加一個詞,再打它的拼音就會出現在最前面。人名、公司名、專有名詞都可以。",
-                         "加一个词,再打它的拼音就会出现在最前面。人名、公司名、专有名词都可以。",
-                         "Add a word and it shows up first the next time you type its spelling. Names, companies, jargon — anything."),
+                title: T("你加過的詞", "你加过的词", "Words you added"),
+                // ⚠ 「中間不要空格」這一句是這一頁最要緊的一句話。
+                //   右邊那一欄留了空格的話,那個詞永遠打不出來,而且畫面上
+                //   一切正常 —— 這一頁曾經因此被拿下來一輪(見 pages 的註解)。
+                blurb: T("加了之後,打那幾個鍵它就會排在最前面。右邊那一欄要照你實際按的鍵寫,中間不要空格。",
+                         "加了之后,打那几个键它就会排在最前面。右边那一栏要照你实际按的键写,中间不要空格。",
+                         "Once added, typing those keys brings it up first. Write the right-hand box exactly as you type it, with no spaces."),
                 storage: .userPhrases),
             SettingSpec(
                 id: "dictionary.export",
