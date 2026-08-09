@@ -127,30 +127,39 @@ class SetupStageTest {
 
     /* ── 哪一格給按鈕 ── */
 
-    /** 失敗態一定要有一條看得見的自救路徑。 */
+    /** 部署失敗是唯一一條「重新整理字詞」真的按得動的路。 */
     @Test
     fun failedStageOffersAWayOut() {
-        assertEquals(NotReadyAction.REFRESH_WORDS, actionOf(SetupStage.FAILED))
+        assertEquals(
+            NotReadyAction.REFRESH_WORDS,
+            actionOf(SetupStage.FAILED, RimeRuntime.Failure.DEPLOY),
+        )
     }
 
     /** 準備中真的沒有人能加速它 —— 給一顆按鈕只會讓人按了以為有用。 */
     @Test
     fun preparingAndReadyHaveNoButton() {
-        assertEquals(NotReadyAction.NONE, actionOf(SetupStage.PREPARING))
-        assertEquals(NotReadyAction.NONE, actionOf(SetupStage.READY))
+        for (f in RimeRuntime.Failure.values()) {
+            assertEquals(NotReadyAction.NONE, actionOf(SetupStage.PREPARING, f))
+            assertEquals(NotReadyAction.NONE, actionOf(SetupStage.READY, f))
+        }
     }
 
     /**
-     * 全覆蓋：除了「還在跑」與「好了」以外的每一格都必須有出路。
-     *
-     * 日後多加一格而忘了決定要不要給按鈕時，這一條會紅 —— 而不是安靜地
-     * 多出一個沒有按鈕的死路。
+     * 系統那兩步的按鈕不受失敗種類影響 —— 那兩顆按鈕開的是系統畫面，
+     * 跟引擎起不起得來無關。
      */
     @Test
-    fun everyBlockedStageHasSomethingToDo() {
-        for (s in SetupStage.values()) {
-            if (s == SetupStage.PREPARING || s == SetupStage.READY) continue
-            assertNotEquals("$s 這一格沒有任何出路", NotReadyAction.NONE, actionOf(s))
+    fun systemStepButtonsDoNotDependOnFailureKind() {
+        for (f in RimeRuntime.Failure.values()) {
+            assertEquals(
+                NotReadyAction.OPEN_IME_SETTINGS,
+                actionOf(SetupStage.NOT_ENABLED, f),
+            )
+            assertEquals(
+                NotReadyAction.SWITCH_IME,
+                actionOf(SetupStage.ENABLED_NOT_DEFAULT, f),
+            )
         }
     }
 

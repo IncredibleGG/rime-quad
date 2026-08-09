@@ -33,11 +33,45 @@ object DeployGate {
      */
     const val DEFAULT_TIMEOUT_MS = 10 * 60 * 1000L
 
+    /**
+     * 為什麼「沒開始」要用代號而不是一句話。
+     *
+     * 這裡原本是 `NotStarted(reason = "librime 尚未初始化")` —— 一句寫死的
+     * 繁體中文，而預設語系是英文，它會原樣上畫面（`StoreController.redeploy()`
+     * 把 `reason` 直接當成對話框的內容）。同一個 commit 才剛把鍵盤上那幾句
+     * 寫死的中文改成資源，卻在自己新開的這條路上又犯了一次。
+     *
+     * 代號留在引擎層、字留在 `res/values…/strings_fail.xml`，
+     * 「有人又寫死一句中文」就變成守門看得見的事（`ImeNoticeStringsTest`）。
+     */
+    enum class NotStartedReason {
+        /**
+         * `RimeCore.isInitialized == false` —— `nativeInit()` 沒成功過。
+         *
+         * ⚠ 這是**畫面上那顆「重新整理字詞」的死路**：五條 `RimeRuntime` 走到
+         * FAILED 的路裡有四條停在這裡，按幾次都一樣。所以那四條路現在根本
+         * 不畫那顆按鈕，見 [org.luminakey.ime.home.actionOf]。
+         * 這條代號仍然存在，因為診斷頁的「重新部署」按得到。
+         */
+        NOT_INITIALIZED,
+
+        /** `rs_deploy()` 拒絕啟動 —— 多半是已經有一個部署在跑。 */
+        REFUSED,
+    }
+
     sealed class Outcome {
         data class Success(val elapsedMs: Long) : Outcome()
         data class Failure(val elapsedMs: Long, val lastError: String) : Outcome()
         data class Timeout(val elapsedMs: Long) : Outcome()
-        data class NotStarted(val reason: String) : Outcome()
+
+        /**
+         * [detail] 是引擎的原始訊息（`rs_last_error()`），可能是空字串。
+         * 它是**故障載荷**，不是介面文字 —— 讀者是收到問題回報的我們。
+         */
+        data class NotStarted(
+            val reason: NotStartedReason,
+            val detail: String = "",
+        ) : Outcome()
     }
 
     /**
@@ -50,7 +84,9 @@ object DeployGate {
         timeoutMs: Long = DEFAULT_TIMEOUT_MS,
         onTick: ((elapsedMs: Long) -> Unit)? = null,
     ): Outcome {
-        if (!RimeCore.isInitialized) return Outcome.NotStarted("librime 尚未初始化")
+        if (!RimeCore.isInitialized) {
+            return Outcome.NotStarted(NotStartedReason.NOT_INITIALIZED)
+        }
 
         val lock = Object()
         val armed = AtomicBoolean(false)
@@ -77,9 +113,7 @@ object DeployGate {
         try {
             armed.set(true)
             if (!RimeCore.deploy()) {
-                return Outcome.NotStarted(
-                    "rs_deploy() 拒絕啟動（多半是已有一個部署在進行中）：${RimeCore.lastError()}"
-                )
+                return Outcome.NotStarted(NotStartedReason.REFUSED, RimeCore.lastError())
             }
             synchronized(lock) {
                 while (result == null) {

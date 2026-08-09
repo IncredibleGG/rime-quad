@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 简体中文。key 集合与 placeholder 必须与 values/strings_fail.xml 完全一致。 -->
+<resources>
+
+    <string name="not_ready_failed_engine">键盘没有启动</string>
+    <string name="not_ready_failed_unsupported">这一份 app 跑不动这台设备。请改装与你的设备相符的版本，或换一台设备试试。</string>
+    <string name="not_ready_failed_reinstall">装好的文件彼此对不上，app 起不来。请先卸载，再从你下载的地方重新安装一次。</string>
+    <string name="not_ready_failed_storage">随附的数据展不开。这几乎都是设备空间满了：清出一些空间，再打开一次这个 app。</string>
+    <string name="not_ready_failed_restart">输入引擎没有启动。请完全关掉这个 app 再打开一次。若一再发生，把下面那一行一起反馈给我们。</string>
+
+    <string name="deploy_not_started_engine">输入引擎还没启动，现在没有东西可以整理。请完全关掉这个 app 再打开一次。</string>
+    <string name="deploy_not_started_busy">已经有一轮整理在进行中。等它跑完再试一次。</string>
+
+    <string name="store_err_download">下载「%1$s」失败：%2$s</string>
+    <string name="store_detail_url">URL：%1$s</string>
+    <string name="store_err_sha_mismatch">「%1$s」的校验码不符。整包已丢弃，没有解开任何文件。</string>
+    <string name="store_detail_sha_declared">索引声明：%1$s</string>
+    <string name="store_detail_sha_actual">实际下载：%1$s</string>
+    <string name="store_err_archive_rejected">「%1$s」没有通过压缩包安全检查，已整包拒绝。</string>
+    <string name="store_err_extract_failed">「%1$s」解不开：%2$s</string>
+    <string name="store_ok_installed">已安装 %1$d 个套件</string>
+    <string name="store_detail_kept">出问题之前已经装好的套件留在设备上，保持关闭：%1$s</string>
+
+    <string name="store_ok_nothing_to_change">没有要变更的项目</string>
+    <string name="store_err_schema_file_missing">设备上找不到 %1$s —— 这个键盘并未安装。</string>
+    <string name="store_err_missing_deps">少了必要的文件，已停止。你的键盘列表没有被动过。</string>
+    <string name="store_ok_already_enabled">这些键盘已经是开启状态</string>
+    <string name="store_ok_already_disabled">这些键盘本来就没有开启</string>
+    <string name="store_ok_enabled">已开启，词条也整理好了（%1$d ms）</string>
+    <string name="store_ok_disabled">已关闭，词条也整理好了（%1$d ms）</string>
+
+    <string name="store_err_deploy_failed">词条整理失败，而且引擎没有给原因。</string>
+    <string name="store_err_deploy_failed_reason">词条整理失败：%1$s</string>
+    <string name="store_err_deploy_timeout_ms">词条整理超时（%1$d ms）</string>
+    <string name="store_err_unknown">不明的问题</string>
+
+    <string name="store_detail_list_restored">你的键盘列表已还原成先前的样子：%1$s</string>
+    <string name="store_detail_rollback_failed">还原之后那次整理也没成功，键盘可能无法使用。请重新启动这个 app。</string>
+    <string name="store_detail_files_kept">文件仍留在设备上（已安装但没开启）。缺的东西补齐之后可以直接开启，不必重新下载。</string>
+
+    <string name="store_err_not_installed">「%1$s」不在已安装列表里</string>
+    <string name="store_err_has_dependents">「%1$s」被其他已安装的套件用到，不能移除</string>
+    <string name="store_detail_dependent">%1$s（%2$s）需要它</string>
+    <string name="store_ok_uninstalled">已移除「%1$s」（删掉 %2$d 个文件）</string>
+
+    <string name="store_err_import_rejected">「%1$s」没有通过压缩包安全检查，已整包拒绝，没有写出任何文件。</string>
+    <string name="store_err_too_big">「%1$s」有 %2$s，超过单文件 %3$s 的上限</string>
+    <string name="store_err_unsafe_name">「%1$s」的文件名不安全：%2$s</string>
+    <string name="store_err_bad_file">「%1$s」不是这个 app 收得下的文件：%2$s</string>
+    <string name="store_err_escapes_dir">「%1$s」的路径解出来会跳出你的数据目录，已拒绝</string>
+    <string name="store_err_bad_type">只接受 .zip 与 .yaml，这个是「%1$s」</string>
+    <string name="store_ok_imported_no_schema">已导入 %1$d 个文件，但里面没有任何一个是键盘定义，所以没有新的可以开启。它可能是纯词典或纯设置的套件。</string>
+    <string name="store_ok_imported">已导入 %1$d 个文件。可以开启的键盘：%2$s</string>
+
+    <string name="archive_err_malformed">压缩包损毁，或根本不是合法的 zip：%1$s</string>
+    <string name="archive_err_path">压缩包里有路径「%1$s」，会写到目标目录之外，已整包拒绝。</string>
+    <string name="archive_err_symlink">压缩包里有符号链接「%1$s」，已整包拒绝。</string>
+    <string name="archive_err_bomb">压缩包超出解压上限：%1$s</string>
+    <string name="archive_err_extension">压缩包里有不允许的文件「%1$s」：%2$s</string>
+    <string name="archive_err_empty">压缩包里没有任何可用的文件</string>
+
+    <string name="preflight_block_dictionary">「%1$s」需要词典 %2$s，但两个数据目录里都没有。请把提供这本词典的套件一起导入。</string>
+    <string name="preflight_block_schema">「%1$s」声明依赖于 %2$s，目前找不到。</string>
+    <string name="preflight_block_config">「%1$s」用到配置文件 %2$s，目前找不到。</string>
+    <string name="preflight_block_grammar">「%1$s」需要语言模型 %2$s，目前找不到。</string>
+    <string name="preflight_warn_dictionary">「%1$s」少了次要词典 %2$s。可以照常打字，但用到这本词典的功能（多半是用另一种码反查）不会有作用。</string>
+    <string name="preflight_warn_schema">「%1$s」声明依赖于 %2$s，目前没安装。它会被略过，主要键盘照常可用。</string>
+    <string name="preflight_warn_config">「%1$s」用到的配置文件 %2$s 不在。</string>
+    <string name="preflight_warn_grammar">「%1$s」少了语言模型 %2$s。整句输入的排序会差一些，其余照常。</string>
+
+</resources>

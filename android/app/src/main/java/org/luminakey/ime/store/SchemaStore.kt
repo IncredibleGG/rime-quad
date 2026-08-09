@@ -1,6 +1,7 @@
 package org.luminakey.ime.store
 
 import android.util.Log
+import org.luminakey.ime.R
 import org.luminakey.ime.net.NetworkGate
 import org.luminakey.ime.net.NetworkPurpose
 import java.io.File
@@ -53,24 +54,33 @@ class SchemaStore(
         data class Extracting(val packageName: String) : Progress()
         data object Preflight : Progress()
         data class Deploying(val elapsedMs: Long) : Progress()
-        data class RollingBack(val reason: String) : Progress()
+
+        /** [reason] 會直接畫在進度覆蓋層上，所以它是 [UiMessage] 不是字串。 */
+        data class RollingBack(val reason: UiMessage) : Progress()
     }
 
+    /**
+     * ⚠ [message] / [details] 是 [UiMessage]（資源 id + 參數），**不是字串**。
+     *
+     * 這一層沒有 `Context`，所以「順手寫一句中文」是阻力最小的路，而這個 app
+     * 的預設語系是英文 —— 這些訊息會**原樣上畫面**（`StoreController.finish()`
+     * → `ResultDialog`）。理由與規矩見 [UiMessage] 的檔頭。
+     */
     sealed class Outcome {
         data class Ok(
-            val message: String,
+            val message: UiMessage,
             val enabledSchemas: List<String> = emptyList(),
             /** 不擋啟用、但使用者該知道的事（例如反查詞典不在）。 */
-            val details: List<String> = emptyList(),
+            val details: List<UiMessage> = emptyList(),
         ) : Outcome()
 
         /**
-         * [rolledBack] = 是否動過 schema_list 又還原了。
+         * [rolledBack] = 是否動過方案清單又還原了。
          * [recoverable] = false 代表回滾本身也失敗，使用者需要人工介入。
          */
         data class Failed(
-            val message: String,
-            val details: List<String> = emptyList(),
+            val message: UiMessage,
+            val details: List<UiMessage> = emptyList(),
             val rolledBack: Boolean = false,
             val recoverable: Boolean = true,
         ) : Outcome()
@@ -108,8 +118,9 @@ class SchemaStore(
             if (dl is NetworkGate.Result.Err) {
                 tmp.delete()
                 return Outcome.Failed(
-                    "下載「${pkg.name}」失敗：${dl.message}",
-                    details = listOf("URL: $url") + doneNote(installed),
+                    UiMessage.of(R.string.store_err_download, pkg.name, dl.message),
+                    details = listOf(UiMessage.of(R.string.store_detail_url, url)) +
+                        doneNote(installed),
                 )
             }
             val got = (dl as NetworkGate.Result.Ok).value
@@ -119,11 +130,11 @@ class SchemaStore(
             if (!got.sha256.equals(pkg.sha256, ignoreCase = true)) {
                 tmp.delete()
                 return Outcome.Failed(
-                    "「${pkg.name}」的 sha256 不符，整包已丟棄（未解壓）",
+                    UiMessage.of(R.string.store_err_sha_mismatch, pkg.name),
                     details = listOf(
-                        "索引宣告: ${pkg.sha256}",
-                        "實際下載: ${got.sha256}",
-                        "URL: $url",
+                        UiMessage.of(R.string.store_detail_sha_declared, pkg.sha256),
+                        UiMessage.of(R.string.store_detail_sha_actual, got.sha256),
+                        UiMessage.of(R.string.store_detail_url, url),
                     ) + doneNote(installed),
                 )
             }
@@ -134,15 +145,15 @@ class SchemaStore(
                 is ExtractResult.Rejected -> {
                     tmp.delete()
                     return Outcome.Failed(
-                        "「${pkg.name}」沒有通過壓縮檔安全檢查，已整包拒絕",
-                        details = ex.report.rejections.map { it.humanMessage() } + doneNote(installed),
+                        UiMessage.of(R.string.store_err_archive_rejected, pkg.name),
+                        details = ex.report.rejections.map { it.uiMessage() } + doneNote(installed),
                     )
                 }
 
                 is ExtractResult.Failed -> {
                     tmp.delete()
                     return Outcome.Failed(
-                        "「${pkg.name}」解壓失敗：${ex.message}",
+                        UiMessage.of(R.string.store_err_extract_failed, pkg.name, ex.message),
                         details = doneNote(installed),
                     )
                 }
@@ -169,12 +180,18 @@ class SchemaStore(
             }
         }
 
-        return Outcome.Ok("已安裝 ${installed.size} 個套件")
+        return Outcome.Ok(UiMessage.of(R.string.store_ok_installed, installed.size))
     }
 
-    private fun doneNote(installed: List<String>): List<String> =
+    /**
+     * 清單一律用 `", "` 接，不用「、」：預設語系是英文，而
+     * 「a、b」對英文讀者是一個看不懂的符號。中文讀者看到逗號沒有損失。
+     */
+    private fun joined(items: List<String>): String = items.joinToString(", ")
+
+    private fun doneNote(installed: List<String>): List<UiMessage> =
         if (installed.isEmpty()) emptyList()
-        else listOf("已經成功安裝的套件保留在裝置上（未啟用）：${installed.joinToString("、")}")
+        else listOf(UiMessage.of(R.string.store_detail_kept, joined(installed)))
 
     /* ───────────────────────── 啟用 / 停用 ───────────────────────── */
 
@@ -200,28 +217,30 @@ class SchemaStore(
         enabled: Boolean,
         progress: (Progress) -> Unit,
     ): Outcome {
-        if (schemaIds.isEmpty()) return Outcome.Ok("沒有要變更的方案")
+        if (schemaIds.isEmpty()) return Outcome.Ok(UiMessage(R.string.store_ok_nothing_to_change))
 
-        val warnings = ArrayList<String>()
+        val warnings = ArrayList<UiMessage>()
 
         if (enabled) {
             progress(Progress.Preflight)
-            // 分兩堆。blocking 是「librime 部署一定會失敗」，warnings 是
+            // 分兩堆。blocking 是「部署一定會失敗」，warnings 是
             // 「少了某個附屬功能，但打得出字」—— 理由與分界線見 SchemaPreflight。
-            val blocking = ArrayList<String>()
+            val blocking = ArrayList<UiMessage>()
             for (id in schemaIds) {
                 val f = searchDirs.map { File(it, "$id.schema.yaml") }.firstOrNull { it.isFile }
                 if (f == null) {
-                    blocking.add("找不到方案檔 $id.schema.yaml —— 這個方案並未安裝。")
+                    blocking.add(
+                        UiMessage.of(R.string.store_err_schema_file_missing, "$id.schema.yaml")
+                    )
                     continue
                 }
                 val report = SchemaPreflight.check(f, searchDirs)
-                report.blocking.forEach { blocking.add(it.humanMessage()) }
-                report.warnings.forEach { warnings.add(it.humanMessage()) }
+                report.blocking.forEach { blocking.add(it.uiMessage()) }
+                report.warnings.forEach { warnings.add(it.uiMessage()) }
             }
             if (blocking.isNotEmpty()) {
                 return Outcome.Failed(
-                    "缺少相依檔案，已停止（沒有動到 schema_list）",
+                    UiMessage(R.string.store_err_missing_deps),
                     details = blocking,
                     rolledBack = false,
                 )
@@ -236,28 +255,31 @@ class SchemaStore(
             SchemaListPatch.disable(userDataDir, schemaIds)
         }
         if (changed.isEmpty()) {
-            return Outcome.Ok(if (enabled) "這些方案已經是啟用狀態" else "這些方案本來就沒有啟用")
+            return Outcome.Ok(
+                UiMessage(
+                    if (enabled) R.string.store_ok_already_enabled
+                    else R.string.store_ok_already_disabled
+                )
+            )
         }
         Log.i(TAG, "schema_list: $before → ${SchemaListPatch.read(userDataDir)}")
 
         val outcome = DeployGate.deployAndWait { progress(Progress.Deploying(it)) }
         if (outcome is DeployGate.Outcome.Success) {
             return Outcome.Ok(
-                if (enabled) "已啟用並部署完成（${outcome.elapsedMs} ms）"
-                else "已停用並部署完成（${outcome.elapsedMs} ms）",
+                UiMessage.of(
+                    if (enabled) R.string.store_ok_enabled else R.string.store_ok_disabled,
+                    outcome.elapsedMs,
+                ),
                 enabledSchemas = SchemaListPatch.read(userDataDir),
                 details = warnings,
             )
         }
 
         // ── 回滾 ──────────────────────────────────────────────────────
-        val why = when (outcome) {
-            is DeployGate.Outcome.Failure -> "部署失敗：${outcome.lastError.ifEmpty { "librime 未提供原因" }}"
-            is DeployGate.Outcome.Timeout -> "部署逾時（${outcome.elapsedMs} ms）"
-            is DeployGate.Outcome.NotStarted -> outcome.reason
-            else -> "未知原因"
-        }
-        Log.e(TAG, "$why —— 回滾 schema_list")
+        val why = describe(outcome)
+        Log.e(TAG, "$outcome —— 回滾 schema_list")
+        // 進度覆蓋層上的那一行也是使用者看得到的字，同樣走資源。
         progress(Progress.RollingBack(why))
         SchemaListPatch.restore(userDataDir, snapshot)
 
@@ -268,17 +290,45 @@ class SchemaStore(
         return Outcome.Failed(
             message = why,
             details = buildList {
-                add("schema_list 已還原為導入前的狀態：${before.joinToString("、")}")
+                add(UiMessage.of(R.string.store_detail_list_restored, joined(before)))
                 if (!backOk) {
-                    add("⚠ 還原後重新部署沒有成功，輸入法可能無法使用。請重新啟動 app。")
+                    add(UiMessage(R.string.store_detail_rollback_failed))
                 }
                 if (enabled) {
-                    add("套件檔案仍留在裝置上（已安裝但未啟用），修好相依之後可直接啟用，不必重新下載。")
+                    add(UiMessage(R.string.store_detail_files_kept))
                 }
             },
             rolledBack = true,
             recoverable = backOk,
         )
+    }
+
+    /**
+     * 部署沒成功時，要對使用者說的那一句。
+     *
+     * [DeployGate.Outcome.NotStarted] 的兩種代號各自有自己的句子 —— 上一版
+     * 這裡是 `outcome.reason`，也就是把引擎層寫死的那句中文原樣轉出去。
+     */
+    private fun describe(outcome: DeployGate.Outcome): UiMessage = when (outcome) {
+        // 引擎沒給原因時走另一句，而不是把「沒有原因」這四個字當成參數塞進去
+        // —— 那個「沒有原因」本身也得是資源，繞一圈只是把問題往裡藏一層。
+        is DeployGate.Outcome.Failure ->
+            if (outcome.lastError.isEmpty()) UiMessage(R.string.store_err_deploy_failed)
+            else UiMessage.of(R.string.store_err_deploy_failed_reason, outcome.lastError)
+
+        is DeployGate.Outcome.Timeout ->
+            UiMessage.of(R.string.store_err_deploy_timeout_ms, outcome.elapsedMs)
+
+        is DeployGate.Outcome.NotStarted -> UiMessage(
+            when (outcome.reason) {
+                DeployGate.NotStartedReason.NOT_INITIALIZED ->
+                    R.string.deploy_not_started_engine
+
+                DeployGate.NotStartedReason.REFUSED -> R.string.deploy_not_started_busy
+            }
+        )
+
+        is DeployGate.Outcome.Success -> UiMessage(R.string.store_err_unknown)
     }
 
     /* ───────────────────────── 解除安裝 ───────────────────────── */
@@ -290,13 +340,15 @@ class SchemaStore(
      */
     fun uninstall(packageId: String, progress: (Progress) -> Unit): Outcome {
         val pkg = registry.get(packageId)
-            ?: return Outcome.Failed("「$packageId」不在已安裝清單裡")
+            ?: return Outcome.Failed(UiMessage.of(R.string.store_err_not_installed, packageId))
 
         val dependents = registry.dependents(packageId)
         if (dependents.isNotEmpty()) {
             return Outcome.Failed(
-                "「${pkg.name}」被其他已安裝的套件依賴，不能移除",
-                details = dependents.map { "${it.name}（${it.id}）需要它" },
+                UiMessage.of(R.string.store_err_has_dependents, pkg.name),
+                details = dependents.map {
+                    UiMessage.of(R.string.store_detail_dependent, it.name, it.id)
+                },
             )
         }
 
@@ -320,7 +372,7 @@ class SchemaStore(
             if (f.isFile && f.delete()) deleted++
         }
         registry.remove(packageId)
-        return Outcome.Ok("已移除「${pkg.name}」（刪除 $deleted 個檔案）")
+        return Outcome.Ok(UiMessage.of(R.string.store_ok_uninstalled, pkg.name, deleted))
     }
 
     /* ───────────────────────── 使用者自帶檔案 ───────────────────────── */
@@ -341,12 +393,13 @@ class SchemaStore(
                 progress(Progress.Extracting(displayName))
                 when (val ex = ArchiveGuard.extract(file, userDataDir, workDir)) {
                     is ExtractResult.Rejected -> return Outcome.Failed(
-                        "「$displayName」沒有通過壓縮檔安全檢查，已整包拒絕（沒有寫出任何檔案）",
-                        details = ex.report.rejections.map { it.humanMessage() },
+                        UiMessage.of(R.string.store_err_import_rejected, displayName),
+                        details = ex.report.rejections.map { it.uiMessage() },
                     )
 
-                    is ExtractResult.Failed ->
-                        return Outcome.Failed("「$displayName」解壓失敗：${ex.message}")
+                    is ExtractResult.Failed -> return Outcome.Failed(
+                        UiMessage.of(R.string.store_err_extract_failed, displayName, ex.message)
+                    )
 
                     is ExtractResult.Ok -> ex.files
                 }
@@ -355,8 +408,12 @@ class SchemaStore(
             lower.endsWith(".yaml") || lower.endsWith(".yml") -> {
                 if (file.length() > MAX_SINGLE_YAML_BYTES) {
                     return Outcome.Failed(
-                        "「$displayName」有 ${formatBytes(file.length())}，超過單檔 " +
-                            "${formatBytes(MAX_SINGLE_YAML_BYTES)} 的上限"
+                        UiMessage.of(
+                            R.string.store_err_too_big,
+                            displayName,
+                            formatBytes(file.length()),
+                            formatBytes(MAX_SINGLE_YAML_BYTES),
+                        )
                     )
                 }
                 // 單檔一樣要過路徑檢查。
@@ -367,21 +424,30 @@ class SchemaStore(
                 // 而我們其實換了一個檔名 —— 這種「善意的修正」正是繞過檢查的
                 // 常見縫隙。整包拒絕，並把原因說清楚。
                 val safeName = displayName
+                // `it` 是英文的故障載荷（見 ArchiveGuard.pathProblemOf），當參數帶出去。
                 ArchiveGuard.pathProblemOf(safeName, ArchiveLimits())?.let {
-                    return Outcome.Failed("「$displayName」的檔名不安全：$it")
+                    return Outcome.Failed(
+                        UiMessage.of(R.string.store_err_unsafe_name, displayName, it)
+                    )
                 }
                 ArchiveGuard.extensionProblemOf(safeName, ArchiveLimits())?.let {
-                    return Outcome.Failed("「$displayName」不是可接受的檔案：$it")
+                    return Outcome.Failed(
+                        UiMessage.of(R.string.store_err_bad_file, displayName, it)
+                    )
                 }
                 val dst = File(userDataDir, safeName)
                 if (!ArchiveGuard.isInside(dst.canonicalFile, userDataDir.canonicalFile)) {
-                    return Outcome.Failed("「$displayName」正規化後跳出了使用者資料目錄，已拒絕")
+                    return Outcome.Failed(
+                        UiMessage.of(R.string.store_err_escapes_dir, displayName)
+                    )
                 }
                 file.copyTo(dst, overwrite = true)
                 listOf(safeName)
             }
 
-            else -> return Outcome.Failed("只接受 .zip 與 .yaml，收到「$displayName」")
+            else -> return Outcome.Failed(
+                UiMessage.of(R.string.store_err_bad_type, displayName)
+            )
         }
 
         val schemaIds = files
@@ -405,10 +471,11 @@ class SchemaStore(
 
         if (schemaIds.isEmpty()) {
             return Outcome.Ok(
-                "已匯入 ${files.size} 個檔案，但裡面沒有 *.schema.yaml，" +
-                    "所以沒有新方案可以啟用（可能是純詞典或配置套件）。"
+                UiMessage.of(R.string.store_ok_imported_no_schema, files.size)
             )
         }
-        return Outcome.Ok("已匯入 ${files.size} 個檔案，可啟用的方案：${schemaIds.joinToString("、")}")
+        return Outcome.Ok(
+            UiMessage.of(R.string.store_ok_imported, files.size, joined(schemaIds))
+        )
     }
 }

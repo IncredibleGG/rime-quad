@@ -1,5 +1,6 @@
 package org.luminakey.ime.store
 
+import org.luminakey.ime.R
 import org.luminakey.ime.theme.MiniYaml
 import org.luminakey.ime.theme.YamlNode
 import java.io.File
@@ -72,31 +73,31 @@ object SchemaPreflight {
         val referencedBy: String,
         val severity: Severity = Severity.BLOCKING,
     ) {
-        fun humanMessage(): String = when (severity) {
+        /**
+         * 給使用者看的一行說明。
+         *
+         * ⚠ 回傳 [UiMessage]（資源 id + 參數）而不是字串 —— 這些話會直接畫在
+         * 「啟用方案」失敗的對話框上，而預設語系是英文。理由見 [UiMessage] 檔頭。
+         *
+         * 資源名的前綴就是嚴重度（`preflight_block_` / `preflight_warn_`），
+         * 而 `SchemaPreflightTest` 用反射比對 `R.string` 的欄位名 —— 所以
+         * 「擋的那一條指到放行的樣板」這種手滑會被抓到，不必靠讀措辭。
+         */
+        fun uiMessage(): UiMessage = UiMessage.of(resId(), referencedBy, fileName)
+
+        private fun resId(): Int = when (severity) {
             Severity.BLOCKING -> when (kind) {
-                Kind.DICTIONARY ->
-                    "方案「$referencedBy」需要詞典 $fileName，但 user 與 shared 目錄裡都沒有。" +
-                        "請一併導入提供這本詞典的套件。"
-                Kind.SCHEMA ->
-                    "方案「$referencedBy」宣告相依於方案檔 $fileName，目前找不到。"
-                Kind.CONFIG ->
-                    "方案「$referencedBy」引用了配置檔 $fileName，目前找不到。"
-                Kind.GRAMMAR ->
-                    "方案「$referencedBy」需要語言模型 $fileName，目前找不到。"
+                Kind.DICTIONARY -> R.string.preflight_block_dictionary
+                Kind.SCHEMA -> R.string.preflight_block_schema
+                Kind.CONFIG -> R.string.preflight_block_config
+                Kind.GRAMMAR -> R.string.preflight_block_grammar
             }
             // 措辭刻意跟上面不同：使用者要能一眼看出「這條不擋我」。
             Severity.WARNING -> when (kind) {
-                Kind.DICTIONARY ->
-                    "方案「$referencedBy」的次要詞典 $fileName 不在，可以照常打字，" +
-                        "但用到這本詞典的功能（多半是反查、輔助碼）不會有作用。"
-                Kind.SCHEMA ->
-                    "方案「$referencedBy」宣告相依於方案 $fileName，目前沒安裝；" +
-                        "librime 會略過它，主方案照常可用。"
-                Kind.CONFIG ->
-                    "方案「$referencedBy」引用的配置檔 $fileName 不在。"
-                Kind.GRAMMAR ->
-                    "方案「$referencedBy」的語言模型 $fileName 不在，整句輸入的排序會差一些，" +
-                        "其餘照常。"
+                Kind.DICTIONARY -> R.string.preflight_warn_dictionary
+                Kind.SCHEMA -> R.string.preflight_warn_schema
+                Kind.CONFIG -> R.string.preflight_warn_config
+                Kind.GRAMMAR -> R.string.preflight_warn_grammar
             }
         }
     }

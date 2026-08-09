@@ -52,7 +52,12 @@ class SchemaPreflightTest {
         assertEquals(1, missing.size)
         assertEquals(SchemaPreflight.Kind.DICTIONARY, missing[0].kind)
         assertEquals("terra_pinyin.dict.yaml", missing[0].fileName)
-        assertTrue(missing[0].humanMessage().contains("terra_pinyin.dict.yaml"))
+        // 檔名要真的流進訊息的參數裡 —— 規範 §4 要的是「缺哪一本」，
+        // 而不是一句「部署失敗」。
+        assertTrue(
+            "缺的檔名沒有帶進訊息參數：${missing[0].uiMessage()}",
+            missing[0].uiMessage().args.contains("terra_pinyin.dict.yaml"),
+        )
     }
 
     @Test
@@ -107,7 +112,23 @@ class SchemaPreflightTest {
         )
         assertTrue("少了反查詞典不該擋住啟用", r.ok)
         assertEquals(2, r.warnings.size)
-        assertTrue(r.warnings.all { it.humanMessage().contains("照常") })
+        // ⚠ 不比對譯文（「照常」兩個字），比對**指到哪一份樣板**：
+        // 資源名的前綴就是嚴重度。擋的那一條指到放行的樣板時這裡會紅，
+        // 而那正是使用者會被一句「不擋你」騙過去的情形。
+        assertEquals(
+            "放行的那幾條指到了 preflight_warn_ 以外的樣板",
+            emptyList<String>(),
+            r.warnings.map { resourceNameOf(it.uiMessage().id) }.filterNot {
+                it.startsWith("preflight_warn_")
+            },
+        )
+        assertEquals(
+            "擋人的那幾條指到了 preflight_block_ 以外的樣板",
+            emptyList<String>(),
+            r.blocking.map { resourceNameOf(it.uiMessage().id) }.filterNot {
+                it.startsWith("preflight_block_")
+            },
+        )
     }
 
     @Test
@@ -305,6 +326,52 @@ class SchemaPreflightTest {
         // 誤報會擋住合法套件，比漏報更糟；解析不了就交給 librime 自己報錯。
         val dirs = setup()
         assertTrue(SchemaPreflight.checkText("x", "\t這不是合法 YAML: [", dirs).isEmpty())
+    }
+
+    /**
+     * 八種（嚴重度 × 種類）各自指到自己的樣板，一個都不准共用。
+     *
+     * ── 為什麼用反射比對資源**名稱** ────────────────────────────────────
+     * `R.string.*` 只是 int，`preflight_block_schema` 與 `preflight_warn_schema`
+     * 兩個常數長得一模一樣，寫錯一個字母編譯照過。名稱是 aapt 從 xml 的
+     * `name` 生出來的，所以「欄位名對得上」就等於「指對了樣板」。
+     * 同一招見 `DiagnosticStringsTest`。
+     *
+     * 這條抓的是最傷的手滑：把 BLOCKING 指到 `preflight_warn_*`，
+     * 於是「這個方案裝不起來」被寫成「不影響你打字」，使用者按下啟用之後
+     * 得到一個編不起來的鍵盤，而畫面上剛剛才跟他說不要緊。
+     */
+    @Test
+    fun `每一種缺檔都指到自己那一份樣板`() {
+        val seen = LinkedHashMap<String, String>()
+        for (severity in SchemaPreflight.Severity.values()) {
+            for (kind in SchemaPreflight.Kind.values()) {
+                val m = SchemaPreflight.Missing(kind, "a.dict.yaml", "schema-x", severity)
+                val name = resourceNameOf(m.uiMessage().id)
+                val expected =
+                    if (severity == SchemaPreflight.Severity.BLOCKING) "preflight_block_"
+                    else "preflight_warn_"
+                assertTrue(
+                    "$severity/$kind 指到了 $name，應該是 $expected 開頭",
+                    name.startsWith(expected),
+                )
+                assertEquals(
+                    "$severity/$kind 的參數應該是（方案名, 檔名）",
+                    listOf<Any>("schema-x", "a.dict.yaml"),
+                    m.uiMessage().args,
+                )
+                seen[name] = "$severity/$kind"
+            }
+        }
+        assertEquals("八種組合共用了樣板：$seen", 8, seen.size)
+    }
+
+    /** `R.string` 的欄位名。找不到就直接紅 —— 那代表那個 id 根本不是字串資源。 */
+    private fun resourceNameOf(id: Int): String {
+        val f = org.luminakey.ime.R.string::class.java.fields
+            .firstOrNull { it.getInt(null) == id }
+        assertTrue("R.string 裡找不到 id=$id 的欄位", f != null)
+        return f!!.name
     }
 
     private companion object {

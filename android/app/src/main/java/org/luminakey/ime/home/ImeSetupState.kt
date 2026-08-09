@@ -15,6 +15,7 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.delay
+import org.luminakey.ime.R
 import org.luminakey.ime.core.RimeRuntime
 
 /**
@@ -139,14 +140,65 @@ enum class NotReadyAction {
     REFRESH_WORDS,
 }
 
-fun actionOf(stage: SetupStage): NotReadyAction = when (stage) {
+/**
+ * ⚠ **「重新整理字詞」只有 [RimeRuntime.Failure.DEPLOY] 那一條路按得動。**
+ *
+ * 上一版這裡是 `SetupStage.FAILED -> REFRESH_WORDS`，五條失敗路徑一視同仁。
+ * 實際上那顆按鈕走的是 `StoreController.redeploy()` → `DeployGate.deployAndWait()`，
+ * 而它的第一行是 `if (!RimeCore.isInitialized) return NotStarted(…)`。
+ * `RimeCore.isInitialized` 只有在 `nativeInit()` 成功之後才為 true ——
+ * 也就是說 `.so` 載不起來、ABI 不符、隨附資料解不開、`rs_init` 回 false
+ * 這四條路上，那顆按鈕**必然**立刻失敗。
+ *
+ * 後果是使用者在那四條路上按下畫面唯一的實心按鈕，拿到一句「還沒初始化」，
+ * 然後沒有別的路。**一顆按不動的按鈕比沒有按鈕更糟**：它把「這台裝置上這個
+ * app 起不來」偽裝成「你再試一次就好」，使用者會一直試。
+ *
+ * 那四條路改成不給按鈕，畫面上換成他真的做得到的事（見 [failedBodyRes]）。
+ */
+fun actionOf(stage: SetupStage, failure: RimeRuntime.Failure): NotReadyAction = when (stage) {
     SetupStage.NOT_ENABLED -> NotReadyAction.OPEN_IME_SETTINGS
     SetupStage.ENABLED_NOT_DEFAULT -> NotReadyAction.SWITCH_IME
-    // 失敗態唯一的出路。原本它只存在於「進階與問題回報」頁最底下的灰字列裡。
-    SetupStage.FAILED -> NotReadyAction.REFRESH_WORDS
+    // 失敗態唯一的出路 —— 但只在它真的按得動的時候。
+    SetupStage.FAILED ->
+        if (failure == RimeRuntime.Failure.DEPLOY) NotReadyAction.REFRESH_WORDS
+        else NotReadyAction.NONE
     // 準備中真的沒有人能加速它，給一顆按鈕只會讓人按了以為有用。
     SetupStage.PREPARING -> NotReadyAction.NONE
     SetupStage.READY -> NotReadyAction.NONE
+}
+
+/**
+ * 失敗態的**標題**。
+ *
+ * 「字詞整理沒成功」只有 [RimeRuntime.Failure.DEPLOY] 那一條路是真的 ——
+ * 另外四條連引擎都沒起來，字詞根本沒開始整理。拿一台空間滿了的手機的人
+ * 看到「字詞整理沒成功」，會去找一顆重新整理的按鈕，而那顆按鈕按不動。
+ * **標題錯了，人就走錯路。**
+ */
+fun failedTitleRes(failure: RimeRuntime.Failure): Int =
+    if (failure == RimeRuntime.Failure.DEPLOY) R.string.not_ready_failed
+    else R.string.not_ready_failed_engine
+
+/**
+ * 失敗態那一段「接下來能做什麼」的文案。
+ *
+ * 每一種失敗講的是**使用者做得到的那一件事**，不是引擎發生了什麼：
+ * 架構不支援 → 換一台或裝對的版本；安裝檔壞了 → 重裝；空間不足 → 清一些再開；
+ * 引擎起不來 → 重開 app。引擎那句話（[RimeRuntime.initError]）另外一行接在後面，
+ * 讀者是收到回報的我們（見 RimeRuntime 檔頭）。
+ *
+ * [RimeRuntime.Failure.NONE] 配上 FAILED 在目前的實作裡走不到 —— `RimeRuntime.fail()`
+ * 是進入 FAILED 的唯一入口，而它一定帶種類。真的走到了就當作「不知道為什麼」：
+ * 給重開 app 的建議、**不給按鈕**。寧可少一顆按鈕，也不要再給一顆按不動的。
+ */
+fun failedBodyRes(failure: RimeRuntime.Failure): Int = when (failure) {
+    RimeRuntime.Failure.DEPLOY -> R.string.not_ready_failed_body
+    RimeRuntime.Failure.LIBRARY_LOAD -> R.string.not_ready_failed_unsupported
+    RimeRuntime.Failure.ABI_MISMATCH -> R.string.not_ready_failed_reinstall
+    RimeRuntime.Failure.UNPACK -> R.string.not_ready_failed_storage
+    RimeRuntime.Failure.RIME_INIT -> R.string.not_ready_failed_restart
+    RimeRuntime.Failure.NONE -> R.string.not_ready_failed_restart
 }
 
 /* ───────────────────────── Android 查詢 ───────────────────────── */
@@ -236,26 +288,38 @@ fun rememberImeSystemState(refreshKey: Any = Unit): ImeSystemState {
 }
 
 /**
- * 失敗訊息，跟著 [rememberRimePhase] 一起更新。
+ * 引擎狀態（階段 + 訊息 + 失敗種類），會自己跟上。
  *
- * ⚠ `RimeRuntime.initError` 是一個普通的 `@Volatile` 欄位，**不是 Compose 狀態**：
- * 在 Composable 裡直接讀它不會登記任何讀取關係，Compose 也就沒有任何理由因為
- * 它變了而重組。所以這裡拿 `phase` 當 `remember` 的鍵 —— `RimeRuntime` 的每一條
- * 失敗路徑都是**先寫 initError 再 setPhase(FAILED)**（見該檔），
- * 所以 phase 一到手，訊息一定已經寫好了。
+ * ── ⚠ 為什麼是一整包，不是 `remember(phase) { RimeRuntime.initError }` ────
+ * 那個寫法在**第二次失敗**時會停在上一次的錯誤，實測推導如下：
+ *
+ *   1. `RimeRuntime.initError` / `failure` 是普通的 `@Volatile` 欄位，在
+ *      Composable 裡直接讀不會登記讀取關係 —— 所以一定要有一個 Compose 狀態
+ *      當載體，這一點兩個版本都成立。
+ *   2. 上一版拿 `phase` 當 `remember` 的鍵。但 `onDeployStatus(RUNNING)` 是
+ *      `if (phase == READY || phase == DEPLOYING) setPhase(DEPLOYING)` ——
+ *      已經是 FAILED 的時候整輪重試 phase 都不會離開 FAILED。
+ *   3. 第二次失敗時 `setPhase(Phase.FAILED)` 送的是**同一個列舉值**。
+ *      `mutableStateOf` 預設 structural equality，寫入相同的值不觸發重組
+ *      （用 `Snapshot.registerApplyObserver` 實測：寫相同值 0 次通知、
+ *      寫不同值 1 次）。於是 `remember(phase)` 不重算，畫面留著舊訊息。
+ *
+ * 換成整包 [RimeRuntime.Status] 之後，訊息或失敗種類只要有一個變了，
+ * data class 的 equals 就不成立 → 重組 → 畫面跟上；三個都沒變時不重組是對的。
  */
 @Composable
-fun rememberRimeInitError(phase: RimeRuntime.Phase): String? =
-    remember(phase) { RimeRuntime.initError }
-
-/** librime 的初始化階段，會自己跟上。 */
-@Composable
-fun rememberRimePhase(): RimeRuntime.Phase {
-    var phase by remember { mutableStateOf(RimeRuntime.phase) }
+fun rememberRimeStatus(): RimeRuntime.Status {
+    var status by remember { mutableStateOf(RimeRuntime.status()) }
     DisposableEffect(Unit) {
-        val listener: (RimeRuntime.Phase) -> Unit = { phase = it }
+        // ⚠ 這裡刻意**不用**回呼帶進來的那個 phase，而是重新取一次整包快照：
+        // 要跟上的是 initError / failure，它們不在回呼的參數裡。
+        val listener: (RimeRuntime.Phase) -> Unit = { status = RimeRuntime.status() }
         RimeRuntime.addListener(listener)
         onDispose { RimeRuntime.removeListener(listener) }
     }
-    return phase
+    return status
 }
+
+/** 只要階段的地方（診斷頁）用這個。 */
+@Composable
+fun rememberRimePhase(): RimeRuntime.Phase = rememberRimeStatus().phase

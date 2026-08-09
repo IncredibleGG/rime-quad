@@ -65,11 +65,9 @@
     <string name="deploy_hint_two_steps">No need to wait for this — go do those two steps above.</string>
 
     <string name="preparing_title">Still sorting out words</string>
-    <string name="preparing_failed_title">Sorting the words did not work</string>
     <!-- %1$d = 預期秒數，來自 core/DeployEstimate.kt。全專案只有那裡有這個數字。 -->
     <string name="preparing_body">Only ever happens once, and takes about %1$d seconds.\nPick one you like while you wait — or pick nothing, and you get the first one.</string>
     <!-- %1$s = 引擎給的原因。刻意放在最後，前面先講他能做什麼。 -->
-    <string name="preparing_failed_body">The keyboard still opens, but it may not produce any characters. Sorting the words again usually fixes it.\n\n%1$s</string>
     <string name="preparing_no_keyboards">The list of keyboards is not readable yet. Once the words are sorted you can also pick one under Settings › Keyboard.</string>
     <string name="preparing_pick">Pick a keyboard</string>
     <string name="preparing_more_hint">There are more keyboards than these. Later you can change without coming back here: while typing, tap the ⚙ at the right end of the candidate row.</string>

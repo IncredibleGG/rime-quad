@@ -30,6 +30,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import org.luminakey.ime.R
 import org.luminakey.ime.core.DeployEstimate
+import org.luminakey.ime.core.RimeRuntime
 import org.luminakey.ime.net.FirstRunNoticeHost
 import org.luminakey.ime.net.NetworkSwitchCard
 import org.luminakey.ime.prefs.PrefsStore
@@ -70,10 +71,11 @@ fun RimeAppScreen(
     val context = LocalContext.current
     val store = remember { StoreController(context.applicationContext) }
     val system = rememberImeSystemState(focusEpoch)
-    val phase = rememberRimePhase()
-    // 失敗訊息要跟著 phase 走；直接讀 RimeRuntime.initError 是畫不出來的，
-    // 見 [rememberRimeInitError]。
-    val initError = rememberRimeInitError(phase)
+    // 階段、訊息、失敗種類是一起來的一包 —— 三者分開拿會讓第二次失敗停在
+    // 上一次的訊息上，見 [rememberRimeStatus]。
+    val status = rememberRimeStatus()
+    val phase = status.phase
+    val initError = status.initError
     val stage = stageOf(system, phase)
 
     var onboarding by remember { mutableStateOf(startInOnboarding && !openStore) }
@@ -91,6 +93,7 @@ fun RimeAppScreen(
                 system = system,
                 phase = phase,
                 initError = initError,
+                failure = status.failure,
                 onRefreshWords = { store.redeploy() },
                 onFinished = { onboarding = false },
             )
@@ -102,6 +105,7 @@ fun RimeAppScreen(
                     stage = stage,
                     system = system,
                     initError = initError,
+                    failure = status.failure,
                     // 失敗態那顆按鈕按的是同一個 redeploy()：進度、成功／失敗
                     // 由 StoreOverlays 統一畫（它畫在所有頁面之外）。
                     onRefreshWords = { store.redeploy() },
@@ -154,6 +158,8 @@ fun HomeScreen(
     stage: SetupStage,
     system: ImeSystemState,
     initError: String?,
+    /** 哪一種失敗 —— 決定那顆按鈕畫不畫得出來，見 [actionOf]。 */
+    failure: RimeRuntime.Failure,
     onRefreshWords: () -> Unit,
     onNavigate: (Route) -> Unit,
 ) {
@@ -187,6 +193,7 @@ fun HomeScreen(
                 stage = stage,
                 system = system,
                 initError = initError,
+                failure = failure,
                 onRefreshWords = onRefreshWords,
             )
             Spacer(Modifier.height(Space.s5))
@@ -261,6 +268,7 @@ private fun NotReadyStrip(
     stage: SetupStage,
     system: ImeSystemState,
     initError: String?,
+    failure: RimeRuntime.Failure,
     onRefreshWords: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -271,7 +279,8 @@ private fun NotReadyStrip(
                     SetupStage.NOT_ENABLED -> stringResource(R.string.not_ready_not_enabled)
                     SetupStage.ENABLED_NOT_DEFAULT -> stringResource(R.string.not_ready_not_default)
                     SetupStage.PREPARING -> stringResource(R.string.not_ready_preparing)
-                    SetupStage.FAILED -> stringResource(R.string.not_ready_failed)
+                    // 標題也分五種 —— 引擎沒起來時說「字詞整理沒成功」是騙人的。
+                    SetupStage.FAILED -> stringResource(failedTitleRes(failure))
                     SetupStage.READY -> ""
                 },
                 fontSize = TypeScale.t3,
@@ -291,7 +300,9 @@ private fun NotReadyStrip(
                         DeployEstimate.TYPICAL_SECONDS,
                     )
 
-                    SetupStage.FAILED -> stringResource(R.string.not_ready_failed_body)
+                    // 五種失敗講的話不一樣 —— 那四條按不動「重新整理字詞」的路
+                    // 要換成使用者真的做得到的事，見 [failedBodyRes]。
+                    SetupStage.FAILED -> stringResource(failedBodyRes(failure))
                     SetupStage.READY -> ""
                 },
                 fontSize = TypeScale.t5,
@@ -314,7 +325,7 @@ private fun NotReadyStrip(
             // PREPARING 沒有按鈕（沒有人能加速它），所以那一格不要留一段空白 ——
             // 空白在別的狀態下是「按鈕在這裡」的預告，留著會讓人以為少畫了東西。
             // ⚠ 這個判斷**不寫在這裡**，見 [actionOf]。
-            val action = actionOf(stage)
+            val action = actionOf(stage, failure)
             if (action != NotReadyAction.NONE) {
                 Spacer(Modifier.height(Space.s4))
                 // 本屏唯一的實心按鈕（A1）：不必讀字就知道該點哪裡。

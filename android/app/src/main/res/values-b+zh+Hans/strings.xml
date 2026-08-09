@@ -47,9 +47,7 @@
     <string name="deploy_hint_two_steps">不用等它，先去做上面那两步就好。</string>
 
     <string name="preparing_title">还在整理词条</string>
-    <string name="preparing_failed_title">词条整理没成功</string>
     <string name="preparing_body">只有第一次要做，大约 %1$d 秒。\n趁现在挑一个顺手的就行，不挑也可以，会用第一个。</string>
-    <string name="preparing_failed_body">键盘还是打得开，但可能打不出字。重新整理一次词条通常就好了。\n\n%1$s</string>
     <string name="preparing_no_keyboards">还读不到可用的键盘列表。等词条整理完，到「设置 › 键盘」也能挑。</string>
     <string name="preparing_pick">挑一个键盘</string>
     <string name="preparing_more_hint">还有更多键盘可以选。以后在键盘上点候选字那一行右边的 ⚙ 就能换，不用回到这里。</string>

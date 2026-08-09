@@ -93,6 +93,14 @@ class StoreController(context: Context) {
      */
     private fun str(id: Int, vararg args: Any): String =
         if (args.isEmpty()) appContext.getString(id) else appContext.getString(id, *args)
+
+    /**
+     * 引擎層回來的 [UiMessage]（資源 id + 參數）在這一層才變成字 ——
+     * 這裡有 `Context`，而 [SchemaStore] 那一層沒有。理由見 UiMessage 檔頭。
+     */
+    private fun msg(m: UiMessage): String = m.format(appContext)
+
+    private fun notes(list: List<UiMessage>): List<String> = list.map { msg(it) }
     private val worker = Executors.newSingleThreadExecutor { r -> Thread(r, "rime-store") }
 
     val settings = StoreSettings(appContext)
@@ -310,7 +318,7 @@ class StoreController(context: Context) {
         worker.execute {
             val installOutcome = s.install(url, idx, plan.plan) { p -> postProgress(p) }
             if (installOutcome is SchemaStore.Outcome.Failed) {
-                finish(false, installOutcome.message, installOutcome.details)
+                finish(false, msg(installOutcome.message), notes(installOutcome.details))
                 return@execute
             }
 
@@ -341,11 +349,11 @@ class StoreController(context: Context) {
                     pendingSchema = schemaIds.first(),
                     // 預檢的 warning（例如反查詞典不在）要讓使用者看得到，
                     // 否則就是一個他永遠不會知道自己少了什麼的功能。
-                    details = en.details,
+                    details = notes(en.details),
                 )
 
                 is SchemaStore.Outcome.Failed ->
-                    finish(false, en.message, en.details)
+                    finish(false, msg(en.message), notes(en.details))
             }
         }
     }
@@ -362,11 +370,11 @@ class StoreController(context: Context) {
         worker.execute {
             when (val r = s.setEnabled(schemaIds, enabled) { p -> postProgress(p) }) {
                 is SchemaStore.Outcome.Ok -> finish(
-                    true, r.message, r.details,
+                    true, msg(r.message), notes(r.details),
                     pendingSchema = if (enabled) schemaIds.firstOrNull() else null,
                 )
 
-                is SchemaStore.Outcome.Failed -> finish(false, r.message, r.details)
+                is SchemaStore.Outcome.Failed -> finish(false, msg(r.message), notes(r.details))
             }
         }
     }
@@ -417,8 +425,24 @@ class StoreController(context: Context) {
                 is DeployGate.Outcome.Timeout ->
                     finish(false, str(R.string.store_msg_deploy_timeout, r.elapsedMs), emptyList())
 
-                is DeployGate.Outcome.NotStarted ->
-                    finish(false, str(R.string.store_msg_deploy_not_started), listOf(r.reason))
+                // ⚠ 這裡原本是 `listOf(r.reason)`，而 `reason` 曾經是 DeployGate
+                // 裡寫死的一句繁體中文 —— 預設語系是英文，它會原樣上畫面。
+                // 現在 reason 是代號，字在 strings_fail.xml。
+                is DeployGate.Outcome.NotStarted -> finish(
+                    false,
+                    str(R.string.store_msg_deploy_not_started),
+                    listOf(
+                        str(
+                            when (r.reason) {
+                                DeployGate.NotStartedReason.NOT_INITIALIZED ->
+                                    R.string.deploy_not_started_engine
+
+                                DeployGate.NotStartedReason.REFUSED ->
+                                    R.string.deploy_not_started_busy
+                            }
+                        )
+                    ) + listOfNotNull(r.detail.takeIf { it.isNotBlank() }),
+                )
             }
         }
     }
@@ -430,8 +454,8 @@ class StoreController(context: Context) {
         job = JobUi(str(R.string.job_uninstall), str(R.string.job_uninstall_detail), -1f)
         worker.execute {
             when (val r = s.uninstall(packageId) { p -> postProgress(p) }) {
-                is SchemaStore.Outcome.Ok -> finish(true, r.message, emptyList())
-                is SchemaStore.Outcome.Failed -> finish(false, r.message, r.details)
+                is SchemaStore.Outcome.Ok -> finish(true, msg(r.message), emptyList())
+                is SchemaStore.Outcome.Failed -> finish(false, msg(r.message), notes(r.details))
             }
         }
     }
@@ -503,14 +527,14 @@ class StoreController(context: Context) {
 
                 val imported = s.importLocal(tmp, displayName) { p -> postProgress(p) }
                 if (imported is SchemaStore.Outcome.Failed) {
-                    finish(false, imported.message, imported.details)
+                    finish(false, msg(imported.message), notes(imported.details))
                     return@execute
                 }
                 val schemaIds = s.registry.get(
                     "local:" + displayName.substringBeforeLast('.').ifEmpty { "import" }
                 )?.schemaIds.orEmpty()
                 if (schemaIds.isEmpty()) {
-                    finish(true, (imported as SchemaStore.Outcome.Ok).message, emptyList())
+                    finish(true, msg((imported as SchemaStore.Outcome.Ok).message), emptyList())
                     return@execute
                 }
                 when (val en = s.setEnabled(schemaIds, enabled = true) { p -> postProgress(p) }) {
@@ -523,10 +547,10 @@ class StoreController(context: Context) {
                         // 這裡原本傳的是 `listOf(en.message)` —— 那是成功訊息的
                         // 複本，不是警告。要帶出來的是預檢的 details（例如
                         // 反查詞典不在），跟另外兩個呼叫端一致。
-                        en.details,
+                        notes(en.details),
                     )
 
-                    is SchemaStore.Outcome.Failed -> finish(false, en.message, en.details)
+                    is SchemaStore.Outcome.Failed -> finish(false, msg(en.message), notes(en.details))
                 }
             } catch (e: Exception) {
                 Log.e("StoreController", "匯入失敗", e)
@@ -584,7 +608,7 @@ class StoreController(context: Context) {
 
             is SchemaStore.Progress.RollingBack -> JobUi(
                 str(R.string.job_rolling_back),
-                str(R.string.job_rolling_back_detail, p.reason),
+                str(R.string.job_rolling_back_detail, msg(p.reason)),
                 -1f,
             )
         }

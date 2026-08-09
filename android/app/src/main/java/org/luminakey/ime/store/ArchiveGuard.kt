@@ -1,5 +1,6 @@
 package org.luminakey.ime.store
 
+import org.luminakey.ime.R
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
@@ -102,14 +103,20 @@ data class ArchiveRejection(
     override fun toString(): String =
         if (entry == null) "[$kind] $detail" else "[$kind] $entry: $detail"
 
-    /** 給使用者看的一行說明。 */
-    fun humanMessage(): String = when (kind) {
-        Kind.MALFORMED -> "壓縮檔損毀或格式不正確：$detail"
-        Kind.PATH_TRAVERSAL -> "壓縮檔含有會寫到目標目錄之外的路徑「$entry」，已整包拒絕"
-        Kind.SYMLINK -> "壓縮檔含有符號連結「$entry」，已整包拒絕"
-        Kind.ZIP_BOMB -> "壓縮檔超出解壓上限：$detail"
-        Kind.EXTENSION -> "壓縮檔含有不允許的檔案「$entry」：$detail"
-        Kind.EMPTY -> "壓縮檔裡沒有任何可用的檔案"
+    /**
+     * 給使用者看的一行說明。
+     *
+     * ⚠ 回傳 [UiMessage]（資源 id + 參數）而不是字串：這些話會直接畫在
+     * 匯入失敗的對話框上，而預設語系是英文。理由見 [UiMessage] 的檔頭。
+     * [detail] 是英文的故障載荷，當參數帶出去。
+     */
+    fun uiMessage(): UiMessage = when (kind) {
+        Kind.MALFORMED -> UiMessage.of(R.string.archive_err_malformed, detail)
+        Kind.PATH_TRAVERSAL -> UiMessage.of(R.string.archive_err_path, entry.orEmpty())
+        Kind.SYMLINK -> UiMessage.of(R.string.archive_err_symlink, entry.orEmpty())
+        Kind.ZIP_BOMB -> UiMessage.of(R.string.archive_err_bomb, detail)
+        Kind.EXTENSION -> UiMessage.of(R.string.archive_err_extension, entry.orEmpty(), detail)
+        Kind.EMPTY -> UiMessage(R.string.archive_err_empty)
     }
 }
 
@@ -160,7 +167,7 @@ object ArchiveGuard {
             rejections.add(
                 ArchiveRejection(
                     ArchiveRejection.Kind.ZIP_BOMB, null,
-                    "entry 數量 ${cd.entries.size} 超過上限 ${limits.maxEntries}",
+                    "entry count ${cd.entries.size} exceeds the limit of ${limits.maxEntries}",
                 )
             )
         }
@@ -181,8 +188,8 @@ object ArchiveGuard {
                 rejections.add(
                     ArchiveRejection(
                         ArchiveRejection.Kind.SYMLINK, e.name,
-                        "external attributes 的 unix mode 為 " +
-                            "0${e.unixMode.toString(8)}（S_IFLNK）",
+                        "unix mode in external attributes is " +
+                            "0${e.unixMode.toString(8)} (S_IFLNK)",
                     )
                 )
                 continue
@@ -202,7 +209,8 @@ object ArchiveGuard {
                 rejections.add(
                     ArchiveRejection(
                         ArchiveRejection.Kind.ZIP_BOMB, e.name,
-                        "宣告的解壓後大小 ${e.uncompressedSize} 超過單檔上限 ${limits.maxEntryBytes}",
+                        "declared uncompressed size ${e.uncompressedSize} exceeds the " +
+                            "per-entry limit of ${limits.maxEntryBytes}",
                     )
                 )
                 continue
@@ -213,7 +221,8 @@ object ArchiveGuard {
                     rejections.add(
                         ArchiveRejection(
                             ArchiveRejection.Kind.ZIP_BOMB, e.name,
-                            "壓縮比 ${ratio}:1 超過上限 ${limits.maxCompressionRatio}:1",
+                            "compression ratio ${ratio}:1 exceeds the limit of " +
+                                "${limits.maxCompressionRatio}:1",
                         )
                     )
                     continue
@@ -225,7 +234,7 @@ object ArchiveGuard {
                 rejections.add(
                     ArchiveRejection(
                         ArchiveRejection.Kind.ZIP_BOMB, null,
-                        "宣告的解壓後總大小已超過上限 ${limits.maxTotalBytes}",
+                        "declared uncompressed total exceeds the limit of ${limits.maxTotalBytes}",
                     )
                 )
                 break
@@ -235,7 +244,7 @@ object ArchiveGuard {
         }
 
         if (rejections.isEmpty() && safe.isEmpty()) {
-            rejections.add(ArchiveRejection(ArchiveRejection.Kind.EMPTY, null, "沒有通過檢查的檔案"))
+            rejections.add(ArchiveRejection(ArchiveRejection.Kind.EMPTY, null, "no entry passed the checks"))
         }
         return ArchiveReport(safe, rejections)
     }
@@ -257,7 +266,7 @@ object ArchiveGuard {
         if (!report.isSafe) return ExtractResult.Rejected(report)
 
         val staging = File(stagingParent, "unzip-${System.nanoTime()}")
-        if (!staging.mkdirs()) return ExtractResult.Failed("無法建立暫存目錄 $staging")
+        if (!staging.mkdirs()) return ExtractResult.Failed("could not create the staging directory $staging")
         val stagingRoot = staging.canonicalFile
 
         var written = 0L
@@ -267,7 +276,7 @@ object ArchiveGuard {
                 for (entry in report.entries) {
                     val ze = zf.getEntry(entry.name)
                         ?: return ExtractResult.Failed(
-                            "central directory 說有 ${entry.name}，ZipFile 卻找不到"
+                            "central directory lists ${entry.name} but ZipFile cannot open it"
                         )
                     val out = File(stagingRoot, entry.name)
 
@@ -282,7 +291,7 @@ object ArchiveGuard {
                                 listOf(
                                     ArchiveRejection(
                                         ArchiveRejection.Kind.PATH_TRAVERSAL, entry.name,
-                                        "正規化後為 $canonical，跳出了目標目錄 $stagingRoot",
+                                        "normalises to $canonical, which is outside $stagingRoot",
                                     )
                                 ),
                             )
@@ -317,7 +326,7 @@ object ArchiveGuard {
         // 全部寫成功了才搬進使用者資料目錄。
         try {
             if (!targetDir.exists() && !targetDir.mkdirs()) {
-                throw IOException("無法建立 $targetDir")
+                throw IOException("could not create $targetDir")
             }
             for (name in names) {
                 val src = File(stagingRoot, name)
@@ -330,7 +339,7 @@ object ArchiveGuard {
                 }
             }
         } catch (e: Exception) {
-            return ExtractResult.Failed("搬進 ${targetDir.name} 失敗: ${e.message}")
+            return ExtractResult.Failed("could not move into ${targetDir.name}: ${e.message}")
         } finally {
             staging.deleteRecursively()
         }
@@ -364,13 +373,14 @@ object ArchiveGuard {
                     out.flush()
                     dst.delete()
                     throw ZipBombException(
-                        name, "$name 實際解壓超過單檔上限 $entryCap（宣告的大小說謊了）"
+                        name, "$name inflates past the per-entry limit $entryCap " +
+                            "(the declared size lied)"
                     )
                 }
                 if (n > totalRemaining) {
                     out.flush()
                     dst.delete()
-                    throw ZipBombException(name, "解壓總量超過上限（宣告的大小說謊了）")
+                    throw ZipBombException(name, "inflated total exceeds the limit (the declared sizes lied)")
                 }
                 out.write(buf, 0, read)
             }
@@ -380,47 +390,49 @@ object ArchiveGuard {
 
     /** 回傳問題描述，null 代表沒問題。**這是 §4.1 的主要防線。** */
     internal fun pathProblemOf(rawName: String, limits: ArchiveLimits): String? {
-        if (rawName.isEmpty()) return "entry 名稱為空"
+        if (rawName.isEmpty()) return "entry name is empty"
         if (rawName.length > limits.maxPathLength) {
-            return "路徑長度 ${rawName.length} 超過上限 ${limits.maxPathLength}"
+            return "path length ${rawName.length} exceeds the limit of ${limits.maxPathLength}"
         }
-        if (rawName.any { it.code < 0x20 || it.code == 0x7F }) return "路徑含控制字元"
+        if (rawName.any { it.code < 0x20 || it.code == 0x7F }) return "path contains control characters"
         // Windows 的分隔符。java.io.File 在 Linux 上不把 '\' 當分隔符，
         // 但 zip 規格說名稱一律用 '/'，出現 '\' 本身就可疑。
-        if (rawName.contains('\\')) return "路徑含反斜線"
-        if (rawName.startsWith("/")) return "路徑以 / 開頭（絕對路徑）"
+        if (rawName.contains('\\')) return "path contains a backslash"
+        if (rawName.startsWith("/")) return "path starts with / (absolute)"
         if (rawName.length >= 2 && rawName[1] == ':' && rawName[0].isLetter()) {
-            return "路徑含磁碟機代號（絕對路徑）"
+            return "path contains a drive letter (absolute)"
         }
 
         val segments = rawName.split('/')
         // 尾端的空段是目錄標記（"foo/"），合法；其餘位置的空段代表 "//"。
         segments.forEachIndexed { idx, seg ->
             when {
-                seg == ".." -> return "路徑含 .. 區段"
-                seg == "." -> return "路徑含 . 區段"
-                seg.isEmpty() && idx != segments.lastIndex -> return "路徑含連續斜線"
+                seg == ".." -> return "path contains a .. segment"
+                seg == "." -> return "path contains a . segment"
+                seg.isEmpty() && idx != segments.lastIndex -> return "path contains consecutive slashes"
                 seg.endsWith(" ") || seg.endsWith(".") ->
-                    return "路徑區段「$seg」以空白或點結尾"
+                    return "path segment '$seg' ends with a space or a dot"
             }
         }
         val depth = segments.count { it.isNotEmpty() }
-        if (depth > limits.maxDepth) return "目錄深度 $depth 超過上限 ${limits.maxDepth}"
+        if (depth > limits.maxDepth) return "directory depth $depth exceeds the limit of ${limits.maxDepth}"
         return null
     }
 
     internal fun extensionProblemOf(name: String, limits: ArchiveLimits): String? {
         val base = name.substringAfterLast('/')
-        if (base.isEmpty()) return "檔名為空"
-        if (base.startsWith(".")) return "不接受以點開頭的隱藏檔"
+        if (base.isEmpty()) return "file name is empty"
+        if (base.startsWith(".")) return "hidden files (names starting with a dot) are not accepted"
         val dot = base.lastIndexOf('.')
         if (dot < 0) {
             return if (base in limits.allowedBareNames) null
-            else "沒有副檔名且不在允許的檔名清單（${limits.allowedBareNames.joinToString()}）"
+            else "no extension and not in the allowed bare names " +
+                    "(${limits.allowedBareNames.joinToString()})"
         }
         val ext = base.substring(dot + 1).lowercase()
         if (ext in limits.allowedExtensions) return null
-        return "副檔名 .$ext 不在白名單（允許：${limits.allowedExtensions.sorted().joinToString()}）"
+        return "extension .$ext is not on the allowlist " +
+            "(allowed: ${limits.allowedExtensions.sorted().joinToString()})"
     }
 
     internal fun isInside(candidate: File, root: File): Boolean {
@@ -466,9 +478,9 @@ internal class ZipCentralDirectory(val entries: List<Entry>) {
         const val S_IFDIR = 0x4000
 
         fun read(file: File): ZipCentralDirectory {
-            if (!file.isFile) throw IOException("檔案不存在: $file")
+            if (!file.isFile) throw IOException("file does not exist: $file")
             val len = file.length()
-            if (len < 22) throw IOException("檔案太小，不可能是 zip（${len} bytes）")
+            if (len < 22) throw IOException("file is too small to be a zip (${len} bytes)")
 
             RandomAccessFile(file, "r").use { raf ->
                 val tailLen = minOf(len, (MAX_COMMENT + 22).toLong()).toInt()
@@ -481,20 +493,20 @@ internal class ZipCentralDirectory(val entries: List<Entry>) {
                 for (i in tailLen - 22 downTo 0) {
                     if (u32(tail, i) == EOCD_SIG.toLong()) { eocd = i; break }
                 }
-                if (eocd < 0) throw IOException("找不到 End Of Central Directory，不是 zip 檔")
+                if (eocd < 0) throw IOException("no End Of Central Directory record — not a zip file")
 
                 if (eocd >= 20 && u32(tail, eocd - 20) == ZIP64_LOCATOR_SIG.toLong()) {
-                    throw IOException("ZIP64 格式不受支援（本專案的套件不應該大到需要它）")
+                    throw IOException("ZIP64 is not supported (no package here should be that large)")
                 }
 
                 val count = u16(tail, eocd + 10)
                 val cdSize = u32(tail, eocd + 12)
                 val cdOffset = u32(tail, eocd + 16)
                 if (count == 0xFFFF || cdSize == 0xFFFFFFFFL || cdOffset == 0xFFFFFFFFL) {
-                    throw IOException("central directory 使用 ZIP64 欄位，不受支援")
+                    throw IOException("the central directory uses ZIP64 fields, which are not supported")
                 }
-                if (cdOffset + cdSize > len) throw IOException("central directory 位置超出檔案範圍")
-                if (cdSize > 16L * 1024 * 1024) throw IOException("central directory 過大")
+                if (cdOffset + cdSize > len) throw IOException("the central directory offset is past the end of the file")
+                if (cdSize > 16L * 1024 * 1024) throw IOException("the central directory is too large")
 
                 val cd = ByteArray(cdSize.toInt())
                 raf.seek(cdOffset)
@@ -511,7 +523,7 @@ internal class ZipCentralDirectory(val entries: List<Entry>) {
                     val compSize = u32(cd, p + 20)
                     val uncompSize = u32(cd, p + 24)
                     val externalAttrs = u32(cd, p + 38)
-                    if (p + 46 + nameLen > cd.size) throw IOException("central directory 被截斷")
+                    if (p + 46 + nameLen > cd.size) throw IOException("the central directory is truncated")
                     val name = String(cd, p + 46, nameLen, Charsets.UTF_8)
                     out.add(
                         Entry(
@@ -525,19 +537,19 @@ internal class ZipCentralDirectory(val entries: List<Entry>) {
                     p += 46 + nameLen + extraLen + commentLen
                 }
                 if (out.size != count) {
-                    throw IOException("central directory 宣告 $count 項，實際讀到 ${out.size} 項")
+                    throw IOException("the central directory declares $count entries but only ${out.size} were read")
                 }
                 return ZipCentralDirectory(out)
             }
         }
 
         private fun u16(b: ByteArray, off: Int): Int {
-            if (off + 2 > b.size || off < 0) throw IOException("讀取越界")
+            if (off + 2 > b.size || off < 0) throw IOException("read past the end of the buffer")
             return (b[off].toInt() and 0xFF) or ((b[off + 1].toInt() and 0xFF) shl 8)
         }
 
         private fun u32(b: ByteArray, off: Int): Long {
-            if (off + 4 > b.size || off < 0) throw IOException("讀取越界")
+            if (off + 4 > b.size || off < 0) throw IOException("read past the end of the buffer")
             return (b[off].toLong() and 0xFF) or
                 ((b[off + 1].toLong() and 0xFF) shl 8) or
                 ((b[off + 2].toLong() and 0xFF) shl 16) or
