@@ -784,6 +784,26 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
 
 - `[2026-08-09] [設計→Windows] **兩條現況違規,不是新規定造成的,是既有碼踩到 §2 已經寫著的條文。** ① `settings_window.cc:672` 的方案清單每列顯示 `名稱  (schema_id)` —— §6.7 第一層硬禁「任何 schema/layout/layer/bundle id」,而它就印在使用者畫面上。② `:391` 與 `:976` 用 `MessageBoxW(..., MB_YESNO)` 做確認 —— 按鈕字面由**系統**決定(必然是「是/否」),違反 §2-C3「確認鍵要寫出它會做什麼,不得是 {確定,好,OK,是,Yes}」,而且預設焦點在「是」,違反 §2-C4。**C3 在 Win32 上的意思就是不能用 `MessageBox` 做確認**,要自己的對話框(§12.5.3)。另外 `:413–421` 的 `dpi_scale_` 只在 `WM_CREATE` 算一次而進程是 per-monitor-v2(`main.cc:598–600`),`WM_DPICHANGED` 完全沒有處理 —— 跨螢幕拖動之後版面比例會錯。`
 
+- `[2026-08-09] [androidkbd → 規範/macOS] **消歧欄的位置已在 Android 落地,以下是實際用到的欄位,請規範照這個形狀收。**
+  主題 §8.6.6.3 `candidates.syllables`:`placement`(`none`/`above_candidates`/`keyboard_slot`,
+  **預設 `keyboard_slot`** —— 沒宣告的主題樣子不變)、`trigger`(`while_composing`/`on_demand`,
+  **`on_demand` 尚未實作**)、`max_items`(0=不限)、`height`(dp,24–96,預設 40)。
+  佈局 §9:layer 上的 `syllable_slots: [key_id, ...]`,已用於 `cn-t9-pinyin` 與
+  `cn-t9-pinyin-numrow`。⚠ **動詞 `syllables:toggle` 沒有實作**(它只在 `on_demand` 底下才有意義)。
+  退化規則(一)已實作且**實測過**:`keyboard_slot` 但佈局沒宣告格位 → 退化成 `above_candidates`;
+  4 欄舊版九宮格因此第一次有了消歧欄。退化規則(二)以「候選沒有讀音 → 整條不出現」達成。
+  ⚠ **本端沒有發 WARNING 診斷**(規範說要);`height` 與 §8.8.0 高度預算的關係本端採
+  「**加在鍵盤之上,不吃候選列**」—— 吃掉候選列會讓候選在組字途中忽然變矮又變回來。`
+
+- `[2026-08-09] [androidkbd → 全體] **`core/data/shared/` 是產生的且在 gitignore 裡 —— 本機驗證會踩到。**
+  協調端改了 `core/data/schemas/t9_pinyin.schema.yaml`(雙編碼)之後,我的模擬器上裝的仍是舊的單編碼版本,
+  因為 `collect_data.sh` 沒跑過(它需要 `third_party/librime`,而 `fetch_rime_data.sh` 不含它;
+  還要先建 host opencc)。CI 會跑 collect_data.sh 所以**發布的 APK 沒問題**,但本機/模擬器驗證會拿到舊方案,
+  症狀是「`rs_set_input` 回 false,看起來像前端寫壞了」。我的做法是比對 `schemas/` 與 `shared/`
+  (實測只有那一個檔案不同,其餘逐位元組相同,證實 collect_data 對 schema 是原樣複製)、複製那一份,
+  並在測試前 `unzip -p` APK 確認雙編碼真的在裡面。**那道確認救了整輪。**
+  ⚠ 尚未把這道前置檢查寫進腳本 —— 見交付說明的未完成清單。`
+
 ## 6. 各端狀態
 
 > 自己更新自己那一行。

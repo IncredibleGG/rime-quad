@@ -1,6 +1,7 @@
 package org.luminakey.ime.keyboard
 
 import android.util.Log
+import org.luminakey.ime.theme.SendSpec
 import org.luminakey.ime.theme.Appearance
 import org.luminakey.ime.theme.DiagnosticText
 import org.luminakey.ime.theme.KeyboardLayout
@@ -247,10 +248,38 @@ class LayoutHost(private val repo: LayoutRepository) {
                     kind = it.kind,
                     forSchema = it.forSchema,
                     autoForSchema = it.autoForSchema,
+                    letters = lettersOf(it),
+                    deprecated = it.deprecated,
                     primary = it.primary,
                 )
             }
         }
+
+    /**
+     * 這份佈局的鍵實際送出哪些字母（小寫化）。
+     *
+     * 只看 `send: keysym`（走引擎的那一種）。`send: text` 繞過引擎直接上屏，
+     * 它打得出什麼與方案的 alphabet 無關，算進來會把判斷弄糊。
+     */
+    private fun lettersOf(layout: KeyboardLayout): Set<Char> {
+        // ⚠ **只看預設層。** 九宮格佈局自己也有一個英數層(a-z),把它算進來會讓
+        // 聯集變成整個字母表,於是 QWERTY 又通過了 —— 實測就是這樣漏掉的:
+        // 選單照樣在 t9_pinyin 底下提供 QWERTY。使用者打字時待的是預設層,
+        // 那一層送什麼才是「這個方案吃得下什麼」的證據。
+        val out = HashSet<Char>()
+        val layers = layout.layers.filter { it.id == layout.defaultLayer }
+            .ifEmpty { layout.layers.take(1) }
+        for (layer in layers) {
+            for (row in layer.rows) {
+                for (key in row.keys) {
+                    val send = key.send as? SendSpec.Keysym ?: continue
+                    val name = send.name
+                    if (name.length == 1 && name[0].isLetter()) out.add(name[0].lowercaseChar())
+                }
+            }
+        }
+        return out
+    }
 
     private fun primaryLayoutId(): String {
         repo.layoutIds().forEach { id -> if (load(id)?.primary == true) return id }

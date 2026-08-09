@@ -172,6 +172,15 @@ data class KeyboardLayout(
     val primary: Boolean,
     val metrics: LayoutMetrics,
     val layers: List<LayoutLayer>,
+    /**
+     * 這份佈局還在,但**不再列進鍵盤類型選單**。
+     *
+     * 用途是「已被取代、但不想讓既有使用者掉鍵盤」的佈局:它仍然載得起來、
+     * 既有的釘選仍然有效、測試仍然拿它當夾具,只是新使用者選不到它。
+     * 直接刪檔會讓釘著它的人退回自動規則(可接受),但也會一併刪掉
+     * LayoutEscape 的死路覆蓋 —— 那是拿真實佈局的靜態內容在驗的。
+     */
+    val deprecated: Boolean = false,
     val ancestry: List<String>
 ) {
     fun layer(id: String): LayoutLayer? = layers.firstOrNull { it.id == id }

@@ -139,6 +139,7 @@ object LayoutParser {
     private val DOC_KEYS = setOf(
         "format", "id", "revision", "name", "description", "author", "license",
         "inherits", "min_client", "kind", "targets", "for_schema", "auto_for_schema",
+        "deprecated",
         "direction", "default_layer", "alpha_layer", "primary", "metrics", "layers",
         "key_patches"
     )
@@ -250,6 +251,7 @@ object LayoutParser {
             targets = c.child("targets").stringList(listOf("android", "ios")),
             forSchema = forSchema,
             autoForSchema = autoForSchema,
+            deprecated = c.child("deprecated").bool(false),
             direction = c.child("direction").enumValue(Direction.LTR),
             defaultLayer = defaultLayer,
             alphaLayer = alphaLayer,

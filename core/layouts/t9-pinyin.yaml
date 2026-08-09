@@ -85,6 +85,11 @@ targets: [android, ios]
 # 但自動命中讓給 cn-t9-pinyin —— 5 欄那份才是華語慣例。
 for_schema: ["t9_pinyin"]
 auto_for_schema: []
+
+# 已由 5 欄的 cn-t9-pinyin 取代,不再列進鍵盤類型選單。
+# 檔案保留:既有使用者的釘選仍然有效(不會突然掉鍵盤),
+# 而 LayoutEscape 的死路覆蓋是拿這份佈局的靜態內容在驗的。
+deprecated: true
 direction: ltr
 default_layer: t9
 # 「中／En」進英文模式時換上的層（見 en 層的檔頭）。
