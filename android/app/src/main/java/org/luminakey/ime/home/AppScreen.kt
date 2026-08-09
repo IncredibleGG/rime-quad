@@ -98,6 +98,9 @@ fun RimeAppScreen(
                 )
 
                 Route.KEYBOARD -> KeyboardPage(
+                    // 同一個 controller 一路傳下去:進度與結果由 StoreOverlays
+                    // 統一畫,而它盯的是這一個。第二個實例畫不出任何東西。
+                    controller = store,
                     onBack = { route = Route.HOME },
                     onOpenStore = { route = Route.STORE },
                 )

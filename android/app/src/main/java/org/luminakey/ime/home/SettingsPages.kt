@@ -215,10 +215,13 @@ private fun Page(
 /* ────────────────────────────── 鍵盤 ────────────────────────────── */
 
 @Composable
-fun KeyboardPage(onBack: () -> Unit, onOpenStore: () -> Unit) {
+fun KeyboardPage(
+    controller: StoreController,
+    onBack: () -> Unit,
+    onOpenStore: () -> Unit,
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val store = remember { StoreController(context.applicationContext) }
     val groups = remember(RimeRuntime.phase) { availableKeyboardGroups(context) }
     val all = remember(groups) { groups.flatMap { it.second } }
     var picked by remember { mutableStateOf(currentKeyboardOf(context, all)) }
@@ -232,7 +235,13 @@ fun KeyboardPage(onBack: () -> Unit, onOpenStore: () -> Unit) {
         )
         Spacer(Modifier.height(Space.s5))
         if (all.isEmpty()) {
-            TypingEmptyState(busy = store.busy, onRefresh = { store.redeploy() })
+            // ⚠ 用**傳進來的**那一個 controller,不要在這裡 new 一個。
+            //   StoreController 不是單例:每一個實例有自己的工作執行緒與自己的
+            //   job 狀態,而畫進度的 StoreOverlays 盯的是 AppScreen 持有的那一個。
+            //   在這裡 new 一個的話,按下去會**真的**開始整理,但畫面上不會有
+            //   任何進度、任何結果、任何提示 —— 使用者按了之後看到的是「沒反應」,
+            //   而且要等十幾秒才會發現字詞其實整理過了。
+            TypingEmptyState(busy = controller.busy, onRefresh = { controller.redeploy() })
         } else {
             for ((schemaName, types) in groups) {
                 SectionLabel(schemaName)
