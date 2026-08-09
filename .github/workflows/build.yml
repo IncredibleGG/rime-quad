@@ -167,6 +167,25 @@ jobs:
       - name: 產品識別碼只有一份(自帶反向測試)
         run: ./scripts/verify_product_ids.sh
 
+      # ⚠ yaml.safe_load 對重複鍵是「後者覆蓋前者」,一聲不吭;
+      #   而 GitHub Actions 會**整份檔案拒收**,那條 run 的名字會變成檔案路徑。
+      #   實際發生過(0072f4f):聯集式的合併衝突解法把 `push:` 底下併出了
+      #   兩個 `branches:`,本機 yaml 驗過、CI 上那一整條車道直接不存在。
+      #   用聯集解衝突的時候最容易長出這種東西,而它不會讓任何一項變紅。
+      - name: workflow 檔沒有重複鍵(自帶反向測試)
+        run: |
+          set -eu
+          python3 scripts/verify_yaml_no_dup_keys.py .github/workflows/*.yml
+          # 反向:植入一個重複鍵,這一關必須紅。沒有這一段就無從分辨
+          # 「沒有重複鍵」與「這支腳本自己壞了」。
+          cp .github/workflows/build.yml /tmp/dup.yml
+          python3 -c "import io;p='/tmp/dup.yml';s=io.open(p,encoding='utf-8').read();i=s.index('  pull_request:');io.open(p,'w',encoding='utf-8').write(s[:i]+'    branches: [main]\n'+s[i:])"
+          if python3 scripts/verify_yaml_no_dup_keys.py /tmp/dup.yml; then
+            echo "植入了重複鍵卻沒有紅 —— 這一關沒有在檢查" >&2
+            exit 1
+          fi
+          echo "反向測試通過:植入的重複鍵會被抓到"
+
       # 發布腳本的關卡自己有沒有在守。擋的是「發出去之後使用者裝不上來」——
       # 那種事一年撞不到幾次,所以關卡壞掉的話**不會有人發現**,除非有人
       # 每次 push 都逼它對著假清單表演一次。不需要 APK、不連網,~2 秒。
