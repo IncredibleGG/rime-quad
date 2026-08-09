@@ -269,7 +269,14 @@ if [ "$SKIP_EMU" -eq 0 ]; then
          --ready-log "phase . READY" --out "$OUT/verify-$KEYS" > "$OUT/verify-$KEYS.log" 2>&1; then
       ok "$NAME：$KEYS → $EXP"
     else
-      bad "$NAME：$KEYS 沒有打出 $EXP，見 $OUT/verify-$KEYS.log"
+      # ⚠ 這裡**不要替失敗定調**。
+      #   「$KEYS 沒有打出 $EXP」聽起來像組字壞了,於是所有人都去查引擎與詞庫。
+      #   CI run 31310612204 就是這樣:真正的原因是測試靶的視窗沒拿到焦點,
+      #   連一個鍵都還沒送出去。子腳本已經把原因寫在它的 [FAIL] 那幾行了,
+      #   這裡原樣端出來就好,不要自己再編一個看起來合理的說法。
+      bad "$NAME($KEYS → $EXP)沒有通過。子腳本說:"
+      grep -E "^[[:space:]]*\[FAIL\]" -A 6 "$OUT/verify-$KEYS.log" | head -12 >&2 || true
+      echo "         完整紀錄:$OUT/verify-$KEYS.log" >&2
     fi
   done
 
@@ -283,8 +290,12 @@ if [ "$SKIP_EMU" -eq 0 ]; then
        --ime "$IME_ID" --out "$OUT/longpress" > "$OUT/longpress.log" 2>&1; then
     ok "按住 12 次之後鍵盤外觀復原，且仍打得出字"
   else
-    bad "按住之後鍵盤壞了或畫面沒有復原，見 $OUT/longpress.log"
-    grep -E "\[FAIL\]|差異|SystemExit|Error" "$OUT/longpress.log" | head -10 >&2 || true
+    # 同上:不要替失敗定調。「按住之後鍵盤壞了」只是這一關**可能**的結論之一,
+    # 而它也可能根本沒走到按住那一步(例如測試靶沒有焦點)。
+    bad "按住那一關沒有通過。子腳本說:"
+    grep -E "^[[:space:]]*\[FAIL\]" -A 6 "$OUT/longpress.log" | head -12 >&2 || true
+    grep -E "差異|SystemExit|Error" "$OUT/longpress.log" | head -4 >&2 || true
+    echo "         完整紀錄:$OUT/longpress.log" >&2
   fi
 
   step "6c. 升級路徑（覆蓋安裝，不解除安裝）"

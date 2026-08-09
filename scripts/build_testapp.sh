@@ -46,6 +46,22 @@
 #   view 樹,監聽器也不會裝)。verify_ime.sh / verify_rime_compose.sh /
 #   verify_longpress.sh 都靠這個靶,它們掃的是畫面下半部,
 #   多一個看不見的框會讓它們戳錯東西。
+#
+# ── 這個靶會把自己的狀態講出來(logcat tag:RimeImeTest)──────────────────
+#
+#   CI run 31310612204 花了一輪才查清楚「鍵盤沒出現」的真正原因是**這個
+#   Activity 的視窗從頭到尾沒有拿到輸入焦點**:logcat 裡只有 onCreate 那一次
+#   showSoftInput(而且 onFailed at PHASE_CLIENT_VIEW_SERVED),
+#   onWindowFocusChanged(true) 之後的七次一次都沒有出現。
+#
+#   那一輪之所以要靠反推,是因為這個靶什麼都不說。現在它會說:
+#
+#     RimeImeTest: <nonce> onCreate bottom=false insets=true
+#     RimeImeTest: <nonce> windowFocus=true          ← 沒有這一行 = 沒拿到焦點
+#     RimeImeTest: <nonce> showSoftInput#1 accepted=true
+#
+#   <nonce> 由啟動它的腳本用 `--es tt_nonce <值>` 帶進來,所以就算 logcat 裡
+#   還留著前一輪的行,也分得出哪幾行是這一次的。
 
 set -euo pipefail
 
@@ -87,6 +103,8 @@ cat > "$WORK/AndroidManifest.xml" <<'XML'
     <application android:label="RIME IME Test">
         <activity android:name=".MainActivity"
                   android:exported="true"
+                  android:showWhenLocked="true"
+                  android:turnScreenOn="true"
                   android:windowSoftInputMode="stateAlwaysVisible|adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -101,8 +119,11 @@ cat > "$WORK/src/dev/rime/imetest/MainActivity.java" <<'JAVA'
 package dev.rime.imetest;
 
 import android.app.Activity;
+import android.app.KeyguardManager;
 import android.content.Context;
+import android.os.Build;
 import android.os.Bundle;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowInsets;
@@ -127,12 +148,35 @@ public class MainActivity extends Activity {
     /** 貼在畫面下緣的那個框(只有 `--ez bottom true` 時才存在)。 */
     public static final String BOTTOM_DESC = "rime_test_input_bottom";
     private EditText mInput;
+    /** logcat 的 tag。自動化靠它判斷「視窗到底有沒有拿到焦點」。 */
+    private static final String TAG = "RimeImeTest";
+    /** 啟動這一次的識別碼(`--es tt_nonce`),用來從舊的 log 行裡分辨這一輪。 */
+    private String mNonce = "-";
+    private int mShowCount = 0;
     /** 標題,兼作「宿主收到的 ime inset」的看板(寫在 content-desc 上)。 */
     private TextView mTitle;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        if (getIntent() != null && getIntent().getStringExtra("tt_nonce") != null) {
+            mNonce = getIntent().getStringExtra("tt_nonce");
+        }
+
+        // 螢幕沒亮、鎖屏還在的時候,**沒有任何視窗會拿到輸入焦點** ——
+        // 而那正是上一輪紅掉的形態。這三件事都只是降低被擋住的機會,
+        // 不是把逾時拉長:它們要嘛立刻生效,要嘛立刻無效。
+        if (Build.VERSION.SDK_INT >= 27) {
+            setShowWhenLocked(true);
+            setTurnScreenOn(true);
+            KeyguardManager km =
+                    (KeyguardManager) getSystemService(Context.KEYGUARD_SERVICE);
+            if (km != null) {
+                km.requestDismissKeyguard(this, null);
+            }
+        }
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
         boolean bottom = getIntent() != null
                 && getIntent().getBooleanExtra("bottom", false);
@@ -212,6 +256,7 @@ public class MainActivity extends Activity {
 
         mInput = bottomInput != null ? bottomInput : input;
         mInput.requestFocus();
+        Log.i(TAG, mNonce + " onCreate bottom=" + bottom + " insets=" + useInsets);
         askForKeyboard();
     }
 
@@ -230,12 +275,20 @@ public class MainActivity extends Activity {
                 (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
         if (imm == null) return;
         mInput.requestFocus();
-        imm.showSoftInput(mInput, InputMethodManager.SHOW_IMPLICIT);
+        boolean accepted = imm.showSoftInput(mInput, InputMethodManager.SHOW_IMPLICIT);
+        mShowCount++;
+        // 回傳值本身沒什麼用(true 只代表請求送出去了),但「叫了幾次」很有用:
+        // 上一輪就是只有一次,而那一次是 onCreate 叫的。
+        Log.i(TAG, mNonce + " showSoftInput#" + mShowCount + " accepted=" + accepted);
     }
 
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
+        // 兩個方向都印。**沒有 windowFocus=true 這一行**,就是「視窗從來沒拿到
+        // 焦點」的直接證據 —— 不必再從 ImeTracker 的請求次數去反推。
+        // 而 windowFocus=true 之後又出現 false,則是「被別的東西蓋掉了」。
+        Log.i(TAG, mNonce + " windowFocus=" + hasFocus);
         if (!hasFocus) return;
         // 拿到焦點之後才是真正有效的那一次。再補幾次,涵蓋首次部署把 IME
         // 進程拖慢、系統把請求丟掉的情況。
