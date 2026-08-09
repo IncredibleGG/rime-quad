@@ -109,6 +109,13 @@ _BASE = product.R2_ARTIFACT_BASE
 # 欄一夕之間變空,看起來像資料掉了。
 _BASES = [_BASE, getattr(product, "R2_ARTIFACT_BASE_LEGACY", "")]
 _BASES = [b for b in _BASES if b]
+# Android 同理。2026-08-10 之前發的那一批叫 rime-android-debug-…,只認新字根
+# 會讓「舊版」欄一夕之間變空 —— 而那些檔案還在 R2 上,是出問題時的退路。
+_ANDROID_PREFIXES = [
+    product.R2_ANDROID_APK_PREFIX,
+    getattr(product, "R2_ANDROID_APK_PREFIX_LEGACY", ""),
+]
+_ANDROID_PREFIXES = [p for p in _ANDROID_PREFIXES if p]
 
 
 def snapshot():
@@ -117,7 +124,7 @@ def snapshot():
         return _cache["data"]
     files = _rclone_list()
     data = {
-        "android": _pick(files, product.R2_ANDROID_APK_PREFIX, ".apk"),
+        "android": _pick(files, _ANDROID_PREFIXES, ".apk"),
         # 安裝程式是主要下載;壓縮包留給想手動放的人。
         "macos": _pick(files, [f"{_MAC}/{b}-macos-" for b in _BASES], ".pkg"),
         "macos_archive": _pick(files, [f"{_MAC}/{b}-macos-" for b in _BASES], ".tar.gz"),

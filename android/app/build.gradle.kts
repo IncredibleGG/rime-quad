@@ -247,15 +247,35 @@ android {
     buildTypes {
         // debug 與 release 都用同一把正式金鑰。
         //
-        // 為什麼 debug 也要：使用者手上跑的就是 debug 建置（本專案側載發布的
-        // 是 debug APK）。debug 若還用 Android 的 debug keystore 簽，等於「能不能
-        // 升級」取決於他當初裝到哪一種建置 —— 那是個會在最糟的時候才發現的坑。
+        // 為什麼 debug 也要：驗證腳本在模擬器上裝的是 debug 建置，而使用者手上
+        // 是 release。兩邊若用不同的金鑰，「覆蓋安裝上得去嗎」在本機就永遠測不到
+        // ——那正是這條線最貴的一種缺陷（升不上去 = 使用者只能重裝、失去詞典）。
+        //
+        // ── 2026-08-10：發給使用者的從 debug 換成 release ────────────────────
+        // 在此之前 scripts/publish_apk.sh 預設發的是 app-debug.apk，而 debug 建置
+        // 的 android:debuggable 預設是 true。後果不是「開發者方便」而是：
+        // 任何拿得到 adb 的人都能 `run-as org.luminakey.ime` 把使用者的詞庫與
+        // 輸入歷史整包讀走，也能對輸入法進程掛除錯器 —— 而輸入法看得到使用者
+        // 打的每一個字。這與「離線為預設、經得起審計」的產品定位直接衝突。
+        //
+        // debug 建置**仍然是 debuggable**，那是刻意的：模擬器上的驗證腳本要靠
+        // run-as 讀資料目錄、要靠 src/debug 的 harness 驅動匯出/匯入。
+        // 兩者的分工由 scripts/release_check.sh 第 3c 關釘住：
+        // 「release 那份不是 debuggable 且不含 harness，debug 那份兩者皆是」。
+        // 後半句是正控 —— 少了它，偵測方法自己壞掉的那天這一關會安靜地全綠。
         val rimeSigning = signingConfigs.findByName("rime")
         debug {
             isJniDebuggable = true
             rimeSigning?.let { signingConfig = it }
         }
         release {
+            // 這兩行是 AGP 的預設值，寫出來是因為它們現在是**產品承諾**而不是
+            // 建置細節。留白的預設值改起來沒有阻力也不留痕跡；寫成一行，
+            // 要改的人得先把上面那段註解讀完。
+            isDebuggable = false
+            isJniDebuggable = false
+            // ⚠ 先不開 R8。開了要動 Compose 與 JNI（RegisterNatives 之外仍有
+            //   以名稱查的 native callback），那是另一件要單獨驗的事。
             isMinifyEnabled = false
             rimeSigning?.let { signingConfig = it }
             proguardFiles(

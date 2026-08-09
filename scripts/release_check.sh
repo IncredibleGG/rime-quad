@@ -15,7 +15,23 @@
 #   ./release_check.sh --skip-emu   # 只跑不需要模擬器的部分(快車道)
 #   ./release_check.sh --emu-only   # 只跑需要模擬器的部分(慢車道)
 #   ./release_check.sh --strict     # 略過一律視為失敗(CI 用)
-#   ./release_check.sh --apk <path> # 驗指定的 APK,不自己建
+#   ./release_check.sh --apk <path>       # 驗指定的 **release** APK,不自己建
+#   ./release_check.sh --debug-apk <path> # 模擬器驗證腳本用的那一份
+#
+# ── 為什麼這支腳本同時盯著兩份 APK(2026-08-10 起)────────────────────────
+# 使用者拿到的是 **release**;模擬器上那幾支驗證腳本跑的是 **debug**。
+# 這不是偷懶,是它們需要 debug 才有的東西:`run-as` 讀資料目錄、
+# `src/debug` 底下的 BackupHarnessReceiver 驅動匯出/匯入往返。
+#
+# 但**發布關卡不可以只驗 debug 那一份** —— 那正是 2026-08-10 之前的狀態:
+# 每一關都綠,而綠的是一份使用者永遠不會拿到的 APK。所以分工是:
+#
+#   驗 release(使用者拿到的)  第 3c、4、6c 關
+#   驗 debug (驗證腳本用的)   第 6、6b 關,以及 verify_* 那幾支
+#
+# 而第 3c 關同時盯住這條分界線本身:release 不是 debuggable、不含 harness,
+# debug 兩者皆是。後半句是**正控** —— 少了它,偵測方法自己壞掉的那天
+# (aapt2 換一版少印一行、dex 字串換了寫法)這一關會安靜地永遠說「乾淨」。
 #
 # ── 為什麼要拆成快慢兩條車道 ──────────────────────────────────────────
 # 模擬器在 CI 上要開機、要冷啟動部署,一輪十幾分鐘;單元測試與 APK 內容
@@ -23,7 +39,7 @@
 # 那等於沒有。所以拆開:快的每次 push 跑,慢的推上 main 或手動觸發時跑。
 #
 # **拆開不等於拿掉。** 兩條車道加起來必須仍是原本那 16 項:
-#   --skip-emu → 第 0–4 關(含 3b)  --emu-only → 第 5–7 關
+#   --skip-emu → 第 0–4 關(含 3b、3c)  --emu-only → 第 5–7 關
 # 而且 --emu-only 會在結尾明白列出它**沒有**驗的那幾關,免得有人拿慢車道
 # 的綠燈當成「發布關卡通過」。發布必須兩條都綠(見 .github/workflows/build.yml
 # 的 publish job 的 needs:)。
@@ -36,7 +52,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$ROOT/scripts/lib/product.sh"
 SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}"
 ADB="$SDK/platform-tools/adb"
-APK="$ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
+# $APK = **使用者拿到的那一份**。所有「這份東西能不能發」的判斷都問它。
+APK="$ROOT/android/app/build/outputs/apk/release/app-release.apk"
+# $APK_DEBUG = 模擬器上那幾支驗證腳本用的那一份(它們需要 run-as 與
+# src/debug 的 harness)。它**不會**被發布,但第 3c 關要拿它當正控。
+APK_DEBUG="$ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
 IME_ID="$RS_ANDROID_IME_ID"
 PKG="$RS_ANDROID_APP_ID"
 SKIP_EMU=0
@@ -46,11 +66,12 @@ OUT="$ROOT/build/release-check"
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --skip-emu) SKIP_EMU=1; shift ;;
-    --emu-only) EMU_ONLY=1; shift ;;
-    --strict)   STRICT=1; shift ;;
-    --apk)      APK="$2"; shift 2 ;;
-    -h|--help)  sed -n '2,30p' "$0"; exit 0 ;;
+    --skip-emu)  SKIP_EMU=1; shift ;;
+    --emu-only)  EMU_ONLY=1; shift ;;
+    --strict)    STRICT=1; shift ;;
+    --apk)       APK="$2"; shift 2 ;;
+    --debug-apk) APK_DEBUG="$2"; shift 2 ;;
+    -h|--help)   sed -n '2,46p' "$0"; exit 0 ;;
     *) echo "未知參數: $1" >&2; exit 2 ;;
   esac
 done
@@ -93,10 +114,15 @@ step() { echo; echo "=== $* ==="; }
 if [ "$EMU_ONLY" -eq 1 ]; then
   echo
   echo "※ --emu-only:這一輪**只**跑第 5–7 關(需要模擬器的部分)。"
-  echo "  沒有跑到的是:離線稽核、工作區狀態、單元測試、建置、APK 內容。"
+  echo "  沒有跑到的是:離線稽核、工作區狀態、單元測試、建置、APK 內容、"
+  echo "  以及第 3c 關(release 不是 debuggable、不含 harness)。"
   echo "  那幾關由 --skip-emu 那一條車道負責。**這一輪的綠燈不等於發布關卡通過。**"
-  echo "  待驗的 APK:$APK"
-  [ -f "$APK" ] || { echo "  找不到那個 APK,無從驗起。" >&2; exit 1; }
+  echo "  要發的那一份(第 6c 關驗它):$APK"
+  echo "  驗證腳本用的那一份(第 6、6b 關):$APK_DEBUG"
+  [ -f "$APK" ] || { echo "  找不到 release APK,升級關卡無從驗起。" >&2; exit 1; }
+  # 少了 debug 那一份不是「少驗一點」,是第 6、6b 關整段沒得跑 ——
+  # 而那兩關失敗時的訊息會是「輸入法打不出字」,完全指錯方向。
+  [ -f "$APK_DEBUG" ] || { echo "  找不到 debug APK,第 6/6b 關無從驗起。" >&2; exit 1; }
 fi
 
 if [ "$EMU_ONLY" -eq 0 ]; then
@@ -173,9 +199,20 @@ else
   grep -E "FAILED|AssertionError" "$OUT/unittest.log" | head -10 || true
 fi
 
-step "3. 建置 APK"
-if (cd android && nohup ./gradlew --console=plain assembleDebug > "$OUT/build.log" 2>&1); then
-  ok "assembleDebug 成功（$(stat -c%s "$APK") bytes）"
+step "3. 建置 APK（release 與 debug 兩份）"
+# 兩份都要建。release 是使用者拿到的;debug 是模擬器上那幾支驗證腳本用的。
+# 只建其中一份的話,另一條路線會在幾關之後以「找不到檔案」失敗,
+# 而那個訊息看起來像環境壞了。
+if (cd android && nohup ./gradlew --console=plain assembleRelease assembleDebug \
+      > "$OUT/build.log" 2>&1); then
+  if [ -f "$APK" ] && [ -f "$APK_DEBUG" ]; then
+    ok "assembleRelease $(stat -c%s "$APK") bytes / assembleDebug $(stat -c%s "$APK_DEBUG") bytes"
+  else
+    # gradle 回 0 但檔案不在 —— 最常見的原因是沒有簽章設定,於是 AGP 產出的是
+    # app-release-**unsigned**.apk。那份東西誰也裝不上,而「建置成功」會蓋掉它。
+    bad "gradle 回 0,但預期的 APK 不在:$( [ -f "$APK" ] || echo "$APK ")$( [ -f "$APK_DEBUG" ] || echo "$APK_DEBUG")"
+    ls -l "$ROOT/android/app/build/outputs/apk"/*/ 2>/dev/null | sed 's/^/    /' || true
+  fi
 else
   bad "建置失敗，見 $OUT/build.log"; tail -20 "$OUT/build.log"
 fi
@@ -208,8 +245,98 @@ else
   # 否則「產物層沒驗」會被第 3 關的紅燈蓋過去而沒有人記得補驗。
   skip "APK 不在，產物層的離線稽核（.so 符號 / APK 的 allowBackup / dex）沒有跑"
 fi
+# ⚠ **已知缺口(2026-08-10 明著留下,不是漏看)**:audit_offline.sh 的產物層
+#   仍然優先掃 app-debug.apk(它自己 :291 與 :536 寫死了那個順序),而使用者
+#   拿到的是 release。debug 是**未經 R8 縮減、而且多了 src/debug** 的一份,
+#   所以「誰碰得到網路」這一項掃它是**更寬**的網(dex_network_refs.py 釘死的
+#   清單也是在它身上量的);但「APK 實際打進去的 allowBackup」這一項掃的
+#   就確實是錯的那一份。改掉要連同重新釘 dex 清單一起做,而那會動到
+#   verify_audit_offline.sh 的 16 條植入 —— 不在這一輪的範圍。
 
-step "4. APK 內容"
+step "3c. 要發的那一份不是 debuggable，也不含開發用的 harness"
+# ═════════════════════════════════════════════════════════════════════════
+# 這一關擋的是 2026-08-10 之前一直在發生的事:發給使用者的是 debug 建置。
+# 後果不是「開發者方便」——
+#   · debuggable=true → 任何拿得到 adb(或把裝置解鎖)的人都能
+#     `run-as org.luminakey.ime` 把詞庫與輸入歷史整包讀走,並對輸入法進程
+#     掛除錯器。而輸入法看得到使用者打的每一個字。
+#   · src/debug 的 BackupHarnessReceiver 是一個 exported 的廣播入口,
+#     一條 `am broadcast` 就能叫 app 匯出整份詞庫到指定路徑。留在 release
+#     裡等於留一個後門 —— 所以它**不可以**為了讓往返測試好跑而搬進 main。
+#
+# ── 為什麼要同時驗 debug 那一份(正控)────────────────────────────────
+# 只問「release 乾不乾淨」的話,偵測方法自己壞掉的那天(aapt2 換一版不再印
+# application-debuggable、dex 裡的類別描述子換了寫法、unzip 抓不到 classes*.dex)
+# 這一關會安靜地永遠說「乾淨」,而輸出和一切正常長得一模一樣。
+# 所以每一項都成對:release 必須沒有,debug 必須有。debug 那半邊紅了,
+# 代表**這一關本身**壞了,不是產品壞了 —— 訊息要這樣寫。
+# ═════════════════════════════════════════════════════════════════════════
+if [ -f "$APK" ] && [ -f "$APK_DEBUG" ]; then
+  # 這三個字串都從 product.env 推導,不寫死套件名。
+  HARNESS_CLASS="$RS_ANDROID_APP_ID.devtools.BackupHarnessReceiver"
+  HARNESS_DEX="L$RS_ANDROID_PKG_PATH/devtools/BackupHarnessReceiver;"
+  # 往返測試真正在驗的產品程式碼(它住在 src/main,兩個變體都有)。
+  SHIPPED_DEX="L$RS_ANDROID_PKG_PATH/store/BackupController;"
+
+  # dex 裡有沒有這個類別。**不要用 `unzip -p … | grep -q`** —— grep -q 一命中
+  # 就結束,unzip 還在寫 → SIGPIPE → 在 pipefail 之下整條管線被判失敗。
+  # grep -c 會讀到 EOF,沒有這個問題(本檔第 4 關的註解記過同一件事)。
+  dex_has() {   # $1 apk  $2 類別描述子 → 印出命中行數
+    unzip -p "$1" 'classes*.dex' 2>/dev/null | grep -ac -- "$2" || true
+  }
+  mani_has() {  # $1 apk  $2 字串 → 印出命中行數
+    "$AAPT2" dump xmltree --file AndroidManifest.xml "$1" 2>/dev/null \
+      | grep -c -- "$2" || true
+  }
+
+  # ── (1) debuggable ──────────────────────────────────────────────────
+  R_BADG="$("$AAPT2" dump badging "$APK" 2>/dev/null || true)"
+  D_BADG="$("$AAPT2" dump badging "$APK_DEBUG" 2>/dev/null || true)"
+  R_DBG="$(printf '%s\n' "$R_BADG" | grep -c '^application-debuggable' || true)"
+  D_DBG="$(printf '%s\n' "$D_BADG" | grep -c '^application-debuggable' || true)"
+  R_DBG_X="$(mani_has "$APK" 'android:debuggable')"
+  D_DBG_X="$(mani_has "$APK_DEBUG" 'android:debuggable')"
+
+  if [ "$D_DBG" -eq 0 ] || [ "$D_DBG_X" -eq 0 ]; then
+    bad "正控倒了:debug 建置**不是** debuggable(badging $D_DBG 處、manifest $D_DBG_X 處)。這代表偵測方法失效,不是產品變好了 —— 這一關現在什麼都保證不了"
+  elif [ "$R_DBG" -ne 0 ] || [ "$R_DBG_X" -ne 0 ]; then
+    bad "release 建置是 debuggable(badging $R_DBG 處、manifest $R_DBG_X 處)—— 任何拿得到 adb 的人都能 run-as 讀走使用者的詞庫與輸入歷史。檢查 android/app/build.gradle.kts 的 buildTypes.release"
+  else
+    ok "release 不是 debuggable，而 debug 是（正控成立，兩個判讀來源都同意）"
+  fi
+
+  # ── (2) harness receiver ────────────────────────────────────────────
+  R_H_M="$(mani_has "$APK" "$HARNESS_CLASS")"
+  D_H_M="$(mani_has "$APK_DEBUG" "$HARNESS_CLASS")"
+  R_H_D="$(dex_has "$APK" "$HARNESS_DEX")"
+  D_H_D="$(dex_has "$APK_DEBUG" "$HARNESS_DEX")"
+
+  if [ "$D_H_M" -eq 0 ] || [ "$D_H_D" -eq 0 ]; then
+    bad "正控倒了:debug 建置裡找不到 $HARNESS_CLASS(manifest $D_H_M 處、dex $D_H_D 處)。要嘛 harness 被刪了(那 verify_backup_roundtrip.sh 也跑不了),要嘛這一關的偵測方式已經失效"
+  elif [ "$R_H_M" -ne 0 ] || [ "$R_H_D" -ne 0 ]; then
+    bad "release 建置裡有 $HARNESS_CLASS(manifest $R_H_M 處、dex $R_H_D 處)—— 那是一個 exported 的廣播入口,一條 am broadcast 就能把使用者整份詞庫匯出到指定路徑。它必須留在 src/debug/"
+  else
+    ok "harness receiver 只在 debug 裡（release 的 manifest 與 dex 都沒有）"
+  fi
+
+  # ── (3) 往返測試驗的那段程式碼真的有出貨 ────────────────────────────
+  # verify_backup_roundtrip.sh 跑的是 debug 建置(它需要 harness 驅動)。
+  # 那個結論要能延伸到使用者手上,前提是「被驗的那段程式碼在 release 裡也在」。
+  # 這一項就是把那個前提從「大家都這麼相信」變成一句可觀察的斷言。
+  R_SHIP="$(dex_has "$APK" "$SHIPPED_DEX")"
+  if [ "$R_SHIP" -gt 0 ]; then
+    ok "release 的 dex 裡有 $SHIPPED_DEX —— 匯出/匯入往返驗的是真的會出貨的程式碼"
+  else
+    bad "release 的 dex 裡找不到 $SHIPPED_DEX —— 那 verify_backup_roundtrip.sh 在 debug 上的綠燈就延伸不到使用者手上"
+  fi
+else
+  skip "兩份 APK 沒有都在，debuggable 與 harness 的對照檢查沒有跑"
+fi
+
+step "4. APK 內容（驗的是 release，也就是使用者拿到的那一份）"
+# ⚠ 這一關以前驗的是 debug。ABI、IME 宣告、隨附的 yaml 三件事在兩個變體上
+#   確實一樣,但那是**碰巧**一樣 —— 只要有人在 release 加一條 manifest 規則、
+#   或讓某個 assets 只進 debug,這一關的綠燈就會替一份沒被看過的 APK 背書。
 if [ -f "$APK" ]; then
   # ⚠ 先把清單抓進變數，不要用 `unzip -l | grep -q`。
   #   grep -q 一找到就結束，unzip 還在寫 → SIGPIPE → 在 `set -o pipefail`
@@ -299,12 +426,17 @@ if [ "$SKIP_EMU" -eq 0 ]; then
     fi
   fi
 
-  step "6. 真正的輸入驗證（走實體按鍵路徑）"
+  step "6. 真正的輸入驗證（走實體按鍵路徑；用 debug 建置）"
   # 注意：verify_ime.sh 用的 input text 走 commitText，會繞過組字，
   # 即使 librime 沒載入也會通過。這裡一定要用 verify_rime_compose.sh。
+  #
+  # 為什麼這一關用 debug 而不是 release:子腳本要讀 logcat 的部署狀態、
+  # 必要時要 run-as 撈現場。組字這條路徑上兩個變體跑的是同一份 src/main
+  # (release 沒開 R8),而「真的會出貨的那份裝得起來、打得出字」由第 6c 關
+  # 用 release 回答 —— 它會把 release 蓋裝上去、確認資料還在。
   for c in "nihao:1:你好:拼音"; do
     KEYS="${c%%:*}"; r="${c#*:}"; SEL="${r%%:*}"; r="${r#*:}"; EXP="${r%%:*}"; NAME="${r##*:}"
-    if "$ROOT/scripts/verify_rime_compose.sh" --ime "$IME_ID" --apk "$APK" \
+    if "$ROOT/scripts/verify_rime_compose.sh" --ime "$IME_ID" --apk "$APK_DEBUG" \
          --keys "$KEYS" --select "$SEL" --expect "$EXP" \
          --ready-log "phase . READY" --out "$OUT/verify-$KEYS" > "$OUT/verify-$KEYS.log" 2>&1; then
       ok "$NAME：$KEYS → $EXP"
@@ -338,7 +470,13 @@ if [ "$SKIP_EMU" -eq 0 ]; then
     echo "         完整紀錄:$OUT/longpress.log" >&2
   fi
 
-  step "6c. 升級路徑（覆蓋安裝，不解除安裝）"
+  step "6c. 升級路徑（覆蓋安裝，不解除安裝；蓋上去的是 release）"
+  # ⚠ 這一關驗的是 **release**,也就是使用者真的會裝下去的那一份。
+  #   2026-08-10 之前它驗的是 debug —— 於是「舊版能不能被新版蓋掉、蓋完資料
+  #   還在不在」這件事,從來沒有在使用者實際會拿到的那個檔案上問過。
+  #   兩個變體的簽章與 versionCode 雖然一樣,但 manifest 合併、變體專屬的
+  #   資源與 source set 都可能讓它們的安裝行為分岔。
+  #
   # 最近兩個真 bug 都出在這條路徑上：新增的內建方案進不到舊使用者、
   # 以及降版被拒。全新安裝永遠測不到它們，而真實使用者絕大多數是升級。
   # 挑「前一版」要挑得對，否則會拿測試產物來比。條件有三：
@@ -414,8 +552,39 @@ if [ "$SKIP_EMU" -eq 0 ]; then
       # 而「資料還沒種下去就升級」會讓下面的保留檢查驗到一個空目錄——空的比對
       # 空的永遠會過，於是這一關變成裝飾品。所以改成等到真的有資料為止。
       "$ADB" -s "$SER" shell monkey -p $PKG -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || true
-      # debug 建置是 debuggable，所以不需要 root 就能用 run-as 看自己的資料目錄。
-      seeded() { "$ADB" -s "$SER" shell "run-as $PKG find . -type f 2>/dev/null | sort" 2>/dev/null | tr -d '\r'; }
+
+      # ── 為什麼這裡不再用 run-as ────────────────────────────────────────
+      # 這一關現在蓋上去的是 **release**,而 release 不是 debuggable ——
+      # `run-as org.luminakey.ime` 會直接回 `package not debuggable` 並失敗。
+      # 那正是這一輪要的結果:使用者手上那份不該讓任何人讀得到資料目錄。
+      # (實測 2026-08-10,emulator-5554,即使 ro.debuggable=1:
+      #    release → run-as: package not debuggable: org.luminakey.ime
+      #    debug   → cache code_cache files shared_prefs)
+      #
+      # 所以要看「使用者的東西還在不在」,只剩 root shell 一條路,而模擬器
+      # (userdebug)給得起。
+      #
+      # ⚠ 給不起 root 就**失敗**,不是略過。這一關存在的理由就是回答
+      #   「升級後詞庫還在嗎」;看不見資料目錄時唯一誠實的答案是「沒驗到」,
+      #   而這支腳本對「沒驗到」的態度寫在檔頭的 skip() 註解裡 ——
+      #   曾經有一關被判成略過然後在結尾報「失敗 0 項」,一片全綠。
+      DATA_DIR="/data/data/$PKG"
+      ROOT_OK=0
+      _R="$("$ADB" -s "$SER" root 2>&1 || true)"
+      case "$_R" in
+        *"already running as root"*) ;;
+        *) "$ADB" -s "$SER" wait-for-device >/dev/null 2>&1 || true; sleep 2 ;;
+      esac
+      [ "$("$ADB" -s "$SER" shell id -u 2>/dev/null | tr -d '\r\n')" = "0" ] && ROOT_OK=1
+      if [ "$ROOT_OK" -eq 0 ]; then
+        bad "拿不到 root shell（adb root 說:${_R:-(沒有輸出)}）—— release 不是 debuggable，沒有 root 就看不見 $DATA_DIR，「升級後資料還在嗎」這一關驗不了。這不是通過"
+      fi
+      # 一律走 root。不做「debuggable 就用 run-as、否則用 root」的分流 ——
+      # 兩條路的關卡會各自腐爛,而先壞掉的那條不會有人發現。
+      seeded() {
+        [ "$ROOT_OK" -eq 1 ] || return 0
+        "$ADB" -s "$SER" shell "find $DATA_DIR -type f 2>/dev/null | sort" 2>/dev/null | tr -d '\r'
+      }
       BEFORE=""
       for i in $(seq 1 180); do
         BEFORE="$(seeded)"
@@ -431,9 +600,12 @@ if [ "$SKIP_EMU" -eq 0 ]; then
         # 種一個哨兵。使用者真正在意的是「我的東西還在嗎」，而那件事只有
         # 「升級前放進去的東西升級後還讀得到」能證明。
         MARKER_TEXT="rime-upgrade-marker-$$"
-        "$ADB" -s "$SER" shell "run-as $PKG sh -c 'mkdir -p files && printf %s \"$MARKER_TEXT\" > files/.rime_upgrade_marker'" >/dev/null 2>&1 || true
-        CHK="$("$ADB" -s "$SER" shell "run-as $PKG cat files/.rime_upgrade_marker 2>/dev/null" 2>/dev/null | tr -d '\r\n')"
-        [ "$CHK" = "$MARKER_TEXT" ] || bad "種不進哨兵檔（run-as 讀回 '$CHK'）——資料保留這一關驗不了"
+        MARKER_PATH="$DATA_DIR/files/.rime_upgrade_marker"
+        "$ADB" -s "$SER" shell "mkdir -p $DATA_DIR/files && printf %s '$MARKER_TEXT' > $MARKER_PATH" >/dev/null 2>&1 || true
+        CHK="$("$ADB" -s "$SER" shell "cat $MARKER_PATH 2>/dev/null" 2>/dev/null | tr -d '\r\n')"
+        # 種不進去 = 這一關的**證據來源**壞了。它必須紅,而且不可以被下面
+        # 「升級後哨兵還在嗎」的比對掩蓋 —— 空的比對空的永遠會過。
+        [ "$CHK" = "$MARKER_TEXT" ] || bad "種不進哨兵檔（讀回 '$CHK'，路徑 $MARKER_PATH）——資料保留這一關驗不了"
         if "$ADB" -s "$SER" install -r "$APK" > "$OUT/upgrade.log" 2>&1; then
           ok "舊版可被新版覆蓋安裝（簽章相容、versionCode 未降版）"
           NEWVC="$("$ADB" -s "$SER" shell dumpsys package $PKG 2>/dev/null | grep -oE 'versionCode=[0-9]+' | head -1)"
@@ -448,7 +620,7 @@ if [ "$SKIP_EMU" -eq 0 ]; then
           # 逐檔比會為了正常的輪替而報紅——那種假警報最後一定會被關掉，
           # 於是連真的資料遺失也一起關掉了。
           # 改問兩件不會誤判的事：我們自己種的哨兵還在嗎，資料量有沒有塌掉。
-          MARKER="$("$ADB" -s "$SER" shell "run-as $PKG cat files/.rime_upgrade_marker 2>/dev/null" 2>/dev/null | tr -d '\r\n')"
+          MARKER="$("$ADB" -s "$SER" shell "cat $MARKER_PATH 2>/dev/null" 2>/dev/null | tr -d '\r\n')"
           if [ "$MARKER" != "$MARKER_TEXT" ]; then
             bad "升級後哨兵檔不見了（讀到 '$MARKER'）——使用者的自訂詞庫與設定會跟著消失"
           elif [ "${NA:-0}" -lt $((NB / 2)) ]; then
@@ -456,11 +628,26 @@ if [ "$SKIP_EMU" -eq 0 ]; then
           else
             ok "升級後資料保留（哨兵檔還在，檔案數 $NB → $NA）"
           fi
+          # 蓋上去的是 release,所以裝完之後 run-as 必須**失敗**。
+          # 這一句不是額外的裝飾:上面每一項用的都是 root shell,
+          # 而 root shell 讀得到資料目錄這件事,和「這份 APK 是不是 debuggable」
+          # 完全無關 —— 少了這一句,把 release 悄悄改成 debuggable 之後
+          # 第 6c 關會一路全綠。第 3c 關驗的是檔案,這一句驗的是**裝上去之後**。
+          RA_OUT="$("$ADB" -s "$SER" shell "run-as $PKG ls" 2>&1 | tr -d '\r' | head -3)"
+          case "$RA_OUT" in
+            *"not debuggable"*)
+              ok "裝上去之後 run-as 被系統擋下（$(printf '%s' "$RA_OUT" | head -1)）" ;;
+            *)
+              bad "裝上去的這一份可以被 run-as 讀出資料目錄，回應是「$RA_OUT」—— 使用者的詞庫與輸入歷史對任何拿得到 adb 的人是敞開的。這份 APK 不該發" ;;
+          esac
         else
           bad "覆蓋安裝失敗 —— 現有使用者將無法升級，只能解除安裝重裝並失去詞典與設定"
           head -5 "$OUT/upgrade.log" >&2
         fi
       fi
+      # 把裝置還原成非 root。後面還有別的腳本要跑（verify_syllables、
+      # verify_backup_roundtrip），讓它們拿到的是預設狀態而不是這一關的殘留。
+      [ "$ROOT_OK" -eq 1 ] && { "$ADB" -s "$SER" unroot >/dev/null 2>&1 || true; sleep 2; }
     else
       skip "前一版裝不上（簽章不同或降版），升級路徑沒有驗到"
     fi

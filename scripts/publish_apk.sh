@@ -10,7 +10,7 @@
 #   - rime-latest.apk 會被覆蓋。帶版號的那份不會,那是出問題時的退路。
 #
 # 用法:
-#   ./publish_apk.sh                      # 用預設的 debug APK
+#   ./publish_apk.sh                      # 用預設的 **release** APK
 #   ./publish_apk.sh --apk <路徑>
 #   ./publish_apk.sh --no-latest          # 只發帶版號的,不動 latest
 #   ./publish_apk.sh --allow-dirty        # 工作區未提交也照發(不建議)
@@ -36,7 +36,17 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APK="$ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
+# ── 為什麼預設是 release 而不是 debug(2026-08-10 改)────────────────────────
+# 在此之前這一行指著 app-debug.apk,而 debug 建置的 android:debuggable 是 true。
+# 使用者手上因此躺著一份「任何拿得到 adb 或解得開鎖的人都能 `run-as` 讀走
+# 詞庫與輸入歷史、還能對輸入法進程掛除錯器」的 APK —— 而輸入法看得到他打的
+# 每一個字。這不是效能或體積的取捨,是產品定位(離線為預設、經得起審計)
+# 直接被推翻。
+#
+# 只改這一行不夠:`--apk` 仍然可以指到任何檔案,而 CI 也是用 `--apk` 傳進來的。
+# 所以下面另有一道**針對 APK 本身**的關卡(check_debuggable),不管 APK 從哪來,
+# debuggable 的一律拒發。
+APK="$ROOT/android/app/build/outputs/apk/release/app-release.apk"
 BASE_URL="https://pub-d6a54d2e5f5947e2b0b23fb8e27ce0a5.r2.dev"
 REMOTE_SUBDIR="rime"                # 只動 rime/ 底下,bucket 內其他路徑屬於別的專案
 UPDATE_LATEST=1
@@ -166,6 +176,75 @@ ok = bool(s.strip()) and len(s) <= 255 and \
 sys.exit(0 if ok else 1)
 '
 }
+
+# ── 關卡:這份 APK 是不是 debuggable ──────────────────────────────────────
+#
+# 擋的是 2026-08-10 之前一直在發生的事:發出去的是 debug 建置。
+# debuggable=true 的後果不是「開發者方便」,是任何拿得到 adb(或把裝置解鎖)
+# 的人都能 `run-as org.luminakey.ime` 把使用者的詞庫與輸入歷史整包讀走,
+# 並對輸入法進程掛除錯器 —— 而輸入法看得到使用者打的每一個字。
+#
+# 為什麼不是「把預設路徑改掉就好」:`--apk` 可以指到任何檔案,CI 也是用它
+# 傳進來的。路徑是慣例,慣例攔不住下一次。這一關看的是 **APK 自己說了什麼**。
+#
+# 兩個獨立的判讀來源,是刻意的:
+#   · badging 的 `application-debuggable` 是 aapt2 幫忙歸納的一行;
+#   · xmltree 讀的是 manifest 裡真正的 `android:debuggable` 屬性。
+# 只看 badging 的話,aapt2 換一版少印那一行,這一關就會從此永遠說「乾淨」,
+# 而且輸出和一切正常長得一模一樣。兩邊講的話不一致 = **讀不出來**,
+# 那不是通過,是沒查成 —— 所以也擋。
+#
+#   $1 aapt2 dump badging 的原文
+#   $2 aapt2 dump xmltree --file AndroidManifest.xml 的原文
+#
+# 與本檔 page_url_problem 同一個約定:**永遠 return 0**,有沒有問題看有沒有印字。
+# 不用結束碼表達判定,是因為 `p="$(f ...)"` 在 set -e 之下會把非零的結束碼
+# 變成當場中止 —— 那會讓 --self-check 在第一個「該紅」的案例上直接死掉。
+debuggable_problem() {
+  local badging="$1" xmltree="$2" b=0 x=0
+
+  case "$badging" in *application-debuggable*) b=1 ;; esac
+  # xmltree 的樣子(build-tools 35.0.0 實測):
+  #   A: http://schemas.android.com/apk/res/android:debuggable(0x0101000f)=true
+  # 舊版 aapt2 會印成 `(type 0x12)0xffffffff`。兩種都要認得 ——
+  # 只認一種的話,換一台機器就等於沒在看。
+  case "$xmltree" in
+    *"android:debuggable(0x0101000f)=true"*) x=1 ;;
+    *"android:debuggable(0x0101000f)=(type 0x12)0xffffffff"*) x=1 ;;
+  esac
+
+  # 兩份輸入都得先是「真的有東西」。空字串在下面每一個 case 都不命中,
+  # 於是一個讀不出 APK 的 aapt2 會產生一句「不是 debuggable」—— 那是最糟的
+  # 一種綠燈。所以先問:manifest 到底讀到了沒有。
+  case "$xmltree" in
+    *"android:debuggable"*|*"N: android="*|*"E: manifest"*) ;;
+    *) printf 'aapt2 讀不出 AndroidManifest.xml(xmltree 輸出裡連 manifest 節點都沒有)—— 這不是「不是 debuggable」,是沒查成'; return 0 ;;
+  esac
+  case "$badging" in
+    *"package: name="*) ;;
+    *) printf 'aapt2 dump badging 讀不出這個 APK(輸出裡沒有 package: name=)—— 沒查成,不是通過'; return 0 ;;
+  esac
+
+  if [ "$b" -ne "$x" ]; then
+    printf 'badging 說 debuggable=%s,xmltree 說 debuggable=%s —— 兩個判讀來源對不上,代表其中一個的解析已經失效。沒查成,不是通過' "$b" "$x"
+    return 0
+  fi
+  if [ "$b" -eq 1 ]; then
+    printf '這是 debuggable 的建置(android:debuggable=true)。發出去等於任何拿得到 adb 的人都能 run-as 讀走使用者的詞庫與輸入歷史,並對輸入法進程掛除錯器 —— 而輸入法看得到他打的每一個字。要發的是 release 那一份:cd android && ./gradlew assembleRelease'
+    return 0
+  fi
+  return 0
+}
+
+# ── 帶版號的 APK 檔名 ─────────────────────────────────────────────────────
+#
+# 純函式,字首從外面傳進來 —— 它的唯一合法來源是 product.env 的
+# R2_ANDROID_APK_PREFIX。在這裡寫死的話,下一次改名時這支腳本會安靜地
+# 繼續產出舊名字(而檔名是**使用者看得到**的東西)。
+# --self-check 的 G1 餵一個哨兵字首進來,確認它真的流到輸出。
+#
+#   $1 字首  $2 時間戳  $3 git sha  $4 -dirty 或空
+release_apk_name() { printf '%s%s-%s%s.apk' "$1" "$2" "$3" "$4"; }
 
 # ── 關卡:線上服役中的套件名 vs 這次要發的套件名 ──────────────────────────
 #
@@ -428,7 +507,7 @@ render_version_json() {
   "size": $SIZE,
   "sha256": "$SHA256",
   "url": "$BASE_URL/$REMOTE_SUBDIR/$NAME",
-  "latest_url": "$BASE_URL/$REMOTE_SUBDIR/rime-latest.apk",
+  "latest_url": "$BASE_URL/$REMOTE_SUBDIR/$RS_R2_ANDROID_LATEST",
   "package": "$APK_PACKAGE",$replaces_json$page_json
   "notes": $notes_json
 }
@@ -669,7 +748,7 @@ declared=false' \
   sc_render() {
     local want_declared="$1" want_page="$2"
     local VERSION_CODE=26081000 VERSION_NAME='0.1.0-dev+x' STAMP=20260810-0000 \
-          SHA=deadbee NAME=rime-android-debug-x.apk SIZE=1 SHA256=ff \
+          SHA=deadbee NAME=sc-fake-x.apk SIZE=1 SHA256=ff \
           BASE_URL=https://example.invalid REMOTE_SUBDIR=rime \
           APK_PACKAGE="$RS_ANDROID_APP_ID" \
           RS_ANDROID_APP_ID_PREVIOUS="$want_declared" PAGE_URL="$want_page" \
@@ -695,12 +774,97 @@ print("keys=" + ",".join(sorted(k for k in ("replaces_package", "page_url") if k
     0 'keys=' \
     sc_render "$MINE" ''
 
+  echo "── G. debuggable(debuggable_problem)────────────────────────────────"
+
+  # 這一段的靶是 aapt2 的**實際輸出**(build-tools 35.0.0,2026-08-10 量的),
+  # 不是我想像中的格式。兩份原文各留一段最小可辨識的片段。
+  local BADG_DBG BADG_OK XML_DBG XML_DBG_OLD XML_OK
+  BADG_DBG="package: name='org.x' versionCode='1' versionName='1'
+application-debuggable
+application: label='X'"
+  BADG_OK="package: name='org.x' versionCode='1' versionName='1'
+application: label='X'"
+  XML_DBG="E: manifest (line=2)
+  E: application (line=20)
+    A: http://schemas.android.com/apk/res/android:debuggable(0x0101000f)=true"
+  # 舊版 aapt2 印的是原始型別。兩種都要認得 —— 只認一種等於換一台機器就沒在看。
+  XML_DBG_OLD="E: manifest (line=2)
+  E: application (line=20)
+    A: http://schemas.android.com/apk/res/android:debuggable(0x0101000f)=(type 0x12)0xffffffff"
+  XML_OK="E: manifest (line=2)
+  E: application (line=20)
+    A: http://schemas.android.com/apk/res/android:label(0x01010001)=@0x7f120000"
+
+  sc_dbg_bad() {
+    local p; p="$(debuggable_problem "$1" "$2")"
+    [ -n "$p" ] || return 1
+    printf '%s' "$p"
+  }
+  sc_dbg_ok() {
+    local p; p="$(debuggable_problem "$1" "$2")"
+    [ -z "$p" ] || { printf '不該有問題卻報了:%s' "$p"; return 1; }
+    printf 'ok'
+  }
+
+  sc_case "G1 debuggable 的建置 → 要擋,而且要說出後果(run-as 讀走詞庫)" \
+    0 'debuggable 的建置
+run-as
+assembleRelease' \
+    sc_dbg_bad "$BADG_DBG" "$XML_DBG"
+
+  sc_case "G2 舊版 aapt2 的 (type 0x12)0xffffffff 寫法也要認得" \
+    0 'debuggable 的建置' \
+    sc_dbg_bad "$BADG_DBG" "$XML_DBG_OLD"
+
+  sc_case "G3 兩份都乾淨 → 放行(誤擋的關卡會被關掉,那才是真的損失)" \
+    0 'ok' \
+    sc_dbg_ok "$BADG_OK" "$XML_OK"
+
+  sc_case "G4 兩個來源講的話不一致 → 要擋,而且要講明「沒查成」不是「通過」" \
+    0 '對不上
+沒查成' \
+    sc_dbg_bad "$BADG_DBG" "$XML_OK"
+
+  sc_case "G5 xmltree 空的(aapt2 讀不出 manifest)→ 要擋。空字串必須不等於「乾淨」" \
+    0 '沒查成' \
+    sc_dbg_bad "$BADG_OK" ""
+
+  sc_case "G6 badging 空的 → 要擋(同上,讀不出來 ≠ 沒問題)" \
+    0 '沒查成' \
+    sc_dbg_bad "" "$XML_OK"
+
+  echo "── G'. 檔名與 latest 指標都取自 product.env ────────────────────────"
+
+  # 這兩條釘的是「字首/指標被抄回腳本裡」。抄回去之後輸出一模一樣,
+  # 差別只有下一次改 product.env 時它不跟著動 —— 那是最難發現的一種。
+  # 所以餵哨兵值進去,要求哨兵出現在輸出裡。
+  sc_case "G7 release_apk_name 用的是傳進來的字首,不是寫死的" \
+    0 'SC-SENTINEL-android-20260810-0000-deadbee.apk' \
+    release_apk_name 'SC-SENTINEL-android-' 20260810-0000 deadbee ''
+
+  sc_latest() {
+    # 只覆蓋 latest 那一個變數,其餘沿用 sc_render 的假值。
+    local RS_R2_ANDROID_LATEST='sc-sentinel-latest.apk'
+    local VERSION_CODE=26081000 VERSION_NAME='x' STAMP=20260810-0000 \
+          SHA=deadbee NAME=sc-fake-x.apk SIZE=1 SHA256=ff \
+          BASE_URL=https://example.invalid REMOTE_SUBDIR=rime \
+          APK_PACKAGE="$RS_ANDROID_APP_ID" RS_ANDROID_APP_ID_PREVIOUS='' \
+          PAGE_URL='' NOTES='x'
+    render_version_json | python3 -c '
+import json, sys
+print("latest_url=" + json.load(sys.stdin)["latest_url"])
+'
+  }
+  sc_case "G8 version.json 的 latest_url 取自 product.env 的 R2_ANDROID_LATEST" \
+    0 'latest_url=https://example.invalid/rime/sc-sentinel-latest.apk' \
+    sc_latest
+
   echo
   # §2-G2:掃描範圍非空。這裡是「條數」—— 少一條就紅,不是「零個違規=通過」。
   # 加新案例時要跟著把這個數字加上去,那是刻意的:少一條的原因通常是有人
   # 在除錯時把某一條註解掉,然後忘了放回來,而全綠會讓他以為沒事。
-  if [ "$SC_N" -ne 28 ]; then
-    sc_bad "跑了 $SC_N 條,預期 28 條 —— 有案例被繞過或被刪掉了(§2-G2)"
+  if [ "$SC_N" -ne 36 ]; then
+    sc_bad "跑了 $SC_N 條,預期 36 條 —— 有案例被繞過或被刪掉了(§2-G2)"
   fi
   echo "=== 共 $SC_N 條,失敗 $SC_FAIL 條 ==="
   [ "$SC_FAIL" -eq 0 ] || return 1
@@ -728,7 +892,24 @@ SHA="$(git rev-parse --short HEAD)"
 DIRTY=""
 git diff --quiet && git diff --cached --quiet || DIRTY="-dirty"
 STAMP="$(date +%Y%m%d-%H%M)"
-NAME="rime-android-debug-${STAMP}-${SHA}${DIRTY}.apk"
+# 字首從 product.env 來,不在這裡寫死 —— 見 release_apk_name() 的註解。
+NAME="$(release_apk_name "$RS_R2_ANDROID_APK_PREFIX" "$STAMP" "$SHA" "$DIRTY")"
+
+# 上面那一行有沒有真的用到 product.env,在輸出上看不出來(寫死同一串字的
+# 結果一模一樣)。所以這裡明著問一次:
+#   · 檔名必須以 product.env 的字首開頭 —— 有人把字面值抄回去時,
+#     下一次改 product.env 這裡就會紅,而不是安靜地繼續產出舊名字;
+#   · 帶版號的那一份不可以撞上 latest 指標 —— 撞上的話,「帶版號的那份
+#     不會被覆蓋、那是出問題時的退路」這句話當場不成立。
+case "$NAME" in
+  "$RS_R2_ANDROID_APK_PREFIX"*) ;;
+  *) die "產出的檔名「$NAME」不是以 product.env 的 R2_ANDROID_APK_PREFIX
+(「$RS_R2_ANDROID_APK_PREFIX」)開頭 —— 有人把檔名字首寫死在腳本裡了。
+檔名是使用者看得到的東西,而寫死的那一份會在下一次改名時安靜地留在舊名字上。" ;;
+esac
+[ "$NAME" != "$RS_R2_ANDROID_LATEST" ] \
+  || die "帶版號的檔名和 latest 指標同名($NAME)——
+那會讓每一次發布都覆蓋掉退路。R2_ANDROID_APK_PREFIX 設錯了。"
 
 # 工作區髒代表這份 APK 對應不到任何一個 commit,回溯不了、也多半是別人建到
 # 一半的產物。實際發生過:誤發了一份 agent 正在改的中途建置。預設擋下。
@@ -793,6 +974,22 @@ if [ "$APK_PACKAGE" != "${RS_ANDROID_APP_ID:-}" ]; then
   echo "[!] 這份 APK 的套件名是 $APK_PACKAGE,而 product.env 說 ANDROID_APP_ID=${RS_ANDROID_APP_ID:-(空)}"
   echo "    —— 兩者應該一致。要嘛這份 APK 是舊的,要嘛 applicationId 被改到別的地方去了。"
 fi
+
+# ---------------------------------------------------- debuggable ---
+# 這一關放在簽章關卡**之前**。理由:簽章關卡問的是「既有使用者裝不裝得上」,
+# 這一關問的是「這份東西該不該存在於使用者手上」。後者先回答。
+#
+# --check-only 也要跑。CI 每次 push 呼叫的就是 --check-only,而「今天建出來的
+# 是不是 debuggable」正是每次 push 都該回答的問題 —— 等到真的按下發布才問,
+# 中間所有的綠燈都在替一份 debuggable 的 APK 背書。
+XMLTREE="$("$AAPT" dump xmltree --file AndroidManifest.xml "$ROOT/release/$NAME" 2>/dev/null || true)"
+DBG_PROBLEM="$(debuggable_problem "$BADGING" "$XMLTREE")" || true
+if [ -n "$DBG_PROBLEM" ]; then
+  die "$DBG_PROBLEM
+
+(這一關是 2026-08-10 加的。在那之前,發給使用者的一直是 app-debug.apk。)"
+fi
+echo "[OK] 不是 debuggable 的建置(badging 與 manifest 兩個來源一致)"
 
 # ── notes ────────────────────────────────────────────────────────────────
 # notes 是 version.json 裡唯一會顯示給使用者看的自由文字,也就是唯一觸及得到
@@ -1063,7 +1260,7 @@ upload() {
 
 upload "$ROOT/release/$NAME" "$REMOTE_DIR/$NAME"
 if [ "$UPDATE_LATEST" -eq 1 ]; then
-  upload "$ROOT/release/$NAME" "$REMOTE_DIR/rime-latest.apk"
+  upload "$ROOT/release/$NAME" "$REMOTE_DIR/$RS_R2_ANDROID_LATEST"
 fi
 
 # version.json:app 內檢查更新讀的就是這一份。
@@ -1122,7 +1319,7 @@ verify() {
 FAIL=0
 verify "$BASE_URL/$REMOTE_SUBDIR/$NAME" "$SIZE" || FAIL=1
 if [ "$UPDATE_LATEST" -eq 1 ]; then
-  verify "$BASE_URL/$REMOTE_SUBDIR/rime-latest.apk" "$SIZE" || FAIL=1
+  verify "$BASE_URL/$REMOTE_SUBDIR/$RS_R2_ANDROID_LATEST" "$SIZE" || FAIL=1
 fi
 verify "$BASE_URL/$REMOTE_SUBDIR/version.json" "" || FAIL=1
 
@@ -1175,7 +1372,7 @@ echo
 echo "=== 發布完成 ==="
 echo "  固定版本   : $BASE_URL/$REMOTE_SUBDIR/$NAME"
 if [ "$UPDATE_LATEST" -eq 1 ]; then
-  echo "  最新版本   : $BASE_URL/$REMOTE_SUBDIR/rime-latest.apk"
+  echo "  最新版本   : $BASE_URL/$REMOTE_SUBDIR/$RS_R2_ANDROID_LATEST"
 fi
 echo "  版本資訊   : $BASE_URL/$REMOTE_SUBDIR/version.json"
 echo "  versionCode: $VERSION_CODE"

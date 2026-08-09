@@ -36,6 +36,7 @@ on:
       - fix-publish
       - fix-gates
       - fix-android-ui
+      - fix2-release
   pull_request:
     branches:
       - main
@@ -72,7 +73,15 @@ concurrency:
 
 env:
   R2_BASE_URL: https://pub-d6a54d2e5f5947e2b0b23fb8e27ce0a5.r2.dev
-  APK_PATH: android/app/build/outputs/apk/debug/app-debug.apk
+  # ⚠ 這兩個變數指的是**兩份不同的東西**,不要合併。
+  #   APK_PATH        = 使用者拿到的那一份(release)。發布、簽章關卡、
+  #                     升級關卡都問它。
+  #   APK_DEBUG_PATH  = 模擬器上那幾支驗證腳本用的(它們需要 run-as 與
+  #                     src/debug 的 harness),**永遠不會被發布**。
+  #   2026-08-10 之前只有前者而且指著 debug —— 於是整條流程每一關都綠,
+  #   而綠的是一份 debuggable 的 APK,使用者拿到的也是它。
+  APK_PATH: android/app/build/outputs/apk/release/app-release.apk
+  APK_DEBUG_PATH: android/app/build/outputs/apk/debug/app-debug.apk
 
 jobs:
   # ══════════════════════════════════════════════════════════════ 快車道 ══
@@ -159,7 +168,7 @@ jobs:
       # 發布腳本的關卡自己有沒有在守。擋的是「發出去之後使用者裝不上來」——
       # 那種事一年撞不到幾次,所以關卡壞掉的話**不會有人發現**,除非有人
       # 每次 push 都逼它對著假清單表演一次。不需要 APK、不連網,~2 秒。
-      - name: 發布關卡的反向測試(publish_apk.sh --self-check,28 條)
+      - name: 發布關卡的反向測試(publish_apk.sh --self-check,36 條)
         run: ./scripts/publish_apk.sh --self-check
       # ── 消歧欄關卡的反向測試(不需要模擬器的那兩個)────────────────
       # verify_syllables.sh 的檔頭從第一天就宣告了三種 --plant「證明它會紅」,
@@ -226,7 +235,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rime-apk
-          path: ${{ env.APK_PATH }}
+          # 兩份都收。上傳時的共同祖先是 …/apk/,所以 artifact 裡會保留
+          # release/ 與 debug/ 兩層 —— 下載端只要指到 …/apk 就還原成原樣。
+          path: |
+            ${{ env.APK_PATH }}
+            ${{ env.APK_DEBUG_PATH }}
           if-no-files-found: error
 
       - name: 上傳執行期資料(給模擬器那條車道用)
@@ -262,7 +275,9 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' &&
-       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/fix-gates'))
+       (github.ref == 'refs/heads/main' ||
+        github.ref == 'refs/heads/fix-gates' ||
+        github.ref == 'refs/heads/fix2-release'))
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
@@ -277,7 +292,10 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: rime-apk
-          path: android/app/build/outputs/apk/debug
+          # 指到 apk/ 這一層(不是 apk/debug):artifact 裡有 release/ 與
+          # debug/ 兩個子目錄,指錯一層會把兩份 APK 攤平到同一個資料夾,
+          # 而 release_check.sh 找的是 …/apk/release/app-release.apk。
+          path: android/app/build/outputs/apk
 
       - name: 取回執行期資料
         uses: actions/download-artifact@v4
@@ -363,7 +381,7 @@ jobs:
             #   交給 sh -c 的(日誌裡每一行都是一次 [command]/usr/bin/sh -c …),
             #   所以行末的 `\` 會原樣變成一個參數,腳本收到之後回「未知參數: \」
             #   然後以 2 結束。YAML 是合法的,命令是壞的 —— 驗 YAML 驗不到這件事。
-            bash ./scripts/verify_syllables.sh --apk android/app/build/outputs/apk/debug/app-debug.apk
+            bash ./scripts/verify_syllables.sh --apk "$APK_DEBUG_PATH"
             # 反向測試:把佈局的 syllable_slots 指到不存在的 key id(「有人把
             # pu_comma 改名」的真實形狀),格位替換就不會發生,畫面照常顯示標點
             # —— 第 2 關必須紅。三種植入裡只有這一種斷言的是畫面像素,
@@ -381,7 +399,7 @@ jobs:
             # ⚠ 它驗的東西單元測試守不住:剛學到的詞還在 librime 的 WriteBatch 裡,
             #   直接複製 *.userdb/ 拿到的是上一輪的詞庫 —— 能開、能用、大小差不多,
             #   只是少了最近學的,而且沒有任何錯誤訊息。
-            bash ./scripts/verify_backup_roundtrip.sh --apk android/app/build/outputs/apk/debug/app-debug.apk
+            bash ./scripts/verify_backup_roundtrip.sh --apk "$APK_DEBUG_PATH"
 
       - name: 上傳模擬器 artifact(截圖、logcat、升級紀錄)
         if: always()
@@ -434,7 +452,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: rime-apk
-          path: android/app/build/outputs/apk/debug
+          path: android/app/build/outputs/apk
 
       - name: 還原 rclone 的 [r2] 設定
         env:

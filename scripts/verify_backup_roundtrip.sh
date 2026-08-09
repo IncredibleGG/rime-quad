@@ -32,6 +32,26 @@
 #      根本沒清乾淨 —— 一個永遠會綠的測試。
 #   3. 每一步都斷言,失敗就停,並印出 logcat 現場。
 #
+# ── 這支跑的是 debug 建置,而使用者拿到的是 release ──────────────────────
+#
+# 2026-08-10 起發布的是 release,而驅動這支腳本的
+# `org.luminakey.ime.devtools.BackupHarnessReceiver` 住在 `src/debug/` ——
+# 它**不在** release 裡,而且**不可以**為了讓這支好跑而搬進 `src/main`:
+# 那是一個 exported 的廣播入口,一條 `am broadcast` 就能叫 app 把整份詞庫
+# 匯出到指定路徑。留在 release 裡等於留一個後門。
+#
+# 那這支腳本的綠燈憑什麼延伸到使用者手上?憑兩件被**釘住**的事實:
+#   1. 它驗的產品程式碼(BackupController / BackupFormat / RimeCore.flushEngine)
+#      住在 src/main,兩個變體共用,而 release 沒有開 R8(isMinifyEnabled=false),
+#      所以那段程式碼不會被改寫;
+#   2. `scripts/release_check.sh` 第 3c 關**每一輪都問一次**:
+#        · release 的 manifest 與 dex 裡沒有 BackupHarnessReceiver;
+#        · release 的 dex 裡有 BackupController(= 這支驗的東西真的有出貨);
+#        · debug 兩者皆有(正控:少了它,偵測方法壞掉時會安靜地全綠)。
+#
+# 換句話說:harness 只在 debug、被驗的程式碼在兩邊都在 —— 這兩句都是斷言,
+# 不是慣例。少了第 3c 關,這一段就只是一個好聽的說法。
+#
 # ⚠ **沒有被這支涵蓋的**:SAF 的檔案選擇器(`ACTION_CREATE_DOCUMENT` /
 #   `ACTION_OPEN_DOCUMENT` 的對話框)。harness 直接給 `BackupController`
 #   一個 `file:` Uri;`ContentResolver` 對 file scheme 走的是同一組
@@ -117,6 +137,44 @@ step "0. 準備"
 adbs get-state >/dev/null 2>&1 || fail "$SERIAL 不在線上(先跑 scripts/emu.sh start)"
 if [ "$INSTALL" -eq 1 ]; then
   [ -f "$APK" ] || fail "找不到 APK:$APK"
+
+  # ⚠ 先問這份 APK 裡到底有沒有 harness,再裝。
+  #   沒有的話(最可能的原因:有人把 release 那一份傳進來了),原本的下場是
+  #   `am broadcast` 送出去沒人接 → harness() 空轉 120 次 → 240 秒之後以
+  #   「librime 一直沒有 READY」失敗。那句話指著引擎,而真正的原因是
+  #   「這個變體本來就沒有那個 receiver」—— 完全不同的兩件事。
+  #   release 沒有 harness 是**正確的**(見檔頭),所以這裡要說得出這件事。
+  find_aapt2() {
+    local sdk d
+    for sdk in "${ANDROID_SDK_ROOT:-}" "${ANDROID_HOME:-}" "$HOME/Android/Sdk"; do
+      [ -n "$sdk" ] && [ -d "$sdk/build-tools" ] || continue
+      for d in $(ls -1 "$sdk/build-tools" 2>/dev/null | sort -Vr); do
+        [ -x "$sdk/build-tools/$d/aapt2" ] && { printf '%s' "$sdk/build-tools/$d/aapt2"; return 0; }
+      done
+    done
+    return 1
+  }
+  AAPT2="$(find_aapt2 || true)"
+  if [ -n "$AAPT2" ]; then
+    # grep -c(不是 -q):-q 一命中就結束,上游 aapt2 拿到 SIGPIPE,
+    # 在 pipefail 之下整條管線被判失敗。本專案在四支腳本裡撞過同一件事。
+    N_RECV="$("$AAPT2" dump xmltree --file AndroidManifest.xml "$APK" 2>/dev/null \
+                | grep -c "$PKG.devtools.BackupHarnessReceiver" || true)"
+    if [ "${N_RECV:-0}" -eq 0 ]; then
+      fail "$(basename "$APK") 的 manifest 裡沒有 $RECEIVER。
+這多半是 release 建置 —— 而 release **本來就不該**有 harness(它是一個
+exported 的廣播入口,見本檔檔頭)。這支腳本要的是 debug 那一份:
+  cd android && ./gradlew assembleDebug
+  ./scripts/verify_backup_roundtrip.sh --apk android/app/build/outputs/apk/debug/app-debug.apk
+「release 沒有 harness、debug 有」這件事本身由 release_check.sh 第 3c 關驗。"
+    fi
+    pass "APK 裡有 harness receiver（manifest 命中 $N_RECV 處）"
+  else
+    # 找不到 aapt2 時**不要**默默跳過。跳過的下場就是上面那個 240 秒的
+    # 假失敗,而且沒有任何一行字提到過真正的原因。
+    info "⚠ 找不到 aapt2，沒能事先確認這份 APK 有 harness。它若是 release，下面會以「librime 一直沒有 READY」失敗，而真正的原因是這個。"
+  fi
+
   adbs install -r "$APK" >/dev/null 2>&1 || fail "安裝失敗(簽章不符?先 adb uninstall $PKG)"
   pass "已安裝 $(basename "$APK")"
 fi
