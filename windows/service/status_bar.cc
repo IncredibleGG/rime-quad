@@ -282,9 +282,9 @@ void StatusBar::Relayout() {
   //
   // 修法不是「往左退一點」,是**寬度一變就重走 §12.10.5 的第 3 條**:
   // 一律把視窗矩形夾進工作區。那是純函式,單元測試碰得到。
+  // ⚠ 只呼叫一次 SetWindowPos。先改尺寸再重擺的話,中間會有一格畫面
+  //   是「已經長寬、還沒往左移」—— 也就是缺陷本身的樣子,閃一下。
   const int total_w = std::max(total, minw);
-  ::SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, total_w, h,
-                 SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOZORDER);
   ApplyPlacement(MulDivRound(total_w, 96, static_cast<int>(dpi_)));
 }
 
