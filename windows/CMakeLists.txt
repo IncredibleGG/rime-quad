@@ -85,6 +85,11 @@ add_library(rime_common STATIC
   # 而它們各自對應一次「畫面完全正常、自動化全過」的實測缺陷。
   common/elevation_policy.cc
   common/key_eat_policy.cc
+  # 「清單上要出現在哪一個語言底下、而且只出現一次」的判斷。
+  # 純邏輯是刻意的:CI 的 Windows runner 上只有一種語言情境
+  #(英文、沒有任何中文輸入語言),簡體/繁體/香港/兩種都有的使用者
+  # 只有 run_logic_tests.sh 那一邊走得到。
+  common/profile_choice.cc
   # net_policy.cc 是離線守門的**判斷**與紀錄格式(Android NetworkGate 的移植)。
   # ⚠ 它不會開任何連線,目前也還沒有東西呼叫它 —— 方案市集還沒做。
   #   放進來是因為它有測試,而且是下一輪的地基。CI 會斷言**兩個二進位
@@ -119,6 +124,7 @@ add_executable(rime_tests
   tests/test_schema_list_patch.cc
   tests/test_elevation_policy.cc
   tests/test_key_eat_policy.cc
+  tests/test_profile_choice.cc
   # 這一支用**真的**鍵盤佈局(LoadKeyboardLayout + ToUnicodeEx),
   # 是 CI 上唯一驗得到「有沒有真的問佈局」的地方。
   tests/test_win32_layouts.cc
@@ -189,6 +195,11 @@ add_executable(rime_ime_setup
   tsf/ipc_client.cc
   tsf/registration.cc
   tsf/registration_check.cc
+  # 「使用者有哪些語言、現在啟用了哪幾份、收斂成一份」。
+  # ⚠ **刻意不進 rime_tsf.dll**:那支住在每一個宿主進程裡,它不需要知道
+  #   使用者的語言清單長什麼樣。相依上沒有新東西(advapi32 + ole32 兩邊
+  #   本來都有),分開純粹是為了「DLL 裡的每一行都說得出為什麼非在那裡不可」。
+  tsf/user_langs.cc
   tsf/trace.cc
   tsf/win32_oracle.cc)
 target_include_directories(rime_ime_setup PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")

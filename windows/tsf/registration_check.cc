@@ -12,6 +12,7 @@
 #include "../winshared/winutil.h"
 #include "guids.h"
 #include "registration.h"
+#include "user_langs.h"
 
 namespace rimewin {
 namespace {
@@ -348,30 +349,45 @@ bool CheckRegistration(const CheckOptions& opt) {
     Say("  所以安裝程式只驗登錄檔。「系統接受了嗎」由事後的 check(不帶 --no-enum)回答。\n");
   }
 
-  // ── 4. 目前使用者有沒有被啟用 ──────────────────────────────────
+  // ── 4. 目前使用者啟用了**幾份** ────────────────────────────────
+  //
+  // ⚠ 這一條在 2026-08-09 由「至少一份」改成「**正好一份**」。
+  //
+  //   舊的註解寫著「HKCU 這一側取決於使用者的語言清單裡有哪幾種中文,
+  //   三種全中才算過的話,這道檢查會在完全正常的機器上失敗」。
+  //   那句話的前半是對的,後半的結論是錯的 —— 因為 EnableLanguageProfile
+  //   **不會**因為使用者沒有那個語言而失敗,它會把那個語言**加進**
+  //   使用者的語言清單。所以舊版三份全都成功,而使用者的 Win + 空白鍵
+  //   清單上我們佔三格,微软拼音與小狼毫各佔一格。他回報了這件事。
+  //
+  //   現在的契約是:註冊三份(HKLM,清單上零格),啟用一份(HKCU,一格)。
+  //   「至少一份」在三份全開的狀態下照樣成立,所以它擋不住這個回歸。
   if (opt.check_user) {
+    // 先問 TSF 自己。停用之後 HKCU 底下那個鍵**可能還在**(Enable 變 0),
+    // 所以數登錄檔的子鍵會把停用的也數進去 —— 而這裡要斷言的正好是數量。
+    const std::vector<int> on = EnabledProfileIndexesForCurrentUser();
+    Say("--- 目前使用者啟用了哪幾份 ---\n");
+    for (int i : on)
+      Say("  ✓ 0x%04X %s\n", static_cast<unsigned>(ProfileLangId(i)),
+          WideToUtf8(ProfileGuidString(i)).c_str());
+
+    // 登錄檔那一側照樣印出來,但**只作診斷**,不參與判定。
+    // 兩邊不一致本身就是有用的資訊(「停用了但鍵還在」)。
     const std::wstring lp = CtfTipRegPath() + L"\\LanguageProfile";
-    int user_ok = 0;
-    for (int i = 0; i < ProfileCount(); ++i) {
-      for (const std::wstring& lang : SubKeys(HKEY_CURRENT_USER, lp)) {
-        if (!NameMatchesLangId(lang, ProfileLangId(i))) continue;
-        for (const std::wstring& g : SubKeys(HKEY_CURRENT_USER, lp + L"\\" + lang)) {
-          if (ToLower(g) != ToLower(ProfileGuidString(i))) continue;
-          ++user_ok;
-          Say("  ✓ HKCU LanguageProfile\\%s\\%s\n", WideToUtf8(lang).c_str(),
-              WideToUtf8(g).c_str());
-        }
-      }
+    for (const std::wstring& lang : SubKeys(HKEY_CURRENT_USER, lp))
+      for (const std::wstring& g : SubKeys(HKEY_CURRENT_USER, lp + L"\\" + lang))
+        Say("    (HKCU 底下還留著鍵 %s\\%s)\n", WideToUtf8(lang).c_str(),
+            WideToUtf8(g).c_str());
+
+    if (on.empty()) {
+      fail("這個使用者一份都沒啟用 —— 症狀是「裝完了,但輸入法清單裡看不到」");
+    } else if (on.size() != 1) {
+      Say("     實際 %d 份,預期正好 1 份\n", static_cast<int>(on.size()));
+      fail("啟用了不只一份 —— 使用者的語言切換清單上會出現好幾格 LuminaKey");
+    } else {
+      Say("  ✓ 正好 1 份(0x%04X)—— 清單上只會有一格\n",
+          static_cast<unsigned>(ProfileLangId(on[0])));
     }
-    // 這裡要求的是「至少一份」,與 HKLM 那一段不同,而且是刻意的:
-    // HKCU 這一側取決於**使用者的語言清單裡有哪幾種中文**,
-    // 那不是我們決定得了的。三種全中才算過的話,這道檢查會在
-    // 完全正常的機器上失敗。
-    if (user_ok == 0)
-      fail("HKCU 底下一份設定檔都沒有 —— 目前這個使用者沒有被啟用");
-    else
-      Say("  ✓ HKCU 底下 %d 份已啟用(取決於使用者的語言清單,不要求三份全中)\n",
-          user_ok);
   }
 
   if (bad != 0) {

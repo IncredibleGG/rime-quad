@@ -154,12 +154,46 @@ HRESULT RegisterTextService(const std::wstring& dll_path) {
   if (FAILED(hr)) return hr;
   // 每一個中文語言各註冊一份。少了這個迴圈的第二圈,系統語言是簡體中文的
   // 使用者會在「繁体中文(中国台湾)」底下看到這個輸入法 —— 或者根本找不到。
+  //
+  // ══ 2026-08-09:bEnabledByDefault 由 TRUE 改成 FALSE ═══════════
+  //
+  // 倒數第二個參數。它的意思是「**替所有使用者**把這一份預設設成啟用」
+  // (對照組:EnableLanguageProfileByDefault 的文件寫的是 for all users,
+  //  EnableLanguageProfile 才是 for the current user)。
+  //
+  // 為什麼非改不可:使用者回報他的 Win + 空白鍵清單上我們佔三格,
+  // 而微软拼音、小狼毫各佔一格。三格的來源只可能是「有三份是啟用的」,
+  // 而這一輪之前有**兩條**路會讓它們變成啟用:
+  //   1. 這個 TRUE(全機、對每一個使用者、三份全開);
+  //   2. 安裝程式的 enable-user 對三份各呼叫一次 EnableLanguageProfile。
+  // 只堵第 2 條而留著第 1 條,等於修了一半 —— 而修一半的症狀與沒修
+  // 完全一樣(清單上還是三格),只是要再等一輪使用者回報才知道。
+  //
+  // 改成 FALSE 之後,「這台機器上這個使用者看到幾格」只由**一條**路決定:
+  // rime_ime_setup.exe enable-user(見 tsf/user_langs.cc)。
+  // 一條路才斷言得了,而 CI 現在斷言的正是「正好一份」。
+  //
+  // ⚠ 代價寫在這裡:同一台機器上**第二個使用者**登入時不會自動拿到
+  //   這個輸入法 —— 因為沒有人替他跑過 enable-user。這是刻意的取捨:
+  //   自動給他的話,給的會是三份(我們無從得知他的語言清單),
+  //   而那正是要修的問題。他要用的話,「開始」功能表裡的
+  //   「LuminaKey 設定」旁邊那支 rime_ime_setup.exe enable-user 補得回來。
+  //   (參考:上游 Weasel 也不把 HK / MO / SG 設成 enabled-by-default。)
+  //
+  // 最後一個參數 dwFlags 仍然是 0。TF_RP_HIDDENINSETTINGUI(0x2)是存在的,
+  // 但**刻意不用**:微軟對它的全部說明只有一句「不會出現在設定 UI 裡」,
+  // 沒有 Remarks、沒有說「設定 UI」涵蓋哪幾個介面、TF_INPUTPROCESSORPROFILE
+  // 也讀不回這個旗標(它只露出 ACTIVE / ENABLED / SUBSTITUTEDBY…),
+  // 而且找不到任何一個公開的輸入法在用它(Weasel、Mozc、chewing 都沒有)。
+  // 拿一個沒有人走過、而且驗證不了的旗標去修一個我們已經知道怎麼修的問題,
+  // 是把「清單上有幾格」交給一個猜測。所以走啟用那一條 —— 那一條量得到。
   for (int i = 0; i < kRimeProfileCount && SUCCEEDED(hr); ++i) {
     const std::wstring desc = kRimeProfiles[i].description;
     hr = profiles->RegisterProfile(
         CLSID_RimeTextService, kRimeProfiles[i].langid, *kRimeProfiles[i].guid,
         desc.c_str(), static_cast<ULONG>(desc.size()), dll_path.c_str(),
-        static_cast<ULONG>(dll_path.size()), 0, nullptr, 0, TRUE, 0);
+        static_cast<ULONG>(dll_path.size()), 0, nullptr, 0,
+        /*bEnabledByDefault=*/FALSE, /*dwFlags=*/0);
   }
   profiles->Release();
   if (FAILED(hr)) return hr;
