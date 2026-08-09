@@ -106,7 +106,12 @@ run_case() {
   local name="$1" pretext="$2" seq="$3" expect="$4"
   local logf="${OUT}/${name}.log"
   local traf="${OUT}/${name}-trace.log"
-  set +e
+  # ⚠ 這裡刻意**不**碰 errexit。這支腳本開頭是 `set -uo pipefail`(沒有 -e),
+  #   因為每一格失敗之後都要繼續跑完剩下的格子 —— 第一格紅就整支停掉的話,
+  #   看到的會是「一顆鍵壞了」而不是「哪幾顆鍵壞了」,而後者才有用。
+  #   (以前這裡寫了一組 `set +e` / `set -e`,而那個 `set -e` 會把 errexit
+  #    **打開**,於是第二格開始每一次 grep 找不到東西都會讓整支腳本消失。)
+  local rc=0
   "${HOST}" --langid "${LANGID}" \
             --seq "${seq}" \
             --pretext "${pretext}" \
@@ -114,8 +119,7 @@ run_case() {
             --require-activate \
             --trace "$(cygpath -w "${traf}")" \
             --wait-ms 3000 > "${logf}" 2>&1
-  local rc=$?
-  set -e
+  rc=$?
 
   local out doc mism
   out="$(tr -d '\r' < "${logf}")"

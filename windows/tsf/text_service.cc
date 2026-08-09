@@ -658,7 +658,17 @@ bool TextService::HandleKey(ITfContext* ctx, WPARAM w, LPARAM l, bool key_up) {
     //   那時放行,由宿主處理。
     if (ShouldSelfInsert(plan.kind) && !composition_) {
       const char32_t ch = CharForSelfInsert(plan.mapped.keysym);
-      if (ch != 0 && SelfInsertChar(ctx, ch)) return true;
+      if (ch != 0 && SelfInsertChar(ctx, ch)) {
+        // 這條路每天都會走到(英數模式的每一顆字母),所以額度要與按鍵那一行
+        // 共用 —— 不然它會變成一條每顆按鍵一次磁碟寫入的路徑,而這裡是
+        // 宿主的 UI 執行緒。
+        if (key_trace_budget_ > 0) {
+          --key_trace_budget_;
+          Trace("引擎不吃這顆字元鍵,由我們補進文件 keysym=0x%X",
+                static_cast<unsigned>(plan.mapped.keysym));
+        }
+        return true;
+      }
     }
     return false;
   }
