@@ -114,7 +114,7 @@ Dvorak 使用者會拿到不合他鍵帽的映射,但那是「輸入法完全不
 | 5 具名管道 | 連得上嗎;連不上的話卡在**開管道 / 握手 / 建 session** 哪一步、`os_error` 是多少 |
 | 6 誰載入了 DLL | 掃描所有看得到的進程,列出載入了 `rime_tsf.dll` 的那些 —— **不必再教使用者裝 Process Explorer** |
 | 7 引擎層 | 呼叫 `rime_console.exe` 直接問 librime(**完全不經 TSF、不經管道**)。它打得出「你好」就代表引擎、詞庫、方案都好,問題必定在 TSF 或 IPC 那一側;反過來也一樣 |
-| 8 除錯記錄 | 瘦 DLL 在宿主進程裡留下的最後 40 行 |
+| 8 除錯記錄 | 瘦 DLL 在宿主進程裡留下的最後 40 行(含 `ActivateEx 完成:key sink=…` 那一行 —— 它一句話說完這個宿主裡能不能用) |
 | 結論 | 有幾格失敗;每個 `[FAIL]` 後面的 `→` 就是接下來要做的事 |
 
 ⚠ **量法很重要,報告裡也寫了**:第 6 格與第 8 格要有意義,得先開一個記事本、
@@ -750,6 +750,34 @@ true;寫成「等於 true 才算開」的話,全新安裝的機器上自動挑�
 的,不是猜一種然後宣布結論。runner 是非互動的工作階段,走不通的時候要看得出
 卡在哪 —— 而 `rime_tsf_host` 連不出 `ITfThreadMgr` 時會以結束碼 3 明說
 「TSF 在這個工作階段裡不可用」,`verify_tsf.sh` 對那個碼**明著拒絕略過**。
+
+#### ⚠ 做這件事的過程中學到的兩件事(值得記住)
+
+**1. 宿主視窗沒有前景的話,TSF 一顆按鍵都不會交給文字服務 —— 而且不報錯。**
+
+第一版的 `rime_tsf_host` 建了視窗但沒有 `ShowWindow`。結果:
+`ActivateEx` 被呼叫、`key sink` 掛上了、語言列按鈕也加上了,
+而 `ITfKeystrokeMgr::TestKeyDown` / `KeyDown` **六顆按鍵一顆都沒有到達
+`OnTestKeyDown`** —— 兩者都回 `S_OK`、`pfEaten` 都是 `FALSE`。
+從呼叫端看,那與「輸入法決定不吃這顆鍵」**完全無法分辨**。
+
+補上 `ShowWindow` + `SetForegroundWindow` 之後,同一份程式碼立刻收到按鍵
+(`keysym=0x6E` / `0x69`)。所以那支驗證宿主現在會把
+`GetForegroundWindow()`、`ITfThreadMgr::IsThreadFocus()` 與
+`ITfThreadMgr::GetFocus()` 全部印出來 —— 少了那幾行,下一次撞到同一件事
+還是會去查佈局或連線,而那兩段都是好的。
+
+⚠ 這一課對產品本身也成立:「按鍵沒有到達 `OnTestKeyDown`」與
+「到達了但 keysym 是 0」是**兩個完全不同的故障**,要查的地方不同。
+除錯記錄與驗證腳本現在分開講這兩件事。
+
+**2. `AdviseKeyEventSink` 的回傳值以前完全沒有人看。**
+
+它失敗的話,`OnTestKeyDown` / `OnKeyDown` 從此不會被呼叫 —— 引擎收不到按鍵、
+連線不建立、服務不啟動、全部 UI 不出現,而 `ActivateEx` 照樣回 `S_OK`。
+與「佈局問不出字」一模一樣的症狀組合。現在會檢查、會記錄,
+而且前景版失敗時會退成非前景版(`fForeground = FALSE`)——
+少的是「別的 TIP 也在時的優先權」,遠好過一顆按鍵都收不到。
 
 ### 這一輪從「驗不了」搬到「驗得了」的:安裝
 
