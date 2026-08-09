@@ -20,7 +20,7 @@
 //  用法:
 //      swiftc -O -o /tmp/tis_probe apple/scripts/tis_probe.swift
 //      /tmp/tis_probe            # 印出所有輸入來源 id
-//      /tmp/tis_probe org.rimequad.inputmethod.RimeQuad.Hant   # 只找這一個
+//      /tmp/tis_probe org.luminakey.inputmethod.LuminaKey.Hant   # 只找這一個
 //
 import Carbon
 import Foundation
@@ -46,10 +46,10 @@ var total = 0
 for source in sources {
     guard let id = stringProperty(source, kTISPropertyInputSourceID) else { continue }
     total += 1
-    let isRimeQuad = id.hasPrefix("org.rimequad.")
+    let isLuminaKey = id.hasPrefix("org.luminakey.")
     if let wanted {
         if id == wanted { matched = true; print("FOUND \(id)") }
-    } else if isRimeQuad {
+    } else if isLuminaKey {
         matched = true
         let name = stringProperty(source, kTISPropertyLocalizedName) ?? ""
         // ⚠ 這一行就是真機回報的那個缺陷:沒有 .lproj 時系統拿不到
@@ -65,7 +65,7 @@ for source in sources {
 
 print("TIS 一共列出 \(total) 個輸入來源")
 if !matched {
-    print("清單裡沒有 org.rimequad.*")
+    print("清單裡沒有 org.luminakey.*")
 }
 // 結束碼:0 = 找到而且名字正常;3 = 找到但名字就是 id;4 = 完全找不到。
 // ⚠ 之前這支程式一律回 0,因為我們**以為** runner 上查不到。

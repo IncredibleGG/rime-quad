@@ -12,8 +12,8 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-SRC="${ROOT}/apple/RimeQuad"
-GATE="Sources/RimeQuadKit/NetworkGate.swift"
+SRC="${ROOT}/apple/LuminaKey"
+GATE="Sources/LuminaKeyKit/NetworkGate.swift"
 
 # 任何一個能建立連線的 API。加新的到這裡,不要放寬。
 PATTERN='URLSession|NSURLConnection|NWConnection|NWBrowser|CFSocket|CFStream|Network\.framework|getaddrinfo|socket\(|BSD socket'

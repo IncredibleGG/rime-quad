@@ -10,7 +10,7 @@
 # 舊的安裝流程是「解壓 → 跑一行 xattr → 複製到一個隱藏目錄 → 登出再登入」,
 # 四個步驟裡任何一步做錯都是同一種靜默失敗。這種東西不該由使用者執行。
 #
-# 產出:apple/build/dist/RimeQuad-<版本>-<架構>.pkg
+# 產出:apple/build/dist/LuminaKey-<版本>-<架構>.pkg
 #   · 裝到 ~/Library/Input Methods(不需要管理員密碼)
 #   · postinstall 自動處理隔離屬性,並把 app 叫起來讓 TIS 登錄它
 #   · 裝完的結語畫面告訴使用者下一步去哪裡按
@@ -22,14 +22,14 @@ die()  { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BUILD="${ROOT}/apple/build"
-APP="${BUILD}/RimeQuad.app"
+APP="${BUILD}/LuminaKey.app"
 DIST="${BUILD}/dist"
 WORK="${BUILD}/pkgwork"
 
-VERSION="${RIMEQUAD_VERSION:-0.3.0}"
+VERSION="${LUMINAKEY_VERSION:-0.3.0}"
 ARCH="$(uname -m)"
-PKG_ID="org.rimequad.inputmethod.RimeQuad.pkg"
-OUT="${DIST}/RimeQuad-${VERSION}-${ARCH}.pkg"
+PKG_ID="org.luminakey.inputmethod.LuminaKey.pkg"
+OUT="${DIST}/LuminaKey-${VERSION}-${ARCH}.pkg"
 
 [[ -d "${APP}" ]] || die "找不到 ${APP} —— 先跑 apple/scripts/build_app.sh"
 command -v pkgbuild >/dev/null 2>&1 || die "找不到 pkgbuild"
@@ -39,7 +39,7 @@ rm -rf "${WORK}"
 mkdir -p "${WORK}/payload" "${WORK}/scripts" "${WORK}/resources" "${DIST}"
 
 log "準備 payload"
-cp -R "${APP}" "${WORK}/payload/RimeQuad.app"
+cp -R "${APP}" "${WORK}/payload/LuminaKey.app"
 
 # ---------------------------------------------------------------- postinstall
 # ⚠ **這支腳本不准失敗。** 每一行都帶 `|| true`:安裝已經成功了,
@@ -48,7 +48,7 @@ cp -R "${APP}" "${WORK}/payload/RimeQuad.app"
 cat > "${WORK}/scripts/postinstall" <<'POSTINSTALL'
 #!/bin/sh
 # $2 = 完整安裝路徑(例如 /Users/xxx/Library/Input Methods)
-TARGET="$2/RimeQuad.app"
+TARGET="$2/LuminaKey.app"
 [ -d "$TARGET" ] || exit 0
 
 # 從網路下載來的東西帶著隔離屬性,TIS 會拒絕載入,而且不會說為什麼。
@@ -77,8 +77,8 @@ cat > "${WORK}/resources/conclusion.html" <<'HTML'
 <ol>
 <li>打開「系統設定」 › 「鍵盤」 › 「文字輸入」 › 「輸入來源」旁的「編輯…」</li>
 <li>按左下角的 <b>+</b>,選「中文（繁體）」或「中文（簡體）」,
-    找到 <b>RimeQuad</b>,加入。</li>
-<li>用 <b>Control + Space</b> 切到 RimeQuad,開始打字。</li>
+    找到 <b>LuminaKey</b>,加入。</li>
+<li>用 <b>Control + Space</b> 切到 LuminaKey,開始打字。</li>
 </ol>
 <p>設定在<b>選單列右上角的輸入法圖示</b>裡:方案、外觀、詞庫、離線開關都在那裡。</p>
 <hr>
@@ -86,8 +86,8 @@ cat > "${WORK}/resources/conclusion.html" <<'HTML'
 <ol>
 <li>Open System Settings › Keyboard › Text Input › Input Sources › Edit…</li>
 <li>Click <b>+</b>, pick Chinese (Traditional) or Chinese (Simplified),
-    find <b>RimeQuad</b>, and add it.</li>
-<li>Press <b>Control + Space</b> to switch to RimeQuad and start typing.</li>
+    find <b>LuminaKey</b>, and add it.</li>
+<li>Press <b>Control + Space</b> to switch to LuminaKey and start typing.</li>
 </ol>
 <p>Settings live in the input-method icon in the menu bar.</p>
 </body></html>
@@ -101,7 +101,7 @@ pkgbuild \
   --scripts "${WORK}/scripts" \
   --identifier "${PKG_ID}" \
   --version "${VERSION}" \
-  "${WORK}/RimeQuad-component.pkg" >/dev/null || die "pkgbuild 失敗"
+  "${WORK}/LuminaKey-component.pkg" >/dev/null || die "pkgbuild 失敗"
 
 # ---------------------------------------------------------------- 產品
 # ⚠ `enable_currentUserHome="true"` 是「裝到自己的家目錄、不用管理員密碼」
@@ -110,8 +110,8 @@ pkgbuild \
 cat > "${WORK}/distribution.xml" <<XML
 <?xml version="1.0" encoding="utf-8"?>
 <installer-gui-script minSpecVersion="2">
-    <title>RimeQuad</title>
-    <organization>org.rimequad</organization>
+    <title>LuminaKey</title>
+    <organization>org.luminakey</organization>
     <options customize="never" require-scripts="false" hostArchitectures="arm64,x86_64"/>
     <domains enable_currentUserHome="true" enable_anywhere="false" enable_localSystem="false"/>
     <conclusion file="conclusion.html" mime-type="text/html"/>
@@ -125,7 +125,7 @@ cat > "${WORK}/distribution.xml" <<XML
     <choice id="${PKG_ID}" visible="false">
         <pkg-ref id="${PKG_ID}"/>
     </choice>
-    <pkg-ref id="${PKG_ID}" version="${VERSION}" onConclusion="none">RimeQuad-component.pkg</pkg-ref>
+    <pkg-ref id="${PKG_ID}" version="${VERSION}" onConclusion="none">LuminaKey-component.pkg</pkg-ref>
 </installer-gui-script>
 XML
 

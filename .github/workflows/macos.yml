@@ -17,7 +17,7 @@ name: macOS (核心 + 輸入法 + 設定介面)
 
 on:
   push:
-    branches: [main, macos]
+    branches: [main, macos, rename-apple]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -44,7 +44,18 @@ jobs:
           swift --version
           bash --version | head -1
 
-      # ── (a-0) 定位:一行 grep 就該看得完 ───────────────────────
+      # ── (a-0) 名字:不編譯、不需要 macOS,30 毫秒,所以排最前面 ──
+      # 改名最典型的失敗是「改了一半」,而它的症狀全都是
+      # 「裝得起來、看得到、不能用,而且沒有錯誤訊息」。這一關把
+      # bundle id / TISInputSourceID / .lproj 的鍵 / @objc 類別名 /
+      # 腳本裡的產物路徑釘在一起,順便擋住「這個 workflow 自己掉了一關」。
+      - name: 名字一致性的反向測試（證明它真的會紅）
+        run: python3 ./apple/scripts/verify_names.py --self-test
+
+      - name: 名字一致性（bundle id / 輸入模式 id / 類別名 / 產物路徑）
+        run: python3 ./apple/scripts/verify_names.py
+
+      # ── (a-0b) 定位:一行 grep 就該看得完 ──────────────────────
       - name: 單一連網出口的反向測試（證明它真的會紅）
         run: ./apple/scripts/verify_single_egress.sh --expect-fail
 
@@ -122,25 +133,83 @@ jobs:
         run: ./apple/scripts/verify_user_dict.sh
 
       # ── (a-3) 輸入法本體 + 設定介面 ────────────────────────────
-      - name: 建 RimeQuad.app（輸入法 + 內嵌的設定介面）
+      - name: 建 LuminaKey.app（輸入法 + 內嵌的設定介面）
         run: ./apple/scripts/build_app.sh
 
       - name: 驗證 .app 的結構與 IMKit 宣告
         run: ./apple/scripts/verify_app_bundle.sh
 
-      - name: bundle 驗證的反向測試（證明它真的會紅）
+      # ⚠ 一次植入三個違規、只斷言「有東西紅了」是不夠的:那證明不了
+      #   **哪一條**斷言在做事,而沒在做事的那幾條看起來完全一樣。
+      #   改成一次一個違規,而且斷言紅的是**它自己那一行**。
+      #   其中「多打包了 core/layouts/」那條反向斷言在這之前從來沒有被
+      #   反向驗過 —— 它可以整條被刪掉而 CI 全綠。
+      - name: bundle 驗證的反向測試（5 個變異,每個都要紅在自己那一條）
         run: |
-          set -e
+          set -uo pipefail
+          SRC=apple/build/LuminaKey.app
+          PB=/usr/libexec/PlistBuddy
           BROKEN=/tmp/Broken.app
-          rm -rf "$BROKEN"
-          cp -R apple/build/RimeQuad.app "$BROKEN"
-          /usr/libexec/PlistBuddy -c "Delete :InputMethodConnectionName" \
+          fails=0
+
+          fresh() { rm -rf "$BROKEN"; cp -R "$SRC" "$BROKEN"; }
+
+          expect() {  # expect <這個變異的名字> <輸出裡必須出現的那一行>
+            local label="$1" want="$2" out rc
+            out="$(./apple/scripts/verify_app_bundle.sh --expect-fail "$BROKEN" 2>&1)"
+            rc=$?
+            if [ "$rc" -ne 0 ]; then
+              echo "!! [$label] 壞掉的 bundle 竟然通過了全部斷言（結束碼 $rc）"
+              printf '%s\n' "$out"
+              fails=$((fails + 1))
+              return
+            fi
+            # ⚠ 不用 `grep -q`:本步驟開了 pipefail,命中即結束會讓上游收到
+            #   SIGPIPE,整條 pipeline 判失敗（這個專案已經被咬過兩次）。
+            #   用 shell 自己的 case 比對,不經管線。
+            case "$out" in
+              *"$want"*) echo "  ✓ [$label] 紅在對的地方：$want" ;;
+              *) echo "!! [$label] 紅了,但不是因為「$want」："
+                 printf '%s\n' "$out"
+                 fails=$((fails + 1)) ;;
+            esac
+          }
+
+          # 1. 少了連線名 → IMKServer 建不起來（裝得起來、按鍵沒反應）
+          fresh
+          "$PB" -c "Delete :InputMethodConnectionName" "$BROKEN/Contents/Info.plist"
+          expect "少了 InputMethodConnectionName" "✗ InputMethodConnectionName"
+
+          # 2. 類別名對不上 → NSClassFromString 回 nil。這一條由二進位自己
+          #    照 IMKit 的作法查一次（--self-check），不是 grep 符號表。
+          fresh
+          "$PB" -c "Set :InputMethodServerControllerClass NoSuchClass" \
             "$BROKEN/Contents/Info.plist"
-          /usr/libexec/PlistBuddy -c "Set :InputMethodServerControllerClass NoSuchClass" \
+          expect "ServerControllerClass 指向不存在的類別" "✗ 二進位 --self-check 失敗"
+
+          # 3. TISInputSourceID 沒有以 bundle id 為前綴 → 系統不列出這個輸入模式
+          fresh
+          "$PB" -c "Set :ComponentInputModeDict:tsInputModeListKey:org.luminakey.inputmethod.LuminaKey.Hant:TISInputSourceID com.example.NotOurs" \
             "$BROKEN/Contents/Info.plist"
+          expect "TISInputSourceID 前綴不對" "✗ 每個 TISInputSourceID"
+
+          # 4. 資源沒進 bundle
+          fresh
           rm -rf "$BROKEN/Contents/Resources/themes"
-          ./apple/scripts/verify_app_bundle.sh --expect-fail "$BROKEN"
+          expect "沒有隨附主題" "✗ 隨附主題"
+
+          # 5. **反過來的那一條**：多帶了東西也是錯的。
+          #    桌面沒有軟鍵盤,core/layouts/ 進了 bundle 會讓人以為有。
+          fresh
+          mkdir -p "$BROKEN/Contents/Resources/layouts"
+          expect "多打包了 core/layouts/" "✗ 沒有打包 core/layouts"
+
           rm -rf "$BROKEN"
+          if [ "$fails" -ne 0 ]; then
+            echo "!! $fails 個反向測試沒有紅在對的地方" >&2
+            exit 1
+          fi
+          echo "5 個變異全部紅在自己那一條 ✓"
 
       # ── (a-4) 安裝:這一輪新增,對應真機回報的兩個缺陷 ──────────
       - name: 做出 .pkg 安裝檔
@@ -164,14 +233,14 @@ jobs:
           cd apple/build
           # 用 tar 而不是讓 upload-artifact 直接吃目錄:zip 會丟掉執行權限
           # 與符號連結,解開之後的 .app 是壞的。
-          tar czf RimeQuad-app-$(uname -m).tar.gz RimeQuad.app
-          ls -lh RimeQuad-app-*.tar.gz
+          tar czf LuminaKey-app-$(uname -m).tar.gz LuminaKey.app
+          ls -lh LuminaKey-app-*.tar.gz
 
       - name: 上傳 .app
         uses: actions/upload-artifact@v4
         with:
           name: rime-macos-app
-          path: apple/build/RimeQuad-app-*.tar.gz
+          path: apple/build/LuminaKey-app-*.tar.gz
           if-no-files-found: error
 
       # ⚠ 這是使用者實際會拿到的東西。上傳成獨立的 artifact,
@@ -180,5 +249,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rime-macos-installer
-          path: apple/build/dist/RimeQuad-*.pkg
+          path: apple/build/dist/LuminaKey-*.pkg
           if-no-files-found: error

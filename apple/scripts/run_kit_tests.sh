@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# run_kit_tests.sh — 跑 RimeQuadKit 的單元測試,並且**證明它們真的會紅**
+# run_kit_tests.sh — 跑 LuminaKeyKit 的單元測試,並且**證明它們真的會紅**
 #
 # ── 為什麼不是一句 `swift test` 就好 ────────────────────────────────────
 # 本專案已經被「測試是綠的,因為它沒在測」咬過兩次:發布關卡的升級測試因為
@@ -20,7 +20,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-PKG="${ROOT}/apple/RimeQuad"
+PKG="${ROOT}/apple/LuminaKey"
 MIN_TESTS="${MIN_TESTS:-150}"
 
 cd "${PKG}" || exit 1
@@ -70,21 +70,25 @@ fi
 #   而且只在測試變多之後才開始發生 —— 看起來像變異測試壞了,
 #   其實是這支腳本自己壞了。一律改用 herestring(<<<),不經管線。
 MUTATIONS=(
-  "Sources/RimeQuadKit/KeyMapper.swift|public static let unicodeKeysymBase: Int32 = 0x0100_0000|public static let unicodeKeysymBase: Int32 = 0x0200_0000|KeyMapperTests"
-  "Sources/RimeQuadKit/CandidateLayout.swift|let itemHeight = measured.map(\\.height).max() ?? 0|let itemHeight = measured.map(\\.height).min() ?? 0|CandidateLayoutTests"
-  "Sources/RimeQuadKit/CommitPolicy.swift|if s.menuCount > 0 { return .keepComposing }|if s.menuCount > 99 { return .keepComposing }|CommitPolicyTests"
-  "Sources/RimeQuadKit/ThemeParser.swift|w.lines = c.child(\"lines\").int(1, min: 0, max: 16)|w.lines = c.child(\"lines\").int(2, min: 0, max: 16)|ThemeParserTests"
-  "Sources/RimeQuadKit/StatusFace.swift|public static let latin = \"En\"|public static let latin = \"英\"|StatusFaceTests"
+  "Sources/LuminaKeyKit/KeyMapper.swift|public static let unicodeKeysymBase: Int32 = 0x0100_0000|public static let unicodeKeysymBase: Int32 = 0x0200_0000|KeyMapperTests"
+  "Sources/LuminaKeyKit/CandidateLayout.swift|let itemHeight = measured.map(\\.height).max() ?? 0|let itemHeight = measured.map(\\.height).min() ?? 0|CandidateLayoutTests"
+  "Sources/LuminaKeyKit/CommitPolicy.swift|if s.menuCount > 0 { return .keepComposing }|if s.menuCount > 99 { return .keepComposing }|CommitPolicyTests"
+  "Sources/LuminaKeyKit/ThemeParser.swift|w.lines = c.child(\"lines\").int(1, min: 0, max: 16)|w.lines = c.child(\"lines\").int(2, min: 0, max: 16)|ThemeParserTests"
+  "Sources/LuminaKeyKit/StatusFace.swift|public static let latin = \"En\"|public static let latin = \"英\"|StatusFaceTests"
   # ⚠ 這一格原本指向 InputModeBinding.simplificationOption,而變異測試
   #   自己抓到了那個錯:紅的是 InputModeBindingTests,不是 SessionOptionsTests。
   #   兩組都會碰到那一行,所以它證明不了「SessionOptionsTests 在測什麼」。
   #   換成只有 SessionOptions 這一層碰得到的規則:「文字」頁明確選繁體時,
   #   simplification 必須是 false(而且要蓋過輸入模式)。
-  "Sources/RimeQuadKit/SessionOptions.swift|case .traditional: out[\"simplification\"] = false|case .traditional: out[\"simplification\"] = true|SessionOptionsTests"
-  "Sources/RimeQuadKit/SettingsCatalog.swift|blurb: T(\"打勾的方案才會出現在切換清單裡。可以拖曳排序,最上面那一個是預設。\",|blurb: T(\"改 schema_list\",|SettingsCatalogTests"
-  "Sources/RimeQuadKit/ArchiveGuard.swift|\"yaml\", \"yml\", \"txt\", \"ocd2\", \"gram\", \"json\", \"md\", \"lua\",|\"yaml\", \"yml\", \"txt\", \"ocd2\", \"gram\", \"json\", \"md\", \"lua\", \"bin\",|ArchiveGuardTests"
-  "Sources/RimeQuadKit/UserPhrases.swift|out.insert(p, at: 0)|out.append(p)|UserPhrasesTests"
-  "Sources/RimeQuadKit/IPC.swift|if case .finished = state { return true }|if false { return true }|IPCTests"
+  "Sources/LuminaKeyKit/SessionOptions.swift|case .traditional: out[\"simplification\"] = false|case .traditional: out[\"simplification\"] = true|SessionOptionsTests"
+  "Sources/LuminaKeyKit/SettingsCatalog.swift|blurb: T(\"打勾的方案才會出現在切換清單裡。可以拖曳排序,最上面那一個是預設。\",|blurb: T(\"改 schema_list\",|SettingsCatalogTests"
+  "Sources/LuminaKeyKit/ArchiveGuard.swift|\"yaml\", \"yml\", \"txt\", \"ocd2\", \"gram\", \"json\", \"md\", \"lua\",|\"yaml\", \"yml\", \"txt\", \"ocd2\", \"gram\", \"json\", \"md\", \"lua\", \"bin\",|ArchiveGuardTests"
+  "Sources/LuminaKeyKit/UserPhrases.swift|out.insert(p, at: 0)|out.append(p)|UserPhrasesTests"
+  "Sources/LuminaKeyKit/IPC.swift|if case .finished = state { return true }|if false { return true }|IPCTests"
+  # 改名之後的資料搬遷。把排除清單換成「只看名字完全相符的那幾個」——
+  # `*.userdb` 與 `build/` 就會被搬過去,而那是這一組存在的理由:
+  # 複製一個舊版正開著的 LevelDB = 一份壞掉但看起來正常的使用者詞典。
+  "Sources/LuminaKeyKit/LegacyDataMigration.swift|for name in names where !shouldSkip(name) {|for name in names where !skippedNames.contains(name) {|LegacyDataMigrationTests"
 )
 
 BACKUP_DIR="$(mktemp -d)"

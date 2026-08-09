@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# verify_app_bundle.sh — 斷言 RimeQuad.app 的結構與 IMKit 宣告
+# verify_app_bundle.sh — 斷言 LuminaKey.app 的結構與 IMKit 宣告
 #
 # ── 這支腳本存在的理由 ──────────────────────────────────────────────────
 # CI 上沒有登入的圖形工作階段,系統不會從 ~/Library/Input Methods 載入輸入法,
@@ -27,9 +27,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 EXPECT_FAIL=0
 if [ "${1:-}" = "--expect-fail" ]; then EXPECT_FAIL=1; shift; fi
-APP="${1:-${ROOT}/apple/build/RimeQuad.app}"
+APP="${1:-${ROOT}/apple/build/LuminaKey.app}"
 PLIST="${APP}/Contents/Info.plist"
-BIN="${APP}/Contents/MacOS/RimeQuad"
+BIN="${APP}/Contents/MacOS/LuminaKey"
 
 fails=0
 ok()   { printf '  ✓ %s\n' "$1"; }
@@ -48,7 +48,7 @@ echo "=== 驗證 ${APP} ==="
 # ── 1. bundle 結構 ─────────────────────────────────────────
 [ -d "${APP}" ]; check ".app 存在" $?
 [ -f "${PLIST}" ]; check "Contents/Info.plist 存在" $?
-[ -x "${BIN}" ]; check "Contents/MacOS/RimeQuad 可執行" $?
+[ -x "${BIN}" ]; check "Contents/MacOS/LuminaKey 可執行" $?
 [ -f "${APP}/Contents/PkgInfo" ]; check "Contents/PkgInfo 存在" $?
 
 if [ ! -f "${PLIST}" ] || [ ! -x "${BIN}" ]; then
@@ -64,7 +64,7 @@ BUNDLE_ID="$(plist_get CFBundleIdentifier)"
 [ -n "${BUNDLE_ID}" ]; check "CFBundleIdentifier: ${BUNDLE_ID}" $?
 
 EXEC="$(plist_get CFBundleExecutable)"
-[ "${EXEC}" = "RimeQuad" ]; check "CFBundleExecutable == RimeQuad（實際:${EXEC}）" $?
+[ "${EXEC}" = "LuminaKey" ]; check "CFBundleExecutable == LuminaKey（實際:${EXEC}）" $?
 
 PKGTYPE="$(plist_get CFBundlePackageType)"
 [ "${PKGTYPE}" = "APPL" ]; check "CFBundlePackageType == APPL" $?
@@ -114,7 +114,7 @@ BADIDS="$(/usr/libexec/PlistBuddy -c "Print :ComponentInputModeDict:tsInputModeL
 # 所以改由二進位自己照做一次(SelfCheck.swift)。那才是這一問的正解。
 #
 # ── 實測到的答案（macos-26 / arm64 / swiftc -O）──────────────
-#   000000010034d980 s _OBJC_CLASS_$_RimeQuadInputController
+#   000000010034d980 s _OBJC_CLASS_$_LuminaKeyInputController
 #                    ^ 小寫 s = **local** 符號,不是 global S。
 # 所以 `nm -g`（只列 global）永遠看不到它 —— 單一模組編譯下 swiftc 沒有把
 # 這個類別符號設成 external。改用 `nm` 不加 -g 就看得到,但那仍然是在假設
@@ -147,7 +147,7 @@ THEMES="$(ls "${APP}/Contents/Resources/themes/"*.yaml 2>/dev/null | wc -l | tr 
 [ ! -d "${APP}/Contents/Resources/layouts" ]
 check "沒有打包 core/layouts/（桌面沒有軟鍵盤）" $?
 
-[ -f "${APP}/Contents/Resources/RimeQuad.tiff" ]
+[ -f "${APP}/Contents/Resources/LuminaKey.tiff" ]
 check "選單列圖示存在" $?
 
 if [ -d "${ROOT}/core/data/shared" ]; then

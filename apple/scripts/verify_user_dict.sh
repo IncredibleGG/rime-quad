@@ -80,12 +80,12 @@ echo "  ✓ 如預期沒有出現"
 # ── 第二步:加詞之後必須出現 ────────────────────────────────────
 echo "=== 2/2 加進詞庫之後,${KEYS} 必須出現「${WORD}」==="
 {
-  printf '# RimeQuad 使用者詞庫 / user phrases — format 1\n'
+  printf '# LuminaKey 使用者詞庫 / user phrases — format 1\n'
   printf '%s\t%s\t99\n' "${WORD}" "${CODE}"
 } > "${PHRASES}"
 
 cat > "${MOUNT}" <<'YAML'
-# rimequad-managed: custom_phrase v1
+# luminakey-managed: custom_phrase v1
 patch:
   "engine/translators/@next": table_translator@custom_phrase
   custom_phrase:

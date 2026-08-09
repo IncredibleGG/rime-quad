@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  LuminaKeySettings.app/Contents/Info.plist
+
+  設定介面是**另一個 bundle,同一份執行檔**(main.swift 依 bundle id 分岔)。
+
+  ⚠ 為什麼一定要分開:輸入法本體是 LSBackgroundOnly,照定義不能被帶到前景,
+    設定視窗裡的文字框拿不到鍵盤焦點 —— 而「我的詞庫」整頁都是文字框。
+    這裡**不寫** LSBackgroundOnly / LSUIElement,它就是一個普通的 app。
+
+  ⚠ bundle id 的 `.Settings` 後綴是 main.swift 的分岔條件,
+    也是 verify_app_bundle.sh 的斷言。三處必須一致。
+-->
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleExecutable</key>
+  <string>LuminaKey</string>
+  <key>CFBundleIdentifier</key>
+  <string>org.luminakey.inputmethod.LuminaKey.Settings</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>LuminaKey Settings</string>
+  <key>CFBundleDisplayName</key>
+  <string>LuminaKey Settings</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>__VERSION__</string>
+  <key>CFBundleVersion</key>
+  <string>__BUILD__</string>
+  <key>CFBundleIconFile</key>
+  <string>LuminaKey</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>__MIN_OS__</string>
+  <key>NSPrincipalClass</key>
+  <string>NSApplication</string>
+  <key>NSHumanReadableCopyright</key>
+  <string>LuminaKey — GPL-3.0. Built on librime.</string>
+  <key>CFBundleLocalizations</key>
+  <array>
+    <string>en</string>
+    <string>zh-Hant</string>
+    <string>zh-Hans</string>
+  </array>
+  <!-- 這個 app 不該出現在 Dock 的「最近使用」與 Spotlight 裡:
+       它不是使用者會主動去找的東西,入口是選單列上的輸入法圖示。 -->
+  <key>LSMultipleInstancesProhibited</key>
+  <true/>
+</dict>
+</plist>
