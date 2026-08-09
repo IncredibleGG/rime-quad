@@ -141,7 +141,9 @@ object BuiltinMigration {
         if (searchDirs.isEmpty()) return emptyList()   // 無從檢查就別亂擋
         val file = searchDirs.map { File(it, "$schemaId.schema.yaml") }.firstOrNull { it.isFile }
             ?: return listOf("裝置上找不到 $schemaId.schema.yaml")
-        return SchemaPreflight.check(file, searchDirs).missing.map { it.humanMessage() }
+        // 只看 blocking：次要詞典/dependencies 不在不會讓部署失敗，
+        // 拿它擋下內建方案的補寫，等於使用者升級後少一個能用的方案。
+        return SchemaPreflight.check(file, searchDirs).blocking.map { it.humanMessage() }
     }
 
     /**

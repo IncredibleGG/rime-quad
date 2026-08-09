@@ -57,7 +57,12 @@ class SchemaStore(
     }
 
     sealed class Outcome {
-        data class Ok(val message: String, val enabledSchemas: List<String> = emptyList()) : Outcome()
+        data class Ok(
+            val message: String,
+            val enabledSchemas: List<String> = emptyList(),
+            /** 不擋啟用、但使用者該知道的事（例如反查詞典不在）。 */
+            val details: List<String> = emptyList(),
+        ) : Outcome()
 
         /**
          * [rolledBack] = 是否動過 schema_list 又還原了。
@@ -197,22 +202,27 @@ class SchemaStore(
     ): Outcome {
         if (schemaIds.isEmpty()) return Outcome.Ok("沒有要變更的方案")
 
+        val warnings = ArrayList<String>()
+
         if (enabled) {
             progress(Progress.Preflight)
-            val missing = ArrayList<String>()
+            // 分兩堆。blocking 是「librime 部署一定會失敗」，warnings 是
+            // 「少了某個附屬功能，但打得出字」—— 理由與分界線見 SchemaPreflight。
+            val blocking = ArrayList<String>()
             for (id in schemaIds) {
                 val f = searchDirs.map { File(it, "$id.schema.yaml") }.firstOrNull { it.isFile }
                 if (f == null) {
-                    missing.add("找不到方案檔 $id.schema.yaml —— 這個方案並未安裝。")
+                    blocking.add("找不到方案檔 $id.schema.yaml —— 這個方案並未安裝。")
                     continue
                 }
                 val report = SchemaPreflight.check(f, searchDirs)
-                report.missing.forEach { missing.add(it.humanMessage()) }
+                report.blocking.forEach { blocking.add(it.humanMessage()) }
+                report.warnings.forEach { warnings.add(it.humanMessage()) }
             }
-            if (missing.isNotEmpty()) {
+            if (blocking.isNotEmpty()) {
                 return Outcome.Failed(
                     "缺少相依檔案，已停止（沒有動到 schema_list）",
-                    details = missing,
+                    details = blocking,
                     rolledBack = false,
                 )
             }
@@ -236,6 +246,7 @@ class SchemaStore(
                 if (enabled) "已啟用並部署完成（${outcome.elapsedMs} ms）"
                 else "已停用並部署完成（${outcome.elapsedMs} ms）",
                 enabledSchemas = SchemaListPatch.read(userDataDir),
+                details = warnings,
             )
         }
 

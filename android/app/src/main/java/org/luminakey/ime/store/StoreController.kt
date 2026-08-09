@@ -336,7 +336,9 @@ class StoreController(context: Context) {
                         plan.rootPackage.name, schemaIds.first(),
                     ),
                     pendingSchema = schemaIds.first(),
-                    details = emptyList(),
+                    // 預檢的 warning（例如反查詞典不在）要讓使用者看得到，
+                    // 否則就是一個他永遠不會知道自己少了什麼的功能。
+                    details = en.details,
                 )
 
                 is SchemaStore.Outcome.Failed ->
@@ -357,7 +359,7 @@ class StoreController(context: Context) {
         worker.execute {
             when (val r = s.setEnabled(schemaIds, enabled) { p -> postProgress(p) }) {
                 is SchemaStore.Outcome.Ok -> finish(
-                    true, r.message, emptyList(),
+                    true, r.message, r.details,
                     pendingSchema = if (enabled) schemaIds.firstOrNull() else null,
                 )
 
