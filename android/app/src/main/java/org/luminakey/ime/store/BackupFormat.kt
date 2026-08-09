@@ -21,8 +21,29 @@ package org.luminakey.ime.store
  */
 object BackupFormat {
 
-    /** 容器內的清單檔。讀取端一律先找它，找不到就不是備份檔。 */
-    const val MANIFEST_NAME = "rimequad-backup.json"
+    /**
+     * 容器內的清單檔。**寫出端只寫這個名字。**
+     *
+     * 讀取端要連 [LEGACY_MANIFEST_NAME] 一起認 —— 見 [MANIFEST_NAMES]。
+     */
+    const val MANIFEST_NAME = "luminakey-backup.json"
+
+    /** 產品改名前的清單檔名。這裡留著的是舊名，讀取端必須認得。 */
+    const val LEGACY_MANIFEST_NAME = "rimequad-backup.json" // 舊名
+
+    /**
+     * 找 manifest 的順序:新名字在前，舊名在後。`docs/backup-format.md` §1
+     * 的改名相容條款是**規範性**的,四端都照這一張表辦。
+     *
+     * ⚠ 少了第二項的下場:使用者升級之後,**他自己匯出的那份備份**會被判成
+     * [BackupProblem.NOT_A_BACKUP]。那句話會叫他去找一個壞掉的檔案,而檔案
+     * 是好的、壞掉的是我們。這一類失敗沒有任何錯誤紀錄,畫面上只是一片乾淨,
+     * 使用者會以為備份是空的。
+     *
+     * 哪天要拿掉第二項,那必須是一個**明確的決定**(確定沒有人手上還有舊備份),
+     * 不是因為沒有人記得它存在。
+     */
+    val MANIFEST_NAMES: List<String> = listOf(MANIFEST_NAME, LEGACY_MANIFEST_NAME)
 
     /**
      * 用來一眼認出「這個 zip 是我們的備份」而不是別的東西。
@@ -31,7 +52,13 @@ object BackupFormat {
      * [StoreController.displayNameOf] 的註解，DocumentsUI 給的是
      * `msf:1000000072` 這種不透明 id）。認容器內容比認檔名可靠。
      */
-    const val KIND = "rimequad-backup"
+    const val KIND = "luminakey-backup"
+
+    /** 產品改名前的 `kind`。這裡留著的是舊名,理由同 [MANIFEST_NAMES]。 */
+    const val LEGACY_KIND = "rimequad-backup" // 舊名
+
+    /** 讀取端接受的 `kind`。**寫出端一律只寫 [KIND]。** */
+    val ACCEPTED_KINDS: Set<String> = setOf(KIND, LEGACY_KIND)
 
     /**
      * 目前寫出的版本。
@@ -57,8 +84,40 @@ object BackupFormat {
         listOf(DIR_DICT, DIR_SCHEMA, DIR_CONFIG, DIR_SETTINGS, DIR_LAYOUT)
 
     const val PREFS_ENTRY = "settings/prefs.json"
-    const val LAYOUT_ENTRY = "layout/rimequad-layouts.json"
-    const val REGISTRY_ENTRY = "schema/rimequad-store.json"
+    const val LAYOUT_ENTRY = "layout/luminakey-layouts.json"
+    const val REGISTRY_ENTRY = "schema/luminakey-store.json"
+
+    /* ── 改名前的兩個容器內路徑。留著的是舊名,只給讀取端用 ── */
+
+    const val LEGACY_LAYOUT_ENTRY = "layout/rimequad-layouts.json" // 舊名
+    const val LEGACY_REGISTRY_ENTRY = "schema/rimequad-store.json" // 舊名
+
+    /**
+     * 找自訂鍵位／安裝帳本的順序:新名字在前。
+     *
+     * ⚠ 這兩項漏掉的失敗**比 manifest 那一項更安靜**:整份備份會匯入成功、
+     * 詞庫也回來了,只有「裝過哪些方案」與「調過的鍵位」變成空的,而且沒有
+     * 任何一句話提到它們。
+     */
+    val LAYOUT_ENTRIES: List<String> = listOf(LAYOUT_ENTRY, LEGACY_LAYOUT_ENTRY)
+    val REGISTRY_ENTRIES: List<String> = listOf(REGISTRY_ENTRY, LEGACY_REGISTRY_ENTRY)
+
+    /**
+     * 容器內用舊名寫出去的檔案,落地時要換成現在的名字。
+     *
+     * 只換名字不換內容:`schema/` 底下的東西是照相對路徑鋪回 user_data_dir 的,
+     * 若原封不動地鋪回去,磁碟上會多出一份叫舊名的帳本,而
+     * [InstalledRegistry] 之後寫的是新名字 —— 兩份帳本各說各話,
+     * 使用者裝過的方案會憑「這次讀到哪一份」而時有時無。
+     *
+     * 右邊的值必須等於 [InstalledRegistry.FILE_NAME] 與
+     * `UserLayoutStore.FILE_NAME`;`BackupLegacyNameTest` 釘住這件事
+     * (這一層刻意不 import `keyboard/`,所以用測試而不是編譯期相依來釘)。
+     */
+    val LEGACY_LANDING_RENAMES: Map<String, String> = mapOf(
+        "rimequad-store.json" to "luminakey-store.json", // 舊名 → 現在的名字
+        "rimequad-layouts.json" to "luminakey-layouts.json", // 舊名 → 現在的名字
+    )
 
     /**
      * 使用者詞典的載體格式。
@@ -116,6 +175,25 @@ object BackupFormat {
     /** 路徑是不是落在允許的前綴底下。**這是解壓前的第一道閘門。** */
     fun isAllowedEntry(path: String): Boolean =
         ALLOWED_PREFIXES.any { path.startsWith(it) && path.length > it.length }
+
+    /**
+     * 容器內的一個路徑,落地到 user_data_dir 之後的**相對路徑**。
+     *
+     * 做兩件事:去掉容器目錄前綴、把改名前的檔名換成現在的名字
+     * ([LEGACY_LANDING_RENAMES])。目錄那一段原樣保留 ——
+     * `schema/opencc/x.json` 要落在 `opencc/x.json`,不是 `x.json`。
+     *
+     * **純函式**,所以「舊名容器落在哪裡」測得起來,不必進模擬器。
+     */
+    fun landingPath(entryPath: String): String {
+        val prefix = ALLOWED_PREFIXES.firstOrNull { entryPath.startsWith(it) }
+            ?: return entryPath
+        val rel = entryPath.removePrefix(prefix)
+        val dir = rel.substringBeforeLast('/', "")
+        val base = rel.substringAfterLast('/')
+        val landed = LEGACY_LANDING_RENAMES[base] ?: base
+        return if (dir.isEmpty()) landed else "$dir/$landed"
+    }
 }
 
 /**
@@ -306,9 +384,12 @@ object BackupManifestJson {
         val root = MiniJson.parseOrNull(text)
             ?: return Result.failure(BackupIssue(BackupProblem.MANIFEST_BROKEN, listOf("json")))
 
-        if (root.str("kind") != BackupFormat.KIND) {
+        // ⚠ 新舊兩個 kind 都認(見 BackupFormat.ACCEPTED_KINDS)。只認新的那一個
+        //    等於把使用者改名前匯出的備份判成「別人的檔案」。
+        val kind = root.str("kind")
+        if (kind == null || kind !in BackupFormat.ACCEPTED_KINDS) {
             return Result.failure(
-                BackupIssue(BackupProblem.MANIFEST_BROKEN, listOf(root.str("kind") ?: "-"))
+                BackupIssue(BackupProblem.MANIFEST_BROKEN, listOf(kind ?: "-"))
             )
         }
         val version = root.long("format_version")?.toInt()

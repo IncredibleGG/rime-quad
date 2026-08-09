@@ -2,13 +2,13 @@
 //  LegacyDataMigration.swift — 改名之後,舊的使用者資料目錄怎麼辦
 //
 //  ── 為什麼需要這個檔案 ──────────────────────────────────────────────────
-//  產品從開發代號 `RimeQuad` 改成 `LuminaKey`,使用者資料目錄跟著從
-//  `~/Library/Application Support/RimeQuad` 換成 `.../LuminaKey`。
+//  產品從開發代號(舊名)`RimeQuad` 改成 `LuminaKey`,使用者資料目錄跟著從
+//  舊名的 `~/Library/Application Support/RimeQuad` 換成 `.../LuminaKey`。
 //  **改了目錄名 = 使用者的詞庫、設定、裝過的方案全部找不到了**,而症狀是
 //  「升級之後一切回到出廠狀態」—— 沒有錯誤訊息,只是東西不見了。
 //
 //  bundle id 也一起改了,所以舊版的 .app 不會被新版覆蓋:它還留在
-//  `~/Library/Input Methods/RimeQuad.app`,而且**可能正在跑**。
+//  舊名的 `~/Library/Input Methods/RimeQuad.app`,而且**可能正在跑**。
 //  這件事決定了底下三個設計:
 //
 //    1. **複製,不是搬移。** 舊的那一份原封不動留著。就算這裡整段出錯,
@@ -36,13 +36,13 @@ public enum LegacyDataMigration {
 
     /// 改名前的目錄名。**這個字串不可以跟著改名腳本一起被取代** ——
     /// 它指的是磁碟上已經存在的舊目錄,不是產品現在的名字。
-    public static let legacyDirectoryName = "RimeQuad"
+    public static let legacyDirectoryName = "RimeQuad" // 舊名
     public static let currentDirectoryName = "LuminaKey"
 
     /// 改名前的市集安裝紀錄檔名。搬過去時要一起換成現在的名字,
     /// 否則 `InstalledRegistry` 讀不到它,使用者裝過的方案會變成「沒裝過」
     /// (而檔案還在,於是下次安裝會撞到已經存在的檔案)。
-    public static let legacyRegistryFileName = "rimequad-store.json"
+    public static let legacyRegistryFileName = "rimequad-store.json" // 舊名
 
     /// 名稱完全相符就不搬。全部都是 librime 自己會重建、或搬過去有害的。
     public static let skippedNames: Set<String> = [

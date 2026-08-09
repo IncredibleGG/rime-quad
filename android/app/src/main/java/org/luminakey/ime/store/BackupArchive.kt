@@ -18,7 +18,8 @@ import java.util.zip.ZipOutputStream
  *
  * 所以這裡換一套**更嚴**的模型，而不是把白名單放寬：
  *
- *   1. **manifest 驅動。** 只有 `rimequad-backup.json` 裡列出來的路徑會被
+ *   1. **manifest 驅動。** 只有 `luminakey-backup.json`(舊名 `rimequad-backup.json`
+ *      也認,見 [BackupFormat.MANIFEST_NAMES])裡列出來的路徑會被
  *      解出來。容器裡多出來的東西一律不落地（也不報錯 —— 那是未來版本
  *      新增的東西，前向相容）。副檔名因此完全不必管：能不能寫出來，
  *      由「我們自己寫的清單上有沒有它」決定。
@@ -103,7 +104,15 @@ object BackupArchive {
     fun readManifest(file: File): BackupManifestJson.Result<BackupManifest> {
         val text = try {
             ZipFile(file).use { zf ->
-                val entry = zf.getEntry(BackupFormat.MANIFEST_NAME)
+                // 依序試新名字與舊名字。**這個迴圈就是改名相容條款本身** ——
+                // 只找一個名字的話,使用者改名前匯出的備份會被判成
+                // NOT_A_BACKUP,而畫面上只是一句「這不是備份」。
+                var found: ZipEntry? = null
+                for (name in BackupFormat.MANIFEST_NAMES) {
+                    found = zf.getEntry(name)
+                    if (found != null) break
+                }
+                val entry = found
                     ?: return BackupManifestJson.Result.failure(
                         BackupIssue(BackupProblem.NOT_A_BACKUP, listOf(file.name))
                     )

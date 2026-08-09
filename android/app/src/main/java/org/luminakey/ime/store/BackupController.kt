@@ -369,9 +369,13 @@ class BackupController private constructor(context: Context) {
         }
 
         // 4b. 方案檔與帳本、4c. *.custom.yaml：直接落在 user_data_dir。
+        //
+        // ⚠ 落地的檔名走 BackupFormat.landingPath():改名前寫出的容器裡,
+        //    帳本叫舊名 `schema/rimequad-store.json`,原封不動鋪回去會在磁碟上
+        //    留下一份舊名的帳本,而 InstalledRegistry 之後寫的是新名字。
         for (prefix in listOf(BackupFormat.DIR_SCHEMA, BackupFormat.DIR_CONFIG)) {
             files.filter { it.startsWith(prefix) }.forEach { path ->
-                val rel = path.removePrefix(prefix)
+                val rel = BackupFormat.landingPath(path)
                 val src = File(staging, path)
                 val dst = File(userDir, rel)
                 dst.parentFile?.mkdirs()
@@ -396,13 +400,18 @@ class BackupController private constructor(context: Context) {
         // 4e. 自訂鍵位。**走 UserLayoutStore 的公開 API 而不是直接寫檔** ——
         //     它是單例而且在記憶體裡有一份快取，直接寫檔會讓畫面與 IME
         //     繼續用舊的那一份，而且 version 不變，IME 永遠不會重載。
-        File(staging, BackupFormat.LAYOUT_ENTRY).takeIf { it.isFile }?.let { f ->
-            runCatching {
-                val store = UserLayoutStore.get(userDir)
-                store.resetAll()
-                LayoutRemapJson.decode(f.readText(Charsets.UTF_8)).forEach { store.put(it) }
-            }.onFailure { Log.w(TAG, "套用自訂鍵位失敗，其餘照常", it) }
-        }
+        //     新舊兩個名字都要找(見 BackupFormat.LAYOUT_ENTRIES)——
+        //     只找新名字的話,改名前匯出的備份會「匯入成功」但鍵位一個都沒回來。
+        BackupFormat.LAYOUT_ENTRIES
+            .map { File(staging, it) }
+            .firstOrNull { it.isFile }
+            ?.let { f ->
+                runCatching {
+                    val store = UserLayoutStore.get(userDir)
+                    store.resetAll()
+                    LayoutRemapJson.decode(f.readText(Charsets.UTF_8)).forEach { store.put(it) }
+                }.onFailure { Log.w(TAG, "套用自訂鍵位失敗，其餘照常", it) }
+            }
 
         // 4f. 已啟用的方案清單。**這台機器上找不到的方案要被剔除**，
         //     否則 librime 部署時會直接失敗，使用者連鍵盤都打不開。

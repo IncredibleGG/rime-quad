@@ -6,6 +6,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import org.luminakey.ime.keyboard.UserLayoutStore
 import org.junit.rules.TemporaryFolder
 import java.io.File
 
@@ -97,7 +98,7 @@ class BackupPlanTest {
         )
         assertEquals(
             BackupFormat.OMIT_DERIVED_BINARIES,
-            BackupPlan.omissionReason("rimequad-store.json.tmp"),
+            BackupPlan.omissionReason(InstalledRegistry.FILE_NAME + ".tmp"),
         )
     }
 
@@ -111,8 +112,12 @@ class BackupPlanTest {
     fun `使用者真正在意的東西不會被排除`() {
         assertNull(BackupPlan.omissionReason("default.custom.yaml"))
         assertNull(BackupPlan.omissionReason("luna_pinyin.custom.yaml"))
-        assertNull(BackupPlan.omissionReason("rimequad-store.json"))
-        assertNull(BackupPlan.omissionReason("rimequad-layouts.json"))
+        assertNull(BackupPlan.omissionReason(InstalledRegistry.FILE_NAME))
+        assertNull(BackupPlan.omissionReason(UserLayoutStore.FILE_NAME))
+        // 改名前的那兩份也一樣要收 —— 使用者還沒寫入過的裝置上,磁碟上
+        // 躺著的仍然是舊名的那一份(見 BackupLegacyNameTest)。
+        assertNull(BackupPlan.omissionReason(InstalledRegistry.LEGACY_FILE_NAME))
+        assertNull(BackupPlan.omissionReason(UserLayoutStore.LEGACY_FILE_NAME))
         assertNull(BackupPlan.omissionReason("ice.dict.yaml"))
         assertNull(BackupPlan.omissionReason("lua/expand_translator.lua"))
     }

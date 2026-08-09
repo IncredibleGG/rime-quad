@@ -112,6 +112,17 @@ macos)
   LIST=$(tar tzf "$TGZ")
   grep -q "$APP_BASE.app/Contents/MacOS/$APP_BASE" <<<"$LIST" \
     || { echo "包裡沒有 $APP_BASE.app/Contents/MacOS/$APP_BASE" >&2; exit 1; }
+
+  # 包裡那個 .app 到底叫什麼 —— **從壓縮包的內容量,不是從檔名猜**。
+  # 上面那一行只確認「檔名推出來的名字在包裡找得到」;它擋不住包裡同時還有
+  # 第二個 .app,而下載頁只會講其中一個。
+  APP_IN_TGZ=$(sed -n 's|^\./||; s|^\([^/][^/]*\.app\)/.*|\1|p' <<<"$LIST" | sort -u)
+  N_APP=$(grep -c . <<<"$APP_IN_TGZ" || true)
+  [ "$N_APP" = 1 ] || {
+    echo "壓縮包裡有 $N_APP 個 .app,說明書只講得了一個:" >&2
+    printf '%s\n' "$APP_IN_TGZ" >&2; exit 1; }
+  [ "$APP_IN_TGZ" = "$APP_BASE.app" ] || {
+    echo "壓縮包叫 $APP_BASE-app-…,裡面的卻是 $APP_IN_TGZ" >&2; exit 1; }
   grep -q 'Contents/Resources/SharedSupport/.*schema.yaml' <<<"$LIST" \
     || { echo "包裡沒有方案資料——裝得起來但一個字都打不出來" >&2; exit 1; }
 
@@ -176,6 +187,31 @@ $APP_BASE macOS  $STAMP  ($SHORT, $ARCH)
 commit: $SHA
 TXT
   upload "$WORK/README.txt" "$RS_R2_MACOS_DIR/README-latest.txt"
+
+  # ── 下載頁講的名字 == 包裡實際的名字 ────────────────────────────────────
+  #
+  # ⚠ 這一段擋的是 product.env 的 MACOS_APP_BUNDLE 註解描述的那個症狀:
+  #   使用者照著四步做完,系統一聲不吭地不載入它。以前那個值要靠人記得
+  #   「發布過一版之後手動改這一行」,而**靠人記得翻轉一個常數是不可靠的**。
+  #   現在:發布時從產物量出來寫上 R2,下載頁讀它;然後這裡再對一次。
+  printf '%s\n' "$APP_IN_TGZ" > "$WORK/app-bundle-latest.txt"
+  upload "$WORK/app-bundle-latest.txt" "$RS_R2_MACOS_DIR/app-bundle-latest.txt"
+
+  PAGE_INSTALL=$(python3 "$ROOT/scripts/downloads_server.py" --print-macos-install)
+  grep -qF "$APP_IN_TGZ" <<<"$PAGE_INSTALL" || {
+    echo "下載頁的手動安裝指令沒有提到 $APP_IN_TGZ:" >&2
+    printf '%s\n' "$PAGE_INSTALL" >&2; exit 1; }
+  # 反面:指令裡不可以出現**別的** .app。少了這一條,一段同時提到新舊兩個
+  # 名字的說明也會通過,而使用者只會照著他先看到的那一個做。
+  #
+  # ⚠ 結尾一定要有 \b。少了它,`com.apple.quarantine` 裡的 `com.app` 會被當成
+  #   一個 .app 名字,於是這一關**永遠**紅 —— 而一個永遠紅的關卡會被關掉。
+  OTHER_APP=$(grep -oE '[A-Za-z0-9._-]+\.app\b' <<<"$PAGE_INSTALL" | sort -u \
+              | grep -vFx "$APP_IN_TGZ" || true)
+  [ -z "$OTHER_APP" ] || {
+    echo "下載頁還在叫使用者搬 $OTHER_APP,而包裡的是 $APP_IN_TGZ" >&2
+    printf '%s\n' "$PAGE_INSTALL" >&2; exit 1; }
+  echo "[name] 下載頁與包裡都叫 $APP_IN_TGZ"
   ;;
 
 # -------------------------------------------------------------- Windows ----

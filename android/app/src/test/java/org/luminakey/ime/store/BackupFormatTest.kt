@@ -169,9 +169,12 @@ class BackupFormatTest {
         assertTrue(BackupFormat.isAllowedEntry("schema/luna_pinyin.dict.yaml"))
         assertTrue(BackupFormat.isAllowedEntry("config/default.custom.yaml"))
         assertTrue(BackupFormat.isAllowedEntry("settings/prefs.json"))
-        assertTrue(BackupFormat.isAllowedEntry("layout/rimequad-layouts.json"))
+        assertTrue(BackupFormat.isAllowedEntry(BackupFormat.LAYOUT_ENTRY))
+        assertTrue(BackupFormat.isAllowedEntry(BackupFormat.LEGACY_LAYOUT_ENTRY))
 
-        assertFalse(BackupFormat.isAllowedEntry("rimequad-backup.json"))
+        // 清單檔在容器根目錄,不在任何一個前綴底下 —— 新舊兩個名字都一樣。
+        assertFalse(BackupFormat.isAllowedEntry(BackupFormat.MANIFEST_NAME))
+        assertFalse(BackupFormat.isAllowedEntry(BackupFormat.LEGACY_MANIFEST_NAME))
         assertFalse(BackupFormat.isAllowedEntry("net/connections.tsv"))
         assertFalse(BackupFormat.isAllowedEntry("dict/"))      // 只有前綴，沒有檔名
         assertFalse(BackupFormat.isAllowedEntry(""))

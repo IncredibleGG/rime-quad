@@ -50,7 +50,7 @@ LICENSE = """GNU General Public License v3.0 (SPDX: GPL-3.0-or-later)
 
 def upstream(name, commit):
     return (
-        "upstream: https://example.invalid/rimequad/%s\n"
+        "upstream: https://example.invalid/fake-upstream/%s\n"
         "commit:   %s\n"
         "packaged: %s\n"
         "note:     由 android/testdata/make_fake_store.py 產生的測試套件，\n"
@@ -68,7 +68,7 @@ schema:
   name: 市集示範
   version: "1.0"
   author:
-    - RimeQuad
+    - 測試資料產生器
   description: |
     假索引用的最小方案，用來驗證方案市集的導入流程。
 
@@ -346,7 +346,7 @@ def main():
             "name": spec["name"],
             "category": spec["category"],
             "description": spec["description"],
-            "upstream": "https://example.invalid/rimequad/%s" % spec["id"],
+            "upstream": "https://example.invalid/fake-upstream/%s" % spec["id"],
             "upstream_commit": spec["commit"],
             "license": "GPL-3.0-or-later",
             "file": fname,

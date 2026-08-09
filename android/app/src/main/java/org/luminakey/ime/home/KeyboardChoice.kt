@@ -71,15 +71,25 @@ import java.io.File
  * 而使用者其實什麼都沒變。獨立一個幾十 bytes 的 SharedPreferences 最省事，
  * 而且同步讀 —— 首頁第一幀就有值，不會先閃一個空白再跳出來。
  */
+/**
+ * 兩個 object 共用同一個 SharedPreferences 檔案(幾十 bytes,分成兩個檔案
+ * 只是多一個要同步的名字)。
+ *
+ * ⚠ **名字只寫一次。** 這一份原本在兩個 object 裡各寫了一遍,而那正是
+ * `scripts/lib/product.env` 存在的理由:改了一份沒改另一份的話,IME 寫進 A 檔、
+ * App 讀 B 檔,兩邊都不會報錯,首頁只是永遠顯示「—」。
+ * `scripts/verify_product_ids.sh` 第 6 項盯著這一行。
+ */
+private const val KEYBOARD_PREFS = "luminakey-current-keyboard"
+
 object CurrentKeyboard {
 
-    private const val PREFS = "luminakey-current-keyboard"
     private const val KEY_SCHEMA = "schema_id"
     private const val KEY_LAYOUT = "layout_id"
 
     fun publish(context: Context, schemaId: String, layoutId: String?) {
         if (schemaId.isEmpty()) return
-        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        context.applicationContext.getSharedPreferences(KEYBOARD_PREFS, Context.MODE_PRIVATE)
             .edit()
             .putString(KEY_SCHEMA, schemaId)
             .putString(KEY_LAYOUT, layoutId)
@@ -88,7 +98,7 @@ object CurrentKeyboard {
 
     /** `schemaId to layoutId`；還沒有人打過字時是 null。 */
     fun read(context: Context): Pair<String, String?>? {
-        val p = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val p = context.applicationContext.getSharedPreferences(KEYBOARD_PREFS, Context.MODE_PRIVATE)
         val schema = p.getString(KEY_SCHEMA, null)?.takeIf { it.isNotEmpty() } ?: return null
         return schema to p.getString(KEY_LAYOUT, null)
     }
@@ -108,17 +118,16 @@ object KeyboardPanelRequest {
 
     const val HEIGHT = "height"
 
-    private const val PREFS = "luminakey-current-keyboard"
     private const val KEY = "pending_panel"
 
     fun request(context: Context, panel: String) {
-        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        context.applicationContext.getSharedPreferences(KEYBOARD_PREFS, Context.MODE_PRIVATE)
             .edit().putString(KEY, panel).apply()
     }
 
     /** 讀完就清掉。回 null = 沒有人請求。 */
     fun consume(context: Context): String? {
-        val p = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val p = context.applicationContext.getSharedPreferences(KEYBOARD_PREFS, Context.MODE_PRIVATE)
         val v = p.getString(KEY, null) ?: return null
         p.edit().remove(KEY).apply()
         return v

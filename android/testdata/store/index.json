@@ -1,6 +1,6 @@
 {
   "format_version": 1,
-  "generated_at": "2026-08-07T07:52:42Z",
+  "generated_at": "2026-08-09T03:02:54Z",
   "base_url": "http://127.0.0.1:8099/packages/",
   "categories": [
     {
@@ -31,12 +31,12 @@
       "name": "示範詞庫（基礎元件）",
       "category": "essential",
       "description": "rq_demo 方案的詞典。只作為相依，不會出現在方案切換清單裡。",
-      "upstream": "https://example.invalid/rimequad/rq-demo-base",
+      "upstream": "https://example.invalid/fake-upstream/rq-demo-base",
       "upstream_commit": "b0a5e01",
       "license": "GPL-3.0-or-later",
       "file": "rq-demo-base-b0a5e01.zip",
       "size": 855,
-      "sha256": "a445eb10d07f05f158be14ad07bbd082057a290b746551f52ff1a6fc49e7b90f",
+      "sha256": "e71f2a88320f4cc51e58a5d49c2cb56eeed53e52876fff2c9715dcb4d971f6df",
       "schemas": [],
       "requires": [],
       "verified": {
@@ -49,12 +49,12 @@
       "name": "市集示範方案",
       "category": "mandarin",
       "description": "驗證用的最小拼音方案。輸入 nihao 應該得到「你好」。",
-      "upstream": "https://example.invalid/rimequad/rq-demo",
+      "upstream": "https://example.invalid/fake-upstream/rq-demo",
       "upstream_commit": "d3m0a11",
       "license": "GPL-3.0-or-later",
       "file": "rq-demo-d3m0a11.zip",
-      "size": 1115,
-      "sha256": "4867d7528e4e5a6d725fb85c56fbeb00aae171e8139d18f4d335cc1dd873a3e9",
+      "size": 1135,
+      "sha256": "65b906fce5686d3f38647af084b02edd59a115ae7ab7faacee63d6990c5d70a9",
       "schemas": [
         {
           "id": "rq_demo",
@@ -80,12 +80,12 @@
       "name": "缺詞典的示範方案",
       "category": "mandarin",
       "description": "刻意缺少詞典的套件，用來驗證錯誤訊息會指名缺的是哪一本。",
-      "upstream": "https://example.invalid/rimequad/rq-nodict",
+      "upstream": "https://example.invalid/fake-upstream/rq-nodict",
       "upstream_commit": "0d1c700",
       "license": "GPL-3.0-or-later",
       "file": "rq-nodict-0d1c700.zip",
-      "size": 1128,
-      "sha256": "0da7473d6efab7ce2db64b0021597da8966a3504c103f381fc8e01c3c7058f6d",
+      "size": 1146,
+      "sha256": "1f4556d501a27ab009ae53c71b031360df4aea1692d093b4c20a9409936ab031",
       "schemas": [
         {
           "id": "rq_nodict",
@@ -105,12 +105,12 @@
       "name": "詞典壞掉的示範方案",
       "category": "mandarin",
       "description": "詞典檔在，但 YAML 壞掉；預檢會過、librime 部署會失敗，用來驗證回滾。",
-      "upstream": "https://example.invalid/rimequad/rq-brokendict",
+      "upstream": "https://example.invalid/fake-upstream/rq-brokendict",
       "upstream_commit": "bad0d1c",
       "license": "GPL-3.0-or-later",
       "file": "rq-brokendict-bad0d1c.zip",
-      "size": 1429,
-      "sha256": "eba589c3277350a49fa9e9def3efa03f7fd1440834729004c1fdc83e3915e9ca",
+      "size": 1445,
+      "sha256": "f8bd4d47b2fe556a6b8dadb79b246f6e0aa81678c0cd8ffeef1b89047fa3949e",
       "schemas": [
         {
           "id": "rq_bad",

@@ -8,8 +8,9 @@ import java.io.File
  * 使用者自訂鍵位的儲存層。
  *
  * ── 存在哪裡、為什麼 ────────────────────────────────────────────────────
- * `<user_data_dir>/rimequad-layouts.json`，與
- * [org.luminakey.ime.store.InstalledRegistry] 的 `rimequad-store.json`、
+ * `<user_data_dir>/luminakey-layouts.json`（改名前的舊名 `rimequad-layouts.json`
+ * 讀得到就會接手，見 [UserLayoutStore.LEGACY_FILE_NAME]），與
+ * [org.luminakey.ime.store.InstalledRegistry] 的 `luminakey-store.json`、
  * [org.luminakey.ime.store.BuiltinMigration] 的 `builtin_introduced.json` 同區。
  *
  * 理由與那兩份帳本相同：它記的是「這台裝置上的使用者資料」，跟 user_data_dir
@@ -33,7 +34,11 @@ import java.io.File
  * 不用 listener 是刻意的 —— IME 可能在設定畫面寫入時根本沒有活著的 view，
  * 一個「下次要用的時候再問」的旗標比一條要小心生命週期的回呼簡單得多。
  */
-class UserLayoutStore private constructor(private val file: File) {
+class UserLayoutStore private constructor(
+    private val file: File,
+    /** 改名前的那一份。只讀不寫,見 [reload] 與 [save]。 */
+    private val legacyFile: File,
+) {
 
     private val entries = LinkedHashMap<String, LayoutRemap>()
 
@@ -45,8 +50,10 @@ class UserLayoutStore private constructor(private val file: File) {
     @Synchronized
     private fun reload() {
         entries.clear()
-        if (!file.isFile) return
-        val text = runCatching { file.readText(Charsets.UTF_8) }.getOrNull() ?: return
+        // 讀:先新名字,沒有才退回改名前的那一份。
+        val src = if (file.isFile) file else legacyFile
+        if (!src.isFile) return
+        val text = runCatching { src.readText(Charsets.UTF_8) }.getOrNull() ?: return
         for (r in LayoutRemapJson.decode(text)) entries[r.layoutId] = r
     }
 
@@ -95,11 +102,24 @@ class UserLayoutStore private constructor(private val file: File) {
                 tmp.copyTo(file, overwrite = true)
                 tmp.delete()
             }
+        }.onSuccess {
+            // 寫:一律寫新名字,寫成功之後才收掉改名前的那一份。
+            // 兩份同時在的話,之後每次讀都得決定信哪一份。
+            if (legacyFile.isFile) legacyFile.delete()
         }
     }
 
     companion object {
-        const val FILE_NAME = "rimequad-layouts.json"
+        const val FILE_NAME = "luminakey-layouts.json"
+
+        /**
+         * 產品改名前的檔名。這裡留著的是舊名。
+         *
+         * ⚠ **讀取端必須認得**(`docs/coordination.md` §5 的相容條款)。
+         * 漏掉的下場是升級之後使用者調過的鍵位全部回到原樣 ——
+         * 檔案還在磁碟上,只是沒有人再去讀它,而且沒有任何錯誤訊息。
+         */
+        const val LEGACY_FILE_NAME = "rimequad-layouts.json" // 舊名
 
         private val instances = HashMap<String, UserLayoutStore>()
 
@@ -107,7 +127,7 @@ class UserLayoutStore private constructor(private val file: File) {
         fun get(userDataDir: File): UserLayoutStore {
             val f = File(userDataDir, FILE_NAME)
             return instances.getOrPut(f.absolutePath) {
-                UserLayoutStore(f).also { it.reload() }
+                UserLayoutStore(f, File(userDataDir, LEGACY_FILE_NAME)).also { it.reload() }
             }
         }
     }

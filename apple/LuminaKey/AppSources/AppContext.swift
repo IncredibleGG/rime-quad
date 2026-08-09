@@ -43,7 +43,7 @@ final class AppContext {
         themesDir = res.appendingPathComponent("themes")
         let home = FileManager.default.homeDirectoryForCurrentUser
         let appSupport = home.appendingPathComponent("Library/Application Support")
-        // 產品改名(RimeQuad → LuminaKey)之後的一次性搬遷。
+        // 產品改名(舊名 RimeQuad → LuminaKey)之後的一次性搬遷。
         // **非破壞性**:舊目錄原封不動留著,失敗最多就是得到一個乾淨的新目錄,
         // 所以這裡不擋啟動。細節與取捨見 LuminaKeyKit/LegacyDataMigration.swift。
         if let line = LegacyDataMigration.logLine(

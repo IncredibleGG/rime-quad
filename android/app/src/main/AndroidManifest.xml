@@ -49,7 +49,7 @@
           · files/rime/user/installation.yaml
                                         installation_id,一組跨重裝穩定的 UUID
           · files/rime/user/user.yaml    schema_access_time：何時用過哪個方案
-          · files/rime/user/rimequad-store.json、sp/luminakey-store.xml
+          · files/rime/user/luminakey-store.json、sp/luminakey-store.xml
                                         裝了哪些第三方方案
           · files/net/                   連網紀錄本身
 

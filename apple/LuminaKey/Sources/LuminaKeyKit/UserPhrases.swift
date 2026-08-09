@@ -204,14 +204,14 @@ public enum UserPhrases {
     /// 判定方式是第一行的標記,見 `isOurs`。
     public static let marker = "# luminakey-managed: custom_phrase v1"
 
-    /// 產品改名之前(RimeQuad)我們自己寫出去的標記。
+    /// 產品改名之前(舊名 RimeQuad)我們自己寫出去的標記。
     ///
     /// ⚠ **少了這一行,改名就會把使用者的掛載檔變成「使用者自己的檔案」** ——
     /// `isOurs` 回 false,於是「我的詞庫」再也不會更新它,UI 說的是
     /// 「這是你自己的檔案,沒有動」,而使用者從頭到尾沒改過那個檔案。
     /// 搬遷會把舊的 `<schema>.custom.yaml` 原樣帶過來(見 LegacyDataMigration),
     /// 所以這裡必須認得舊標記。
-    public static let legacyMarkers = ["# rimequad-managed: custom_phrase v1"]
+    public static let legacyMarkers = ["# rimequad-managed: custom_phrase v1"] // 舊名
 
     public static func schemaPatchText() -> String {
         """

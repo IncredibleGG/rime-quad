@@ -164,18 +164,60 @@ summary{cursor:pointer;color:#6b7280;font-size:13px}
 }
 """
 
-INSTALL = {
-    "android": None,
-    # ⚠ 這裡的 .app 名字必須是**包裡真的那個名字**,不是產品名。對不上的話
-    #   使用者做完四步、系統一聲不吭地不載入它,而且沒有任何錯誤訊息。
-    "macos": f"""cd ~/Downloads
-tar xzf {{file}}
-xattr -dr com.apple.quarantine {product.MACOS_APP_BUNDLE}
-mkdir -p ~/Library/Input\\ Methods
-mv {product.MACOS_APP_BUNDLE} ~/Library/Input\\ Methods/
-open ~/Library/Input\\ Methods/{product.MACOS_APP_BUNDLE}""",
-    "windows": None,
-}
+# R2 上的這個小檔案記著「最新那一份 macOS 壓縮包裡的 .app 到底叫什麼」。
+# 由 scripts/publish_desktop.sh 在發布時**從產物本身量出來**之後寫上去。
+MACOS_BUNDLE_KEY = f"{product.R2_MACOS_DIR}/app-bundle-latest.txt"
+
+_APP_NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,64}\.app")
+
+_bundle_cache = {"at": 0.0, "name": None}
+
+
+def macos_app_bundle():
+    """手動安裝指令裡那個 `.app` 叫什麼。
+
+    ⚠ **不可以從產品名推。** R2 上躺著的是**上一次發布**的產物,而「產品改名」
+    與「改名後發布過一版」之間必然有一段時間差 —— 那段時間裡從產品名推出來的
+    名字是錯的。名字錯了的症狀是:使用者照著四步做完,系統一聲不吭地不載入它,
+    沒有任何錯誤訊息(見 scripts/lib/product.env 的 MACOS_APP_BUNDLE)。
+
+    所以真相來源與這一頁的其他東西一樣,只有 R2 本身;讀不到那個檔案時才退回
+    product.env 的值 —— 那代表 R2 上還是改名前發布的那一份,而那個常數記的
+    正好就是它。
+    """
+    now = time.time()
+    if _bundle_cache["name"] and now - _bundle_cache["at"] < CACHE_SECONDS:
+        return _bundle_cache["name"]
+    name = None
+    try:
+        out = subprocess.run(
+            ["rclone", "cat", f"{REMOTE}/{MACOS_BUNDLE_KEY}", "--s3-no-check-bucket"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if out.returncode == 0:
+            got = out.stdout.strip()
+            if _APP_NAME_RE.fullmatch(got):
+                name = got
+    except (OSError, subprocess.SubprocessError):
+        name = None
+    name = name or product.MACOS_APP_BUNDLE
+    _bundle_cache.update(at=now, name=name)
+    return name
+
+
+def macos_install_text(app_bundle, archive_name):
+    """手動安裝的四步。**publish_desktop.sh 會拿這段字去和產物比對。**
+
+    四步裡任何一步的名字錯了都是靜默失敗,所以這段字只有一個產生點。
+    """
+    return (
+        "cd ~/Downloads\n"
+        f"tar xzf {archive_name}\n"
+        f"xattr -dr com.apple.quarantine {app_bundle}\n"
+        "mkdir -p ~/Library/Input\\ Methods\n"
+        f"mv {app_bundle} ~/Library/Input\\ Methods/\n"
+        f"open ~/Library/Input\\ Methods/{app_bundle}"
+    )
 
 
 def card(title, tag, tag_cls, items, extra_meta="", note="", install="", alt=None):
@@ -198,7 +240,7 @@ def card(title, tag, tag_cls, items, extra_meta="", note="", install="", alt=Non
     if note:
         body.append(f'<div class="note">{note}</div>')
     if install:
-        body.append(f"<pre>{html.escape(install.format(file=fname))}</pre>")
+        body.append(f"<pre>{html.escape(install)}</pre>")
     if alt and alt[1]:
         a = alt[1][0]
         body.append(
@@ -239,6 +281,9 @@ def page():
                   f"然後系統設定 → 鍵盤 → 輸入來源 → + → 繁體中文/簡體中文 → {product.PRODUCT_NAME}。"
                   "設定從選單列上的輸入法圖示打開。"
                   "ad-hoc 簽章,不是可散布的正式版本。",
+             install=(macos_install_text(macos_app_bundle(),
+                                         d["macos_archive"][0]["path"].split("/")[-1])
+                      if d["macos_archive"] else ""),
              alt=("手動安裝(進階)", d["macos_archive"])),
         card("Windows x64", "帶設定介面", "warn", d["windows"],
              note="雙擊 Setup.exe,它會自己要求管理員權限。"
@@ -277,6 +322,13 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=20000)
     ap.add_argument("--bind", default="0.0.0.0")
+    # 給 scripts/publish_desktop.sh 用:印出這一頁**現在會叫使用者打的那幾行**。
+    # 發布時拿它和壓縮包裡真的那個 .app 比對,對不上就不准發。
+    ap.add_argument("--print-macos-install", action="store_true",
+                    help="印出 macOS 手動安裝指令(發布關卡用),不起伺服器")
     ns = ap.parse_args()
+    if ns.print_macos_install:
+        print(macos_install_text(macos_app_bundle(), "<壓縮包>"))
+        raise SystemExit(0)
     print(f"下載頁: http://{ns.bind}:{ns.port}/")
     ThreadingHTTPServer((ns.bind, ns.port), Handler).serve_forever()

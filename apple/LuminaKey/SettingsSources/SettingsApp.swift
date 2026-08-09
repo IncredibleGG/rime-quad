@@ -239,7 +239,7 @@ final class SettingsModel {
     /// 內建的索引位址。R2 目前是**測試階段**的位置,日後要改走
     /// GitHub Releases(見專案的長期記事)。改這裡不需要動格式。
     ///
-    /// ⚠ 這一行在改名那一輪修過:原本是 `https://pub-rimequad.r2.dev/...`,
+    /// ⚠ 這一行在改名那一輪修過:原本是舊名的 `https://pub-rimequad.r2.dev/...`,
     ///   而**那個主機從來不存在** —— R2 的公開網域是自動產生的
     ///   `pub-<32 位十六進位>.r2.dev`,取不了自己想要的名字。
     ///   全 repo 其他五處(android/app/build.gradle.kts、scripts/build_schema_store.sh、

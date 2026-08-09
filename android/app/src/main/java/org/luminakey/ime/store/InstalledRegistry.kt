@@ -130,17 +130,34 @@ class InstalledRegistry private constructor(
             tmp.copyTo(file, overwrite = true)
             tmp.delete()
         }
+        // 寫成功之後才把舊名的那一份收掉 —— 兩份帳本同時存在的話,
+        // 之後每次讀都得決定信哪一份,而它們會愈差愈遠。
+        if (file.name == FILE_NAME) {
+            File(file.parentFile, LEGACY_FILE_NAME).takeIf { it.isFile }?.delete()
+        }
     }
 
     companion object {
-        const val FILE_NAME = "rimequad-store.json"
+        const val FILE_NAME = "luminakey-store.json"
+
+        /**
+         * 產品改名前的帳本檔名。這裡留著的是舊名。
+         *
+         * ⚠ **讀取端必須認得**(`docs/coordination.md` §5 的相容條款)。
+         * 漏掉的下場是升級之後「裝過哪些方案」變成空清單,而檔案還在 ——
+         * 於是下一次安裝會撞到已經存在的檔案。整條路徑上沒有錯誤訊息。
+         */
+        const val LEGACY_FILE_NAME = "rimequad-store.json" // 舊名
+
         const val FORMAT_VERSION = 1
 
         fun load(userDataDir: File): InstalledRegistry {
             val f = File(userDataDir, FILE_NAME)
+            // 讀:先新名字,沒有才退回舊名字。寫:一律寫新名字(見 save())。
+            val src = if (f.isFile) f else File(userDataDir, LEGACY_FILE_NAME)
             val map = LinkedHashMap<String, InstalledPackage>()
-            if (f.isFile) {
-                val root = runCatching { f.readText(Charsets.UTF_8) }.getOrNull()
+            if (src.isFile) {
+                val root = runCatching { src.readText(Charsets.UTF_8) }.getOrNull()
                     ?.let { MiniJson.parseOrNull(it) }
                 root?.arr("packages")?.forEach { n ->
                     val id = n.str("id") ?: return@forEach

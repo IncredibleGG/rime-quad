@@ -419,6 +419,25 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
 
   **沒有驗到的**:這一輪只做了靜態驗證(全部改過的 shell 腳本 `bash -n`、`downloads_server.py` 實際起得來並回 200、`verify_product_ids.sh` 自帶反向測試)。**沒有裝過任何一份改名後的建置**,所以「改名後輸入法還註冊得上、還打得出字」一次都沒有被驗過。`
 
+- `[2026-08-09] [協調] ⚠ **更正 §5 上面那則 `[insets→協調]` 建議指令裡的 IME id(只加註,原段落一字未動)。** 那一行寫的是 `org.rimequad.ime/.RimeInputMethodService`,改名之後已經不對;要加進 `build.yml` 的 emulator job 時請用 **`org.luminakey.ime/.RimeInputMethodService`**,或更好的做法 —— `. scripts/lib/product.sh` 之後用 `"$RS_ANDROID_IME_ID"`,那樣下一次改名不必再回來翻一遍文件。同一個形狀在 `docs/emulator.md` 有兩處(第 8 節與 `verify_ime.sh` 的範例),那兩處寫的是 `dev.rime.ime/…`,**一個從來沒有存在過的套件名**,已經改成正確值並加上取值寫法。`scripts/verify_product_ids.sh` 現在盯著「文件裡每一個 `…/RimeInputMethodService` 都必須等於 product.env 推出來的 IME id」(coordination.md 除外 —— 這份文件只加不刪,所以用這一則附註更正)。`
+
+- `[2026-08-09] [協調] **六個落地識別碼在 Android 那一側補齊了,而且讀取端同時認舊名。** `rename-shared` 把規範寫進 `docs/backup-format.md` §1 與 `docs/coordination.md` §5(值是 `luminakey-*`),`rename-android` 判斷「四端共用格式要改就一起改」所以刻意沒改 —— 兩邊各自有道理,但併起來之後**沒有任何一道關卡會發現**。採用規範值(macOS 那側已經照規範做完,含 `LegacyDataMigration` 與 17 條 self-test,退回去的成本明顯較高):
+  `BackupFormat.MANIFEST_NAME` / `KIND` / `REGISTRY_ENTRY` / `LAYOUT_ENTRY`、`InstalledRegistry.FILE_NAME`、`UserLayoutStore.FILE_NAME` 全部改成 `luminakey-*`,並各自多一個 `LEGACY_*` 常數。
+  **寫出端只寫新名字,讀取端先新後舊**:manifest 依序試兩個檔名、`kind` 接受兩個值、容器內的 entry 兩個路徑都找、磁碟上的兩份帳本讀不到新名就退回舊名**並在下一次寫入時遷移過去**(寫成功之後才刪舊的那一份,不會同時留下兩份各說各話的帳本)。容器裡用舊名寫出去的檔案落地時會換成現在的名字(`BackupFormat.landingPath()`,純函式)。
+  新增 `BackupLegacyNameTest`(10 條):**一份舊名容器與一份新名容器各匯入一次,兩份都必須成功**,再加一條反向對照(名字兩個都不是的容器仍然必須是 `NOT_A_BACKUP`)—— 少了那一條,前兩條在「什麼 zip 都當成備份」的實作下也會綠。實測植入(把三個 `LEGACY_*` 從清單裡拿掉)之後,舊名那幾條紅、新名那條照樣綠。`:app:testDebugUnitTest --rerun-tasks` 462 項、0 失敗 0 略過。`
+
+- `[2026-08-09] [協調] ⚠ **`scripts/verify_product_ids.sh` 在上面那六項全部不一致的情況下 6/6 全綠、exit 0 —— 它正是自己檔頭警告的那個樣子。** 原因:第 3 項只 `find "$ROOT/scripts"`(不含 `apple/scripts/`),第 4 項只掃 `core/ docs/ tools/ README.md .github/workflows/build.yml` —— **`android/` 與 `apple/` 不在任何一項的掃描範圍內**。已改:
+  · 第 3 項掃 `scripts/`、`android/`、`apple/` 的 `.sh` 與 `.py`,三個掃描根各植入一個違規證明每一個根都真的走到了;`apple/` 的建置與驗證腳本走一張**帶理由的允許清單**(它們由 `apple/scripts/verify_names.py` 逐條盯著),而且清單指到不存在的檔案時會紅,不會活得比它的對象久。
+  · 第 4 項的舊名掃描加上 `android/app/src`、`android/testdata` 與 `apple/` 的 `Sources`/`AppSources`/`SettingsSources`;`apple/` 的 `Tests/` 與 `scripts/` 仍由 `verify_names.py` §9 的 MUST_KEEP 表管(那張表比「同一行寫舊名」更嚴),而第 3 項會斷言那支腳本還在。
+  · **新增第 6 項:20 列落地識別碼逐一比對 product.env**(12 列現行值 + 8 列相容宣告),比對的是**整段宣告**而不是只有值。反向測試逐列把宣告改成另一個名字,要求「比植入前**多**紅的正好是那一列」。它當場抓到一個真的重複:`KeyboardChoice.kt` 把同一個 SharedPreferences 名字在兩個 object 裡各寫了一遍(已合併成一個檔案層級常數)。
+  **植入驗證**:把六個常數逐一改回舊值,每一次 `exit 1` 且指名那一列;還原後 11 項全過、`exit 0`。`
+
+- `[2026-08-09] [協調→macOS] **下載頁不再靠人記得翻轉 `MACOS_APP_BUNDLE`。** `scripts/downloads_server.py` 原本用 `product.MACOS_APP_BUNDLE`(`RimeQuad.app`)產生 macOS 手動安裝指令,而 `product.env` 的註解要求「發布過一版之後才手動改這一行」—— 靠人記得翻轉一個常數是不可靠的,而漏掉的症狀正是那段註解自己寫的:**使用者照做四步,系統一聲不吭地不載入它**。現在:`publish_desktop.sh` 從壓縮包的**內容**量出 `.app` 的名字(不是從檔名猜,而且包裡出現兩個 `.app` 會擋下來),寫成 R2 上的 `macos/app-bundle-latest.txt`;下載頁讀那個檔案,讀不到才退回 `product.env`(那代表 R2 上還是改名前的那一份,而那個常數記的正好就是它)。發布的最後一關比對「下載頁講的名字」與「包裡實際的名字」,不一致就不准發,而且**反面**也擋:指令裡不可以同時出現第二個 `.app`。
+  ⚠ 順帶修掉一個會讓那一關永遠紅的東西:`[A-Za-z0-9._-]+\.app` 會把 `com.apple.quarantine` 裡的 `com.app` 當成一個 app 名字 —— 結尾要有 `\b`。**一個永遠紅的關卡會被關掉**,所以這不是小事。
+  另外:`downloads_server.py` 的 `INSTALL` 那一段**從來沒有被 render 過**(`card()` 有 `install=` 參數,但沒有任何一處傳它),所以那段舊名字其實還沒有出現在頁面上。現在接上了,macOS 那張卡片會列出四步,而且用的是壓縮包的實際檔名。`
+
+- `[2026-08-09] [協調] **沒有驗到的**:(1) 這一輪一樣**沒有裝過任何一份改名後的建置** —— 「改名後輸入法還註冊得上、還打得出字」仍然一次都沒有被驗過,`docs/emulator.md` 改對的那個 IME id 也還沒有在模擬器上實跑過。(2) `apple/` 的改動只有註解與 `// 舊名` 標記,**沒有編譯過 Swift**(這台是 Ubuntu);`apple/scripts/verify_names.py --self-test` 全過,涵蓋了它 self-test 會動到的那幾行。(3) macOS 發布那條路徑**沒有真的發布過一次** —— 新增的兩段(量 `.app` 名字、比對下載頁)是用 tar 清單與指令字串在本機對測的,不是在一次真的 `publish_desktop.sh macos <run_id>` 裡跑過。(4) `windows/` 一個字都沒動。`
+
 ---
 
 ## 6. 各端狀態

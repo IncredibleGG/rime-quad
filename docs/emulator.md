@@ -140,11 +140,26 @@ export ANDROID_SDK_ROOT=$HOME/Android/Sdk
 ./scripts/verify_ime.sh
 
 # 驗證我們自己的輸入法
+# ⚠ IME id 的唯一來源是 scripts/lib/product.env(ANDROID_APP_ID +
+#   ANDROID_IME_SERVICE)。這裡寫出來只是為了能直接複製貼上;
+#   要保險就照下面那一行取值,改名時不會跟著壞。
 ./scripts/verify_ime.sh \
-  --ime dev.rime.ime/.RimeInputMethodService \
+  --ime org.luminakey.ime/.RimeInputMethodService \
   --apk android/app/build/outputs/apk/debug/app-debug.apk \
   --text "nihao"
+
+# 等價、而且改名之後不必回來改這一段:
+. scripts/lib/product.sh
+./scripts/verify_ime.sh --ime "$RS_ANDROID_IME_ID" \
+  --apk android/app/build/outputs/apk/debug/app-debug.apk --text "nihao"
 ```
+
+> ⚠ **2026-08-09 更正。** 這一段的套件名原本寫 `dev.rime.ime`,
+> 而那個套件名**從來沒有存在過**(舊名是 `org.rimequad.ime`,現在是
+> `org.luminakey.ime`)。它不是這次改名改壞的,是一直都錯 —— 而這是一段會被
+> 直接複製貼上的指令,照著跑會停在 `verify_ime.sh` 第 3 步。
+> `scripts/verify_product_ids.sh` 現在盯著文件裡每一個
+> `…/RimeInputMethodService`,對不上 product.env 就紅。
 
 主要選項:
 
@@ -250,8 +265,14 @@ CI 裡建議 `verify_ime.sh` 不帶 `--no-start`(它會自己確保模擬器就�
 ## 8. 接上我們自己的 IME 時要注意什麼
 
 1. **IME id 的格式**是 `<applicationId>/<service 的完整或相對類名>`。
-   相對類名要以 `.` 開頭(例如 `dev.rime.ime/.RimeInputMethodService`)。
+   相對類名要以 `.` 開頭(本專案是 `org.luminakey.ime/.RimeInputMethodService`)。
    填錯的話 `verify_ime.sh` 第 3 步就會擋下來,並印出系統實際看得到的清單。
+
+   ⚠ **不要把這個字串再抄一份。** 它的唯一來源是 `scripts/lib/product.env`
+   (`ANDROID_APP_ID` + `ANDROID_IME_SERVICE`);shell 裡 `. scripts/lib/product.sh`
+   之後用 `$RS_ANDROID_IME_ID`,python 裡 `import product` 之後用
+   `product.ANDROID_IME_ID`。這一行本身在 2026-08-09 之前就是錯的
+   (套件名寫著一個從來沒有存在過的 `dev.rime.ime`),原因正是它是抄來的。
 
 2. **要被 `ime list -a` 看見**,APK 必須具備:
    * `<service>` 宣告 `android:permission="android.permission.BIND_INPUT_METHOD"`
