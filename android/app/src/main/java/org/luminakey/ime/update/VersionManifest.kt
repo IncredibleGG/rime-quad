@@ -28,6 +28,29 @@ import org.luminakey.ime.store.MiniJson
  * （"0.10.0" < "0.9.0" 這種）。`version_code` 是 Android 自己的升級語意
  * 所依據的整數，而且 [org.luminakey.ime.update.UpdateController] 拿到的
  * 「目前版本」也是同一個來源（PackageInfo），兩邊比的是同一件事。
+ *
+ * ── ⚠ 為什麼還要有 `package`（2026-08-09 加）──────────────────────────
+ * 2026-08-09 產品改名，applicationId 從 `org.rimequad.ime` 換成
+ * `org.luminakey.ime`。Android 把套件名不同的兩份 APK 視為**兩個 app**，
+ * 不允許覆蓋安裝 —— 而升級器當時只比 version_code，於是它下載了 28MB、
+ * 讓使用者按下安裝，再把系統的拒絕原樣轉述給他：
+ *
+ *     APK 檔案無效或已損毀。
+ *     （系統訊息：INSTALL_FAILED_INVALID_APK: … specified package
+ *      org.rimequad.ime inconsistent with org.luminakey.ime）
+ *
+ * 那句話是**錯的**：檔案完全正常，sha256 也對得上。使用者會以為下載壞了，
+ * 重試幾次、然後放棄。
+ *
+ * 「套件名一不一樣」是**按下安裝之前就判定得出來的事實**，不該等系統拒絕。
+ * 所以 version.json 多一個 `package`，而 [UpdateController] 在發現它與本機
+ * 不同時走完全不同的一條路（見那個檔案的 `Migration`）。
+ *
+ * ⚠ **這個欄位是選用的，而且必須永遠是選用的。** 使用者手上的**舊版**
+ * 讀的是**新的** version.json —— 但反過來也成立：新版可能讀到一份還沒更新的
+ * 舊 version.json（發布端還沒改、或使用者的快取）。缺欄位時
+ * [PackageIdentity.Verdict.UNKNOWN]，行為與從前完全相同，另外靠
+ * 「安裝前直接讀 APK 自己的套件名」那道防線兜底（見 [UpdateInstaller.packageNameOf]）。
  */
 data class VersionManifest(
     /** 遠端版本的 versionCode。單調遞增，見 android/app/build.gradle.kts 的推導。 */
@@ -46,6 +69,23 @@ data class VersionManifest(
     val url: String,
     /** 更新說明。可能是空字串。 */
     val notes: String,
+    /**
+     * 遠端這一份 APK 的 applicationId。**選用** —— 舊的 version.json 沒有它。
+     * null 代表「發布端沒說」，不代表「一樣」。見類別註解。
+     */
+    val packageId: String? = null,
+    /**
+     * 這一版**取代**的舊 applicationId（改名時才會有；可以是字串或字串陣列）。
+     *
+     * 有它才分得出兩件事：「這是我們自己改名」與「這份 version.json 根本
+     * 不是給這個 app 的」。前者要告訴使用者怎麼手動搬過去，後者要叫他停手。
+     */
+    val replacesPackages: List<String> = emptyList(),
+    /**
+     * 給人看的下載頁。**選用**。改名之後升級器裝不了，只能把使用者送去
+     * 一個他自己下載得到的地方 —— 沒有這個欄位就退回直接給 APK 的網址。
+     */
+    val pageUrl: String? = null,
 )
 
 sealed class ManifestParseResult {
@@ -112,6 +152,35 @@ object VersionManifestParser {
             return ManifestParseResult.Err("下載網址只接受 http/https：$url")
         }
 
+        // ── 以下三個欄位都是**選用**的 ───────────────────────────────────
+        //
+        // ⚠ 缺席一律當成「發布端沒說」，不是錯誤。使用者手上跑著的可能是
+        //    任何一個舊版本，而版本資訊是**線上那一份**：加欄位不可以讓
+        //    任何一版的 app 從此再也檢查不到更新。所以這裡不 return Err。
+        //
+        // 但**格式不對就當成沒有**（不是照收）：一個 `"package": 123` 或
+        // 帶空白的套件名，比缺席更危險 —— 它會讓「一不一樣」的比對得出
+        // 一個看起來確定、實際上沒有根據的答案。
+        val packageId = root.str("package")
+            ?.trim()
+            ?.takeIf { PackageIdentity.looksLikePackageName(it) }
+
+        // 字串或字串陣列都收。發布端只換過一次名字時寫字串最自然，
+        // 換過兩次就得是陣列 —— 兩種都認得，省掉一次「格式要改了」的協調。
+        val replaces = buildList {
+            root.str("replaces_package")?.trim()
+                ?.takeIf { PackageIdentity.looksLikePackageName(it) }
+                ?.let { add(it) }
+            root.strings("replaces_package")
+                .map { it.trim() }
+                .filter { PackageIdentity.looksLikePackageName(it) }
+                .forEach { if (it !in this) add(it) }
+        }
+
+        val pageUrl = root.str("page_url")?.takeIf { it.isNotBlank() }
+            ?.let { NetworkGate.resolveUrl(manifestUrl, null, it) }
+            ?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+
         return ManifestParseResult.Ok(
             VersionManifest(
                 versionCode = versionCode,
@@ -122,6 +191,9 @@ object VersionManifestParser {
                 sha256 = sha256,
                 url = url,
                 notes = root.str("notes")?.trim().orEmpty(),
+                packageId = packageId,
+                replacesPackages = replaces,
+                pageUrl = pageUrl,
             )
         )
     }

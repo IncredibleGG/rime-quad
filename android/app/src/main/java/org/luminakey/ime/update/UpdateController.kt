@@ -1,7 +1,11 @@
 package org.luminakey.ime.update
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -9,6 +13,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import org.luminakey.ime.BuildConfig
+import org.luminakey.ime.R
 import org.luminakey.ime.net.NetworkGate
 import org.luminakey.ime.net.NetworkPurpose
 import org.luminakey.ime.store.FileDigest
@@ -41,6 +46,15 @@ class UpdateController private constructor(context: Context) {
     private val worker = Executors.newSingleThreadExecutor { r -> Thread(r, "rime-update") }
     private val prefs: SharedPreferences =
         app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    /**
+     * 背景執行緒上沒有 composition，所以走 `app.getString()`。
+     * 與 `store.BackupController.str` 同一個作法：同一份資源、同一個語系，
+     * 只是不需要 Compose 在場。**這一層一句寫死的字面都不該有** ——
+     * 寫死的中文對一個英文使用者來說就是另一種「訊息指向錯的地方」。
+     */
+    private fun str(id: Int, vararg args: Any): String =
+        if (args.isEmpty()) app.getString(id) else app.getString(id, *args)
 
     enum class Phase { IDLE, CHECKING, DOWNLOADING, VERIFYING, READY_TO_INSTALL, INSTALLING }
 
@@ -89,6 +103,51 @@ class UpdateController private constructor(context: Context) {
 
     /** 已下載且**已驗過 sha256** 的 APK。null = 還沒有可安裝的檔案。 */
     var verifiedApk by mutableStateOf<File?>(null)
+        private set
+
+    /**
+     * 線上那一版換了 app 的身分 —— 系統不會讓它蓋在這一支上面。
+     *
+     * ══════════════════════════════════════════════════════════════════
+     *  ⚠ 這一格不是「錯誤」，是一條**不同的路**
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * 2026-08-09 產品改名（`org.rimequad.ime` → `org.luminakey.ime`）之後，
+     * 使用者按下安裝拿到的是「APK 檔案無效或已損毀」。檔案沒有壞，是
+     * 升級器提供了一個**它自己裝不起來的更新**，然後把系統的原始訊息
+     * 原樣轉述。兩個缺陷，都在這一格裡修掉：
+     *
+     *   1. 這件事在**下載之前**就判定得出來（[PackageIdentity]），所以
+     *      這一格非 null 時我們不下載、也不給「安裝」按鈕。
+     *   2. 使用者需要知道的是「為什麼」與「他要做什麼」，包括那句
+     *      **詞典與設定不會自動轉移** —— 那是他會真的失去東西的地方，
+     *      而系統的任何一則訊息都不會提到它。
+     */
+    var migration by mutableStateOf<Migration?>(null)
+        private set
+
+    /**
+     * @param fromPackage 使用者手上這一支的身分
+     * @param toPackage   線上那一版的身分
+     * @param declared    線上那一份有沒有**明說**它取代的就是我們。false 時
+     *                    語氣要保守：那可能不是我們自己改名，而是版本資訊
+     *                    的網址指錯了地方。
+     * @param downloadUrl APK 的直接網址（複製連結用）
+     * @param pageUrl     給人看的下載頁；沒有就退回 [downloadUrl]
+     */
+    data class Migration(
+        val fromPackage: String,
+        val toPackage: String,
+        val declared: Boolean,
+        val versionName: String,
+        val downloadUrl: String,
+        val pageUrl: String?,
+    ) {
+        val openUrl: String get() = pageUrl ?: downloadUrl
+    }
+
+    /** 最近一次安裝失敗的分類。UI 靠它決定要不要順便把搬家步驟畫出來。 */
+    var lastInstallFailure by mutableStateOf<InstallFailureKind?>(null)
         private set
 
     var lastCheckAt by mutableStateOf(prefs.getLong(KEY_LAST_CHECK, 0L))
@@ -140,7 +199,7 @@ class UpdateController private constructor(context: Context) {
     fun checkNow() {
         if (!NetworkGate.isEnabled) {
             status = null
-            error = "連網開關是關閉的，沒有檢查。到「連網」分頁打開開關後再試一次。"
+            error = str(R.string.upgrade_err_network_off_check)
             return
         }
         check(silent = false)
@@ -150,7 +209,7 @@ class UpdateController private constructor(context: Context) {
         if (busy) return
         phase = Phase.CHECKING
         error = null
-        if (!silent) status = "檢查中…"
+        if (!silent) status = str(R.string.upgrade_status_checking)
         worker.execute {
             val result = NetworkGate.fetchText(
                 manifestUrl, NetworkPurpose.UPDATE_MANIFEST, maxBytes = MAX_MANIFEST_BYTES,
@@ -164,7 +223,7 @@ class UpdateController private constructor(context: Context) {
                         // 靜默模式什麼都不說 —— 使用者沒問，就不要拿網路錯誤煩他。
                         if (!silent) {
                             status = null
-                            error = "取不到版本資訊：${result.message}"
+                            error = str(R.string.upgrade_err_no_manifest, result.message)
                         }
                     }
 
@@ -197,10 +256,10 @@ class UpdateController private constructor(context: Context) {
             status = when (verdict) {
                 // 不重複「有新版本：<版號>」—— 卡片標題已經用紅點與粗體說了一次，
                 // 在它正下方再說一遍只是噪音。這裡只確認「你按的那一下有作用」。
-                UpdateVerdict.UPDATE_AVAILABLE -> "檢查完成。"
-                UpdateVerdict.UP_TO_DATE -> "已是最新版本。"
+                UpdateVerdict.UPDATE_AVAILABLE -> str(R.string.upgrade_status_check_done)
+                UpdateVerdict.UP_TO_DATE -> str(R.string.upgrade_status_up_to_date)
                 UpdateVerdict.DOWNGRADE ->
-                    "伺服器上的版本（${m.versionName}）比本機舊，不提供更新。"
+                    str(R.string.upgrade_status_downgrade, m.versionName)
                 null -> null
             }
         }
@@ -211,8 +270,46 @@ class UpdateController private constructor(context: Context) {
             // 回呼根本沒機會跑,下次開起來就看到一顆「安裝」按鈕要你再裝一次
             // 已經裝好的版本。清理因此不能只掛在成功回呼上。
             verifiedApk = null
+            migration = null
             if (phase == Phase.READY_TO_INSTALL) phase = Phase.IDLE
             worker.execute { updateDir().listFiles()?.forEach { it.delete() } }
+            return
+        }
+
+        // ── ⚠ 換 app 身分的判定，**排在下載之前** ────────────────────────
+        //
+        // 順序就是這一輪要修的第一個缺陷：這一段只要排到下載之後，就變成
+        // 「下載 28MB，再讓系統拒絕，再把系統的話原樣轉述給使用者」。
+        // 套件名一不一樣是**事先判定得出來的事實**，不是要等系統開口的事。
+        //
+        // ⚠ 只在 UPDATE_AVAILABLE 這一格判。降級的情況下叫使用者「解除安裝
+        //    再裝一個更舊的」是把他推下懸崖；那種組合代表發布端出了事，
+        //    上面 DOWNGRADE 那一句已經說了。
+        //
+        // ⚠ 缺 `package` 欄位（[PackageIdentity.Verdict.UNKNOWN]）時**行為與
+        //    從前完全相同**：照常下載。使用者手上的舊版會讀到新的 version.json，
+        //    新版也可能讀到還沒更新的舊 version.json，兩個方向都得活下去。
+        //    真正兜底的是安裝前那道「直接讀 APK 檔自己的套件名」（見 [install]），
+        //    它不需要發布端配合，也就不會因為誰忘了改而失效。
+        migration = when (PackageIdentity.compare(app.packageName, m)) {
+            PackageIdentity.Verdict.CHANGED -> Migration(
+                fromPackage = app.packageName,
+                toPackage = m.packageId.orEmpty(),
+                declared = PackageIdentity.declaresReplacing(app.packageName, m),
+                versionName = m.versionName,
+                downloadUrl = m.url,
+                pageUrl = m.pageUrl,
+            )
+
+            PackageIdentity.Verdict.SAME, PackageIdentity.Verdict.UNKNOWN -> null
+        }
+        if (migration != null) {
+            // 不下載、不留半份檔案、也不給「安裝」按鈕。使用者要做的事
+            // 全部在 UpdateSection 的搬家卡片上。
+            verifiedApk = null
+            if (phase == Phase.READY_TO_INSTALL) phase = Phase.IDLE
+            worker.execute { updateDir().listFiles()?.forEach { it.delete() } }
+            if (announce) status = str(R.string.upgrade_not_downloaded)
             return
         }
 
@@ -231,7 +328,7 @@ class UpdateController private constructor(context: Context) {
                 ) {
                     verifiedApk = cached
                     phase = Phase.READY_TO_INSTALL
-                    status = "先前已下載並通過驗證，可以直接安裝。"
+                    status = str(R.string.upgrade_status_ready_cached)
                 }
             }
         }
@@ -249,14 +346,16 @@ class UpdateController private constructor(context: Context) {
         val m = latest ?: return
         if (busy) return
         if (verdict != UpdateVerdict.UPDATE_AVAILABLE) return
+        // ⚠ 已知裝不上去就不要下載。這一行就是「不要下載完再讓系統拒絕」。
+        if (migration != null) return
         if (!NetworkGate.isEnabled) {
-            error = "連網開關是關閉的，沒有下載。到「連網」分頁打開開關後再試一次。"
+            error = str(R.string.upgrade_err_network_off_download)
             return
         }
         error = null
         phase = Phase.DOWNLOADING
         progress = 0f
-        status = "下載中…"
+        status = str(R.string.upgrade_status_downloading, fmtBytes(0), fmtBytes(m.size))
         val dest = apkFileFor(m)
         worker.execute {
             dest.parentFile?.mkdirs()
@@ -268,7 +367,11 @@ class UpdateController private constructor(context: Context) {
                 val f = if (m.size > 0) read.toFloat() / m.size else -1f
                 main.post {
                     progress = f
-                    status = "下載中… ${fmtBytes(read)} / ${fmtBytes(m.size)}"
+                    status = str(
+                        R.string.upgrade_status_downloading,
+                        fmtBytes(read),
+                        fmtBytes(m.size),
+                    )
                 }
             }
             main.post {
@@ -278,17 +381,17 @@ class UpdateController private constructor(context: Context) {
                         phase = Phase.IDLE
                         progress = -1f
                         status = null
-                        error = "下載失敗：${r.message}"
+                        error = str(R.string.upgrade_err_download_failed, r.message)
                     }
 
                     is NetworkGate.Result.Ok -> {
                         phase = Phase.VERIFYING
-                        status = "驗證檔案完整性…"
+                        status = str(R.string.upgrade_status_verifying)
                         if (UpdateCheck.sha256Matches(m.sha256, r.value.sha256)) {
                             verifiedApk = dest
                             phase = Phase.READY_TO_INSTALL
                             progress = 1f
-                            status = "已下載並通過 sha256 驗證，可以安裝。"
+                            status = str(R.string.upgrade_status_ready)
                         } else {
                             // 規範與市集那條線一致：不符即整包丟棄，不留著、
                             // 不「先裝再說」。
@@ -297,15 +400,14 @@ class UpdateController private constructor(context: Context) {
                             phase = Phase.IDLE
                             progress = -1f
                             status = null
-                            error = buildString {
-                                appendLine("下載的檔案未通過 sha256 驗證，已丟棄，不會安裝。")
-                                appendLine("預期：${m.sha256}")
-                                appendLine("實際：${r.value.sha256}")
-                                append(
-                                    "通常是傳輸過程壞掉（或中途被快取／代理動過）。" +
-                                        "稍後再試一次；一直失敗請回報。"
-                                )
-                            }
+                            // ⚠ **整條線上唯一一句可以說「檔案壞了」的話** ——
+                            //    因為只有這裡真的比對過雜湊而且不符。
+                            //    安裝失敗那一側不准說（見 InstallFailure 檔頭）。
+                            error = str(
+                                R.string.upgrade_err_sha_mismatch,
+                                m.sha256,
+                                r.value.sha256,
+                            )
                         }
                     }
                 }
@@ -337,25 +439,165 @@ class UpdateController private constructor(context: Context) {
         val apk = verifiedApk ?: return
         if (phase == Phase.INSTALLING) return
         if (!canInstallPackages()) {
-            error = "系統尚未允許本 app 安裝應用程式。請先開啟「安裝未知的應用程式」。"
+            error = str(R.string.upgrade_err_install_not_permitted)
             return
         }
+
+        // ── ⚠ 最後一道：直接問這個檔案「你是誰」 ────────────────────────
+        //
+        // version.json 的 `package` 欄位靠發布端寫，而**舊的 version.json
+        // 沒有它** —— 也就是說，光靠上面那道 preflight，下一次換套件名時
+        // 仍然有一批人會走到系統那句「APK 檔案無效或已損毀」。
+        //
+        // 這一行不靠任何人：它剖析的是我們手上這個檔案自己宣告的套件名。
+        // 系統會拒絕的事情，我們在把檔案交給它之前就先知道，並且說得比它清楚。
+        //
+        // 讀不出來（null）時**照常安裝**：一個讀檔失敗不該變成「不給你升級」。
+        val apkPackage = UpdateInstaller.packageNameOf(app, apk)
+        if (apkPackage != null && apkPackage != app.packageName) {
+            val m = latest
+            migration = Migration(
+                fromPackage = app.packageName,
+                toPackage = apkPackage,
+                declared = m != null && PackageIdentity.declaresReplacing(app.packageName, m),
+                versionName = m?.versionName ?: installedVersionName,
+                downloadUrl = m?.url ?: manifestUrl,
+                pageUrl = m?.pageUrl,
+            )
+            // 檔案留著沒有意義：它裝不上去，而且是 28MB。
+            apk.delete()
+            verifiedApk = null
+            phase = Phase.IDLE
+            status = null
+            error = null
+            return
+        }
+
         error = null
+        lastInstallFailure = null
         phase = Phase.INSTALLING
-        status = "等待系統的安裝確認…"
-        UpdateInstaller.install(app, apk) { ok, message ->
-            main.post {
-                phase = if (ok) Phase.IDLE else Phase.READY_TO_INSTALL
-                if (ok) {
-                    status = message
-                    // 裝完了，快取檔沒有留著的理由（28MB）。
+        status = str(R.string.upgrade_status_waiting_confirm)
+        UpdateInstaller.install(app, apk) { outcome ->
+            main.post { onInstallOutcome(apk, outcome) }
+        }
+    }
+
+    private fun onInstallOutcome(apk: File, outcome: InstallOutcome) {
+        when (outcome) {
+            is InstallOutcome.Success -> {
+                phase = Phase.IDLE
+                status = str(R.string.upgrade_status_installed)
+                lastInstallFailure = null
+                // 裝完了，快取檔沒有留著的理由（28MB）。
+                apk.delete()
+                verifiedApk = null
+            }
+
+            is InstallOutcome.DidNotStart -> {
+                phase = Phase.READY_TO_INSTALL
+                status = null
+                error = outcome.message
+            }
+
+            is InstallOutcome.Rejected -> {
+                phase = Phase.READY_TO_INSTALL
+                status = null
+                lastInstallFailure = outcome.kind
+                error = renderInstallFailure(outcome)
+
+                // 系統說的是「套件名不同」→ 這不是重試得好的事，是要搬家。
+                // 把搬家卡片叫出來（連 version.json 都沒說的情況下，系統的
+                // 那一則訊息就是我們唯一的來源）。
+                if (outcome.kind == InstallFailureKind.PACKAGE_ID_CHANGED) {
+                    val pair = PackageIdentity.inconsistentPackages(outcome.raw)
+                    val m = latest
+                    migration = Migration(
+                        fromPackage = pair?.first ?: app.packageName,
+                        toPackage = pair?.second ?: m?.packageId.orEmpty(),
+                        declared = m != null &&
+                            PackageIdentity.declaresReplacing(app.packageName, m),
+                        versionName = m?.versionName ?: installedVersionName,
+                        downloadUrl = m?.url ?: manifestUrl,
+                        pageUrl = m?.pageUrl,
+                    )
                     apk.delete()
                     verifiedApk = null
-                } else {
-                    status = null
-                    error = message
+                    phase = Phase.IDLE
                 }
             }
+        }
+    }
+
+    /**
+     * 把一則安裝失敗寫成使用者讀得懂、而且**知道下一步做什麼**的話。
+     *
+     * 三段，順序固定：
+     *   1. 這是什麼（[InstallFailureKind] 各有各的一句，含下一步）；
+     *   2. 「檔案沒有壞」—— 因為它剛剛才通過 sha256，而使用者的第一個念頭
+     *      一定是「是不是下載壞了」。先替他把那條錯路關掉；
+     *   3. 系統原文，原樣保留，給回報用。
+     *
+     * ⚠ 第 2 段刻意不出現在「使用者自己取消」那一則：他沒有懷疑檔案，
+     *    多說一句只是噪音。
+     */
+    private fun renderInstallFailure(outcome: InstallOutcome.Rejected): String {
+        val size = latest?.size
+        val head = when (outcome.kind) {
+            InstallFailureKind.CANCELLED -> str(R.string.upgrade_fail_cancelled)
+            InstallFailureKind.PACKAGE_ID_CHANGED -> str(R.string.upgrade_fail_package_changed)
+            InstallFailureKind.SIGNATURE_MISMATCH -> str(R.string.upgrade_fail_signature)
+            InstallFailureKind.DOWNGRADE -> str(R.string.upgrade_fail_downgrade)
+            InstallFailureKind.NOT_ENOUGH_SPACE ->
+                str(R.string.upgrade_fail_storage, fmtBytes(size ?: 0L))
+            InstallFailureKind.DEVICE_INCOMPATIBLE -> str(R.string.upgrade_fail_incompatible)
+            InstallFailureKind.BLOCKED -> str(R.string.upgrade_fail_blocked)
+            InstallFailureKind.REJECTED_UNEXPLAINED -> str(R.string.upgrade_fail_unexplained)
+        }
+        return buildString {
+            append(head)
+            if (outcome.kind != InstallFailureKind.CANCELLED) {
+                append("\n\n")
+                append(str(R.string.upgrade_fail_verified))
+            }
+            outcome.raw?.takeIf { it.isNotBlank() }?.let {
+                append("\n\n")
+                append(str(R.string.upgrade_fail_system_detail, it))
+            }
+        }
+    }
+
+    /* ───────────────────── 搬家時使用者做得到的事 ───────────────────── */
+
+    /**
+     * 把下載網址放進剪貼簿。
+     *
+     * 為什麼這顆按鈕存在：搬家卡片上的每一句話都在告訴使用者「你要自己去
+     * 下載」，而一個 60 個字元的網址是他**抄不下來**的。沒有這一顆，
+     * 那段說明等於沒有下一步。
+     */
+    fun copyDownloadLink(): Boolean {
+        val url = migration?.downloadUrl ?: latest?.url ?: return false
+        return runCatching {
+            val cm = app.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            cm.setPrimaryClip(ClipData.newPlainText(app.packageName, url))
+            status = str(R.string.upgrade_link_copied)
+            true
+        }.getOrDefault(false)
+    }
+
+    /**
+     * 用外部瀏覽器打開下載頁。
+     *
+     * ⚠ 打不開時**要說**，而且要說得出替代方案 —— 一顆按下去什麼都不發生的
+     * 按鈕，在這個畫面上會被理解成「連這個也壞了」。
+     */
+    fun openDownloadPage(): Boolean {
+        val url = migration?.openUrl ?: latest?.url ?: return false
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return runCatching { app.startActivity(intent); true }.getOrElse {
+            error = str(R.string.upgrade_no_browser, str(R.string.upgrade_copy_link))
+            false
         }
     }
 

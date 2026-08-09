@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    應用內升級的訊息(繁體)。key 與 placeholder 必須與 values/strings_upgrade.xml
+    完全一致 —— 由 keyboard/KbdStringsTest.kt 掃目錄驗。
+-->
+<resources>
+
+    <!-- ═══════════════ 換了 app 身分:裝不上去 ═══════════════ -->
+
+    <string name="upgrade_blocked_title">這個新版本要自己手動裝</string>
+
+    <string name="upgrade_blocked_why">新版本用的是另一個 app 身分(%1$s,而你手上這一支是 %2$s)。你的手機會把它當成另一個 app、而不是同一支的更新,所以不讓它蓋上去。檔案沒有壞、下載也沒有問題,只是 Android 不允許這樣直接換。</string>
+
+    <string name="upgrade_blocked_unverified">我們在這裡沒有辦法確認它真的是同一個專案換了名字。如果你不知道這支 app 有要改名,先不要裝 —— 請先把這一頁的內容回報。</string>
+
+    <string name="upgrade_blocked_data_warning">你打過的字和你的設定不會自己跟過去。解除安裝會把它們刪掉。請務必先做第 1 步,不然就沒了。</string>
+
+    <string name="upgrade_step_save">1. 先把全部存成一個文件 —— 本頁上面那個「%1$s」。</string>
+    <string name="upgrade_step_get">2. 用下面的按鈕拿到新版本。</string>
+    <string name="upgrade_step_uninstall">3. 解除安裝這一支。</string>
+    <string name="upgrade_step_install">4. 打開你剛下載的檔案,把它裝起來。</string>
+    <string name="upgrade_step_restore">5. 打開新的那一支,用「%1$s」把你的字和設定拿回來。</string>
+
+    <string name="upgrade_open_page">開啟下載頁</string>
+    <string name="upgrade_copy_link">複製下載連結</string>
+    <string name="upgrade_link_copied">下載連結已複製。</string>
+    <string name="upgrade_no_browser">這台手機上沒有東西可以打開連結。改用「%1$s」,再把它貼到你下載得了的地方。</string>
+
+    <string name="upgrade_not_downloaded">這一版不會自動下載,因為它沒辦法蓋在你現在這一支上面。</string>
+
+    <!-- ═══════════════ 安裝失敗 ═══════════════ -->
+
+    <string name="upgrade_fail_verified">我們下載到的檔案與發布時公布的指紋完全相同,所以這不是下載壞掉,再下載一次也不會有幫助。</string>
+
+    <string name="upgrade_fail_package_changed">你的手機拒絕了:新版本用的是另一個 app 身分,對 Android 來說那是另一支 app,不是更新。</string>
+    <string name="upgrade_fail_signature">你的手機拒絕了:這個檔案不是用你現在這一支的同一把鑰匙簽的。千萬不要用解除安裝的方式硬裝 —— 那會清掉這個鍵盤跟你學過的每一個字。請先把這一頁回報。</string>
+    <string name="upgrade_fail_downgrade">你手機上的版本已經比這一份新,而 Android 不會往回裝。這裡你沒有事情要做 —— 這是我們這邊出的錯,麻煩回報一下。</string>
+    <string name="upgrade_fail_storage">空間不夠,裝不下去。大約需要 %1$s 的空位,還要留一些解開的空間。清一點出來再按一次安裝。</string>
+    <string name="upgrade_fail_incompatible">這個版本不合這台手機 —— 不是處理器型別不同,就是你的 Android 版本比它需要的舊。這件事在手機上做什麼都不會改變。麻煩回報你用的是哪一款手機、Android 幾版。</string>
+    <string name="upgrade_fail_blocked">你的手機把這次安裝擋下來了。開著 Play Protect 掃描的手機有時候會擋掉不是從商店來的 app:再試一次並選「仍要安裝」,或者暫時把那個掃描關掉。</string>
+    <string name="upgrade_fail_cancelled">已取消安裝。你的手機上什麼都沒有變。想裝的時候再按一次安裝就好。</string>
+    <string name="upgrade_fail_unexplained">你的手機拒絕安裝這個檔案,而它給的理由我們認不出來。麻煩把下面那一行回報給我們 —— 那是目前唯一的線索。</string>
+
+    <string name="upgrade_fail_system_detail">(Android 說的原話:%1$s)</string>
+
+    <!-- ═══════════════ 其餘 ═══════════════ -->
+
+    <string name="upgrade_err_network_off_check">連網開關是關閉的,沒有檢查。到「連網」分頁打開開關後再試一次。</string>
+    <string name="upgrade_err_network_off_download">連網開關是關閉的,沒有下載。到「連網」分頁打開開關後再試一次。</string>
+    <string name="upgrade_err_no_manifest">取不到版本資訊:%1$s</string>
+    <string name="upgrade_err_download_failed">下載失敗:%1$s</string>
+    <string name="upgrade_err_install_not_permitted">你的手機還沒允許這支 app 安裝應用程式。請先打開「安裝未知的應用程式」。</string>
+
+    <string name="upgrade_err_sha_mismatch">下載到的檔案與發布時公布的指紋不符,已經丟棄,什麼都沒有安裝。通常是下載途中壞掉(或中間有東西動過它)。稍後再試一次;一直這樣請回報。\n\n預期:%1$s\n實際:%2$s</string>
+
+    <string name="upgrade_status_checking">檢查中…</string>
+    <string name="upgrade_status_check_done">檢查完成。</string>
+    <string name="upgrade_status_up_to_date">已經是最新版本。</string>
+    <string name="upgrade_status_downgrade">伺服器上的版本(%1$s)比你手上的舊,沒有東西可以更新。</string>
+    <string name="upgrade_status_downloading">下載中… %1$s / %2$s</string>
+    <string name="upgrade_status_verifying">檢查檔案中…</string>
+    <string name="upgrade_status_ready">已下載並檢查完成,可以安裝了。</string>
+    <string name="upgrade_status_ready_cached">先前已經下載並檢查過了,可以直接安裝。</string>
+    <string name="upgrade_status_waiting_confirm">等你的手機跳出確認畫面…</string>
+    <string name="upgrade_status_installed">安裝完成,新版本已經在跑了。</string>
+    <string name="upgrade_status_no_confirm_screen">你的手機要你確認,卻沒有給我們可以顯示的畫面。</string>
+    <string name="upgrade_status_no_confirm_open">打不開手機的安裝確認畫面:%1$s</string>
+    <string name="upgrade_err_session">沒辦法開始安裝:%1$s</string>
+
+</resources>
