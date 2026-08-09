@@ -129,7 +129,7 @@ TEST(Proto_old_service_rejects_a_v2_hello_cleanly) {
   h.host_pid = 1;
   h.host_exe = "x";
   h.input_langid = 0x0804;
-  h.profile_guid = "{07FB3057-4192-4868-AB6E-E4EE5597C0FE}";
+  h.profile_guid = "{4F78BA11-E997-4BD7-8B97-F4553ABC0B18}";
   const std::string v2 = EncodeHello(9, h);
   CHECK(!DecodeHelloAsV1Only(v2, &seq, &proto));
   // 而且它比 v1 長:欄位真的加上去了(否則上面那條會因為別的理由通過)。
@@ -143,7 +143,7 @@ TEST(Proto_v2_hello_roundtrip) {
   h.host_pid = 999;
   h.host_exe = "C:\\Program Files\\Some App\\app.exe";
   h.input_langid = 0x0C04;
-  h.profile_guid = "{23BBABB2-5C8A-4751-85F1-B360C70A5637}";
+  h.profile_guid = "{C6B736EB-38E3-4041-B59B-ECF91AD8E28A}";
   uint32_t seq = 0;
   Hello back;
   CHECK(DecodeHello(EncodeHello(3, h), &seq, &back));

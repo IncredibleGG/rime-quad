@@ -96,7 +96,7 @@ Dvorak 使用者會拿到不合他鍵帽的映射,但那是「輸入法完全不
 命令列的等價寫法:
 
 ```
-"C:\Program Files\RimeQuad\rime_ime_setup.exe" doctor
+"C:\Program Files\LuminaKey\rime_ime_setup.exe" doctor
 ```
 
 ⚠ **不要提權**跑它。提權時看到的 `HKCU` 與具名管道都是**另一個帳號的**,
@@ -110,7 +110,7 @@ Dvorak 使用者會拿到不合他鍵帽的映射,但那是「輸入法完全不
 
 ```
 :: 開「命令提示字元」,不要用系統管理員身分,整行貼上:
-"C:\Program Files\RimeQuad\rime_service.exe" > "%USERPROFILE%\rime-service.txt" 2>&1
+"C:\Program Files\LuminaKey\rime_service.exe" > "%USERPROFILE%\rime-service.txt" 2>&1
 :: 畫面會停住不動(那是正常的,它在跑)。等 5 分鐘之後按 Ctrl+C,
 :: 把 C:\Users\<你的名字>\rime-service.txt 傳回來。
 ```
@@ -163,20 +163,20 @@ Windows 11 **預設把新出現的系統匣圖示收進溢位區**(工作列上�
 
 ```
 :: 1. 引擎層(不經 TSF、不經管道)。印得出「你好」就代表引擎與資料都好
-"C:\Program Files\RimeQuad\rime_console.exe" "C:\Program Files\RimeQuad\data\shared" "%APPDATA%\RimeQuad" nihao 1 luna_pinyin_tw
+"C:\Program Files\LuminaKey\rime_console.exe" "C:\Program Files\LuminaKey\data\shared" "%APPDATA%\LuminaKey" nihao 1 luna_pinyin_tw
 
 :: 2. 註冊層。TSF 列舉得到我們嗎
-"C:\Program Files\RimeQuad\rime_ime_setup.exe" check
+"C:\Program Files\LuminaKey\rime_ime_setup.exe" check
 
 :: 3. 瘦 DLL 在宿主進程裡發生了什麼
-notepad "%LOCALAPPDATA%\RimeQuad\diagnostics\tsf.log"
+notepad "%LOCALAPPDATA%\LuminaKey\diagnostics\tsf.log"
 ```
 
 ### 除錯記錄
 
 | | |
 |---|---|
-| 位置 | `%LOCALAPPDATA%\RimeQuad\diagnostics\tsf.log` |
+| 位置 | `%LOCALAPPDATA%\LuminaKey\diagnostics\tsf.log` |
 | 關掉 | 環境變數 `RIME_TSF_TRACE=0` |
 | 換位置 | `RIME_TSF_TRACE=<完整路徑>`(CI 用這條) |
 
@@ -203,8 +203,12 @@ notepad "%LOCALAPPDATA%\RimeQuad\diagnostics\tsf.log"
 ## 安裝
 
 ```
-RimeQuad-Setup-x64.exe     下載、雙擊、下一步、裝好。
+<安裝程式>.exe     下載、雙擊、下一步、裝好。
 ```
+
+> 檔名由 `scripts/lib/product.env` 的 `CI_ARTIFACT_WINDOWS_SETUP` 決定 ——
+> 那也是 CI 的 artifact 名與發布流程要抓的名字。這裡刻意不抄一份:
+> 抄了就會變成三個版本裡最沒有人記得更新的那一個。
 
 雙擊就會跳 UAC 提權對話框(`PrivilegesRequired=admin` 寫在安裝程式自己的
 manifest 裡),不需要右鍵「以系統管理員身分執行」。裝完之後按
@@ -212,11 +216,51 @@ manifest 裡),不需要右鍵「以系統管理員身分執行」。裝完之後
 
 | 東西 | 位置 |
 |---|---|
-| 程式與唯讀資料 | `C:\Program Files\RimeQuad`(位置固定,安裝時不讓選) |
-| **使用者詞典、設定** | **`%APPDATA%\RimeQuad`** |
+| 程式與唯讀資料 | `C:\Program Files\LuminaKey`(位置固定,安裝時不讓選) |
+| **使用者詞典、設定** | **`%APPDATA%\LuminaKey`** |
 
 解除安裝走「新增或移除程式」,它會停掉服務、反註冊、刪掉程式,
-**預設不刪 `%APPDATA%\RimeQuad`** —— 那是使用者的資料。
+**預設不刪 `%APPDATA%\LuminaKey`** —— 那是使用者的資料。
+
+### ⚠ 從舊版升級:必須先解除安裝舊版(舊名 RimeQuad)
+
+**這一版與改名前那一版(舊名 RimeQuad)在 Windows 眼裡是兩個不同的輸入法。**
+不是「換了個名字」,
+是換了身分:
+
+| 換掉的東西 | 在哪裡 | 後果 |
+|---|---|---|
+| `AppId` | 安裝程式 | 「新增或移除程式」裡會**同時出現兩筆** |
+| `CLSID_RimeTextService` | COM 類別 | 新版不會取代舊版的 COM 註冊 |
+| 三個語言設定檔 GUID | 語言列 | 語言列上會**同時出現兩個**輸入法 |
+
+為什麼非換不可:COM 的類別識別碼是這個輸入法在系統上的身分。沿用舊值而
+只換顯示名的話,兩個 AppId 不同的安裝會共用同一個 CLSID —— 誰先解除安裝,
+誰就把另一個也一起反註冊掉了。理由的全文在 `windows/tsf/guids.h` 檔頭。
+
+**正確的升級步驟:**
+
+1. **先用舊版解除安裝。**「設定 → 應用程式」裡找舊名那一筆(`RIME 四端輸入法`),移除它。
+   舊版的解除安裝程式認得自己的註冊,會把它清乾淨;新版不會,也**不應該** ——
+   去刪另一個產品留下的登錄檔是在猜別人的東西。
+2. **重新開機。** 解除安裝的最後一個對話框會要求這件事,照做。
+   瘦 DLL 還被正在執行的程式(檔案總管、瀏覽器、Office…)握著,
+   要開機才刪得掉。**登出再登入不夠** —— 那份「開機時刪除」的佇列
+   只有在開機時才會被處理。
+3. **再安裝新版。**
+
+**跳過第 1 步會怎樣:** 兩個輸入法會同時存在。它們各自能用,但語言列與
+`Win + 空白鍵` 的清單上會有兩項名字不同的中文輸入法,而舊的那一項
+指著一個已經沒有人維護的 DLL。要收拾只能回頭做第 1 步。
+
+**你的詞典與設定:** 第 1 步預設**不會**刪(解除安裝時會明著問一次,
+預設「否」)。但資料夾名也跟著改了 —— 舊版的資料在舊名那個資料夾(`%APPDATA%\RimeQuad`),
+新版讀的是 `%APPDATA%\LuminaKey`。想把學過的詞帶過去的話,在裝新版**之前**
+把舊資料夾裡的檔案複製過去;不想帶的話,舊資料夾可以直接刪掉。
+
+> 現在使用者數接近零,所以改名選在現在。這是**唯一**一次會需要這個步驟的改名 ——
+> 之後的版本升級走正常的「裝上去覆蓋」那條路。
+
 
 ### 解除安裝最後那個「要不要重新啟動」
 
@@ -360,7 +404,7 @@ manifest 裡),不需要右鍵「以系統管理員身分執行」。裝完之後
 
 ### 打包工具:Inno Setup(不是 WiX)
 
-完整理由在 `windows/installer/rimequad.iss` 檔頭。摘要:需求是**一個 .exe**,
+完整理由在 `windows/installer/luminakey.iss` 檔頭。摘要:需求是**一個 .exe**,
 而 WiX 的原生產物是 .msi,要變成單一 .exe 得再套一層 Burn bootstrapper;
 解除安裝要跑真的邏輯(停服務、反註冊、保留詞典),Inno 的 Pascal script
 直接做得到,MSI 要另外編一個 custom action DLL;而且 runner 內建 Inno。
@@ -370,9 +414,9 @@ MSI 唯一贏的是網域 GPO 派送,那不是這一輪的目標。
 
 | langid | | 描述字串 |
 |---|---|---|
-| `0x0404` | zh-Hant-TW | RIME 四端輸入法 |
-| `0x0804` | zh-Hans-CN | RIME 四端输入法 |
-| `0x0C04` | zh-Hant-HK | RIME 四端輸入法 |
+| `0x0404` | zh-Hant-TW | LuminaKey 輸入法 |
+| `0x0804` | zh-Hans-CN | LuminaKey 输入法 |
+| `0x0C04` | zh-Hant-HK | LuminaKey 輸入法 |
 
 第一版只註冊了 `0x0404`,結果**系統語言是簡體中文的使用者在自己的語言底下
 找不到這個輸入法** —— 它掛在「繁体中文(中国台湾)」那一欄。使用者實際回報過。
@@ -624,7 +668,7 @@ IMM32 的 IME 是 `0xExxx<langid>`,兩者對 `ToUnicodeEx` 都是「什麼都不
 
 ## IPC
 
-具名管道 `\\.\pipe\rime-quad.<使用者 SID>.v1`,自帶長度分幀,
+具名管道 `\\.\pipe\luminakey.<使用者 SID>.v1`,自帶長度分幀,
 payload 是明確序列化的訊息(不是 memcpy 結構體 —— DLL 與服務可能來自不同建置)。
 
 **管道上流的是使用者的每一次按鍵**,所以:
@@ -691,7 +735,7 @@ DLL 回報 `pfEaten = TRUE` 卻拿不到結果 —— 那顆鍵既沒進文件�
 
 ## 設定介面
 
-`%APPDATA%\RimeQuad\rimequad.settings`(純文字,`key = value`,使用者改得動)。
+`%APPDATA%\LuminaKey\luminakey.settings`(純文字,`key = value`,使用者改得動)。
 
 三個入口。**沒有入口的設定介面等於沒做**,所以每一個都要能單獨成立:
 
@@ -704,7 +748,7 @@ DLL 回報 `pfEaten = TRUE` 卻拿不到結果 —— 那顆鍵既沒進文件�
 語言列那顆按鈕按下去有**三條路**,少任何一條都會有一整類情境按了沒反應:
 
 1. 管道已連上且協商到協議 v2 → 送 `Op::kOpenSettings`。
-2. 否則 → 開具名事件 `Local\RimeQuadSettings.<SID>` 並 `SetEvent`。
+2. 否則 → 開具名事件 `Local\LuminaKeySettings.<SID>` 並 `SetEvent`。
 3. 服務沒在跑 → `CreateProcess(rime_service.exe --settings)`。
 
 理由:UWP／市集 App 的宿主跑在 AppContainer 裡,**開不了** `Local\` 底下
@@ -961,15 +1005,15 @@ true;寫成「等於 true 才算開」的話,全新安裝的機器上自動挑�
 |---|---|
 | 靜默安裝 | `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`,結束碼必須 0 |
 | 檔案 | 三個二進位 + `data\shared` 的四個 schema、三本詞庫、`essay.txt`、`.ocd2`、`data\user\default.custom.yaml` |
-| COM | `HKLM\SOFTWARE\Classes\CLSID\{E94B9FC2-…}` 存在 |
-| COM | `…\InprocServer32` 預設值 **等於**`C:\Program Files\RimeQuad\rime_tsf.dll`(精確比對,抓「登錄檔指著建置樹裡那份」) |
+| COM | `HKLM\SOFTWARE\Classes\CLSID\{7D02992E-…}` 存在 |
+| COM | `…\InprocServer32` 預設值 **等於**`C:\Program Files\LuminaKey\rime_tsf.dll`(精確比對,抓「登錄檔指著建置樹裡那份」) |
 | COM | `…\InprocServer32` 的 `ThreadingModel` = `Apartment` |
 | TSF | `HKLM\SOFTWARE\Microsoft\CTF\TIP\{CLSID}` 存在 |
-| TSF | `…\LanguageProfile\0x00000404\{07FB3057-…}`、`\0x00000804\{57BE9E4D-…}`、`\0x00000C04\{23BBABB2-…}` **三個都在**(不是「至少一個」) |
+| TSF | `…\LanguageProfile\0x00000404\{4F78BA11-…}`、`\0x00000804\{84420A61-…}`、`\0x00000C04\{C6B736EB-…}` **三個都在**(不是「至少一個」) |
 | TSF | `…\Category\Category` 底下正好 6 個類別,底下正好 1 + 5×3 筆 |
 | **系統接受了嗎** | `ITfInputProcessorProfiles::EnumLanguageProfiles(langid)` 對**每一個** langid 都列舉得到我們;`ITfInputProcessorProfileMgr::EnumProfiles` 也列得到 |
 | 使用者側 | `HKCU\…\CTF\TIP\{CLSID}\LanguageProfile\…` 有東西(`enable-user` 真的生效) |
-| 新增或移除程式 | `…\Uninstall\{7A033CF7-…}_is1` 有 `DisplayName` / `DisplayVersion` / `UninstallString` |
+| 新增或移除程式 | `…\Uninstall\{4D16C4D6-…}_is1` 有 `DisplayName` / `DisplayVersion` / `UninstallString` |
 | 資料目錄 | `rime_service.exe --print-dirs`:shared 在 Program Files 底下,user **不在** |
 | **真的打得出字** | 用**安裝好的**服務與**安裝好的**詞庫(不給 `--shared` / `--user`),經由真的具名管道 `nihao → 你好` |
 | **沒有寫進 Program Files** | 跑完之後安裝目錄的檔案清單與時間戳與跑之前逐字元相同 |
@@ -1218,14 +1262,14 @@ windows/verify_tsf.sh --bin third_party/build/windows-x64/ime/bin
                                                   # 真的經過 TSF(需提權;會動登錄檔)
 windows/check_binaries.sh third_party/build/windows-x64/ime/bin
 third_party/build/windows-x64/ime/bin/rime_tests.exe
-windows/make_installer.sh                         # → installer/RimeQuad-Setup-x64.exe
+windows/make_installer.sh                         # → installer/<CI_ARTIFACT_WINDOWS_SETUP>.exe
 ```
 
 安裝與驗證(需要系統管理員權限):
 
 ```bash
 windows/verify_installer.sh \
-  --setup third_party/build/windows-x64/installer/RimeQuad-Setup-x64.exe \
+  --setup third_party/build/windows-x64/installer/<安裝程式>.exe \
   --probe third_party/build/windows-x64/ime/bin/rime_probe.exe \
   --tool  third_party/build/windows-x64/ime/bin/rime_ime_setup.exe \
   --host  third_party/build/windows-x64/ime/bin/rime_tsf_host.exe
@@ -1237,7 +1281,7 @@ windows/verify_installer.sh \
 **刪掉 `%APPDATA%` 底下的使用者資料目錄**(那正是它要驗的事)。
 不要在自己日常用的機器上跑 —— 你自己的詞典會被刪掉。
 
-⚠ 它會**真的**裝到 `C:\Program Files\RimeQuad`、註冊、然後解除安裝。
+⚠ 它會**真的**裝到 `C:\Program Files\LuminaKey`、註冊、然後解除安裝。
 不要在自己日常用的機器上跑。
 
 手動操作(開發用;一般使用者走安裝程式,不碰這些):
@@ -1275,7 +1319,7 @@ rime_service.exe --print-dirs      # 印出解析結果就結束,不啟動引擎
 | | 預設 | 覆寫 |
 |---|---|---|
 | shared | `<執行檔目錄>\data\shared` | `--shared` / `RIME_SHARED_DATA_DIR` |
-| user | `%APPDATA%\RimeQuad` | `--user` / `RIME_USER_DATA_DIR` |
+| user | `%APPDATA%\LuminaKey` | `--user` / `RIME_USER_DATA_DIR` |
 | 範本 | `<執行檔目錄>\data\user` | `--seed` |
 
 ---

@@ -30,7 +30,7 @@
 // ── 按下去之後真的會發生什麼(三條路,不是一條)────────────────
 //
 //   1. 管道已經連上且協商到 v2 → 送 Op::kOpenSettings。
-//   2. 否則 → 開具名事件 `Local\RimeQuadSettings.<SID>` 並 SetEvent。
+//   2. 否則 → 開具名事件 `Local\LuminaKeySettings.<SID>` 並 SetEvent。
 //   3. 服務根本沒在跑 → CreateProcess(rime_service.exe --settings)。
 //
 // 為什麼要三條:UWP／市集 App 的宿主跑在 AppContainer 裡,開不了

@@ -498,7 +498,7 @@ void SectionEngine(Report& r, const std::wstring& dir) {
   //
   // 這一格 CI **永遠看不到** —— runner 的帳號叫 runneradmin。而中文使用者的
   // Windows 帳號名稱是中文是很常見的事,於是 %APPDATA% 會長成
-  // C:\Users\王小明\AppData\Roaming\RimeQuad。
+  // C:\Users\王小明\AppData\Roaming\LuminaKey。
   //
   // 我們自己這一側是乾淨的(全程寬字元 + UTF-8),但路徑要交給 librime,
   // 而它在 Windows 上怎麼解讀那串位元組是它的事。萬一它當成系統 ANSI 代碼頁,
@@ -520,7 +520,7 @@ void SectionEngine(Report& r, const std::wstring& dir) {
   wchar_t tmp_dir[MAX_PATH] = {0};
   ::GetTempPathW(MAX_PATH, tmp_dir);
   const std::wstring out_path =
-      std::wstring(tmp_dir) + L"rimequad-doctor-engine.txt";
+      std::wstring(tmp_dir) + L"luminakey-doctor-engine.txt";
 
   SECURITY_ATTRIBUTES sa{};
   sa.nLength = sizeof(sa);
@@ -726,7 +726,7 @@ void SectionTrace(Report& r) {
 void WriteAndOpenReport(const std::string& text) {
   wchar_t tmp_dir[MAX_PATH] = {0};
   ::GetTempPathW(MAX_PATH, tmp_dir);
-  const std::wstring path = std::wstring(tmp_dir) + L"rimequad-doctor.txt";
+  const std::wstring path = std::wstring(tmp_dir) + L"luminakey-doctor.txt";
   HANDLE h = ::CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (h == INVALID_HANDLE_VALUE) return;

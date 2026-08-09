@@ -7,7 +7,7 @@
 namespace rimewin {
 namespace {
 
-constexpr const char* kSettingsFile = "rimequad.settings";
+constexpr const char* kSettingsFile = "luminakey.settings";
 constexpr const char* kDefaultCustom = "default.custom.yaml";
 constexpr const char* kNetLogFile = "connections.tsv";
 

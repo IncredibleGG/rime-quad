@@ -56,7 +56,9 @@ namespace rimewin {
 //   1. 環境變數 RIME_TSF_TRACE
 //        "0" / "off" / "OFF"  → 關掉
 //        其餘                 → 當成檔案的完整路徑(CI 用這條)
-//   2. %LOCALAPPDATA%\RimeQuad\diagnostics\tsf.log
+//   2. %LOCALAPPDATA%\<資料夾名>\diagnostics\tsf.log
+//      <資料夾名> 向 winshared 的 RimeUserDataFolderName() 要 ——
+//      那是**唯一**決定它的地方(見那支函式的註解)。
 //   3. 兩者都拿不到 → 關掉
 bool TraceFilePath(wchar_t* out, size_t out_len);
 

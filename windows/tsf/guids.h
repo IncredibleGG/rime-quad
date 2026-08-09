@@ -2,21 +2,44 @@
 //
 // 這些值一旦發布出去就不能改:改了等於變成另一個輸入法,使用者原本
 // 選好的那一個會從語言列上消失,而且舊的那筆註冊沒有東西去清掉它。
+//
+// ══ 2026-08-09:改名 LuminaKey 時**刻意**換掉了四個 ═══════════════
+//
+//   CLSID_RimeTextService、GUID_RimeProfile、…Hans、…HK 全部是新值。
+//
+//   為什麼非換不可:COM 的類別識別碼與語言設定檔 GUID 是這個輸入法在
+//   系統上的**身分**。沿用舊值而只換顯示名,使用者機器上會出現一個
+//   「名字變了但還是同一筆註冊」的東西 —— 而舊版的解除安裝程式仍然
+//   認得它、會去反註冊它,新版卻是從另一個 AppId 裝上去的。兩邊互相
+//   看不見對方,卻共用同一個 CLSID,誰先解除安裝誰就把對方也拆了。
+//
+//   換掉的後果(**必須向使用者說清楚**):
+//     · 新版與舊版在系統眼裡是**兩個不同的輸入法**,可以同時存在;
+//     · 「新增或移除程式」裡會同時出現兩筆(AppId 也換了);
+//     · 舊版留下的 COM 註冊不會被新版清掉 —— 我們**不去刪別人的登錄檔**,
+//       那是在猜另一個產品的東西。
+//
+//   所以正確的升級步驟是:
+//     1. 先用**舊版**的解除安裝程式移除舊版(它認得自己的註冊);
+//     2. 依提示**重新開機**(瘦 DLL 被宿主進程握著,要開機才刪得掉);
+//     3. 再安裝新版。
+//   使用者資料(%APPDATA% 底下的詞典與設定)在步驟 1 預設不會被刪,
+//   但資料夾名也跟著改名了 —— 見 windows/README.md 的升級章節。
 #ifndef RIMEWIN_TSF_GUIDS_H_
 #define RIMEWIN_TSF_GUIDS_H_
 
 #include <windows.h>
 
 // 文字服務的 COM class。
-// {E94B9FC2-6730-45AD-A462-B7D02995D95B}
+// {7D02992E-B213-4E06-B62E-CCC6338DA98A}
 extern const CLSID CLSID_RimeTextService;
 
 // 輸入法設定檔(語言列上的那一項)。**每一個語言各一個。**
-// {07FB3057-4192-4868-AB6E-E4EE5597C0FE}  zh-Hant-TW(0x0404)
+// {4F78BA11-E997-4BD7-8B97-F4553ABC0B18}  zh-Hant-TW(0x0404)
 extern const GUID GUID_RimeProfile;
-// {57BE9E4D-3F4E-4B4F-959B-E85E6095F2CA}  zh-Hans-CN(0x0804)
+// {84420A61-0A08-4A68-9D60-292EFD31C7BC}  zh-Hans-CN(0x0804)
 extern const GUID GUID_RimeProfileHans;
-// {23BBABB2-5C8A-4751-85F1-B360C70A5637}  zh-Hant-HK(0x0C04)
+// {C6B736EB-38E3-4041-B59B-ECF91AD8E28A}  zh-Hant-HK(0x0C04)
 extern const GUID GUID_RimeProfileHK;
 
 // 預留:顯示屬性(組字底線)與保留鍵。本輪未實作,但先把值定下來,
@@ -31,7 +54,7 @@ extern const GUID GUID_RimePreservedKeyToggle;
 extern const GUID GUID_RimeLangBarButton;
 
 // COM 類別本身的描述(HKCR\CLSID\{…} 的預設值)。使用者看不到這一個。
-#define RIME_TEXT_SERVICE_DESC L"RIME 四端輸入法"
+#define RIME_TEXT_SERVICE_DESC L"LuminaKey 輸入法"
 
 // ── 註冊在哪些語言底下 ────────────────────────────────────────────
 //
@@ -60,6 +83,8 @@ extern const GUID GUID_RimeLangBarButton;
 //
 // ⚠ GUID 與這張表一旦發布出去就不能改。改了等於變成另一個輸入法,
 //   使用者原本選好的那一個會從清單上消失,而且舊的那筆註冊沒有東西去清掉它。
+//   (2026-08-09 的改名是**明著**做了這件事一次,見本檔檔頭;
+//    從現在起這條規矩重新生效。)
 struct RimeProfileDef {
   LANGID langid;
   const GUID* guid;

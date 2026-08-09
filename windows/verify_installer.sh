@@ -28,11 +28,13 @@
 #   · 「每一顆鍵是不是都真的做了它宣稱的事」
 #
 # 用法(Git Bash,需要系統管理員權限):
-#   windows/verify_installer.sh --setup <RimeQuad-Setup-x64.exe> \
+#   windows/verify_installer.sh --setup <安裝程式.exe> \
 #                               --probe <rime_probe.exe> \
 #                               --tool  <rime_ime_setup.exe>
 #
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
@@ -58,16 +60,26 @@ done
 command -v cygpath >/dev/null 2>&1 || die "必須在 Git Bash / MSYS2 下執行"
 w() { cygpath -w "$1"; }
 
+# 產品識別:值的唯一來源是 scripts/lib/product.env。
+#
+# ⚠ 這一段的每一個名字都與**使用者磁碟上真的存在的東西**綁著:安裝目錄、
+#   %APPDATA% 底下的資料夾、設定檔名、安裝記錄裡的字首。腳本自己抄一份的話,
+#   改名之後這支腳本會去檢查一個不存在的資料夾 —— 而它的每一項檢查都是
+#   「這個東西應該在」或「這個東西應該不在」,後者在資料夾根本不存在時
+#   **全部會通過**。也就是說:漏改的症狀是一片綠燈,而不是紅字。
+# shellcheck disable=SC1091
+. "${SCRIPT_DIR}/product_win.sh"
+
 # 安裝目錄不寫死 C:\。Inno 的 {autopf} 在 64 位元安裝模式下展開成
 # %ProgramW6432%(而不是 (x86) 那一份),所以就照那個算 ——
 # runner 的系統碟哪天不是 C: 的話,寫死的版本會以「檔案不存在」的形式失敗,
 # 而那看起來像安裝程式壞了。
 PF_W="${ProgramW6432:-${PROGRAMFILES:-C:\\Program Files}}"
-INSTALL_DIR_W="${PF_W}\\RimeQuad"
-INSTALL_DIR="$(cygpath -u "${PF_W}")/RimeQuad"
+INSTALL_DIR_W="${PF_W}\\${RS_WIN_INSTALL_FOLDER}"
+INSTALL_DIR="$(cygpath -u "${PF_W}")/${RS_WIN_INSTALL_FOLDER}"
 USER_DIR="${APPDATA:-}"
 [ -n "${USER_DIR}" ] || die "APPDATA 是空的"
-USER_DIR="$(cygpath -u "${USER_DIR}")/RimeQuad"
+USER_DIR="$(cygpath -u "${USER_DIR}")/${RS_WIN_DATA_FOLDER}"
 WORK="$(dirname "${SETUP}")/verify"
 mkdir -p "${WORK}"
 
@@ -137,18 +149,26 @@ HKLM_CTF_CAT="HKLM\\$(get_path HKLM_CTF_CATEGORY)"
 CATEGORY_COUNT="$(get_path CATEGORY_COUNT)"
 CATEGORY_ITEMS="$(get_path CATEGORY_ITEMS)"
 PROFILE_COUNT="$(get_path PROFILE_COUNT)"
-# 一行一個:PROFILE=0x0404={07FB3057-…}
+# 一行一個:PROFILE=0x0404={4F78BA11-…}
 PROFILES="$(grep '^PROFILE=' "${WORK}/paths.clean" | sed 's/^PROFILE=//')"
 
 # 交叉比對:這幾個值一旦發布出去就不能改。
-EXPECT_CLSID='{E94B9FC2-6730-45AD-A462-B7D02995D95B}'
+#
+# ⚠ 這一份是**刻意寫死的第二意見**,不從 tsf/guids.cc 讀進來 ——
+#   讀進來就變成拿同一個來源跟自己比,而那種比對永遠會過。
+#   產品那一側的值由 `rime_ime_setup.exe paths` 報出來(上面的 $CLSID)。
+#
+# ⚠ 2026-08-09:產品定名時這五個 GUID(CLSID、三份語言設定檔、AppId)
+#   **全部換過一次**,理由與後果見 tsf/guids.h 檔頭與 windows/README.md
+#   的升級章節。換完之後「不能改」重新生效。
+EXPECT_CLSID='{7D02992E-B213-4E06-B62E-CCC6338DA98A}'
 # 語言 → profile GUID。**這張表就是「輸入法出現在哪些語言底下」。**
 # 使用者回報過:只註冊 0x0404 的話,系統語言是簡體中文的人在自己的語言
 # 底下找不到這個輸入法(它掛在「繁体中文(中国台湾)」那一欄)。
 EXPECT_PROFILES="$(printf '%s\n' \
-  '0x0404={07FB3057-4192-4868-AB6E-E4EE5597C0FE}' \
-  '0x0804={57BE9E4D-3F4E-4B4F-959B-E85E6095F2CA}' \
-  '0x0C04={23BBABB2-5C8A-4751-85F1-B360C70A5637}')"
+  '0x0404={4F78BA11-E997-4BD7-8B97-F4553ABC0B18}' \
+  '0x0804={84420A61-0A08-4A68-9D60-292EFD31C7BC}' \
+  '0x0C04={C6B736EB-38E3-4041-B59B-ECF91AD8E28A}')"
 
 [ "${CLSID}" = "${EXPECT_CLSID}" ] \
   || die "CLSID 變了:${CLSID} != ${EXPECT_CLSID}
@@ -229,7 +249,7 @@ ok "安裝程式以 0 結束"
 # 在報表上長得一模一樣,而要分辨得再等一輪 CI。
 if [ -f "${WORK}/install.log" ]; then
   echo "  --- 安裝程式的記錄 ---"
-  tr -d '\r' < "${WORK}/install.log" | grep -a 'RimeQuad:' | sed 's/^/    /' || true
+  tr -d '\r' < "${WORK}/install.log" | grep -a "${RS_WIN_LOG_TAG}" | sed 's/^/    /' || true
 
   # ⚠⚠ 這一條是本輪最重要的斷言之一。
   #
@@ -251,7 +271,7 @@ if [ -f "${WORK}/install.log" ]; then
 
   # enable-user 有沒有真的被執行過。沒有這一條的話,「那一步被跳過」
   # 與「跑了但沒生效」在報表上長得一模一樣。
-  if tr -d '\r' < "${WORK}/install.log" | grep -aq 'RimeQuad: enable-user'; then
+  if tr -d '\r' < "${WORK}/install.log" | grep -aq "${RS_WIN_LOG_TAG} enable-user"; then
     ok "安裝程式執行過 enable-user"
   else
     note_fail "安裝記錄裡沒有 enable-user —— 那一步根本沒被執行"
@@ -314,7 +334,7 @@ profile_langkey() { printf '0x%08x' "$((16#${1#0x}))"; }
 while IFS= read -r line; do
   [ -z "${line}" ] && continue
   lang="${line%%=*}"          # 0x0404
-  guid="${line#*=}"           # {07FB3057-…}
+  guid="${line#*=}"           # {4F78BA11-…}
   key="${HKLM_CTF}\\LanguageProfile\\$(profile_langkey "${lang}")\\${guid}"
   if reg_key_exists "${key}"; then
     ok "${key}"
@@ -350,7 +370,7 @@ n_cat="$(reg query "${HKLM_CTF_CAT}" //reg:64 2>/dev/null | tr -d '\r' \
 #
 # Inno 的 ARP 鍵名是 <AppId>_is1。AppId 改了的話舊版會永遠留在
 # 「新增或移除程式」裡而且解除安裝不掉,所以這裡也寫死一份做交叉比對。
-ARP='HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{7A033CF7-CB91-408E-A653-EF639F4173DB}_is1'
+ARP='HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{4D16C4D6-444A-40A7-953D-57BF873E8689}_is1'
 reg_key_exists "${ARP}" && ok "新增或移除程式:有這一筆" \
   || note_fail "新增或移除程式裡找不到 ${ARP}"
 UNINST="$(reg_value "${ARP}" UninstallString | tr -d '"')"
@@ -429,11 +449,11 @@ log "5b. 輸入模式 → 方案 / 簡繁"
 choice_out() { "${INSTALL_DIR}/rime_service.exe" --print-choice "$1" 2>&1 | tr -d '\r'; }
 field_of() { echo "$1" | awk -F= -v k="$2" '$1==k { sub("^" k "=", ""); print; exit }'; }
 
-# ⚠ --print-choice 會讀 %APPDATA%\RimeQuad\rimequad.settings,而設定裡釘的
+# ⚠ --print-choice 會讀 ${USER_DIR}/${RS_WIN_SETTINGS_FILE},而設定裡釘的
 #   方案優先於輸入模式。runner 上那個檔案不存在,所以讀到的就是「沒釘」——
 #   但如果哪天有人在這支腳本前面寫了設定,這段斷言會安靜地變成在測別的東西。
-if [ -f "${USER_DIR}/rimequad.settings" ]; then
-  note_fail "runner 上竟然已經有 rimequad.settings —— 下面的斷言測到的
+if [ -f "${USER_DIR}/${RS_WIN_SETTINGS_FILE}" ]; then
+  note_fail "runner 上竟然已經有 ${RS_WIN_SETTINGS_FILE} —— 下面的斷言測到的
      會是那份設定的覆寫,而不是輸入模式的推導。"
 fi
 
@@ -1034,7 +1054,7 @@ reg_key_exists "${ARP}" \
 #   2. 有沒有被排進「開機時刪除」的佇列(→ 為什麼登出不夠)
 #   3. **不重開機就重裝的話,安裝程式擋不擋**(→ 「不重啟會怎樣」的具體後果)
 #
-# 量到的結果直接寫進 installer/rimequad.iss 的 UninstalledAndNeedsRestart。
+# 量到的結果直接寫進 .iss 的 UninstalledAndNeedsRestart。
 if [ -n "${HOST}" ]; then
   log "11. 有程式握著 DLL 時解除安裝(重現使用者的處境)"
   set +e

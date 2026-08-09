@@ -18,7 +18,7 @@ namespace {
 
 // 語言列與系統匣上顯示的字。刻意短:那一格只有幾個字寬。
 constexpr wchar_t kButtonText[] = L"設定";
-constexpr wchar_t kTooltip[] = L"RIME 四端輸入法設定";
+constexpr wchar_t kTooltip[] = L"LuminaKey 輸入法設定";
 
 // 這個 cookie 只要不是 TF_INVALID_COOKIE 就好。用一個固定值:
 // 我們只接受一個 sink,而 TSF 也只會掛一個。

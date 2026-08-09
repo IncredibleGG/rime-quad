@@ -1,4 +1,4 @@
-; windows/installer/rimequad.iss — RimeQuad-Setup-x64.exe
+; windows/installer/luminakey.iss — 安裝程式腳本(產物名見 SetupBaseName)
 ;
 ; ══ 為什麼是 Inno Setup 而不是 WiX ══════════════════════════════════
 ;
@@ -44,20 +44,57 @@
   #define ArchDirective "x64compatible"
 #endif
 
+; ── 產品識別:**不在這個檔案裡** ───────────────────────────────────
+;
+; 產品名、中文顯示名、識別碼字根、安裝程式檔名的單一來源是
+; scripts/lib/product.env。windows/make_installer.sh 把它讀出來,用 ISCC
+; 的 /D 傳進來。這裡刻意**沒有預設值**:少傳一個就編不過。
+;
+; 為什麼不寫 `#ifndef X / #define X "<某個寫死的名字>"` 那種退路 —— 那正好是改名
+; 會漏掉的形狀。有退路的話,傳參那一條哪天斷了(改了旗標名、換了呼叫者),
+; 安裝程式照樣編得出來,只是悄悄地用回一個寫死的舊名字,而每一關都是綠的。
+; 沒有退路的話它會在四分鐘的 lint 那一步就死,訊息還指得出是哪一個。
+#ifndef ProductName
+  #error 少了 ProductName。這份 .iss 只能由 windows/make_installer.sh 編(它從 scripts/lib/product.env 傳值進來)。
+#endif
+#ifndef ProductNameZh
+  #error 少了 ProductNameZh(來源同上)。
+#endif
+#ifndef ProductIdRoot
+  #error 少了 ProductIdRoot(來源同上)。
+#endif
+#ifndef SetupBaseName
+  #error 少了 SetupBaseName(來源同上,對應 product.env 的 CI_ARTIFACT_WINDOWS_SETUP)。
+#endif
+
 [Setup]
 ; ⚠ AppId 一旦發布出去就不能改。它決定「新增或移除程式」裡那一筆的登錄檔
 ;   鍵名,也決定升級時 Inno 認不認得舊版。改了的話,舊版會永遠留在
 ;   「新增或移除程式」裡,而且解除安裝不掉。
-AppId={{7A033CF7-CB91-408E-A653-EF639F4173DB}
-AppName=RIME 四端輸入法
-AppVerName=RIME 四端輸入法 {#AppVersion}
+;
+; ══ 2026-08-09:產品定名時**刻意**換了一個新的 ═══════════════════
+;   舊值是 {7A033CF7-CB91-408E-A653-EF639F4173DB}。
+;
+;   為什麼非換不可:AppId 與 tsf/guids.h 的 CLSID 必須一起換或一起不換。
+;   CLSID 換了(理由見那個檔的檔頭)而 AppId 沒換的話,新版的安裝程式會
+;   被 Inno 當成「同一個產品的升級」,於是它會去跑**舊版**留下的解除安裝
+;   邏輯 —— 而那份邏輯反註冊的是舊 CLSID,新的那一份沒有人管。
+;
+;   換掉的後果,以及使用者的正確升級步驟,寫在 windows/README.md 的
+;   升級章節與 tsf/guids.h 檔頭。摘要:先用舊版解除安裝並重新開機,再裝新版。
+;   **不要**讓新版自己去刪舊版的登錄檔 —— 那是在猜另一個產品的東西。
+AppId={{4D16C4D6-444A-40A7-953D-57BF873E8689}
+AppName={#ProductNameZh}
+AppVerName={#ProductNameZh} {#AppVersion}
 AppVersion={#AppVersion}
 VersionInfoVersion={#VersionInfo}
-AppPublisher=RimeQuad
+AppPublisher={#ProductName}
+; ⚠ 這一行的 rime-quad 是 **GitHub repo 名**,不是產品名,刻意不改 ——
+;   見 scripts/lib/product.env 的 GITHUB_REPO(改它會牽動所有推送腳本與 CI)。
 AppPublisherURL=https://github.com/IncredibleGG/rime-quad
-DefaultDirName={autopf}\RimeQuad
-DefaultGroupName=RIME 四端輸入法
-OutputBaseFilename=RimeQuad-Setup-x64
+DefaultDirName={autopf}\{#ProductName}
+DefaultGroupName={#ProductNameZh}
+OutputBaseFilename={#SetupBaseName}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
@@ -83,14 +120,14 @@ ArchitecturesInstallIn64BitMode={#ArchDirective}
 MinVersion=10.0
 
 ; ── 解除安裝 ──────────────────────────────────────────────────────
-UninstallDisplayName=RIME 四端輸入法
+UninstallDisplayName={#ProductNameZh}
 UninstallDisplayIcon={app}\rime_service.exe
 
 ; 不去關使用者正在用的程式。TSF 的 DLL 會被載入到每一個接受文字輸入的
 ; 進程裡,讓 Inno 的重新啟動管理員去關它們等於「安裝輸入法會關掉你的 Word」。
 ; 檔案被佔用的情況由下面 [Files] 段的 restartreplace 承接。
 CloseApplications=no
-SetupMutex=RimeQuadSetupMutex
+SetupMutex={#ProductName}SetupMutex
 
 ; 安裝完成頁不推銷任何東西。程式集資料夾裡只放兩個捷徑(見 [Icons]),
 ; 所以不必讓使用者選資料夾名字。
@@ -132,7 +169,7 @@ Source: "{#PayloadDir}\rime_console.exe";    DestDir: "{app}"; Flags: ignorevers
 ; ⚠ 執行期資料。**少了這一段,前面每一步都會成功,服務起得來、輸入法
 ;   註冊得上,然後一個字都打不出來,而且沒有任何錯誤訊息。**
 ;   data\shared 是方案、詞庫與 opencc 詞典;data\user 是首次執行要補進
-;   %APPDATA%\RimeQuad 的範本(default.custom.yaml 把 schema_list 限縮成
+;   %APPDATA%\{#ProductName} 的範本(default.custom.yaml 把 schema_list 限縮成
 ;   我們真的有詞庫的四個方案)。
 ;   make_installer.sh 在編譯之前會逐項點名檢查這棵樹,缺了就不出安裝程式。
 Source: "{#PayloadDir}\data\*"; DestDir: "{app}\data"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -473,6 +510,12 @@ UninstallPurgeFailed=有部分資料沒有刪掉(可能有檔案正被使用):%n
 
 const
   SetupExeName = 'rime_ime_setup.exe';
+  // 安裝記錄(/LOG)裡我們自己那幾行的字首。
+  // ⚠ 只在這一個地方由 ISPP 展開產品名 —— 原本是十五處各寫一份字面值,
+  //   而 windows/verify_installer.sh 靠這個字首把我們的行從 Inno 自己的
+  //   幾百行裡撈出來。十五份裡漏改一份,撈出來的就會少幾行,
+  //   而「少了幾行」在報表上看起來跟「那一步沒跑」一模一樣。
+  LogTag = '{#ProductName}: ';
 
 // 停掉舊的服務進程。
 //
@@ -547,17 +590,17 @@ begin
   // 而要分辨得再等一輪 CI。
   try
     if ExecAsOriginalUser(Exe, 'enable-user', '', SW_HIDE, ewWaitUntilTerminated, Rc) then
-      Log('RimeQuad: enable-user(登入者)rc=' + IntToStr(Rc))
+      Log(LogTag + 'enable-user(登入者)rc=' + IntToStr(Rc))
     else
-      Log('RimeQuad: enable-user(登入者)**啟動失敗** —— 多半是沒有互動式 shell');
+      Log(LogTag + 'enable-user(登入者)**啟動失敗** —— 多半是沒有互動式 shell');
   except
-    Log('RimeQuad: ExecAsOriginalUser 不可用');
+    Log(LogTag + 'ExecAsOriginalUser 不可用');
   end;
 
   if Exec(Exe, 'enable-user', '', SW_HIDE, ewWaitUntilTerminated, Rc) then
-    Log('RimeQuad: enable-user(目前身分)rc=' + IntToStr(Rc))
+    Log(LogTag + 'enable-user(目前身分)rc=' + IntToStr(Rc))
   else
-    Log('RimeQuad: enable-user(目前身分)啟動失敗');
+    Log(LogTag + 'enable-user(目前身分)啟動失敗');
 
   // ── 最後才自我檢查 ──────────────────────────────────────────────
   //
@@ -602,7 +645,7 @@ begin
   AppDir := ExpandConstant('{app}');
   Exe := AppDir + '\' + SetupExeName;
   if not FileExists(Exe) then begin
-    Log('RimeQuad: 找不到 ' + Exe + ',跳過反註冊');
+    Log(LogTag + '找不到 ' + Exe + ',跳過反註冊');
     Exit;
   end;
 
@@ -615,33 +658,33 @@ begin
   try
     if ExecAsOriginalUser(Exe, 'stop-service --dir "' + AppDir + '"', '',
                           SW_HIDE, ewWaitUntilTerminated, Rc) then
-      Log('RimeQuad: stop-service(登入者)rc=' + IntToStr(Rc))
+      Log(LogTag + 'stop-service(登入者)rc=' + IntToStr(Rc))
     else
-      Log('RimeQuad: stop-service(登入者)啟動失敗');
+      Log(LogTag + 'stop-service(登入者)啟動失敗');
   except
-    Log('RimeQuad: ExecAsOriginalUser 在解除安裝情境下不可用,改走提權那一條');
+    Log(LogTag + 'ExecAsOriginalUser 在解除安裝情境下不可用,改走提權那一條');
   end;
 
   if Exec(Exe, 'stop-service --dir "' + AppDir + '"', '',
           SW_HIDE, ewWaitUntilTerminated, Rc) then
-    Log('RimeQuad: stop-service(提權)rc=' + IntToStr(Rc));
+    Log(LogTag + 'stop-service(提權)rc=' + IntToStr(Rc));
 
   try
     if ExecAsOriginalUser(Exe, 'disable-user', '', SW_HIDE, ewWaitUntilTerminated, Rc) then
-      Log('RimeQuad: disable-user(登入者)rc=' + IntToStr(Rc))
+      Log(LogTag + 'disable-user(登入者)rc=' + IntToStr(Rc))
     else
-      Log('RimeQuad: disable-user(登入者)啟動失敗');
+      Log(LogTag + 'disable-user(登入者)啟動失敗');
   except
-    Log('RimeQuad: disable-user(登入者)無法執行');
+    Log(LogTag + 'disable-user(登入者)無法執行');
   end;
   // 提權那一側的 HKCU 也清一次(unregister 會刪掉整棵 HKCU CTF 子樹)。
   if Exec(Exe, 'disable-user', '', SW_HIDE, ewWaitUntilTerminated, Rc) then
-    Log('RimeQuad: disable-user(提權)rc=' + IntToStr(Rc));
+    Log(LogTag + 'disable-user(提權)rc=' + IntToStr(Rc));
 
   if Exec(Exe, 'unregister', '', SW_HIDE, ewWaitUntilTerminated, Rc) then
-    Log('RimeQuad: unregister rc=' + IntToStr(Rc))
+    Log(LogTag + 'unregister rc=' + IntToStr(Rc))
   else
-    Log('RimeQuad: unregister 啟動失敗 —— 登錄檔會留下殘骸');
+    Log(LogTag + 'unregister 啟動失敗 —— 登錄檔會留下殘骸');
 end;
 
 // ══════════════════════════════════════════════════════════════════
@@ -712,7 +755,7 @@ var
   Lines: TArrayOfString;
 begin
   Result := '';
-  Tmp := ExpandConstant('{tmp}\rimequad-userdir.txt');
+  Tmp := ExpandConstant('{tmp}\{#ProductIdRoot}-userdir.txt');
   // cmd /C 才能做輸出重導向。Exec 本身不會解析 > 。
   try
     if not ExecAsOriginalUser(ExpandConstant('{cmd}'),
@@ -736,7 +779,7 @@ procedure DecidePurge;
 begin
   GPurge := CmdLineParamExists('/PURGEUSERDATA');
   if GPurge then begin
-    Log('RimeQuad: /PURGEUSERDATA —— 明確要求刪除使用者資料');
+    Log(LogTag + '/PURGEUSERDATA —— 明確要求刪除使用者資料');
     Exit;
   end;
   // 靜默解除安裝時**不問也不刪**。沒有旗標就是不刪。
@@ -747,7 +790,7 @@ begin
   GPurge := SuppressibleMsgBox(
               FmtMessage(CustomMessage('UninstallAskPurge'), [GUserDataDir]),
               mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES;
-  if GPurge then Log('RimeQuad: 使用者選擇「連資料一起刪」');
+  if GPurge then Log(LogTag + '使用者選擇「連資料一起刪」');
 end;
 
 procedure DoPurge(Exe: String);
@@ -756,7 +799,7 @@ var
 begin
   GPurgeOk := False;
   if GUserDataDir = '' then begin
-    Log('RimeQuad: 算不出使用者資料目錄,不刪');
+    Log(LogTag + '算不出使用者資料目錄,不刪');
     Exit;
   end;
   // ⚠ 身分很重要:要刪的是**登入者的** %APPDATA%。
@@ -774,12 +817,12 @@ begin
     Rc := -1;
   end;
   if Rc <> 0 then begin
-    Log('RimeQuad: purge(登入者)rc=' + IntToStr(Rc) + ',改走提權那一條');
+    Log(LogTag + 'purge(登入者)rc=' + IntToStr(Rc) + ',改走提權那一條');
     if not Exec(Exe, 'purge-user-data --yes-delete-my-dictionary', '',
                 SW_HIDE, ewWaitUntilTerminated, Rc) then
       Rc := -1;
   end;
-  Log('RimeQuad: purge-user-data rc=' + IntToStr(Rc));
+  Log(LogTag + 'purge-user-data rc=' + IntToStr(Rc));
   GPurgeOk := (Rc = 0) and (not DirExists(GUserDataDir));
 end;
 
@@ -794,7 +837,7 @@ begin
     //   3. 停服務 / 反註冊(UninstallCleanup)—— 服務還握著詞庫時刪不掉
     //   4. 最後才刪資料
     GUserDataDir := QueryUserDataDir(ExpandConstant('{app}\' + SetupExeName));
-    Log('RimeQuad: 使用者資料目錄 = ' + GUserDataDir);
+    Log(LogTag + '使用者資料目錄 = ' + GUserDataDir);
     DecidePurge;
     UninstallCleanup;
     if GPurge then DoPurge(ExpandConstant('{app}\' + SetupExeName));

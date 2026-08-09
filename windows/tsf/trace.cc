@@ -1,5 +1,10 @@
 #include "trace.h"
 
+// 診斷記錄檔住在 %LOCALAPPDATA%\<資料夾名>\diagnostics\ 底下,而<資料夾名>
+// 與 %APPDATA% 底下那個是**同一個**。原本這裡抄了一份字面值,於是產品
+// 改名時有兩個地方要改。見 winshared/winutil.h 的 RimeUserDataFolderName()。
+#include "../winshared/winutil.h"
+
 #include <stdarg.h>
 #include <stdio.h>
 
@@ -108,9 +113,24 @@ bool TraceFilePath(wchar_t* out, size_t out_len) {
 
   // 手動接字串。這裡不可以用 std::wstring —— 這段程式碼會在 DllMain 的
   // 載入器鎖底下跑一次,那裡不該配置堆積。
-  static const wchar_t kTail[] = L"\\RimeQuad\\diagnostics\\tsf.log";
+  //
+  // ⚠ 資料夾名向 winshared 要,**不要在這裡再抄一份**。抄一份的代價不是
+  //   多打幾個字,是「改名時漏掉這一處」——而漏掉不會編譯失敗、不會報錯,
+  //   只會讓記錄寫進一個叫舊名字的資料夾,然後 doctor 說它找不到記錄檔。
+  //   RimeUserDataFolderName() 回傳靜態字串,不配置堆積。
+  const wchar_t* const folder = RimeUserDataFolderName();
+  static const wchar_t kHead[] = L"\\";
+  static const wchar_t kTail[] = L"\\diagnostics\\tsf.log";
   size_t i = 0;
   for (; i < out_len - 1 && local[i] != 0; ++i) out[i] = local[i];
+  for (size_t k = 0; kHead[k] != 0; ++k) {
+    if (i >= out_len - 1) return false;
+    out[i++] = kHead[k];
+  }
+  for (size_t k = 0; folder[k] != 0; ++k) {
+    if (i >= out_len - 1) return false;
+    out[i++] = folder[k];
+  }
   for (size_t k = 0; kTail[k] != 0; ++k) {
     if (i >= out_len - 1) return false;
     out[i++] = kTail[k];

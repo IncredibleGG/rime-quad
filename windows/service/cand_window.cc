@@ -8,7 +8,7 @@
 namespace rimewin {
 namespace {
 
-constexpr wchar_t kClassName[] = L"RimeQuadCandidateWindow";
+constexpr wchar_t kClassName[] = L"LuminaKeyCandidateWindow";
 constexpr UINT WM_RIME_UPDATE = WM_APP + 1;
 constexpr UINT WM_RIME_HIDE = WM_APP + 2;
 constexpr UINT WM_RIME_QUIT = WM_APP + 3;

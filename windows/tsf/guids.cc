@@ -13,33 +13,33 @@
 
 #include "guids.h"
 
-// {E94B9FC2-6730-45AD-A462-B7D02995D95B}
+// {7D02992E-B213-4E06-B62E-CCC6338DA98A}(改名前是 {E94B9FC2-6730-45AD-A462-B7D02995D95B})
 extern const CLSID CLSID_RimeTextService = {
-    0xe94b9fc2, 0x6730, 0x45ad, {0xa4, 0x62, 0xb7, 0xd0, 0x29, 0x95, 0xd9, 0x5b}};
+    0x7d02992e, 0xb213, 0x4e06, {0xb6, 0x2e, 0xcc, 0xc6, 0x33, 0x8d, 0xa9, 0x8a}};
 
-// {07FB3057-4192-4868-AB6E-E4EE5597C0FE}
+// {4F78BA11-E997-4BD7-8B97-F4553ABC0B18}(改名前是 {07FB3057-4192-4868-AB6E-E4EE5597C0FE})
 extern const GUID GUID_RimeProfile = {
-    0x07fb3057, 0x4192, 0x4868, {0xab, 0x6e, 0xe4, 0xee, 0x55, 0x97, 0xc0, 0xfe}};
+    0x4f78ba11, 0xe997, 0x4bd7, {0x8b, 0x97, 0xf4, 0x55, 0x3a, 0xbc, 0x0b, 0x18}};
 
-// {57BE9E4D-3F4E-4B4F-959B-E85E6095F2CA}
+// {84420A61-0A08-4A68-9D60-292EFD31C7BC}(改名前是 {57BE9E4D-3F4E-4B4F-959B-E85E6095F2CA})
 extern const GUID GUID_RimeProfileHans = {
-    0x57be9e4d, 0x3f4e, 0x4b4f, {0x95, 0x9b, 0xe8, 0x5e, 0x60, 0x95, 0xf2, 0xca}};
+    0x84420a61, 0x0a08, 0x4a68, {0x9d, 0x60, 0x29, 0x2e, 0xfd, 0x31, 0xc7, 0xbc}};
 
-// {23BBABB2-5C8A-4751-85F1-B360C70A5637}
+// {C6B736EB-38E3-4041-B59B-ECF91AD8E28A}(改名前是 {23BBABB2-5C8A-4751-85F1-B360C70A5637})
 extern const GUID GUID_RimeProfileHK = {
-    0x23bbabb2, 0x5c8a, 0x4751, {0x85, 0xf1, 0xb3, 0x60, 0xc7, 0x0a, 0x56, 0x37}};
+    0xc6b736eb, 0x38e3, 0x4041, {0xb5, 0x9b, 0xec, 0xf9, 0x1a, 0xd8, 0xe2, 0x8a}};
 
 // 註冊在哪些語言底下。說明見 guids.h。
 //
-// ⚠ 0x0404 那一列必須留在原位、GUID 不可以動:它已經發布出去了,
-//   使用者機器上就是那一筆。動了的話,他們清單上的那一項會變成孤兒 ——
-//   反註冊找不到它,而新的那一份是另一個輸入法。
+// ⚠ 這三個 GUID 在 2026-08-09 產品定名 LuminaKey 時**一起換掉了**,
+//   理由與後果見 guids.h 檔頭。換完之後這條規矩重新生效:
+//   從現在起這三列的 GUID 不可以再動,動了就是再變成另一個輸入法一次。
 //
 // 描述字串跟著語言的字形走。簡體使用者的輸入法清單上不該出現一串繁體字。
 extern const RimeProfileDef kRimeProfiles[] = {
-    {(LANGID)0x0404, &GUID_RimeProfile,     L"RIME 四端輸入法"},  // zh-Hant-TW
-    {(LANGID)0x0804, &GUID_RimeProfileHans, L"RIME 四端输入法"},  // zh-Hans-CN
-    {(LANGID)0x0C04, &GUID_RimeProfileHK,   L"RIME 四端輸入法"},  // zh-Hant-HK
+    {(LANGID)0x0404, &GUID_RimeProfile,     L"LuminaKey 輸入法"},  // zh-Hant-TW
+    {(LANGID)0x0804, &GUID_RimeProfileHans, L"LuminaKey 输入法"},  // zh-Hans-CN
+    {(LANGID)0x0C04, &GUID_RimeProfileHK,   L"LuminaKey 輸入法"},  // zh-Hant-HK
 };
 extern const int kRimeProfileCount =
     (int)(sizeof(kRimeProfiles) / sizeof(kRimeProfiles[0]));
