@@ -53,6 +53,17 @@ done
 [ -n "${BIN}" ] || die "用法: windows/verify_tsf.sh --bin <目錄> [--full]"
 [ -d "${BIN}" ] || die "找不到目錄 ${BIN}"
 
+# ⚠ 一定要轉成絕對路徑,而且要在做任何事之前。
+#
+# 登錄檔的 InprocServer32 存的是**絕對路徑** —— COM 之後照著它去 LoadLibrary。
+# 這裡若把相對路徑餵給 register,`cygpath -w` 會給出一個相對的 Windows 路徑
+# (`third_party\build\...`),於是註冊「成功」,而任何宿主都載不到那個 DLL。
+# 實測就是這樣:CI run #58 的 register 回報成功、三個語言也都列舉得到,
+# 只有 check 的「InprocServer32 指到的不是這一份」那一條抓住它。
+# 少了 check 那條斷言,這支腳本會在一個根本載不到 DLL 的狀態下繼續跑,
+# 然後以「ActivateEx 沒有被呼叫」失敗 —— 指向一個完全錯的地方。
+BIN="$(cd "${BIN}" && pwd)"
+
 command -v cygpath >/dev/null 2>&1 || die "必須在 Git Bash / MSYS2 下執行"
 w() { cygpath -w "$1"; }
 
@@ -197,7 +208,10 @@ else
 $(printf '%s\n' "${trace}" | grep -a '按鍵' | sed 's/^/       /')" ;;
     *"按鍵 vk="*)
       ok "按鍵映得出非零的 keysym(佈局問得出字)" ;;
-    *) note_fail "記錄裡沒有任何按鍵行 —— OnTestKeyDown 沒有被呼叫" ;;
+    *) note_fail "記錄裡沒有任何按鍵行 —— OnTestKeyDown **一次都沒有被呼叫**。
+     這與「按鍵映不出 keysym」是兩件完全不同的事:按鍵根本沒有被交給我們。
+     要查的是 ActivateEx 裡的 AdviseKeyEventSink(記錄裡有 key sink 那一行),
+     不是佈局、也不是連線。" ;;
   esac
   case "${trace}" in
     *"完全問不出字"*)

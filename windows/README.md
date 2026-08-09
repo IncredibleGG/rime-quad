@@ -1,16 +1,166 @@
 # Windows 端
 
-目前的狀態:**有安裝程式、也有設定介面了。** CI 會真的把安裝程式裝起來、
-斷言註冊、打一次字、再解除安裝。使用者已在真 Windows 上裝起來,輸入法出現在語言列上。
+目前的狀態:**CI 現在會真的經過 TSF 打一次字。** 這一輪之前,
+「切到這個輸入法之後系統有沒有把 DLL 載進來、ActivateEx 有沒有被呼叫、
+按鍵經 TSF 進來之後打不打得出字」整條是**紙上的** —— 而使用者回報的
+「裝好了,三個語言都打不出中文,也沒有任何 UI」撞的正是那一段。
 
-這一輪修掉一個使用者實際回報過的缺陷(**選了簡體輸入法卻打出繁體字**),
-並補上設定介面與三個入口(語言列按鈕、系統匣、librime 內建的 Ctrl+`)。
-**設定介面的每一顆控制項都真的做它宣稱的事** —— 做不到的刻意沒有放上去,
-清單見[「刻意沒有做的」](#刻意沒有做的)。
+這一輪做了四件事:
 
-還沒有人驗證過的部分見
+1. **找到並修掉一個會讓「打不出字」與「沒有 UI」同時發生的缺陷。**
+   見下面[「一個根因,兩個症狀」](#一個根因兩個症狀)。
+2. **瘦 DLL 現在會留下落地的除錯記錄。** 它住在別人的進程裡,
+   印到 stdout 沒有人看得到,而使用者手上沒有偵錯器。
+3. **`rime_ime_setup.exe doctor`** —— 使用者跑一次、把輸出貼過來就夠了。
+   見[「使用者說『不能用』的時候」](#使用者說不能用的時候)。
+4. **CI 往「真的經過 TSF」推了一大步。** `windows/verify_tsf.sh` 用一個
+   假的文字編輯器逼系統走完
+   `登錄檔 → CoCreateInstance → 載入 DLL → ActivateEx → 送按鍵 → 組字 → 上屏`。
+
+仍然沒有人驗證過的部分見
 [「沒有被驗證的部分」](#沒有被驗證的部分) —— 那一節仍然是本文件最重要的一節,
-只是這一輪從裡面搬走了好幾項。
+只是這一輪又從裡面搬走了好幾項。
+
+---
+
+## 一個根因,兩個症狀
+
+使用者回報的是兩句話:「無論什麼語言都不能打中文」「也沒有任何 UI 界面」。
+看起來像兩個問題。**它們是同一個。**
+
+服務進程(`rime_service.exe`)持有引擎、候選窗、系統匣圖示與設定視窗。
+在這一輪之前,它唯一的啟動時機是「第一顆按鍵走到 `EnsureReady()`」。
+而按鍵要走到那裡,得先讓 `MapKey` 映出非零的 keysym —— 那一步是問
+`ToUnicodeEx`「這顆鍵在你的鍵盤佈局上是什麼字」。
+
+**問題是:我們的文字服務被啟用時,`GetKeyboardLayout(0)` 拿到的不保證是
+一份真的鍵盤佈局。** TSF 的文字服務在系統裡也有自己的 HKL,形狀是
+`0xFxxx<langid>`;IMM32 那一代的 IME 是 `0xExxx<langid>`。兩者都不是鍵盤
+佈局的控制代碼,`ToUnicodeEx` 對它們**一個字都不會給**。於是:
+
+```
+ToUnicodeEx 回 0
+  → MapKey 回 keysym == 0
+    → OnTestKeyDown 直接放行,不吃這顆鍵
+      → OnKeyDown 根本不會被呼叫
+        → 引擎一顆按鍵都收不到,連線永遠不會建立
+          → **服務進程永遠不會被啟動**
+            → 沒有系統匣圖示、沒有設定視窗、沒有候選窗
+```
+
+一個判斷失誤,兩個看起來無關的症狀,而且**每一層都「正常地」回報成功**。
+這正是本專案反覆抓到的那一類問題的又一個實例。
+
+⚠ 為什麼既有的測試抓不到:`tests/test_win32_layouts.cc` 拿
+`LoadKeyboardLayout` 載入的**真佈局**(美式 / 德文 / 法文)去測 ——
+而那正好是唯一不會出事的情形。它測的是「有沒有真的問佈局」,
+不是「問到的那一份答不答得出來」。
+
+### 修法
+
+`Win32KeyboardOracle` 建構時實地問幾顆一定有字的鍵(A / S / K / 1 / 5)。
+問不出來就換一份**真的**佈局來問:先找語言相同的,再找任何一份答得出來的,
+最後明著 `LoadKeyboardLayoutW(L"00000409")` 載入美式。
+
+⚠ 換的仍然是「問一份真的佈局」,**不是**退回「`VK_A` 就當 `'a'`」。
+後者在 QWERTY 上看起來完全正確,而 Dvorak 使用者打出來的每一個字都是錯的 ——
+那正是 `common/keymap.cc` 整個檔案要避免的東西。走到「載入美式」那一步的
+Dvorak 使用者會拿到不合他鍵帽的映射,但那是「輸入法完全不能用」與
+「按鍵位置不對」之間的選擇,而後者他看得出來、也修得掉(切一次佈局)。
+
+反向與正向都有測試(`test_win32_layouts.cc` 的
+`win32_blind_hkl_falls_back_to_a_real_layout` 與
+`win32_good_hkl_does_not_fall_back`)—— 佈局本來就好好的時候**不可以**被換掉。
+
+### 並且把兩個症狀解耦
+
+服務改成在 `ActivateEx` 的**背景執行緒**上啟動(不是在宿主的 UI 執行緒上 ——
+那會讓切換輸入法卡住)。所以:
+
+* 使用者切到本輸入法幾秒內就會看到系統匣圖示與設定視窗,不必先打字;
+* 首次部署(要編譯詞庫,一到數分鐘)提早開始,而不是等到他第一次按鍵;
+* 而「打不出字」如果還在,**就只剩按鍵那條路可以查了**。
+
+把兩個症狀解耦,比同時修兩件事重要。
+
+⚠ 提權的宿主仍然刻意不啟動服務(那會產生一支提權的服務,把使用者詞庫
+檔案的擁有者換掉)。所以提權視窗裡預期仍然是「沒有輸入法」。
+
+---
+
+## 使用者說「不能用」的時候
+
+**請他執行「開始」功能表裡的「診斷:輸入法為什麼不能用」,把記事本裡跳出來
+的那份報告整份貼過來。** 就這樣,不需要再問任何問題。
+
+命令列的等價寫法:
+
+```
+"C:\Program Files\RimeQuad\rime_ime_setup.exe" doctor
+```
+
+⚠ **不要提權**跑它。提權時看到的 `HKCU` 與具名管道都是**另一個帳號的**,
+報告會說「使用者沒有被啟用」「連不上服務」,而那兩句都是假的。
+報告開頭會明著寫出它自己是不是提權的。
+
+### 報告裡的九格
+
+| 格 | 它在回答什麼 |
+|---|---|
+| 1 檔案 | 裝齊了嗎(尤其 `data\shared` —— 少了它每一步都成功而一個候選都沒有) |
+| 2 註冊 | HKLM 的 COM 與 TSF 鍵、三份語言設定檔、**TSF 自己列舉得到我們嗎**、HKCU 啟用了嗎 |
+| 3 語言設定檔與佈局 | 目前啟用的是不是我們;**這台機器上每一份佈局問不問得出字**(見上面的根因) |
+| 4 服務進程 | `rime_service.exe` 在不在、pid、執行檔位置 |
+| 5 具名管道 | 連得上嗎;連不上的話卡在**開管道 / 握手 / 建 session** 哪一步、`os_error` 是多少 |
+| 6 誰載入了 DLL | 掃描所有看得到的進程,列出載入了 `rime_tsf.dll` 的那些 —— **不必再教使用者裝 Process Explorer** |
+| 7 引擎層 | 呼叫 `rime_console.exe` 直接問 librime(**完全不經 TSF、不經管道**)。它打得出「你好」就代表引擎、詞庫、方案都好,問題必定在 TSF 或 IPC 那一側;反過來也一樣 |
+| 8 除錯記錄 | 瘦 DLL 在宿主進程裡留下的最後 40 行 |
+| 結論 | 有幾格失敗;每個 `[FAIL]` 後面的 `→` 就是接下來要做的事 |
+
+⚠ **量法很重要,報告裡也寫了**:第 6 格與第 8 格要有意義,得先開一個記事本、
+`Win + 空白鍵`切到本輸入法、按幾個鍵、**不要關掉記事本**,再跑診斷。
+不然「沒有任何進程載入 DLL」是理所當然的 —— 沒有程式正在用它。
+
+### 手動的分層檢查
+
+要更快分層的話,這三行由粗到細:
+
+```
+:: 1. 引擎層(不經 TSF、不經管道)。印得出「你好」就代表引擎與資料都好
+"C:\Program Files\RimeQuad\rime_console.exe" "C:\Program Files\RimeQuad\data\shared" "%APPDATA%\RimeQuad" nihao 1 luna_pinyin_tw
+
+:: 2. 註冊層。TSF 列舉得到我們嗎
+"C:\Program Files\RimeQuad\rime_ime_setup.exe" check
+
+:: 3. 瘦 DLL 在宿主進程裡發生了什麼
+notepad "%LOCALAPPDATA%\RimeQuad\diagnostics\tsf.log"
+```
+
+### 除錯記錄
+
+| | |
+|---|---|
+| 位置 | `%LOCALAPPDATA%\RimeQuad\diagnostics\tsf.log` |
+| 關掉 | 環境變數 `RIME_TSF_TRACE=0` |
+| 換位置 | `RIME_TSF_TRACE=<完整路徑>`(CI 用這條) |
+
+為什麼是檔案而不是 `OutputDebugString`:這支 DLL 住在**別人的進程**裡
+(記事本、瀏覽器、Office),它印到 stdout 沒有人看得到,而
+`OutputDebugString` 需要一個偵錯器接著 —— **使用者手上沒有偵錯器**。
+
+記錄的內容:DLL 載入、`DllGetClassObject`、`ActivateEx`(含 clientid 與
+**當下的 HKL**)、語言設定檔走了三層退路的哪一層、profile sink 有沒有被呼叫、
+語言列按鈕加不加得上、**前五顆按鍵的 vk / scan / keysym / 吃不吃**、
+連線失敗的階段與 `os_error`。
+
+紀律(見 `tsf/trace.h` 檔頭):只用 kernel32(相依白名單一個都不加)、
+不在按鍵路徑上無上限地做 I/O(每個進程 400 行、按鍵只記前 5 顆)、
+寫不進去一律安靜(診斷壞掉不該讓輸入法跟著壞掉)。
+
+隱私:記錄裡有宿主程式的**檔名**(`notepad.exe`)——「在 Edge 裡不行、
+在記事本裡可以」是這一類問題裡最有價值的一句話。但**沒有**完整路徑、
+沒有視窗標題、**絕對沒有按過的鍵或候選字**;檔案只在本機,
+`audit_offline_win.sh` 在原始碼層面守著「沒有任何檔案碰網路 API」。
 
 ---
 
@@ -187,7 +337,27 @@ TSF **不會** Deactivate 再 Activate 這個文字服務,它只發
 | `service/` | 引擎、管道伺服器、候選窗 | 否(但可語法檢查) |
 | `setup/` | `rime_ime_setup.exe`:註冊/反註冊/檢查/停服務 | 否(但可語法檢查) |
 | `installer/` | Inno Setup 腳本 | —(不編譯) |
-| `tests/` | 單元測試、真實佈局測試、probe | 部分 |
+| `tests/` | 單元測試、真實佈局測試、probe、**TSF 驗證宿主** | 部分 |
+
+服務進程是**什麼時候被啟動的**,這一輪改了,而且那是一個影響很大的改動:
+
+| | 之前 | 現在 |
+|---|---|---|
+| 啟動時機 | 第一顆按鍵走到 `EnsureReady()` | `ActivateEx`(使用者切到本輸入法的當下),在**背景執行緒**上 |
+| 後果 | 按鍵那條路一斷,服務就永遠不會起來 —— 於是同時失去輸入**與全部 UI** | 兩件事解耦:UI 幾秒內出現,首次部署提早開始 |
+
+⚠ 一定要在背景執行緒上做。`ActivateEx` 跑在宿主的 UI 執行緒上,
+在那裡 `CreateProcess`(甚至只是開一次登錄檔)都會讓切換輸入法卡一下,
+而那是使用者每天做很多次的動作。執行緒活著期間會抓住 DLL 的參考計數,
+否則宿主可能在 `DllCanUnloadNow` 回 `S_OK` 之後把 DLL 卸載掉,
+而執行緒還在那段已經不存在的程式碼裡。
+
+「服務在不在」的判斷用的是**單一實例的互斥鎖**,不是管道:
+服務啟動之後要先跑完 `rs_init` 才開管道,而首次部署那段時間是好幾分鐘。
+拿管道當依據會在那幾分鐘裡一直說「不在」,於是每次都再啟動一支 ——
+新的那支被互斥鎖擋掉、安靜地以 0 結束,誰都不會報錯。
+名字的唯一定義處是 `winshared/winutil.cc` 的 `RimeServiceMutexName()`
+(三個呼叫者:服務自己、瘦 DLL、`doctor`)。
 
 註冊的實作在 `tsf/registration.cc`,**`rime_tsf.dll` 與 `rime_ime_setup.exe`
 共用同一份**。兩邊各寫一份會漂移,而漂移的症狀是「用安裝程式裝的能用、
@@ -208,6 +378,10 @@ MINGW=<mingw g++> windows/syntax_check_mingw.sh   # tsf/ 與 service/ 的語法�
 windows/audit_offline_win.sh                     # 原始碼層面的離線稽核
 windows/audit_offline_win.sh --self-check        # 它的反向測試
 ```
+
+⚠ `syntax_check_mingw.sh` 現在也涵蓋 `tests/tsf_host_main.cc`。
+mingw 的 `msctf.h` 缺 `TF_IPPMF_*` 那組旗標,值補在
+`tests/mingw_syntax_shim.h`(照 Windows SDK 抄)。
 
 ⚠ `syntax_check_mingw.sh` 目前**跳過** `tsf/lang_bar.cc`:mingw-w64 的
 `ctfutb.h` 沒有 `ITfLangBarItemButton`(真正的 Windows SDK 有)。
@@ -251,6 +425,24 @@ Windows 的佈局檔含 scancode→VK 對照,所以**字母鍵的 VK 會跟著�
 **真的**佈局(`LoadKeyboardLayout` 載入 `00000409` / `00000407` / `0000040C`)。
 把 `MapKey` 改回常數表的話,在 GitHub 的美式 runner 上就會紅。
 
+### ⚠ 但「問佈局」本身有一個更前面的前提:那份 HKL 得答得出來
+
+**這一輪的根因就在這裡**(完整說明見開頭的
+[「一個根因,兩個症狀」](#一個根因兩個症狀))。
+
+`Oracle()` 拿的是 `GetKeyboardLayout(0)`,而我們的文字服務啟用時,
+那個值不保證是一份真的鍵盤佈局:TSF 的文字服務有自己的 HKL(`0xFxxx<langid>`),
+IMM32 的 IME 是 `0xExxx<langid>`,兩者對 `ToUnicodeEx` 都是「什麼都不給」。
+
+上面那張表列的三類是「問對了佈局但答案錯」;這一類是「**根本沒有答案**」,
+而它的後果更嚴重也更難看出來 —— 不是標點打錯,是**一顆鍵都進不了引擎**,
+連帶服務不會被啟動、全部 UI 不會出現。
+
+`Win32KeyboardOracle` 的建構子因此多了一段:實地問幾顆一定有字的鍵,
+問不出來就換一份真的佈局(`used_fallback()` / `blind()` 會說出發生了什麼,
+而 `ActivateEx` 會把它寫進除錯記錄)。正反兩面的測試在
+`test_win32_layouts.cc` 的最後三個 `TEST`。
+
 ### 幾個容易錯的細節
 
 - **AltGr**:成立時要**帶著它去問佈局**,但回報給引擎的 modifier
@@ -262,6 +454,9 @@ Windows 的佈局檔含 scancode→VK 對照,所以**字母鍵的 VK 會跟著�
   (值 `4`,「不要改動鍵盤狀態」)。少了它,使用者按了法文的 `^` 之後,
   我們為了查表呼叫一次就把它吃掉了 —— 症狀是「裝了這個輸入法之後別的語言的
   重音字打不出來」,而且與輸入法的功能毫無關聯。這個旗標需要 Windows 10 1607+。
+- **`scan_code` 為 0 時要自己從 VK 推**,而且要用**實際在查的那一份佈局**
+  (`MapVirtualKeyExW(vk, MAPVK_VK_TO_VSC, hkl_)`)。宿主送來的 lParam 通常帶著
+  實體掃描碼(與佈局無關,原樣可用),但不是每一個宿主都帶。
 - **`kSuperMask` 是 `1 << 26` 不是 `1 << 6`** —— 但那是 librime 的遮罩,
   由 `core/src/rime_shell.cc` 負責轉換。Windows 端只用 `rs_modifier`,
   而 `test_keymap.cc` 有一條斷言把兩份定義釘在一起。
@@ -505,8 +700,58 @@ true;寫成「等於 true 才算開」的話,全新安裝的機器上自動挑�
 | **原始碼裡沒有任何檔案碰網路 API** | `audit_offline_win.sh`(含反向測試) |
 | **產物的匯入表裡沒有網路 DLL** | `check_binaries.sh` 的 `NET_DLLS` |
 | **裝好的**那份 `rime_service.exe` 真的替簡體使用者選簡體方案 | `verify_installer.sh` §5b(含反向測試) |
+| **系統真的把 `rime_tsf.dll` 載入宿主進程** | `verify_tsf.sh` + `rime_tsf_host.exe`(含正反兩面) |
+| **`ActivateEx` 真的被呼叫** | 同上 |
+| **按鍵經 TSF 進來之後映得出非零 keysym** | 同上(這一格就是本輪根因所在) |
+| **經由真的 TSF** 打出「你好」(裝好的 DLL + 裝好的服務) | `verify_installer.sh` §6c |
+| 佈局問不出字時會換一份真的來問,而佈局好好的時候不會被換掉 | `test_win32_layouts.cc`(正反兩面) |
+| **`doctor` 這支診斷工具本身會不會紅** | `verify_installer.sh`(裝之前紅、裝好綠、停掉服務再紅、解除安裝後紅) |
+| 瘦 DLL 的落地除錯記錄真的有寫出東西 | `verify_tsf.sh` / `verify_installer.sh` §6c |
 
-### 這一輪從「驗不了」搬到「驗得了」的
+### 這一輪從「驗不了」搬到「驗得了」的:**TSF 那一整條**
+
+上一輪這裡寫著「TSF 的 Activate / 組字 / edit session 只有人做得到」。
+**那個判斷是錯的。**
+
+`windows/tests/tsf_host_main.cc` 建出來的 `rime_tsf_host.exe` 是一個
+**假的文字編輯器**:它建 `ITfThreadMgr`、`Activate`、建一份最小可用的
+`ITextStoreACP`、`Push` 進 `ITfDocumentMgr`、`SetFocus`、用
+`ITfInputProcessorProfileMgr::ActivateProfile` 啟用我們的語言設定檔,
+再用 `ITfKeystrokeMgr::TestKeyDown / KeyDown` 送按鍵,最後看文件裡長出什麼字。
+
+也就是說**它逼系統走完真正的那一條**:
+
+```
+登錄檔 → CoCreateInstance → 把 rime_tsf.dll 載入這個進程 → ActivateEx
+       → AdviseKeyEventSink → OnTestKeyDown → OnKeyDown → RequestEditSession
+       → StartComposition → SetText → EndComposition
+```
+
+⚠ 它**不連結** `rime_tsf`。連結了就變成直接呼叫我們自己的函式,
+驗到的是另一件事。它只認 CLSID 與 profile GUID,其餘全部交給系統去解析 ——
+註冊錯了、`InprocServer32` 指錯了、DLL 載不起來,它都會在該紅的地方紅。
+
+兩種模式:
+
+| 在哪 | 要求 |
+|---|---|
+| `logic-x64`(四分鐘,不需要 librime) | DLL 被載入、`ActivateEx` 被呼叫、按鍵映得出非零 keysym |
+| `install-x64` §6c(用**安裝好**的那一份) | 再加上:按鍵被吃掉、文件裡真的是「你好」 |
+
+反向測試(證明它不是恆真的):
+
+- **註冊之前**跑一次,必須非零結束
+- **反註冊之後**再跑一次,必須再度非零結束
+- 腳本用 `trap` 保證登錄檔一定被清乾淨 —— 沒有的話,同一台機器上的下一個
+  job 會在 `verify_installer.sh` 的第一條斷言(「安裝之前 check 必須紅」)
+  失敗,而那個失敗看起來與這裡完全無關
+
+⚠ `ActivateProfile` 的旗標組合是**逐一試過去並把每一種的 HRESULT 都印出來**
+的,不是猜一種然後宣布結論。runner 是非互動的工作階段,走不通的時候要看得出
+卡在哪 —— 而 `rime_tsf_host` 連不出 `ITfThreadMgr` 時會以結束碼 3 明說
+「TSF 在這個工作階段裡不可用」,`verify_tsf.sh` 對那個碼**明著拒絕略過**。
+
+### 這一輪從「驗不了」搬到「驗得了」的:安裝
 
 上一輪把「regsvr32 是否真的註冊成功、輸入法是否出現在系統的清單上」列在
 只有人做得到那一欄。**那個判斷有一半是錯的** —— `windows-latest` 的 runner 上
@@ -570,45 +815,70 @@ true;寫成「等於 true 才算開」的話,全新安裝的機器上自動挑�
 
 **以下每一項目前都是「寫出來了,沒被驗過」。**
 
-1. **切到這個輸入法之後 `ActivateEx` 有沒有被呼叫**、sink 有沒有掛上。
-2. **在記事本裡打不打得出字。** 組字視窗(TSF composition)會不會出現、
-   preedit 更新對不對、commit 進不進得去文件。
-   ⚠ CI 驗到的是「服務端打得出字」,不是「TSF 這一層打得出字」。
-3. **使用者的語言列上到底看不看得到它。** CI 斷言得到「系統接受了這個輸入法」,
+~~1. 切到這個輸入法之後 `ActivateEx` 有沒有被呼叫、sink 有沒有掛上。~~
+~~2. 在記事本裡打不打得出字(TSF composition、preedit、commit)。~~
+→ 這兩項**這一輪搬走了**,由 `verify_tsf.sh` 與 `verify_installer.sh` §6c 驗。
+⚠ 但要誠實:驗到的宿主是我們自己寫的 `rime_tsf_host.exe`,不是記事本。
+真實宿主有自己的版面、DPI、UI 執行緒模型,而 `GetTextExt` 在很多宿主上
+會失敗 —— 我們的假宿主一定成功。所以「在**真的**記事本裡打得出字」
+仍然沒有被驗過,只是它前面那幾格不再是紙上的。
+
+1. **使用者的語言列上到底看不看得到它。** CI 斷言得到「系統接受了這個輸入法」,
    但看不看得到還取決於使用者的語言清單裡有沒有那幾種中文,
    而 runner 上沒有辦法製造那個情境。
-4. **候選窗會不會出現**、位置對不對、在高 DPI 與多螢幕下對不對。
+2. **候選窗會不會出現**、位置對不對、在高 DPI 與多螢幕下對不對。
    `GetTextExt` 在很多宿主上會失敗或給空矩形(已有退回宿主視窗左上角的路徑,
    但那條路徑也沒被驗過)。
-5. **在瀏覽器、Office、UWP／市集 App 裡能不能用。** 那需要
+3. **在瀏覽器、Office、UWP／市集 App 裡能不能用。** 那需要
    `GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT` 等能力類別註冊正確 —— 已經寫了,沒驗過。
-6. **提權的視窗上能不能打字**(`GUID_TFCAT_TIPCAP_SECUREMODE`)。
+   ⚠ 市集 App 跑在 AppContainer 裡,而具名管道與 `Local\` 具名物件的 DACL
+   只授權目前使用者 —— **那一格很可能是壞的,而且沒有人驗過。**
+4. **提權的視窗上能不能打字**(`GUID_TFCAT_TIPCAP_SECUREMODE`)。
    相關的:DLL 在提權宿主裡**不會**自動啟動服務(那會產生一支提權的服務,
    把使用者的詞庫檔案擁有者換掉)。所以提權視窗裡預期是「沒有輸入法」,
    而不是崩潰 —— **這個預期也沒被驗過。**
-7. **服務自動啟動**:DLL 找不到管道時 `CreateProcess` 起 `rime_service.exe`。
-8. **首次部署那幾分鐘的行為。** 服務在部署完成前對每一顆按鍵立刻回「沒處理」,
+5. **首次部署那幾分鐘的行為。** 服務在部署完成前對每一顆按鍵立刻回「沒處理」,
    使用者應該看到的是「輸入法還沒好,打出來是英文」而不是卡住。
-9. **「每一顆鍵是不是都真的做了它宣稱的事」。** 這個專案已經抓到四個
+6. **「每一顆鍵是不是都真的做了它宣稱的事」。** 這個專案已經抓到四個
    「畫面完全正常、自動化全過」的功能:重輸鍵呼叫的是結束組字而不是清空、
    中英鍵切了模式卻不換佈局、按下後顏色回不來、工具列的 emoji 鍵什麼都不做。
-   Windows 端目前**一顆鍵都沒有被人按過**。
-10. **`ToUnicodeEx` 的死鍵狀態沒有被我們吃掉。** 程式碼帶了「不改動鍵盤狀態」
-    的旗標,但那件事只有真的按一次法文的 `^` 再按 `e` 才驗得到。
+   Windows 端目前**一顆鍵都沒有被人按過**(`rime_tsf_host` 按的是 `nihao1`,
+   那只證明基本的組字與選字,不是每一顆功能鍵)。
+7. **`ToUnicodeEx` 的死鍵狀態沒有被我們吃掉。** 程式碼帶了「不改動鍵盤狀態」
+   的旗標,但那件事只有真的按一次法文的 `^` 再按 `e` 才驗得到。
+8. **`ActivateEx` 背景啟動服務那條路,在真的宿主裡的時序。** CI 上驗得到
+   它不會崩、不會卡住 `ActivateEx`;但「使用者切過去之後幾秒內看到系統匣圖示」
+   這件事本身沒有人看過。
+9. **使用者機器上 `GetKeyboardLayout(0)` 到底是什麼。** 本輪的佈局退路是
+   對著「它可能不是真的佈局」寫的,而且正反兩面都有測試 ——
+   但**使用者那台機器上實際的值**要等他跑一次 `doctor`(報告第 3 節與
+   第 8 節的除錯記錄)才知道。這是本輪最想拿到的一個數字。
+
+### 上一輪新增、這一輪部分搬走的
+
+**11 與 12 這一輪不再是紙上的**,但方式與原本想的不一樣:它們不是被
+「驗成綠的」,而是**被記下來了** —— 瘦 DLL 現在會把
+「語言設定檔:第 N 層 …」與「profile sink:啟用 langid=…」寫進除錯記錄,
+`verify_tsf.sh` 會把整份記錄印出來,`doctor` 的第 8 節也會。
+所以下一次使用者回報時,我們看得到走的是哪一層 ——
+而在這之前那是一個沒有辦法問出來的問題。
+
+⚠ 差別要講清楚:**「有記錄」不等於「驗過了」。** 目前 CI 只斷言記錄裡
+有那幾行,沒有斷言它們的值是對的(runner 上的語言環境與使用者不同,
+斷言一個值等於把 runner 的組態當成規格)。
+
+11. `ITfInputProcessorProfileMgr::GetActiveProfile` 在 `ActivateEx` 當下回傳的
+    是不是我們 —— **三層退路走了哪一層現在記錄得到**,但哪一層才是對的
+    仍然要看使用者的機器。
+12. `ITfInputProcessorProfileActivationSink` 會不會被呼叫 ——
+    **被呼叫時會留下一行**,但「使用者從繁體切到簡體之後打出來真的變了」
+    仍然只有人驗得到。
 
 ### 這一輪新增、而且**一項都沒有被驗過**的
 
 ⚠ 這一整段是這一輪最需要人去按一遍的地方。CI 驗到的是「判斷邏輯對」與
 「編得起來」,**沒有一個像素、沒有一次點擊被驗證過**。
 
-11. **`ITfInputProcessorProfileMgr::GetActiveProfile` 在 `ActivateEx` 的當下
-    回傳的是不是我們。** 註冊完的 CTF 快取有延遲(實測 0.12 秒看不到、
-    22 秒後看得到,見下面「三件實際踩到的事」),`Activate` 的當下會不會
-    也有同一類延遲**沒有驗過**。有三層退路(ProfileMgr → GetCurrentLanguage
-    → `LOWORD(GetKeyboardLayout(0))`),但**三層都沒有被執行過一次**。
-12. **`ITfInputProcessorProfileActivationSink` 到底會不會被呼叫。** 這是
-    「使用者從繁體切到簡體」唯一的通知管道 —— 少了它,切換完全沒有效果。
-    整條路徑目前是紙上的。
 13. **語言列上到底看不看得到那顆「設定」按鈕。** `TF_LBI_STYLE_SHOWNINTRAY`
     是照文件加的;`GetIcon` 回 `E_FAIL` 讓它退回顯示文字,那是慣例,
     **沒有在任何一個宿主上看過**。
@@ -632,6 +902,12 @@ true;寫成「等於 true 才算開」的話,全新安裝的機器上自動挑�
     在 CI 上構造不出來。
 19. **`--settings` 在已經有服務在跑時真的把訊息傳過去了。**
 20. **explorer 重啟之後系統匣圖示會不會回來**(`TaskbarCreated`)。
+21. **`doctor` 報告在使用者眼裡讀不讀得懂。** 每一格的 `[FAIL]` 後面都接了
+    「接下來做什麼」,但那些句子沒有給任何一個真的使用者看過。
+    這一項比看起來重要:一份看不懂的診斷報告等於沒有診斷。
+22. **開始功能表那兩個捷徑按下去會怎樣。** 「診斷」那一個會開一個主控台視窗、
+    跑一到三分鐘(引擎層那一格要等 librime)、然後跳出記事本。
+    **那段等待中間沒有任何進度提示**,而使用者很可能以為它當掉了。
 
 ### 已知的功能缺口(不是忘了,是本輪範圍外)
 
@@ -727,7 +1003,9 @@ inflate 有 bug 會被抓到而不是安靜地寫出壞詞庫)。那大約是
 windows/build.sh                                  # deps + console + ime
 scripts/fetch_rime_data.sh && scripts/collect_data.sh
 windows/verify_console.sh                         # 核心層
-windows/verify_ime.sh                             # 經由具名管道的端到端
+windows/verify_ime.sh                             # 經由具名管道的端到端(**繞過 TSF**)
+windows/verify_tsf.sh --bin third_party/build/windows-x64/ime/bin
+                                                  # 真的經過 TSF(需提權;會動登錄檔)
 windows/check_binaries.sh third_party/build/windows-x64/ime/bin
 third_party/build/windows-x64/ime/bin/rime_tests.exe
 windows/make_installer.sh                         # → installer/RimeQuad-Setup-x64.exe
@@ -739,8 +1017,11 @@ windows/make_installer.sh                         # → installer/RimeQuad-Setup
 windows/verify_installer.sh \
   --setup third_party/build/windows-x64/installer/RimeQuad-Setup-x64.exe \
   --probe third_party/build/windows-x64/ime/bin/rime_probe.exe \
-  --tool  third_party/build/windows-x64/ime/bin/rime_ime_setup.exe
+  --tool  third_party/build/windows-x64/ime/bin/rime_ime_setup.exe \
+  --host  third_party/build/windows-x64/ime/bin/rime_tsf_host.exe
 ```
+
+`--host` 是可選的;給了才會跑 §6c(用**裝好的**那份 DLL 經由真的 TSF 打字)。
 
 ⚠ 它會**真的**裝到 `C:\Program Files\RimeQuad`、註冊、然後解除安裝。
 不要在自己日常用的機器上跑。
@@ -755,7 +1036,13 @@ rime_ime_setup.exe check [--user]  斷言註冊狀態,不通過就非零結束
 rime_ime_setup.exe paths           印出所有會被寫到的登錄檔路徑與 GUID
 rime_ime_setup.exe dump            印出登錄檔實況
 rime_ime_setup.exe stop-service
+rime_ime_setup.exe doctor          一頁式自我診斷(這一支是給**使用者**的)
+rime_ime_setup.exe doctor --report 另存一份並用記事本打開
 ```
+
+⚠ `doctor` 的結束碼是「失敗的格數是不是 0」,所以它可以被斷言 ——
+`verify_installer.sh` 對它有四條正反斷言(裝之前紅、裝好綠、
+停掉服務再紅、解除安裝後紅)。一支只會印綠字的診斷工具比沒有更糟。
 
 `regsvr32 rime_tsf.dll` 仍然有效(那兩個匯出是 COM in-proc server 的既定介面,
 而且與 `rime_ime_setup.exe register` **共用同一份實作** —— 見 `tsf/registration.cc`),

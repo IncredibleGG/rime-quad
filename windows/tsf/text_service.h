@@ -105,6 +105,12 @@ class TextService : public ITfTextInputProcessorEx,
   DWORD thread_mgr_cookie_ = TF_INVALID_COOKIE;
   DWORD profile_sink_cookie_ = TF_INVALID_COOKIE;
   LangBarButton* lang_bar_ = nullptr;
+  // key event sink 掛上了沒有。
+  //
+  // ⚠ 它是 false 的話,這個宿主裡**一顆按鍵都收不到**,而且沒有任何
+  //   其他跡象:ActivateEx 照樣回 S_OK,語言列按鈕照樣在。
+  //   以前這個回傳值完全沒有人看。
+  bool key_sink_ok_ = false;
   ITfComposition* composition_ = nullptr;
   ITfContext* composition_ctx_ = nullptr;
 

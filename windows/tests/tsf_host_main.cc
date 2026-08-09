@@ -494,7 +494,29 @@ static int Run(int argc, wchar_t** argv) {
   HWND hwnd = ::CreateWindowExW(0, L"RimeTsfHostWnd", L"rime tsf host",
                                 WS_OVERLAPPEDWINDOW, 0, 0, 400, 200, nullptr,
                                 nullptr, wc.hInstance, nullptr);
-  if (!hwnd) Fail("建不出視窗 err=%lu", ::GetLastError());
+  if (!hwnd) {
+    Fail("建不出視窗 err=%lu", ::GetLastError());
+  } else {
+    // ⚠ 一定要真的顯示並搶到前景。
+    //
+    // TSF 的 key event sink 分「前景」與「非前景」兩種,而
+    // AdviseKeyEventSink(..., fForeground = TRUE) 要求**呼叫執行緒擁有前景**。
+    // 視窗藏著不顯示的話,文字服務掛前景 sink 會失敗,於是
+    // ITfKeystrokeMgr::KeyDown 送進去的按鍵**不會被交給任何人** ——
+    // 而回傳值仍然是 S_OK、pfEaten 仍然是 FALSE,看起來就像「輸入法不吃這顆鍵」。
+    // 實測(CI run #58 的 install job)就是這樣:ActivateEx 過了、
+    // 語言列按鈕也加上了,而六顆按鍵一顆都沒有到達 OnTestKeyDown。
+    ::ShowWindow(hwnd, SW_SHOWNORMAL);
+    ::UpdateWindow(hwnd);
+    ::SetForegroundWindow(hwnd);
+    ::SetActiveWindow(hwnd);
+    ::SetFocus(hwnd);
+    Pump(200);
+    HWND fg = ::GetForegroundWindow();
+    Say("  前景視窗 = %p(我們的是 %p)%s\n", static_cast<void*>(fg),
+        static_cast<void*>(hwnd),
+        fg == hwnd ? " —— 搶到了" : " —— **沒搶到**(非互動的工作階段?)");
+  }
 
   ITfThreadMgr* thread_mgr = nullptr;
   HRESULT hr = ::CoCreateInstance(CLSID_TF_ThreadMgr, nullptr,
@@ -609,6 +631,7 @@ static int Run(int argc, wchar_t** argv) {
   const std::string trace = ReadAll(trace_path);
   const bool saw_load = trace.find("DLL 載入") != std::string::npos;
   const bool saw_activate = trace.find("ActivateEx 被呼叫") != std::string::npos;
+  const bool key_sink_bad = trace.find("**沒掛上,收不到按鍵**") != std::string::npos;
   Say("\n--- 分層結論 ---\n");
   if (saw_load)
     Ok("系統把 rime_tsf.dll 載入了這個進程");
@@ -656,8 +679,19 @@ static int Run(int argc, wchar_t** argv) {
         static_cast<int>(keys.size()));
   }
 
-  if (require_eaten && eaten_count == 0)
-    Fail("一顆按鍵都沒有被吃掉 —— 按鍵沒有進到引擎。\n"
+  // 「一顆按鍵都沒有到達 OnTestKeyDown」與「到達了但沒吃」是兩件完全不同的事。
+  // 前者要查 ActivateEx 那一段(key event sink 掛上了沒有),
+  // 後者要查佈局或連線。把它們併成一句話,就是把人往錯的方向送。
+  const bool saw_any_key = trace.find("按鍵 vk=") != std::string::npos;
+  if (!keys.empty() && !saw_any_key) {
+    Fail("按鍵**一顆都沒有到達 OnTestKeyDown** —— 不是「不吃」,是根本沒收到。\n"
+         "     要查的是 ActivateEx 裡的 AdviseKeyEventSink,不是佈局也不是連線。\n"
+         "     記錄裡的 key sink 那一行會說掛上了沒有。");
+    if (key_sink_bad)
+      Fail("記錄明說 key event sink 兩種都掛不上");
+  }
+  if (require_eaten && eaten_count == 0 && saw_any_key)
+    Fail("按鍵到達了 OnTestKeyDown,但一顆都沒有被吃掉。\n"
          "     照除錯記錄裡的 keysym 判斷是哪一段:\n"
          "       keysym=0x0  → 鍵盤佈局問不出字(win32_oracle.h)\n"
          "       keysym!=0   → 連不上服務(上面會有一行「連線失敗」)");

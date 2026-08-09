@@ -245,18 +245,55 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* mgr, TfClientId id,
 
   ITfSource* source = nullptr;
   if (SUCCEEDED(thread_mgr_->QueryInterface(IID_ITfSource, (void**)&source))) {
-    source->AdviseSink(IID_ITfThreadMgrEventSink,
-                       static_cast<ITfThreadMgrEventSink*>(this),
-                       &thread_mgr_cookie_);
+    const HRESULT hr = source->AdviseSink(
+        IID_ITfThreadMgrEventSink, static_cast<ITfThreadMgrEventSink*>(this),
+        &thread_mgr_cookie_);
+    if (FAILED(hr)) Trace("!! ThreadMgr sink 掛不上 hr=0x%08lX", (unsigned long)hr);
     source->Release();
   }
 
-  ITfKeystrokeMgr* keystroke = nullptr;
-  if (SUCCEEDED(
-          thread_mgr_->QueryInterface(IID_ITfKeystrokeMgr, (void**)&keystroke))) {
-    keystroke->AdviseKeyEventSink(client_id_,
-                                  static_cast<ITfKeyEventSink*>(this), TRUE);
-    keystroke->Release();
+  // ══ key event sink ═══════════════════════════════════════════════
+  //
+  // ⚠⚠ **這裡的回傳值以前沒有人看。** 而它失敗的話,後果是整個輸入法
+  //     安靜地不存在:
+  //
+  //       AdviseKeyEventSink 失敗 → 我們的 OnTestKeyDown / OnKeyDown
+  //       **從來不會被呼叫** → 引擎一顆按鍵都收不到 → 連線不建立
+  //       → 服務不會被啟動 → 沒有系統匣圖示、沒有設定視窗
+  //
+  //     也就是與「佈局問不出字」一模一樣的症狀組合,而且一樣沒有錯誤訊息:
+  //     `ActivateEx` 照樣回 S_OK,語言列按鈕照樣加得上,使用者看到輸入法
+  //     好端端地在清單上、切得過去、然後什麼都不會發生。
+  //
+  // fForeground = TRUE 要求**呼叫執行緒擁有前景**。文件是這樣寫的,而
+  // 微軟自己的 SampleIME 也傳 TRUE —— 問題是那個前提不是永遠成立的
+  // (沒有互動式桌面的工作階段、被遠端桌面接管、宿主在背景時被啟用…)。
+  // 前景 sink 拿不到就退一步用非前景的:少的是「別的 TIP 也在時的優先權」,
+  // 而那遠好過**一顆按鍵都收不到**。
+  {
+    ITfKeystrokeMgr* keystroke = nullptr;
+    const HRESULT qhr =
+        thread_mgr_->QueryInterface(IID_ITfKeystrokeMgr, (void**)&keystroke);
+    if (SUCCEEDED(qhr) && keystroke) {
+      HRESULT ahr = keystroke->AdviseKeyEventSink(
+          client_id_, static_cast<ITfKeyEventSink*>(this), TRUE);
+      if (FAILED(ahr)) {
+        const HRESULT first = ahr;
+        ahr = keystroke->AdviseKeyEventSink(
+            client_id_, static_cast<ITfKeyEventSink*>(this), FALSE);
+        Trace("key sink:前景版失敗 hr=0x%08lX,退成非前景 hr=0x%08lX",
+              (unsigned long)first, (unsigned long)ahr);
+      } else {
+        Trace("key sink:已掛上(前景)");
+      }
+      key_sink_ok_ = SUCCEEDED(ahr);
+      if (!key_sink_ok_)
+        Trace("!! key sink 兩種都掛不上 —— 這個宿主裡一顆按鍵都收不到");
+      keystroke->Release();
+    } else {
+      Trace("!! 拿不到 ITfKeystrokeMgr hr=0x%08lX —— 收不到任何按鍵",
+            (unsigned long)qhr);
+    }
   }
 
   // 語言設定檔變更的通知。見 text_service.h 的說明:三份設定檔共用一個
@@ -264,9 +301,13 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* mgr, TfClientId id,
   {
     ITfSource* psrc = nullptr;
     if (SUCCEEDED(thread_mgr_->QueryInterface(IID_ITfSource, (void**)&psrc))) {
-      psrc->AdviseSink(IID_ITfInputProcessorProfileActivationSink,
-                       static_cast<ITfInputProcessorProfileActivationSink*>(this),
-                       &profile_sink_cookie_);
+      const HRESULT hr = psrc->AdviseSink(
+          IID_ITfInputProcessorProfileActivationSink,
+          static_cast<ITfInputProcessorProfileActivationSink*>(this),
+          &profile_sink_cookie_);
+      if (FAILED(hr))
+        Trace("!! profile sink 掛不上 hr=0x%08lX —— "
+              "使用者從繁體切到簡體會完全沒有效果", (unsigned long)hr);
       psrc->Release();
     }
   }
@@ -313,6 +354,11 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* mgr, TfClientId id,
   // 按鍵那條路一斷,使用者就同時失去輸入與全部 UI。見上面
   // StartServiceInBackground 的說明。
   StartServiceInBackground(service_path_);
+  // 一行把「這個宿主裡到底能不能用」講完。使用者回報時,這一行就是答案。
+  Trace("ActivateEx 完成:key sink=%s 語言列=%s 服務路徑=%s",
+        key_sink_ok_ ? "OK" : "**沒掛上,收不到按鍵**",
+        lang_bar_ ? "OK" : "沒有",
+        service_path_.empty() ? "(算不出來)" : "OK");
   return S_OK;
   RIME_GUARD_END_HR
 }
@@ -413,6 +459,9 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* ctx, WPARAM w, LPARAM l,
   // 回 TRUE 但稍後 OnKeyDown 回 FALSE 是合法的 —— TSF 會把那顆鍵交回宿主。
   // 反過來(這裡回 FALSE)則 OnKeyDown 根本不會被呼叫,那顆鍵就永遠進不到引擎。
   // 所以這裡寧可寬鬆。
+  // 走到這裡就代表 key event sink 是好的 —— 它沒掛上的話這個函式
+  // 根本不會被呼叫。所以「記錄裡完全沒有按鍵行」與「按鍵行的 keysym 是 0」
+  // 是兩件完全不同的事,前者要查的是 ActivateEx 那一段。
   const MappedKey mapped = MapKey(BuildKeyEvent(w, l, false), Oracle());
   const bool ready = mapped.keysym != 0 && ipc_.EnsureReady();
   if (key_trace_budget_ > 0) {
