@@ -299,6 +299,54 @@ for n in root.iter("node"):
     adbs shell input tap $xy >/dev/null 2>&1
     sleep 0.8
   }
+  shot() { adbs shell screencap -p "/sdcard/syl.png" >/dev/null 2>&1; adbs pull /sdcard/syl.png "$1" >/dev/null 2>&1; }
+
+  # ⚠ 打字**之前**先拍一張。消歧欄該出現的那幾格,是「打字前後真的變了」的
+  #   那幾格 —— 用變化定位比用幾何模型定位可靠得多:
+  #   · 幾何模型實測在 cn-t9-pinyin-numrow 上與渲染器差了約 75px;
+  #   · 而整條左欄從格線頂端裁到底,會把數字列與 `!@#` 那顆鍵一起裁進來,
+  #     OCR 於是讀出「ee ni mi lot」「ne mi o」這種夾雜垃圾的字串 ——
+  #     CI 上就是這樣紅的,而畫面上明明白白寫著 ni 與 mi。
+  #   而且這樣一來,斷言從「這一塊讀得到 ni」變成
+  #   「**打字後才出現**的那幾格讀得到 ni」,比原本更嚴。
+  # ⚠ 底圖要在畫面靜止之後才拍。鍵盤是滑上來的,拍太早的話「打字前後的差異」
+  #   會變成整片都在動 —— 實測那一次:整條左欄被併成**一個**橫帶,
+  #   點擊座標算成整欄的中點(y=2709,第三列的空格位),於是那一下把組字取消掉,
+  #   第二關再比就變成「和底圖一模一樣」,0 個橫帶。
+  #   徵狀看起來像功能壞了,其實是底圖拍早了。
+  wait_stable() {
+    local a="$LOUT/.s1.png" b="$LOUT/.s2.png" i
+    for i in $(seq 1 12); do
+      shot "$a"; sleep 0.4; shot "$b"
+      if python3 - "$a" "$b" <<'PYS'
+import sys
+from PIL import Image, ImageChops
+try:
+    a = Image.open(sys.argv[1]).convert("L")
+    b = Image.open(sys.argv[2]).convert("L")
+except Exception:
+    sys.exit(1)
+if a.size != b.size:
+    sys.exit(1)
+bbox = ImageChops.difference(a, b).point(lambda p: 255 if p > 24 else 0).getbbox()
+# 狀態列的時鐘一直在變,所以允許極小面積的差異。
+if bbox is None:
+    sys.exit(0)
+area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+sys.exit(0 if area < a.width * a.height // 200 else 1)
+PYS
+      then
+        rm -f "$a" "$b"
+        return 0
+      fi
+      sleep 0.6
+    done
+    rm -f "$a" "$b"
+    return 1
+  }
+  wait_stable || { fail "$LAYOUT:畫面一直在動,拍不到穩定的底圖"; continue; }
+  shot "$LOUT/0-idle.png"
+
   for k in "$KEY_M" "$KEY_G" "$KEY_G" "$KEY_A" "$KEY_M"; do
     tap_key "$k" || { fail "$LAYOUT:點不到鍵 $k"; continue 2; }
   done
@@ -311,18 +359,19 @@ for n in root.iter("node"):
     SLOT_LINE='    syllable_slots: ["nope_1", "nope_2", "nope_3"]'
   fi
 
-  shot() { adbs shell screencap -p "/sdcard/syl.png" >/dev/null 2>&1; adbs pull /sdcard/syl.png "$1" >/dev/null 2>&1; }
-
   # 裁切 + OCR。⚠ 一定要避開候選列(理由見 read_frame)。
   ocr_region() {
     local png="$1" outtxt="$2"
     python3 - "$png" "$outtxt" "$LOUT/keymap.json" "$GRID_TOP" "$FRAME_TOP" "$WM_DENS" \
-             "$SLOT_LINE" "$TESSERACT" "$TESSDATA" <<'PY'
+             "$SLOT_LINE" "$TESSERACT" "$TESSDATA" "$LOUT/0-idle.png" <<'PY'
 import json, subprocess, sys, os, re
 from PIL import Image, ImageOps
-png, outtxt, keymap, grid_top, frame_top, dens, slot_line, tess, tessdata = sys.argv[1:10]
+png, outtxt, keymap, grid_top, frame_top, dens, slot_line, tess, tessdata, idle = sys.argv[1:11]
 grid_top, frame_top, dens = int(grid_top), int(frame_top), int(dens)
 im = Image.open(png).convert("L")
+base = Image.open(idle).convert("L") if os.path.isfile(idle) else None
+if base is not None and base.size != im.size:
+    base = None          # 尺寸變了(旋轉?)就別比,寧可退回舊做法也不要比錯
 env = dict(os.environ)
 if tessdata:
     env["TESSDATA_PREFIX"] = tessdata
@@ -352,14 +401,23 @@ def ocr(img, tag, psms):
                       min(work.width, bb[2] + pad), min(work.height, bb[3] + pad)))
     if work.height < 4 or work.width < 4:
         return ""
-    scale = max(1, int(round(80.0 / work.height)))
+    # 字高拉到 ~160px 再送。80px 那一版把 cn-t9-pinyin 的 `ni` 讀成 `ne` ——
+    # 那一格是淺灰底上的深灰字,`i` 的點在低解析度下會併進字身。
+    scale = max(1, int(round(160.0 / work.height)))
     work = work.resize((work.width * scale, work.height * scale), Image.LANCZOS)
     work = ImageOps.expand(work, border=30, fill=255)
     work.save(outtxt + "." + tag + ".png")
-    best = ""
     # psm 8 = 單一詞(左欄一格就是一個詞),psm 7 = 單行(上方橫排一行三個詞)。
     # ⚠ 順序由呼叫端決定:對上方橫排先用 psm 8 的話,它只會吐出一個詞,
     #   `mi` 就不見了 —— 而斷言要的是「ni 與 mi 都在」。
+    #
+    # ⚠ **取聯集,不是取第一個非空。** 同一張圖不同 psm 會給出不同讀法
+    #   (實測 `ni` 在 psm 8 下讀成 `ne`、psm 7 下讀對)。取第一個等於讓
+    #   psm 的排序決定關卡紅不紅,那是隨機的紅燈,和假綠燈一樣有害。
+    #   代價是判準變成「**某一種讀法**認得出 ni」;能這樣放寬的前提是
+    #   這一格已經由「打字前後有沒有變」定位過了 —— 它一定是消歧格,
+    #   不會是候選列(候選列的 comment 印著 ni hao,那才是真正的假綠燈來源)。
+    toks = []
     for psm in psms:
         r = subprocess.run(
             [tess, outtxt + "." + tag + ".png", "stdout", "--psm", psm,
@@ -368,10 +426,10 @@ def ocr(img, tag, psms):
              "-c", "load_system_dawg=0", "-c", "load_freq_dawg=0"],
             capture_output=True, text=True, env=env)
         t = re.sub(r"[^a-z]+", " ", r.stdout.lower()).strip()
-        if t:
-            best = t
-            break
-    return best
+        for w in t.split():
+            if w not in toks:
+                toks.append(w)
+    return " ".join(toks)
 
 ids = re.findall(r'"([^"]+)"', slot_line) if slot_line.strip() else []
 tokens, boxes = [], []
@@ -407,11 +465,25 @@ if rects:
     col = (max(0, x0), max(0, grid_top), min(im.width, x1), im.height)
     boxes.append(col)
     strip = im.crop(col)
-    w = ImageOps.autocontrast(strip, cutoff=1)
-    lo, hi = w.getextrema()
-    thr = lo + (hi - lo) * 0.45 if hi > lo else 0
-    px = w.load()
-    rowink = [sum(1 for x in range(w.width) if px[x, y] <= thr) for y in range(w.height)]
+    if base is not None:
+        # 「有沒有變」比「有沒有墨跡」精準:數字列與 `!@#` 那顆鍵一直都在,
+        # 但它們不會因為打了字而改變,於是自然被排除。
+        b = base.crop(col)
+        sp, bp = strip.load(), b.load()
+        rowink = [
+            sum(1 for x in range(strip.width) if abs(sp[x, y] - bp[x, y]) > 24)
+            for y in range(strip.height)
+        ]
+        # 少量雜訊(抗鋸齒、游標)不算變化。
+        floor = max(2, strip.width // 20)
+        rowink = [n if n >= floor else 0 for n in rowink]
+        w = strip
+    else:
+        w = ImageOps.autocontrast(strip, cutoff=1)
+        lo, hi = w.getextrema()
+        thr = lo + (hi - lo) * 0.45 if hi > lo else 0
+        px = w.load()
+        rowink = [sum(1 for x in range(w.width) if px[x, y] <= thr) for y in range(w.height)]
     bands, cur = [], None
     for y, n in enumerate(rowink):
         if n > 0 and cur is None:
@@ -422,6 +494,15 @@ if rects:
             cur = None
     if cur is not None and w.height - cur >= 8:
         bands.append((cur, w.height))
+    # 一個橫帶佔掉半條欄以上,那不是一個格位 —— 幾乎一定是底圖拍在畫面還在動的
+    # 時候。這種情況要**指名**,不能讓它變成「消歧欄上讀不到 ni/mi」——
+    # 那句話會把人送去查一個沒壞的功能。
+    if bands and max(y1 - y0 for y0, y1 in bands) > w.height * 0.5:
+        open(outtxt, "w").write("")
+        open(outtxt + ".tap", "w").write("")
+        print("BOX=%s TEXT= TAP=- ERROR=左欄整片都在變,底圖不可信(鍵盤可能還在動)"
+              % (boxes,))
+        sys.exit(0)
     for n, (by0, by1) in enumerate(bands):
         pad = 8
         b = (0, max(0, by0 - pad), w.width, min(w.height, by1 + pad))
@@ -438,6 +519,26 @@ else:
     h = int(round(40 * dens / 160.0))
     b = (0, frame_top, im.width, min(im.height, frame_top + h))
     boxes.append(b)
+    if base is not None:
+        d = im.crop(b)
+        e = base.crop(b)
+        dp, ep = d.load(), e.load()
+        changed = sum(
+            1
+            for y in range(d.height)
+            for x in range(0, d.width, 4)
+            if abs(dp[x, y] - ep[x, y]) > 24
+        )
+        # 門檻是量出來的,不是猜的:實測 t9-pinyin 這一條在打字前後有 172 個
+        # 取樣點變了("ni mi" 兩個小字),而完全沒變的區域是 0。所以這裡要的是
+        # 一個「有沒有」的下限,不是「變了多少」的比例 —— 比例那一版訂在 226,
+        # 把一條**畫對了**的消歧欄判成沒出現。
+        if changed < 24:
+            # 這一條在打字前後一模一樣 —— 它不是消歧欄,是別的東西。
+            open(outtxt, "w").write("")
+            open(outtxt + ".tap", "w").write("")
+            print("BOX=%s TEXT= TAP=- ERROR=候選列上方那一條在打字前後沒有變化" % (boxes,))
+            sys.exit(0)
     tokens.append(ocr(im.crop(b), "row", ("7", "6")))
 
 text = " ".join(t for t in tokens if t).strip()

@@ -325,7 +325,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: emulator-artifacts
-          path: build/release-check/
+          # ⚠ 消歧欄那一關失敗時會印出 build/verify-syllables/... 的截圖路徑,
+          #   但以前沒有收進 artifact —— 於是訊息指著一個 run 結束就消失的路徑,
+          #   紅了也看不到畫面。這一輪就是因此得靠本機模擬器重跑一次。
+          path: |
+            build/release-check/
+            build/verify-syllables/
           if-no-files-found: ignore
 
   # ══════════════════════════════════════════════════════════════ 發布 ══
