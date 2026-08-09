@@ -104,6 +104,15 @@ if [ -z "$TESSERACT" ] || [ ! -x "$TESSERACT" ]; then
   echo "找不到 tesseract。請安裝(apt-get install -y tesseract-ocr)或設 RIME_TESSERACT。" >&2
   exit 2
 fi
+# ⚠ 同樣的道理,但這一條是**吃過的虧**:GitHub runner 上沒有 Pillow,
+#   裁切那段 python 每次都 ModuleNotFoundError,而腳本沒有 -e、
+#   `ocr_region` 的輸出檔就是空的 —— 於是三份佈局都報
+#   「消歧欄上讀不到 ni/mi」。**看起來像產品壞了,其實是關卡自己缺套件。**
+#   工具缺席必須在這裡就停,而且訊息要指向安裝,不要指向產品。
+if ! python3 -c "import PIL" >/dev/null 2>&1; then
+  echo "python3 缺 Pillow(裁切要用)。請安裝:pip3 install --user pillow" >&2
+  exit 2
+fi
 
 # ═══════════════════════ 第 0 關:方案漂移 ═══════════════════════
 #
@@ -441,8 +450,14 @@ PY
   # ── 第 2 關:第一個音節 ─────────────────────────────────────────
   read_frame || { fail "$LAYOUT:讀不到 IME 視窗 frame"; continue; }
   shot "$LOUT/1-typed.png"
-  OCR1="$(ocr_region "$LOUT/1-typed.png" "$LOUT/1-typed.txt" 2>&1)"
+  OCR1="$(ocr_region "$LOUT/1-typed.png" "$LOUT/1-typed.txt" 2>&1)"; RC1=$?
   info "$OCR1"
+  # 裁切/OCR 自己壞掉 ≠ 畫面上沒有那幾個字。兩者報成同一句話的話,
+  # 下一個人會去查一個根本沒壞的功能(這正是這一輪發生的事)。
+  if [ "$RC1" -ne 0 ]; then
+    fail "$LAYOUT:裁切/OCR 這一步自己失敗了(exit $RC1),不是畫面的問題:$OCR1"
+    continue
+  fi
   T1="$(cat "$LOUT/1-typed.txt" 2>/dev/null || echo)"
   if echo "$T1" | grep -qw ni && echo "$T1" | grep -qw mi; then
     pass "$LAYOUT:畫面上讀得到第一個音節 ni 與 mi(\"$T1\")"
@@ -473,8 +488,12 @@ PY
   # ── 第 3 關:第二個音節 ─────────────────────────────────────────
   read_frame || { fail "$LAYOUT:讀不到 IME 視窗 frame"; continue; }
   shot "$LOUT/2-picked.png"
-  OCR2="$(ocr_region "$LOUT/2-picked.png" "$LOUT/2-picked.txt" 2>&1)"
+  OCR2="$(ocr_region "$LOUT/2-picked.png" "$LOUT/2-picked.txt" 2>&1)"; RC2=$?
   info "$OCR2"
+  if [ "$RC2" -ne 0 ]; then
+    fail "$LAYOUT:裁切/OCR 這一步自己失敗了(exit $RC2),不是畫面的問題:$OCR2"
+    continue
+  fi
   T2="$(cat "$LOUT/2-picked.txt" 2>/dev/null || echo)"
   if echo "$T2" | grep -qwE 'hao|gan|gao'; then
     pass "$LAYOUT:選了 ni 之後,畫面上換成第二個音節(\"$T2\")"

@@ -265,6 +265,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y tesseract-ocr tesseract-ocr-eng
           tesseract --version | head -1
+          # 裁切用 Pillow。runner 的 python3 預設沒有它,少了這一行,
+          # 關卡會用「消歧欄上讀不到 ni/mi」的說法報一個不存在的產品問題。
+          python3 -m pip install --quiet --user pillow
+          python3 -c "import PIL; print('Pillow', PIL.__version__)"
 
       - name: 啟用 KVM(沒有它模擬器會慢到超時)
         run: |
