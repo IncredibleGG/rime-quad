@@ -310,10 +310,49 @@ if [ "$SKIP_EMU" -eq 0 ]; then
     [ -n "$CVC" ] && [ -n "$NEW_VC" ] && [ "$CVC" -lt "$NEW_VC" ] || continue
     PREV="$cand"; break
   done
+  # 「前一版」的套件名可能跟現在不一樣 —— 改 applicationId 等於換一個 app。
+  # 那種時候 `run-as <新套件>` 在舊版身上看不到任何檔案,這一關必然失敗,
+  # 而失敗訊息會是「舊版跑了 180s 還沒種出資料」—— 完全指錯方向。
+  pkg_of() { "$AAPT2" dump badging "$1" 2>/dev/null \
+               | grep -oE "package: name='[^']+'" | head -1 | cut -d"'" -f2; }
+  PREV_PKG=""
+  [ -n "$PREV" ] && PREV_PKG="$(pkg_of "$PREV")"
   if [ -z "$PREV" ]; then
     skip "release/ 下沒有前一版，升級路徑完全沒有驗到"
+  elif [ -n "$PREV_PKG" ] && [ "$PREV_PKG" != "$PKG" ]; then
+    # ⚠ 這一段刻意**不是**把關卡關掉。沒有明文宣告就當場失敗 ——
+    #   applicationId 無聲地變了,是最貴的那種缺陷:所有使用者都升不上去。
+    if [ "$PREV_PKG" = "${RS_ANDROID_APP_ID_PREVIOUS:-}" ]; then
+      echo "  前一版:$(basename "$PREV")(套件 $PREV_PKG)"
+      echo "  [INFO] 這是一次**已宣告**的套件識別碼變更:$PREV_PKG -> $PKG"
+      echo "  [INFO] 理由:${RS_ANDROID_APP_ID_CHANGE_REASON:-(未填)}"
+      # 換套件之後「升級」在定義上不存在,所以改驗這一次真正該成立的事:
+      # 新舊兩個 app 並存 —— 也就是使用者會看到兩個,必須自己移除舊的。
+      # 這件事要被關卡驗到,而不是靠人記得在發布說明裡講。
+      if "$ADB" -s "$SER" install -r "$PREV" >/dev/null 2>&1; then
+        PKGS="$("$ADB" -s "$SER" shell pm list packages 2>/dev/null | tr -d "\r")"
+        if printf "%s\n" "$PKGS" | grep -qx "package:$PREV_PKG" \
+           && printf "%s\n" "$PKGS" | grep -qx "package:$PKG"; then
+          ok "已宣告的套件變更:新舊兩個 app 並存(使用者必須自行移除舊的那一個)"
+        else
+          bad "宣告的套件變更下,新舊兩個套件沒有同時存在 —— 與預期不符"
+        fi
+        "$ADB" -s "$SER" uninstall "$PREV_PKG" >/dev/null 2>&1 || true
+      else
+        bad "宣告的舊套件裝不上去,無法驗證共存行為"
+      fi
+      echo "  [!] 使用者動作:必須先解除安裝 $PREV_PKG,再安裝 $PKG。詞典與設定不會轉移。"
+    else
+      bad "前一版的套件是 $PREV_PKG,與現在的 $PKG 不同,而 product.env 沒有宣告這次變更 —— applicationId 被無聲地改掉了,所有使用者都升不上去"
+    fi
   else
-    echo "  前一版：$(basename "$PREV")"
+    echo "  前一版:$(basename "$PREV")"
+    # 宣告過期偵測:線上版本的套件名已經等於現在的了,那份一次性宣告該刪掉,
+    # 否則下一次真的無聲改套件時,會被誤當成「已宣告」而放行。
+    if [ -n "${RS_ANDROID_APP_ID_PREVIOUS:-}" ]; then
+      echo "  [INFO] product.env 仍留著 ANDROID_APP_ID_PREVIOUS=$RS_ANDROID_APP_ID_PREVIOUS,"
+      echo "         而線上版本的套件名已經是 $PKG —— 那份一次性宣告可以刪掉了。"
+    fi
     # 先移除，才能裝回舊簽章的版本 —— 第 6 步已經裝上新版了，
     # 直接 install -r 舊版會因為簽章不同（或降版）而失敗，
     # 於是升級測試被「略過」而不是被執行。那正好放過了要驗的東西。
