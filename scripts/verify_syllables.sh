@@ -411,13 +411,13 @@ def ocr(img, tag, psms):
     # ⚠ 順序由呼叫端決定:對上方橫排先用 psm 8 的話,它只會吐出一個詞,
     #   `mi` 就不見了 —— 而斷言要的是「ni 與 mi 都在」。
     #
-    # ⚠ **取聯集,不是取第一個非空。** 同一張圖不同 psm 會給出不同讀法
-    #   (實測 `ni` 在 psm 8 下讀成 `ne`、psm 7 下讀對)。取第一個等於讓
-    #   psm 的排序決定關卡紅不紅,那是隨機的紅燈,和假綠燈一樣有害。
-    #   代價是判準變成「**某一種讀法**認得出 ni」;能這樣放寬的前提是
-    #   這一格已經由「打字前後有沒有變」定位過了 —— 它一定是消歧格,
-    #   不會是候選列(候選列的 comment 印著 ni hao,那才是真正的假綠燈來源)。
-    toks = []
+    # ⚠ **不要跨 psm 取聯集。** 在真的 band 圖上掃過一輪(12 張、4 個 psm、
+    #   oem 與 whitelist 各兩種)結果很乾脆:
+    #     · 一格一個詞的直欄 → psm 8 / 13 全對,psm 6 / 7 一律吐 `al` `aal`
+    #     · 一行多個詞的橫排 → psm 6 / 7 全對,psm 8 / 13 黏成 `nimi`
+    #   whitelist 與 oem 完全不影響。所以正確的 psm 只有一個,聯集只會把
+    #   另一個 psm 的垃圾一起收進來(實測:`ni al mi aal`)。
+    #   呼叫端給的第一個就是對的那一個,後面的只在前面讀不出東西時才試。
     for psm in psms:
         r = subprocess.run(
             [tess, outtxt + "." + tag + ".png", "stdout", "--psm", psm,
@@ -426,10 +426,9 @@ def ocr(img, tag, psms):
              "-c", "load_system_dawg=0", "-c", "load_freq_dawg=0"],
             capture_output=True, text=True, env=env)
         t = re.sub(r"[^a-z]+", " ", r.stdout.lower()).strip()
-        for w in t.split():
-            if w not in toks:
-                toks.append(w)
-    return " ".join(toks)
+        if t:
+            return t
+    return ""
 
 ids = re.findall(r'"([^"]+)"', slot_line) if slot_line.strip() else []
 tokens, boxes = [], []
@@ -462,7 +461,19 @@ if rects:
     # 印著「ni hao」,裁進來就是永遠綠的假關卡)。再依「有墨跡的橫帶」把欄切成
     # 一格一格,每一帶就是一個讀音。
     x0 = min(r["x"] for r in rects); x1 = max(r["x"] + r["w"] for r in rects)
-    col = (max(0, x0), max(0, grid_top), min(im.width, x1), im.height)
+    # ⚠ **格線頂端要往上讓一點,否則 `i` 的那一點會被切掉。**
+    #   CI 上實際發生過:`grid_top = FRAME_BOT - GRID_H` 算出來的線正好壓在
+    #   `ni` 的字身上緣,那一點落在線的上面 —— 裁出來的圖是 `nl`,
+    #   tesseract 讀成 `ne`,而畫面完全正確。(本機模擬器解析度不同,
+    #   那一點剛好在線下面,所以本機一直是綠的 —— 又一個「換台機器才發作」。)
+    #
+    #   讓多少要有上限:候選列就在格線區正上方,而它的 comment 印著「ni hao」——
+    #   讓過頭就會裁到候選列,那是這支腳本從第一天就在防的假綠燈。
+    #   兩個上限取小的:格線區高度的 6%,以及「視窗頂端到格線頂端」的 25%
+    #   (候選列的文字在它自己那一條的中間,25% 連它的下緣留白都碰不到)。
+    lift = min(int(0.06 * max(0, im.height - grid_top)),
+               int(0.25 * max(0, grid_top - frame_top)))
+    col = (max(0, x0), max(0, grid_top - lift), min(im.width, x1), im.height)
     boxes.append(col)
     strip = im.crop(col)
     if base is not None:
@@ -484,16 +495,32 @@ if rects:
         thr = lo + (hi - lo) * 0.45 if hi > lo else 0
         px = w.load()
         rowink = [sum(1 for x in range(w.width) if px[x, y] <= thr) for y in range(w.height)]
-    bands, cur = [], None
+    # 先切出所有的墨跡段(不論多短),之後再合併、再篩。
+    runs, cur = [], None
     for y, n in enumerate(rowink):
         if n > 0 and cur is None:
             cur = y
         elif n == 0 and cur is not None:
-            if y - cur >= 8:
-                bands.append((cur, y))
+            runs.append((cur, y))
             cur = None
-    if cur is not None and w.height - cur >= 8:
-        bands.append((cur, w.height))
+    if cur is not None:
+        runs.append((cur, w.height))
+
+    # ⚠ **`i` 的那一點是獨立的一段。** 直接用「長度 >= 8」篩,那一點會被丟掉,
+    #   而裁出來的圖就變成 `nl` —— CI 上實際發生過:tesseract 讀成 `ne`,
+    #   看起來像功能壞了,其實是這裡把字裁壞了。(本機的模擬器解析度不同,
+    #   那一點剛好併進來了,所以本機一直是綠的。)
+    #   所以:間距小於「較高那一段的 60%」就當成同一個字併起來。
+    merged = []
+    for r in runs:
+        if merged:
+            gap = r[0] - merged[-1][1]
+            tall = max(r[1] - r[0], merged[-1][1] - merged[-1][0])
+            if gap <= max(6, int(tall * 0.6)):
+                merged[-1] = (merged[-1][0], r[1])
+                continue
+        merged.append(r)
+    bands = [r for r in merged if r[1] - r[0] >= 8]
     # 一個橫帶佔掉半條欄以上,那不是一個格位 —— 幾乎一定是底圖拍在畫面還在動的
     # 時候。這種情況要**指名**,不能讓它變成「消歧欄上讀不到 ni/mi」——
     # 那句話會把人送去查一個沒壞的功能。
@@ -506,7 +533,7 @@ if rects:
     for n, (by0, by1) in enumerate(bands):
         pad = 8
         b = (0, max(0, by0 - pad), w.width, min(w.height, by1 + pad))
-        tok = ocr(strip.crop(b), "band%d" % n, ("8", "7"))
+        tok = ocr(strip.crop(b), "band%d" % n, ("8", "13"))
         tokens.append(tok)
         # 點的是**我們剛剛在畫面上讀到的那一格**,不是模型算出來的座標。
         if tok and "ni" in tok.split() and not tap_xy:
