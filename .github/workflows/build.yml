@@ -319,6 +319,17 @@ jobs:
             #   所以行末的 `\` 會原樣變成一個參數,腳本收到之後回「未知參數: \」
             #   然後以 2 結束。YAML 是合法的,命令是壞的 —— 驗 YAML 驗不到這件事。
             bash ./scripts/verify_syllables.sh --apk android/app/build/outputs/apk/debug/app-debug.apk
+            # 匯出/匯入的完整往返。**這一支以前沒有被任何 workflow 呼叫過**,
+            # 而 docs/backup-format.md §343 把它當成「整條往返實跑過」的證據 ——
+            # 那句話在它被跑的那一天是真的,之後沒有任何東西讓它保持為真。
+            #
+            # 現在它是承重的:下載頁叫改名前的使用者「先匯出詞庫再解除安裝」,
+            # 匯出要是壞的,那句話會直接毀掉他的詞庫。
+            #
+            # ⚠ 它驗的東西單元測試守不住:剛學到的詞還在 librime 的 WriteBatch 裡,
+            #   直接複製 *.userdb/ 拿到的是上一輪的詞庫 —— 能開、能用、大小差不多,
+            #   只是少了最近學的,而且沒有任何錯誤訊息。
+            bash ./scripts/verify_backup_roundtrip.sh --apk android/app/build/outputs/apk/debug/app-debug.apk
 
       - name: 上傳模擬器 artifact(截圖、logcat、升級紀錄)
         if: always()
@@ -331,6 +342,7 @@ jobs:
           path: |
             build/release-check/
             build/verify-syllables/
+            build/verify-backup/
           if-no-files-found: ignore
 
   # ══════════════════════════════════════════════════════════════ 發布 ══
