@@ -187,3 +187,55 @@ TEST(statusbar_broken_anchor_strings_fall_back_instead_of_going_off_screen) {
     CHECK(p.y + p.h <= 1040);
   }
 }
+
+// ── 寬度變了之後必須重走這支純函式 ──────────────────────────────
+//
+// ⚠ 上面每一條都餵固定的 kBarW,所以「那一橫變寬之後沒有重新定位」
+//   一條都碰不到。而那正是實際發生的缺陷:status_bar.cc 的 Relayout
+//   用 SWP_NOACTIVATE | SWP_NOMOVE 只改尺寸 —— 左上角釘死、只往右長。
+
+TEST(statusbar_growing_wider_stays_inside_the_work_area) {
+  const WorkArea mon = Primary1080();
+  // 「未就緒」:一格,約 114 DIP。使用者沒有拖過,走預設的右下角 12/12。
+  const PlacedBar narrow = PlaceStatusBar(BarAnchor(), {mon}, 114, kBarH);
+  CHECK_INT(narrow.w, 114);
+  CHECK_INT(mon.right - (narrow.x + narrow.w), 12);
+
+  // 就緒之後變成四格,約 220 DIP。重走一次這支純函式:
+  const BarAnchor a =
+      MakeAnchor(mon, narrow.x, narrow.y, narrow.w, narrow.h);
+  const PlacedBar wide = PlaceStatusBar(a, {mon}, 220, kBarH);
+  CHECK_INT(wide.w, 220);
+  CHECK(wide.x >= mon.left);
+  CHECK(wide.x + wide.w <= mon.right);
+  // 右錨定:右緣仍然離工作區右邊 12,長出來的部分往左跑。
+  CHECK_INT(mon.right - (wide.x + wide.w), 12);
+  CHECK(wide.x < narrow.x);
+
+  // ── 對照組:只改尺寸不重擺會跑出去多少 ──
+  // 這不是裝飾。缺陷的量級寫在測試裡,下一個人才知道「不重擺」
+  // 的後果是「設定那一格整格點不到」,而不是「差一點點」。
+  const int kept_left = narrow.x;             // SWP_NOMOVE 保留的左上角
+  CHECK(kept_left + 220 > mon.right);
+  CHECK_INT(kept_left + 220 - mon.right, 94);  // 94 px 在螢幕外面
+}
+
+TEST(statusbar_growing_wider_survives_a_narrow_work_area) {
+  // 極端:工作區只有 150 寬,而那一橫要 220。先夾尺寸、再擺位置,
+  // 不可以產生負的邊距(§8.6.7.3)。
+  WorkArea tiny;
+  tiny.left = 0;
+  tiny.top = 0;
+  tiny.right = 150;
+  tiny.bottom = 200;
+  tiny.primary = true;
+  tiny.dpi = 96;
+  for (int w = 100; w <= 400; w += 7) {
+    const PlacedBar p = PlaceStatusBar(BarAnchor(), {tiny}, w, kBarH);
+    CHECK(p.w >= 1);
+    CHECK(p.x >= tiny.left);
+    CHECK(p.y >= tiny.top);
+    CHECK(p.x + p.w <= tiny.right);
+    CHECK(p.y + p.h <= tiny.bottom);
+  }
+}

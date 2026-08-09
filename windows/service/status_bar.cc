@@ -161,8 +161,7 @@ void StatusBar::ThreadMain() {
   fonts_.Reset(dpi_, Script::kHant);
   visible_ = st.GetTri(keys::kAppearanceFloatingBar) != Tri::kFalse;
 
-  Relayout();
-  ApplyPlacement();
+  Relayout();  // Relayout 自己會走 ApplyPlacement(寬度是它算出來的)
   if (visible_) ::ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
 
   MSG msg;
@@ -273,20 +272,43 @@ void StatusBar::Relayout() {
   }
   const int total = x - gap + Dip(kBarBorder + space::s2, dpi_);
 
-  RECT cur{};
-  ::GetWindowRect(hwnd_, &cur);
-  ::SetWindowPos(hwnd_, HWND_TOPMOST, cur.left, cur.top, std::max(total, minw),
-                 h, SWP_NOACTIVATE | SWP_NOMOVE);
+  // ── ⚠ 這裡以前是 SWP_NOMOVE ────────────────────────────────────
+  //
+  // 左上角釘死、只往右長。而這一橫是**右錨定**的
+  // (statusbar_place.cc:「mon->right - dx - w」),預設離右邊 12 DIP。
+  // 最痛的那條路是「未就緒(1 格,約 114 DIP)→ 就緒(4 格,約 195~220)」:
+  // 寬度多 80~110 DIP,扣掉 12 的邊距之後有 70~100 DIP 在螢幕外面 ——
+  // 「設定」整格點不到,而使用者剛裝好、正需要那一格。
+  //
+  // 修法不是「往左退一點」,是**寬度一變就重走 §12.10.5 的第 3 條**:
+  // 一律把視窗矩形夾進工作區。那是純函式,單元測試碰得到。
+  const int total_w = std::max(total, minw);
+  ::SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, total_w, h,
+                 SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOZORDER);
+  ApplyPlacement(MulDivRound(total_w, 96, static_cast<int>(dpi_)));
 }
 
-void StatusBar::ApplyPlacement() {
+void StatusBar::ApplyPlacement(int w_dip) {
   // §12.10.5 的三段回落。**全部是純函式**(common/statusbar_place.h),
   // 所以在 Ubuntu 上測得到 —— W20 靠這條。
-  BarAnchor anchor;
-  if (store_) {
-    const Settings st = store_->Load();
-    anchor = ParseAnchor(st.Raw(keys::kAppearanceFloatingBarPos));
+  //
+  // ⚠ 寬度由呼叫端給,**不是**從 GetWindowRect 讀回來的。Relayout 一改
+  //   寬度就要重走這裡,而那時視窗上的寬度可能還是舊的。
+  if (w_dip <= 0) {
+    RECT cur{};
+    ::GetWindowRect(hwnd_, &cur);
+    w_dip = MulDivRound(cur.right - cur.left, 96, static_cast<int>(dpi_));
   }
+  // ⚠ 錨點快取著,不要每次重排都去讀一次設定檔:Relayout 會跟著
+  //   引擎狀態變動被叫到,而那是使用者打字的路徑上。
+  if (!anchor_loaded_) {
+    if (store_) {
+      const Settings st = store_->Load();
+      anchor_ = ParseAnchor(st.Raw(keys::kAppearanceFloatingBarPos));
+    }
+    anchor_loaded_ = true;
+  }
+  const BarAnchor anchor = anchor_;
 
   std::vector<WorkArea> monitors;
   struct Ctx {
@@ -325,9 +347,6 @@ void StatusBar::ApplyPlacement() {
       },
       reinterpret_cast<LPARAM>(&ctx));
 
-  RECT rc{};
-  ::GetWindowRect(hwnd_, &rc);
-  const int w_dip = MulDivRound(rc.right - rc.left, 96, static_cast<int>(dpi_));
   const PlacedBar p = PlaceStatusBar(anchor, monitors, w_dip, kBarH);
   ::SetWindowPos(hwnd_, HWND_TOPMOST, p.x, p.y, p.w, p.h,
                  SWP_NOACTIVATE);
@@ -353,6 +372,8 @@ void StatusBar::SavePlacement() {
   Settings st = store_->Load();
   st.SetRaw(keys::kAppearanceFloatingBarPos, SerializeAnchor(a));
   store_->Save(st);
+  anchor_ = a;
+  anchor_loaded_ = true;
 }
 
 // ─────────────────────────── 繪製 ───────────────────────────
@@ -475,16 +496,27 @@ void StatusBar::ClickCell(int cell) {
       return;
     }
     case kCellVariant: {
+      // ⚠ 這裡以前**只讀不寫** simplified_。而 simplified_ 全 windows/
+      //   只有一個寫入點(OnSnapshot),OnSnapshot 只在使用者真的打一個字
+      //   時才會來。後果有兩層:
+      //     · 按下去畫面完全不變(指示器在說謊);
+      //     · ClickCell 是拿 simplified_ 反推要送哪一個值,所以在打字之前
+      //       **再按一次送的是同一個值** —— 使用者會覺得這一格只能往
+      //       一個方向切。
+      //   第一格(中/En)在上面就是樂觀寫入的,兩格的行為必須一致。
       bool now;
       {
         std::lock_guard<std::mutex> lock(mu_);
         now = simplified_;
+        simplified_ = !now;
       }
       // 走設定視窗那一支,三條路(狀態列、系統匣、設定)共用同一份寫入 ——
       // 各寫一份會漂移,而漂移的症狀是「從這裡切有效、從那裡切無效」。
       if (settings_)
         settings_->SetVariantPref(now ? VariantPref::kTraditional
                                       : VariantPref::kSimplified);
+      Relayout();
+      ::InvalidateRect(hwnd_, nullptr, TRUE);
       return;
     }
     case kCellSchema:
@@ -636,8 +668,24 @@ LRESULT CALLBACK StatusBar::PopupProc(HWND hwnd, UINT msg, WPARAM w,
            pick < static_cast<int>(self->popup_items_.size()))
               ? self->popup_items_[pick].first
               : std::string();
+      // ⚠ 與 简/繁 那一格同一個形狀:schema_name_ 只有 OnSnapshot 寫,
+      //   而 OnSnapshot 要等使用者真的打一個字。不樂觀寫入的話,選完方案
+      //   那一格上還印著舊方案的名字 —— 使用者會以為沒選到、再選一次。
+      const std::string picked_name =
+          (inside && pick >= 0 &&
+           pick < static_cast<int>(self->popup_items_.size()))
+              ? self->popup_items_[pick].second
+              : std::string();
       self->ClosePopup();
-      if (!id.empty() && self->engine_) self->engine_->SelectSchemaAll(id);
+      if (!id.empty() && self->engine_) {
+        if (!picked_name.empty()) {
+          std::lock_guard<std::mutex> lock(self->mu_);
+          self->schema_name_ = picked_name;
+        }
+        self->engine_->SelectSchemaAll(id);
+        self->Relayout();
+        ::InvalidateRect(self->hwnd_, nullptr, TRUE);
+      }
       return 0;
     }
     case WM_CAPTURECHANGED:
@@ -761,13 +809,13 @@ LRESULT CALLBACK StatusBar::WndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
       if (self && (Theme::IsColorSetChange(l) || w == SPI_SETHIGHCONTRAST)) {
         self->RefreshTheme();
         // 工作區可能變了(工作列改大小)—— 重新夾一次位置。
-        self->ApplyPlacement();
+        self->ApplyPlacement(0);
       }
       break;
     case WM_DISPLAYCHANGE:
       // ⚠ 螢幕拔掉了。不重新定位的話,那一橫會留在一個不存在的座標上,
       //   而症狀是「它不見了」。
-      if (self) self->ApplyPlacement();
+      if (self) self->ApplyPlacement(0);
       return 0;
     default:
       break;
