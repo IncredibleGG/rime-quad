@@ -147,6 +147,12 @@ jobs:
       - name: bundle 驗證的反向測試（5 個變異,每個都要紅在自己那一條）
         run: |
           set -uo pipefail
+          # ⚠ Actions 的預設 shell 是 `bash -e {0}` —— errexit **本來就開著**,
+          #   而 `set -uo pipefail` 不會把它關掉。留著的話,底下
+          #   `out="$(verify_app_bundle.sh --expect-fail ...)"` 一旦回非零,
+          #   整個 step 會在**印出原因之前**就被掐掉,於是唯一需要那段診斷的
+          #   時候它不存在。失敗由這支腳本自己判定,所以明確關掉。
+          set +e
           SRC=apple/build/LuminaKey.app
           PB=/usr/libexec/PlistBuddy
           BROKEN=/tmp/Broken.app
