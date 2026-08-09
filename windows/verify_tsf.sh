@@ -84,6 +84,7 @@ note_fail() { printf '\033[1;31m  !! %s\033[0m\n' "$*" >&2; fail=1; }
 #   verify_installer.sh 的第一條斷言(「安裝之前 check 必須紅」)會失敗,
 #   而那個失敗看起來與這裡完全無關。
 cleanup() {
+  "${TOOL}" disable-user > "${WORK}/cleanup-user.log" 2>&1 || true
   "${TOOL}" unregister > "${WORK}/cleanup.log" 2>&1 || true
 }
 trap cleanup EXIT
@@ -147,6 +148,37 @@ done
 if [ "${seen}" -ne 1 ]; then
   cat "${WORK}/check.log"
   die "60 秒之後 CTF 仍然看不到這個輸入法 —— 後面每一步都沒有意義"
+fi
+
+# ── 替**目前使用者**啟用那一份語言設定檔 ──────────────────────────
+#
+# ⚠ 這一步是 2026-08-09 加的,而它補的是一個**一直被隱式滿足**的前提。
+#
+#   在那之前,RegisterProfile 的 bEnabledByDefault 是 TRUE ——
+#   那是「全機、對所有使用者預設啟用」。所以這支腳本只要 register 完就能
+#   activate,從來不必問「這個使用者啟用了嗎」。
+#
+#   而 TRUE 正是使用者回報的「清單上三格」的來源之一,這一輪改成了 FALSE
+#   (見 tsf/registration.cc)。改完之後這支腳本**當場紅了**,而且紅得
+#   很有價值:ActivateProfile 仍然回 S_OK、ActivateEx 仍然被呼叫、
+#   語言列按鈕仍然加得上,只有**按鍵一顆都沒有到達 OnTestKeyDown**,
+#   而 GetActiveProfile 回報的是另一個 langid。
+#   也就是說「沒有替使用者啟用」的症狀是**輸入法看起來活著但打不出字**。
+#
+#   這件事現在明著寫進流程:真實的順序是 register → enable-user → 使用,
+#   安裝程式做的就是這三步。腳本照著做,才是在驗使用者會走的那條路。
+#
+# ⚠ 用 --lang 指定,不用自動判斷:runner 上一個中文語言都沒有,自動判斷
+#   會落到退路(0x0804),而這支腳本待會要 activate 的是 ${LANGID}。
+#   兩者不一致的話,失敗的原因會指向完全錯的地方。
+log "1b. 替目前使用者啟用 ${LANGID}(真實順序是 register → enable-user → 使用)"
+if "${TOOL}" enable-user --lang "${LANGID}" > "${WORK}/enable-user.log" 2>&1; then
+  cat "${WORK}/enable-user.log"
+  ok "已替目前使用者啟用 ${LANGID}(而且只有這一份)"
+else
+  cat "${WORK}/enable-user.log"
+  note_fail "enable-user 失敗 —— 下面每一格都會以「打不出字」的形式紅,
+     而真正的原因在這裡。"
 fi
 
 # ══════════════════════════════════════════════════════════════════

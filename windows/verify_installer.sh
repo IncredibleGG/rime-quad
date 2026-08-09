@@ -505,6 +505,16 @@ cat "${WORK}/profiles.log"
 prof_clean="$(tr -d '\r' < "${WORK}/profiles.log")"
 ENABLED_COUNT="$(printf '%s' "${prof_clean}" | sed -n 's/^ENABLED_COUNT=//p' | head -1)"
 ENABLED_LANGS="$(printf '%s' "${prof_clean}" | sed -n 's/^ENABLED=\(0x[0-9A-Fa-f]*\)=.*/\1/p' | tr '\n' ' ')"
+# ⚠ 後面 §6c / §6d / §11 的 TSF 宿主必須 activate **實際被啟用的那一份**。
+#
+#   在這一輪之前,RegisterProfile 的 bEnabledByDefault 是 TRUE(全機、
+#   對所有使用者),所以那幾節寫死 0x0404 也照樣過。改成 FALSE 之後
+#   「哪一份可以被 activate」完全由 enable-user 決定 —— 而 runner 上
+#   一個中文語言都沒有,所以它選的是退路 0x0804,不是 0x0404。
+#   繼續寫死的話那幾節會以「按鍵一顆都沒到達」失敗,而原因與它們無關。
+ACTIVE_LANGID="$(printf '%s' "${ENABLED_LANGS}" | awk '{print $1}')"
+[ -n "${ACTIVE_LANGID}" ] || ACTIVE_LANGID=0x0404
+echo "  後面的 TSF 宿主會 activate ${ACTIVE_LANGID}"
 
 if [ "${ENABLED_COUNT}" = "1" ]; then
   ok "這個使用者啟用了 1 份(${ENABLED_LANGS})—— 清單上只有一格"
@@ -800,7 +810,7 @@ esac
 # 而這一節要驗的是**切過去就該起來**(系統匣圖示與設定視窗都在服務裡,
 # 使用者不該為了看到 UI 而先打一個字)。
 set +e
-"${HOST}" --langid 0x0404 --require-activate \
+"${HOST}" --langid "${ACTIVE_LANGID}" --require-activate \
           --trace "$(w "${WORK}/coldstart-trace.log")" --wait-ms 5000 \
           > "${WORK}/coldstart-activate.log" 2>&1
 rc=$?
@@ -868,7 +878,7 @@ if [ "${SAW}" -eq 1 ]; then
   if [ "${READY_COLD}" -eq 1 ]; then
     ok "冷啟動的服務在自己編譯完詞庫之後接得起連線"
     set +e
-    "${HOST}" --langid 0x0404 --require-activate --require-eaten \
+    "${HOST}" --langid "${ACTIVE_LANGID}" --require-activate --require-eaten \
               --keys nihao1 --expect 你好 \
               --trace "$(w "${WORK}/coldstart-type-trace.log")" --wait-ms 5000 \
               > "${WORK}/coldstart-type.log" 2>&1
@@ -1003,7 +1013,7 @@ if [ -n "${HOST}" ]; then
   TRACE_LOG="${WORK}/tsf-trace.log"
   rm -f "${TRACE_LOG}"
   set +e
-  "${HOST}" --langid 0x0404 --require-activate --require-eaten \
+  "${HOST}" --langid "${ACTIVE_LANGID}" --require-activate --require-eaten \
             --keys nihao1 --expect 你好 \
             --trace "$(w "${TRACE_LOG}")" --wait-ms 4000 \
             > "${WORK}/tsf-host.log" 2>&1
@@ -1053,7 +1063,7 @@ fi
 if [ -n "${HOST}" ]; then
   log "6d. 按鍵矩陣(退格、Delete、方向鍵、Esc、Enter、Tab…)"
   set +e
-  "${SCRIPT_DIR}/verify_input_matrix.sh" --host "${HOST}" --langid 0x0404 \
+  "${SCRIPT_DIR}/verify_input_matrix.sh" --host "${HOST}" --langid "${ACTIVE_LANGID}" \
     --out "${WORK}/inputmatrix" 2>&1 | sed 's/^/    /'
   rc_matrix="${PIPESTATUS[0]}"
   set -e
