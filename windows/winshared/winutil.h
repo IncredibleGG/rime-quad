@@ -10,6 +10,9 @@
 
 #include <string>
 
+// 判斷邏輯在純邏輯層(不 include windows.h),這裡只提供事實。
+#include "../common/elevation_policy.h"
+
 namespace rimewin {
 
 std::wstring Utf8ToWide(const std::string& s);
@@ -60,10 +63,41 @@ std::wstring RimeSettingsEventName();
 // 會讓「看起來一樣」的兩個值比不相等。
 std::string GuidToUtf8(const GUID& g);
 
-// 目前的進程是不是被提權的。TSF 的 DLL 會被載入到提權的進程裡,
-// 而從那裡 CreateProcess 起來的服務也會是提權的 —— 那支服務接著會用
-// 提權的身分去讀寫使用者的設定檔與詞庫。不可以。
+// 目前的進程是不是被提權的。
+//
+// ⚠ **不要拿這一個來決定要不要啟動服務。** 它只回答「高不高」,而那個問題
+//   的答案在內建 Administrator 帳號上永遠是「高」—— 於是服務永遠不啟動,
+//   使用者永遠打不出字(2026-08 的實測回報)。要決定啟不啟動請用下面的
+//   QueryHostElevation() / MayStartUserService()。
+//
+//   這一支仍然有它的用途:setup_main.cc 要判斷「我現在寫的 HKCU 是不是
+//   提權帳號的那一份」,那是另一個問題,而且 IsProcessElevated 對它是對的。
 bool IsProcessElevated();
+
+// ── 這個宿主可不可以啟動服務進程 ─────────────────────────────────
+//
+// 判準與理由全部寫在 windows/common/elevation_policy.h 的檔頭。
+// 這裡只負責把權杖裡的**事實**問出來交給那一格判斷 ——
+// 判斷本身是純邏輯,在 Ubuntu 上有一張窮舉的真值表在守
+// (tests/test_elevation_policy.cc)。
+struct HostElevationFacts {
+  HostElevation verdict = HostElevation::kUnknown;
+  // 下面四個是**原始事實**,不是結論。診斷報告要印它們:使用者回報時
+  // 我們才有辦法重算一次判定,而不是只能相信結論。
+  bool token_query_ok = false;
+  bool is_elevated = true;
+  TokenSplit split = TokenSplit::kUnknown;
+  bool service_account = false;
+  std::wstring sid;
+  // 內建 Administrator 是不是成因(SID 尾巴 -500)。**不參與判定** ——
+  // 判定只看有沒有連結權杖(見 elevation_policy.h)。印出來是為了讓
+  // 回報看得懂「為什麼這台機器整個工作階段都是提權的」。
+  bool builtin_administrator = false;
+};
+HostElevationFacts QueryHostElevation();
+
+// 只要判定的簡便版本。結果在進程的一生中不會變,呼叫端可以快取。
+HostElevation ClassifyHostElevation();
 
 // 本模組(DLL 或 exe)所在的目錄,結尾不含反斜線。
 std::wstring ModuleDirectory(HMODULE module);

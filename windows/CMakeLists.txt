@@ -80,6 +80,11 @@ add_library(rime_common STATIC
   common/schema_choice.cc
   common/settings.cc
   common/schema_list_patch.cc
+  # 「這個宿主可不可以啟動服務」與「這一顆鍵可不可以宣告吃掉」。
+  # 兩者都是純邏輯,所以 Ubuntu 上的 run_logic_tests.sh 也跑得到 ——
+  # 而它們各自對應一次「畫面完全正常、自動化全過」的實測缺陷。
+  common/elevation_policy.cc
+  common/key_eat_policy.cc
   # net_policy.cc 是離線守門的**判斷**與紀錄格式(Android NetworkGate 的移植)。
   # ⚠ 它不會開任何連線,目前也還沒有東西呼叫它 —— 方案市集還沒做。
   #   放進來是因為它有測試,而且是下一輪的地基。CI 會斷言**兩個二進位
@@ -95,7 +100,10 @@ add_library(rime_winshared STATIC winshared/winutil.cc)
 # ole32:StringFromGUID2(GuidToUtf8)。它已經在瘦 DLL 的允許清單裡,
 # 而且每一個載入 COM 的進程本來就有 —— 但 rime_probe 只連 winshared,
 # 所以要放在 PUBLIC,不然那一支會是 LNK2019。
-target_link_libraries(rime_winshared PUBLIC advapi32 ole32)
+# rime_common 是 PUBLIC 的:winutil.h 現在露出 common/elevation_policy.h 的
+# 型別(HostElevation / TokenSplit),而 rime_tsf_host 只連 winshared ——
+# PRIVATE 的話那一支會是 LNK2019,而且是在 CI 上才發現。
+target_link_libraries(rime_winshared PUBLIC advapi32 ole32 rime_common)
 
 add_executable(rime_tests
   tests/test_main.cc
@@ -109,6 +117,8 @@ add_executable(rime_tests
   tests/test_net_policy.cc
   tests/test_proto_compat.cc
   tests/test_schema_list_patch.cc
+  tests/test_elevation_policy.cc
+  tests/test_key_eat_policy.cc
   # 這一支用**真的**鍵盤佈局(LoadKeyboardLayout + ToUnicodeEx),
   # 是 CI 上唯一驗得到「有沒有真的問佈局」的地方。
   tests/test_win32_layouts.cc

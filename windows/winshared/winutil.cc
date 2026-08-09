@@ -89,7 +89,7 @@ std::string GuidToUtf8(const GUID& g) {
 bool IsProcessElevated() {
   HANDLE token = nullptr;
   if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &token))
-    return true;  // 問不到就當成是。寧可不自動啟動服務,也不要提權啟動。
+    return true;  // 問不到就當成是。
   TOKEN_ELEVATION elevation{};
   DWORD size = sizeof(elevation);
   bool elevated = true;
@@ -98,6 +98,86 @@ bool IsProcessElevated() {
   ::CloseHandle(token);
   return elevated;
 }
+
+namespace {
+
+// SID 字串是不是機器帳號。
+//
+// ⚠ 用字串比對而不是 IsWellKnownSid:這三個值是**寫死在 Windows 裡的常數**,
+//   不會在地化、不會隨機器變。而且我們的具名管道名字裡帶的就是這個字串
+//   (RimePipeName),所以「名字裡的那個 SID 是不是一個人」與「可不可以
+//   啟動服務」問的是同一個東西 —— 用同一個值回答比較不會漂移。
+bool SidIsServiceAccount(const std::wstring& sid) {
+  return sid == L"S-1-5-18" ||  // LocalSystem
+         sid == L"S-1-5-19" ||  // NT AUTHORITY\\LOCAL SERVICE
+         sid == L"S-1-5-20";    // NT AUTHORITY\\NETWORK SERVICE
+}
+
+// 內建的 Administrator 帳號:SID 的最後一段(RID)是 500。
+// 只作診斷用,不參與判定。
+bool SidIsBuiltinAdministrator(const std::wstring& sid) {
+  const size_t dash = sid.rfind(L'-');
+  if (dash == std::wstring::npos) return false;
+  return sid.compare(dash + 1, std::wstring::npos, L"500") == 0;
+}
+
+}  // namespace
+
+HostElevationFacts QueryHostElevation() {
+  HostElevationFacts f;
+  f.sid = CurrentUserSidString();
+  f.service_account = SidIsServiceAccount(f.sid);
+  f.builtin_administrator = SidIsBuiltinAdministrator(f.sid);
+
+  HANDLE token = nullptr;
+  if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &token)) {
+    // token_query_ok 留在 false → 判定是 kUnknown → 不啟動。
+    f.verdict = ClassifyHostElevation(false, true, TokenSplit::kUnknown,
+                                      f.service_account);
+    return f;
+  }
+
+  bool ok = !f.sid.empty();  // SID 問不到的話,管道名也算不出來 —— 一樣是壞的
+
+  TOKEN_ELEVATION elevation{};
+  DWORD size = sizeof(elevation);
+  if (::GetTokenInformation(token, TokenElevation, &elevation, size, &size))
+    f.is_elevated = elevation.TokenIsElevated != 0;
+  else
+    ok = false;
+
+  // ⚠ 這一個查詢才是整格的重點:「這個身分有沒有第二份權杖」。
+  //   TokenElevation 只說高不高,而高不高不是我們要問的問題。
+  TOKEN_ELEVATION_TYPE type = TokenElevationTypeDefault;
+  size = sizeof(type);
+  if (::GetTokenInformation(token, TokenElevationType, &type, size, &size)) {
+    switch (type) {
+      case TokenElevationTypeDefault:
+        f.split = TokenSplit::kNoLinkedToken;
+        break;
+      case TokenElevationTypeFull:
+        f.split = TokenSplit::kFullWithLinked;
+        break;
+      case TokenElevationTypeLimited:
+        f.split = TokenSplit::kLimitedWithLinked;
+        break;
+      default:
+        f.split = TokenSplit::kUnknown;
+        ok = false;
+        break;
+    }
+  } else {
+    ok = false;
+  }
+
+  ::CloseHandle(token);
+  f.token_query_ok = ok;
+  f.verdict = ClassifyHostElevation(ok, f.is_elevated, f.split,
+                                    f.service_account);
+  return f;
+}
+
+HostElevation ClassifyHostElevation() { return QueryHostElevation().verdict; }
 
 // ⚠ 資料夾名寫在這一個地方,而且只有這一個地方。
 //   產品改名時改這裡;改別處等於製造一個「刪了一個不存在的資料夾然後

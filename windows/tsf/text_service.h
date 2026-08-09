@@ -20,6 +20,7 @@
 #include <memory>
 #include <string>
 
+#include "../common/key_eat_policy.h"
 #include "ipc_client.h"
 #include "win32_oracle.h"
 
@@ -80,8 +81,32 @@ class TextService : public ITfTextInputProcessorEx,
                            DWORD flags) override;
 
  private:
+  // 一顆按鍵算出來的東西:keysym、族別、以及「該不該宣告吃掉」。
+  //
+  // ⚠ OnTestKeyDown 與 OnKeyDown **必須用同一份**。兩邊各算各的,
+  //   就會出現「測試說吃、真的處理時說不吃」—— 而那正是使用者回報的
+  //   「可以打字,不能刪除」:宿主在測試那一趟就放棄了自己的預設處理,
+  //   事後改口它收不到。見 common/key_eat_policy.h 的檔頭。
+  struct KeyPlan {
+    MappedKey mapped;
+    KeyKind kind = KeyKind::kUnmappable;
+    bool eat = false;
+  };
+  KeyPlan PlanKey(WPARAM w, LPARAM l, bool key_up);
+
+  // 目前有沒有進行中的組字。
+  //
+  // 兩個來源取聯集是刻意的:composition_ 是**我們在宿主文件上**開的那一段,
+  // engine_composing_ 是**引擎**說它手上還有輸入。正常情況兩者一致,
+  // 而不一致的那一刻(StartComposition 失敗、或宿主自己把組字收掉了)
+  // 用聯集才不會把退格鍵誤判成「宿主的鍵」而讓引擎裡的輸入卡住。
+  bool Composing() const { return composition_ != nullptr || engine_composing_; }
+
   // 一顆按鍵的完整處理。回傳「宿主要不要吃掉它」。
   bool HandleKey(ITfContext* ctx, WPARAM w, LPARAM l, bool key_up);
+  // 引擎說它不處理這顆字元鍵時,由我們把那個字寫進文件。
+  // 見 common/key_eat_policy.h:宣告吃掉的鍵一定要有人負責。
+  bool SelfInsertChar(ITfContext* ctx, char32_t ch);
   // 依快照對文件做事。必須在 edit session 內呼叫。
   HRESULT ApplyPlan(TfEditCookie ec, ITfContext* ctx, const Snapshot& snap);
   HRESULT StartCompositionIfNeeded(TfEditCookie ec, ITfContext* ctx);
@@ -113,6 +138,8 @@ class TextService : public ITfTextInputProcessorEx,
   bool key_sink_ok_ = false;
   ITfComposition* composition_ = nullptr;
   ITfContext* composition_ctx_ = nullptr;
+  // 引擎最後一次回報的「我還在組字」。見 Composing()。
+  bool engine_composing_ = false;
 
   IpcClient ipc_;
   // 服務執行檔的完整路徑(與 DLL 同目錄)。空字串 = 算不出來。

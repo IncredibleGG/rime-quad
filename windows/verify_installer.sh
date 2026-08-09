@@ -21,11 +21,22 @@
 # ── 仍然驗不到的(這一節請不要縮水)────────────────────────────
 #
 #   · 在記事本 / 瀏覽器 / Office / 市集 App 裡真的打不打得出字
-#   · 切過去之後 ActivateEx 有沒有被呼叫、組字視窗會不會出現
+#     (§6c 與 §6d 走的是我們自己寫的假宿主 rime_tsf_host.exe)
 #   · 候選窗長什麼樣、位置對不對、高 DPI 與多螢幕
 #   · 使用者的語言列上看不看得到它(還取決於使用者的語言清單,
 #     而 runner 上沒有辦法製造那個情境)
-#   · 「每一顆鍵是不是都真的做了它宣稱的事」
+#   · 語言列按鈕上那個「未啟動」的狀態**長什麼樣** ——
+#     它的判斷邏輯有單元測試,但沒有人看過它畫出來
+#   · 修飾鍵組合(Ctrl+C / Alt+F4)真的沒有被吃掉 ——
+#     假宿主的送鍵路徑不帶修飾鍵狀態,所以那一格只有真值表驗得到
+#
+# ── 這一輪從上面那一欄**搬下來**的(現在驗得到了)────────────────
+#
+#   · 切過去之後 ActivateEx 有沒有被呼叫(§6c)
+#   · **服務由瘦 DLL 自己啟動**(§5c)—— 以前每一次都是這支腳本
+#     自己先把服務跑起來,所以那條路從來沒有被驗過一次
+#   · **冷啟動**:空的使用者資料目錄 + 沒有人先部署 → 第一次打字(§5c)
+#   · 「每一顆鍵是不是都真的做了它宣稱的事」(§6d 的按鍵矩陣)
 #
 # 用法(Git Bash,需要系統管理員權限):
 #   windows/verify_installer.sh --setup <安裝程式.exe> \
@@ -504,6 +515,196 @@ $(echo "${neg}" | sed 's/^/       /')
 fi
 
 # ══════════════════════════════════════════════════════════════════
+#  5c. 冷啟動:空的使用者資料目錄 + 沒有人先把服務跑起來
+# ══════════════════════════════════════════════════════════════════
+#
+# ⚠⚠ **這一節補的是這整支腳本以前最大的一個洞。**
+#
+#   底下的 §6 是這樣開始的:腳本**自己**把 rime_service.exe 跑起來,
+#   等它就緒,然後才驗端到端。§6c 也一樣 —— 它跑 rime_tsf_host 的時候,
+#   服務已經起來而且預熱完了。
+#
+#   也就是說:「使用者切到本輸入法 → 瘦 DLL 在 ActivateEx 裡把服務叫起來」
+#   這一條路,**從來沒有被驗過一次**。而它正是每一個使用者的第一次經驗,
+#   也正是 2026-08 那次回報壞掉的地方(內建 Administrator 帳號上,
+#   那條路被「提權的宿主不啟動服務」擋掉,於是沒有系統匣圖示、
+#   沒有設定視窗、打不出字 —— 三個症狀一個原因,零個錯誤訊息)。
+#
+#   這一節把它變成:**沒有人先動手,只有 ActivateEx。**
+#   而且使用者資料目錄是空的 —— 那才是第一次啟動真正的樣子。
+log "5c. 冷啟動 + 服務由 DLL 自動啟動"
+
+# ⚠ 這一節非要 rime_tsf_host.exe 不可:它是唯一能逼系統走完
+#   「載入 DLL → ActivateEx」的東西,而「服務由 DLL 自動啟動」就掛在那裡。
+#   沒有它就不是「少驗一點」,是這一整條路完全沒有守門 —— 所以不靜靜跳過。
+if [ -z "${HOST}" ]; then
+  note_fail "沒有給 --host,冷啟動與「服務自動啟動」這一整節驗不到。
+     那條路是每個使用者的第一次經驗(切過去 → 系統匣圖示、設定視窗、
+     打得出字),而它在本輪之前從來沒有被驗過一次。"
+fi
+if [ -n "${HOST}" ]; then
+
+# 這一節之後 §6 才會自己啟動服務,所以這裡結束前一定要把服務停掉 ——
+# 不然 §6 那一支會被單一實例的互斥鎖擋掉,而它會安靜地以 0 結束。
+coldstart_stop_service() {
+  "${INSTALL_DIR}/rime_ime_setup.exe" stop-service --dir "${INSTALL_DIR_W}" \
+    > "${WORK}/coldstart-stop.log" 2>&1 || true
+  for _ in $(seq 1 30); do
+    [ "$(count_service)" -eq 0 ] && break
+    sleep 1
+  done
+}
+
+# 進程數。用 tasklist 而不是 kill -0:自動啟動的那一支不是這個 shell 的子行程。
+count_service() {
+  tasklist 2>/dev/null | grep -c -i 'rime_service\.exe' || true
+}
+
+# ── 前置:確定現在真的是「冷」的 ────────────────────────────────
+if [ "$(count_service)" -ne 0 ]; then
+  note_fail "5c 開始前就已經有 rime_service.exe 在跑 —— 這一節要驗的是
+     『沒有人先動手』,有人先動手就驗不到了。"
+  coldstart_stop_service
+fi
+# 使用者資料目錄清空。第一次安裝時它本來就不存在,而重跑這支腳本時會留著。
+rm -rf "${USER_DIR}"
+if [ -d "${USER_DIR}" ]; then
+  note_fail "刪不掉 ${USER_DIR} —— 冷啟動這一節驗不到(目錄裡已經有部署好的產物)"
+else
+  ok "使用者資料目錄是空的:${USER_DIR}"
+fi
+
+# ── 這台機器的提權形狀 ──────────────────────────────────────────
+#
+# ⚠ runner 預設就是系統管理員,所以「提權的宿主不啟動服務」這條規則在
+#   CI 上一直是**生效**的 —— 這正是那個缺陷沒有被 CI 抓到的原因之一。
+#   現在把判定印出來並據此決定要斷言什麼,而**不可以**因為形狀不對就
+#   安靜地跳過:那是這個專案抓過很多次的「測試是綠的,因為它沒在測」。
+"${INSTALL_DIR}/rime_ime_setup.exe" doctor --no-engine --no-scan \
+  > "${WORK}/doctor-coldstart.log" 2>&1 || true
+ELEV="$(tr -d '\r' < "${WORK}/doctor-coldstart.log" \
+        | sed -n 's/^.*\[INFO\] 提權判定: \([a-z-]*\).*$/\1/p' | head -1)"
+if [ -z "${ELEV}" ]; then
+  note_fail "doctor 沒有印出「提權判定:」那一行 —— 第 4 節那一格沒有在看,
+     而它正是使用者回報時唯一能分辨『刻意不啟動』與『壞掉』的東西。"
+  ELEV="(沒印出來)"
+fi
+log "  runner 的提權判定 = ${ELEV}"
+
+case "${ELEV}" in
+  normal|whole-session-elevated)
+    # 這兩種都必須自動啟動。normal 是多數使用者;whole-session-elevated
+    # 是內建 Administrator / 關掉 UAC 的那一種,也就是這次回報的那一種。
+    EXPECT_AUTOSTART=1 ;;
+  split-token-elevated|service-account|unknown)
+    EXPECT_AUTOSTART=0 ;;
+  *)
+    EXPECT_AUTOSTART=0 ;;
+esac
+
+# ── ActivateEx:只切過去,不打字 ────────────────────────────────
+#
+# 刻意不送任何按鍵。以前服務是靠「第一顆按鍵走到 EnsureReady」才起來的,
+# 而這一節要驗的是**切過去就該起來**(系統匣圖示與設定視窗都在服務裡,
+# 使用者不該為了看到 UI 而先打一個字)。
+set +e
+"${HOST}" --langid 0x0404 --require-activate \
+          --trace "$(w "${WORK}/coldstart-trace.log")" --wait-ms 5000 \
+          > "${WORK}/coldstart-activate.log" 2>&1
+rc=$?
+set -e
+tr -d '\r' < "${WORK}/coldstart-activate.log" | sed 's/^/    /'
+[ "${rc}" -eq 0 ] || note_fail "冷啟動的 ActivateEx 那一趟以 ${rc} 結束"
+
+# ── 服務有沒有自己起來 ──────────────────────────────────────────
+SAW=0
+for _ in $(seq 1 30); do
+  if [ "$(count_service)" -gt 0 ]; then SAW=1; break; fi
+  sleep 1
+done
+
+if [ "${EXPECT_AUTOSTART}" -eq 1 ]; then
+  if [ "${SAW}" -eq 1 ]; then
+    ok "**服務由瘦 DLL 自動啟動了**(提權判定 ${ELEV})—— 這一格從本輪之前
+     一直是紙上的:以前每一次都是測試腳本自己先把服務跑起來。"
+  else
+    note_fail "切到本輸入法之後,服務**沒有自己起來**(提權判定 ${ELEV})。
+     使用者看到的會是:沒有系統匣圖示、沒有設定視窗、打不出字 ——
+     三個症狀一個原因,而且沒有任何錯誤訊息。
+     瘦 DLL 的除錯記錄裡會有一行說明它為什麼沒啟動:
+$(tr -d '\r' < "${WORK}/coldstart-trace.log" 2>/dev/null | grep -a '服務' | sed 's/^/       /')"
+  fi
+else
+  # 這台機器的形狀不允許自動啟動。那**不是**跳過 —— 我們仍然斷言兩件事:
+  #   (1) 它確實沒有啟動(規則真的生效,不是碰巧)
+  #   (2) 拒絕的理由有被寫下來(不然使用者看到的就只是「壞掉」)
+  if [ "${SAW}" -eq 0 ]; then
+    ok "提權判定 ${ELEV} → 刻意不自動啟動,而且真的沒有啟動"
+  else
+    note_fail "提權判定 ${ELEV} 說不該自動啟動,但服務還是起來了 ——
+     那條保護沒有生效。"
+  fi
+  if tr -d '\r' < "${WORK}/coldstart-trace.log" 2>/dev/null \
+       | grep -aq '不啟動服務(刻意)'; then
+    ok "除錯記錄裡寫明了拒絕的理由"
+  else
+    note_fail "拒絕啟動而**沒有留下理由** —— 一個刻意的拒絕不該長得跟壞掉一樣。"
+  fi
+  printf '\033[1;33m  ⚠ 這台 runner 的提權形狀是 %s,所以「服務自動啟動」這一條\033[0m\n' "${ELEV}" >&2
+  printf '\033[1;33m    在這裡驗不到。使用者回報的那一種是 whole-session-elevated。\033[0m\n' >&2
+  note_fail "「服務由 DLL 自動啟動」在這台 runner 上驗不到(形狀是 ${ELEV})。
+     這條路徑是每個使用者的第一次經驗,不可以沒有守門 ——
+     請改用一台形狀是 normal 或 whole-session-elevated 的 runner。"
+fi
+
+# ── 冷啟動的第一次打字 ──────────────────────────────────────────
+#
+# 服務起來之後要先把詞庫編譯完(首次安裝是一到數分鐘)。使用者在那段時間
+# 打字打不出中文是正常的,但**打完之後必須成功** —— 那才是「第一次使用」
+# 真正的驗收標準。
+if [ "${SAW}" -eq 1 ]; then
+  log "  等服務就緒(冷啟動要編譯詞庫,可能數分鐘)"
+  READY_COLD=0
+  for i in $(seq 1 900); do
+    if "${PROBE}" --connect-only --attempts 1 > "${WORK}/coldstart-probe.log" 2>&1; then
+      READY_COLD=1
+      break
+    fi
+    sleep 1
+    [ $((i % 60)) -eq 0 ] && log "    ...已等 ${i}s"
+  done
+  if [ "${READY_COLD}" -eq 1 ]; then
+    ok "冷啟動的服務在自己編譯完詞庫之後接得起連線"
+    set +e
+    "${HOST}" --langid 0x0404 --require-activate --require-eaten \
+              --keys nihao1 --expect 你好 \
+              --trace "$(w "${WORK}/coldstart-type-trace.log")" --wait-ms 5000 \
+              > "${WORK}/coldstart-type.log" 2>&1
+    rc=$?
+    set -e
+    tr -d '\r' < "${WORK}/coldstart-type.log" | sed 's/^/    /'
+    if [ "${rc}" -eq 0 ]; then
+      ok "**冷啟動之後第一次打字就打得出「你好」**(空的使用者目錄、
+     沒有人先幫它部署 —— 這正是新使用者的第一次經驗)"
+    else
+      note_fail "冷啟動之後第一次打字失敗(結束碼 ${rc})"
+    fi
+  else
+    note_fail "冷啟動的服務在 900 秒內沒有接起連線 —— 使用者的第一次使用
+     會是『切過去了,然後什麼都不會發生』。"
+  fi
+fi
+
+# 把場地還原:§6 要自己啟動一支服務。
+coldstart_stop_service
+if [ "$(count_service)" -ne 0 ]; then
+  note_fail "5c 結束時還有 rime_service.exe 在跑 —— §6 那一支會被單一實例
+     的互斥鎖擋掉,然後安靜地以 0 結束,而 §6 會變成在驗這一支。"
+fi
+fi  # -n "${HOST}"
+
+
+# ══════════════════════════════════════════════════════════════════
 #  6. 用**安裝好的**東西真的打出「你好」
 # ══════════════════════════════════════════════════════════════════
 #
@@ -644,6 +845,34 @@ if [ -n "${HOST}" ]; then
   fi
 else
   log "6c. (沒有給 --host,跳過「經由真的 TSF」那一段)"
+fi
+
+# ══════════════════════════════════════════════════════════════════
+#  6d. 按鍵矩陣:每一顆會被吃掉的鍵,真的做了它宣稱的事嗎
+# ══════════════════════════════════════════════════════════════════
+#
+# ⚠ 上面的 §6c 送的是 `nihao1` —— 七顆字母與數字,**一顆功能鍵都沒有**。
+#   使用者回報的「可以打字,不能刪除」因此完全在自動化的射程之外:
+#   退格鍵被宣告吃掉、引擎在沒有組字時不處理它,那顆鍵就掉進黑洞,
+#   而 CI 全綠。
+#
+#   windows/verify_input_matrix.sh 把每一顆鍵在「組字中」與「沒有組字」
+#   兩種狀態下各驗一次,而且斷言的是**文件內容**,不是「有沒有被吃掉」。
+if [ -n "${HOST}" ]; then
+  log "6d. 按鍵矩陣(退格、Delete、方向鍵、Esc、Enter、Tab…)"
+  set +e
+  "${SCRIPT_DIR}/verify_input_matrix.sh" --host "${HOST}" --langid 0x0404 \
+    --out "${WORK}/inputmatrix" 2>&1 | sed 's/^/    /'
+  rc_matrix="${PIPESTATUS[0]}"
+  set -e
+  if [ "${rc_matrix}" -eq 0 ]; then
+    ok "按鍵矩陣全過"
+  else
+    note_fail "按鍵矩陣有格子沒過 —— 詳見上面,以及 ${WORK}/inputmatrix/"
+  fi
+else
+  note_fail "沒有給 --host,按鍵矩陣驗不到。退格鍵那一類缺陷只有這一條路
+     抓得到(單元測試驗的是政策,不是政策有沒有接到 TSF 上)。"
 fi
 
 # ══════════════════════════════════════════════════════════════════

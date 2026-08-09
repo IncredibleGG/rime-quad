@@ -42,6 +42,19 @@
 //                     [--require-activate] [--require-eaten]
 //                     [--trace <檔案>] [--wait-ms 3000]
 //
+//   ── 按鍵矩陣模式(windows/verify_input_matrix.sh 用的)──────────
+//
+//   --seq "n i h a o {BS} 1"   逐鍵送。`{名字}` 是功能鍵,見 kNamedKeys。
+//   --pretext "已經有的字"      先把文件內容設成這樣(游標在最後)。
+//                              用來驗「沒有組字時的退格」—— 那需要文件裡
+//                              先有東西可以刪。
+//   --expect-doc "已經有的"     跑完之後文件必須完全等於這個。
+//
+//   ⚠ **宿主會做預設處理。** KeyDown 回報沒吃掉的鍵,這支假宿主會像一個
+//     真的編輯框那樣自己處理(插入字元、退格刪一個、方向鍵移游標)。
+//     少了這一段,「放行」與「掉進黑洞」在文件內容上長得一模一樣 ——
+//     而那正是使用者回報的「可以打字,不能刪除」的形狀。
+//
 //   rime_tsf_host.exe --hold-dll <dll路徑> --hold-ms <毫秒>
 //                     只 LoadLibrary 那個 DLL 然後睡著,不碰 TSF。
 //                     用來**重現使用者解除安裝時撞到的那個狀態**:
@@ -400,6 +413,135 @@ bool AsciiToKey(wchar_t ch, WPARAM* vk, LPARAM* lparam) {
 
 std::string Narrow(const std::wstring& s) { return WideToUtf8(s); }
 
+// ── 具名功能鍵 ────────────────────────────────────────────────────
+//
+// ⚠ 這張表存在的理由:舊的 --keys 只吃 ASCII 字元(VkKeyScanW),
+//   所以 CI **從來沒有送過一顆功能鍵**。使用者回報的退格鍵缺陷因此
+//   完全在自動化的射程之外 —— 六顆字母全綠,而鍵盤是壞的。
+struct NamedKey {
+  const wchar_t* name;
+  WPARAM vk;
+  bool extended;  // lParam bit 24。方向鍵那一組在主鍵盤上是 extended。
+};
+const NamedKey kNamedKeys[] = {
+    {L"BS", VK_BACK, false},      {L"DEL", VK_DELETE, true},
+    {L"LEFT", VK_LEFT, true},     {L"RIGHT", VK_RIGHT, true},
+    {L"UP", VK_UP, true},         {L"DOWN", VK_DOWN, true},
+    {L"HOME", VK_HOME, true},     {L"END", VK_END, true},
+    {L"PGUP", VK_PRIOR, true},    {L"PGDN", VK_NEXT, true},
+    {L"ESC", VK_ESCAPE, false},   {L"ENTER", VK_RETURN, false},
+    {L"TAB", VK_TAB, false},      {L"SPACE", VK_SPACE, false},
+    {L"F1", VK_F1, false},        {L"INS", VK_INSERT, true},
+};
+
+// 一顆要送出去的鍵。
+struct SeqKey {
+  std::wstring label;  // 印出來用
+  WPARAM vk = 0;
+  LPARAM lparam = 0;
+  wchar_t ch = 0;  // 字元鍵才有;宿主的預設處理要拿它插進文件
+};
+
+bool NamedToKey(const std::wstring& name, SeqKey* out) {
+  for (const NamedKey& n : kNamedKeys) {
+    if (name != n.name) continue;
+    const UINT scan =
+        ::MapVirtualKeyW(static_cast<UINT>(n.vk), MAPVK_VK_TO_VSC);
+    out->label = L"{" + name + L"}";
+    out->vk = n.vk;
+    out->lparam = static_cast<LPARAM>(1 | (static_cast<LPARAM>(scan) << 16) |
+                                      (n.extended ? (1L << 24) : 0));
+    out->ch = (n.vk == VK_SPACE) ? L' ' : 0;
+    return true;
+  }
+  return false;
+}
+
+// "n i h a o {BS} 1" → 一串 SeqKey。空白與逗號都是分隔符;
+// 不在 {} 裡的每一個非空白字元各自是一顆鍵。
+// 宿主的預設處理:KeyDown 說「沒吃掉」的鍵,一個真的編輯框會做的事。
+//
+// ⚠⚠ **這一段是這支程式這一輪最重要的改動。**
+//
+//   沒有它的話,「輸入法放行了,宿主收到了」與「輸入法吃掉了但什麼都沒做」
+//   在文件內容上完全一樣(兩者都是文件沒變)。而後者正是使用者回報的
+//   「可以打字,不能刪除」。也就是說:沒有這一段,那個缺陷在 CI 上
+//   **不可能**被抓到,不管送多少顆退格。
+//
+//   所以矩陣的斷言看的是**文件內容**,不是「有沒有被吃掉」。
+void HostDefaultAction(FakeDoc* doc, const SeqKey& k) {
+  const LONG len = static_cast<LONG>(doc->text.size());
+  LONG& s = doc->sel_start;
+  LONG& e = doc->sel_end;
+  if (s < 0) s = 0;
+  if (s > len) s = len;
+  switch (k.vk) {
+    case VK_BACK:
+      if (s > 0) {
+        doc->text.erase(static_cast<size_t>(s - 1), 1);
+        s = e = s - 1;
+      }
+      return;
+    case VK_DELETE:
+      if (s < static_cast<LONG>(doc->text.size()))
+        doc->text.erase(static_cast<size_t>(s), 1);
+      e = s;
+      return;
+    case VK_LEFT:  if (s > 0) s = e = s - 1; return;
+    case VK_RIGHT: if (s < len) s = e = s + 1; return;
+    case VK_HOME:  s = e = 0; return;
+    case VK_END:   s = e = len; return;
+    // 單行編輯框對這幾顆鍵不動文件。Enter 也一樣 —— 插入換行只會讓
+    // 矩陣的預期字串變得難讀,而我們要驗的是「有沒有被放行」。
+    case VK_UP: case VK_DOWN: case VK_PRIOR: case VK_NEXT:
+    case VK_ESCAPE: case VK_TAB: case VK_RETURN: case VK_F1: case VK_INSERT:
+      return;
+    default: break;
+  }
+  if (k.ch != 0) {
+    doc->text.insert(static_cast<size_t>(s), 1, k.ch);
+    s = e = s + 1;
+  }
+}
+
+bool ParseSeq(const std::wstring& seq, std::vector<SeqKey>* out) {
+  size_t i = 0;
+  while (i < seq.size()) {
+    const wchar_t c = seq[i];
+    if (c == L' ' || c == L',' || c == L'\t') {
+      ++i;
+      continue;
+    }
+    if (c == L'{') {
+      const size_t close = seq.find(L'}', i);
+      if (close == std::wstring::npos) {
+        Say("!! --seq 裡有沒收尾的 '{'\n");
+        return false;
+      }
+      const std::wstring name = seq.substr(i + 1, close - i - 1);
+      SeqKey k;
+      if (!NamedToKey(name, &k)) {
+        Say("!! --seq 不認得 {%s} —— 請加進 kNamedKeys\n",
+            Narrow(name).c_str());
+        return false;
+      }
+      out->push_back(k);
+      i = close + 1;
+      continue;
+    }
+    SeqKey k;
+    if (!AsciiToKey(c, &k.vk, &k.lparam)) {
+      Say("!! '%s' 在目前的佈局上打不出來\n", Narrow(std::wstring(1, c)).c_str());
+      return false;
+    }
+    k.label = std::wstring(1, c);
+    k.ch = c;
+    out->push_back(k);
+    ++i;
+  }
+  return true;
+}
+
 void DumpTrace(const std::wstring& path) {
   Say("\n--- 瘦 DLL 的除錯記錄(%s)---\n", Narrow(path).c_str());
   HANDLE h = ::CreateFileW(path.c_str(), GENERIC_READ,
@@ -473,6 +615,10 @@ int main(int, char**) {
 static int Run(int argc, wchar_t** argv) {
   LANGID langid = 0x0404;
   std::wstring keys;
+  std::wstring seq;
+  std::wstring pretext;
+  std::wstring expect_doc;
+  bool have_expect_doc = false;
   std::wstring expect;
   std::wstring trace_path;
   bool require_activate = false;
@@ -486,6 +632,12 @@ static int Run(int argc, wchar_t** argv) {
     if (a == L"--langid" && i + 1 < argc)
       langid = static_cast<LANGID>(::wcstol(argv[++i], nullptr, 0));
     else if (a == L"--keys" && i + 1 < argc) keys = argv[++i];
+    else if (a == L"--seq" && i + 1 < argc) seq = argv[++i];
+    else if (a == L"--pretext" && i + 1 < argc) pretext = argv[++i];
+    else if (a == L"--expect-doc" && i + 1 < argc) {
+      expect_doc = argv[++i];
+      have_expect_doc = true;
+    }
     else if (a == L"--expect" && i + 1 < argc) expect = argv[++i];
     else if (a == L"--trace" && i + 1 < argc) trace_path = argv[++i];
     else if (a == L"--require-activate") require_activate = true;
@@ -582,6 +734,12 @@ static int Run(int argc, wchar_t** argv) {
   Step("CreateDocumentMgr", hr);
 
   FakeDoc* doc = new FakeDoc(hwnd);
+  // 「沒有組字時按退格」需要文件裡先有東西可以刪 —— 不然刪成功與
+  // 刪失敗都是空字串,斷言等於沒有斷言。
+  if (!pretext.empty()) {
+    doc->text = pretext;
+    doc->sel_start = doc->sel_end = static_cast<LONG>(pretext.size());
+  }
   ITfContext* ctx = nullptr;
   TfEditCookie ec = 0;
   if (docmgr) {
@@ -683,8 +841,30 @@ static int Run(int argc, wchar_t** argv) {
     Say("  (ActivateEx 沒有被呼叫)\n");
 
   // ── 送按鍵 ─────────────────────────────────────────────────
+  //
+  // --seq 是逐鍵模式(功能鍵寫成 {BS});--keys 是舊的 ASCII 字串模式。
+  // 兩者最後都變成同一串 SeqKey,走同一條路 —— 不然「矩陣測到的」與
+  // 「§6c 測到的」會是兩段不同的程式碼。
+  std::vector<SeqKey> plan;
+  if (!seq.empty()) {
+    if (!ParseSeq(seq, &plan)) return 2;
+  } else {
+    for (wchar_t ch : keys) {
+      SeqKey k;
+      if (!AsciiToKey(ch, &k.vk, &k.lparam)) {
+        Fail("'%c' 在目前的佈局上打不出來", static_cast<char>(ch));
+        continue;
+      }
+      k.label = std::wstring(1, ch);
+      k.ch = ch;
+      plan.push_back(k);
+    }
+  }
+
   int eaten_count = 0;
-  if (!keys.empty()) {
+  int mismatch_count = 0;
+  int host_handled = 0;
+  if (!plan.empty()) {
     ITfKeystrokeMgr* ks = nullptr;
     hr = thread_mgr->QueryInterface(IID_ITfKeystrokeMgr, (void**)&ks);
     Step("QueryInterface(ITfKeystrokeMgr)", hr);
@@ -713,31 +893,51 @@ static int Run(int argc, wchar_t** argv) {
         Pump(200);
       }
       Say("\n--- 送按鍵 ---\n");
-      for (wchar_t ch : keys) {
-        WPARAM vk = 0;
-        LPARAM lp = 0;
-        if (!AsciiToKey(ch, &vk, &lp)) {
-          Fail("'%c' 在目前的佈局上打不出來", static_cast<char>(ch));
-          continue;
-        }
+      for (const SeqKey& sk : plan) {
         BOOL test_eaten = FALSE;
         BOOL eaten = FALSE;
-        const HRESULT t = ks->TestKeyDown(vk, lp, &test_eaten);
-        const HRESULT k = ks->KeyDown(vk, lp, &eaten);
+        const HRESULT t = ks->TestKeyDown(sk.vk, sk.lparam, &test_eaten);
+        const HRESULT k = ks->KeyDown(sk.vk, sk.lparam, &eaten);
         BOOL up_eaten = FALSE;
-        ks->KeyUp(vk, lp | 0xC0000000, &up_eaten);
-        Say("  '%c' vk=0x%02X test=%d(hr=0x%08lX) down=%d(hr=0x%08lX)\n",
-            static_cast<char>(ch), static_cast<unsigned>(vk),
-            test_eaten ? 1 : 0, static_cast<unsigned long>(t), eaten ? 1 : 0,
-            static_cast<unsigned long>(k));
+        ks->KeyUp(sk.vk, sk.lparam | 0xC0000000, &up_eaten);
+
+        // ⚠ 輸入法沒吃 → 宿主自己處理。真的編輯框就是這樣。
+        bool did_host = false;
+        if (!eaten) {
+          HostDefaultAction(doc, sk);
+          did_host = true;
+          ++host_handled;
+        }
+        // TestKeyDown 說吃、KeyDown 說不吃 = **這顆鍵在真實宿主上會消失**。
+        // 這支假宿主因為有上面那一段所以看不出來,但真的程式不會補救它 ——
+        // 所以在這裡明著數出來。這正是「可以打字,不能刪除」的形狀。
+        if (test_eaten && !eaten) ++mismatch_count;
+
+        // 這一行是給 verify_input_matrix.sh 解析的。欄位順序不要動。
+        Say("  KEY %-8s vk=0x%02X test=%d down=%d host=%d doc=\"%s\"\n",
+            Narrow(sk.label).c_str(), static_cast<unsigned>(sk.vk),
+            test_eaten ? 1 : 0, eaten ? 1 : 0, did_host ? 1 : 0,
+            Narrow(doc->text).c_str());
+        (void)t;
+        (void)k;
         if (eaten) ++eaten_count;
         Pump(60);
       }
       ks->Release();
     }
     Say("\n  文件內容 = \"%s\"\n", Narrow(doc->text).c_str());
-    Say("  被吃掉的按鍵 = %d / %d\n", eaten_count,
-        static_cast<int>(keys.size()));
+    Say("  被吃掉的按鍵 = %d / %d(宿主自己處理了 %d 顆)\n", eaten_count,
+        static_cast<int>(plan.size()), host_handled);
+    Say("  DOC=\"%s\"\n", Narrow(doc->text).c_str());
+    Say("  MISMATCH=%d\n", mismatch_count);
+    if (mismatch_count > 0)
+      Fail("有 %d 顆鍵是 TestKeyDown 說「吃」、KeyDown 說「不吃」。\n"
+           "     在真的宿主裡那幾顆鍵會**直接消失**:宿主在測試那一趟就\n"
+           "     放棄了自己的預設處理,而我們事後改口它收不到。\n"
+           "     使用者回報的「可以打字,不能刪除」就是這個形狀。\n"
+           "     修的地方是 windows/common/key_eat_policy.cc —— \n"
+           "     沒有實作的鍵就不要在 OnTestKeyDown 宣告吃掉。",
+           mismatch_count);
   }
 
   // 「一顆按鍵都沒有到達 OnTestKeyDown」與「到達了但沒吃」是兩件完全不同的事。
@@ -765,6 +965,16 @@ static int Run(int argc, wchar_t** argv) {
          "     照除錯記錄裡的 keysym 判斷是哪一段:\n"
          "       keysym=0x0  → 鍵盤佈局問不出字(win32_oracle.h)\n"
          "       keysym!=0   → 連不上服務(上面會有一行「連線失敗」)");
+
+  if (have_expect_doc) {
+    if (doc->text == expect_doc)
+      Ok("文件內容 = \"%s\"(與預期相同)", Narrow(expect_doc).c_str());
+    else
+      Fail("文件內容 = \"%s\",預期 \"%s\"\n"
+           "     ⚠ 斷言看的是**文件內容**,不是「有沒有被吃掉」——\n"
+           "     「吃掉了但什麼都沒做」正是這一輪要抓的缺陷。",
+           Narrow(doc->text).c_str(), Narrow(expect_doc).c_str());
+  }
 
   if (!expect.empty()) {
     if (doc->text == expect)

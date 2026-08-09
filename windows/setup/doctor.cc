@@ -310,12 +310,44 @@ std::vector<DWORD> FindProcessesNamed(const wchar_t* exe_name,
   return pids;
 }
 
-void SectionService(Report& r, const std::wstring& dir) {
+// 回傳「服務是不是在跑」。第 7 節要用它 —— 引擎層打不出字時,
+// 「服務從來沒跑過」與「方案或詞庫壞了」是兩個完全不同的診斷,
+// 而把後者印給前者的使用者看,會讓他有信心地往錯的地方查。
+bool SectionService(Report& r, const std::wstring& dir) {
   r.Head("4. 服務進程(引擎、候選窗、系統匣圖示、設定視窗都在它裡面)");
 
   std::wstring path;
   const std::vector<DWORD> pids = FindProcessesNamed(L"rime_service.exe", &path);
   const bool mutex_held = ServiceIsRunning();
+
+  // ── 這個工作階段的提權形狀 ────────────────────────────────────
+  //
+  // ⚠ 這一格不是背景資訊,它是 2026-08 那次「三個症狀一個原因」的**答案**。
+  //
+  //   瘦 DLL 在提權的宿主裡不啟動服務(那會把使用者詞庫的擁有者換成系統
+  //   管理員)。但使用者用內建 Administrator 帳號登入時,**整個工作階段的
+  //   每一個進程都是提權的** —— 於是服務永遠不會被啟動,而使用者看到的是
+  //   沒有系統匣圖示、沒有設定視窗、打不出字,一個錯誤訊息都沒有。
+  //
+  //   所以這裡把判定與**原始事實**都印出來。印事實是為了讓回報可以被重算:
+  //   只印結論的話,判定邏輯有問題時我們永遠不會知道。
+  const HostElevationFacts elev = QueryHostElevation();
+  r.Info(std::string("提權判定: ") + HostElevationTag(elev.verdict) + "(" +
+         HostElevationZh(elev.verdict) + ")");
+  r.Note(Fmt("權杖: 提權=%s 連結權杖=%s 機器帳號=%s%s",
+             elev.is_elevated ? "是" : "否",
+             elev.split == TokenSplit::kNoLinkedToken     ? "沒有"
+             : elev.split == TokenSplit::kFullWithLinked  ? "有(這份是提權的)"
+             : elev.split == TokenSplit::kLimitedWithLinked ? "有(這份是受限的)"
+                                                           : "問不到",
+             elev.service_account ? "是" : "否",
+             elev.builtin_administrator ? " 內建Administrator=是" : ""));
+  r.Note("  (這一格量的是**跑這支診斷的進程**。整個工作階段都提權時,");
+  r.Note("   它與使用者的瀏覽器、記事本看到的是同一個答案。)");
+  if (!MayStartUserService(elev.verdict)) {
+    r.Note("  ⚠ 這種狀態下瘦 DLL **刻意不啟動服務**。那不是壞掉,");
+    r.Note("     但也代表服務要嘛由別的宿主啟動,要嘛得手動跑一次。");
+  }
 
   if (!pids.empty()) {
     std::string ids;
@@ -334,17 +366,33 @@ void SectionService(Report& r, const std::wstring& dir) {
     if (pids.size() > 1)
       r.Warn("同時有多支服務在跑 —— 它們會爭同一份使用者詞庫。請重新登入一次。");
   } else {
-    r.Fail("rime_service.exe 沒有在跑",
-           "這正是「沒有系統匣圖示、沒有設定視窗、打不出中文」的直接原因。\n"
-           "         切到本輸入法時瘦 DLL 會自動把它啟動;沒有啟動的話,\n"
-           "         多半是這個工作階段裡根本沒有載入到瘦 DLL(見第 6 節),\n"
-           "         或宿主是提權的(提權的宿主刻意不啟動服務)。\n"
-           "         可以手動啟動一次試試:\n"
-           "         \"" + W(dir) + "\\rime_service.exe\"");
+    // ⚠ 不要再列一串「可能是 A、可能是 B」。上面那一格已經**量到**
+    //   提權判定了,所以這裡要嘛指名它,要嘛明說它不是原因。
+    //   一份把人往三個方向送的診斷,等於沒有診斷。
+    std::string why =
+        "這正是「沒有系統匣圖示、沒有設定視窗、打不出中文」的直接原因。\n"
+        "         切到本輸入法時瘦 DLL 會自動把它啟動 —— 沒有啟動的話:\n";
+    if (!MayStartUserService(elev.verdict)) {
+      why += "         **就是上面那個提權判定**(";
+      why += HostElevationTag(elev.verdict);
+      why += ")。\n"
+             "         瘦 DLL 在這種宿主裡刻意不啟動服務,而這台機器上\n"
+             "         所有宿主看到的都是同一個答案,所以沒有人會啟動它。\n"
+             "         先手動跑一次(下面那一行),確認其餘部分都是好的。\n";
+    } else {
+      why += "         提權判定是 ";
+      why += HostElevationTag(elev.verdict);
+      why += ",所以**不是**提權擋住的。\n"
+             "         多半是這個工作階段裡根本沒有載入到瘦 DLL(見第 6 節)。\n";
+    }
+    why += "         可以手動啟動一次試試:\n         \"" + W(dir) +
+           "\\rime_service.exe\"";
+    r.Fail("rime_service.exe 沒有在跑", why);
   }
   if (mutex_held && pids.empty())
     r.Warn("單一實例的鎖被人持有,但找不到 rime_service.exe —— "
            "有一支剛結束或屬於別的使用者。");
+  return !pids.empty();
 }
 
 // ── 5. 具名管道 ───────────────────────────────────────────────────
@@ -373,8 +421,13 @@ void SectionPipe(Report& r) {
                "         (首次安裝要一到數分鐘),過幾分鐘再跑一次這支診斷。");
       } else if (d.os_error == ERROR_ACCESS_DENIED) {
         r.Fail("管道在,但這個身分開不了(錯誤 5)",
-               "多半是你用系統管理員身分跑這支診斷,而服務是你自己那一支。\n"
-               "         請不要提權,直接跑一次。");
+               "兩種成因,第 4 節的提權判定可以分辨:\n"
+               "         (a) 你用系統管理員身分跑這支診斷,而服務是你自己\n"
+               "             那一支 —— 請不要提權,直接跑一次。\n"
+               "         (b) 服務與這個進程的**完整性等級**不同(一個提權、\n"
+               "             一個沒有)。具名管道預設不准低完整性的進程寫入\n"
+               "             高完整性進程建立的物件,DACL 對了也一樣。\n"
+               "             把服務停掉、用與宿主相同的身分重跑一次。");
       } else {
         r.Fail(Fmt("開管道失敗(錯誤 %lu)", d.os_error),
                "服務沒有在監聽,或權限不對。");
@@ -472,7 +525,7 @@ void SectionLoadedIn(Report& r, const std::wstring& dll_name) {
 // 分層診斷的第一刀:rime_console.exe 完全不經過 TSF、不經過管道,
 // 直接驅動 librime + 資料。它打得出「你好」就代表引擎、資料、方案都是好的,
 // 問題必定在 TSF 或 IPC 那一側 —— 反過來也一樣。
-void SectionEngine(Report& r, const std::wstring& dir) {
+void SectionEngine(Report& r, const std::wstring& dir, bool service_running) {
   r.Head("7. 引擎層(不經 TSF、不經管道,直接問 librime)");
 
   const std::wstring console = dir + L"\\rime_console.exe";
@@ -609,21 +662,43 @@ void SectionEngine(Report& r, const std::wstring& dir) {
       text.find(">>> COMMIT: \"你好\"") != std::string::npos;
   const bool deploy_ok = text.find("[deploy] SUCCESS") != std::string::npos;
 
-  if (deploy_ok)
+  if (deploy_ok) {
     r.Pass("詞庫部署成功");
-  else
+  } else if (!service_running) {
+    // ⚠ 不要說「資料有問題」。使用者資料目錄裡的編譯產物是**服務**第一次
+    //   啟動時生出來的,服務從沒跑過就一定看不到部署成功 —— 這是第 4 節的
+    //   下游,不是一個獨立的線索。
+    r.Warn("沒有看到部署成功 —— 服務從來沒有跑起來過(見第 4 節)");
+  } else {
     r.Warn("沒有看到部署成功 —— 詞庫可能還在編譯,或資料有問題");
+  }
 
   if (rc == 0 && commit_ok) {
     r.Pass("引擎層打得出「你好」—— librime、資料、方案全部正常");
     r.Note("所以問題必定在 TSF(第 2/3/6 節)或管道(第 5 節)那一側。");
-  } else if (inited) {
-    // 起得來但沒打出字:仍然是壞的,但壞在別的地方(方案、詞庫、選字),
-    // 而不是「librime 根本起不來」。這兩者要查的東西不同。
+  } else if (inited && !service_running) {
+    // ⚠⚠ **這一格以前指錯方向,而診斷指錯方向比沒有診斷更貴。**
+    //
+    //   舊的訊息說「librime 起來了,所以問題在方案或詞庫那一層」。
+    //   2026-08 的實測回報裡,真正的原因是**服務從來沒有跑起來過** ——
+    //   方案的編譯產物是服務第一次啟動時才生出來的。使用者手動跑一次
+    //   rime_service.exe,這一格就綠了,而在那之前他被這句話送去查詞庫。
+    //
+    //   第 4 節已經量到服務沒在跑了。這裡要做的是**引用那個事實**,
+    //   而不是自己開一條新的線索。
     r.Fail(Fmt("引擎層起得來,但打不出「你好」(結束碼 %lu)",
                static_cast<unsigned long>(rc)),
-           "librime 起來了,所以問題在方案或詞庫那一層,不在路徑。\n"
-           "         請連同下面這幾行一起回報。");
+           "第 4 節說服務**從來沒有跑起來過** —— 方案的編譯產物是服務\n"
+           "         第一次啟動時才生出來的,所以這一格是第 4 節的**下游**,\n"
+           "         不是另一個問題。\n"
+           "         先照第 4 節把服務跑起來(它會編譯詞庫,要一到數分鐘),\n"
+           "         再回來跑一次這支診斷。不要先去查方案或詞庫。");
+  } else if (inited) {
+    // 服務**在跑**而引擎層仍然打不出字 —— 這時才真的輪到方案 / 詞庫那一層。
+    r.Fail(Fmt("引擎層起得來,但打不出「你好」(結束碼 %lu)",
+               static_cast<unsigned long>(rc)),
+           "librime 起來了,而且第 4 節說服務也在跑,所以問題在方案或詞庫\n"
+           "         那一層,不在路徑。請連同下面這幾行一起回報。");
   } else {
     r.Fail(Fmt("引擎層連 rs_init 都沒有完成(結束碼 %lu)",
                static_cast<unsigned long>(rc)),
@@ -782,10 +857,10 @@ int RunDoctor(const DoctorOptions& opt) {
   SectionFiles(r, dir);
   SectionRegistration(r, dll);
   SectionProfileAndLayout(r);
-  SectionService(r, dir);
+  const bool service_running = SectionService(r, dir);
   SectionPipe(r);
   if (opt.scan_processes) SectionLoadedIn(r, L"rime_tsf.dll");
-  if (opt.check_engine) SectionEngine(r, dir);
+  if (opt.check_engine) SectionEngine(r, dir, service_running);
   SectionTrace(r);
 
   r.Head("結論");
