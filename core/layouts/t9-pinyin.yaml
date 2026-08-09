@@ -72,9 +72,9 @@ id: t9-pinyin
 revision: 1
 
 name:
-  en: "Pinyin 9-key"
-  zh-Hant: "九宮格拼音"
-  zh-Hans: "九宫格拼音"
+  en: "Pinyin 9-key (4-column, legacy)"
+  zh-Hant: "九宮格拼音（4 欄・舊版）"
+  zh-Hans: "九宫格拼音（4 列・旧版）"
 
 description:
   zh-Hant: "4x4 九宮格（已由 5 欄的 cn-t9-pinyin 取代）。鍵面印 ABC、送出 keysym A。"
