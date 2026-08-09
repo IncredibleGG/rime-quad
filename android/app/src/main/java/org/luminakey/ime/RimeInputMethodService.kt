@@ -24,6 +24,7 @@ import kotlinx.coroutines.launch
 import org.luminakey.ime.core.AndroidKeyMap
 import org.luminakey.ime.core.RimeCore
 import org.luminakey.ime.core.RimeRuntime
+import org.luminakey.ime.keyboard.T9Syllables
 import org.luminakey.ime.keyboard.ConfigRepository
 import org.luminakey.ime.keyboard.KeyboardEvent
 import org.luminakey.ime.keyboard.KeyboardTypes
@@ -148,6 +149,15 @@ class RimeInputMethodService : InputMethodService() {
 
     /** 上一次看到的方案 id，用來偵測方案變動並套用 §9.1.1 的自動換佈局。 */
     private var lastSchemaId: String = ""
+
+    /**
+     * 九宮格消歧：使用者已經確定的音節（小寫精確拼音），依序。
+     *
+     * 住在 service 而不是 UI，因為它的真相來源是 `rs_get_input()` —— 只有這裡
+     * 拿得到 session。每次 refresh 都會拿引擎的輸入串重新對帳
+     * （見 [T9Syllables.syncConfirmed]），所以它不可能長期與引擎脫節。
+     */
+    private var confirmedSyllables: List<String> = emptyList()
 
     /** onKeyDown 消費掉的 keycode，onKeyUp 要對應吃掉，否則宿主會收到落單的 up。 */
     private val consumedKeys = HashSet<Int>()
@@ -672,6 +682,32 @@ class RimeInputMethodService : InputMethodService() {
 
     /* ─────────────────── 軟鍵盤事件 ─────────────────── */
 
+    /**
+     * 消歧欄按下一個讀音：把引擎的輸入串改寫成「已確定的音節 + 這個音節 + 剩下的模糊碼」。
+     *
+     * ⚠ **引擎拒絕就什麼都不做。** `rs_set_input()` 回 false 代表那一串沒有整個
+     * 落在方案的 alphabet 裡（例如方案還是舊的單編碼版本，或 stub）。這時若照樣
+     * 更新畫面，使用者會看到候選收斂、而引擎一個字元都沒改 —— 空白鍵送出去的
+     * 還是原本那個字。那正是這個專案抓過七次的「畫面與事實不符」。
+     */
+    private fun selectSyllable(syllable: String) {
+        val current = RimeCore.getInput(session)
+        if (current.isEmpty()) return
+        val confirmed = T9Syllables.syncConfirmed(current, confirmedSyllables)
+        val next = T9Syllables.rewriteInput(current, confirmed, syllable)
+        if (next == null || next == current) {
+            Log.w(TAG, "音節 $syllable 改寫不出合法的輸入串（現在是 $current），不動作")
+            return
+        }
+        if (!RimeCore.setInput(session, next)) {
+            Log.w(TAG, "引擎拒絕輸入串改寫：$current → $next")
+            return
+        }
+        confirmedSyllables = confirmed + syllable
+        Log.i(TAG, "音節消歧：$current → $next（已確定 ${confirmedSyllables.joinToString("/")}）")
+        refreshFromRime()
+    }
+
     private fun handleEvent(event: KeyboardEvent) {
         when (event) {
             is KeyboardEvent.Send -> handleSend(event.spec)
@@ -681,6 +717,8 @@ class RimeInputMethodService : InputMethodService() {
                 RimeCore.selectCandidate(session, event.indexOnPage)
                 refreshFromRime(allowAutoCommit = true)
             }
+
+            is KeyboardEvent.SelectSyllable -> selectSyllable(event.syllable)
 
             is KeyboardEvent.CandidateLongPress -> {
                 RimeCore.deleteCandidate(session, event.indexOnPage)
@@ -1128,10 +1166,12 @@ class RimeInputMethodService : InputMethodService() {
         val snapshot = RimeCore.snapshot(session)
 
         if (snapshot == null) {
+            confirmedSyllables = emptyList()
             uiState = uiState.copy(
                 preedit = "",
                 candidates = emptyList(),
                 highlighted = -1,
+                confirmedSyllables = emptyList(),
                 isStub = RimeCore.isStub(),
                 theme = effectiveTheme(),
                 layout = layoutHost.layout,
@@ -1204,9 +1244,17 @@ class RimeInputMethodService : InputMethodService() {
         val visible =
             if (cap > 0) snapshot.menu.candidates.take(cap) else snapshot.menu.candidates
 
+        // 已確定的音節要跟著引擎走。刪除鍵砍過頭、或整串重新組字之後，
+        // 前綴可能已經不在輸入串裡了（見 T9Syllables.syncConfirmed）。
+        confirmedSyllables = T9Syllables.syncConfirmed(
+            RimeCore.getInput(session),
+            confirmedSyllables,
+        )
+
         uiState = uiState.copy(
             preedit = snapshot.composition.preedit,
             candidates = visible,
+            confirmedSyllables = confirmedSyllables,
             highlighted = snapshot.menu.highlighted,
             pageNo = snapshot.menu.pageNo,
             isLastPage = snapshot.menu.isLastPage,

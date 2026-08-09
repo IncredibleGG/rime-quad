@@ -166,6 +166,36 @@ object RimeCore {
     fun commitComposition(session: Long): Boolean =
         libraryLoaded && session != INVALID_SESSION && nativeCommitComposition(session)
 
+    /* ───────────────── 輸入串的直接改寫（九宮格音節消歧）───────────────── */
+
+    /**
+     * 直接改寫「引擎目前正在打的那一串」，並讓它重新切分、重新算候選。
+     *
+     * ── 為什麼九宮格非用它不可 ─────────────────────────────────────────
+     * 一顆鍵三四個字母，`MG` 可能是 ni 也可能是 mi。使用者點了 ni 之後，引擎
+     * 必須知道「第一個音節確定是 ni，後面仍然模糊」。librime **沒有**「選擇
+     * 某個拼寫」的 API（上游作者明講過，rime/librime#123）：那是前端的工作，
+     * 做法就是把輸入串改寫成 `ni` + 剩下的模糊碼。
+     *
+     * [selectCandidate] 做不到 —— 它確定的是**字**，不是**音節**。
+     *
+     * ⚠ 這是「重打一次」，不是「附加」。新字串必須整串落在方案的
+     *   `speller/alphabet` 裡，否則引擎會靜靜地丟掉不認得的部分。回傳 false
+     *   代表引擎拒絕了，**呼叫端必須當成沒發生**，不可以照樣更新畫面。
+     */
+    fun setInput(session: Long, input: String): Boolean =
+        libraryLoaded && session != INVALID_SESSION && nativeSetInput(session, input)
+
+    /**
+     * 引擎目前持有的輸入串。
+     *
+     * ⚠ **不是 preedit。** preedit 是給人看的，speller 可能已經插入分隔符
+     * （本方案的 `delimiter` 是空白與 `'`）或做過轉寫；拿 preedit 去餵
+     * [setInput] 會把那些顯示用的字元一起寫回引擎。
+     */
+    fun getInput(session: Long): String =
+        if (libraryLoaded && session != INVALID_SESSION) nativeGetInput(session) else ""
+
     /* ───────────────── 快照 ───────────────── */
 
     /**
@@ -227,6 +257,8 @@ object RimeCore {
     private external fun nativeChangePage(session: Long, backward: Boolean): Boolean
     private external fun nativeClearComposition(session: Long): Boolean
     private external fun nativeCommitComposition(session: Long): Boolean
+    private external fun nativeSetInput(session: Long, input: String): Boolean
+    private external fun nativeGetInput(session: Long): String
     private external fun nativeSnapshot(session: Long): Array<Any?>?
     private external fun nativeSchemaList(): Array<String>?
     private external fun nativeSelectSchema(session: Long, schemaId: String): Boolean

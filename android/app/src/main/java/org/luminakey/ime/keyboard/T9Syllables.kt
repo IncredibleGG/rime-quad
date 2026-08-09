@@ -252,4 +252,115 @@ object T9Syllables {
 
     /** 「zhuang」是最長的漢語拼音音節（6）。留一點餘裕，但不留到能吞下一整句。 */
     private const val MAX_SYLLABLE = 8
+
+    /* ═════════════════ 逐個音節選下去（輸入串改寫）═════════════════
+     *
+     * ── 為什麼上面那一套「篩選」不夠 ──────────────────────────────────
+     * 本檔原本的做法是**候選篩選**：點了 ni 就只留讀音是 ni 的候選。當時的理由
+     * 寫在檔頭 —— 引擎側做不到，因為 `t9_pinyin` 的 alphabet 只有 `ADGJMPTW`，
+     * 「ni」這三個字母送不進去。
+     *
+     * **那個前提已經不成立了。** 方案改成雙編碼之後（`core/data/schemas/`，
+     * alphabet 同時含小寫拼音與大寫 T9 碼），精確拼音與模糊碼可以共存在同一串
+     * 輸入裡：`niGAM` 解得出「你好」—— 第一個音節精確、後面仍然模糊。
+     * 加上 `rs_set_input()` 進了 ABI 3，真正的收斂終於做得到：
+     *
+     *     使用者點 ni  →  把輸入串從 `MGGAM` 改寫成 `niGAM`
+     *                  →  引擎重新切分，候選收斂成 ni 開頭的
+     *                  →  左欄換成**第二個音節**的候選讀音（hao / gao / gan…）
+     *
+     * 這才是使用者要的「選了一個之後讓我選下一個」。篩選只是讓畫面看起來收斂，
+     * 引擎完全不知道使用者做過選擇 —— 空白鍵送出去的仍是原本那個高亮候選。
+     */
+
+    /**
+     * 拼音字母 → 九宮格的代表字母。
+     *
+     * 這是方案 `speller/algebra` 那條 `xlit` 的**反向**，兩邊必須一致：
+     * 那條 xlit 把 `ABCDEFGHIJKLMNOPQRSTUVWXYZ` 折成
+     * `AAADDDGGGJJJMMMPPPPTTTWWWW`。改方案而沒改這裡，改寫出來的字串會落在
+     * alphabet 之外，`rs_set_input()` 直接回 false（不會靜靜地錯）。
+     */
+    private val T9_OF: Map<Char, Char> = HashMap<Char, Char>().apply {
+        fun group(letters: String, rep: Char) = letters.forEach { put(it, rep) }
+        group("abc", 'A'); group("def", 'D'); group("ghi", 'G'); group("jkl", 'J')
+        group("mno", 'M'); group("pqrs", 'P'); group("tuv", 'T'); group("wxyz", 'W')
+    }
+
+    /** 一個音節的九宮格按鍵序列；含非拼音字母就回 null。 */
+    fun t9Encode(syllable: String): String? {
+        if (syllable.isEmpty()) return null
+        val sb = StringBuilder(syllable.length)
+        for (c in syllable) sb.append(T9_OF[c] ?: return null)
+        return sb.toString()
+    }
+
+    /** 一則 comment 的全部音節。分隔字元同 [readingOf]：空白與 `'`。 */
+    fun syllablesOf(comment: String): List<String> =
+        comment.trim().split(' ', '\'').filter { it.isNotEmpty() }
+
+    /**
+     * 候選的**第 [index] 個**音節有哪些可能，去重、保持 librime 給的順序。
+     *
+     * [index] = 已確定的音節數。0 就是原本的 [readingsOf]。
+     * 音節數不足的候選（例如已經確定兩個音節時，那些只涵蓋一個音節的候選）
+     * 直接跳過 —— 它們對「下一個音節是什麼」沒有意見。
+     */
+    fun readingsAt(candidates: List<RimeCandidate>, index: Int): List<String> {
+        if (index < 0) return emptyList()
+        val out = LinkedHashSet<String>()
+        for (c in candidates) {
+            val s = syllablesOf(c.comment).getOrNull(index) ?: continue
+            if (s.length in 1..MAX_SYLLABLE && s.all { it in 'a'..'z' }) out.add(s)
+        }
+        return out.toList()
+    }
+
+    /**
+     * 這個音節會吃掉模糊尾巴的前幾個按鍵。認不出來就回 null。
+     *
+     * ⚠ **不是「音節有幾個字母就吃幾鍵」。** 方案有
+     * `abbrev/^([ADGJMPTW]).+$/$1/`（超級簡拼），所以「ni」也可能只按了一鍵 `M`。
+     * 兩種都要認：先試完整長度，再試簡拼的一鍵。都對不上就回 null ——
+     * **猜一個數字出來會把使用者後面打的東西吃掉**，那比不動更糟。
+     */
+    fun consumedCodes(fuzzyTail: String, syllable: String): Int? {
+        val full = t9Encode(syllable) ?: return null
+        if (fuzzyTail.startsWith(full)) return full.length
+        if (fuzzyTail.isNotEmpty() && fuzzyTail[0] == full[0]) return 1
+        return null
+    }
+
+    /**
+     * 點了 [syllable] 之後，引擎的輸入串該變成什麼。不合法就回 null。
+     *
+     * [confirmed] 是**已經確定**的音節（小寫精確拼音），它們必須真的是 [input]
+     * 的前綴 —— 否則代表引擎那邊已經變過（使用者按了刪除、或重新組字），
+     * 這時回 null 讓呼叫端什麼都不做，而不是把一段不存在的前綴接回去。
+     */
+    fun rewriteInput(input: String, confirmed: List<String>, syllable: String): String? {
+        val prefix = confirmed.joinToString("")
+        if (!input.startsWith(prefix)) return null
+        val tail = input.substring(prefix.length)
+        val n = consumedCodes(tail, syllable) ?: return null
+        return prefix + syllable + tail.substring(n)
+    }
+
+    /**
+     * 引擎的輸入串變了之後，[confirmed] 還有幾個算數。
+     *
+     * 使用者按刪除鍵會把尾巴砍掉，砍過頭就會吃到已確定的那一段；重新開始組字
+     * 更是整串換掉。留著過期的前綴，消歧欄會從第 3 個音節開始問，而畫面上
+     * 根本沒有前兩個 —— 又是一個「內部狀態對、畫面對不上」。
+     */
+    fun syncConfirmed(input: String, confirmed: List<String>): List<String> {
+        val out = ArrayList<String>(confirmed.size)
+        val acc = StringBuilder()
+        for (s in confirmed) {
+            acc.append(s)
+            if (!input.startsWith(acc)) break
+            out += s
+        }
+        return out
+    }
 }

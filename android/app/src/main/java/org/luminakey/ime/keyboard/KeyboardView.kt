@@ -141,7 +141,11 @@ fun RimeKeyboard(
         pinnedSyllable = null
         syllableOffset = 0
     }
-    val readings = remember(state.candidates) { T9Syllables.readingsOf(state.candidates) }
+    // 問的是**第幾個**音節：已確定幾個，就問下一個。
+    val syllableIndex = state.confirmedSyllables.size
+    val readings = remember(state.candidates, syllableIndex) {
+        T9Syllables.readingsAt(state.candidates, syllableIndex)
+    }
     val slotIds = T9Syllables.slotKeys(state.layout?.id, state.layerId)
     // 只有一個讀音時**不換掉標點**：那一格點下去什麼都不會發生，而
     // 「看得到摸不到」正是這個專案抓過六次的那一類缺陷。
@@ -183,9 +187,11 @@ fun RimeKeyboard(
                     when (cell) {
                         // 再點一次同一個讀音 = 取消篩選。不另外做一顆「全部」鍵：
                         // 開關就在使用者剛剛按過的那一格上，找得回來。
+                        // 真的把輸入串改寫掉，不是把候選藏起來。改寫成功之後
+                        // 引擎會給出下一個音節的候選，這一欄跟著換成第二個音節
+                        // 的讀音 —— 「選了一個之後讓我選下一個」就是這麼來的。
                         is T9Syllables.Cell.Reading ->
-                            pinnedSyllable =
-                                if (pinnedSyllable == cell.syllable) null else cell.syllable
+                            onEvent(KeyboardEvent.SelectSyllable(cell.syllable))
                         T9Syllables.Cell.More ->
                             syllableOffset =
                                 T9Syllables.nextOffset(readings, slotIds.size, syllableOffset)
