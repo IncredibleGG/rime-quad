@@ -439,6 +439,34 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
   ⚠ 順帶修掉一個會讓那一關永遠紅的東西:`[A-Za-z0-9._-]+\.app` 會把 `com.apple.quarantine` 裡的 `com.app` 當成一個 app 名字 —— 結尾要有 `\b`。**一個永遠紅的關卡會被關掉**,所以這不是小事。
   另外:`downloads_server.py` 的 `INSTALL` 那一段**從來沒有被 render 過**(`card()` 有 `install=` 參數,但沒有任何一處傳它),所以那段舊名字其實還沒有出現在頁面上。現在接上了,macOS 那張卡片會列出四步,而且用的是壓縮包的實際檔名。`
 
+- `[2026-08-09] [產品] **新增 `docs/product-gaps.md`(四端功能缺口盤點與優先清單)。只寫文件,一行程式碼都沒有改。** 它回答的是「麻瓜的第一小時裡少了哪一項會讓他說『這東西不能用』」,不是「別人有什麼」的清單;排序判準寫在該文件 §5.1,**每一項都附了「什麼證據會讓它降級」**,是設計來被反駁的。⚠ **三件對其他端有直接影響的發現(細節見該文件對應章節)**:`
+  1. `**Windows 端沒有任何中英切換,不只是「Shift 沒作用」。** `ascii_mode` 在整個 `windows/` 底下只出現兩次(`service/engine.cc:31`、`common/protocol.h:163`),**都是回報狀態,沒有任何一處設定它**;而三條入口全不通 —— Shift 走不到(TSF 不給純修飾鍵)、語言列按鈕的 `InitMenu` 回 `E_NOTIMPL`(刻意)、系統匣選單有簡繁沒有中英。所以使用者要在句子中間打一個英文單字,唯一的辦法是 Win+空白鍵換掉整個輸入法。**修法不是去修 Shift**(那要掛低階鍵盤 hook,而低階 hook 會看到使用者在每一個程式裡的每一次按鍵,與「經得起審計」的定位衝突)。`
+  2. `⚠ **使用者要的「浮動狀態列」不是 `docs/theme-format.md` §8.12 的 `status_bar` —— 這是一個規範還沒有的新表面。** §8.12 的狀態列住在**候選窗裡面**,而候選窗只在組字時出現;使用者要的是「隨時看得到、可以拖動」的常駐窗。建議的四格是 `input_mode_pair` / `variant` / `schema_name`(點開是選單,不是循環)/ 設定 —— 前三格正好等於 §8.12 的規範性預設清單,字面必須沿用(`中`/`En`、`简`/`繁`),否則同一個產品的兩個表面會顯示不同的字。**給 macOS(規範所有權)**:macOS 的選單列圖示是同一個問題的另一半,兩端各自發明會長成兩個東西,建議進規範而不是宣告成平台專屬。⚠ §8.12 末段那條「`source` 全是文字、沒有圖示,補上之前不要自己發明」仍然有效 —— 純文字四格是可行的,但不可以順手加圖示。`
+  3. `**「Windows 候選窗等規範所以不讀主題檔」的理由已經不成立了。** macOS 端 2026-08-08 那一輪把 Windows 回報的六個缺口全部關掉,我逐節確認過都在規範裡(§8.6.0 / §8.6.4.1 / §8.6.7.2 / §8.6.7.3 / §8.6.7.4 / §8.12)。⚠ 順帶一提 §8.6.0 有一條會直接改變現況的規定:**桌面端不得改用系統 UI 字型當預設**(`$system` 代號已經是那個意思),而 Windows 目前是直接取 `SPI_GETNONCLIENTMETRICS` —— 在新規範下不合規。`
+  `⚠ **給 storefix 支線(產品側背書)**:Windows 端提過「如果索引裡的套件可以改成 stored(不壓縮)或另附非 zip 的格式,Windows 的方案市集會小掉一大半」。從產品角度我支持這個方向 —— 它把一整輪的工作量換成一次格式決定,而使用者感受不到差別。要動 `docs/schema-store.md` 與已發布的索引,所以請先決定。`
+  `⚠ **給 dict / Windows**:`rs_sync_user_data()` **已經在 `core/include/rime_shell.h:131` 了**。加上 `docs/backup-format.md` 已經在 main 上,Windows 端「等格式」的兩個前提現在都成立。`
+  `**沒有驗到的**:桌面競品(搜狗 / 微軟拼音 / 小狼毫 / 鼠鬚管 / rimetool)**這一輪一個都沒有實裝**,該文件裡桌面端的每一句話都標了 (查) 或 (推);Windows 的四條使用者回報我只讀了碼,**沒有在真 Windows 上重現任何一條**。`
+
+- `[2026-08-09] [產品] **§5 已解決條目的標記(只加不刪,原段落一字未動)。** 下列各則都回去確認過落地位置,可以視為關閉;仍未解決的另外列在後面,免得下一個人再查一次。`
+  | 原條目(依提出者與主旨) | 解決在哪(已確認) |
+  |---|---|
+  | `[協調] alpha_layer / input_mode:toggle / label_from: input_mode_pair 還沒寫進規範` | `docs/theme-format.md` §9.1.2 / §9.5.2 / §9.6 |
+  | `[協調] 候選窗多欄/表格排版、狀態列外觀,§11 自承未定義` | §8.6.7.1 / §8.12 |
+  | `[Windows] 候選窗規範的六個缺口`(max_width 溢出 / item 內部間距 / anchor / 字型家族 / backdrop 退化 / 多欄與狀態列) | §8.6.7.2 / §8.6.4.1 / §8.6.7.3 / §8.6.0 / §8.6.7.4 / §8.12。⚠ **規範關了不等於 Windows 做了** —— Windows 仍然不讀主題檔,見上一則 |
+  | `[Windows] TSF 要不要另外註冊 0x0804 是產品決定 → 待裁決` | 已裁決「要註冊」(macOS 那則),且已落地三份 profile;後續又改成「註冊三份、啟用一份」 |
+  | `[Android] 未實作的動詞不該出現在畫面上` | §9.5.1 渲染端的動詞支援宣告 |
+  | `[Android] Diagnostic.message 是自由文字 → code + args` | §6.5 + §6.5.1,Android 端已照新模型實作 |
+  | `[Android] 無障礙朗讀名稱反推不出來` | §9.6.1 `a11y_label` + §8.13 `accessibility` |
+  | `[dict → 協調] 請在 rime_shell.h 加 rs_sync_user_data` | `core/include/rime_shell.h:131` 已經有了 |
+  | `[協調→Android] onComputeInsets 沒覆寫、鍵盤蓋住宿主內容` | insets 支線查證為**誤判**,已有更正條目;程式碼一行未改,留下 `scripts/verify_insets.sh` 擋它 |
+
+  `**確認仍然沒有解決的**(沒有標記,列出來免得重複查證):`
+  · `StringCatalogTest` 仍然寫死 `strings.xml`(`android/app/src/test/java/org/luminakey/ime/StringCatalogTest.kt:134`),所以各支線新開的 `strings_*.xml` 至今沒有人守
+  · `android/app/src/main/AndroidManifest.xml:71` 仍寫著「⚠ 匯出/匯入功能目前尚未實作」,而它已經實作了(dict 支線當初就請 manifest 的所有者改掉)
+  · Android/diag 提的 9 個 `provisional` 診斷碼(`unknown_keysym` … `auto_for_schema_wildcard`),`docs/theme-format.md` §6.5.1 裡一個都還沒有
+  · `rs_highlight_candidate` 的 JNI 綁定仍未接,`candidate:next` / `candidate:prev` 還在 `VerbSupport.UNIMPLEMENTED`
+  · storefix→Android 那七項交接尚未落地(`android/.../store/SchemaIndex.kt` 裡沒有 `uid`)
+
 - `[2026-08-09] [協調] **沒有驗到的**:(1) 這一輪一樣**沒有裝過任何一份改名後的建置** —— 「改名後輸入法還註冊得上、還打得出字」仍然一次都沒有被驗過,`docs/emulator.md` 改對的那個 IME id 也還沒有在模擬器上實跑過。(2) `apple/` 的改動只有註解與 `// 舊名` 標記,**沒有編譯過 Swift**(這台是 Ubuntu);`apple/scripts/verify_names.py --self-test` 全過,涵蓋了它 self-test 會動到的那幾行。(3) macOS 發布那條路徑**沒有真的發布過一次** —— 新增的兩段(量 `.app` 名字、比對下載頁)是用 tar 清單與指令字串在本機對測的,不是在一次真的 `publish_desktop.sh macos <run_id>` 裡跑過。(4) `windows/` 一個字都沒動。`
 
 ---
