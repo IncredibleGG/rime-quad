@@ -3,7 +3,10 @@
 // 安裝程式的手腳。一支很小的執行檔,不連 librime,只做四件事:
 //
 //   register / unregister    全機註冊(HKLM),需要系統管理員權限
-//   enable-user / disable-user  目前使用者的啟用(HKCU)
+//   enable-user / disable-user  目前使用者的啟用(HKCU)。
+//                            ⚠ enable-user 只會留下**一份** ——
+//                            清單上出現幾格由這裡決定,不是由註冊決定。
+//   user-profiles            印出「這個使用者現在啟用了哪幾份」與判斷依據
 //   check                    「真的註冊好了嗎」,CI 靠它斷言
 //   stop-service             停掉 rime_service.exe(升級與解除安裝前)
 //   doctor                   一頁式自我診斷(給使用者用的,見 setup/doctor.h)
@@ -31,12 +34,15 @@
 #include <tlhelp32.h>
 
 #include <cstdarg>
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <vector>
 
+#include "../common/profile_choice.h"
 #include "../tsf/registration.h"
 #include "../tsf/registration_check.h"
+#include "../tsf/user_langs.h"
 #include "../winshared/winutil.h"
 #include "doctor.h"
 
@@ -67,8 +73,17 @@ void Usage() {
       "\n"
       "  register [--dll <路徑>]    全機註冊(需要系統管理員權限)\n"
       "  unregister                 全機反註冊\n"
-      "  enable-user                把輸入法加進**目前使用者**的清單\n"
-      "  disable-user               反之\n"
+      "  enable-user [--lang <十六進位 langid>]\n"
+      "                             把輸入法加進**目前使用者**的清單。\n"
+      "                             只會留下一份(其餘一律停用)——\n"
+      "                             語言列/Win+空白鍵的清單上只該有一格。\n"
+      "                             不給 --lang 就依使用者既有的語言清單自動選。\n"
+      "  disable-user               全部停用\n"
+      "  user-profiles              印出目前啟用了哪幾份、以及自動判斷會選哪一份\n"
+      "  find-window --class <類別名> [--visible]\n"
+      "                             那個視窗類別現在存不存在。找到 = 0,沒找到 = 1\n"
+      "                             --visible:還要求它是**顯示中**的\n"
+      "                             (CI 用:斷言「設定視窗真的開出來了」)\n"
       "  check [--dll <路徑>] [--user] [--no-enum]\n"
       "                             斷言註冊狀態;不通過就以非零結束\n"
       "                             --no-enum:只驗登錄檔,不問 TSF 的列舉 API\n"
@@ -300,6 +315,94 @@ int PurgeUserData(bool confirmed) {
   return 0;
 }
 
+// ══════════════════════════════════════════════════════════════════
+//  語言設定檔:清單上只留一格
+// ══════════════════════════════════════════════════════════════════
+//
+// 為什麼會有這一段,見 common/profile_choice.h 的檔頭。一句話:
+// **註冊(HKLM)不會讓清單上多一格,啟用(HKCU)才會**,而舊版對三份
+// profile 都做了啟用,於是使用者的 Win + 空白鍵清單上我們佔三格,
+// 而微软拼音、小狼毫各佔一格。
+
+// "0x0804" / "0804" / "2052" 都收。認不得回 0(= 沒有指定)。
+uint32_t ParseLangId(const std::wstring& text) {
+  if (text.empty()) return 0;
+  int base = 10;
+  size_t i = 0;
+  if (text.size() > 2 && text[0] == L'0' && (text[1] == L'x' || text[1] == L'X')) {
+    base = 16;
+    i = 2;
+  } else {
+    // 沒有 0x 前綴但含有 a-f → 當十六進位。langid 實務上一律寫十六進位,
+    // 而 "0804" 當十進位解會變成 804,那不是任何一個語言 —— 靜靜地選錯
+    // 比明著失敗糟得多。所以:四位數字一律當十六進位。
+    bool hexish = false;
+    for (wchar_t c : text)
+      if ((c >= L'a' && c <= L'f') || (c >= L'A' && c <= L'F')) hexish = true;
+    if (hexish || text.size() == 4) base = 16;
+  }
+  uint32_t v = 0;
+  for (; i < text.size(); ++i) {
+    const wchar_t c = text[i];
+    int d;
+    if (c >= L'0' && c <= L'9') d = c - L'0';
+    else if (c >= L'a' && c <= L'f') d = c - L'a' + 10;
+    else if (c >= L'A' && c <= L'F') d = c - L'A' + 10;
+    else return 0;
+    if (d >= base) return 0;
+    v = v * static_cast<uint32_t>(base) + static_cast<uint32_t>(d);
+  }
+  return v;
+}
+
+// kRimeProfiles 的 langid,給純邏輯層當「我們實際註冊了哪幾個」。
+// ⚠ 不要在 profile_choice.cc 裡另寫一份常數清單:那一份與這裡漂移的話,
+//   會選到一個沒有註冊的 langid,而症狀是「裝完了,清單上什麼都沒有」。
+std::vector<uint16_t> RegisteredLangIds() {
+  std::vector<uint16_t> v;
+  for (int i = 0; i < ProfileCount(); ++i)
+    v.push_back(static_cast<uint16_t>(ProfileLangId(i)));
+  return v;
+}
+
+int IndexOfLangId(uint16_t langid) {
+  for (int i = 0; i < ProfileCount(); ++i)
+    if (static_cast<uint16_t>(ProfileLangId(i)) == langid) return i;
+  return -1;
+}
+
+// 蒐集事實 → 交給純邏輯層 → 回傳 kRimeProfiles 的索引(-1 = 算不出來)。
+// 過程一律印出來:**選了哪一個**與**為什麼**是兩個問題,只印前者的話,
+// 選錯時要再等一輪 CI 才知道是哪一層做的決定。
+int DecideProfileIndex(uint32_t explicit_langid, bool verbose) {
+  const std::vector<std::wstring> tags = CurrentUserLanguageTags();
+  std::vector<std::string> tags_utf8;
+  for (const std::wstring& t : tags) tags_utf8.push_back(WideToUtf8(t));
+  const std::vector<uint32_t> installed = InstalledInputLangIds();
+  const uint32_t ui = ::GetUserDefaultUILanguage();
+
+  if (verbose) {
+    Say("  使用者的語言清單(依序):");
+    if (tags_utf8.empty()) Say("(讀不到)");
+    for (const std::string& t : tags_utf8) Say(" %s", t.c_str());
+    Say("\n  已安裝的輸入語言:");
+    if (installed.empty()) Say("(讀不到)");
+    for (uint32_t l : installed) Say(" 0x%04X", static_cast<unsigned>(l));
+    Say("\n  系統顯示語言:0x%04X\n", static_cast<unsigned>(ui));
+  }
+
+  const rimewin::ProfileChoice c = rimewin::ChooseUserProfileLangId(
+      tags_utf8, installed, ui, explicit_langid, RegisteredLangIds());
+  if (c.langid == 0) {
+    Say("!! 算不出要啟用哪一份(%s)\n", c.reason);
+    return -1;
+  }
+  const int idx = IndexOfLangId(c.langid);
+  if (verbose)
+    Say("  → 選 0x%04X(%s)\n", static_cast<unsigned>(c.langid), c.reason);
+  return idx;
+}
+
 int Report(const char* what, HRESULT hr) {
   if (SUCCEEDED(hr)) {
     Say("%s 成功\n", what);
@@ -338,11 +441,17 @@ static int Run(int argc, wchar_t** argv) {
   bool want_user = false;
   bool want_enum = true;
   bool purge_confirmed = false;
+  uint32_t explicit_langid = 0;
+  std::wstring window_class;
+  bool require_visible = false;
   DoctorOptions doctor;
 
   for (int i = 2; i < argc; ++i) {
     const std::wstring a = argv[i];
-    if (a == L"--dll" && i + 1 < argc) dll = argv[++i];
+    if (a == L"--class" && i + 1 < argc) window_class = argv[++i];
+    else if (a == L"--visible") require_visible = true;
+    else if (a == L"--lang" && i + 1 < argc) explicit_langid = ParseLangId(argv[++i]);
+    else if (a == L"--dll" && i + 1 < argc) dll = argv[++i];
     else if (a == L"--dir" && i + 1 < argc) dir = argv[++i];
     else if (a == L"--user") want_user = true;
     else if (a == L"--no-enum") want_enum = false;
@@ -392,32 +501,123 @@ static int Run(int argc, wchar_t** argv) {
 
   if (verb == L"unregister") return Report("全機反註冊", UnregisterTextService());
 
-  if (verb == L"enable-user" || verb == L"disable-user") {
-    const bool enable = (verb == L"enable-user");
+  if (verb == L"enable-user" || verb == L"disable-user" ||
+      verb == L"user-profiles" || verb == L"enable-user-legacy-all") {
     // 提權時的 HKCU 是**提權那個帳號的**。安裝程式必須以 ExecAsOriginalUser
     // 呼叫這一支,否則「用系統管理員帳號提權裝完,登入的那個人清單裡什麼都沒有」。
-    if (IsProcessElevated())
+    if (IsProcessElevated() && verb != L"user-profiles")
       Say("  ⚠ 這支目前是提權的 —— 寫進去的會是提權帳號的 HKCU,不是登入者的。\n");
     Say("  SID = %s\n", WideToUtf8(CurrentUserSidString()).c_str());
 
-    // 逐一做,逐一印出 HRESULT。
+    // ── 目前實況 ────────────────────────────────────────────────
     //
-    // **不因為其中一個語言失敗就放棄其餘的**:使用者的語言清單裡通常只有
-    // 其中一種中文,哪幾份會成功取決於他的系統。全部失敗才算失敗。
-    int okc = 0;
-    for (int i = 0; i < ProfileCount(); ++i) {
-      const HRESULT hr = SetProfileEnabledForCurrentUser(i, enable);
-      Say("  0x%04X %s -> %s (hr=0x%08lX)\n",
-          static_cast<unsigned>(ProfileLangId(i)),
-          WideToUtf8(ProfileGuidString(i)).c_str(),
-          SUCCEEDED(hr) ? "OK" : "失敗", static_cast<unsigned long>(hr));
-      if (SUCCEEDED(hr)) ++okc;
+    // ⚠ 答案向 TSF 要(IsEnabledLanguageProfile),不是數 HKCU 的子鍵:
+    //   停用之後那個鍵可能還在,數子鍵的話「停用了」與「還開著」
+    //   長得一模一樣 —— 而這一輪要斷言的正好是「只剩一份」。
+    {
+      const std::vector<int> on = EnabledProfileIndexesForCurrentUser();
+      Say("  目前已啟用 %d 份:", static_cast<int>(on.size()));
+      for (int i : on) Say(" 0x%04X", static_cast<unsigned>(ProfileLangId(i)));
+      Say("\n");
     }
-    Say("%s:%d / %d 份成功\n", enable ? "啟用" : "停用", okc, ProfileCount());
-    if (okc == 0) {
-      Say("!! 一份都沒成功 —— 這個使用者的清單上不會出現這個輸入法\n");
+
+    if (verb == L"user-profiles") {
+      // 機器可讀的一段,給 windows/verify_installer.sh 斷言用。
+      // 格式與 `paths` 一致:一行一筆 KEY=值。
+      const std::vector<std::wstring> tags = CurrentUserLanguageTags();
+      Say("USER_LANGS=");
+      for (size_t k = 0; k < tags.size(); ++k)
+        Say("%s%s", k ? "," : "", WideToUtf8(tags[k]).c_str());
+      Say("\n");
+      const std::vector<int> on = EnabledProfileIndexesForCurrentUser();
+      Say("ENABLED_COUNT=%d\n", static_cast<int>(on.size()));
+      for (int i : on)
+        Say("ENABLED=0x%04X=%s\n", static_cast<unsigned>(ProfileLangId(i)),
+            WideToUtf8(ProfileGuidString(i)).c_str());
+      const int want = DecideProfileIndex(explicit_langid, false);
+      if (want >= 0)
+        Say("WOULD_CHOOSE=0x%04X\n",
+            static_cast<unsigned>(ProfileLangId(want)));
+      else
+        Say("WOULD_CHOOSE=0x0000\n");
+      return 0;
+    }
+
+    if (verb == L"enable-user-legacy-all") {
+      // ⚠ **這個動詞只有 CI 在用,而且它刻意重現一個已經修掉的 bug。**
+      //
+      //   windows/verify_installer.sh §4c 要驗的是「升級時會把舊版多開的
+      //   語言設定檔收回去」。要驗那件事,得先有一台**處於舊狀態**的機器 ——
+      //   而製造那個狀態最誠實的方法,是跑一次舊版真的跑過的那段程式碼,
+      //   不是去猜舊版在登錄檔裡留下什麼然後手寫進去。
+      //
+      //   直接連跑兩次 enable-user 驗不到這件事:第二次面對的已經是
+      //   「只有一份」的狀態,清理那條路從來不會被走到 ——
+      //   而一個前提不成立的斷言必定通過。這個專案抓過那種測試。
+      //
+      //   它不會出現在 Usage 裡,安裝程式也不會呼叫它。
+      int okc = 0;
+      for (int i = 0; i < ProfileCount(); ++i) {
+        const HRESULT hr = SetProfileEnabledForCurrentUser(i, true);
+        Say("  0x%04X -> %s (hr=0x%08lX)\n",
+            static_cast<unsigned>(ProfileLangId(i)),
+            SUCCEEDED(hr) ? "OK" : "失敗", static_cast<unsigned long>(hr));
+        if (SUCCEEDED(hr)) ++okc;
+      }
+      Say("(測試用)重現舊版:%d / %d 份被啟用\n", okc, ProfileCount());
+      return okc == ProfileCount() ? 0 : 1;
+    }
+
+    if (verb == L"disable-user") {
+      // 全部停用。解除安裝走這條 —— 那時我們要從清單上完全消失。
+      int okc = 0;
+      for (int i = 0; i < ProfileCount(); ++i) {
+        const HRESULT hr = SetProfileEnabledForCurrentUser(i, false);
+        Say("  0x%04X %s -> %s (hr=0x%08lX)\n",
+            static_cast<unsigned>(ProfileLangId(i)),
+            WideToUtf8(ProfileGuidString(i)).c_str(),
+            SUCCEEDED(hr) ? "OK" : "失敗", static_cast<unsigned long>(hr));
+        if (SUCCEEDED(hr)) ++okc;
+      }
+      Say("停用:%d / %d 份成功\n", okc, ProfileCount());
+      return okc == 0 ? 1 : 0;
+    }
+
+    // ── enable-user:**只留一份** ────────────────────────────────
+    //
+    // 舊版是「三份各啟用一次」,而那正是使用者回報的問題:
+    // 語言清單上我們佔三格,微软拼音與小狼毫各佔一格。
+    // 更糟的是,對一個他清單裡**沒有**的語言做啟用,Windows 會順手
+    // 把那個語言加進他的語言清單 —— 截圖上那兩欄繁體中文底下只有
+    // LuminaKey 一個輸入法,就是這麼來的。
+    const int keep = DecideProfileIndex(explicit_langid, true);
+    if (keep < 0) {
+      Say("!! 沒有可以啟用的語言設定檔 —— 這個使用者的清單上不會出現這個輸入法\n");
       return 1;
     }
+    int on = 0, off = 0;
+    const HRESULT hr = KeepOnlyProfileEnabled(keep, &on, &off);
+    Say("  啟用 0x%04X %s\n", static_cast<unsigned>(ProfileLangId(keep)),
+        WideToUtf8(ProfileGuidString(keep)).c_str());
+    Say("  停用其餘 %d 份(升級時把舊版多開的那幾份收回來)\n", off);
+    if (on == 0) {
+      Say("!! 啟用失敗 hr=0x%08lX —— 這個使用者的清單上不會出現這個輸入法\n",
+          static_cast<unsigned long>(hr));
+      return 1;
+    }
+    // 收斂之後再問一次 TSF。**不要相信自己剛才做了什麼** ——
+    // 這一步抓的是「呼叫都成功了,但實際上還是兩份」那種狀態,
+    // 而那正是使用者看到的東西。
+    const std::vector<int> now = EnabledProfileIndexesForCurrentUser();
+    Say("  收斂後已啟用 %d 份:", static_cast<int>(now.size()));
+    for (int i : now) Say(" 0x%04X", static_cast<unsigned>(ProfileLangId(i)));
+    Say("\n");
+    if (now.size() != 1) {
+      Say("!! 預期正好 1 份,實際 %d 份 —— 使用者的語言清單上會出現 %d 格\n",
+          static_cast<int>(now.size()), static_cast<int>(now.size()));
+      return 1;
+    }
+    Say("啟用:1 份(清單上只會有一格)\n");
     return 0;
   }
 
@@ -428,6 +628,40 @@ static int Run(int argc, wchar_t** argv) {
     opt.check_user = want_user;
     opt.check_enum = want_enum;
     return CheckRegistration(opt) ? 0 : 1;
+  }
+
+  if (verb == L"find-window") {
+    // ⚠ 這個動詞存在的理由是**編碼**,不是功能。
+    //
+    //   原本這一格是 verify_installer.sh 用 PowerShell 的 FindWindowW 做的,
+    //   而類別名與「開始」功能表的路徑都含中文。Git Bash → powershell.exe
+    //   的命令列會經過一次代碼頁轉換,中文在那裡被換掉之後,
+    //   FindWindow 找的是一個不存在的類別 —— 於是它**永遠回報找不到**,
+    //   而那看起來與「設定視窗真的沒開出來」一模一樣。
+    //
+    //   類別名由呼叫端傳進來(腳本從 scripts/lib/product.env 推導),
+    //   這裡刻意**不寫死** —— 寫死就變成產品名的第二份。
+    if (window_class.empty()) {
+      Say("!! find-window 需要 --class <類別名>\n");
+      return 2;
+    }
+    const HWND h = ::FindWindowW(window_class.c_str(), nullptr);
+    const bool visible = h && ::IsWindowVisible(h);
+    Say("類別「%s」:%s\n", WideToUtf8(window_class).c_str(),
+        h ? (visible ? "找到了(顯示中)" : "找到了(隱藏)") : "找不到");
+    if (h) {
+      DWORD pid = 0;
+      ::GetWindowThreadProcessId(h, &pid);
+      Say("  hwnd=%p pid=%lu visible=%d\n", static_cast<void*>(h),
+          static_cast<unsigned long>(pid), visible ? 1 : 0);
+    }
+    // ⚠ --visible 不是可有可無的。設定視窗在**服務一啟動時就被建好但不顯示**
+    //   (見 service/settings_window.cc:按下去要立刻看到窗,不能等它建)。
+    //   所以「視窗存在」對任何一支跑著的服務都恆真 —— 拿它當斷言的話,
+    //   「按下去有反應」與「按下去沒反應」會一起通過。使用者看得到的是
+    //   **顯示出來**,不是存在。
+    if (require_visible) return visible ? 0 : 1;
+    return h ? 0 : 1;
   }
 
   if (verb == L"dump") {

@@ -16,8 +16,20 @@ namespace {
 constexpr wchar_t kClass[] = L"LuminaKeySettingsWindow";
 constexpr UINT WM_RIME_OPEN = WM_APP + 1;
 constexpr UINT WM_RIME_TRAY = WM_APP + 2;
+// 外部執行緒要求改簡繁。wParam = VariantPref 的索引(kVariantOrder)。
+constexpr UINT WM_RIME_SET_VARIANT = WM_APP + 3;
 constexpr UINT kTrayId = 1;
-enum : int { IDM_TRAY_SETTINGS = 900, IDM_TRAY_REDEPLOY, IDM_TRAY_QUIT };
+enum : int {
+  IDM_TRAY_SETTINGS = 900,
+  IDM_TRAY_REDEPLOY,
+  IDM_TRAY_QUIT,
+  // 簡繁。語言設定檔收斂成一份之後,Win + 空白鍵不再能切簡繁
+  // (見 common/profile_choice.h),所以這三項不是錦上添花 ——
+  // 它們是那個功能在系統匣這一側的家。
+  IDM_TRAY_VAR_FOLLOW,
+  IDM_TRAY_VAR_HANT,
+  IDM_TRAY_VAR_HANS,
+};
 constexpr UINT_PTR kDeployTimer = 1;
 
 // 控制項 id。
@@ -87,7 +99,13 @@ constexpr int kPageCount = 4;
 const VariantPref kVariantOrder[] = {VariantPref::kFollowInputMode,
                                      VariantPref::kTraditional,
                                      VariantPref::kSimplified};
-const wchar_t* const kVariantLabels[] = {L"跟著我選的輸入法語言", L"繁體字",
+// ⚠ 第一格的字在 2026-08-09 改過。原本是「跟著我選的輸入法語言」,
+//   那句話的前提是使用者的清單上有好幾份語言設定檔可以選 ——
+//   而這一輪把它收斂成一份了(見 common/profile_choice.h),
+//   所以那句話會變成一個**永遠不變的**選項,而使用者不知道為什麼。
+//   現在它的意思是「跟著這個輸入法註冊在哪個語言底下」,而那句話
+//   對使用者仍然是可理解的:他在語言清單上看得到那一格。
+const wchar_t* const kVariantLabels[] = {L"跟著輸入法所在的語言", L"繁體字",
                                          L"簡體字"};
 constexpr int kVariantCount = 3;
 
@@ -247,6 +265,13 @@ LRESULT CALLBACK SettingsWindow::WndProc(HWND hwnd, UINT msg, WPARAM w,
     case WM_TIMER:
       if (self && w == kDeployTimer) self->OnDeployTick();
       return 0;
+    case WM_RIME_SET_VARIANT: {
+      // 外部(系統匣、語言列、IPC)指定的簡繁。已經在 UI 執行緒上了。
+      const int i = static_cast<int>(w);
+      if (self && i >= 0 && i < kVariantCount)
+        self->CommitVariantPref(kVariantOrder[i]);
+      return 0;
+    }
     case WM_CLOSE:
       // 關閉 = 隱藏。服務進程還要繼續跑,而重建視窗會讓下一次開啟變慢。
       ::ShowWindow(hwnd, SW_HIDE);
@@ -308,6 +333,23 @@ void SettingsWindow::OnTray(WPARAM /*w*/, LPARAM l) {
   HMENU menu = ::CreatePopupMenu();
   if (!menu) return;
   ::AppendMenuW(menu, MF_STRING, IDM_TRAY_SETTINGS, L"設定(&S)…");
+  ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  // ── 簡繁 ────────────────────────────────────────────────────
+  //
+  // ⚠ 打勾用 MF_CHECKED 而不是自己畫。使用者要看得出**現在是哪一個**,
+  //   而一個沒有狀態的選單就是這個專案抓過四次的「看得到但摸不到」的
+  //   另一種長相:按了、切了、下次打開還是不知道自己在哪。
+  {
+    const VariantPref cur = CurrentVariantPref();
+    const int ids[3] = {IDM_TRAY_VAR_FOLLOW, IDM_TRAY_VAR_HANT,
+                        IDM_TRAY_VAR_HANS};
+    for (int i = 0; i < kVariantCount; ++i)
+      ::AppendMenuW(menu,
+                    MF_STRING | (kVariantOrder[i] == cur ? MF_CHECKED
+                                                         : MF_UNCHECKED),
+                    ids[i], kVariantLabels[i]);
+  }
+  ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   ::AppendMenuW(menu, MF_STRING, IDM_TRAY_REDEPLOY, L"重新整理字詞(&R)");
   ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   ::AppendMenuW(menu, MF_STRING, IDM_TRAY_QUIT, L"結束輸入法服務(&X)");
@@ -323,6 +365,14 @@ void SettingsWindow::OnTray(WPARAM /*w*/, LPARAM l) {
 
   if (cmd == IDM_TRAY_SETTINGS) {
     Open();
+  } else if (cmd == IDM_TRAY_VAR_FOLLOW || cmd == IDM_TRAY_VAR_HANT ||
+             cmd == IDM_TRAY_VAR_HANS) {
+    // 已經在 UI 執行緒上,直接做。**不要**經過 PostMessage ——
+    // 那會讓「按下去」與「生效」中間隔著一次訊息迴圈,而使用者
+    // 立刻就會去打字驗證。
+    CommitVariantPref(cmd == IDM_TRAY_VAR_FOLLOW  ? VariantPref::kFollowInputMode
+                      : cmd == IDM_TRAY_VAR_HANT  ? VariantPref::kTraditional
+                                                  : VariantPref::kSimplified);
   } else if (cmd == IDM_TRAY_REDEPLOY) {
     // 先把視窗叫出來:進度與結果都顯示在它上面,不然按下去真的會
     // 「什麼都沒發生」——而部署要十幾秒。
@@ -654,8 +704,14 @@ void SettingsWindow::SetStatus(const std::wstring& text) {
 
 void SettingsWindow::ApplyVariantNow() {
   const int sel = ComboSel(hwnd_, IDC_VARIANT_COMBO);
-  settings_.SetVariantPref(
-      kVariantOrder[(sel >= 0 && sel < kVariantCount) ? sel : 0]);
+  CommitVariantPref(kVariantOrder[(sel >= 0 && sel < kVariantCount) ? sel : 0]);
+}
+
+// 設定分頁的下拉、系統匣的選單、以及外部(語言列)指定,三條路共用這一支。
+// ⚠ 各寫一份的話會漂移,而漂移的症狀是「從系統匣切有效、從設定切無效」——
+//   使用者只會說「這個輸入法有時候會亂跳字」。
+void SettingsWindow::CommitVariantPref(VariantPref v) {
+  settings_.SetVariantPref(v);
   if (!store_->Save(settings_)) {
     SetStatus(L"設定存不起來 —— 改了但不會留到下次開機。");
     return;
@@ -665,7 +721,34 @@ void SettingsWindow::ApplyVariantNow() {
   // ⚠ 每個 session 的語言不一樣,所以交給 Engine 按各自的 langid 算,
   //   而它走的是與建 session 時**同一支** DecideVariant。
   engine_->ApplyVariantAll(settings_.SchemaPref());
+
+  // 下拉選單要跟著動。從系統匣切完之後打開設定,看到的必須是新的值 ——
+  // 不然使用者會以為那一刀沒生效。視窗還沒建好時 Ctl() 回 nullptr,
+  // FillCombo 自己會擋掉。
+  int vsel = 0;
+  for (int i = 0; i < kVariantCount; ++i)
+    if (kVariantOrder[i] == v) vsel = i;
+  FillCombo(Ctl(hwnd_, IDC_VARIANT_COMBO), kVariantLabels, kVariantCount, vsel);
   SetStatus(L"已套用。");
+}
+
+void SettingsWindow::SetVariantPref(VariantPref v) {
+  // 可能來自別的執行緒(具名事件那條路、IPC 的連線執行緒)。
+  // 碰控制項一律排到 UI 執行緒上。
+  int idx = 0;
+  for (int i = 0; i < kVariantCount; ++i)
+    if (kVariantOrder[i] == v) idx = i;
+  if (hwnd_)
+    ::PostMessageW(hwnd_, WM_RIME_SET_VARIANT, static_cast<WPARAM>(idx), 0);
+}
+
+VariantPref SettingsWindow::CurrentVariantPref() {
+  // ⚠ 讀記憶體裡那一份,不重新 Load():設定視窗還沒開過的時候
+  //   settings_ 是空的,而系統匣選單在那之前就打得開了。
+  //   所以視窗建立時會先 Load 一次(見 ThreadMain / ReloadFromSettings),
+  //   這裡只在完全沒載入過時補一次。
+  if (settings_.size() == 0) settings_ = store_->Load();
+  return settings_.SchemaPref().variant;
 }
 
 void SettingsWindow::ApplyPunctNow() {

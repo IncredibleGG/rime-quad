@@ -42,11 +42,14 @@ ok()   { printf '  ✓ %s\n' "$*"; }
 BIN=""
 FULL=0
 LANGID="0x0404"
+# 呼叫端有沒有明確指定。沒有的話 1b 會用 enable-user 自動選的那一份 ——
+# 那才是使用者機器上會發生的事。
+LANGID_EXPLICIT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --bin)    BIN="$2"; shift 2 ;;
     --full)   FULL=1; shift ;;
-    --langid) LANGID="$2"; shift 2 ;;
+    --langid) LANGID="$2"; LANGID_EXPLICIT=1; shift 2 ;;
     *) die "未知參數: $1" ;;
   esac
 done
@@ -84,6 +87,7 @@ note_fail() { printf '\033[1;31m  !! %s\033[0m\n' "$*" >&2; fail=1; }
 #   verify_installer.sh 的第一條斷言(「安裝之前 check 必須紅」)會失敗,
 #   而那個失敗看起來與這裡完全無關。
 cleanup() {
+  "${TOOL}" disable-user > "${WORK}/cleanup-user.log" 2>&1 || true
   "${TOOL}" unregister > "${WORK}/cleanup.log" 2>&1 || true
 }
 trap cleanup EXIT
@@ -148,6 +152,59 @@ if [ "${seen}" -ne 1 ]; then
   cat "${WORK}/check.log"
   die "60 秒之後 CTF 仍然看不到這個輸入法 —— 後面每一步都沒有意義"
 fi
+
+# ── 替**目前使用者**啟用那一份語言設定檔 ──────────────────────────
+#
+# ⚠ 這一步是 2026-08-09 加的,而它補的是一個**一直被隱式滿足**的前提。
+#
+#   在那之前,RegisterProfile 的 bEnabledByDefault 是 TRUE ——
+#   那是「全機、對所有使用者預設啟用」。所以這支腳本只要 register 完就能
+#   activate,從來不必問「這個使用者啟用了嗎」。
+#
+#   而 TRUE 正是使用者回報的「清單上三格」的來源之一,這一輪改成了 FALSE
+#   (見 tsf/registration.cc)。改完之後這支腳本**當場紅了**,而且紅得
+#   很有價值:ActivateProfile 仍然回 S_OK、ActivateEx 仍然被呼叫、
+#   語言列按鈕仍然加得上,只有**按鍵一顆都沒有到達 OnTestKeyDown**,
+#   而 GetActiveProfile 回報的是另一個 langid。
+#   也就是說「沒有替使用者啟用」的症狀是**輸入法看起來活著但打不出字**。
+#
+#   這件事現在明著寫進流程:真實的順序是 register → enable-user → 使用,
+#   安裝程式做的就是這三步。腳本照著做,才是在驗使用者會走的那條路。
+#
+# ⚠ 用 --lang 指定,不用自動判斷:runner 上一個中文語言都沒有,自動判斷
+#   會落到退路(0x0804),而這支腳本待會要 activate 的是 ${LANGID}。
+#   兩者不一致的話,失敗的原因會指向完全錯的地方。
+log "1b. 替目前使用者啟用一份(真實順序是 register → enable-user → 使用)"
+if [ -n "${LANGID_EXPLICIT}" ]; then
+  "${TOOL}" enable-user --lang "${LANGID}" > "${WORK}/enable-user.log" 2>&1 || true
+else
+  "${TOOL}" enable-user > "${WORK}/enable-user.log" 2>&1 || true
+fi
+cat "${WORK}/enable-user.log"
+
+# ⚠ **待會要 activate 的,必須是實際被啟用的那一份。**
+#
+#   runner 上使用者的語言清單裡一個中文都沒有,而已安裝的輸入語言有
+#   0x0804(zh-CN)沒有 0x0404(zh-TW)。硬要 activate 0x0404 的話,
+#   TSF 會去 activate 它找得到的那一個(實測回報 0x0804),
+#   於是宿主與 DLL 對「現在是哪一份」的認知不一致,而症狀是
+#   **按鍵一顆都沒有到達 OnTestKeyDown** —— 一個指向完全錯誤方向的紅燈。
+#
+#   這件事本身就是這一輪在修的問題的另一面:**註冊一個使用者沒有的語言,
+#   他就找不到我們**。腳本硬寫一個 langid,等於在測一個不會發生的情境。
+"${TOOL}" user-profiles > "${WORK}/user-profiles.log" 2>&1 || true
+CHOSEN="$(tr -d '\r' < "${WORK}/user-profiles.log" \
+          | sed -n 's/^ENABLED=\(0x[0-9A-Fa-f]*\)=.*/\1/p' | head -1)"
+n_on="$(tr -d '\r' < "${WORK}/user-profiles.log" | sed -n 's/^ENABLED_COUNT=//p' | head -1)"
+if [ "${n_on}" = "1" ] && [ -n "${CHOSEN}" ]; then
+  ok "已替目前使用者啟用 ${CHOSEN},而且**正好一份**(清單上只會有一格)"
+  LANGID="${CHOSEN}"
+else
+  cat "${WORK}/user-profiles.log"
+  note_fail "enable-user 之後啟用了 ${n_on:-?} 份(預期 1)。
+     下面每一格都會以「打不出字」的形式紅,而真正的原因在這裡。"
+fi
+echo "  後面的宿主會 activate ${LANGID}"
 
 # ══════════════════════════════════════════════════════════════════
 #  3. 真的走一遍
@@ -216,6 +273,32 @@ $(printf '%s\n' "${trace}" | grep -a '按鍵' | sed 's/^/       /')" ;;
   case "${trace}" in
     *"完全問不出字"*)
       note_fail "記錄說這個工作階段的鍵盤佈局完全問不出字" ;;
+  esac
+
+  # ── 語言列上的那顆按鈕 ──────────────────────────────────────────
+  #
+  # ⚠ 這一條是這一輪加的。它補的是一個一直被當成「驗不了」的東西:
+  #   「使用者的語言列上到底看不看得到它」。
+  #
+  #   長什麼樣仍然驗不到(那要有人看)。但**它有沒有被建出來、有沒有被
+  #   語言列收下**是 ActivateEx 裡的一個明確結果,而瘦 DLL 自己會把答案
+  #   寫進落地記錄(text_service.cc 的「語言列按鈕:…」那一行)。
+  #   在這之前那一行只有出事之後才有人去看 —— 沒有人主動問過它。
+  #
+  #   加不上去**不算失敗**:某些宿主根本沒有語言列項目管理員,那時
+  #   系統匣那條路才是入口。但「記錄裡連提都沒提」是失敗 ——
+  #   那代表 ActivateEx 沒走到那一段,而那是另一回事。
+  case "${trace}" in
+    *"語言列按鈕:已加入"*)
+      ok "語言列按鈕被建出來而且被宿主收下了(設定的入口之一)" ;;
+    *"語言列按鈕:加不上"*)
+      echo "  · 語言列按鈕加不上(這個假宿主沒有語言列項目管理員)——"
+      echo "    不算失敗,但代表這一輪**沒有**驗到那個入口在真宿主上會出現。"
+      echo "    系統匣與「開始」功能表那兩條路是獨立的,見 verify_installer.sh §12。" ;;
+    *)
+      note_fail "記錄裡完全沒有「語言列按鈕」那一行 —— ActivateEx 沒有走到那一段。
+     那不是「這個宿主沒有語言列」,是我們根本沒有嘗試加。
+     症狀會是語言列上永遠沒有設定入口,而使用者只剩系統匣與開始功能表。" ;;
   esac
 fi
 

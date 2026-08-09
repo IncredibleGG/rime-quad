@@ -40,6 +40,7 @@ SRCS=(
   "${SCRIPT_DIR}/common/schema_list_patch.cc"
   "${SCRIPT_DIR}/common/elevation_policy.cc"
   "${SCRIPT_DIR}/common/key_eat_policy.cc"
+  "${SCRIPT_DIR}/common/profile_choice.cc"
   "${SCRIPT_DIR}/tests/test_main.cc"
   "${SCRIPT_DIR}/tests/test_protocol.cc"
   "${SCRIPT_DIR}/tests/test_keymap.cc"
@@ -53,6 +54,7 @@ SRCS=(
   "${SCRIPT_DIR}/tests/test_schema_list_patch.cc"
   "${SCRIPT_DIR}/tests/test_elevation_policy.cc"
   "${SCRIPT_DIR}/tests/test_key_eat_policy.cc"
+  "${SCRIPT_DIR}/tests/test_profile_choice.cc"
 )
 
 mkdir -p "${OUT}"

@@ -46,6 +46,7 @@
 
 #include <string>
 
+#include "../common/schema_choice.h"
 #include "engine.h"
 #include "settings_store.h"
 
@@ -70,6 +71,21 @@ class SettingsWindow {
   // 設定變更後要通知候選窗重新讀字級。可為 nullptr。
   void SetCandidateWindow(CandidateWindow* w) { cand_ = w; }
 
+  // ── 簡繁:設定視窗**以外**的入口 ────────────────────────────
+  //
+  // ⚠ 這一支是這一輪加的,而它補的是一個由別處的修正造成的缺口:
+  //   語言設定檔從三份收斂成一份之後(見 common/profile_choice.h),
+  //   使用者**再也不能用 Win + 空白鍵在簡繁之間切** —— 以前他切的其實
+  //   是 langid,而 langid 決定字集。所以那件事必須在我們自己的 UI 裡
+  //   做得到,否則這一輪等於拿走了一個他本來有的功能。
+  //
+  // 可從任何執行緒呼叫。實際的套用排到 UI 執行緒上做
+  //(PostMessage),因為它會碰控制項。
+  void SetVariantPref(VariantPref v);
+
+  // 目前的偏好。系統匣選單要據此打勾。
+  VariantPref CurrentVariantPref();
+
  private:
   static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l);
   static DWORD WINAPI ThreadEntry(LPVOID self);
@@ -90,6 +106,10 @@ class SettingsWindow {
   void OnTray(WPARAM w, LPARAM l);
 
   void ApplyVariantNow();
+  // 把偏好寫進設定、存檔、對現有的每一個 session 立刻套用。
+  // ApplyVariantNow(讀下拉選單)與 SetVariantPref(外部指定)共用它 ——
+  // 兩份會漂移,而漂移的症狀是「從系統匣切有效、從設定切無效」(或反過來)。
+  void CommitVariantPref(VariantPref v);
   void ApplyPunctNow();
   void ApplyDefaultSchemaNow();
   bool ApplyOrderAndPageSize(std::string* error);

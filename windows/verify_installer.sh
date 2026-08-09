@@ -139,6 +139,89 @@ reg_value() {
     | awk '/REG_SZ|REG_EXPAND_SZ|REG_DWORD/ { $1=""; $2=""; sub(/^[ \t]+/, ""); print; exit }'
 }
 
+# ── 使用者的語言清單 ──────────────────────────────────────────────
+#
+# HKCU\Control Panel\International\User Profile 的 REG_MULTI_SZ `Languages`。
+# reg.exe 把 MULTI_SZ 的分隔印成字面的 \0,所以換成空白就是一份清單。
+#
+# ⚠ 這個位置**沒有**官方文件(微軟文件裡的對應物是 PowerShell 的
+#   Get-WinUserLanguageList)。這裡只拿它當**觀測用**,不拿它當判斷依據 ——
+#   判斷走的是產品自己的 `rime_ime_setup.exe user-profiles`。
+#   讀不到就印「(讀不到)」,不讓這一節因此變紅:它是量測,不是斷言。
+user_language_list() {
+  reg query 'HKCU\Control Panel\International\User Profile' //v Languages //reg:64 2>/dev/null \
+    | tr -d '\r' \
+    | awk '/REG_MULTI_SZ/ { $1=""; $2=""; sub(/^[ \t]+/, ""); print; exit }' \
+    | sed 's/\\0/ /g'
+}
+
+# ── 設定視窗現在開著嗎 ────────────────────────────────────────────
+#
+# 問視窗類別名,不是找進程、也不是找標題:
+#   · 找進程只證明「服務在跑」,那與「視窗開出來了」是兩件事 ——
+#     而使用者按下去看到的是後者。
+#   · 標題會隨語言與版本變,類別名不會。
+#
+# ⚠ 走產品自己的 `rime_ime_setup.exe find-window`,**不走 PowerShell**。
+#   第一版是 PowerShell 的 FindWindowW,而類別名含中文:
+#   Git Bash → powershell.exe 的命令列會經過一次代碼頁轉換,中文被換掉之後
+#   它找的是一個不存在的類別,於是**永遠回報找不到** ——
+#   而那看起來與「設定視窗真的沒開出來」一模一樣(CI run #86 就是這樣)。
+#
+# 類別名的唯一來源仍然是 product.env(見 verify_product_names.sh 的
+# 「設定窗類別名」那一列),由這裡推導後傳進去。
+SETTINGS_CLASS="${RS_PRODUCT_NAME}SettingsWindow"
+# ⚠ **一定要 --visible。** 設定視窗在服務一啟動時就被建好但不顯示
+#   (service/settings_window.cc:按下去要立刻看到窗,不能等它建)。
+#   所以「視窗存在」對任何一支跑著的服務都恆真 —— CI run #87 就是這樣:
+#   12b 兩秒就「通過」了,而 12c 立刻發現「第一支不帶 --settings 的服務
+#   也把視窗開出來了」。使用者看得到的是**顯示出來**,不是存在。
+settings_window_present() {
+  "${INSTALL_DIR}/rime_ime_setup.exe" find-window \
+    --class "${SETTINGS_CLASS}" --visible >/dev/null 2>&1
+}
+
+# ── 捷徑(.lnk)指到哪裡、帶什麼參數 ──────────────────────────────
+#
+# ⚠ 這是這一輪非加不可的一項,而它**第一次跑就抓到一個一直存在的缺陷**:
+#   捷徑名字裡的冒號是半形的,而 NTFS 把「名字:something」解讀成交替資料流,
+#   於是磁碟上長出來的是一個名字被截斷的**空檔案** ——
+#   「開始」功能表裡那一項什麼都不會做。那正是我們叫使用者去點的診斷入口。
+#
+# ⚠ **不要在命令列上傳中文給 PowerShell。** Git Bash → powershell.exe 會經過
+#   一次代碼頁轉換,而「開始」功能表的資料夾名是產品的中文名 ——
+#   轉壞之後 CreateShortcut 拿到一個不存在的路徑,回傳空字串,
+#   而那看起來與「捷徑指到錯的地方」一模一樣(CI run #86 就是這樣)。
+#   所以改成:把腳本寫成檔案(UTF-8 with BOM,PowerShell 讀得對),
+#   讓它自己去列舉整個「開始」功能表,結果寫成 UTF-8 的 TSV,bash 再讀。
+#   命令列上一個非 ASCII 字元都沒有。
+dump_start_menu_shortcuts() {   # $1 = 輸出檔(TSV: 名字 \t 目標 \t 參數)
+  local ps1="${WORK}/dump-lnk.ps1"
+  printf '\xEF\xBB\xBF' > "${ps1}"
+  cat >> "${ps1}" <<'PS1EOF'
+$ErrorActionPreference = 'Stop'
+$roots = @(
+  (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'),
+  (Join-Path $env:AppData     'Microsoft\Windows\Start Menu\Programs')
+)
+$sh = New-Object -ComObject WScript.Shell
+$out = New-Object System.Collections.ArrayList
+foreach ($r in $roots) {
+  if (-not (Test-Path $r)) { continue }
+  Get-ChildItem -Path $r -Recurse -Filter *.lnk -ErrorAction SilentlyContinue | ForEach-Object {
+    try {
+      $l = $sh.CreateShortcut($_.FullName)
+      [void]$out.Add(($_.BaseName + "`t" + $l.TargetPath + "`t" + $l.Arguments))
+    } catch { }
+  }
+}
+[System.IO.File]::WriteAllLines($env:RIMEWIN_LNK_OUT, $out, (New-Object System.Text.UTF8Encoding($false)))
+PS1EOF
+  RIMEWIN_LNK_OUT="$(cygpath -w "$1")" \
+    powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+               -File "$(cygpath -w "${ps1}")" >/dev/null 2>&1 || true
+}
+
 # ══════════════════════════════════════════════════════════════════
 #  0. 產品自己宣稱的登錄檔路徑與 GUID
 # ══════════════════════════════════════════════════════════════════
@@ -192,6 +275,15 @@ if [ "$(printf '%s\n' "${PROFILES}" | sort)" != "$(printf '%s\n' "${EXPECT_PROFI
   「輸入法出現在哪些語言底下」,少一個就是那個語言的使用者找不到它。"
 fi
 ok "CLSID 與 ${PROFILE_COUNT} 份語言設定檔的 GUID 都與預期一致"
+
+# ── 安裝之前的語言清單(§4b 要拿它比對)────────────────────────────
+#
+# 這一份是本輪唯一能回答「**啟用一份語言設定檔會不會替使用者新增一個語言**」
+# 的東西。那個問題微軟沒有文件(EnableLanguageProfile 那一頁只有簽章與
+# 兩個回傳碼,沒有 Remarks),而使用者截圖上那兩欄只掛著本輸入法的
+# 繁體中文,強烈指向「是我們加上去的」。與其猜,不如量。
+LANGS_BEFORE="$(user_language_list)"
+log "安裝前的使用者語言清單:${LANGS_BEFORE:-(讀不到)}"
 
 # ══════════════════════════════════════════════════════════════════
 #  1. 反向測試:**安裝之前**檢查必須是紅的
@@ -410,12 +502,150 @@ else
   note_fail "安裝之後全機註冊檢查仍然失敗"
 fi
 
-if "${INSTALL_DIR}/rime_ime_setup.exe" check --user > "${WORK}/check-user.log" 2>&1; then
-  ok "目前使用者已被啟用(HKCU 底下有設定檔)"
+# 使用者那一側(啟用了幾份)搬到 §4b —— 那裡有「正好一份」的斷言
+# 與失敗時該說的話。這裡若再做一次,同一個問題會用兩種說法報兩次。
+
+# ══════════════════════════════════════════════════════════════════
+#  4b. 語言切換清單上我們佔幾格
+# ══════════════════════════════════════════════════════════════════
+#
+# ⚠ 這一節是這一輪的主題。使用者的截圖:
+#
+#     简体中文(中国大陆)            <本輸入法>
+#     简体中文(中国大陆)            微软拼音
+#     简体中文(中国大陆)            小狼毫
+#     繁体中文(中国台湾)            <本輸入法>
+#     繁体中文(中国香港特别行政区)   <本輸入法>
+#
+# 微软拼音與小狼毫各佔一格,我們佔三格。他的話:「輸入法不應該顯示那麼多。」
+#
+# 契約:**註冊三份(HKLM)、啟用一份(HKCU)**。
+#   · 三份註冊讓「不管他有哪一種中文,都在他自己的語言底下找得到我們」——
+#     那是這一端最早的 bug(只註冊繁中,簡體使用者完全找不到),不可以退回去。
+#   · 一份啟用決定清單上有幾格。
+#
+# 舊的斷言是「HKCU 底下至少一份」,而三份全開的狀態下它照樣成立 ——
+# 也就是說**這個回歸本來就穿得過舊的關卡**。現在是「正好一份」。
+log "4b. 語言切換清單上我們佔幾格(**正好一格**)"
+
+"${INSTALL_DIR}/rime_ime_setup.exe" user-profiles > "${WORK}/profiles.log" 2>&1 || true
+cat "${WORK}/profiles.log"
+prof_clean="$(tr -d '\r' < "${WORK}/profiles.log")"
+ENABLED_COUNT="$(printf '%s' "${prof_clean}" | sed -n 's/^ENABLED_COUNT=//p' | head -1)"
+ENABLED_LANGS="$(printf '%s' "${prof_clean}" | sed -n 's/^ENABLED=\(0x[0-9A-Fa-f]*\)=.*/\1/p' | tr '\n' ' ')"
+# ⚠ 後面 §6c / §6d / §11 的 TSF 宿主必須 activate **實際被啟用的那一份**。
+#
+#   在這一輪之前,RegisterProfile 的 bEnabledByDefault 是 TRUE(全機、
+#   對所有使用者),所以那幾節寫死 0x0404 也照樣過。改成 FALSE 之後
+#   「哪一份可以被 activate」完全由 enable-user 決定 —— 而 runner 上
+#   一個中文語言都沒有,所以它選的是退路 0x0804,不是 0x0404。
+#   繼續寫死的話那幾節會以「按鍵一顆都沒到達」失敗,而原因與它們無關。
+ACTIVE_LANGID="$(printf '%s' "${ENABLED_LANGS}" | awk '{print $1}')"
+[ -n "${ACTIVE_LANGID}" ] || ACTIVE_LANGID=0x0404
+echo "  後面的 TSF 宿主會 activate ${ACTIVE_LANGID}"
+
+if [ "${ENABLED_COUNT}" = "1" ]; then
+  ok "這個使用者啟用了 1 份(${ENABLED_LANGS})—— 清單上只有一格"
+else
+  note_fail "這個使用者啟用了 ${ENABLED_COUNT:-?} 份(${ENABLED_LANGS})。
+     預期正好 1 份。使用者的 Win + 空白鍵清單上會出現 ${ENABLED_COUNT:-?} 格本輸入法,
+     而微软拼音、小狼毫各只佔一格 —— 這正是他回報的問題。"
+fi
+
+# 產品自己的檢查也要同意。兩邊都問是刻意的:上面讀的是 user-profiles 的
+# 輸出格式,這裡走的是 check --user 的斷言路徑,而安裝程式與 doctor 用的是後者。
+if "${INSTALL_DIR}/rime_ime_setup.exe" check --user --no-enum \
+     > "${WORK}/check-user.log" 2>&1; then
+  ok "check --user 通過(正好一份)"
 else
   cat "${WORK}/check-user.log"
-  note_fail "使用者側沒有被啟用 —— 安裝程式的 enable-user 那一步沒有生效。
-     症狀是「裝完了,但輸入法清單裡看不到」。"
+  note_fail "check --user 沒過 —— 啟用的份數不是 1,或一份都沒有。
+     前者是「清單上好幾格」,後者是「裝完了但清單裡看不到」。"
+fi
+
+# ── 量測:啟用一份會不會替使用者新增一個語言 ──────────────────────
+#
+# ⚠ 這一段**只印不判**(除了最後一條)。它回答的是一個沒有文件的問題,
+#   而 runner 上的情境只有一種(英文、沒有任何中文),所以它證明不了
+#   一般情形。把觀測寫進日誌,是為了讓下一個人不必再猜一次。
+LANGS_AFTER="$(user_language_list)"
+echo "  --- 量到的事實 ---"
+echo "    安裝前:${LANGS_BEFORE:-(讀不到)}"
+echo "    安裝後:${LANGS_AFTER:-(讀不到)}"
+if [ "${LANGS_BEFORE}" != "${LANGS_AFTER}" ]; then
+  echo "    → 使用者的語言清單**被改動了**。runner 上沒有任何中文,"
+  echo "      所以啟用一份中文設定檔確實會替他新增那個語言。"
+  echo "      這也就解釋了截圖上那兩欄只掛著本輸入法的繁體中文是怎麼來的。"
+else
+  echo "    → 語言清單沒有變。"
+fi
+# 唯一的斷言:不管清單怎麼變,**我們只能佔一格**。
+n_ours="$(printf '%s' "${ENABLED_COUNT:-0}")"
+case "${n_ours}" in
+  1) ok "不論語言清單如何變動,我們只啟用一份" ;;
+  *) note_fail "我們啟用了 ${n_ours} 份" ;;
+esac
+
+# ══════════════════════════════════════════════════════════════════
+#  4c. 升級:舊版啟用了三份,新版必須把多的收回去
+# ══════════════════════════════════════════════════════════════════
+#
+# ⚠ 這一節是**這一輪的必要條件**,不是加分項。
+#
+#   使用者機器上已經裝著一個啟用了三份的版本。如果升級只是「新版只啟用
+#   一份」而沒有清掉舊的兩份,他會看到「新版說只有一格,但清單裡還是三格」——
+#   對他而言等於這個問題根本沒修,而我們會以為修好了。
+#
+#   做法:**真的把三份都打開**(模擬舊版裝完的狀態),再跑一次 enable-user,
+#   然後斷言回到一份。中間那一步是重點 —— 直接跑兩次 enable-user 的話,
+#   第二次面對的是已經只有一份的狀態,那條清理路徑從來不會被走到。
+log "4c. 升級清理:先重現舊版的三份全開,再跑 enable-user"
+
+# 製造前提。走的是產品自己的 enable-user-legacy-all —— 那一段程式碼
+# **就是舊版跑的那一段**(對三份各呼叫一次 EnableLanguageProfile)。
+# 手寫登錄檔去模擬的話,驗到的是我們對舊版的猜測,不是舊版。
+"${INSTALL_DIR}/rime_ime_setup.exe" enable-user-legacy-all \
+  > "${WORK}/legacy3.log" 2>&1 || true
+cat "${WORK}/legacy3.log"
+
+"${INSTALL_DIR}/rime_ime_setup.exe" user-profiles > "${WORK}/profiles-dirty.log" 2>&1 || true
+dirty="$(tr -d '\r' < "${WORK}/profiles-dirty.log" | sed -n 's/^ENABLED_COUNT=//p' | head -1)"
+echo "  收斂前:啟用了 ${dirty:-?} 份"
+
+if [ "${dirty:-0}" -lt 2 ] 2>/dev/null; then
+  # 前提沒做出來 → 這一節什麼都沒驗到。**明著紅**,不要讓它靜靜地綠。
+  # 一個前提不成立的斷言必定通過,那比沒有這一節更糟。
+  cat "${WORK}/profiles-dirty.log"
+  note_fail "沒能重現舊版的三份全開(只有 ${dirty:-?} 份),
+     所以「升級會把多餘的收回去」這一條**這一輪沒有被驗證**。
+     這不是產品壞了,是這段測試沒有製造出它要測的前提。"
+else
+  ok "重現出舊版的狀態(${dirty} 份被啟用)"
+  # 真正的動作:跑一次 enable-user,就像升級時安裝程式做的那樣。
+  "${INSTALL_DIR}/rime_ime_setup.exe" enable-user > "${WORK}/reconverge.log" 2>&1 || true
+  cat "${WORK}/reconverge.log"
+  "${INSTALL_DIR}/rime_ime_setup.exe" user-profiles > "${WORK}/profiles-clean.log" 2>&1 || true
+  clean="$(tr -d '\r' < "${WORK}/profiles-clean.log" | sed -n 's/^ENABLED_COUNT=//p' | head -1)"
+  if [ "${clean}" = "1" ]; then
+    ok "升級清理成立:${dirty} 份 → 1 份"
+  else
+    cat "${WORK}/profiles-clean.log"
+    note_fail "跑完 enable-user 之後還有 ${clean:-?} 份被啟用。
+     升級的使用者會看到「新版說只有一格,但清單裡還是 ${clean:-?} 格」——
+     對他而言等於這個問題根本沒修。"
+  fi
+
+  # 反向測試:上面那條斷言會不會在該紅的時候紅?
+  # 再弄髒一次,直接問 check --user —— 它必須**失敗**。
+  "${INSTALL_DIR}/rime_ime_setup.exe" enable-user-legacy-all >/dev/null 2>&1 || true
+  if "${INSTALL_DIR}/rime_ime_setup.exe" check --user --no-enum >/dev/null 2>&1; then
+    note_fail "三份全開的狀態下 check --user 竟然通過 —— 那道關卡擋不住這個回歸,
+     它報出來的綠燈不算數。(舊的斷言寫的是「至少一份」,正是這個形狀。)"
+  else
+    ok "反向測試通過:三份全開時 check --user 會紅"
+  fi
+  # 收乾淨,後面幾節要的是正常狀態。
+  "${INSTALL_DIR}/rime_ime_setup.exe" enable-user >/dev/null 2>&1 || true
 fi
 
 # ══════════════════════════════════════════════════════════════════
@@ -608,7 +838,7 @@ esac
 # 而這一節要驗的是**切過去就該起來**(系統匣圖示與設定視窗都在服務裡,
 # 使用者不該為了看到 UI 而先打一個字)。
 set +e
-"${HOST}" --langid 0x0404 --require-activate \
+"${HOST}" --langid "${ACTIVE_LANGID}" --require-activate \
           --trace "$(w "${WORK}/coldstart-trace.log")" --wait-ms 5000 \
           > "${WORK}/coldstart-activate.log" 2>&1
 rc=$?
@@ -676,7 +906,7 @@ if [ "${SAW}" -eq 1 ]; then
   if [ "${READY_COLD}" -eq 1 ]; then
     ok "冷啟動的服務在自己編譯完詞庫之後接得起連線"
     set +e
-    "${HOST}" --langid 0x0404 --require-activate --require-eaten \
+    "${HOST}" --langid "${ACTIVE_LANGID}" --require-activate --require-eaten \
               --keys nihao1 --expect 你好 \
               --trace "$(w "${WORK}/coldstart-type-trace.log")" --wait-ms 5000 \
               > "${WORK}/coldstart-type.log" 2>&1
@@ -811,7 +1041,7 @@ if [ -n "${HOST}" ]; then
   TRACE_LOG="${WORK}/tsf-trace.log"
   rm -f "${TRACE_LOG}"
   set +e
-  "${HOST}" --langid 0x0404 --require-activate --require-eaten \
+  "${HOST}" --langid "${ACTIVE_LANGID}" --require-activate --require-eaten \
             --keys nihao1 --expect 你好 \
             --trace "$(w "${TRACE_LOG}")" --wait-ms 4000 \
             > "${WORK}/tsf-host.log" 2>&1
@@ -861,7 +1091,7 @@ fi
 if [ -n "${HOST}" ]; then
   log "6d. 按鍵矩陣(退格、Delete、方向鍵、Esc、Enter、Tab…)"
   set +e
-  "${SCRIPT_DIR}/verify_input_matrix.sh" --host "${HOST}" --langid 0x0404 \
+  "${SCRIPT_DIR}/verify_input_matrix.sh" --host "${HOST}" --langid "${ACTIVE_LANGID}" \
     --out "${WORK}/inputmatrix" 2>&1 | sed 's/^/    /'
   rc_matrix="${PIPESTATUS[0]}"
   set -e
@@ -1093,6 +1323,222 @@ fi
 
 # 服務已經停了,解除安裝不需要 trap 再做一次。
 trap - EXIT
+
+# ══════════════════════════════════════════════════════════════════
+#  12. 設定的入口:它們在嗎、指對了嗎、按下去真的會開嗎
+# ══════════════════════════════════════════════════════════════════
+#
+# ⚠ 使用者的原話:「設置你要做成圖形界面的。你這樣對新手不友好。」
+#   而在那之前,他問「UI 在哪裡」,得到的回答是一行命令列指令。
+#   那不是答案,那是開發者的繞法。
+#
+# 現在有四個入口,而這一節的工作是讓「它在」變成一件**斷言得到**的事:
+#
+#   1. 「開始」功能表的捷徑  ← 最不會失敗,而且新手找得到。本節驗。
+#   2. 系統匣圖示            ← Windows 11 預設收進「^」溢位區。本節說明。
+#   3. 語言列上的按鈕        ← §6c 的 TSF 宿主驗得到它被建出來。
+#   4. rime_service --settings ← 捷徑指的就是它。本節真的執行一次。
+#
+# ⚠ 捷徑存在但參數打錯,症狀是**「點了沒反應」**——
+#   而這個專案抓過四次那種鍵,共同點都是「畫面完全正常、自動化全過」。
+#   所以這裡不只驗檔案在不在,還驗它指到哪、帶什麼參數。
+log "12. 設定的入口"
+
+# ── 12a. 「開始」功能表的兩個捷徑 ─────────────────────────────────
+#
+# {group} = DefaultGroupName = [Setup] 的 AppName = 產品的中文名。
+# 全機安裝,所以在 ProgramData 底下的共用「開始」功能表。
+# {group} = DefaultGroupName = [Setup] 的 AppName = 產品的中文名。
+# 全機安裝,所以在 ProgramData 底下的共用「開始」功能表。
+# ⚠ 名字從 product.env 推導,不寫死 —— 改名時這裡要跟著動,
+#   而寫死的那一份會安靜地去找一個不存在的資料夾,然後每一條
+#   「這個東西應該不在」的檢查都會通過。
+START_MENU="$(cygpath -u "${ProgramData:-C:\\ProgramData}")/Microsoft/Windows/Start Menu/Programs/${RS_PRODUCT_NAME_ZH}"
+echo "  程式集資料夾:${START_MENU}"
+[ -d "${START_MENU}" ] || note_fail "找不到程式集資料夾 —— 「開始」功能表裡什麼都沒有,
+     而那是新手唯一找得到的入口。"
+LNK_TSV="${WORK}/shortcuts.tsv"
+dump_start_menu_shortcuts "${LNK_TSV}"
+if [ ! -s "${LNK_TSV}" ]; then
+  note_fail "列不出任何「開始」功能表捷徑 —— 這一節什麼都沒驗到。
+     (不是產品的問題,是這段測試自己壞了;但**不可以**因此當成通過。)"
+else
+  echo "  「開始」功能表裡與我們有關的捷徑:"
+  grep -i "${RS_PRODUCT_NAME}"'\|rime_' "${LNK_TSV}" | sed 's/^/    /' || true
+fi
+
+# 名字、目標、參數三者都要對。三者的來源是 .iss 的 [Icons]。
+#
+# ⚠ **目標與參數直接讀 .lnk 的位元組,不問 WScript.Shell。**
+#   前一版用 PowerShell 的 CreateShortcut().TargetPath,而它在 runner 上
+#   對每一個捷徑都回傳**空字串**(CI run #87)—— 檔案明明在、名字也對。
+#   沒有查清楚為什麼,但那不重要:一個回傳空字串的探針,會把
+#   「捷徑指到錯的地方」與「探針壞了」變成同一個紅燈,而那正是要避免的。
+#
+#   .lnk 裡的路徑與參數是 UTF-16LE 的字串。把 NUL 去掉之後,
+#   `rime_service.exe` 與 `--settings` 這種純 ASCII 的字串就直接搜得到 ——
+#   不需要 COM、不需要 PowerShell、不經過任何代碼頁。
+#   (代價:這是子字串比對,不是欄位解析。配上「檔案本身要在對的名字下」
+#    這一條之後仍然擋得住「指到錯的執行檔」與「參數打錯」這兩種真實的失敗。)
+lnk_contains() {  # $1 = .lnk 路徑, $2 = 要找的 ASCII 字串
+  # ⚠ `--` 是必要的:要找的字串本身以 -- 開頭(--settings),
+  #   沒有它 grep 會把它當成選項、印出用法、並**回傳非零** ——
+  #   於是「參數是對的」會被判成「找不到參數」。實測踩過(CI run #89)。
+  tr -d '\000' < "$1" 2>/dev/null | grep -aqF -- "$2"
+}
+
+check_lnk() {
+  local name="$1" want_exe="$2" want_args="$3"
+  local path="${START_MENU}/${name}.lnk"
+  if [ ! -f "${path}" ]; then
+    note_fail "缺少捷徑「${name}」(${path})。
+     ⚠ 名字裡有**半形**冒號的話,NTFS 會把它當成交替資料流 ——
+     磁碟上長出來的是一個截斷的空檔案,而「開始」功能表裡那一項
+     什麼都不會做。用全形冒號。(2026-08-09 實際抓到過一次。)"
+    return
+  fi
+  echo "    ${name}(${path})"
+  if lnk_contains "${path}" "${want_exe}"; then
+    ok "捷徑「${name}」指到 ${want_exe}"
+  else
+    echo "      .lnk 裡的可讀字串:"
+    tr -d '\000' < "${path}" | tr -c '[:print:]' '\n' | grep -a '\.exe\|--' \
+      | head -8 | sed 's/^/        /' || true
+    note_fail "捷徑「${name}」裡找不到 ${want_exe}。
+     症狀會是「點了沒反應」或跑錯程式。"
+  fi
+  if [ -z "${want_args}" ] || lnk_contains "${path}" "${want_args}"; then
+    ok "捷徑「${name}」帶著參數 ${want_args}"
+  else
+    note_fail "捷徑「${name}」裡找不到參數「${want_args}」。
+     參數錯掉的症狀正是「點了沒反應」—— 這個專案抓過四次那種鍵。"
+  fi
+}
+check_lnk "${RS_PRODUCT_NAME} 設定" "rime_service.exe" "--settings"
+check_lnk "${RS_PRODUCT_NAME} 診斷：輸入法為什麼不能用" "rime_ime_setup.exe" "doctor --report"
+
+# 反向測試:上面那個比對真的會在該紅的時候紅嗎?
+# 沒有這一條的話,「lnk_contains 永遠回真」與「捷徑都對」在報表上分不出來。
+if lnk_contains "${START_MENU}/${RS_PRODUCT_NAME} 設定.lnk" "這個字串不可能在裡面"; then
+  note_fail "一個不可能存在的字串竟然比對得到 —— 上面幾條斷言不算數"
+else
+  ok "反向測試通過:.lnk 裡不存在的字串比對不到"
+fi
+
+# ── 12b. 捷徑真的按得下去嗎(冷:服務沒在跑)──────────────────────
+#
+# ⚠ 這是「三條路一條都沒有被人走過」裡的第三條(CreateProcess)。
+#   捷徑指的就是這一條 —— 服務沒在跑的時候,它必須自己起來並開出視窗。
+log "  12b. 服務沒在跑時,--settings 要自己把視窗開出來"
+taskkill //IM rime_service.exe //F >/dev/null 2>&1 || true
+sleep 2
+if settings_window_present; then
+  note_fail "測試開始前設定視窗就已經開著 —— 下面那條斷言測不到東西。"
+fi
+# ⚠ **不可以帶 --no-ui**:main.cc 在 no_ui 底下連設定視窗都不建
+#   (系統匣圖示也掛在它的訊息迴圈上)。帶了的話這條斷言會永遠紅,
+#   而紅的原因與產品無關 —— 那比不驗更糟,它會讓人以為入口壞了。
+"${INSTALL_DIR}/rime_service.exe" --settings --quit-after 40 \
+  > "${WORK}/settings-cold.log" 2>&1 &
+cold_pid=$!
+opened=0
+for i in $(seq 1 40); do
+  if settings_window_present; then opened=1; break; fi
+  sleep 1
+done
+if [ "${opened}" -eq 1 ]; then
+  ok "冷啟動:--settings 把設定視窗開出來了(捷徑走的就是這條)"
+else
+  cat "${WORK}/settings-cold.log" 2>/dev/null | tail -20
+  note_fail "服務沒在跑時,rime_service.exe --settings 沒有開出設定視窗。
+     「開始」功能表那個捷徑按下去會**沒反應** —— 而它是新手唯一的入口。"
+fi
+
+# ── 12c. 服務已經在跑時(具名事件那條路)──────────────────────────
+#
+# ⚠ 這是三條路裡的第二條。語言列按鈕在管道還沒連上時走的就是它,
+#   而它同樣從來沒有被走過。第二支 rime_service.exe 會被單一實例擋掉,
+#   那時它必須**把訊息傳過去**,不是靜靜結束。
+log "  12c. 服務已經在跑時,第二支 --settings 要通知它(具名事件)"
+if [ "${opened}" -eq 1 ]; then
+  # 先把整支服務收掉,再從乾淨狀態重來。
+  #
+  # ⚠ 原本這裡是用 PowerShell 的 ShowWindow 把視窗藏起來,但那條路同樣
+  #   要在命令列上傳類別名,而且「藏起來」不等於「視窗不存在」——
+  #   FindWindow 找得到隱藏的視窗,所以那個做法根本擋不住恆真。
+  #   收掉進程才是真的回到「服務沒在跑」。
+  kill "${cold_pid}" 2>/dev/null || true
+  taskkill //IM rime_service.exe //F >/dev/null 2>&1 || true
+  sleep 3
+  if settings_window_present; then
+    note_fail "服務收掉之後設定視窗還在 —— 12c 的斷言會恆真,這一節沒有驗到。"
+  else
+    # 起一支長命的服務(不帶 --settings),然後用第二支 --settings 去通知它。
+    "${INSTALL_DIR}/rime_service.exe" --quit-after 60 \
+      > "${WORK}/settings-host.log" 2>&1 &
+    host_pid=$!
+    up=0
+    for i in $(seq 1 30); do
+      if "${INSTALL_DIR}/rime_ime_setup.exe" doctor --no-engine --no-scan \
+           >/dev/null 2>&1; then up=1; break; fi
+      sleep 1
+    done
+    sleep 2
+    if settings_window_present; then
+      note_fail "第一支服務(不帶 --settings)就把視窗開出來了 ——
+     那不該發生,而且會讓下面那條斷言恆真。"
+    else
+      set +e
+      "${INSTALL_DIR}/rime_service.exe" --settings > "${WORK}/settings-warm.log" 2>&1
+      rc_warm=$?
+      set -e
+      warm=0
+      for i in $(seq 1 15); do
+        if settings_window_present; then warm=1; break; fi
+        sleep 1
+      done
+      if [ "${warm}" -eq 1 ] && [ "${rc_warm}" -eq 0 ]; then
+        ok "具名事件那條路成立:第二支 --settings 把視窗叫出來了(rc=${rc_warm})"
+      else
+        cat "${WORK}/settings-warm.log" 2>/dev/null
+        note_fail "服務已經在跑時,第二支 rime_service.exe --settings 沒有把視窗叫出來
+     (rc=${rc_warm})。語言列按鈕在管道還沒連上時走的就是這條 ——
+     症狀是「按了設定,什麼都沒發生」。"
+      fi
+    fi
+    kill "${host_pid}" 2>/dev/null || true
+  fi
+else
+  note_fail "12b 沒過,所以 12c 這一節**沒有被驗證**。"
+fi
+kill "${cold_pid}" 2>/dev/null || true
+taskkill //IM rime_service.exe //F >/dev/null 2>&1 || true
+sleep 1
+
+# ── 12d. 系統匣圖示:Windows 11 的溢位區 ──────────────────────────
+#
+# ⚠ 查過了,結論是**沒有辦法**,所以這裡只留下記錄,不留下一個假的斷言。
+#
+#   · Shell_NotifyIcon / NOTIFYICONDATA **沒有**任何「請把我釘在外面」的旗標。
+#     微軟把這件事寫成政策而不是疏漏:「Only the user can promote an icon
+#     from the overflow to the notification area」。
+#   · HKCU\Control Panel\NotifyIconSettings\<id> 底下確實有 IsPromoted,
+#     但那個 <id> 是不公開的雜湊(同一支執行檔在不同機器上不一樣),
+#     而且那個鍵**要等圖示第一次出現過才會存在** —— 安裝程式寫不了它。
+#   · unattend 的 PromotedIcon1..4 是 OEM 封裝映像用的,不是應用程式叫得動的。
+#
+#   所以產品這一側能做的只有「在說明裡講清楚要點那個 ^」,而那句話已經
+#   寫進安裝完成頁(見 .iss 的 FinishedLabel)。這裡斷言的是**那句話還在**——
+#   文案被改掉而沒有人發現,使用者就又找不到圖示了。
+log "  12d. 系統匣的溢位區(沒有 API 可以請求晉升,只能在文案裡講)"
+if grep -q '\^' "${SCRIPT_DIR}/${RS_WIN_ISS_REL}" \
+   && grep -q '系統匣' "${SCRIPT_DIR}/${RS_WIN_ISS_REL}"; then
+  ok "安裝完成頁有交代系統匣圖示與「^」溢位區"
+else
+  note_fail "安裝完成頁沒有交代系統匣圖示會被收進「^」——
+     Windows 11 預設把新圖示藏起來,而我們沒有 API 可以要求晉升,
+     所以那句話是使用者唯一會知道的管道。"
+fi
 
 # ══════════════════════════════════════════════════════════════════
 #  7. 反向測試:故意破壞註冊,check 必須紅
