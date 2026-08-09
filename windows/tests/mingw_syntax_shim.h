@@ -44,3 +44,28 @@ extern const GUID GUID_TFCAT_TIPCAP_INPUTMODECOMPARTMENT;
 extern const GUID GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT;
 extern const GUID GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT;
 }
+
+// ── ActivateProfile 的旗標(mingw-w64 13.0 的 msctf.h 沒有)───────────
+//
+// windows/tests/tsf_host_main.cc 用得到:它要在**這個進程裡**啟用我們的
+// 語言設定檔,才逼得系統把 rime_tsf.dll 載進來並呼叫 ActivateEx。
+// 值照 Windows SDK 的 msctf.h 抄 —— 這裡只影響語法檢查,
+// 真正編出產物的是 CI 上的 MSVC(它用的是真的 SDK 標頭)。
+#ifndef TF_IPPMF_FORPROCESS
+#define TF_IPPMF_FORPROCESS 0x10000000
+#endif
+#ifndef TF_IPPMF_FORSESSION
+#define TF_IPPMF_FORSESSION 0x20000000
+#endif
+#ifndef TF_IPPMF_FORSYSTEMALL
+#define TF_IPPMF_FORSYSTEMALL 0x40000000
+#endif
+#ifndef TF_IPPMF_ENABLEPROFILE
+#define TF_IPPMF_ENABLEPROFILE 0x00000001
+#endif
+#ifndef TF_IPPMF_DISABLEPROFILE
+#define TF_IPPMF_DISABLEPROFILE 0x00000002
+#endif
+#ifndef TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE
+#define TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE 0x00000004
+#endif

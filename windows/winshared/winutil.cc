@@ -70,6 +70,12 @@ std::wstring RimeServiceQuitEventName() {
   return L"Local\\RimeQuadServiceQuit." + sid;
 }
 
+std::wstring RimeServiceMutexName() {
+  std::wstring sid = CurrentUserSidString();
+  if (sid.empty()) sid = L"unknown";
+  return L"Local\\RimeQuadService." + sid;
+}
+
 std::wstring RimeSettingsEventName() {
   return L"Local\\RimeQuadSettings." + CurrentUserSidString();
 }
@@ -91,6 +97,26 @@ bool IsProcessElevated() {
     elevated = elevation.TokenIsElevated != 0;
   ::CloseHandle(token);
   return elevated;
+}
+
+// ⚠ 資料夾名寫在這一個地方,而且只有這一個地方。
+//   產品改名時改這裡;改別處等於製造一個「刪了一個不存在的資料夾然後
+//   回報成功」的缺陷。
+static const wchar_t kUserDataFolderName[] = L"RimeQuad";
+
+const wchar_t* RimeUserDataFolderName() { return kUserDataFolderName; }
+
+std::wstring RimeUserDataDir() {
+  wchar_t buf[32768];
+  const DWORD n = ::GetEnvironmentVariableW(L"APPDATA", buf, 32768);
+  if (n == 0 || n >= 32768) return std::wstring();
+  std::wstring dir(buf, n);
+  // %APPDATA% 理論上不會以反斜線結尾,但拼路徑時多防一次是零成本的 ——
+  // 而拼錯的結果是一個帶雙反斜線的路徑,某些 API 吃、某些不吃。
+  while (!dir.empty() && (dir.back() == L'\\' || dir.back() == L'/'))
+    dir.pop_back();
+  if (dir.empty()) return std::wstring();
+  return dir + L"\\" + kUserDataFolderName;
 }
 
 std::wstring ModuleDirectory(HMODULE module) {

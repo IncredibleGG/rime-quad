@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "../winshared/winutil.h"
+#include "trace.h"
 
 // 版本協商用:DLL 側編譯時看到的門面 ABI。DLL 本身**不連結** rime_shell,
 // 只取這一個常數,所以只 include 標頭不會把 librime 拖進宿主進程。
@@ -65,6 +66,45 @@ bool WorthDowngrading(LinkFailure k) {
 }
 
 }  // namespace
+
+bool ServiceIsRunning() {
+  // OpenMutexW 成功 = 那個名字底下已經有一個互斥鎖存在 = 服務進程活著。
+  // 只要 SYNCHRONIZE 權限,不去取得它 —— 取得了會擋住服務自己的收尾。
+  HANDLE m = ::OpenMutexW(SYNCHRONIZE, FALSE, RimeServiceMutexName().c_str());
+  if (!m) return false;
+  ::CloseHandle(m);
+  return true;
+}
+
+bool LaunchService(const std::wstring& service_path) {
+  if (service_path.empty()) return false;
+  if (IsProcessElevated()) return false;
+
+  STARTUPINFOW si{};
+  si.cb = sizeof(si);
+  si.dwFlags = STARTF_USESHOWWINDOW;
+  si.wShowWindow = SW_HIDE;
+  PROCESS_INFORMATION pi{};
+  std::wstring cmd = L"\"" + service_path + L"\"";
+  std::vector<wchar_t> mutable_cmd(cmd.begin(), cmd.end());
+  mutable_cmd.push_back(L'\0');
+
+  if (!::CreateProcessW(service_path.c_str(), mutable_cmd.data(), nullptr,
+                        nullptr, FALSE, CREATE_NO_WINDOW | DETACHED_PROCESS,
+                        nullptr, nullptr, &si, &pi)) {
+    // ⚠ 路徑走 WideToUtf8 而不是 printf 的 %ls。MSVC 的窄字元 printf 用
+    //   目前的 C locale 去轉寬字元,預設的 "C" locale 碰到非 ASCII 就整段
+    //   截斷 —— 而安裝路徑裡有中文正是最需要看到這一行的時候。
+    Trace("啟動服務失敗 err=%lu path=%s",
+          static_cast<unsigned long>(::GetLastError()),
+          WideToUtf8(service_path).c_str());
+    return false;
+  }
+  Trace("已啟動服務 pid=%lu", static_cast<unsigned long>(pi.dwProcessId));
+  ::CloseHandle(pi.hThread);
+  ::CloseHandle(pi.hProcess);
+  return true;
+}
 
 IpcClient::IpcClient() {
   event_ = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -163,10 +203,32 @@ bool IpcClient::EnsureReady() {
     if (!WorthDowngrading(diag_.failure)) break;
     --p;
   }
-  if (!ok) return false;
-  if (!OpenSession()) return false;
+  if (!ok || !OpenSession()) {
+    if (trace_budget_ > 0) {
+      --trace_budget_;
+      // 三個欄位缺一不可,而且**不可以併成一句話**:
+      //   stage  = 開管道 / 握手 / 建 session,三者要修的地方完全不同
+      //   os_err = 2(沒有這條管道)與 5(有,但這個身分開不了)長得一樣
+      //   peer   = 版本不合時,對方報的版本是唯一有用的線索
+      Trace("連線失敗 第%u次 階段=%s 原因=%s os_err=%lu 宣告proto=%u abi=%u "
+            "對方%s(proto=%u abi=%u)",
+            static_cast<unsigned>(diag_.attempts), ReadyStageName(diag_.stage),
+            LinkFailureName(diag_.failure),
+            static_cast<unsigned long>(diag_.os_error),
+            static_cast<unsigned>(diag_.tried_proto),
+            static_cast<unsigned>(diag_.my_shell_abi),
+            diag_.peer_replied ? "回了" : "沒回",
+            static_cast<unsigned>(diag_.peer.proto),
+            static_cast<unsigned>(diag_.peer.shell_abi));
+    }
+    return false;
+  }
   link_.OnConnected();
   diag_.stage = ReadyStage::kNone;
+  Trace("連線就緒 proto=%u abi=%u session=%llu",
+        static_cast<unsigned>(negotiated_proto_),
+        static_cast<unsigned>(diag_.my_shell_abi),
+        static_cast<unsigned long long>(session_));
   return true;
 }
 
@@ -212,38 +274,18 @@ bool IpcClient::Connect() {
 }
 
 bool IpcClient::TryLaunchService() {
-  if (service_path_.empty()) return false;
-
-  // ⚠ 提權的宿主進程不可以啟動服務。
-  //
-  // TSF 的 DLL 會被載入到提權的進程裡(以系統管理員身分執行的編輯器、
-  // UAC 的對話框…)。從那裡 CreateProcess 起來的服務會繼承提權的權杖,
-  // 而那支服務接下來會用**系統管理員**的身分去讀寫使用者的設定與詞庫 ——
-  // 檔案的擁有者從此變成不對的人,一般權限的那份服務再也寫不進去。
-  // 症狀是「用過一次系統管理員的程式之後,輸入法就再也記不住東西」。
-  if (IsProcessElevated()) return false;
-
   const int64_t now = NowMs();
   if (last_launch_ms_ >= 0 && now - last_launch_ms_ < kLaunchCooldownMs)
     return false;
   last_launch_ms_ = now;
 
-  STARTUPINFOW si{};
-  si.cb = sizeof(si);
-  si.dwFlags = STARTF_USESHOWWINDOW;
-  si.wShowWindow = SW_HIDE;
-  PROCESS_INFORMATION pi{};
-  std::wstring cmd = L"\"" + service_path_ + L"\"";
-  std::vector<wchar_t> mutable_cmd(cmd.begin(), cmd.end());
-  mutable_cmd.push_back(L'\0');
+  // 服務已經在跑,只是管道還沒開(首次部署要編譯詞庫,好幾分鐘)。
+  // 再啟動一支只會被單一實例的互斥鎖擋掉,而且它會安靜地以 0 結束 ——
+  // 白花一次 CreateProcess,還會讓「服務沒起來」與「服務起來了但還沒好」
+  // 在診斷上混成同一件事。
+  if (ServiceIsRunning()) return false;
 
-  if (!::CreateProcessW(service_path_.c_str(), mutable_cmd.data(), nullptr,
-                        nullptr, FALSE, CREATE_NO_WINDOW | DETACHED_PROCESS,
-                        nullptr, nullptr, &si, &pi))
-    return false;
-  ::CloseHandle(pi.hThread);
-  ::CloseHandle(pi.hProcess);
-  return true;
+  return LaunchService(service_path_);
 }
 
 bool IpcClient::WriteAllTimed(const std::string& data, DWORD timeout_ms) {

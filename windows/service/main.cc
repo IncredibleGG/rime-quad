@@ -142,9 +142,12 @@ std::string DefaultSeedDir() {
 // 代價是編譯產物(<user>\build)也跟著漫遊,在有漫遊設定檔的網域環境裡會變重。
 // 那是已知的取捨,不是沒想過。
 std::string DefaultUserDir() {
-  const std::string appdata = EnvUtf8(L"APPDATA");
-  if (appdata.empty()) return std::string();
-  return appdata + "\\RimeQuad";
+  // ⚠ 路徑本身由 winshared/winutil.cc 的 RimeUserDataDir() 決定,
+  //   **這裡不再自己拼**。呼叫者已經有三個(服務、rime_ime_setup 的
+  //   doctor 與「解除安裝時一起刪資料」、以及安裝程式),
+  //   各拼一份的話,資料夾名一改就會漏掉一處 ——
+  //   而那一處會去讀 / 去刪一個不存在的資料夾然後回報成功。
+  return rimewin::WideToUtf8(rimewin::RimeUserDataDir());
 }
 
 bool DirExists(const std::string& utf8) {
@@ -425,8 +428,11 @@ static int RunService(int argc, wchar_t** argv) {
 
   // 單一實例。每個宿主進程都會嘗試啟動服務(DLL 那邊有節流,但仍會撞在一起),
   // 沒有這道鎖的話會有好幾支服務同時開著同一份使用者詞庫。
-  const std::wstring mutex_name =
-      L"Local\\RimeQuadService." + rimewin::CurrentUserSidString();
+  // ⚠ 名字的定義在 winshared/winutil.cc,不在這裡。瘦 DLL 與
+  //   rime_ime_setup.exe doctor 都要問「服務在不在」,三份各抄一次的話,
+  //   漂移的症狀是「DLL 每次都以為服務沒在跑」——它會一直嘗試啟動,
+  //   而每一支新的都被單一實例擋掉,誰都不會報錯。
+  const std::wstring mutex_name = rimewin::RimeServiceMutexName();
   HANDLE single = ::CreateMutexW(nullptr, TRUE, mutex_name.c_str());
   if (!single || ::GetLastError() == ERROR_ALREADY_EXISTS) {
     // 已經有一支在跑,這不是錯誤。

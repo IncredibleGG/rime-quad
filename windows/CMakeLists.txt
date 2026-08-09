@@ -131,6 +131,12 @@ target_link_libraries(rime_tests PRIVATE rime_common user32)
 #   ITfLangBarItem 是 TSF 向**文字服務**要的介面,語言列的按鈕只能在這裡。
 #   它不畫東西、不載字型、不建視窗,按下去只送一則單向 IPC 訊息。
 #   設定介面本體在服務進程那一側(service/settings_window.cc)。
+# ⚠ trace.cc 是這一輪加進來的,而且它是**不得不加**的那一種:
+#   這支 DLL 住在別人的進程裡,印到 stdout 沒有人看得到,
+#   OutputDebugString 需要偵錯器 —— 而使用者手上沒有偵錯器。
+#   「DLL 沒被載入」「載入了但 ActivateEx 沒被呼叫」「按鍵映不出 keysym」
+#   這三件事在使用者眼裡完全一樣,而它們要修的地方完全不同。
+#   它只用 kernel32(見 tsf/trace.h 的規矩 2),不加任何相依。
 add_library(rime_tsf SHARED
   tsf/dll.cc
   tsf/guids.cc
@@ -138,6 +144,7 @@ add_library(rime_tsf SHARED
   tsf/text_service.cc
   tsf/ipc_client.cc
   tsf/lang_bar.cc
+  tsf/trace.cc
   tsf/win32_oracle.cc
   tsf/rime_tsf.def)
 # oleaut32:SysAllocString(語言列按鈕的 BSTR)。它是 COM 的字串配置器,
@@ -158,19 +165,49 @@ set_target_properties(rime_tsf PROPERTIES OUTPUT_NAME "rime_tsf")
 # 沒有理由為了「檢查」多背一份程式碼(見 windows/check_binaries.sh 的允許清單)。
 #
 # 它也不需要 librime —— 所以它在 logic 那一組就建得出來,快速 job 就驗得到。
+#
+# ⚠ 這一輪它多了一個動詞:doctor。那是給**使用者**跑的一頁式自我診斷
+#   (見 setup/doctor.h)。為此它必須連進幾個原本只有 DLL 在用的東西:
+#     ipc_client + rime_common   → 才問得到「管道連不連得上、卡在哪一步」
+#     win32_oracle               → 才問得到「這台機器的鍵盤佈局答不答得出字」
+#     trace                      → 才讀得到瘦 DLL 留下的記錄檔
+#   這些都不會讓 DLL 變胖:胖的是 rime_ime_setup.exe,而它只在安裝與診斷時跑。
 add_executable(rime_ime_setup
   setup/setup_main.cc
+  setup/doctor.cc
   tsf/guids.cc
+  tsf/ipc_client.cc
   tsf/registration.cc
-  tsf/registration_check.cc)
+  tsf/registration_check.cc
+  tsf/trace.cc
+  tsf/win32_oracle.cc)
 target_include_directories(rime_ime_setup PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(rime_ime_setup PRIVATE rime_winshared
+target_link_libraries(rime_ime_setup PRIVATE rime_common rime_winshared
                                              kernel32 user32 advapi32 ole32 uuid)
 
 add_executable(rime_probe
   tests/probe_main.cc
-  tsf/ipc_client.cc)
+  tsf/ipc_client.cc
+  tsf/trace.cc)
 target_link_libraries(rime_probe PRIVATE rime_common rime_winshared)
+
+# ── 真的經過 TSF 的驗證宿主 ──────────────────────────────────────────
+#
+# rime_tsf_host.exe 是一個**假的文字編輯器**:它建 ITfThreadMgr、給一份
+# ITextStoreACP 焦點、啟用我們的語言設定檔、用 ITfKeystrokeMgr 送按鍵,
+# 然後看文件裡長出什麼字。也就是說它逼系統走完
+#   登錄檔 → CoCreateInstance → 載入 rime_tsf.dll → ActivateEx → 按鍵 → 組字
+# 這一整條 —— 而那正是 CI 到目前為止**完全沒有碰過**的一段
+# (verify_ime.sh 走的是具名管道,繞過 TSF)。
+#
+# ⚠ 它**不連結** rime_tsf:那樣就變成直接呼叫我們自己的函式,驗到的是
+#   另一件事。它只認 CLSID 與 profile GUID,其餘全部交給系統去解析 ——
+#   註冊錯了、路徑錯了、DLL 載不起來,它都會在該紅的地方紅。
+add_executable(rime_tsf_host
+  tests/tsf_host_main.cc
+  tsf/guids.cc)
+target_link_libraries(rime_tsf_host PRIVATE rime_winshared
+                                            kernel32 user32 ole32 uuid)
 
 # ── 第二組:需要 librime ──────────────────────────────────────────────
 

@@ -90,7 +90,10 @@ class TextService : public ITfTextInputProcessorEx,
   HRESULT InsertText(TfEditCookie ec, ITfContext* ctx, const std::wstring& text);
   void EndComposition(TfEditCookie ec);
   void ReportCaretRect(TfEditCookie ec, ITfContext* ctx);
-  const KeyboardOracle& Oracle();
+  // 回具體型別而不是介面:診斷要問得到 used_fallback() / blind(),
+  // 而那兩件事正是這一輪查出來的關鍵(見 win32_oracle.h 檔頭)。
+  // MapKey 收的仍然是介面,所以這不影響「純邏輯層不碰 windows.h」那條界線。
+  const Win32KeyboardOracle& Oracle();
   // 問系統「使用者現在用的是我們的哪一份語言設定檔」,結果交給 ipc_。
   void RefreshProfile();
   // 語言列按鈕按下去時做的事。單向,不等回覆。
@@ -102,13 +105,29 @@ class TextService : public ITfTextInputProcessorEx,
   DWORD thread_mgr_cookie_ = TF_INVALID_COOKIE;
   DWORD profile_sink_cookie_ = TF_INVALID_COOKIE;
   LangBarButton* lang_bar_ = nullptr;
+  // key event sink 掛上了沒有。
+  //
+  // ⚠ 它是 false 的話,這個宿主裡**一顆按鍵都收不到**,而且沒有任何
+  //   其他跡象:ActivateEx 照樣回 S_OK,語言列按鈕照樣在。
+  //   以前這個回傳值完全沒有人看。
+  bool key_sink_ok_ = false;
   ITfComposition* composition_ = nullptr;
   ITfContext* composition_ctx_ = nullptr;
 
   IpcClient ipc_;
+  // 服務執行檔的完整路徑(與 DLL 同目錄)。空字串 = 算不出來。
+  std::wstring service_path_;
   // 每個 HKL 一個 oracle。使用者切換鍵盤佈局時重建。
   std::unique_ptr<Win32KeyboardOracle> oracle_;
   HKL oracle_hkl_ = nullptr;
+
+  // 還可以把幾顆按鍵寫進除錯記錄。
+  //
+  // ⚠ **不可以每一顆都寫。** OnTestKeyDown 跑在宿主的 UI 執行緒上,
+  //   每一顆按鍵一次磁碟寫入是不能接受的。而診斷需要的資訊在前幾顆就齊了:
+  //   「vk 進來了、映出的 keysym 是什麼、有沒有被吃掉」——
+  //   第二十顆按鍵的那一行與第一顆一模一樣。
+  int key_trace_budget_ = 5;
 
   // 最近一次待送出的候選窗位置。在 edit session 內算好,出來之後才送 ——
   // edit session 裡做 IPC 等於在持有文件鎖的時候等別的進程。

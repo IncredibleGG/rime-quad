@@ -6,6 +6,10 @@
 //   enable-user / disable-user  目前使用者的啟用(HKCU)
 //   check                    「真的註冊好了嗎」,CI 靠它斷言
 //   stop-service             停掉 rime_service.exe(升級與解除安裝前)
+//   doctor                   一頁式自我診斷(給使用者用的,見 setup/doctor.h)
+//   user-data-path           印出使用者資料目錄(安裝程式問它,不自己拼)
+//   purge-user-data          刪掉使用者的詞典與設定。**不可回復**,
+//                            必須帶 --yes-delete-my-dictionary 才會真的動手
 //
 // ── 為什麼是一支獨立的 exe,而不是叫 regsvr32 ──────────────────
 //
@@ -34,6 +38,7 @@
 #include "../tsf/registration.h"
 #include "../tsf/registration_check.h"
 #include "../winshared/winutil.h"
+#include "doctor.h"
 
 using namespace rimewin;
 
@@ -70,7 +75,17 @@ void Usage() {
       "                             (剛註冊完的當下 CTF 還看不到,見標頭說明)\n"
       "  paths                      印出所有會被寫到的登錄檔路徑與 GUID\n"
       "  stop-service [--dir <目錄>]  停掉 rime_service.exe\n"
-      "  dump                       印出登錄檔實況(診斷用)\n");
+      "  dump                       印出登錄檔實況(診斷用)\n"
+      "  user-data-path             印出使用者資料目錄(一行,不含其他東西)\n"
+      "  purge-user-data --yes-delete-my-dictionary\n"
+      "                             刪掉使用者的詞典與設定。**無法復原**。\n"
+      "                             沒有帶那個參數就什麼都不做。\n"
+      "  doctor [--report] [--no-engine] [--no-scan]\n"
+      "                             一頁式自我診斷:檔案、註冊、目前的語言設定檔、\n"
+      "                             鍵盤佈局、服務進程、管道、誰載入了 DLL、\n"
+      "                             引擎層、以及瘦 DLL 的除錯記錄。\n"
+      "                             有任何一格 FAIL 就以非零結束。\n"
+      "                             --report:另存一份並用記事本打開\n");
 }
 
 std::wstring DefaultDllPath() {
@@ -165,6 +180,126 @@ int StopService(const std::wstring& dir) {
   return 0;
 }
 
+// ══════════════════════════════════════════════════════════════════
+//  「連我的資料一起刪」
+// ══════════════════════════════════════════════════════════════════
+//
+// 使用者的原話:「增加一個刪除乾淨,就是用戶確實不需要了,我們就直接刪除」。
+//
+// ⚠ 這是整個產品裡**唯一一個不可回復**的動作。使用者的詞典是他用了幾個月
+//   累積出來的東西,刪錯了沒有任何辦法補救 —— 重裝補不回來、CI 補不回來。
+//   所以這一段的每一個決定都往「寧可少刪」那一邊倒:
+//
+//   1. **只有明確要求才刪。** 這支程式的預設行為是什麼都不做:
+//      沒有帶那個確認參數就直接以 2 結束並印用法。
+//      安裝程式那一側同樣是明確勾選 / 明確回答「是」才會叫到這裡,
+//      而且靜默解除安裝**永遠不會**走到這裡(除非另外傳 /PURGEUSERDATA)。
+//   2. **路徑不自己拼。** 走 winshared 的 RimeUserDataDir() ——
+//      唯一的決定處。自己拼一份的話,資料夾名一改(例如產品改名)
+//      這裡就會去刪一個不存在的目錄然後回報成功。
+//   3. **刪之前逐條檢查**(見 SafeToDelete)。任何一條不過就拒絕,
+//      而且明著說是哪一條 —— 「拒絕刪除」永遠比「刪錯」好。
+//   4. **不跟著符號連結走。** 目錄若是 reparse point(junction / symlink),
+//      只刪那個連結本身,不遞迴進去 —— 不然一個指向 C:\ 的 junction
+//      會把整台機器帶走。
+
+// 這個路徑可不可以刪。回傳 nullptr = 可以;否則回傳拒絕的理由。
+const char* SafeToDelete(const std::wstring& dir) {
+  if (dir.empty()) return "算不出使用者資料目錄(%APPDATA% 是空的?)";
+  // 「C:\x」這種長度的東西一定不是我們的資料目錄。
+  if (dir.size() < 12) return "路徑短得不合理";
+  if (dir.find(L"..") != std::wstring::npos) return "路徑裡有 ..";
+
+  wchar_t appdata[32768];
+  const DWORD n = ::GetEnvironmentVariableW(L"APPDATA", appdata, 32768);
+  if (n == 0 || n >= 32768) return "讀不到 %APPDATA%";
+  std::wstring base(appdata, n);
+  while (!base.empty() && (base.back() == L'\\' || base.back() == L'/'))
+    base.pop_back();
+  if (base.empty()) return "%APPDATA% 是空的";
+  // 必須**真的**在 %APPDATA% 底下,而且不是 %APPDATA% 自己。
+  if (dir.size() <= base.size() + 1) return "路徑不在 %APPDATA% 底下";
+  if (LowerW(dir).compare(0, base.size(), LowerW(base)) != 0)
+    return "路徑不在 %APPDATA% 底下";
+
+  // 最後一段必須正好是我們的資料夾名。這一條擋的是「路徑算錯成
+  // %APPDATA% 底下的別的東西」——例如少接了一段,結果指到 Microsoft\。
+  const size_t slash = dir.find_last_of(L"\\/");
+  if (slash == std::wstring::npos) return "路徑裡沒有反斜線";
+  if (LowerW(dir.substr(slash + 1)) != LowerW(RimeUserDataFolderName()))
+    return "最後一段不是我們的資料夾名";
+  return nullptr;
+}
+
+// 遞迴刪除。回傳刪掉的檔案數;失敗的計進 *failed。
+int DeleteTree(const std::wstring& dir, int* failed) {
+  int removed = 0;
+  WIN32_FIND_DATAW fd{};
+  HANDLE h = ::FindFirstFileW((dir + L"\\*").c_str(), &fd);
+  if (h != INVALID_HANDLE_VALUE) {
+    do {
+      const std::wstring name = fd.cFileName;
+      if (name == L"." || name == L"..") continue;
+      const std::wstring full = dir + L"\\" + name;
+      if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+        // ⚠ reparse point(junction / symlink)**不可以遞迴進去**。
+        //   一個指向 C:\ 的 junction 會讓這個函式把整台機器刪掉。
+        //   只刪那個連結本身。
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+          if (::RemoveDirectoryW(full.c_str())) ++removed;
+          else if (failed) ++*failed;
+          continue;
+        }
+        removed += DeleteTree(full, failed);
+      } else {
+        // 唯讀屬性會讓 DeleteFileW 失敗。先拿掉 —— 使用者自己設成唯讀的
+        // 檔案,在「我要刪乾淨」這個明確要求底下也該被刪掉。
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_READONLY)
+          ::SetFileAttributesW(full.c_str(), FILE_ATTRIBUTE_NORMAL);
+        if (::DeleteFileW(full.c_str())) ++removed;
+        else if (failed) ++*failed;
+      }
+    } while (::FindNextFileW(h, &fd));
+    ::FindClose(h);
+  }
+  if (!::RemoveDirectoryW(dir.c_str()) && failed) ++*failed;
+  return removed;
+}
+
+int PurgeUserData(bool confirmed) {
+  const std::wstring dir = RimeUserDataDir();
+  Say("使用者資料目錄: %s\n", WideToUtf8(dir).c_str());
+  if (!confirmed) {
+    Say("!! 沒有帶 --yes-delete-my-dictionary,什麼都不做。\n"
+        "   這個動作會刪掉使用者的詞典與設定,而且**無法復原** ——\n"
+        "   所以它必須被明確要求,不會因為打錯一個字就發生。\n");
+    return 2;
+  }
+  const char* why = SafeToDelete(dir);
+  if (why) {
+    Say("!! 拒絕刪除:%s\n"
+        "   (寧可什麼都不刪,也不要刪錯一個目錄。)\n", why);
+    return 1;
+  }
+  if (::GetFileAttributesW(dir.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    // 不是失敗:使用者可能已經自己刪過了,或從來沒有真的用過。
+    Say("目錄不存在,沒有東西要刪。\n");
+    return 0;
+  }
+  int failed = 0;
+  const int removed = DeleteTree(dir, &failed);
+  Say("已刪除 %d 個檔案,%d 個失敗\n", removed, failed);
+  if (::GetFileAttributesW(dir.c_str()) != INVALID_FILE_ATTRIBUTES) {
+    // 目錄還在 = 有東西被佔用著(服務還沒完全結束、或使用者開著檔案)。
+    // 這要明著說:安裝程式那一側會據此告訴使用者「有些東西沒刪掉」,
+    // 而不是宣布刪乾淨了然後留下半棵樹。
+    Say("!! 目錄仍然存在 —— 有檔案被佔用著(服務還在跑?)\n");
+    return 1;
+  }
+  Say("使用者資料已完全刪除。\n");
+  return 0;
+}
+
 int Report(const char* what, HRESULT hr) {
   if (SUCCEEDED(hr)) {
     Say("%s 成功\n", what);
@@ -202,6 +337,8 @@ static int Run(int argc, wchar_t** argv) {
   std::wstring dir = ModuleDirectory(nullptr);
   bool want_user = false;
   bool want_enum = true;
+  bool purge_confirmed = false;
+  DoctorOptions doctor;
 
   for (int i = 2; i < argc; ++i) {
     const std::wstring a = argv[i];
@@ -209,6 +346,12 @@ static int Run(int argc, wchar_t** argv) {
     else if (a == L"--dir" && i + 1 < argc) dir = argv[++i];
     else if (a == L"--user") want_user = true;
     else if (a == L"--no-enum") want_enum = false;
+    else if (a == L"--report") doctor.open_report = true;
+    else if (a == L"--no-engine") doctor.check_engine = false;
+    else if (a == L"--no-scan") doctor.scan_processes = false;
+    // 參數名字刻意又長又白話。`--force` / `-y` 那種東西會被人習慣性地帶上,
+    // 而這是唯一一個帶錯就救不回來的動作。
+    else if (a == L"--yes-delete-my-dictionary") purge_confirmed = true;
     else {
       Say("未知參數: %s\n", WideToUtf8(a).c_str());
       Usage();
@@ -291,6 +434,27 @@ static int Run(int argc, wchar_t** argv) {
     DumpRegistration();
     return 0;
   }
+
+  if (verb == L"doctor") {
+    // 結束碼 = 失敗的格數。0 = 全綠。
+    //
+    // ⚠ 這一點讓 doctor 變成一個**可以被 CI 斷言**的東西,而不是一份
+    //   只會印綠字的報告。windows/verify_installer.sh 對它有正反兩面的
+    //   斷言:安裝前必須紅、安裝後必須綠、把服務停掉之後必須再度紅。
+    //   一支只會印綠字的診斷工具比沒有更糟 —— 它讓人以為有人在看。
+    const int fails = RunDoctor(doctor);
+    return fails == 0 ? 0 : 1;
+  }
+
+  if (verb == L"user-data-path") {
+    // 只印一行,不印別的 —— 安裝程式會把它整個讀進去當路徑用。
+    // ⚠ 這個動詞存在的唯一理由是「路徑只有一份」:安裝程式若自己拼
+    //   {userappdata}\<資料夾名>,產品改名時就會漏掉那一處。
+    Say("%s\n", WideToUtf8(RimeUserDataDir()).c_str());
+    return 0;
+  }
+
+  if (verb == L"purge-user-data") return PurgeUserData(purge_confirmed);
 
   if (verb == L"stop-service") return StopService(dir);
 

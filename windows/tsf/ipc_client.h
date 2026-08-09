@@ -66,6 +66,29 @@ struct ReadyDiagnosis {
   uint32_t attempts = 0;
 };
 
+// ── 與連線狀態無關的兩支 ──────────────────────────────────────────
+//
+// 放在類別外面是刻意的:ActivateEx 那條路要在**背景執行緒**上用它們,
+// 而 IpcClient 的實例活在宿主的 UI 執行緒上、沒有任何鎖。
+// 從兩條執行緒碰同一個 IpcClient 是一個等著發生的損壞。
+
+// 服務進程在不在。
+//
+// ⚠ 判斷依據是**單一實例的互斥鎖**,不是管道。
+//   服務啟動之後要先跑完 rs_init 才開管道,而首次部署那段時間是**好幾分鐘**。
+//   拿管道當「在不在」的依據,會在那幾分鐘裡一直說「不在」,
+//   於是每次都再啟動一支 —— 新的那支被互斥鎖擋掉、以 0 結束、什麼都不說。
+bool ServiceIsRunning();
+
+// 啟動服務進程(卸離、無視窗)。
+// 回傳 false = 沒有啟動:路徑是空的、宿主是提權的、或 CreateProcess 失敗。
+//
+// ⚠ 提權的宿主一律不啟動。從提權進程 CreateProcess 起來的服務會繼承提權的
+//   權杖,接著用系統管理員的身分讀寫使用者的詞庫 —— 檔案的擁有者從此變成
+//   不對的人,一般權限的那份服務再也寫不進去。症狀是「用過一次系統管理員的
+//   程式之後,輸入法就再也記不住東西」。
+bool LaunchService(const std::wstring& service_path);
+
 class IpcClient {
  public:
   IpcClient();
@@ -161,6 +184,13 @@ class IpcClient {
   std::string profile_guid_;
   uint32_t negotiated_proto_ = 0;
   ReadyDiagnosis diag_;
+  // 還可以往除錯記錄寫幾行。
+  //
+  // ⚠ 有預算是必要的,不是保守。連不上時每一顆按鍵都會來一次 EnsureReady
+  //   (被退避擋掉的除外),而寫記錄是磁碟 I/O、發生在宿主的 UI 執行緒上。
+  //   而且真正有用的是**前幾次**:第七次的失敗訊息與第一次一模一樣,
+  //   只會把記錄檔前面那些有價值的行擠掉。
+  int trace_budget_ = 6;
 };
 
 }  // namespace rimewin

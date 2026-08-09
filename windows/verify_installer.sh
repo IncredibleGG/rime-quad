@@ -37,18 +37,23 @@ set -euo pipefail
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
 
-SETUP=""; PROBE=""; TOOL=""
+SETUP=""; PROBE=""; TOOL=""; HOST=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --setup) SETUP="$2"; shift 2 ;;
     --probe) PROBE="$2"; shift 2 ;;
     --tool)  TOOL="$2";  shift 2 ;;
+    # rime_tsf_host.exe。給了就多做一件事:**經由真的 TSF** 打一次字
+    # (見底下 §6c)。刻意做成可選的 —— 這支腳本在只有安裝程式的環境下
+    # 仍然要跑得動。
+    --host)  HOST="$2";  shift 2 ;;
     *) die "未知參數: $1" ;;
   esac
 done
 [ -f "${SETUP}" ] || die "找不到安裝程式: ${SETUP}"
 [ -f "${PROBE}" ] || die "找不到 rime_probe.exe: ${PROBE}"
 [ -f "${TOOL}" ]  || die "找不到 rime_ime_setup.exe: ${TOOL}"
+[ -z "${HOST}" ] || [ -f "${HOST}" ] || die "找不到 rime_tsf_host.exe: ${HOST}"
 
 command -v cygpath >/dev/null 2>&1 || die "必須在 Git Bash / MSYS2 下執行"
 w() { cygpath -w "$1"; }
@@ -78,6 +83,24 @@ ok()        { printf '  ✓ %s\n' "$*"; }
 # /reg:64 明著指定 64 位元檢視 —— 少了它,在 32 位元的宿主底下查會落進
 # WOW6432Node,而「查不到」與「沒註冊」長得一模一樣。
 reg_key_exists() { reg query "$1" //reg:64 >/dev/null 2>&1; }
+
+# ── 「開機時刪除」的佇列 ──────────────────────────────────────────
+#
+# 檔案在解除安裝當下被別的程式握著時,Inno 刪不掉它,只好呼叫
+# MoveFileEx(..., MOVEFILE_DELAY_UNTIL_REBOOT) —— 那會在這個登錄檔值裡
+# 留下一筆。**這就是使用者看到那個「必須重新啟動」對話框的原因**,
+# 也是「為什麼登出不夠」的答案:這份佇列只有 Session Manager 在
+# **開機**時處理,登出登入不會碰它。
+#
+# 這兩個函式讓那件事變成可以斷言的東西,而不是我們寫在文案裡的推測。
+PFRO='HKLM\SYSTEM\CurrentControlSet\Control\Session Manager'
+pending_renames() {
+  reg query "${PFRO}" //v PendingFileRenameOperations //reg:64 2>/dev/null \
+    | tr -d '\r' || true
+}
+pending_has_our_dll() {
+  pending_renames | grep -qi 'rime_tsf\.dll'
+}
 
 reg_value() {
   # $1 = 鍵, $2 = 值名(空字串代表預設值)
@@ -155,6 +178,33 @@ if "${TOOL}" check > "${WORK}/check-before.log" 2>&1; then
   die "什麼都還沒裝,check 竟然通過 —— 這道檢查沒有在檢查"
 fi
 ok "未安裝時 check 以非零結束"
+
+# ── doctor 的反向測試 ─────────────────────────────────────────────
+#
+# `rime_ime_setup.exe doctor` 是這一輪要交給**使用者**的東西:他只要跑一次、
+# 把輸出貼過來,我們就知道是九種「不能用」裡的哪一種。
+#
+# ⚠ 一支只會印綠字的診斷工具比沒有更糟 —— 它讓人以為有人在看。
+#   所以它在這裡有正反兩面的斷言,而反面這一條放在最前面:
+#   **什麼都還沒裝的時候,它必須是紅的,而且必須指出是註冊那一格。**
+#   --no-engine / --no-scan:這一步只驗「它會不會紅」,
+#   跑引擎與掃進程要好幾十秒,而那兩格在裝好之後才有意義。
+set +e
+"${TOOL}" doctor --no-engine --no-scan > "${WORK}/doctor-before.log" 2>&1
+rc_doc=$?
+set -e
+if [ "${rc_doc}" -eq 0 ]; then
+  tr -d '\r' < "${WORK}/doctor-before.log"
+  die "什麼都還沒裝,doctor 竟然以 0 結束 —— 這支診斷工具沒有在診斷"
+fi
+if tr -d '\r' < "${WORK}/doctor-before.log" | grep -q '^  \[FAIL\] 全機註冊不完整'; then
+  ok "未安裝時 doctor 以 ${rc_doc} 結束,並指出「全機註冊不完整」"
+else
+  echo "--- doctor 的輸出 ---"
+  tr -d '\r' < "${WORK}/doctor-before.log"
+  note_fail "doctor 紅了,但沒有指出是註冊那一格 —— 它紅得沒有指向性,
+     而「不知道為什麼紅」與「不知道為什麼壞」一樣沒有用。"
+fi
 
 # ══════════════════════════════════════════════════════════════════
 #  2. 靜默安裝
@@ -521,6 +571,162 @@ else
   fi
 fi
 
+# ══════════════════════════════════════════════════════════════════
+#  6c. **經由真的 TSF** 打一次字
+# ══════════════════════════════════════════════════════════════════
+#
+# ⚠ 上面 §6 走的是具名管道 —— 它**繞過 TSF**。它證明的是
+#   「引擎 + 資料 + IPC」是好的,完全沒有經過
+#     登錄檔 → CoCreateInstance → 把 rime_tsf.dll 載入宿主進程
+#           → ActivateEx → key event sink → edit session → 組字 → 上屏
+#   而使用者實際回報的「切過去、一個字都打不出來、也沒有任何 UI」,
+#   撞到的正是這一段。
+#
+# rime_tsf_host.exe 是一個假的文字編輯器,它逼系統走完那一整條。
+# 這裡用的是**安裝程式裝好並註冊好的那一份 DLL**,以及上面那支已經
+# 預熱完的服務 —— 也就是使用者機器上的狀態。
+if [ -n "${HOST}" ]; then
+  log "6c. 經由真的 TSF:ActivateEx → 按鍵 → 組字 → 上屏"
+  TRACE_LOG="${WORK}/tsf-trace.log"
+  rm -f "${TRACE_LOG}"
+  set +e
+  "${HOST}" --langid 0x0404 --require-activate --require-eaten \
+            --keys nihao1 --expect 你好 \
+            --trace "$(w "${TRACE_LOG}")" --wait-ms 4000 \
+            > "${WORK}/tsf-host.log" 2>&1
+  rc=$?
+  set -e
+  tr -d '\r' < "${WORK}/tsf-host.log" | sed 's/^/    /'
+  host_out="$(tr -d '\r' < "${WORK}/tsf-host.log")"
+  case "${host_out}" in
+    *"系統把 rime_tsf.dll 載入了這個進程"*)
+      ok "系統把裝好的 rime_tsf.dll 載入了宿主進程" ;;
+    *) note_fail "裝好、註冊好,但系統**沒有**把 rime_tsf.dll 載入宿主進程" ;;
+  esac
+  case "${host_out}" in
+    *"ActivateEx 被呼叫了"*) ok "ActivateEx 被呼叫了" ;;
+    *) note_fail "ActivateEx **沒有**被呼叫 —— 使用者切過去之後什麼都不會發生" ;;
+  esac
+  case "${host_out}" in
+    *"文件裡真的是「你好」"*)
+      ok "**經由真的 TSF**把「你好」寫進了文件(這一格從本輪之前一直是紙上的)" ;;
+    *) note_fail "沒有經由 TSF 打出「你好」(結束碼 ${rc})。
+     照除錯記錄裡的 keysym 判斷是哪一段:
+       keysym=0x0 → 鍵盤佈局問不出字
+       keysym!=0  → 連不上服務(記錄裡會有一行「連線失敗」)" ;;
+  esac
+  if [ -f "${TRACE_LOG}" ]; then
+    echo "    --- 瘦 DLL 的除錯記錄 ---"
+    tr -d '\r' < "${TRACE_LOG}" | sed 's/^/      /'
+  else
+    note_fail "瘦 DLL 完全沒有留下除錯記錄 —— 落地記錄機制本身壞了,
+     而那正是使用者回報問題時唯一的線索來源。"
+  fi
+else
+  log "6c. (沒有給 --host,跳過「經由真的 TSF」那一段)"
+fi
+
+# ══════════════════════════════════════════════════════════════════
+#  6b. doctor:服務跑著的時候必須全綠,停掉之後必須指出是服務那一格
+# ══════════════════════════════════════════════════════════════════
+#
+# 這是這一輪要交給使用者的那支工具的**正面**斷言。它跑在這裡是刻意的:
+# 上面那一段剛好讓服務處於「起來了、詞庫也部署完了」的狀態 ——
+# 也就是使用者機器上正常時的樣子。
+log "6b. doctor(裝好、服務跑著)"
+set +e
+"${INSTALL_DIR}/rime_ime_setup.exe" doctor --no-engine \
+  > "${WORK}/doctor-after.log" 2>&1
+rc_doc=$?
+set -e
+doctor_after="$(tr -d '\r' < "${WORK}/doctor-after.log")"
+printf '%s\n' "${doctor_after}" | sed 's/^/    /'
+if [ "${rc_doc}" -eq 0 ]; then
+  ok "裝好而且服務跑著的時候,doctor 以 0 結束"
+else
+  note_fail "裝好之後 doctor 仍然以 ${rc_doc} 結束 —— 見上面的 [FAIL] 行"
+fi
+# 逐格點名。只看結束碼的話,「九格都沒在看」也會以 0 結束。
+for want in \
+  "[PASS] rime_tsf.dll" \
+  "[PASS] rime_service.exe 在跑" \
+  "[PASS] 連得上、握手過了、session 建得起來" \
+  "[PASS] 全機註冊完整"
+do
+  case "${doctor_after}" in
+    *"${want}"*) ok "doctor 有這一格:${want}" ;;
+    *) note_fail "doctor 沒有印出「${want}」——那一格沒有在看" ;;
+  esac
+done
+
+# ── 反向:把服務停掉,doctor 必須指出來 ──────────────────────────
+#
+# 沒有這一條的話,「服務在跑」那一格可能是恆真的(例如判斷寫反、
+# 或它其實什麼都沒查),而那正是它最該說話的時候。
+"${INSTALL_DIR}/rime_ime_setup.exe" stop-service --dir "${INSTALL_DIR_W}" \
+  > "${WORK}/stop-for-doctor.log" 2>&1 || true
+sleep 2
+#
+# ⚠ 這一次**不加** --no-engine:第 7 格(引擎層)在這裡才驗得到,而且
+#   只有在這裡驗得到 —— 它要呼叫 rime_console.exe 直接驅動 librime,
+#   而那需要一份**已經部署完**的使用者目錄(上面 §6 已經做完了),
+#   還需要**服務不在跑**(服務持有使用者詞庫的 LevelDB,兩支同時開會打架)。
+#   剛好這兩個條件在這一刻同時成立。
+#
+#   沒有這一條的話,doctor 最有價值的那一格(「引擎層通不通」——
+#   分層診斷的第一刀)會是整支工具裡唯一沒有人驗過的部分。
+set +e
+"${INSTALL_DIR}/rime_ime_setup.exe" doctor --no-scan \
+  > "${WORK}/doctor-nosvc.log" 2>&1
+rc_doc=$?
+set -e
+doctor_nosvc="$(tr -d '\r' < "${WORK}/doctor-nosvc.log")"
+if [ "${rc_doc}" -eq 0 ]; then
+  printf '%s\n' "${doctor_nosvc}" | sed 's/^/    /'
+  note_fail "服務已經停掉了,doctor 竟然還以 0 結束 —— 服務那一格是恆真的"
+elif printf '%s\n' "${doctor_nosvc}" \
+       | grep -q '^  \[FAIL\] rime_service.exe 沒有在跑'; then
+  ok "服務停掉之後,doctor 指出「rime_service.exe 沒有在跑」"
+else
+  printf '%s\n' "${doctor_nosvc}" | sed 's/^/    /'
+  note_fail "服務停掉之後 doctor 紅了,但沒有指出是服務那一格"
+fi
+
+# 引擎層那一格。斷言的是它真的跑了 rime_console 並拿到「你好」——
+# 而不是安靜地跳過(「這個安裝裡沒有 rime_console.exe」也是 [INFO],
+# 印出來長得跟通過很像)。
+#
+# ⚠ 接受**兩種**結果,而且只接受這兩種:
+#
+#   [PASS] 引擎層打得出「你好」        —— 最好的情形
+#   [WARN] 引擎層起得來,但這一次沒有打完 —— rs_init 過了,只是沒等到部署回報
+#
+# 第二種不是我們放水,是一個真實而且無法在這裡消除的時序:
+# rime_console 會等最多 600 秒的部署通知,而 librime 在**已經部署過**的
+# 目錄上不一定會再發一次 —— 而這裡的使用者目錄剛好在 §6 就部署完了。
+# doctor 的預算是 180 秒(它是給使用者跑的,不能等十分鐘)。
+#
+# 關鍵是這兩種以外的一律紅,包括:
+#   · 「連 rs_init 都沒有完成」   —— 引擎層真的壞了
+#   · 「起得來,但打不出你好」     —— 方案或詞庫那一層壞了
+#   · 「沒有 rime_console.exe」    —— 分層診斷的第一刀切不下去
+#     (那一格會安靜地變成 [INFO],而 [INFO] 印出來跟通過很像)
+case "${doctor_nosvc}" in
+  *"[PASS] 引擎層打得出「你好」"*)
+    ok "doctor 的引擎層那一格真的跑了 rime_console 並拿到「你好」" ;;
+  *"[WARN] 引擎層起得來,但這一次沒有打完"*)
+    ok "doctor 的引擎層那一格跑了,rs_init 過了(沒等到部署回報,見上面的說明)" ;;
+  *"沒有 rime_console.exe"*)
+    note_fail "安裝包裡沒有 rime_console.exe —— 分層診斷的第一刀切不下去。
+     那一格會安靜地變成 [INFO],而 [INFO] 印出來跟通過很像。" ;;
+  *)
+    printf '%s\n' "${doctor_nosvc}" | sed -n '/7. 引擎層/,/^$/p' | sed 's/^/    /'
+    note_fail "doctor 的引擎層那一格既不是 PASS 也不是那個已知的 WARN —— 見上" ;;
+esac
+
+# 後面的「安裝目錄一個位元都沒變」需要服務是停的 —— 剛好已經停了。
+# 但為了不讓兩段互相依賴,下面那一步仍然會自己再停一次(冪等)。
+
 # ── 使用者詞典去了哪裡 ────────────────────────────────────────────
 [ -d "${USER_DIR}" ] && ok "使用者資料目錄已建立: ${USER_DIR}" \
                      || note_fail "沒有建立 ${USER_DIR}"
@@ -623,12 +829,37 @@ while IFS= read -r line; do
   fi
 done <<< "${PROFILES}"
 
+# ── ⚠ 沒有東西被鎖住時,不可以留下「開機時刪除」的佇列 ────────────
+#
+# 這一條回答的是「重啟提示會不會在不必要的時候跳出來」。
+#
+# 走到這裡時,沒有任何進程握著 rime_tsf.dll(§6c 那支宿主早就結束了),
+# 所以 Inno 應該是**直接刪掉**它,而不是排進開機佇列 —— 也就不會問使用者
+# 要不要重新啟動。這一條把「應該」變成斷言。
+#
+# 它紅掉的意思是:每一個使用者、即使剛開機什麼都沒開,解除安裝之後
+# 都會被問一次要不要重開機。一個沒有必要的重啟提示會讓人覺得這軟體很髒。
+if pending_has_our_dll; then
+  echo "  --- PendingFileRenameOperations ---"
+  pending_renames | sed 's/^/    /'
+  note_fail "沒有任何程式握著 rime_tsf.dll,解除安裝卻仍然把它排進「開機時刪除」。
+     那代表**每一次**解除安裝都會跳出重新啟動的提示,即使完全沒有必要。"
+else
+  ok "沒有東西被鎖住時,解除安裝不留下「開機時刪除」的佇列(不會問要不要重啟)"
+fi
+
 # ── 反向測試:解除安裝之後 check 必須紅 ──────────────────────────
 if "${TOOL}" check > "${WORK}/check-uninstalled.log" 2>&1; then
   cat "${WORK}/check-uninstalled.log"
   note_fail "解除安裝之後 check 竟然還通過"
 else
   ok "解除安裝之後 check 以非零結束"
+fi
+if "${TOOL}" doctor --no-engine --no-scan > "${WORK}/doctor-uninstalled.log" 2>&1; then
+  tr -d '\r' < "${WORK}/doctor-uninstalled.log"
+  note_fail "解除安裝之後 doctor 竟然還以 0 結束"
+else
+  ok "解除安裝之後 doctor 以非零結束"
 fi
 
 # ── ⚠ 使用者詞典必須還在 ─────────────────────────────────────────
@@ -677,6 +908,214 @@ else
   else
     note_fail "安裝目錄還留著 ${ours} 個**我們的**檔案:$( (find "${INSTALL_DIR}" -type f ! -name 'unins*' | head -5 | tr '\n' ' ') )"
   fi
+fi
+
+# ══════════════════════════════════════════════════════════════════
+#  10. 「連我的資料一起刪」那條路
+# ══════════════════════════════════════════════════════════════════
+#
+# ⚠ 這一節與第 9 節是**一對**,兩條都要驗。
+#
+#   第 9 節:不帶旗標的靜默解除安裝 → 使用者的詞典必須還在
+#   第 10 節:帶 /PURGEUSERDATA 的  → 必須整個消失
+#
+# 只驗第 9 節的話,「刪除」這個功能等於沒有被驗過;只驗第 10 節的話,
+# 更糟 —— 那會讓「靜默解除安裝順手毀掉使用者資料」變成綠燈。
+# 這個專案抓過太多次「測試是綠的,因為它沒在測」。
+log "10. 「連我的資料一起刪」"
+
+# ── 10a. 反向:不帶確認參數時,那支工具必須什麼都不做 ─────────────
+#
+# 這一條擋的是「參數被忽略」。忽略了的話,上面每一條「預設保留」的斷言
+# 都還是會綠(因為安裝程式那一側沒有叫它),而真正的地雷埋在工具裡。
+n_before="$( (find "${USER_DIR}" -type f 2>/dev/null || true) | wc -l | tr -d ' ')"
+if [ "${n_before}" -eq 0 ]; then
+  note_fail "第 10 節開始時使用者目錄是空的 —— 後面的斷言不算數"
+fi
+set +e
+"${TOOL}" purge-user-data > "${WORK}/purge-noflag.log" 2>&1
+rc=$?
+set -e
+tr -d '\r' < "${WORK}/purge-noflag.log" | sed 's/^/    /'
+if [ "${rc}" -eq 0 ]; then
+  note_fail "purge-user-data 沒有帶確認參數竟然以 0 結束 —— 那個參數沒有作用"
+else
+  ok "purge-user-data 不帶確認參數時以 ${rc} 結束,什麼都不做"
+fi
+n_now="$( (find "${USER_DIR}" -type f 2>/dev/null || true) | wc -l | tr -d ' ')"
+[ "${n_now}" -eq "${n_before}" ] \
+  && ok "資料一個檔案都沒少(${n_now} 個)" \
+  || note_fail "不帶確認參數卻少了檔案:${n_before} -> ${n_now}"
+
+# ── 10b. 路徑是向產品要的,不是腳本自己拼的 ──────────────────────
+#
+# 安裝程式靠 `user-data-path` 拿路徑(見 .iss 的 QueryUserDataDir)。
+# 那一條若壞掉,刪除會去刪一個不存在的目錄然後回報成功 ——
+# 使用者以為清乾淨了,其實原封不動。
+claimed="$("${TOOL}" user-data-path 2>/dev/null | tr -d '\r' | head -1)"
+claimed_u="$(cygpath -u "${claimed}" 2>/dev/null || true)"
+if [ -n "${claimed}" ] && [ "${claimed_u}" = "${USER_DIR}" ]; then
+  ok "user-data-path 說的是 ${claimed}"
+else
+  note_fail "user-data-path 說「${claimed}」,而實際的使用者目錄是 ${USER_DIR}
+     安裝程式就是靠這一行決定要刪哪裡的。"
+fi
+
+# ── 10c. 重裝一次,然後帶旗標靜默解除安裝 ────────────────────────
+#
+# 重裝很快(詞庫已經編好了,這一步不啟動服務)。要重裝是因為
+# 解除安裝程式本身已經在第 8 節被移除了。
+log "  重新安裝一次(不啟動服務)"
+set +e
+"${SETUP}" //VERYSILENT //SUPPRESSMSGBOXES //NORESTART \
+           "//LOG=$(w "${WORK}/install2.log")"
+rc=$?
+set -e
+[ "${rc}" -eq 0 ] || { tail -40 "${WORK}/install2.log"; die "第二次安裝以 ${rc} 結束"; }
+ok "第二次安裝完成"
+
+UNINST2="$(reg_value "${ARP}" UninstallString | tr -d '"')"
+[ -n "${UNINST2}" ] || die "第二次安裝之後 ARP 裡沒有 UninstallString"
+UNINST2_U="$(cygpath -u "${UNINST2}")"
+
+n_before="$( (find "${USER_DIR}" -type f 2>/dev/null || true) | wc -l | tr -d ' ')"
+[ "${n_before}" -gt 0 ] \
+  && ok "重裝之後使用者的詞典還在(${n_before} 個檔案)—— 重裝不會弄丟資料" \
+  || note_fail "重裝之後使用者目錄空了"
+
+log "  帶 /PURGEUSERDATA 靜默解除安裝"
+set +e
+"${UNINST2_U}" //VERYSILENT //SUPPRESSMSGBOXES //NORESTART //PURGEUSERDATA
+rc=$?
+set -e
+for i in $(seq 1 120); do
+  reg_key_exists "${ARP}" || break
+  sleep 1
+done
+[ "${rc}" -eq 0 ] || note_fail "帶旗標的解除安裝以 ${rc} 結束"
+
+# 給刪檔一點時間收尾。
+for i in $(seq 1 30); do
+  [ -d "${USER_DIR}" ] || break
+  sleep 1
+done
+
+if [ ! -d "${USER_DIR}" ]; then
+  ok "**使用者資料已完全刪除** —— /PURGEUSERDATA 真的做了它宣稱的事"
+else
+  left="$( (find "${USER_DIR}" -type f 2>/dev/null || true) | wc -l | tr -d ' ')"
+  if [ "${left}" -eq 0 ]; then
+    ok "使用者資料已刪除(目錄殼還在,裡面 0 個檔案)"
+  else
+    (find "${USER_DIR}" -type f | head -10 | sed 's/^/      /') || true
+    note_fail "帶了 /PURGEUSERDATA,使用者目錄裡卻還有 ${left} 個檔案。
+     使用者按了「連我的資料一起刪」,而它其實沒刪乾淨 ——
+     那比不提供這個選項更糟。"
+  fi
+fi
+
+# 產品本身也必須清乾淨(這一次沒有第 8 節那些斷言,至少確認 ARP 沒了)。
+reg_key_exists "${ARP}" \
+  && note_fail "帶旗標解除安裝之後,「新增或移除程式」裡那一筆還在" \
+  || ok "新增或移除程式:那一筆已消失"
+
+# ══════════════════════════════════════════════════════════════════
+#  11. 有程式握著 DLL 時解除安裝會發生什麼(使用者撞到的那一個)
+# ══════════════════════════════════════════════════════════════════
+#
+# ⚠ 這一節是**用來寫文案的**,不是用來讓 CI 變綠的。
+#
+# 使用者解除安裝時看到「必須重新啟動」。我們要在文案裡回答三件事:
+# 為什麼、不重啟會怎樣、可不可以晚點再重啟。**那三件事都不可以用猜的。**
+#
+# 所以這裡把他的處境重現出來:讓一個進程握著 rime_tsf.dll(那正是
+# 檔案總管與瀏覽器在做的事),然後解除安裝,再量三件事:
+#   1. 檔案還在不在
+#   2. 有沒有被排進「開機時刪除」的佇列(→ 為什麼登出不夠)
+#   3. **不重開機就重裝的話,安裝程式擋不擋**(→ 「不重啟會怎樣」的具體後果)
+#
+# 量到的結果直接寫進 installer/rimequad.iss 的 UninstalledAndNeedsRestart。
+if [ -n "${HOST}" ]; then
+  log "11. 有程式握著 DLL 時解除安裝(重現使用者的處境)"
+  set +e
+  "${SETUP}" //VERYSILENT //SUPPRESSMSGBOXES //NORESTART \
+             "//LOG=$(w "${WORK}/install3.log")"
+  rc=$?
+  set -e
+  [ "${rc}" -eq 0 ] || die "第三次安裝以 ${rc} 結束"
+
+  UNINST3="$(reg_value "${ARP}" UninstallString | tr -d '"')"
+  UNINST3_U="$(cygpath -u "${UNINST3}")"
+
+  log "  讓一個進程握住 ${INSTALL_DIR_W}\\rime_tsf.dll"
+  "${HOST}" --hold-dll "${INSTALL_DIR_W}\\rime_tsf.dll" --hold-ms 90000 \
+    > "${WORK}/hold.log" 2>&1 &
+  HOLD_PID=$!
+  hold_cleanup() { kill "${HOLD_PID}" 2>/dev/null || true; }
+  trap hold_cleanup EXIT
+  for i in $(seq 1 20); do
+    grep -q '已載入' "${WORK}/hold.log" 2>/dev/null && break
+    sleep 1
+  done
+  if grep -q '已載入' "${WORK}/hold.log" 2>/dev/null; then
+    ok "DLL 已被另一個進程握住"
+  else
+    tr -d '\r' < "${WORK}/hold.log" | sed 's/^/    /'
+    note_fail "沒有握住 DLL —— 這一節量不到任何東西"
+  fi
+
+  log "  在這個狀態下靜默解除安裝"
+  set +e
+  "${UNINST3_U}" //VERYSILENT //SUPPRESSMSGBOXES //NORESTART
+  set -e
+  for i in $(seq 1 120); do
+    reg_key_exists "${ARP}" || break
+    sleep 1
+  done
+
+  echo "  --- 量到的事實(文案就照這個寫)---"
+  if [ -f "${INSTALL_DIR}/rime_tsf.dll" ]; then
+    echo "    · rime_tsf.dll **還在磁碟上**(被握著,刪不掉)"
+  else
+    echo "    · rime_tsf.dll 已經不在了"
+  fi
+  if pending_has_our_dll; then
+    echo "    · 已被排進「開機時刪除」的佇列(PendingFileRenameOperations)"
+    echo "      → 那份佇列只有 Session Manager 在**開機**時處理;"
+    echo "        登出再登入不會碰它。所以「重新啟動」不是誇大。"
+    ok "重現成功:被握著的 DLL 進了開機刪除佇列"
+  else
+    echo "    · **沒有**進開機刪除佇列"
+    pending_renames | sed 's/^/      /'
+    note_fail "檔案被握著,卻沒有排進開機刪除佇列 —— 那它永遠不會被刪掉,
+     而使用者卻被要求重新啟動。這兩件事必須一致。"
+  fi
+
+  # 不重開機就重裝,安裝程式擋不擋?
+  #
+  # 這一格決定文案要不要寫「重新啟動之前不要重新安裝」。Inno 有一則
+  # PreviousInstallNotCompleted 的內建訊息,但它到底會不會在**解除安裝**
+  # 留下的佇列上觸發,只有實測知道。
+  log "  不重開機直接重裝,看安裝程式擋不擋"
+  set +e
+  "${SETUP}" //VERYSILENT //SUPPRESSMSGBOXES //NORESTART \
+             "//LOG=$(w "${WORK}/install4.log")"
+  rc4=$?
+  set -e
+  echo "    · 重裝的結束碼 = ${rc4}"
+  if tr -d '\r' < "${WORK}/install4.log" 2>/dev/null \
+       | grep -aqi 'previous\|restart'; then
+    echo "    · 安裝記錄裡提到 previous / restart:"
+    tr -d '\r' < "${WORK}/install4.log" | grep -ai 'previous\|restart' \
+      | head -5 | sed 's/^/      /'
+  else
+    echo "    · 安裝記錄裡沒有提到 previous / restart"
+  fi
+
+  hold_cleanup
+  trap - EXIT
+else
+  log "11. (沒有給 --host,跳過「有程式握著 DLL 時解除安裝」那一節)"
 fi
 
 echo

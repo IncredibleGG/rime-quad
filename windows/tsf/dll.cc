@@ -15,6 +15,7 @@
 #include "guids.h"
 #include "registration.h"
 #include "text_service.h"
+#include "trace.h"
 
 HMODULE g_rime_module = nullptr;
 LONG g_rime_dll_refs = 0;
@@ -75,6 +76,16 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
       // 載入器鎖底下能做的事極少。這裡只記一個控制代碼,
       // 並關掉執行緒通知 —— 宿主可能有幾十條執行緒,每條都通知一次是白費的。
       ::DisableThreadLibraryCalls(instance);
+      // ⚠ 這一行是整個診斷鏈的第一格,而且**只有在這裡記得到**。
+      //
+      // 「系統根本沒有載入這支 DLL」與「載入了但 ActivateEx 沒被呼叫」
+      // 在使用者眼裡完全一樣(不能打字、沒有 UI),而要修的地方一個在
+      // 註冊、一個在文字服務本身。少了這一行,那兩件事分不開。
+      //
+      // 在 DllMain 裡做檔案 I/O 通常是要避免的 —— 這裡可以做,是因為
+      // Trace() 只用 kernel32 裡本來就已經載入的函式,不會觸發任何
+      // LoadLibrary(見 tsf/trace.h 的規矩 2 與 3)。
+      rimewin::Trace("DLL 載入(DLL_PROCESS_ATTACH)");
       break;
     default:
       break;
@@ -87,7 +98,13 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
 STDAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, void** ppv) {
   if (!ppv) return E_INVALIDARG;
   *ppv = nullptr;
-  if (!IsEqualCLSID(rclsid, CLSID_RimeTextService)) return CLASS_E_CLASSNOTAVAILABLE;
+  if (!IsEqualCLSID(rclsid, CLSID_RimeTextService)) {
+    rimewin::Trace("DllGetClassObject:不是我們的 CLSID");
+    return CLASS_E_CLASSNOTAVAILABLE;
+  }
+  // 第二格:COM 真的來要我們的類別工廠了。走到這裡就代表登錄檔的
+  // InprocServer32 是對的、DLL 也載得起來。
+  rimewin::Trace("DllGetClassObject:CLSID 相符");
   return g_factory.QueryInterface(riid, ppv);
 }
 

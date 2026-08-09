@@ -37,6 +37,17 @@ std::wstring RimePipeName();
 // 名字裡帶 SID 的理由同管道名 —— 同一台機器上的兩個人不可以互相關掉對方的服務。
 std::wstring RimeServiceQuitEventName();
 
+// 服務的「單一實例」互斥鎖名稱。
+//
+// 定義在這裡而不是 service/main.cc,是因為現在有**三個**呼叫者:
+//   · 服務自己(建立它,藉此擋掉第二支服務)
+//   · 瘦 DLL(ActivateEx 時要判斷「服務在不在」,不能靠開管道 ——
+//     服務剛啟動、詞庫還在編譯的那幾分鐘裡管道還沒開,而那時它明明在跑,
+//     再啟動一支只會被單一實例擋掉,白花一次 CreateProcess)
+//   · rime_ime_setup.exe doctor(要回答「服務在不在」這一格)
+// 三個地方各抄一份名字的話,漂移的症狀是「DLL 每次都以為服務沒在跑」。
+std::wstring RimeServiceMutexName();
+
 // 「把設定視窗叫出來」的具名事件。服務進程建立並等待它;語言列按鈕與
 // 系統匣圖示在管道還沒連上時走這一條。
 //
@@ -56,6 +67,26 @@ bool IsProcessElevated();
 
 // 本模組(DLL 或 exe)所在的目錄,結尾不含反斜線。
 std::wstring ModuleDirectory(HMODULE module);
+
+// ── 使用者資料目錄:**唯一的決定處** ──────────────────────────────
+//
+// `%APPDATA%\<資料夾名>`。取不到 %APPDATA% 時回傳空字串。
+//
+// ⚠ 這一格必須只有一份。呼叫者有三個,而且會越來越多:
+//     · rime_service.exe    —— 詞典、設定、librime 的編譯產物都在那裡
+//     · rime_ime_setup.exe  —— doctor 的引擎層檢查、以及「解除安裝時
+//                              連我的資料一起刪」那個選項
+//     · 安裝程式(Inno)      —— 它**不自己拼**這個路徑,而是問上面那支
+//                              (`rime_ime_setup.exe user-data-path`)
+//
+//   各自拼一份的下場很具體:資料夾名一改(例如產品改名),漏掉的那一處
+//   會去刪 / 去讀一個不存在的資料夾,然後**回報成功** ——
+//   使用者以為資料刪乾淨了,其實原封不動;或以為設定存好了,其實沒有。
+std::wstring RimeUserDataDir();
+
+// 上面那個路徑的最後一段(資料夾名)。刪除前的安全檢查要用它比對,
+// 而比對用的值當然不可以是另外抄的一份。
+const wchar_t* RimeUserDataFolderName();
 
 }  // namespace rimewin
 

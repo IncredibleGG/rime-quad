@@ -60,9 +60,16 @@ verify_payload() {
   local root="$1"
   local missing=0 f
 
-  # 二進位三件。少 rime_ime_setup.exe 的話安裝程式會在註冊那一步失敗;
+  # 二進位四件。少 rime_ime_setup.exe 的話安裝程式會在註冊那一步失敗;
   # 少 rime_service.exe 的話輸入法註冊得上但每一顆鍵都不會有反應。
-  for f in rime_tsf.dll rime_service.exe rime_ime_setup.exe; do
+  #
+  # ⚠ rime_console.exe 這一輪從「驗證工具」變成**要出貨的東西**。
+  #   理由是分層診斷:它完全不經過 TSF、不經過管道,直接驅動 librime + 資料。
+  #   使用者說「不能用」的時候,第一刀就是問它 —— 它打得出「你好」就代表
+  #   引擎、詞庫、方案都是好的,問題必定在 TSF 或 IPC 那一側,反過來也一樣。
+  #   `rime_ime_setup.exe doctor` 的第 7 節就是呼叫它。
+  #   少了它,那一刀就切不下去,而我們又回到「來回好幾輪才問得出資訊」。
+  for f in rime_tsf.dll rime_service.exe rime_ime_setup.exe rime_console.exe; do
     if [ -f "${root}/${f}" ]; then
       printf '    ✓ %s (%s bytes)\n' "${f}" "$(stat -c%s "${root}/${f}" 2>/dev/null || echo ?)"
     else
@@ -116,6 +123,37 @@ verify_payload() {
   return "${missing}"
 }
 
+# ---------------------------------------------------------------- .iss 的區段標籤
+#
+# ⚠ ISCC 是**逐行**判斷區段標籤的,而且它會先去掉行首的空白。
+#
+# 也就是說 [Code] 裡一行縮排之後以 `[` 開頭 —— 例如把陣列參數斷行寫成
+#
+#       SuppressibleMsgBox(FmtMessage(CustomMessage('X'),
+#                                     [SomeVar]), mbInformation, MB_OK, IDOK);
+#
+# —— 那個 `[SomeVar]),` 會被當成一個區段標籤,而錯誤訊息是
+#   「PreprocessingError ... Invalid section tag」,**而且它指的行號還是別的地方**。
+#
+# 實測:CI run #62 就是這樣紅的。ISCC 只在 Windows 上跑得動,所以這個純文字
+# 檢查是**唯一一個在 Linux 開發機上就抓得到它**的關卡 —— 那是它存在的理由。
+# (--lint 那一步四分鐘,已經比二十分鐘的正式建置好很多;這一支是零秒。)
+KNOWN_SECTIONS='Setup|Types|Components|Tasks|Dirs|Files|Icons|INI|InstallDelete|Languages|Messages|CustomMessages|LangOptions|Registry|Run|UninstallDelete|UninstallRun|Code'
+check_iss_section_tags() {
+  local iss="$1"
+  local bad
+  # 去掉行首空白之後以 [ 開頭、但不是已知區段名的行。
+  bad="$(grep -nE '^[[:space:]]*\[' "${iss}" \
+         | grep -vE "^[0-9]+:\[(${KNOWN_SECTIONS})\][[:space:]]*$" || true)"
+  if [ -n "${bad}" ]; then
+    echo "  !! .iss 裡有幾行去掉縮排之後以 [ 開頭,ISCC 會把它們當成區段標籤:" >&2
+    printf '%s\n' "${bad}" | sed 's/^/     /' >&2
+    echo "     把那個 [ 挪到不在行首的位置(例如先把值存進一個變數)。" >&2
+    return 1
+  fi
+  return 0
+}
+
 # ---------------------------------------------------------------- 反向測試
 #
 # 「測試是綠的,因為它沒在測」是這個專案抓過最多次的失敗模式。
@@ -140,6 +178,10 @@ self_check() {
   : > "${tmp}/rime_tsf.dll"
   : > "${tmp}/rime_service.exe"
   : > "${tmp}/rime_ime_setup.exe"
+  # ⚠ 這一行忘了加的話,反向測試的第 3 步(「補齊之後必須轉綠」)會紅,
+  #   而錯誤訊息是「這道檢查恆假」—— 指向完全錯的地方。
+  #   實測:rime_console.exe 變成必需品的那一輪,CI 就紅在這裡。
+  : > "${tmp}/rime_console.exe"
   local f
   for f in default.yaml luna_pinyin_tw.schema.yaml bopomofo_tw.schema.yaml \
            luna_pinyin.schema.yaml t9_pinyin.schema.yaml luna_pinyin.dict.yaml \
@@ -161,6 +203,24 @@ self_check() {
 
   rm -rf "${tmp}"
   log "反向測試通過:payload 檢查會在該紅的時候紅、該綠的時候綠 ✓"
+
+  # ⚠ 這一項與 payload 無關,但它掛在這裡是刻意的:--self-check 是本腳本
+  #   唯一**不需要 Windows** 的入口,而這個檢查也不需要 Windows。
+  #   掛在這裡,開發機上一行指令就驗得到。
+  log "檢查 .iss 的區段標籤"
+  check_iss_section_tags "${SCRIPT_DIR}/installer/rimequad.iss" \
+    || die ".iss 的區段標籤有問題,見上。ISCC 會以一個指向別處的行號失敗。"
+  log "  ✓ 沒有會被誤認成區段標籤的行"
+
+  # 反向測試的反向測試:植入一行,要求上面那個檢查真的紅。
+  local probe="${WORK}/iss-probe.iss"
+  cp "${SCRIPT_DIR}/installer/rimequad.iss" "${probe}"
+  printf '    [ThisLineLooksLikeASectionTag]\n' >> "${probe}"
+  if check_iss_section_tags "${probe}" > /dev/null 2>&1; then
+    die "植入了一行縮排的 [ ,區段標籤檢查竟然通過 —— 它沒有在檢查"
+  fi
+  rm -f "${probe}"
+  log "  ✓ 植入一行縮排的 [ 之後它會紅"
 }
 
 mkdir -p "${WORK}"
@@ -239,6 +299,8 @@ log "ISCC = ${ISCC_EXE}"
 ISS_SRC="${SCRIPT_DIR}/installer/rimequad.iss"
 ISS="${WORK}/rimequad.iss"
 [ -f "${ISS_SRC}" ] || die "找不到 ${ISS_SRC}"
+check_iss_section_tags "${ISS_SRC}" \
+  || die ".iss 的區段標籤有問題,見上。"
 printf '\xEF\xBB\xBF' > "${ISS}"
 cat "${ISS_SRC}" >> "${ISS}"
 head -c 3 "${ISS}" | od -An -tx1 | tr -d ' \n' | grep -q 'efbbbf' \
@@ -307,7 +369,7 @@ if [ "${LINT}" -eq 1 ]; then
   rm -rf "${LINT_DIR}"
   mkdir -p "${LINT_DIR}/payload/data/shared/opencc" "${LINT_DIR}/payload/data/user" \
            "${LINT_DIR}/out"
-  for f in rime_tsf.dll rime_service.exe rime_ime_setup.exe; do
+  for f in rime_tsf.dll rime_service.exe rime_ime_setup.exe rime_console.exe; do
     : > "${LINT_DIR}/payload/${f}"
   done
   : > "${LINT_DIR}/payload/data/shared/default.yaml"
@@ -335,8 +397,17 @@ cp "${BIN}/rime_tsf.dll"       "${PAYLOAD}/"
 cp "${BIN}/rime_service.exe"   "${PAYLOAD}/"
 cp "${BIN}/rime_ime_setup.exe" "${PAYLOAD}/"
 
-# rime_probe.exe / rime_tests.exe **刻意不裝**:那是驗證用的東西,
-# 不是使用者機器上該有的。安裝目錄裡多一支執行檔就多一個要解釋的東西。
+# rime_console.exe 建在 console/bin,不在 ime/bin(它是 build.sh console 那一步的
+# 產物)。路徑寫死在這裡而不是猜:找不到就明確地死,不要靜靜地出一個
+# 少了診斷工具的安裝包。
+CONSOLE_EXE="${BUILD_ROOT}/console/bin/rime_console.exe"
+[ -f "${CONSOLE_EXE}" ] || die "找不到 ${CONSOLE_EXE};先跑 windows/build.sh console
+  它現在是要出貨的東西(使用者的分層自我診斷靠它),不再只是 CI 的驗證工具。"
+cp "${CONSOLE_EXE}" "${PAYLOAD}/"
+
+# rime_probe.exe / rime_tests.exe / rime_tsf_host.exe **刻意不裝**:
+# 那些是驗證用的東西,不是使用者機器上該有的。
+# 安裝目錄裡多一支執行檔就多一個要解釋的東西。
 cp -r "${ROOT}/core/data/shared" "${PAYLOAD}/data/shared"
 cp -r "${ROOT}/core/data/user"   "${PAYLOAD}/data/user"
 
