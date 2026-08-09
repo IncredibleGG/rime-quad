@@ -504,8 +504,14 @@ void PipeServer::ServeClient(HANDLE pipe) {
           // 套用的時機是 session 剛建立時,**不是**每一顆按鍵:
           // 每顆鍵都套的話,使用者用 Ctrl+` 換過的方案會被一直打回去。
           engine_->SetSessionLangId(ok.session, langid);
+          // ⚠ 用**快取**那一支。量到的(CI run 31315693513):
+          //     [engine] 慢工作 列方案 等待=0 ms 執行=46~99 ms  ×26
+          //   SESSION_NEW 那 94~110 毫秒裡有一半是這一趟,而它問的是
+          //   一件全域且幾乎不變的事 —— 方案清單只有重新部署之後才會變。
+          //   每個宿主連上來都重問一次,是把一個常數當成變數。
           std::vector<std::string> ids;
-          for (const auto& kv : engine_->SchemaList()) ids.push_back(kv.first);
+          for (const auto& kv : engine_->SchemaListCached())
+            ids.push_back(kv.first);
           const Settings st = settings_ ? settings_->Load() : Settings();
           const SchemaPreference pref = st.SchemaPref();
           const SchemaChoice choice = ChooseSchema(langid, ids, pref);

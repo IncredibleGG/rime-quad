@@ -93,6 +93,25 @@ class Engine {
   // 會被踩掉。這裡在引擎執行緒上把字串複製出來再回來。
   std::vector<std::pair<std::string, std::string>> SchemaList();
 
+  // ── ⚠ 建 session 那條路徑要用**這一支**,不是上面那一支 ──────────
+  //
+  // 量到的(CI run 31315693513,引擎的慢工作記錄):
+  //
+  //     [engine] 慢工作 列方案 等待=0 ms 執行=46~99 ms   ×26
+  //     [engine] 慢工作 建 session 等待=0 ms 執行=40~57 ms ×4
+  //
+  // 也就是說:SESSION_NEW 那 94~110 毫秒裡,**有一半是 rs_schema_list**,
+  // 而它問的是一件**全域而且幾乎不變**的事 —— 方案清單只有在重新部署
+  // 之後才會變。每一個宿主連上來都重問一次,是把一個常數當成變數。
+  //
+  // (另外注意「等待」全都是 0:那一輪引擎根本沒有排隊,所以慢的不是
+  //  別人擋著,是這件事本身。這也是為什麼答案是快取而不是排程。)
+  //
+  // 快取由 SchemaList() 自己填,並在部署開始/結束時清掉 ——
+  // 清掉之後下一次呼叫會退回真的問一次,所以最壞情況只是回到原本的成本。
+  std::vector<std::pair<std::string, std::string>> SchemaListCached();
+  void InvalidateSchemaCache();
+
   // 對**目前存在的每一個 session** 套用。設定介面改了字形之後,
   // 使用者不該還要換一個程式才看得到效果。
   void SetOptionAll(const char* option, bool value);
@@ -181,6 +200,11 @@ class Engine {
   // 每收到一次**終局**的部署結果就加一。見 BeginDeploy 的說明:
   // 沒有這個序號的話,上一輪的結果會被讀成這一輪的。
   std::atomic<uint32_t> deploy_seq_{0};
+  // 方案清單的快取。與 mu_ 分開:填快取的人剛從引擎執行緒回來,
+  // 而讀快取的人(連線執行緒)完全不該碰引擎的佇列鎖。
+  mutable std::mutex cache_mu_;
+  std::vector<std::pair<std::string, std::string>> schema_cache_;
+
   std::string init_error_;
   mutable std::mutex err_mu_;
   std::string last_error_;

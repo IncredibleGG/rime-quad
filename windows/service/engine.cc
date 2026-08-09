@@ -467,7 +467,26 @@ std::vector<std::pair<std::string, std::string>> Engine::SchemaList() {
       out.emplace_back(ids[i] ? ids[i] : "", names[i] ? names[i] : "");
     }
   });
+  {
+    std::lock_guard<std::mutex> lock(cache_mu_);
+    schema_cache_ = out;
+  }
   return out;
+}
+
+std::vector<std::pair<std::string, std::string>> Engine::SchemaListCached() {
+  {
+    std::lock_guard<std::mutex> lock(cache_mu_);
+    if (!schema_cache_.empty()) return schema_cache_;
+  }
+  // 快取是空的(還沒問過,或剛部署完被清掉)—— 真的問一次,
+  // 上面那一支會順手把快取填好。
+  return SchemaList();
+}
+
+void Engine::InvalidateSchemaCache() {
+  std::lock_guard<std::mutex> lock(cache_mu_);
+  schema_cache_.clear();
 }
 
 bool Engine::SetOption(uint64_t id, const char* option, bool value) {
@@ -546,6 +565,10 @@ int Engine::AbiVersion() const { return rs_abi_version(); }
 
 bool Engine::BeginDeploy(uint32_t* out_seq) {
   if (out_seq) *out_seq = deploy_seq_.load();
+  // 部署會改寫方案清單(使用者可能剛勾掉一個方案)。清掉快取,
+  // 下一次問的時候會退回真的問一次引擎 —— 寧可慢一次,
+  // 也不要拿一份舊清單去替使用者挑方案。
+  InvalidateSchemaCache();
   // rs_deploy 是唯一允許跨執行緒呼叫的函式(rime_shell.h),
   // 所以不必進引擎佇列 —— 而且**不該**進:部署要好幾分鐘,
   // 佔住引擎執行緒等於整個輸入法停擺。
@@ -565,6 +588,10 @@ bool Engine::PollDeploy(uint32_t since_seq, int* status) {
   const int v = deploy_state_.load();
   if (v == 0) return false;
   if (status) *status = v;
+  // 部署結束了 —— 清單可能已經不一樣。再清一次:BeginDeploy 那一次清的是
+  // 「部署開始前」的舊清單,而部署**期間**若有人問過,快取又被填成
+  // 一份半路的清單了。
+  InvalidateSchemaCache();
   if (v != 1) {
     std::lock_guard<std::mutex> lock(err_mu_);
     const char* e = rs_last_error();
