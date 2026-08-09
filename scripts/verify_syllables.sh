@@ -48,6 +48,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 # shellcheck source=lib/product.sh
 . "$HERE/lib/product.sh"
+# ⚠ 就緒判斷不可以寫成 `logcat | grep -q`:pipefail 之下命中會變成 141
+#   (grep -q 一命中就結束 → 上游 SIGPIPE),於是「有命中」被判成「沒命中」。
+#   改用 lib/logmatch.sh 的 log_has / log_matches —— 它們先收進變數再用內建比對。
+. "$HERE/lib/logmatch.sh"
 
 SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}"
 ADB="$SDK/platform-tools/adb"
@@ -402,7 +406,7 @@ for n in root.iter("node"):
   # shellcheck disable=SC2086
   [ -n "$FIELD_XY" ] && adbs shell input tap $FIELD_XY >/dev/null 2>&1
   for _ in $(seq 1 40); do
-    adbs logcat -d -s RimeRuntime:I 2>/dev/null | tr -d '\r' | grep -q "READY" && break
+    log_has "READY" adbs logcat -d -s RimeRuntime:I && break
     sleep 3
   done
   sleep 3

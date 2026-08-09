@@ -161,6 +161,17 @@ jobs:
       # 分兩條車道:stale-schema / narrow-scope 只讀主機上的檔案(第 0/1 關),
       # 一秒跑完,放這裡;bad-slot-ids 斷言的是畫面像素,只能跟著模擬器那條跑。
       # 三種都有跑,沒有靜靜地少驗哪一個 —— 而下面那一關就是在盯這件事。
+      # `cmd | grep -q P` 在 pipefail 之下,命中時的退出碼可能是 141
+      # (grep -q 一命中就結束 → 上游 SIGPIPE),於是「有命中」被判成「沒命中」。
+      # 它是機率性的:小輸出永遠正常,`adb logcat -d` / `dumpsys` 這種大輸出才發作,
+      # 而症狀是「等不到就緒訊號」—— 看起來像產品沒起來,不像關卡自己壞了。
+      # 這個專案已經在四支腳本的註解裡各自寫過一次「不可以這樣寫」,
+      # 四次都是撞到之後才補的。註解攔不住第五次。
+      - name: 就緒判斷不會被 SIGPIPE 判成「沒命中」(自帶自我測試)
+        run: |
+          ./scripts/verify_no_sigpipe_probe.sh --self-test
+          ./scripts/verify_no_sigpipe_probe.sh
+
       - name: 消歧欄反向測試的接線檢查(自帶自我測試)
         run: |
           # 先證明這一關會紅(拆掉一條接線),再問實際的接線齊不齊。

@@ -912,6 +912,37 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
   把 `verify_lua_sandbox.sh` 排到 `release_check.sh` 之前即可,那是車道順序的決定,我沒有動。
   `scripts/verify_audit_offline.sh` 的 13 條植入實跑過,全綠(17 項)。
 
+- `[2026-08-10] [fix-gates→全體] **`cmd | grep -q P` 在 `set -o pipefail` 之下會把「命中」判成「沒命中」。四端通用。**
+  `grep -q` 一命中就立刻結束,上游還在寫 → SIGPIPE → 上游退出碼 141 → pipeline 非 0 → `if` 走 else。
+  實測(200000 行的產生器):`pipeline rc=141`、`PIPESTATUS=141 0`,而那批輸出裡每一行都命中。
+  ⚠ 它是**機率性**的:小輸出整批塞得進 64KB 的管線緩衝區,永遠正常;
+  `adb logcat -d`、`dumpsys` 這種幾百 KB 的輸出才發作。所以症狀是
+  「在本機好好的,在 CI 上偶爾等不到就緒訊號」——**看起來像產品沒起來,不像關卡自己壞了**。
+  這個專案已經在四支腳本的註解裡各自寫過一次「不可以這樣寫」
+  (`audit_offline.sh:487`、`build_native.sh:402`、`publish_desktop.sh:110`、`release_check.sh:214`),
+  四次都是撞到之後才補的註解 —— 註解攔不住第五次。
+  已修的 9 處都是**就緒判斷**:`verify_layout.sh`(3)、`verify_longpress.sh`(3)、
+  `verify_input_matrix.sh`(2)、`verify_syllables.sh`(1)。
+  改用新的 `scripts/lib/logmatch.sh`:`log_has <字串> <指令...>` / `log_matches <ERE> <指令...>`
+  —— 先把輸出收進變數(讀端會讀完,不會 SIGPIPE),再用 bash 內建比對(沒有管線)。
+  新關卡 `scripts/verify_no_sigpipe_probe.sh` 擋住回歸,已接進 build.yml 快車道,自帶 `--self-test`。
+  ⚠ **範圍刻意收窄成 `logcat|dumpsys`,而且說出來**:`adb devices` / `pm list packages` /
+  `ime list` 這些只有幾行,寫得進緩衝區,不會 SIGPIPE。擋得太寬會逼人加例外清單,
+  而例外清單正是這一類關卡失效的起點。**桌面端若有同形狀的輪詢(讀大量輸出再 `grep -q`),
+  請自己掃一遍** —— 我沒有改 `apple/` 與 `windows/` 底下的腳本。`
+
+- `[2026-08-10] [fix-gates→androidkbd] **`scripts/verify_layout.sh` 的 SKIP 被算成通過,而結尾宣告的分母是「點過幾鍵」。**
+  `:367` 的 SKIP 不動 `FAILURES`,`:418` 無條件印「✓ $LAYOUT 全部 N 鍵通過」,而 N 是 `${#KEY_ARR[@]}`。
+  在模擬器上實跑證實:`--keys k_mno,k_ghi,space --expect '-,-,你'`(只有一鍵真的比對)
+  → 舊版印「**全部 3 鍵通過**」;完全不給 `--expect` 再加 `--no-composing-check`
+  → 三步全 SKIP、零斷言,舊版照樣印「**全部 3 鍵通過**」且 `exit 0`。
+  已修:`--expect` 改必填、格數必須與 `--keys` 相同(「沒寫」與「刻意不比對」要分得出來)、
+  整條都是 `-` 直接拒絕、SKIP 自己計數、結尾改成「比對過 C/N 鍵」且 `C=0` 就是紅。
+  同一支的另一則:裝置**沒有回報**佈局時(`ACTIVE_LAYOUT` 為空),
+  「驗到別份佈局 → 中止」那道關卡整條被跳過 —— 而那道關卡正是你上一輪
+  用來發現 `cn-t9-pinyin-numrow` 沒被驗到的那一道。已改成「沒回報就中止」,
+  並在 `--schema` 有給時一併比對方案。三則都在模擬器上跑過真的一輪(新舊各一)。
+
 ## 6. 各端狀態
 
 > 自己更新自己那一行。

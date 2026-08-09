@@ -48,6 +48,10 @@ SERIAL="${RIME_SERIAL:-${ANDROID_SERIAL:-emulator-${RIME_EMU_PORT:-5556}}}"
 # 產品識別碼的唯一來源,見 scripts/lib/product.env。
 # shellcheck source=lib/product.sh
 . "$SCRIPT_DIR/lib/product.sh"
+# ⚠ 就緒判斷不可以寫成 `logcat | grep -q`:pipefail 之下命中會變成 141
+#   (grep -q 一命中就結束 → 上游 SIGPIPE),於是「有命中」被判成「沒命中」。
+#   改用 lib/logmatch.sh 的 log_has / log_matches —— 它們先收進變數再用內建比對。
+. "$SCRIPT_DIR/lib/logmatch.sh"
 IME_ID="${RIME_IME_ID:-$RS_ANDROID_IME_ID}"
 IME_PKG="${IME_ID%%/*}"
 PKG="dev.rime.inputmatrix"
@@ -361,12 +365,12 @@ launch_field() {
   # 等 READY,最多 8 秒
   local i
   for i in $(seq 1 16); do
-    adbs logcat -d -s "$TAG:I" 2>/dev/null | grep -qF "READY $f" && break
+    log_has "READY $f" adbs logcat -d -s "$TAG:I" && break
     sleep 0.5
   done
   # 等軟鍵盤真的出現
   for i in $(seq 1 20); do
-    adbs shell dumpsys input_method 2>/dev/null | grep -q "mIsInputViewShown=true" && break
+    log_has "mIsInputViewShown=true" adbs shell dumpsys input_method && break
     sleep 0.5
   done
   # 點一下輸入框本身,再靜置。兩個理由:
