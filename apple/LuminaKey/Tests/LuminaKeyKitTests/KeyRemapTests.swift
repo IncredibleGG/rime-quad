@@ -483,6 +483,46 @@ final class KeyRemapTests: XCTestCase {
         }
     }
 
+    /// ⚠ **桌面端整套換鍵建立在一個假設上,而那個假設住在別人的檔案裡。**
+    ///
+    /// 假設是:`core/layouts/qwerty.yaml` 的 26 顆字母鍵,`id` 就是它在
+    /// `lower` 層送出的 keysym 名稱,而 `upper` 層同一個 `id` 送的是大寫。
+    /// 桌面端因此**不必**把佈局檔打包進 .app(它沒有軟鍵盤,不該為了換鍵
+    /// 開始出貨佈局檔),直接由 id 算得出 keysym。
+    ///
+    /// 那份 yaml 是行動端的(`docs/coordination.md` §2),而且會被市集更新。
+    /// 假設破掉的症狀是**桌面端把鍵換到別顆去,而畫面完全正常** ——
+    /// 沒有任何一行程式碼會拋錯。所以這裡直接去讀那份檔案。
+    func testQwertyLayoutStillMatchesTheAssumptionDesktopDependsOn() throws {
+        let src = Repo.root.appendingPathComponent("core/layouts/qwerty.yaml")
+        guard let text = try? String(contentsOf: src, encoding: .utf8) else {
+            return XCTFail("讀不到 \(src.path)")
+        }
+        var current = ""
+        var seen: [String: Set<Character>] = [:]
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let s = String(line)
+            if s.contains("- id: \"\(DesktopRemap.unshiftedLayer)\"") {
+                current = DesktopRemap.unshiftedLayer
+            } else if s.contains("- id: \"\(DesktopRemap.shiftedLayer)\"") {
+                current = DesktopRemap.shiftedLayer
+            }
+            guard !current.isEmpty else { continue }
+            for c in DesktopRemap.letters where s.contains("id: \"\(c)\"") {
+                let want = DesktopRemap.keysym(c, shifted: current == DesktopRemap.shiftedLayer)
+                let name = String(Character(Unicode.Scalar(UInt32(want))!))
+                XCTAssertTrue(s.contains("keysym: \"\(name)\""),
+                              "qwerty.yaml 的 \(current) 層,「\(c)」這顆鍵送的不是 \(name):\(s)")
+                seen[current, default: []].insert(c)
+            }
+        }
+        for layer in [DesktopRemap.unshiftedLayer, DesktopRemap.shiftedLayer] {
+            XCTAssertEqual(seen[layer]?.count, 26,
+                           "qwerty.yaml 的 \(layer) 層字母鍵不是 26 顆了 —— "
+                           + "桌面端的換鍵範圍就是這 26 顆")
+        }
+    }
+
     /// 改名前的舊檔讀得到 —— 漏掉這一條的下場是升級之後鍵位全部回到原樣,
     /// 檔案還在磁碟上,只是沒有人再去讀它。
     func testLegacyFileIsPickedUp() throws {

@@ -69,7 +69,7 @@ final class RemapPage: NSView {
         if !compiled.cycles.isEmpty {
             stack.addArrangedSubview(UI.label(
                 T("你換過的", "你换过的", "What you changed")[lang], size: 13, weight: .medium))
-            stack.addArrangedSubview(UI.card(compiled.cycles.map(row(for:))))
+            stack.addArrangedSubview(UI.card(compiled.cycles.map { row(for: $0) }))
         }
 
         if store.hasAnythingToRestore { stack.addArrangedSubview(restoreEverything(compiled)) }
