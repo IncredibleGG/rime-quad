@@ -1047,10 +1047,50 @@ log "5d. 第三種冷:服務被結束之後由瘦 DLL 重新拉起(= 使用者�
   && ok "現在沒有服務在跑(與使用者剛登入時一樣)" \
   || note_fail "5d 開始前還有服務在跑 —— 這一節驗不到「由 DLL 重新拉起」"
 
+# ⚠ 分成兩步,而且這正是使用者的動線:先切到這個輸入法(服務被拉起來),
+#   過一會兒才開始打字。
+#
+#   合成一步會量到別的東西:同一支宿主一邊啟動服務、一邊馬上送按鍵時,
+#   服務進程剛建好的視窗(設定視窗 / 系統匣)會把**前景**拿走,而 TSF
+#   只把按鍵交給擁有前景的執行緒 —— 於是一顆鍵都不會到達文字服務,
+#   而報表看起來像「打字失敗」。實測過(CI run 31314468397)。
+log "  5d-1. 切到這個輸入法(只 activate,不打字)—— 服務應該被拉起來"
+set +e
+"${HOST}" --langid "${ACTIVE_LANGID}" --require-activate \
+          --trace "$(w "${WORK}/relaunch-activate-trace.log")" --wait-ms 5000 \
+          > "${WORK}/relaunch-activate.log" 2>&1
+rc=$?
+set -e
+[ "${rc}" -eq 0 ] || note_fail "5d 的 activate 那一趟以 ${rc} 結束"
+RELAUNCHED=0
+for _ in $(seq 1 30); do
+  if [ "$(count_service)" -gt 0 ]; then RELAUNCHED=1; break; fi
+  sleep 1
+done
+[ "${RELAUNCHED}" -eq 1 ] \
+  && ok "瘦 DLL 把服務重新拉起來了" \
+  || note_fail "服務**沒有**被重新拉起來 —— 使用者每天開機切過來都會是這樣"
+
+# 等它就緒。詞庫已經編好了,所以這裡量的是「重啟之後多久能服務」。
+log "  5d-2. 等它就緒(詞庫已經編好,所以這一段應該很短)"
+READY_RE=0
+for i in $(seq 1 180); do
+  if "${PROBE}" --connect-only --attempts 1 > "${WORK}/relaunch-probe.log" 2>&1; then
+    READY_RE=1
+    break
+  fi
+  sleep 1
+done
+[ "${READY_RE}" -eq 1 ] \
+  && ok "重新拉起來的服務在 ${i} 秒內接得起連線" \
+  || note_fail "重新拉起來的服務 180 秒內接不起連線 —— 使用者每天開機之後
+     切過來都打不出中文,而詞庫早就編好了。"
+
+log "  5d-3. 現在打字(= 使用者每天開機之後的第一串字)"
 set +e
 "${HOST}" --langid "${ACTIVE_LANGID}" --require-activate --require-eaten \
           --keys nihao1 --expect 你好 \
-          --trace "$(w "${WORK}/relaunch-trace.log")" --wait-ms 20000 \
+          --trace "$(w "${WORK}/relaunch-trace.log")" --wait-ms 5000 \
           > "${WORK}/relaunch-type.log" 2>&1
 rc=$?
 set -e
