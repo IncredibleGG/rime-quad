@@ -42,6 +42,12 @@
 //                     [--require-activate] [--require-eaten]
 //                     [--trace <檔案>] [--wait-ms 3000]
 //
+//   rime_tsf_host.exe --hold-dll <dll路徑> --hold-ms <毫秒>
+//                     只 LoadLibrary 那個 DLL 然後睡著,不碰 TSF。
+//                     用來**重現使用者解除安裝時撞到的那個狀態**:
+//                     還有程式握著 rime_tsf.dll,所以檔案刪不掉。
+//                     見 windows/verify_installer.sh §11。
+//
 // 結束碼 0 = 要求的每一項都成立。
 #include <msctf.h>
 #include <windows.h>
@@ -429,6 +435,30 @@ std::string ReadAll(const std::wstring& path) {
 
 }  // namespace
 
+// ── 把 DLL 抓在手上不放 ────────────────────────────────────────────
+//
+// 這不是測試 TSF,是**重現使用者的處境**:瀏覽器、檔案總管、Office 這些
+// 程式在解除安裝的當下仍然握著 rime_tsf.dll,於是那個檔案刪不掉,
+// Inno 只好把它排進「開機時刪除」的佇列,然後問使用者要不要重新啟動。
+//
+// 刻意用最笨的方式(LoadLibrary + 睡)——不註冊、不啟用 profile、不建 TSF 情境。
+// 要重現的就只是「有一個進程握著這個檔案」這件事本身,多做任何一步都是
+// 在測別的東西。
+int HoldDll(const std::wstring& path, DWORD ms) {
+  Say("LoadLibrary %s\n", Narrow(path).c_str());
+  HMODULE h = ::LoadLibraryW(path.c_str());
+  if (!h) {
+    Say("!! 載入不了 err=%lu\n", static_cast<unsigned long>(::GetLastError()));
+    return 1;
+  }
+  Say("已載入,握住 %lu 毫秒\n", static_cast<unsigned long>(ms));
+  std::fflush(stdout);
+  ::Sleep(ms);
+  ::FreeLibrary(h);
+  Say("已放開\n");
+  return 0;
+}
+
 static int Run(int argc, wchar_t** argv);
 
 int main(int, char**) {
@@ -448,6 +478,8 @@ static int Run(int argc, wchar_t** argv) {
   bool require_activate = false;
   bool require_eaten = false;
   DWORD wait_ms = 3000;
+  std::wstring hold_dll;
+  DWORD hold_ms = 0;
 
   for (int i = 1; i < argc; ++i) {
     const std::wstring a = argv[i];
@@ -460,11 +492,17 @@ static int Run(int argc, wchar_t** argv) {
     else if (a == L"--require-eaten") require_eaten = true;
     else if (a == L"--wait-ms" && i + 1 < argc)
       wait_ms = static_cast<DWORD>(::wcstol(argv[++i], nullptr, 0));
+    else if (a == L"--hold-dll" && i + 1 < argc) hold_dll = argv[++i];
+    else if (a == L"--hold-ms" && i + 1 < argc)
+      hold_ms = static_cast<DWORD>(::wcstol(argv[++i], nullptr, 0));
     else {
       Say("未知參數: %s\n", Narrow(a).c_str());
       return 2;
     }
   }
+
+  // --hold-dll 是一條完全獨立的路徑:不碰 COM、不碰 TSF、不寫除錯記錄。
+  if (!hold_dll.empty()) return HoldDll(hold_dll, hold_ms ? hold_ms : 30000);
 
   if (trace_path.empty()) {
     wchar_t tmp[MAX_PATH] = {0};

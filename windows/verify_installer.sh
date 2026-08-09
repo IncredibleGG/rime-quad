@@ -84,6 +84,24 @@ ok()        { printf '  ✓ %s\n' "$*"; }
 # WOW6432Node,而「查不到」與「沒註冊」長得一模一樣。
 reg_key_exists() { reg query "$1" //reg:64 >/dev/null 2>&1; }
 
+# ── 「開機時刪除」的佇列 ──────────────────────────────────────────
+#
+# 檔案在解除安裝當下被別的程式握著時,Inno 刪不掉它,只好呼叫
+# MoveFileEx(..., MOVEFILE_DELAY_UNTIL_REBOOT) —— 那會在這個登錄檔值裡
+# 留下一筆。**這就是使用者看到那個「必須重新啟動」對話框的原因**,
+# 也是「為什麼登出不夠」的答案:這份佇列只有 Session Manager 在
+# **開機**時處理,登出登入不會碰它。
+#
+# 這兩個函式讓那件事變成可以斷言的東西,而不是我們寫在文案裡的推測。
+PFRO='HKLM\SYSTEM\CurrentControlSet\Control\Session Manager'
+pending_renames() {
+  reg query "${PFRO}" //v PendingFileRenameOperations //reg:64 2>/dev/null \
+    | tr -d '\r' || true
+}
+pending_has_our_dll() {
+  pending_renames | grep -qi 'rime_tsf\.dll'
+}
+
 reg_value() {
   # $1 = 鍵, $2 = 值名(空字串代表預設值)
   local out
@@ -811,6 +829,25 @@ while IFS= read -r line; do
   fi
 done <<< "${PROFILES}"
 
+# ── ⚠ 沒有東西被鎖住時,不可以留下「開機時刪除」的佇列 ────────────
+#
+# 這一條回答的是「重啟提示會不會在不必要的時候跳出來」。
+#
+# 走到這裡時,沒有任何進程握著 rime_tsf.dll(§6c 那支宿主早就結束了),
+# 所以 Inno 應該是**直接刪掉**它,而不是排進開機佇列 —— 也就不會問使用者
+# 要不要重新啟動。這一條把「應該」變成斷言。
+#
+# 它紅掉的意思是:每一個使用者、即使剛開機什麼都沒開,解除安裝之後
+# 都會被問一次要不要重開機。一個沒有必要的重啟提示會讓人覺得這軟體很髒。
+if pending_has_our_dll; then
+  echo "  --- PendingFileRenameOperations ---"
+  pending_renames | sed 's/^/    /'
+  note_fail "沒有任何程式握著 rime_tsf.dll,解除安裝卻仍然把它排進「開機時刪除」。
+     那代表**每一次**解除安裝都會跳出重新啟動的提示,即使完全沒有必要。"
+else
+  ok "沒有東西被鎖住時,解除安裝不留下「開機時刪除」的佇列(不會問要不要重啟)"
+fi
+
 # ── 反向測試:解除安裝之後 check 必須紅 ──────────────────────────
 if "${TOOL}" check > "${WORK}/check-uninstalled.log" 2>&1; then
   cat "${WORK}/check-uninstalled.log"
@@ -981,6 +1018,105 @@ fi
 reg_key_exists "${ARP}" \
   && note_fail "帶旗標解除安裝之後,「新增或移除程式」裡那一筆還在" \
   || ok "新增或移除程式:那一筆已消失"
+
+# ══════════════════════════════════════════════════════════════════
+#  11. 有程式握著 DLL 時解除安裝會發生什麼(使用者撞到的那一個)
+# ══════════════════════════════════════════════════════════════════
+#
+# ⚠ 這一節是**用來寫文案的**,不是用來讓 CI 變綠的。
+#
+# 使用者解除安裝時看到「必須重新啟動」。我們要在文案裡回答三件事:
+# 為什麼、不重啟會怎樣、可不可以晚點再重啟。**那三件事都不可以用猜的。**
+#
+# 所以這裡把他的處境重現出來:讓一個進程握著 rime_tsf.dll(那正是
+# 檔案總管與瀏覽器在做的事),然後解除安裝,再量三件事:
+#   1. 檔案還在不在
+#   2. 有沒有被排進「開機時刪除」的佇列(→ 為什麼登出不夠)
+#   3. **不重開機就重裝的話,安裝程式擋不擋**(→ 「不重啟會怎樣」的具體後果)
+#
+# 量到的結果直接寫進 installer/rimequad.iss 的 UninstalledAndNeedsRestart。
+if [ -n "${HOST}" ]; then
+  log "11. 有程式握著 DLL 時解除安裝(重現使用者的處境)"
+  set +e
+  "${SETUP}" //VERYSILENT //SUPPRESSMSGBOXES //NORESTART \
+             "//LOG=$(w "${WORK}/install3.log")"
+  rc=$?
+  set -e
+  [ "${rc}" -eq 0 ] || die "第三次安裝以 ${rc} 結束"
+
+  UNINST3="$(reg_value "${ARP}" UninstallString | tr -d '"')"
+  UNINST3_U="$(cygpath -u "${UNINST3}")"
+
+  log "  讓一個進程握住 ${INSTALL_DIR_W}\\rime_tsf.dll"
+  "${HOST}" --hold-dll "${INSTALL_DIR_W}\\rime_tsf.dll" --hold-ms 90000 \
+    > "${WORK}/hold.log" 2>&1 &
+  HOLD_PID=$!
+  hold_cleanup() { kill "${HOLD_PID}" 2>/dev/null || true; }
+  trap hold_cleanup EXIT
+  for i in $(seq 1 20); do
+    grep -q '已載入' "${WORK}/hold.log" 2>/dev/null && break
+    sleep 1
+  done
+  if grep -q '已載入' "${WORK}/hold.log" 2>/dev/null; then
+    ok "DLL 已被另一個進程握住"
+  else
+    tr -d '\r' < "${WORK}/hold.log" | sed 's/^/    /'
+    note_fail "沒有握住 DLL —— 這一節量不到任何東西"
+  fi
+
+  log "  在這個狀態下靜默解除安裝"
+  set +e
+  "${UNINST3_U}" //VERYSILENT //SUPPRESSMSGBOXES //NORESTART
+  set -e
+  for i in $(seq 1 120); do
+    reg_key_exists "${ARP}" || break
+    sleep 1
+  done
+
+  echo "  --- 量到的事實(文案就照這個寫)---"
+  if [ -f "${INSTALL_DIR}/rime_tsf.dll" ]; then
+    echo "    · rime_tsf.dll **還在磁碟上**(被握著,刪不掉)"
+  else
+    echo "    · rime_tsf.dll 已經不在了"
+  fi
+  if pending_has_our_dll; then
+    echo "    · 已被排進「開機時刪除」的佇列(PendingFileRenameOperations)"
+    echo "      → 那份佇列只有 Session Manager 在**開機**時處理;"
+    echo "        登出再登入不會碰它。所以「重新啟動」不是誇大。"
+    ok "重現成功:被握著的 DLL 進了開機刪除佇列"
+  else
+    echo "    · **沒有**進開機刪除佇列"
+    pending_renames | sed 's/^/      /'
+    note_fail "檔案被握著,卻沒有排進開機刪除佇列 —— 那它永遠不會被刪掉,
+     而使用者卻被要求重新啟動。這兩件事必須一致。"
+  fi
+
+  # 不重開機就重裝,安裝程式擋不擋?
+  #
+  # 這一格決定文案要不要寫「重新啟動之前不要重新安裝」。Inno 有一則
+  # PreviousInstallNotCompleted 的內建訊息,但它到底會不會在**解除安裝**
+  # 留下的佇列上觸發,只有實測知道。
+  log "  不重開機直接重裝,看安裝程式擋不擋"
+  set +e
+  "${SETUP}" //VERYSILENT //SUPPRESSMSGBOXES //NORESTART \
+             "//LOG=$(w "${WORK}/install4.log")"
+  rc4=$?
+  set -e
+  echo "    · 重裝的結束碼 = ${rc4}"
+  if tr -d '\r' < "${WORK}/install4.log" 2>/dev/null \
+       | grep -aqi 'previous\|restart'; then
+    echo "    · 安裝記錄裡提到 previous / restart:"
+    tr -d '\r' < "${WORK}/install4.log" | grep -ai 'previous\|restart' \
+      | head -5 | sed 's/^/      /'
+  else
+    echo "    · 安裝記錄裡沒有提到 previous / restart"
+  fi
+
+  hold_cleanup
+  trap - EXIT
+else
+  log "11. (沒有給 --host,跳過「有程式握著 DLL 時解除安裝」那一節)"
+fi
 
 echo
 [ "${fail}" -eq 0 ] || die "安裝程式驗證失敗,見上。"
