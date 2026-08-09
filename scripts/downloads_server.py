@@ -80,12 +80,16 @@ def _stamp_of(name):
 def _pick(files, prefix, suffix):
     """挑出某一端所有帶版本戳的檔案,最新的排前面。
 
+    prefix 可以是字串或多個字串。多個時同時認 —— 改名之後 R2 上新舊檔名
+    並存,只認新的會讓「舊版」欄一夕之間變空,看起來像資料掉了。
+
     刻意跳過 *-latest.*:那是指標不是版本,列出來只會讓人分不清哪個是哪個。
     """
+    prefixes = (prefix,) if isinstance(prefix, str) else tuple(prefix)
     got = []
     for f in files:
         p = f["Path"]
-        if not (p.startswith(prefix) and p.endswith(suffix)):
+        if not (any(p.startswith(x) for x in prefixes) and p.endswith(suffix)):
             continue
         if "latest" in p:
             continue
@@ -101,6 +105,10 @@ def _pick(files, prefix, suffix):
 _MAC = product.R2_MACOS_DIR
 _WIN = product.R2_WINDOWS_DIR
 _BASE = product.R2_ARTIFACT_BASE
+# 新字根在前、舊的在後:改名之後 R2 上兩種檔名並存,只認新的會讓「舊版」
+# 欄一夕之間變空,看起來像資料掉了。
+_BASES = [_BASE, getattr(product, "R2_ARTIFACT_BASE_LEGACY", "")]
+_BASES = [b for b in _BASES if b]
 
 
 def snapshot():
@@ -111,10 +119,10 @@ def snapshot():
     data = {
         "android": _pick(files, product.R2_ANDROID_APK_PREFIX, ".apk"),
         # 安裝程式是主要下載;壓縮包留給想手動放的人。
-        "macos": _pick(files, f"{_MAC}/{_BASE}-macos-", ".pkg"),
-        "macos_archive": _pick(files, f"{_MAC}/{_BASE}-macos-", ".tar.gz"),
-        "windows": _pick(files, f"{_WIN}/{_BASE}-Setup-x64-", ".exe"),
-        "windows_archive": _pick(files, f"{_WIN}/{_BASE}-windows-", ".zip"),
+        "macos": _pick(files, [f"{_MAC}/{b}-macos-" for b in _BASES], ".pkg"),
+        "macos_archive": _pick(files, [f"{_MAC}/{b}-macos-" for b in _BASES], ".tar.gz"),
+        "windows": _pick(files, [f"{_WIN}/{b}-Setup-x64-" for b in _BASES], ".exe"),
+        "windows_archive": _pick(files, [f"{_WIN}/{b}-windows-" for b in _BASES], ".zip"),
         "android_version": _android_version(),
         "at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
