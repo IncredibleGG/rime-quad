@@ -404,12 +404,47 @@ void SectionPipe(Report& r) {
   //   啟動了的話,「服務沒在跑」這個症狀會在被觀察的當下消失 ——
   //   而這正是我們要量的東西。
   IpcClient client;
-  client.ResetLink();
-  const bool ok = client.EnsureReady();
+
+  // ── 為什麼要試三次 ────────────────────────────────────────────
+  //
+  // ⚠ 一次就報 FAIL 是**錯的診斷**,而錯的診斷比沒有診斷貴。
+  //
+  //   服務的引擎跑在**單一一條執行緒**上(service.log 的
+  //   「rs_init OK,啟動引擎執行緒」),所有宿主的請求都排在那一條上,
+  //   而「結束一個 session」也排在同一條 —— 那一步要收掉 librime 的
+  //   Engine、把使用者詞典寫回去。所以「上一個程式剛關掉」的那一瞬間,
+  //   下一個 SESSION_NEW 會排在後面等,而且等得過我們的逾時。
+  //
+  //   CI 上重現得出來,而且是**乾淨的重現**:某一次 rime_probe 在
+  //   08:00:08.901 拿到 session=14,0.34 秒後這支診斷要下一個 session 就逾時。
+  //   服務完全正常,只是還沒輪到我們。
+  //
+  //   一次就紅的話,使用者看到的是「連上也握手了,但建不出 session」,
+  //   而他接下來會做的事(重裝)不會有任何幫助。
+  //
+  //   真的壞掉時三次一樣會紅 —— 只是不會再把暫時的排隊誤判成故障。
+  //
+  // ⚠ 每一次之前要 ResetLink():那會把連線狀態機歸零而**不進退避**
+  //   (見 ipc_client.cc:ResetLink 刻意不呼叫 Fail())。少了它,
+  //   第二、三次會被上一次失敗的退避直接吃掉 —— 於是「試了三次」是假的。
+  constexpr int kTries = 3;
+  bool ok = false;
+  int used = 0;
+  for (int i = 0; i < kTries && !ok; ++i) {
+    if (i > 0) ::Sleep(1500);
+    client.ResetLink();
+    ok = client.EnsureReady();
+    used = i + 1;
+  }
   const ReadyDiagnosis& d = client.diagnosis();
   if (ok) {
     r.Pass(Fmt("連得上、握手過了、session 建得起來(線路版本 %u)",
                static_cast<unsigned>(client.negotiated_proto())));
+    // 需要重試這件事本身要說出來 —— 不然一台「每次都要等三秒」的機器
+    // 會在報告上長得跟一台健康的機器一模一樣。
+    if (used > 1)
+      r.Warn(Fmt("不過第 1 次沒成功,試到第 %d 次才通(服務忙,多半是剛剛"
+                 "有別的程式在打字)", used));
     return;
   }
   // 三步的修法完全不同,所以不可以併成一句「連不上」。
