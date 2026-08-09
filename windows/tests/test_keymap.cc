@@ -43,7 +43,10 @@ TEST(keymap_mod_bits_match_rime_shell_abi) {
   //   1 -> 2  core/ 新增 rs_sync_user_data() 與 rs_sync_dir()(詞庫匯出要
   //           先讓 librime 把記憶體裡的交易落地)。純新增函式,rs_modifier
   //           的位元與所有既有結構的佈局一個位元都沒動,Windows 端無需改碼。
-  CHECK_INT(RIME_SHELL_ABI_VERSION, 2);
+  //   2 -> 3  core/ 新增 rs_set_input() / rs_get_input()(九宮格的音節消歧
+  //           要靠改寫輸入串,librime 沒有「選擇拼寫」的 API)。純新增函式,
+  //           rs_modifier 的位元與所有既有結構的佈局一個位元都沒動。
+  CHECK_INT(RIME_SHELL_ABI_VERSION, 3);
 }
 
 TEST(keymap_char_to_keysym_rules) {

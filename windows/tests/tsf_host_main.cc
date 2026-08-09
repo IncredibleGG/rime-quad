@@ -962,6 +962,34 @@ static int Run(int argc, wchar_t** argv) {
         Say("  重新 SetFocus hr=0x%08lX\n", static_cast<unsigned long>(shr));
         Pump(200);
       }
+      // ── ⚠ 送按鍵之前把視窗前景搶回來 ────────────────────────────
+      //
+      // ActivateEx 到這裡之間會發生別的事:最重要的是**服務進程可能剛被
+      // 我們自己啟動起來**,而它會建自己的視窗(設定視窗、系統匣)。
+      // 那些視窗一出現就可能把前景拿走,而 TSF 只把按鍵交給擁有前景的
+      // 那條執行緒 —— 沒有前景時 KeyDown 回 S_OK、pfEaten=FALSE,
+      // 一顆鍵都不會到達文字服務,**而且不報錯**。
+      //
+      // 實測(CI run 31314468397 的 §5d):`前景視窗 = …030136
+      // (我們的是 …05018E)`、`IsThreadFocus = 0`,六顆鍵一顆都沒到,
+      // 而報表寫的是「第一次打字失敗」—— 一個看起來像產品壞掉的測試台問題。
+      if (!thread_focus && hwnd) {
+        ::ShowWindow(hwnd, SW_SHOWNORMAL);
+        ::SetForegroundWindow(hwnd);
+        ::SetActiveWindow(hwnd);
+        ::SetFocus(hwnd);
+        if (docmgr) thread_mgr->SetFocus(docmgr);
+        Pump(300);
+        BOOL again = FALSE;
+        thread_mgr->IsThreadFocus(&again);
+        Say("  重新搶前景之後 IsThreadFocus = %d(前景視窗 %p,我們的是 %p)\n",
+            again ? 1 : 0, static_cast<void*>(::GetForegroundWindow()),
+            static_cast<void*>(hwnd));
+        if (!again)
+          Fail("送按鍵之前仍然拿不到執行緒焦點 —— TSF 不會把任何按鍵交給\n"
+               "     文字服務,所以底下量到的東西**不能拿來判斷產品好壞**。\n"
+               "     這是測試台/工作階段的問題,不是輸入法的問題。");
+      }
       Say("\n--- 送按鍵 ---\n");
       for (const SeqKey& sk : plan) {
         const SendOutcome o = SendKeyThrough(ks, doc, sk);

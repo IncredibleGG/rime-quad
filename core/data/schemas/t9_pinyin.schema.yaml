@@ -79,14 +79,26 @@ engine:
     - uniquifier
 
 speller:
-  # 八顆字母鍵。刻意不含 0-9，數字鍵才不會被 speller 吃掉。
-  alphabet: 'ADGJMPTW'
+  # ⚠ **雙編碼**：小寫拼音與九宮格鍵位**同時**存在於這一個 prism 裡。
+  #
+  #   為什麼:九宮格的音節消歧(一顆鍵三四個字母,「MG」可能是 ni 也可能是 mi)
+  #   在 librime 裡**沒有**「選擇拼寫」的 API —— 上游作者明講過(rime/librime#123):
+  #   那是前端的工作,做法是**把輸入串改寫掉**,把已確定的那一段換成精確的拼音,
+  #   後面仍然留著模糊碼。改寫之後 prism 必須同時認得兩種形式,否則整串解不開。
+  #
+  #   這是萬象的 拼音选择器 用的辦法 —— 目前唯一有在出貨的實作。
+  #
+  # ⚠ 刻意**不**用 rime-ice 那種逐字元 `derive/[abc]/2/` 串接:那會產生
+  #   2^n 條拼寫,音節一長就爆掉。這裡是「一條 derive + 一條 xlit」,線性。
+  alphabet: 'abcdefghijklmnopqrstuvwxyzADGJMPTW'
   delimiter: " '"
   algebra:
-    # 1. 把詞典裡的拼音音節整個折成九宮格鍵位。
+    # 1. 先複製一份全大寫的拼寫。原本的小寫**留著** —— 那就是精確拼音那一半。
+    - derive/^(.*)$/\U$1/
+    # 2. 只有大寫那一份會被折成九宮格鍵位(小寫的不受影響)。
     #    ü 在 luna_pinyin.dict.yaml 裡寫作 v，歸在 TUV → T。
-    - xlit|abcdefghijklmnopqrstuvwxyz|AAADDDGGGJJJMMMPPPPTTTWWWW|
-    # 2. 超級簡拼：每個音節只打第一鍵。
+    - xlit|ABCDEFGHIJKLMNOPQRSTUVWXYZ|AAADDDGGGJJJMMMPPPPTTTWWWW|
+    # 3. 超級簡拼：每個音節只打第一鍵。
     #    折疊後的音節都是 A/D/G/J/M/P/T/W，所以這條規則等同「取首鍵」。
     - abbrev/^([ADGJMPTW]).+$/$1/
 
@@ -95,7 +107,11 @@ translator:
   # 必須指定獨立的 prism：詞典雖然和朙月拼音同一本，拼寫規則完全不同，
   # 兩者共用 prism 會互相覆蓋。
   prism: t9_pinyin
-  spelling_hints: 5
+  # ⚠ 這是**音節數**上限,不是字元數(ScriptSyllabifier::GetOriginalSpelling
+  #   比對的是 cand.code().size())。設 5 的話,超過五個音節的候選**完全沒有
+  #   comment** —— 而消歧欄正是從 comment 讀讀音的,於是長句一律取不到讀音。
+  #   萬象用 50,rime-ice 用 100。
+  spelling_hints: 50
   # 折疊之後重碼極多，靠語言模型組句比逐字選有用得多。
   enable_sentence: true
   enable_user_dict: true

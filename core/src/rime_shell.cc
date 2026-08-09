@@ -542,6 +542,30 @@ bool rs_clear_composition(rs_session s) {
   });
 }
 
+bool rs_set_input(rs_session s, const char* input) {
+  const char* text = input ? input : "";
+  return with_session(s, [&](Session* sess) {
+    // librime 的 set_input 會把整串重新切分並重算候選,等同「重打一次」。
+    return g_api->set_input(sess->id, text) != False;
+  });
+}
+
+const char* rs_get_input(rs_session s) {
+  // ⚠ 不能用 with_session:它回傳 bool。這裡自己走同一套檢查,
+  //    並把結果複製進 thread_local 緩衝 —— 直接把 librime 的指標交出去,
+  //    生命週期就綁在它的內部狀態上,而契約承諾的是「下一次 API 呼叫前有效」。
+  static thread_local std::string buf;
+  buf.clear();
+  Session* sess = as_session(s);
+  if (!sess || !g_initialized)
+    return buf.c_str();
+  std::lock_guard<std::mutex> lock(sess->mutex);
+  const char* p = g_api->get_input(sess->id);
+  if (p)
+    buf.assign(p);
+  return buf.c_str();
+}
+
 bool rs_commit_composition(rs_session s) {
   return with_session(s, [&](Session* sess) {
     // librime 的回傳值是「是否有待讀取的 commit 文字」，
