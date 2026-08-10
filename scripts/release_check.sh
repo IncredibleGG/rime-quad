@@ -384,21 +384,47 @@ if [ -f "$APK" ]; then
   #   之下整條管線被判定失敗，變成假警報。輸出小時管線緩衝區塞得下不會發生，
   #   大時才會 —— 這種偶發性的假失敗最難查。
   LIST="$(unzip -l "$APK")"
-  ABIS="$(printf '%s\n' "$LIST" | grep -oE 'lib/[a-z0-9_-]+/' | sort -u | tr '\n' ' ')"
-  case "$ABIS" in
-    *arm64-v8a*) ok "含 arm64-v8a（真機用的就是這個）" ;;
-    *) bad "缺 arm64-v8a，真機裝不起來" ;;
-  esac
-  case "$ABIS" in *x86_64*) ok "含 x86_64（模擬器用）" ;; *) bad "缺 x86_64" ;; esac
-
-  # IME 宣告缺任一項，輸入法會裝得起來但系統看不見
-  X="$("$AAPT2" dump xmltree --file AndroidManifest.xml "$APK" 2>/dev/null || true)"
-  has() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
-  has "BIND_INPUT_METHOD" "$X"        && ok "有 BIND_INPUT_METHOD 權限"   || bad "缺 BIND_INPUT_METHOD"
-  has "android.view.InputMethod" "$X" && ok "有 InputMethod intent-filter" || bad "缺 intent-filter"
-  has "android.view.im" "$X"          && ok "有 android.view.im meta-data" || bad "缺 meta-data"
+  # ── ABI 與 IME 宣告:判斷搬到 scripts/apk_ime_shape.py ────────────────
+  #
+  # ⚠ 2026-08-10 之前這五關是用「這個字串有沒有出現在檔案裡」判斷的,
+  #   兩個洞都用**真的 APK** 實測證實過(見 fix3-install 的 commit 訊息):
+  #
+  #     · ABI 只問 `lib/<abi>/` 底下有沒有東西。但相依函式庫
+  #       (androidx.graphics.path、datastore_shared_counter)本來就在每個
+  #       ABI 底下各放一個 .so —— 把 lib/x86_64/librime_jni.so 從發布出去的
+  #       那份 APK 裡刪掉,舊寫法「含 x86_64（模擬器用）」照樣是綠的。
+  #       而那份 APK 在 x86_64 裝置上就是「裝得起來、載不到引擎」。
+  #
+  #     · IME 三項只問三個字串在不在**整份 manifest** 裡,不問它們掛在
+  #       哪個元素上。把 <service> 整個拿掉、改掛一個帶著同樣三個字串的
+  #       <receiver>,重新建一份 release APK:系統眼裡它已經不是輸入法
+  #       (aapt2 連 provides-component:'ime' 都不印了),而舊寫法三項全綠。
+  #
+  #   這正是本專案反覆吃虧的那一種:`grep 名字` 掃整個檔案 = 名字在別處
+  #   出現一次就永遠綠。改成純函式 + 結構化判讀,並保留舊寫法當對照組 ——
+  #   apk_ime_shape.py --self-test 的 16 條裡有兩條就是在斷言
+  #   「舊寫法在這個變異上真的說綠」,少了它,新檢查嚴在哪裡沒有人驗得到。
+  #
+  # 這裡刻意逐項轉成 ok/bad(五項),不是整包一個綠燈:關卡數是本腳本結尾
+  # 那道下界唯一的依據,合併成一項會讓「少驗了四件事」不留任何痕跡。
+  SHAPE_OUT="$(python3 "$ROOT/scripts/apk_ime_shape.py" --apk "$APK" --aapt2 "$AAPT2" 2>&1 || true)"
+  SHAPE_N="$(printf '%s\n' "$SHAPE_OUT" | grep -cE '^(PASS|FAIL): ' || true)"
+  if [ "${SHAPE_N:-0}" -ne 5 ]; then
+    bad "apk_ime_shape.py 只吐了 ${SHAPE_N:-0} 行判讀(預期 5)—— 是它自己壞了,不是這份 APK 沒問題:
+$SHAPE_OUT"
+  else
+    while IFS= read -r _line; do
+      case "$_line" in
+        "PASS: "*) ok "${_line#PASS: }" ;;
+        "FAIL: "*) bad "${_line#FAIL: }" ;;
+      esac
+    done <<EOF_SHAPE
+$SHAPE_OUT
+EOF_SHAPE
+  fi
 
   # 隨附資料：沒有 schema 就是一個打不出字的輸入法
+  has() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
   N_YAML="$(printf '%s\n' "$LIST" | grep -c 'assets/rime/.*\.yaml' || true)"
   [ "$N_YAML" -gt 0 ] && ok "隨附 $N_YAML 份 yaml" || bad "assets 裡沒有任何 yaml"
   has "essay" "$LIST" && ok "含語言模型" || bad "缺語言模型"

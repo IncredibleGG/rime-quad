@@ -24,8 +24,20 @@ third_party/librime-lua/
 third_party/*.log
 
 # collect_data.sh 的產物（由 third_party/rime-data 與 host opencc 產生）
-/core/data/shared/
-/core/data/user/
+#
+# ⚠ 這兩行**沒有**結尾斜線,而那不是筆誤。帶斜線的樣式只匹配目錄,而每一條
+#   支線的 worktree 都是把它們 symlink 到主 repo 的那一份(交接文件要求的
+#   `ln -sfn /home/lc/rime/core/data/shared <worktree>/core/data/shared`)。
+#   symlink 在 git 眼裡不是目錄,`/core/data/shared/` 因此匹配不到它 ——
+#   結果是**每一個 worktree 的 git status 上都永遠掛著兩筆 `??`**,而
+#   release_check.sh 第 1 關(「工作區有未提交變更,這份 APK 對應不到任何
+#   commit」)在每一個 worktree 上都因此是紅的。
+#
+#   一道永遠紅的守門和沒有守門是同一件事:它教會每個人略過那一行,而那一關
+#   擋的是「發出去的 APK 對不回任何一個 commit」—— 這個專案已經差點把一份
+#   別人改到一半的 APK 發給使用者(見 release_check.sh 檔頭)。
+/core/data/shared
+/core/data/user
 /third_party/rime-data/
 
 # --- Android 專案(android/)---
