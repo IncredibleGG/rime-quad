@@ -39,6 +39,7 @@ on:
       - fix-android-ui
       - fix2-release
       - fix2-deadend
+      - fix3-install
   pull_request:
     branches:
       - main
@@ -222,6 +223,13 @@ jobs:
       - name: 消歧欄反向測試:掃描範圍變窄(第 1 關必須紅)
         run: ./scripts/verify_syllables.sh --plant narrow-scope
 
+      # 「這份 APK 系統還認不認得它是輸入法」的判斷本體。純函式 + 16 條
+      # 反向測試,其中兩條是**對照組**:斷言舊的子字串寫法在那個變異上
+      # 仍然說綠 —— 少了對照組,新檢查到底比舊的多擋了什麼沒有人驗得到。
+      # 不需要 APK、不需要模擬器,~0.1 秒。
+      - name: APK 形狀判讀的反向測試(apk_ime_shape.py --self-test,16 條)
+        run: python3 scripts/apk_ime_shape.py --self-test
+
       - name: 發布關卡(不需要模擬器的部分)
         run: ./scripts/release_check.sh --skip-emu --strict
 
@@ -240,6 +248,36 @@ jobs:
         # 放在發布關卡**之後**:其中一條要用已建置的 APK
         # (產物層的「只有 NetworkGate 碰得到 HttpURLConnection」)。
         run: ./scripts/verify_audit_offline.sh
+
+      # ⚠ 上面那一關驗的是判斷邏輯(fixture)。這一關驗的是**這一次真的建出來
+      #   的那份 APK 走過同一條路會不會紅** —— 兩件事會分岔:aapt2 換版、
+      #   AGP 改 manifest 合併、打包方式改變,任何一個都可能讓判讀在真的
+      #   產物上失效,而 fixture 永遠不會發現。
+      #
+      #   變異挑的正是舊寫法擋不住的那一個:把我們自己的 librime_jni.so 從
+      #   x86_64 拿掉,lib/x86_64/ 底下留著相依函式庫的 .so。舊的
+      #   `grep -oE 'lib/[a-z0-9_-]+/'` 對這種 APK 是綠的。
+      - name: 對真的 APK 做一次變異(拿掉 x86_64 的 JNI,這一關必須紅)
+        run: |
+          set -eu
+          AAPT2="$(ls -1d "$ANDROID_SDK_ROOT"/build-tools/*/aapt2 | sort -Vr | head -1)"
+          # 正控:沒動過的那一份必須是綠的。少了它,一個「永遠回紅」的
+          # 判讀也會通過下面的反向測試。
+          python3 scripts/apk_ime_shape.py --apk "$APK_PATH" --aapt2 "$AAPT2"
+          cp "$APK_PATH" /tmp/mutant.apk
+          zip -q -d /tmp/mutant.apk 'lib/x86_64/librime_jni.so'
+          if python3 scripts/apk_ime_shape.py --apk /tmp/mutant.apk --aapt2 "$AAPT2" \
+               > /tmp/mutant.out 2>&1; then
+            echo "把 x86_64 的 JNI 拿掉之後這一關還是綠的 —— 它沒有在檢查" >&2
+            cat /tmp/mutant.out >&2
+            exit 1
+          fi
+          grep -q 'lib/x86_64/librime_jni.so' /tmp/mutant.out || {
+            echo "紅了,但訊息沒指名少掉的是哪一個檔 —— 紅的理由可能不對" >&2
+            cat /tmp/mutant.out >&2
+            exit 1
+          }
+          echo "反向測試通過:x86_64 少了我們自己的 .so 會被抓到"
 
       - name: 簽章與單調性關卡(沿用 publish_apk.sh 的檢查)
         run: |
