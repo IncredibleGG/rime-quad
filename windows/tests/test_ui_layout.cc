@@ -273,12 +273,43 @@ TEST(ui_layout_advanced_page_counts_the_last_button_in_its_height) {
   for (const PlacedControl& p : pl.items)
     if (!p.rect.empty() && p.rect.bottom() > max_bottom)
       max_bottom = p.rect.bottom();
+  // 2026-08-11:「連上網路」與「更新」兩區**搬去「連網」那一頁**了,
+  // 所以這個數字回到 810。⚠ 它是**釘住**的:改版面時要一起改,
+  // 而那正是重點 —— 有人「順手重排」而讓最後那顆危險鍵又掉出捲動範圍時,
+  // 這一條會先攔下來。
+  //
+  // ⚠ 為什麼搬:兩條線各自做了一次同一件事,合併之後同一個連網開關
+  //   在畫面上有**兩個入口**(進階頁一個、連網頁一個),而它們讀的是
+  //   同一個值。使用者在其中一邊改完,另一邊要等下一次重畫才會跟上,
+  //   而中間那一段畫面上會有兩個互相矛盾的開關。
   CHECK_INT(max_bottom, 810);
   CHECK_INT(pl.content_h_dip, max_bottom + kContentPadBottomDip);
   // 三顆固定寬度的按鈕都要在內容高度以內。
   for (int id : {IDC_REDEPLOY, IDC_DIAG_COPY, IDC_RESET}) {
     for (const PlacedControl& p : pl.items)
       if (p.id == id) CHECK(p.rect.bottom() <= pl.content_h_dip);
+  }
+}
+
+TEST(ui_layout_network_page_counts_the_update_card_in_its_height) {
+  // ⚠ 更新卡片是 2026-08-11 從進階頁搬過來的,而它的最後一顆(三顆按鈕
+  //   那一列)在紀錄不是空的時候**還不是**整頁的最後一顆 —— 底下還有
+  //   清除紀錄那個危險區塊。所以這一條要問的是整頁的底,不是卡片的底:
+  //   卡片被塞進來之後把危險鍵擠出捲動範圍,是這一頁最可能發生的迴歸。
+  for (const PageState& state : {PageState{false, true}, PageState{false, false}}) {
+    const PageLayout pl = LayoutSettingsPageDip(kPageNetwork, 780, state);
+    int max_bottom = 0;
+    for (const PlacedControl& p : pl.items)
+      if (!p.rect.empty() && p.rect.bottom() > max_bottom)
+        max_bottom = p.rect.bottom();
+    CHECK_INT(pl.content_h_dip, max_bottom + kContentPadBottomDip);
+    // 三顆更新鍵與清除鍵都要在內容高度以內 —— 捲到最底碰得到。
+    for (int id : {IDC_UPDATE_CHECK, IDC_UPDATE_ACTION, IDC_UPDATE_PAGE,
+                   IDC_NETLOG_CLEAR}) {
+      for (const PlacedControl& p : pl.items)
+        if (p.id == id && !p.rect.empty())
+          CHECK(p.rect.bottom() <= pl.content_h_dip);
+    }
   }
 }
 
@@ -554,7 +585,14 @@ TEST(ui_layout_network_page_empty_log_says_so_instead_of_showing_a_blank_list) {
     CHECK(!FindOn(kPageNetwork, state, IDC_NET_SWITCH).empty());
     CHECK(!FindOn(kPageNetwork, state, IDC_NET_STATE).empty());
     CHECK(!FindOn(kPageNetwork, state, IDC_NET_DETAIL).empty());
-    CHECK(!FindOn(kPageNetwork, state, IDC_NET_UPDATE).empty());
+    // 更新卡片:信任錨那一句與三顆鍵。⚠ 信任錨要**在按鈕之前** ——
+    //   排在後面的話,使用者按下去的時候還沒讀到它。
+    const RectI trust = FindOn(kPageNetwork, state, IDC_UPDATE_TRUST);
+    const RectI check = FindOn(kPageNetwork, state, IDC_UPDATE_CHECK);
+    CHECK(!trust.empty());
+    CHECK(!check.empty());
+    CHECK(trust.y + trust.h <= check.y);
+    CHECK(!FindOn(kPageNetwork, state, IDC_UPDATE_ACTION).empty());
     CHECK(!FindOn(kPageNetwork, state, IDC_NETLOG_PATH).empty());
   }
 }

@@ -302,9 +302,17 @@ enum SettingsControlId : int {
   IDC_NET_SWITCH,
   IDC_NET_STATE,
   IDC_NET_DETAIL,
-  IDC_NET_UPDATE_HEAD,
-  IDC_NET_UPDATE_BLURB,
-  IDC_NET_UPDATE,
+  // 更新。⚠ IDC_UPDATE_TRUST(「這支程式沒有數位簽章」那一句)是一個
+  //   **永遠顯示**的靜態文字,不是錯誤狀態才出現的東西 —— 而且版面上
+  //   它排在按鈕之前,使用者要在按下去**之前**就讀到它。
+  IDC_UPDATE_HEAD,
+  IDC_UPDATE_BLURB,
+  IDC_UPDATE_TRUST,
+  IDC_UPDATE_WHAT,
+  IDC_UPDATE_STATUS,
+  IDC_UPDATE_CHECK,
+  IDC_UPDATE_ACTION,
+  IDC_UPDATE_PAGE,
   IDC_NETLOG_HEAD,
   IDC_NETLOG_BLURB,
   IDC_NETLOG_SUMMARY,

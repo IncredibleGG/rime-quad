@@ -212,6 +212,13 @@ Source: "{#PayloadDir}\rime_console.exe";    DestDir: "{app}"; Flags: ignorevers
 ;   %APPDATA%\{#ProductName} 的範本(default.custom.yaml 把 schema_list 限縮成
 ;   我們真的有詞庫的四個方案)。
 ;   make_installer.sh 在編譯之前會逐項點名檢查這棵樹,缺了就不出安裝程式。
+; ⚠ 應用內更新靠這一個檔案回答「我是哪一版」。它由 windows/make_installer.sh
+;   在打包時產生(版本號由 commit 時間推導,執行檔編好的時候還算不出來)。
+;   少了它,裝出來的那一套**永遠查不到更新** —— 而輸入法本身完全正常,
+;   所以那是一個沒有人會回報的安靜失敗。make_installer.sh 的 verify_payload
+;   會點名它。
+Source: "{#PayloadDir}\version.txt"; DestDir: "{app}"; Flags: ignoreversion
+
 Source: "{#PayloadDir}\data\*"; DestDir: "{app}\data"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 ; ⚠ 解除安裝要做的事(停服務、停用、反註冊)**不在 [UninstallRun]**,
@@ -793,6 +800,39 @@ begin
   //   windows/verify_installer.sh(它會斷言安裝記錄裡沒有 raised an exception)。
   //   互動安裝時使用者會看到錯誤訊息,那一條是成立的。
   RunSetupVerbOrFail('check --no-enum');
+
+  // ══ /RESTARTIME:把服務叫回來 ═══════════════════════════════════
+  //
+  // **只有應用內更新會帶這個旗標**(service/update_service.cc 的 kSetupArgs)。
+  // 使用者自己雙擊安裝程式時不帶,行為與從前一模一樣。
+  //
+  // 為什麼需要它:更新的流程是「停服務 → 換檔 → 重啟服務」,而**停**那一步
+  // 是 PrepareToInstall 做的(它停掉的正是叫起我們的那個進程)。少了這一段,
+  // 使用者按下更新之後設定視窗消失,然後畫面上什麼都不再發生 ——
+  // 輸入法其實要等他下一次去別的程式打字、瘦 DLL 把服務重新叫起來才會回來。
+  // 那看起來就是「更新把輸入法弄壞了」。
+  //
+  // ⚠ **一定是 ExecAsOriginalUser,不可以是 Exec。**
+  //   這個安裝程式是提權的;用 Exec 生出來的服務會繼承提權的權杖,
+  //   接著用系統管理員的身分去讀寫使用者的檔案,擁有者從此換成不對的人,
+  //   一般權限的那一支服務再也寫不進去。症狀是「更新過一次之後,
+  //   輸入法就再也記不住東西」。理由完整寫在
+  //   windows/common/elevation_policy.h 的檔頭。
+  //   windows/verify_installer.sh --self-check-restart 逐條驗這一段。
+  //
+  // 失敗不中止安裝:檔案都換好了,使用者下一次打字一樣會把服務叫起來。
+  if CmdLineParamExists('/RESTARTIME') then begin
+    try
+      if ExecAsOriginalUser(ExpandConstant('{app}\rime_service.exe'),
+                            '--settings', ExpandConstant('{app}'), SW_SHOWNORMAL,
+                            ewNoWait, Rc) then
+        Log(LogTag + '更新後重新啟動服務(登入者身分)')
+      else
+        Log(LogTag + '更新後重新啟動服務**失敗** —— 使用者下次打字時會自己起來');
+    except
+      Log(LogTag + 'ExecAsOriginalUser 不可用,沒有重新啟動服務');
+    end;
+  end;
 end;
 
 // 解除安裝時的收尾。

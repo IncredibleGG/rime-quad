@@ -122,6 +122,8 @@ add_library(rime_common STATIC
   common/schema_preflight.cc
   common/store_index.cc
   common/store_engine.cc
+  common/update_manifest.cc
+  common/update_flow.cc
   # ── 這一輪加的:設定介面的純邏輯層 ────────────────────────────
   #
   # ⚠ 全部刻意不 include windows.h —— 版面、色票、狀態列位置還原都是

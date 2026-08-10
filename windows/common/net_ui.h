@@ -92,37 +92,6 @@ const wchar_t* NetOutcomeUiText(NetOutcome o, UiLang lang);
 // 所以格式化本身仍然測得到。
 int LocalTzOffsetMinutes();
 
-// ── 檢查更新 ────────────────────────────────────────────────────
-//
-// ⚠ 真正去連的那一半在 service/update_check.h(win-update 那條線)。
-//   這裡只有「該不該開始」與「結果要說哪一句話」——兩件都是純判斷,
-//   而兩件寫壞了畫面都看起來正常。
-
-enum class UpdateCheckState {
-  // 這個版本還沒有接上更新來源。**不是失敗,也不是「已經最新」** ——
-  // 把它講成後者是「宣稱做不到的事」,而那是這個專案的硬約束之一。
-  kNotWired = 0,
-  kUpToDate,
-  kAvailable,
-  // 連網開關是關的。**一個位元組都沒有送出去**,所以它與 kFailed
-  // 必須分得開:前者要給一顆開開關的路,後者要給重試。
-  kBlocked,
-  kFailed,
-};
-UiString UpdateStateText(UpdateCheckState s);
-
-enum class UpdateAction {
-  kStart = 0,
-  kSwitchIsOff,
-  kAlreadyRunning,
-};
-
-// ⚠ **順序是規定的:開關排在「已經在跑了」前面。** 反過來寫的話,
-//   「已經在跑」會蓋掉「開關是關的」,而使用者得到的訊息是
-//   「請稍候」——一句在開關關著時完全是假的話。
-UpdateAction DecideUpdateAction(bool network_enabled, bool already_running);
-UiString UpdateActionText(UpdateAction a);
-
 }  // namespace rimewin
 
 #endif  // RIMEWIN_NET_UI_H_

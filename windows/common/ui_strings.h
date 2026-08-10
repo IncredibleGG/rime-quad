@@ -254,18 +254,48 @@ enum class UiString : int {
   kNetOutcomeFailed,
   kNetOutcomeRedirected,
 
-  // 檢查更新
+  // ── 更新(住在「連網」那一頁上)──────────────────────────────────────────
+  //
+  // ⚠ kUpdateTrustAnchor 是**誠實那一句**:沒有程式碼簽章,TLS 是唯一的
+  //   信任錨,sha256 擋的是傳輸損壞而不是惡意替換。它必須出現在使用者
+  //   看得到的地方,不是只寫在註解裡 —— common/update_flow.cc 的
+  //   DescribeUpdateCard 每一條路徑都帶著它,並由測試釘住。
+  //
+  // ⚠ kUpdateErr* 每一條都是**不同的一句話**。這一整組存在的理由就是
+  //   「三種不同的失敗在畫面上是同一句紅字」那個缺陷 ——
+  //   test_update_flow.cc 逐對比對,兩格指到同一條就會紅。
   kUpdateHeading,
   kUpdateBlurb,
-  kUpdateButton,
-  kUpdateChecking,
-  // ⚠ 「開關是關的」與「連不上」是兩件事,兩句話。壓成同一句紅字
-  //   正是這個專案在 Windows 端犯過的錯。
-  kUpdateNeedsNetwork,
-  kUpdateUpToDate,
-  kUpdateAvailable,
-  kUpdateFailed,
-  kUpdateNotWired,
+  kUpdateTrustAnchor,
+  kUpdateWhatHappens,
+  kUpdateCheckButton,
+  kUpdateInstallButton,
+  kUpdateInstallNowButton,
+  kUpdateOpenPageButton,
+  kUpdateStatusIdle,
+  kUpdateStatusChecking,
+  kUpdateStatusUpToDate,
+  kUpdateStatusAvailable,
+  kUpdateStatusDowngrade,
+  kUpdateStatusDownloading,
+  kUpdateStatusVerifying,
+  kUpdateStatusReady,
+  kUpdateStatusHandedOff,
+  kUpdateStatusInstalled,
+  kUpdateErrSwitchOff,
+  kUpdateErrUnreachable,
+  kUpdateErrUnreadable,
+  kUpdateErrOwnVersionUnknown,
+  kUpdateErrDownloadInterrupted,
+  kUpdateErrTooLarge,
+  kUpdateErrSha256,
+  kUpdateErrStagingWrite,
+  kUpdateErrProductChanged,
+  kUpdateErrBusy,
+  kUpdateErrElevationDeclined,
+  kUpdateErrHandoffFailed,
+  kUpdateErrFileLocked,
+  kUpdateErrNotInstalled,
 
   kUiStringCount,
 };

@@ -79,7 +79,11 @@ verify_payload() {
   #   引擎、詞庫、方案都是好的,問題必定在 TSF 或 IPC 那一側,反過來也一樣。
   #   `rime_ime_setup.exe doctor` 的第 7 節就是呼叫它。
   #   少了它,那一刀就切不下去,而我們又回到「來回好幾輪才問得出資訊」。
-  for f in rime_tsf.dll rime_service.exe rime_ime_setup.exe rime_console.exe; do
+  # ⚠ version.txt 進了這張清單:少了它,安裝出來的那一套**永遠查不到更新**
+  #   (app 端會說「查不出你現在裝的是哪一版」)。那是一個安靜的失敗 ——
+  #   輸入法完全正常,只是更新這條路從此不存在。
+  for f in rime_tsf.dll rime_service.exe rime_ime_setup.exe rime_console.exe \
+           version.txt; do
     if [ -f "${root}/${f}" ]; then
       printf '    ✓ %s (%s bytes)\n' "${f}" "$(stat -c%s "${root}/${f}" 2>/dev/null || echo ?)"
     else
@@ -175,7 +179,7 @@ self_check() {
   rm -rf "${tmp}"
   mkdir -p "${tmp}/data/shared/opencc" "${tmp}/data/user"
 
-  log "反向測試 1/3:完全空的 payload"
+  log "反向測試 1/4:完全空的 payload"
   if verify_payload "${tmp}" > /dev/null 2>&1; then
     die "空的 payload 竟然通過檢查 —— 這道檢查沒有在檢查,上面的綠燈都不算數"
   fi
@@ -184,7 +188,7 @@ self_check() {
   # 造一棵「幾乎完整、只少了 default.custom.yaml」的樹。
   # 這一種最危險:它會裝得起來、跑得起來、部署也不會整個失敗,
   # 只是有些方案沒有候選。純粹靠人眼永遠不會發現。
-  log "反向測試 2/3:只少了 data/user/default.custom.yaml"
+  log "反向測試 2/4:只少了 data/user/default.custom.yaml"
   : > "${tmp}/rime_tsf.dll"
   : > "${tmp}/rime_service.exe"
   : > "${tmp}/rime_ime_setup.exe"
@@ -192,6 +196,7 @@ self_check() {
   #   而錯誤訊息是「這道檢查恆假」—— 指向完全錯的地方。
   #   實測:rime_console.exe 變成必需品的那一輪,CI 就紅在這裡。
   : > "${tmp}/rime_console.exe"
+  : > "${tmp}/version.txt"
   local f
   for f in default.yaml luna_pinyin_tw.schema.yaml bopomofo_tw.schema.yaml \
            luna_pinyin.schema.yaml t9_pinyin.schema.yaml luna_pinyin.dict.yaml \
@@ -204,12 +209,24 @@ self_check() {
   fi
   log "  ✓ 紅了"
 
-  log "反向測試 3/3:補齊之後必須轉綠(否則這道檢查是恆假的)"
+  log "反向測試 3/4:補齊之後必須轉綠(否則這道檢查是恆假的)"
   : > "${tmp}/data/user/default.custom.yaml"
   if ! verify_payload "${tmp}" > /dev/null 2>&1; then
     die "補齊之後仍然紅 —— 這道檢查恆假,同樣不算在檢查"
   fi
   log "  ✓ 綠了"
+
+  # ⚠ 第 4 條是這一輪加的,而它擋的是一個**沒有人會回報**的失敗:
+  #   少了 version.txt,輸入法完全正常 —— 只是它從此查不到更新
+  #   (app 端會說「查不出你現在裝的是哪一版」)。沒有這一條的話,
+  #   哪天有人把 write_version_txt 那一行拿掉,每一關都會是綠的。
+  log "反向測試 4/4:只少了 version.txt(輸入法會正常,但永遠查不到更新)"
+  rm -f "${tmp}/version.txt"
+  if verify_payload "${tmp}" > /dev/null 2>&1; then
+    die "少了 version.txt 竟然通過檢查 —— 那會出一個永遠更新不了的安裝包"
+  fi
+  log "  ✓ 紅了"
+  : > "${tmp}/version.txt"
 
   rm -rf "${tmp}"
   log "反向測試通過:payload 檢查會在該紅的時候紅、該綠的時候綠 ✓"
@@ -275,7 +292,49 @@ fi
 SHA="$(git -C "${ROOT}" rev-parse --short HEAD 2>/dev/null || echo nogit)"
 VERSION_INFO="0.1.${V3}.${V4}"
 APP_VERSION="0.1.0+${STAMP}.${SHA}"
-log "版本: ${APP_VERSION}  (VersionInfoVersion=${VERSION_INFO})"
+
+# ── 線上更新用的版本號 ──────────────────────────────────────────
+#
+# ⚠ **單調就好,不必讀得出日期。** V3 是距 2020-01-01 的天數、V4 是 commit
+#   時間的 HHMM(0..2359),所以 V3*10000+V4 隨 commit 時間嚴格遞增。
+#   應用內更新只拿它比大小(common/update_manifest.h:version_code 是
+#   **唯一**用來判斷新舊的欄位,version_name 只給人看)。
+#
+# ⚠ 取不到 commit 時間時它是 0,而 0 在 app 端等於「不知道自己是哪一版」——
+#   那條路會**停用更新**並照實說,不會拿一個假的 0 去跟線上比大小
+#   (見 ParseInstalledVersion 與 MayHandOff 的 kOwnVersionUnknown)。
+VERSION_CODE="$(( V3 * 10000 + V4 ))"
+
+# AppId 的唯一來源是 .iss。⚠ **不在這裡再寫一份** —— 兩份會漂移,
+#   而漂移的症狀是「更新器以為產品換了身分,於是所有人都更新不了」。
+#   撈不到就死:沒有退路,理由與 .iss 裡那幾個 #error 相同。
+read_app_id() {  # $1 = .iss 路徑
+  # Inno 的 `AppId={{GUID}` 裡,開頭那個 `{` 是跳脫;真正的值是 `{GUID}`。
+  sed -n 's/^AppId={\({[0-9A-Fa-f-]\{36\}}\)$/\1/p' "$1" | head -1
+}
+APP_ID="$(read_app_id "${SCRIPT_DIR}/${RS_WIN_ISS_REL}")"
+[ -n "${APP_ID}" ] || die "從 ${RS_WIN_ISS_REL} 撈不到 AppId。
+  它是線上更新用來判斷「線上那一版還是不是同一個產品」的依據 ——
+  撈不到就不能出貨,而不是寫一個猜的值進去。"
+
+log "版本: ${APP_VERSION}  (VersionInfoVersion=${VERSION_INFO}, version_code=${VERSION_CODE})"
+log "AppId: ${APP_ID}(從 ${RS_WIN_ISS_REL} 讀出來的)"
+
+# 寫進 payload,由安裝程式放進安裝目錄。服務進程讀它來回答
+# 「我是哪一版」。⚠ 為什麼是檔案而不是編進 exe 的版本資源:
+# 版本號是**打包時**才算得出來的(它由 commit 時間推導),而執行檔在那之前
+# 就編好了。要編進去就得讓每一次打包都重編一次,而重編出來的那一份
+# 沒有被任何一關測過。
+write_version_txt() {  # $1 = 目的地目錄
+  cat > "$1/version.txt" <<VTXT
+# ${RS_PRODUCT_NAME} —— 這一份是安裝時寫下的,給應用內更新讀。
+# 由 windows/make_installer.sh 產生。手動改它只會讓更新判斷變成錯的。
+version_code=${VERSION_CODE}
+version_name=${APP_VERSION}
+app_id=${APP_ID}
+commit=${SHA}
+VTXT
+}
 
 # ---------------------------------------------------------------- ISCC
 find_iscc() {
@@ -386,6 +445,7 @@ if [ "${LINT}" -eq 1 ]; then
   for f in rime_tsf.dll rime_service.exe rime_ime_setup.exe rime_console.exe; do
     : > "${LINT_DIR}/payload/${f}"
   done
+  : > "${LINT_DIR}/payload/version.txt"
   : > "${LINT_DIR}/payload/data/shared/default.yaml"
   : > "${LINT_DIR}/payload/data/shared/opencc/t2s.ocd2"
   : > "${LINT_DIR}/payload/data/user/default.custom.yaml"
@@ -425,6 +485,8 @@ cp "${CONSOLE_EXE}" "${PAYLOAD}/"
 cp -r "${ROOT}/core/data/shared" "${PAYLOAD}/data/shared"
 cp -r "${ROOT}/core/data/user"   "${PAYLOAD}/data/user"
 
+write_version_txt "${PAYLOAD}"
+
 log "檢查 payload(缺任何一項都不出貨)"
 verify_payload "${PAYLOAD}" || die "payload 不完整,見上。
   這道檢查擋下的是本專案最貴的一種失敗:每一步都成功,而使用者裝上去打不出字。"
@@ -439,5 +501,14 @@ compile_installer "${PAYLOAD}" "${WORK}" "${WORK}/iscc" \
   tail -40 "${WORK}/iscc.log"
   die "ISCC 以 0 結束,但沒有產生 ${OUT_NAME} —— OutputBaseFilename 或 //O 不對"
 }
+
+# 輸出目錄也放一份 version.txt。
+#
+# ⚠ 它**不是**給使用者的(使用者那一份在安裝程式裡面);它是給
+#   scripts/publish_desktop.sh 讀的:線上版本資訊的 version_code 必須與
+#   安裝進去的那一份**逐字相同**,否則使用者裝完之後會發現自己永遠
+#   比線上舊(或永遠比線上新),而兩種都會讓更新這條路壞掉。
+#   所以那個值只算一次,由這裡帶出去,發布端不重算。
+cp "${PAYLOAD}/version.txt" "${WORK}/version.txt"
 
 log "完成 ✓  ${WORK}/${OUT_NAME} ($(stat -c%s "${WORK}/${OUT_NAME}" 2>/dev/null || echo ?) bytes)"

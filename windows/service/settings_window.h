@@ -70,6 +70,7 @@
 //   「開關看起來開了,按下去卻說被擋下」。
 #include "net_gate.h"
 #include "settings_store.h"
+#include "update_service.h"
 #include "ui_font.h"
 #include "ui_theme.h"
 #include "update_check.h"
@@ -132,10 +133,7 @@ class SettingsWindow {
   //   完全相同:這個檔案在 Ubuntu 上編不起來,寫在這裡就沒有人驗得到。
   void RefreshNetworkPage();
   void OnNetSwitchToggled();
-  void StartUpdateCheck();
-  void OnUpdateCheckDone(const UpdateCheckOutcome* result);
   void DoClearNetLog();
-  static DWORD WINAPI UpdateThreadEntry(LPVOID param);
   // 版面上那兩個執行期分支的**唯一**來源。⚠ 兩格都得是真的狀態:
   // net_log_empty 寫死的話,一次都沒有連過的使用者會看到一個空表格
   // 加一顆清除鍵,而那正是這一頁最不該有的樣子。
@@ -191,6 +189,27 @@ class SettingsWindow {
   void ApplyStatusBarVisibility();
   void DoResetSettings();
   bool ApplyOrderAndPageSize(std::string* error);
+  // ── 連上網路 / 更新 ──────────────────────────────────────
+  //
+  // ⚠ 檢查與下載都是**阻塞**的(見 net_gate.h),所以它們跑在自己的
+  //   執行緒上。UI 執行緒同時在跑候選窗 —— 卡住它就是
+  //   「打字打到一半整個沒反應」。
+  //
+  // 執行緒回來的方式是 PostMessage(WM_RIME_UPDATE_DONE),不是直接改狀態:
+  // 所有 UI 狀態一律只在 UI 執行緒上動。
+  // ⚠ 這一支把**整頁**重畫一次(連網那半走 RefreshNetworkPage)——
+  //   更新卡片與紀錄在同一頁上,而按下更新之後紀錄裡會多幾筆,
+  //   只重畫卡片的話使用者要換頁再換回來才看得到那幾筆。
+  void RefreshNetworkAndUpdateCard();
+  void StartUpdateCheck();
+  void StartUpdateDownload();
+  void DoUpdateHandOff();
+  void OnUpdateWorkerDone();
+  void ToggleNetwork();
+  void OpenNetLog();
+  void OpenDownloadPage();
+  static DWORD WINAPI UpdateWorkerEntry(LPVOID self);
+
   void StartRedeploy(UiString why);
   void SetStatus(const std::wstring& text);
   void SetStatus(UiString s) { SetStatus(UiText(s)); }
@@ -241,6 +260,19 @@ class SettingsWindow {
   //   每次 LayoutUi 都無條件呼叫的話,捲動時整頁會閃。
   std::vector<int> clip_h_;
 
+  // ⚠ **只有一個 NetGate**,而且是整個進程唯一的那一個 —— 出口只有一個,
+  //   這裡不新開第二條路(見 net_gate.h 的「單一出口」)。它宣告在上面
+  //   store_ 後面的 net_gate_;update_ 吃它的位址,所以 update_ 必須排在
+  //   它後面(宣告順序 = 初始化順序)。
+  UpdateService update_;
+  // 0 = 沒有在跑;1 = 查;2 = 下載。UI 執行緒讀、工作執行緒不寫。
+  int update_job_ = 0;
+  HANDLE update_thread_ = nullptr;
+  UpdateStage update_stage_ = UpdateStage::kIdle;
+  UpdateFailure update_failure_ = UpdateFailure::kNone;
+  // 上一次交棒的結果(啟動時和解出來的)。只顯示一次。
+  std::wstring update_note_;
+
   bool deploying_ = false;
   uint32_t deploy_seq_ = 0;
   DWORD deploy_start_ = 0;
@@ -265,7 +297,6 @@ class SettingsWindow {
   std::vector<std::wstring> net_log_lines_;
   // 有一次檢查正在跑。⚠ 只在 UI 執行緒上讀寫(按鈕與完成訊息都在那裡),
   // 所以不需要 atomic;背景執行緒**不碰它**。
-  bool update_running_ = false;
 };
 
 }  // namespace rimewin

@@ -231,8 +231,30 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
       emit(IDC_NET_DETAIL, st.Push(t5h * 5, space::s7), false,
            "network_cost_note");
 
-      heading(IDC_NET_UPDATE_HEAD, IDC_NET_UPDATE_BLURB, 3);
-      button(IDC_NET_UPDATE, 180, space::s7, "check_update_button");
+      // ── 更新 ──────────────────────────────────────────────
+      //
+      // ⚠ IDC_UPDATE_TRUST(沒有數位簽章那一句)排在**按鈕之前**。
+      //   排在後面的話,使用者按下去的時候還沒讀到它 —— 而那句話的
+      //   全部價值就在於他按之前就知道。
+      heading(IDC_UPDATE_HEAD, IDC_UPDATE_BLURB, 3);
+      emit(IDC_UPDATE_TRUST, st.Push(t5h * 5, space::s3), false,
+           "update_trust_anchor");
+      emit(IDC_UPDATE_WHAT, st.Push(t5h * 4, space::s3), false,
+           "update_what_happens");
+      emit(IDC_UPDATE_STATUS, st.Push(t5h * 3, space::s3), false,
+           "update_status");
+      {
+        const RectI row = st.Push(btn_h, space::s7);
+        const int bw = (cw - 2 * space::s3) / 3;
+        emit(IDC_UPDATE_CHECK, RectI{row.x, row.y, bw, row.h}, true,
+             "update_check");
+        emit(IDC_UPDATE_ACTION,
+             RectI{row.x + bw + space::s3, row.y, bw, row.h}, true,
+             "update_action");
+        emit(IDC_UPDATE_PAGE,
+             RectI{row.x + 2 * (bw + space::s3), row.y, bw, row.h}, true,
+             "update_page");
+      }
 
       heading(IDC_NETLOG_HEAD, IDC_NETLOG_BLURB, 4);
       if (state.net_log_empty) {

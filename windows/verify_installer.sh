@@ -178,6 +178,106 @@ Z:\NotAProduct\FakeInstallDir\data\shared\essay.txt'
   exit 0
 fi
 
+# ── 更新之後把服務叫回來:那一段的規則(純文字,Linux 上就驗得到)──
+#
+# ⚠ 這一條守的**不是**「檔案裡有沒有某個字」,是三件會把行為弄壞的事:
+#
+#   1. **不可以用 Exec 啟動服務。** 這個安裝程式是提權的;Exec 生出來的
+#      服務會繼承提權的權杖,接著用系統管理員的身分去讀寫使用者的檔案,
+#      擁有者從此換成不對的人,一般權限的那一支服務再也寫不進去。
+#      症狀是「更新過一次之後,輸入法就再也記不住東西」——
+#      而且要好幾天後才發現。理由完整寫在 common/elevation_policy.h。
+#   2. **必須被 /RESTARTIME 守著。** 沒有守衛的話,使用者自己雙擊安裝程式
+#      也會被塞一個服務進程,而那不是他要的。
+#   3. **那一段不可以消失。** 少了它,應用內更新按下去之後設定視窗會關掉、
+#      然後什麼都不再發生 —— 看起來就是「更新把輸入法弄壞了」。
+#
+#   另外驗第四件:.iss 有沒有真的安裝 version.txt。少了它,裝出來的那一套
+#   永遠查不到更新,而輸入法本身完全正常 —— 沒有人會回報這種事。
+#
+# 做成「讀 stdin、印違規」的純函式,所以 --self-check-restart 在任何一台
+# 機器上都跑得動,而且可以真的植入違規要求它變紅。
+restart_rule_violations() {  # 讀 stdin,印出違規(一行一條);沒有就什麼都不印
+  # ⚠ 指令碼要先落到檔案再跑。把 heredoc 直接餵給 python3 - 的話，它會把**指令碼自己**當成 stdin，
+  #   於是待驗的內容永遠是空的 —— 而空的內容當然「沒有違規」，
+  #   五條反向測試會全部回同一個答案。實測踩過。
+  local _py; _py="$(mktemp)"
+  cat > "${_py}" <<'PYRESTART'
+import re, sys
+
+src = sys.stdin.read()
+
+# Pascal Script 的一句話以 ; 結尾。把換行折起來再切,呼叫寫成兩行也看得到。
+flat = re.sub(r"\s+", " ", src)
+stmts = flat.split(";")
+
+start_calls = [t for t in stmts if "rime_service.exe" in t and "Exec" in t]
+
+if not start_calls:
+    print("NOSTART=更新之後沒有任何一句會把 rime_service.exe 叫回來")
+
+for t in start_calls:
+    if re.search(r"(?<!AsOriginalUser)\bExec\s*\(", t):
+        print("ELEVATED=用 Exec 啟動服務(會繼承提權權杖):" + t.strip()[:120])
+
+# 守衛:啟動那一句要在 /RESTARTIME 的判斷之後、而且在同一個程序裡
+# (以下一個行首的 end; 當程序結束)。
+g = src.find("CmdLineParamExists('/RESTARTIME')")
+if g < 0:
+    print("NOGUARD=沒有 /RESTARTIME 這個守衛 —— 使用者自己雙擊也會被啟動服務")
+else:
+    tail = src[g:]
+    stop = tail.find("\nend;")
+    scope = tail[:stop if stop >= 0 else len(tail)]
+    if "rime_service.exe" not in scope:
+        print("OUTSIDE=啟動服務那一句不在 /RESTARTIME 的守衛裡")
+
+# version.txt 要真的被裝進安裝目錄。
+if not re.search(r'Source:\s*"[^"]*version\.txt";\s*DestDir:\s*"\{app\}"', src):
+    print("NOVERSIONTXT=.iss 沒有把 version.txt 裝進安裝目錄 —— 裝出來的那一套永遠查不到更新")
+PYRESTART
+  "${RIME_PY:-python3}" "${_py}"
+  rm -f "${_py}"
+}
+
+if [ "${1:-}" = "--self-check-restart" ]; then
+  # ⚠ 這一段與上面那個開機佇列的自檢不同:它**必須讀真的 .iss**,
+  #   所以要先把產品識別載進來。檔名寫死的話,改名那一天這支腳本會
+  #   安靜地找不到檔案 —— 而「找不到就 die」看起來會像環境問題。
+  . "${SCRIPT_DIR}/product_win.sh"
+  ISS="${SCRIPT_DIR}/${RS_WIN_ISS_REL}"
+  [ -f "${ISS}" ] || die "找不到 ${ISS}"
+  rc_fail=0
+  rc_case() {  # 名稱 期望的違規標籤(空 = 不該有違規) 檔案內容來源命令
+    local name="$1" want="$2"; shift 2
+    local got
+    got="$("$@" | restart_rule_violations | cut -d= -f1 | sort -u | tr '\n' ',' )"
+    got="${got%,}"
+    if [ "${got}" = "${want}" ]; then
+      printf '  \033[1;32mok\033[0m   %s(違規=%s)\n' "${name}" "${got:-無}"
+    else
+      printf '\033[1;31m  !! %s:預期違規「%s」,實際「%s」\033[0m\n' \
+             "${name}" "${want:-無}" "${got:-無}" >&2
+      rc_fail=1
+    fi
+  }
+  # ⚠ 第一條是**恆假防護**:現況必須是綠的。少了它,底下三條全部會因為
+  #   「反正一直都有違規」而永遠通過。
+  rc_case "現況(不該有任何違規)" "" cat "${ISS}"
+  rc_case "把 ExecAsOriginalUser 換成 Exec" "ELEVATED" \
+          sed 's/ExecAsOriginalUser(ExpandConstant(.{app}\\rime_service.exe.)/Exec(ExpandConstant('"'"'{app}\\rime_service.exe'"'"')/' "${ISS}"
+  rc_case "拿掉 /RESTARTIME 守衛" "NOGUARD" \
+          sed "s/CmdLineParamExists('\/RESTARTIME')/True/" "${ISS}"
+  rc_case "整段啟動服務拿掉" "NOSTART,OUTSIDE" \
+          sed '/rime_service.exe.,$/d;/rime_service.exe/{/Source:/!d}' "${ISS}"
+  rc_case "不安裝 version.txt" "NOVERSIONTXT" \
+          sed '/Source: "{#PayloadDir}\\version.txt"/d' "${ISS}"
+  [ "${rc_fail}" -eq 0 ] || {
+    printf '\033[1;31m重啟服務那一段的反向測試沒過\033[0m\n' >&2; exit 1; }
+  printf '\033[1;32m重啟服務那一段的反向測試全部通過\033[0m\n'
+  exit 0
+fi
+
 SETUP=""; PROBE=""; TOOL=""; HOST=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -190,6 +290,7 @@ while [ $# -gt 0 ]; do
     --host)  HOST="$2";  shift 2 ;;
     # 已經在上面處理掉了;留在這裡只是為了讓 --help 之類的讀者看得到。
     --self-check-pending) shift ;;
+    --self-check-restart) shift ;;
     *) die "未知參數: $1" ;;
   esac
 done

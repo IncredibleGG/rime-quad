@@ -232,40 +232,4 @@ NetLogView BuildNetLogView(const std::vector<NetLogEntry>& entries, UiLang lang,
 
 // ── 檢查更新 ────────────────────────────────────────────────────
 
-UiString UpdateStateText(UpdateCheckState s) {
-  switch (s) {
-    case UpdateCheckState::kUpToDate:
-      return UiString::kUpdateUpToDate;
-    case UpdateCheckState::kAvailable:
-      return UiString::kUpdateAvailable;
-    case UpdateCheckState::kBlocked:
-      return UiString::kUpdateNeedsNetwork;
-    case UpdateCheckState::kFailed:
-      return UiString::kUpdateFailed;
-    case UpdateCheckState::kNotWired:
-    default:
-      return UiString::kUpdateNotWired;
-  }
-}
-
-UpdateAction DecideUpdateAction(bool network_enabled, bool already_running) {
-  // ⚠ 開關**先問**。反過來的話,一次卡住的檢查會讓「開關是關的」
-  //   永遠說不出口,而使用者看到的是「請稍候」——那句話在開關關著時
-  //   是假的,而且它暗示我們正在連線。
-  if (!network_enabled) return UpdateAction::kSwitchIsOff;
-  if (already_running) return UpdateAction::kAlreadyRunning;
-  return UpdateAction::kStart;
-}
-
-UiString UpdateActionText(UpdateAction a) {
-  switch (a) {
-    case UpdateAction::kSwitchIsOff:
-      return UiString::kUpdateNeedsNetwork;
-    case UpdateAction::kAlreadyRunning:
-    case UpdateAction::kStart:
-    default:
-      return UiString::kUpdateChecking;
-  }
-}
-
 }  // namespace rimewin

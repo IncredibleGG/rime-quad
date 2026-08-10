@@ -57,6 +57,8 @@ namespace rimewin {
 enum class NetPurpose {
   kStoreIndex = 0,   // 瀏覽方案市集(取索引)
   kStorePackage,     // 下載方案套件
+  kUpdateManifest,   // 查有沒有新版本(取線上的版本資訊)
+  kUpdateSetup,      // 下載新版本的安裝程式
 };
 
 enum class NetOutcome {
