@@ -143,6 +143,12 @@ librime 的靜態庫沒有指定部署目標,實際最低系統版本可能高�
   (什麼都沒印也成立),所以 B 必須落在「部署失敗(印出原因)」或
   「部署成功且列得出方案」之一;「結束碼 0 又一個方案都沒有」判為
   **這一關自己壞了**。
+- ⭐ **`.pkg` 真的把東西放進 `~/Library/Input Methods`。**
+  ⚠ 這一條在 2026-08-10 抓到一個真的缺陷:`pkgbuild --root` 自動產生的元件清單
+  把 app bundle 標成 `BundleIsRelocatable`,於是 `installer` 回報成功卻**什麼都沒裝**。
+  已用單獨的對照組確認因果(只拿掉那一段 → 立刻回到同一片紅)。
+  失敗時會印出 `installer` 的輸出、`pkgutil` 的收據、以及這台機器上所有
+  `LuminaKey.app` 的位置 —— 少了這段診斷,那一片 ✗ 讀起來像 pkgbuild 壞了。
 - ⭐ **候選真的翻得了頁**:`rime_console` 直接問 librime,
   `nihao` → page 0、`nihao=` → page 1、`nihao=-` → page 0。
   「一頁 5 個」是 `core/data/shared/default.yaml` 的 `menu/page_size`(印出來當紀錄,
