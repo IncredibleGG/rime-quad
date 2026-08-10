@@ -37,6 +37,30 @@ RectI SidebarStatusDip(int window_h_dip) {
   return r;
 }
 
+RectI SidebarListDip(int window_h_dip) {
+  RectI r;
+  r.x = 0;
+  r.y = space::s5;
+  r.w = metric::kSidebarW;
+  // ⚠ 高度要**同時**扣掉上面那段留白與底部狀態區。少扣上面那一段
+  //   就是實機回報的那個缺陷:清單壓進狀態區 12 DIP。
+  r.h = window_h_dip - metric::kSidebarStatusH - space::s5;
+  if (r.h < 0) r.h = 0;
+  return r;
+}
+
+int TextLineBoxDip(int size_dip) { return size_dip * 4 / 3 + 2; }
+
+RectI SidebarStatusLineDip(int window_h_dip, int line) {
+  const RectI strip = SidebarStatusDip(window_h_dip);
+  RectI r;
+  r.x = strip.x;
+  r.w = strip.w;
+  r.h = kSidebarStatusLineH;
+  r.y = strip.y + space::s4 + line * (kSidebarStatusLineH + space::s1);
+  return r;
+}
+
 RectI Stack::Push(int h_dip, int gap_dip) {
   RectI r;
   r.x = x_;

@@ -399,3 +399,78 @@ TEST(ui_layout_scrolled_out_controls_stay_in_the_tab_order) {
   CHECK(off_screen > 0);   // 掃描範圍非空:真的有捲到看不見的控制項
   CHECK_INT(hidden, 0);    // 而且沒有一顆是藏起來的
 }
+
+// ── W26:側欄清單與底部狀態區不可以重疊,兩行文字要放得下 ──────────
+//
+// 使用者實機回報:側欄底部那兩行「可以打字」「離線」是斷的,第一行被
+// 讀成「⼝以打字」—— 那是「可」的上緣被裁掉之後剩下的形狀。
+//
+// 根因是算式,不是繪製:清單擺在 y = 12,高度卻給了 H - 64,
+// 於是它的下緣落在 H - 52,而狀態區從 H - 64 開始。重疊 12 DIP。
+// 側欄清單是**子視窗**,而設定視窗開著 WS_CLIPCHILDREN ——
+// 父視窗畫在那一塊的東西不是被蓋住,是根本不會被畫。
+//
+// ⚠ 這件事以前沒有任何自動化看得到:位置在 settings_window.cc 裡算,
+//   而那個檔案在 Ubuntu 上編不起來。
+TEST(ui_layout_sidebar_list_never_covers_the_status_lines) {
+  // 三種高度:預設、最小、以及一個很高的視窗。
+  const int heights[] = {kWindowDefaultH, kWindowMinH, 1200};
+  int checked = 0;
+  for (int H : heights) {
+    const RectI list = SidebarListDip(H);
+    const RectI strip = SidebarStatusDip(H);
+
+    // 清單本身要有高度(否則這一條在測一個不存在的東西)。
+    CHECK(list.h > 0);
+    // ⚠ 核心那一條:清單的下緣**不得**越過狀態區的上緣。
+    CHECK(list.y + list.h <= strip.y);
+    // 清單也不可以跑出視窗。
+    CHECK(list.y >= 0);
+    CHECK(list.y + list.h <= H);
+
+    for (int i = 0; i < 2; ++i) {
+      const RectI line = SidebarStatusLineDip(H, i);
+      // 兩行都要完整落在狀態區裡。
+      CHECK(line.y >= strip.y);
+      CHECK(line.y + line.h <= strip.y + strip.h);
+      CHECK(line.y + line.h <= H);
+      // 而且都在清單下面 —— 不然又會被子視窗裁掉。
+      CHECK(line.y >= list.y + list.h);
+      // 行高要放得下一行漢字。⚠ 「字級 + 4」不夠:漢字的行高大約是
+      //   字級的 4/3,那樣寫是零餘裕,換一套字體就削掉一條。
+      CHECK(line.h >= TextLineBoxDip(text_size::t5));
+      // 左右也要在側欄裡面。
+      CHECK(line.x >= 0);
+      CHECK(line.x + line.w <= metric::kSidebarW);
+      ++checked;
+    }
+  }
+  // 掃描範圍非空(§2-G2):上面真的跑過六行,不是零行都沒跑。
+  CHECK_INT(checked, 6);
+
+  // 兩行不可以互相疊在一起。
+  const RectI a = SidebarStatusLineDip(kWindowDefaultH, 0);
+  const RectI b = SidebarStatusLineDip(kWindowDefaultH, 1);
+  CHECK(a.y + a.h <= b.y);
+
+  // 反向的證明:舊的那個算式(高度只扣狀態區、不扣上面那段留白)
+  // **必須**踩到上面那一條。這一行是讓「W26 其實沒在測」現形的地方。
+  const int old_bottom = space::s5 + (kWindowDefaultH - metric::kSidebarStatusH);
+  CHECK(old_bottom > SidebarStatusDip(kWindowDefaultH).y);
+}
+
+// 行高的規則本身:它必須真的比字級大,而且比「字級 + 4」那個舊寫法大。
+TEST(ui_layout_text_line_box_leaves_room_for_han_characters) {
+  const int sizes[] = {text_size::t5, text_size::t4, text_size::t3,
+                       text_size::t2, text_size::t1};
+  int n = 0;
+  for (int s : sizes) {
+    CHECK(TextLineBoxDip(s) > s);
+    // 漢字的 ascent+descent 大約 4/3 個字級。四捨五入之後至少要有這麼高。
+    CHECK(TextLineBoxDip(s) >= s * 4 / 3);
+    ++n;
+  }
+  CHECK_INT(n, 5);
+  // 舊寫法(字級 + 4)在 t5 上不夠 —— 這一行說明為什麼要換掉它。
+  CHECK(TextLineBoxDip(text_size::t5) > text_size::t5 + space::s2);
+}

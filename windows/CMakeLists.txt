@@ -152,8 +152,14 @@ add_executable(rime_tests
   # 這一支用**真的**鍵盤佈局(LoadKeyboardLayout + ToUnicodeEx),
   # 是 CI 上唯一驗得到「有沒有真的問佈局」的地方。
   tests/test_win32_layouts.cc
+  # 自繪的 ListView **真的畫得出東西嗎**。使用者實機回報「方案清單一列
+  # 都沒有」,而 windows/ 底下所有 UI 測試都刻意不 include windows.h ——
+  # 也就是「畫得出來嗎」以前在 CI 上完全不存在。這一支開真的控制項、
+  # 走真的 comctl32、把畫面渲染進點陣圖數像素,數的是產品碼本身。
+  tests/test_win32_listview.cc
+  service/ui_listview.cc
   tsf/win32_oracle.cc)
-target_link_libraries(rime_tests PRIVATE rime_common user32)
+target_link_libraries(rime_tests PRIVATE rime_common user32 gdi32 comctl32)
 
 # ── TSF 瘦 DLL ────────────────────────────────────────────────────────
 #
@@ -319,6 +325,7 @@ add_executable(rime_service
   service/settings_store.cc
   service/settings_window.cc
   service/status_bar.cc
+  service/ui_listview.cc
   service/ui_font.cc
   service/ui_theme.cc
   service/ui_confirm.cc

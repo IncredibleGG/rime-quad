@@ -14,6 +14,7 @@
 #include "cand_window.h"
 #include "status_bar.h"
 #include "ui_confirm.h"
+#include "ui_listview.h"
 
 namespace rimewin {
 namespace {
@@ -541,27 +542,14 @@ void SettingsWindow::CreateUi(HWND hwnd) {
 
   // 側欄。§12.5.3:SysListView32 單欄 + LVS_SINGLESEL + custom-draw ——
   // 方向鍵巡覽與選取狀態是免費的,而自己畫一排矩形要自己補一份 UIA provider。
-  sidebar_ = ::CreateWindowExW(
-      0, WC_LISTVIEWW, L"",
-      WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_NOCOLUMNHEADER |
-          LVS_SHOWSELALWAYS | LVS_NOSCROLL | WS_TABSTOP,
-      0, 0, 10, 10, hwnd,
-      reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_SIDEBAR)), inst,
-      nullptr);
+  sidebar_ = CreateRowList(
+      hwnd, IDC_SIDEBAR,
+      WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_NOCOLUMNHEADER |
+          LVS_SHOWSELALWAYS | LVS_NOSCROLL | WS_TABSTOP);
   if (sidebar_) {
-    LVCOLUMNW col{};
-    col.mask = LVCF_WIDTH;
-    col.cx = Dip(metric::kSidebarW, dpi_);
-    ::SendMessageW(sidebar_, LVM_INSERTCOLUMNW, 0,
-                   reinterpret_cast<LPARAM>(&col));
-    for (int i = 0; i < kPageCount; ++i) {
-      LVITEMW it{};
-      it.mask = LVIF_TEXT;
-      it.iItem = i;
-      it.pszText = const_cast<wchar_t*>(UiText(kPageNames[i]));
-      ::SendMessageW(sidebar_, LVM_INSERTITEMW, 0,
-                     reinterpret_cast<LPARAM>(&it));
-    }
+    std::vector<std::wstring> pages;
+    for (int i = 0; i < kPageCount; ++i) pages.push_back(UiText(kPageNames[i]));
+    SetRowListItems(sidebar_, pages);
   }
 
   // ⚠ 每一顆控制項都從 kControls 產生 —— 見那張表上面的說明。
@@ -577,13 +565,10 @@ void SettingsWindow::CreateUi(HWND hwnd) {
     if (d.id == IDC_SCHEMA_LIST) schema_list_ = h;
   }
 
-  if (schema_list_) {
-    LVCOLUMNW col{};
-    col.mask = LVCF_WIDTH;
-    col.cx = Dip(kContentMaxW, dpi_);
-    ::SendMessageW(schema_list_, LVM_INSERTCOLUMNW, 0,
-                   reinterpret_cast<LPARAM>(&col));
-  }
+  // ⚠ report 模式沒有欄的話,每一列的矩形都是空的 —— 清單裡有列而畫面
+  //   是空白的。寬度在這裡給不準(此刻的 client 還是 10×10),
+  //   真正的對齊在 LayoutUi() 的 place():控制項一改大小就跟著改。
+  EnsureRowListColumn(schema_list_);
 
   ApplyFonts();
 
@@ -688,15 +673,21 @@ void SettingsWindow::LayoutUi() {
     if (!c) return;
     ::SetWindowPos(c, nullptr, Dip(r.x, dpi), Dip(r.y, dpi), Dip(r.w, dpi),
                    Dip(r.h, dpi), SWP_NOZORDER);
+    // ⚠ 單欄的 report 清單,欄寬**不會**跟著控制項走。不補這一句的話,
+    //   建立時那個寬度會一直用下去,而使用者看到的是一個空白的清單。
+    if (id == IDC_SCHEMA_LIST) SyncRowListColumn(c);
   };
 
   // 側欄:整條左邊,狀態區留在下面。
+  // ⚠ 位置由 common/ui_layout.cc 算(純函式,單元測試看得到)。以前這裡
+  //   自己算,而它算出來的清單**壓在底部狀態區上面 12 DIP** ——
+  //   WS_CLIPCHILDREN 會把父視窗畫在那一塊的東西整個裁掉,
+  //   於是「可以打字」那一行的上緣被切掉,使用者讀成「⼝以打字」。
   if (sidebar_) {
-    const int sb_h = H - metric::kSidebarStatusH;
-    ::SetWindowPos(sidebar_, nullptr, 0, Dip(space::s5, dpi),
-                   Dip(metric::kSidebarW, dpi), Dip(sb_h, dpi), SWP_NOZORDER);
-    ::SendMessageW(sidebar_, LVM_SETCOLUMNWIDTH, 0,
-                   MAKELPARAM(Dip(metric::kSidebarW, dpi), 0));
+    const RectI list = SidebarListDip(H);
+    ::SetWindowPos(sidebar_, nullptr, Dip(list.x, dpi), Dip(list.y, dpi),
+                   Dip(list.w, dpi), Dip(list.h, dpi), SWP_NOZORDER);
+    SyncRowListColumn(sidebar_);
   }
 
   const int cx = ContentXDip(W);
@@ -903,7 +894,11 @@ LRESULT SettingsWindow::DrawSidebar(NMLVCUSTOMDRAW* cd) {
           show_focus_ && (cd->nmcd.uItemState & CDIS_FOCUS) != 0;
 
       HDC hdc = cd->nmcd.hdc;
-      RECT r = cd->nmcd.rc;
+      // ⚠ **不要直接用 cd->nmcd.rc** —— 見 ui_listview.h 的 RowRect()。
+      //   拿不到矩形時交回控制項自己畫(item 上有文字),
+      //   不是畫一片空白:一列看不見比一列不好看嚴重得多。
+      RECT r{};
+      if (!RowRect(sidebar_, cd, &r)) return CDRF_DODEFAULT;
       // 側欄項的內距(§12.4.2:側欄左右內距 12)。
       RECT item = r;
       item.left += Dip(space::s5, dpi_);
@@ -956,7 +951,10 @@ LRESULT SettingsWindow::DrawSchemaList(NMLVCUSTOMDRAW* cd) {
           show_focus_ && (cd->nmcd.uItemState & CDIS_FOCUS) != 0;
 
       HDC hdc = cd->nmcd.hdc;
-      RECT r = cd->nmcd.rc;
+      // ⚠ 見 ui_listview.h 的 RowRect()。這一格就是使用者回報的
+      //   「『啟用的方式』底下是一個空白的 list」。
+      RECT r{};
+      if (!RowRect(schema_list_, cd, &r)) return CDRF_DODEFAULT;
       const Role bg = selected ? (hot ? kRowSelectedHover : kPrimaryContainer)
                                : (hot ? kRowHover : kSurface);
       ::FillRect(hdc, &r, theme_.Brush(bg));
@@ -1070,10 +1068,15 @@ void SettingsWindow::OnPaint(HDC hdc) {
   //   這裡與懸浮狀態列是同一個訊號的兩個家。
   ::SetBkMode(hdc, TRANSPARENT);
   HGDIOBJ oldf = ::SelectObject(hdc, fonts_.Get(text_size::t5));
-  const int pad = Dip(space::s5, dpi_);
-  const int top = H - Dip(metric::kSidebarStatusH, dpi_);
-  RECT r1{pad, top + Dip(space::s3, dpi_), sb - pad,
-          top + Dip(space::s3 + text_size::t5 + 4, dpi_)};
+  // ⚠ 這兩行的矩形由 common/ui_layout.cc 算(純函式,單元測試看得到)。
+  //   以前是在這裡算的,而算出來的行高剛好等於漢字的行高、一點餘裕
+  //   都沒有,再加上側欄清單壓在狀態區上面 12 DIP —— 使用者實機看到的
+  //   是兩行斷掉的字,第一行「可以打字」被讀成「⼝以打字」。
+  const int Hdip = MulDivRound(H, 96, static_cast<int>(dpi_));
+  const RectI l1 = SidebarStatusLineDip(Hdip, 0);
+  const RectI l2 = SidebarStatusLineDip(Hdip, 1);
+  RECT r1{Dip(l1.x, dpi_), Dip(l1.y, dpi_), Dip(l1.x + l1.w, dpi_),
+          Dip(l1.y + l1.h, dpi_)};
   // ⚠ 這裡以前與那一橫犯同一個錯:一個布林,而「還在準備 /
   //   準備失敗 / 引擎不在」三種處境共用同一句紅字「輸入法沒有在跑」。
   //   第一種那句話是假的,而第一次安裝的人看到的就是它。
@@ -1082,14 +1085,16 @@ void SettingsWindow::OnPaint(HDC hdc) {
   ::SetTextColor(hdc, theme_.Color(StateIsFailure(state)
                                        ? kError
                                        : kOnSurfaceVariant));
-  ::DrawTextW(hdc, UiText(SidebarStatusTextFor(state)),
-              -1, &r1, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-  RECT r2 = r1;
-  r2.top = r1.bottom + Dip(space::s1, dpi_);
-  r2.bottom = r2.top + Dip(text_size::t5 + 4, dpi_);
+  // DT_VCENTER:行高比字高多出來的那幾格留在上下兩側,不是全留在下面。
+  ::DrawTextW(hdc, UiText(SidebarStatusTextFor(state)), -1, &r1,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                  DT_NOPREFIX);
+  RECT r2{Dip(l2.x, dpi_), Dip(l2.y, dpi_), Dip(l2.x + l2.w, dpi_),
+          Dip(l2.y + l2.h, dpi_)};
   ::SetTextColor(hdc, theme_.Color(kOnSurfaceVariant));
   ::DrawTextW(hdc, UiText(UiString::kNavStatusOffline), -1, &r2,
-              DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                  DT_NOPREFIX);
   ::SelectObject(hdc, oldf);
 
   // 底部狀態行上面那一條 hairline。
@@ -1164,17 +1169,10 @@ void SettingsWindow::ReloadSchemaList() {
   for (const auto& kv : schemas_) order_.push_back(kv.first);
 
   if (schema_list_) {
-    ::SendMessageW(schema_list_, LVM_DELETEALLITEMS, 0, 0);
-    for (size_t i = 0; i < schemas_.size(); ++i) {
-      LVITEMW it{};
-      it.mask = LVIF_TEXT;
-      it.iItem = static_cast<int>(i);
-      // 文字由 custom-draw 畫,但仍然要設 —— 螢幕閱讀器讀的是這一份。
-      std::wstring name = SchemaDisplayName(i);
-      it.pszText = const_cast<wchar_t*>(name.c_str());
-      ::SendMessageW(schema_list_, LVM_INSERTITEMW, 0,
-                     reinterpret_cast<LPARAM>(&it));
-    }
+    std::vector<std::wstring> rows;
+    for (size_t i = 0; i < schemas_.size(); ++i)
+      rows.push_back(SchemaDisplayName(i));
+    SetRowListItems(schema_list_, rows);
     if (!schemas_.empty()) {
       LVITEMW it{};
       it.mask = LVIF_STATE;
