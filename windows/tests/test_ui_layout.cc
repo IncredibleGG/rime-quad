@@ -324,14 +324,21 @@ TEST(ui_layout_stack_puts_danger_last_behind_a_divider) {
 
   // 進階頁上真的是這個形狀:重設鈕是最後一顆,而且在那條線下面。
   const PageLayout pl = LayoutSettingsPageDip(kPageAdvanced, 780, PageState{});
-  int reset_y = -1, diag_copy_bottom = -1;
+  int reset_y = -1, reset_head_y = -1, diag_copy_bottom = -1;
   for (const PlacedControl& p : pl.items) {
     if (p.id == IDC_RESET) reset_y = p.rect.y;
+    if (p.id == IDC_RESET_HEAD) reset_head_y = p.rect.y;
     if (p.id == IDC_DIAG_COPY) diag_copy_bottom = p.rect.bottom();
   }
   CHECK(reset_y > 0);
+  CHECK(reset_head_y > 0);
   CHECK(diag_copy_bottom > 0);
-  CHECK(reset_y >= diag_copy_bottom + 2 * space::s7 + metric::kHairline);
+  // ⚠ 量的是**區段標題**,不是按鈕。按鈕與上一塊之間本來就隔著區段標題
+  //   與說明(21 + 36 = 57 DIP),已經大於 s7 + hairline + s7 = 41 ——
+  //   拿按鈕去量的話,把 st.PushDivider() 整行刪掉這一條仍然是綠的。
+  //   (2026-08-10 的反向測試就是這樣抓到的,在連網頁那一條上。)
+  CHECK_INT(reset_head_y, diag_copy_bottom + 2 * space::s7 + metric::kHairline);
+  CHECK(reset_y > reset_head_y);
 }
 
 
@@ -558,20 +565,26 @@ TEST(ui_layout_network_page_clear_button_is_last_and_behind_a_divider) {
   // 就找不回來了。
   const PageState has_rows{false, false};
   const PageLayout pl = LayoutSettingsPageDip(kPageNetwork, 780, has_rows);
-  RectI clear{}, path{};
+  RectI clear{}, path{}, head{};
   int max_bottom = 0;
   for (const PlacedControl& p : pl.items) {
     if (p.id == IDC_NETLOG_CLEAR) clear = p.rect;
+    if (p.id == IDC_NETLOG_CLEAR_HEAD) head = p.rect;
     if (p.id == IDC_NETLOG_PATH) path = p.rect;
     if (!p.rect.empty() && p.rect.bottom() > max_bottom)
       max_bottom = p.rect.bottom();
   }
   CHECK(!clear.empty());
   CHECK(!path.empty());
+  CHECK(!head.empty());
   // 它是最後一顆。
   CHECK_INT(clear.bottom(), max_bottom);
-  // 而且與上面隔著一條分隔線的距離(hairline + 兩段 s7)。
-  CHECK(clear.y >= path.bottom() + 2 * space::s7 + metric::kHairline);
+  // ⚠ 與上面隔著一條分隔線(s7 + hairline + s7 = 41 DIP),而且量的是
+  //   **區段標題**——它才是分隔線正下方的第一個東西。拿按鈕去量的話,
+  //   標題(21)加說明(36)本身就有 57 DIP,把 st.PushDivider() 刪掉
+  //   斷言照樣成立。這是反向測試實際抓到的一條假綠。
+  CHECK_INT(head.y, path.bottom() + 2 * space::s7 + metric::kHairline);
+  CHECK(clear.y > head.y);
   // ⚠ 最後一顆的高度要真的進內容高度。舊版的「重設全部設定」就是
   //   沒有推進堆疊,於是捲到底仍然差 32 DIP 碰不到。
   CHECK_INT(pl.content_h_dip, max_bottom + kContentPadBottomDip);
