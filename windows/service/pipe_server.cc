@@ -628,6 +628,10 @@ void PipeServer::ServeClient(HANDLE pipe) {
         Result r = IsAsciiToggleHotkey(k.keysym, k.mods)
                        ? engine_->ToggleAsciiMode(k.session)
                        : engine_->ProcessKey(k.session, k.keysym, k.mods);
+        if (IsAsciiToggleHotkey(k.keysym, k.mods)) {  // [植入 M2]
+          r.snap.has_commit = false;
+          r.snap.commit_text.clear();
+        }
         note_schema(r.snap);
         push_ui(r.snap);
         if (!send(EncodeResult(seq, r))) goto done;
