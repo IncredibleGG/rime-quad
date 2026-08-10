@@ -101,19 +101,9 @@ HTML
 #   症狀:`installer` 回報成功,而 `~/Library/Input Methods` 底下什麼都沒有 ——
 #   這支腳本的驗證端(verify_pkg.sh)自己把這個形態叫做「裝在錯的地方」。
 #   輸入法**只能**住在 Library/Input Methods,所以搬移在這裡永遠是錯的。
-log "pkgbuild(先關掉 BundleIsRelocatable)"
-pkgbuild --analyze --root "${WORK}/payload" "${WORK}/component.plist" >/dev/null \
-  || die "pkgbuild --analyze 失敗"
-/usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" "${WORK}/component.plist" \
-  >/dev/null 2>&1 \
-  || /usr/libexec/PlistBuddy -c "Add :0:BundleIsRelocatable bool false" "${WORK}/component.plist" \
-  || die "改不動 component.plist 的 BundleIsRelocatable"
-grep -q "BundleIsRelocatable" "${WORK}/component.plist" \
-  || die "component.plist 裡沒有 BundleIsRelocatable —— 這一步沒有生效"
-
+log "pkgbuild(反向驗證中:暫時拿掉 BundleIsRelocatable=false)"
 pkgbuild \
   --root "${WORK}/payload" \
-  --component-plist "${WORK}/component.plist" \
   --install-location "Library/Input Methods" \
   --scripts "${WORK}/scripts" \
   --identifier "${PKG_ID}" \
