@@ -34,7 +34,7 @@ name: Windows (核心驗證 + TSF)
 
 on:
   push:
-    branches: [main, windows, fix-win, fix2-winmsg, fix2-gates, fix3-win, fix4-winkey]
+    branches: [main, windows, fix-win, fix2-winmsg, fix2-gates, fix3-win, fix4-winkey, win-netgate]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -129,12 +129,15 @@ jobs:
       - name: 開機佇列的判準必須抓得到不只 rime_tsf.dll
         run: ./windows/verify_installer.sh --self-check-pending
 
-      - name: 二進位結構檢查（匯出符號、相依白名單、**沒有網路相依**）
+      - name: 二進位結構檢查（匯出符號、相依白名單、**瘦 DLL 零網路相依**）
         run: ./windows/check_binaries.sh third_party/build/windows-x64/logic/bin
 
       # 離線稽核。Android 端的 scripts/audit_offline.sh 在原始碼層面守
-      # 「整個 app 只有一個檔案碰得到網路」,這一支是 Windows 端的對應物。
-      # 目前的主張更強:**一個檔案都沒有**。
+      # 「整個 app 只有一個檔案碰得到網路」,這一支是 Windows 端的對應物,
+      # 而主張現在與 Android 一樣:**只有 service/net_gate.cc 一個檔案**。
+      # ⚠ 那支腳本的允許清單比對的是**路徑**不是檔名,而且會反過來斷言
+      #   那個路徑真的存在、真的碰得到網路 API —— 出口哪天搬走了,
+      #   留在原地的豁免就是一個沒有人守著的洞。
       # ⚠ 這一步是這一輪加的,而且它補的是**使用者實際撞到的那一段**。
       #
       # 在它之前,「切到這個輸入法之後 ActivateEx 有沒有被呼叫」整條是紙上的:
@@ -151,12 +154,14 @@ jobs:
       - name: 真的經過 TSF（載入 DLL → ActivateEx → 送按鍵）
         run: ./windows/verify_tsf.sh --bin third_party/build/windows-x64/logic/bin
 
-      - name: 離線稽核（原始碼層面:沒有任何檔案碰網路 API）
+      - name: 離線稽核（原始碼層面:只有 net_gate.cc 碰得到網路 API）
         run: ./windows/audit_offline_win.sh
 
-      # 與上面「框架必須會紅」同一個約定:--self-check 植入一個真的
+      # 與上面「框架必須會紅」同一個約定:--self-check 植入**兩個**真的
       # WinHttpOpen 呼叫,並要求腳本**非零結束**。一支只會印綠字的稽核
       # 腳本比沒有更糟 —— 它讓人以為有人在看。
+      # 兩個植入分別是:普通檔案開始連網、以及**檔名與允許清單相同但
+      # 路徑不同**的檔案 —— 後者是這條豁免最容易被繞過的方式。
       - name: 反向測試（離線稽核必須抓得到植入的違規）
         run: |
           if ./windows/audit_offline_win.sh --self-check; then
