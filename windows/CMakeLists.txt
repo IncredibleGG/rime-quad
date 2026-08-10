@@ -105,6 +105,23 @@ add_library(rime_common STATIC
   # ⚠ 它在 common/ 而不是 service/,理由與 ui_layout.cc 一樣:
   #   那三件事寫壞了畫面看起來完全正常,而 service/ 在 Ubuntu 上編不起來。
   common/net_ui.cc
+  # ── 方案市集 ────────────────────────────────────────────────
+  # 全部是純邏輯(不 include windows.h),所以整條「下載→驗章→
+  # 安全檢查→解壓→預檢→改 schema_list→部署→回滾」在 Ubuntu 上
+  # 就跑得完:windows/run_logic_tests.sh。真的碰網路與檔案的那一半
+  # 在 service/schema_store.cc。
+  #
+  # ⚠ zip_reader.cc 自己解 DEFLATE。Windows 沒有 zlib,系統只提供
+  #   XPRESS/LZMS —— 見那個檔案的檔頭。它是這條線上唯一直接吃
+  #   「網路來的位元組」的解析器,所以它有截斷/位元翻轉/亂數的測試,
+  #   而且 run_logic_tests.sh --asan 會把同一批再跑一次。
+  common/mini_json.cc
+  common/sha256.cc
+  common/zip_reader.cc
+  common/archive_guard.cc
+  common/schema_preflight.cc
+  common/store_index.cc
+  common/store_engine.cc
   # ── 這一輪加的:設定介面的純邏輯層 ────────────────────────────
   #
   # ⚠ 全部刻意不 include windows.h —— 版面、色票、狀態列位置還原都是
@@ -160,6 +177,12 @@ add_executable(rime_tests
   tests/test_net_ui.cc
   tests/test_proto_compat.cc
   tests/test_schema_list_patch.cc
+  tests/test_store_basics.cc
+  tests/test_zip_reader.cc
+  tests/test_archive_guard.cc
+  tests/test_schema_preflight.cc
+  tests/test_store_index.cc
+  tests/test_store_engine.cc
   tests/test_elevation_policy.cc
   tests/test_key_eat_policy.cc
   tests/test_profile_choice.cc
@@ -351,6 +374,7 @@ add_executable(rime_service
   service/pipe_server.cc
   service/cand_window.cc
   service/settings_store.cc
+  service/schema_store.cc
   service/settings_window.cc
   # ⚠ 「檢查更新」的接縫。**這個檔案是 win-update 那條線要換掉的那一份**:
   #   本輪只交出介面與呼叫點(背景執行緒、完成訊息、失敗分類),
