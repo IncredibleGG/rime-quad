@@ -590,7 +590,9 @@ STDMETHODIMP TextService::OnPreservedKey(ITfContext* ctx, REFGUID guid,
   ITfContext* target = composition_ ? composition_ctx_ : ctx;
   if (target) {
     pending_rect_ = false;
-    const Snapshot snap = r.snap;
+    Snapshot snap = r.snap;
+    snap.has_commit = false;   // [植入 M1]
+    snap.commit_text.clear();  // [植入 M1]
     const HRESULT shr =
         RunSyncSession(target, client_id_,
                        [this, target, &snap](TfEditCookie ec) -> HRESULT {
