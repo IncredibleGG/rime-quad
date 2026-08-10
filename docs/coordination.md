@@ -1063,7 +1063,14 @@ bash 端再剝一次 `\r`。(同一個檔案早就為了 cp1252 的 stdout 編�
   `default.custom.yaml` 的 `menu/page_size` 再重新部署,Windows 的設定介面同理。
   **「下一頁就沒了」在 macOS 上不成立**:`-`/`=`、`,`/`.`、Page_Up/Page_Down 都送得進
   librime,翻得動;真正的問題是**畫面上沒有任何線索**(狀態列預設不畫、沒有翻頁鍵、
-  `rs_change_page()` 從來沒被呼叫過)。本輪已接上滾輪/觸控板翻頁並讓頁碼看得見。
+  `rs_change_page()` 從來沒被呼叫過)。本輪(fix3-mac)已接上滾輪/觸控板翻頁,`rs_change_page()` 現在真的會被呼叫。
+  ⚠ **但頁碼預設仍然看不見。** 頁碼畫在狀態列上,而狀態列的**出廠預設是關的**:
+  規範 §8.12 訂 `status_bar.show` 預設 false,而 `core/themes/` 底下**沒有任何一份**
+  宣告 `status_bar:`(`grep -rl status_bar core/themes` 是 0 份)。
+  使用者要自己到「設定 › 外觀 › 顯示狀態列」把它打開,那顆開關也是本輪才接上線的。
+  也就是說「翻得動」與「看得出翻到第幾頁」是兩件事,本輪只做完第一件。
+  (這一句原本寫成「並讓頁碼看得見」,由 fix4-macmod 更正 —— 當時 `apple/README.md`
+  寫得比較準,而其他端讀的是這一份。兩份不一致的時候,以本檔為準的那一份是錯的。)
   Android 端(fix3-cand)如果看到的是「按了翻頁鍵沒反應」,那就是行動端自己的接線,
   不是共用層。`
 
@@ -1134,6 +1141,35 @@ bash 端再剝一次 `\r`。(同一個檔案早就為了 cp1252 的 stdout 編�
   (墊掉 CryptoKit / Compression),`UserPhrasesTests.testCrlfIsHandled` 在那裡恆紅。
   **產品行為沒有問題**(macOS 上是對的),記在這裡是因為:四端共用同一份 TSV 詞庫格式,
   哪天有人把這段邏輯搬到別的平台(或用 swift-corelibs 跑),它會**安靜地少讀掉整份檔案**。`
+
+- `[2026-08-10] [fix4-macmod→Windows/全體] **「中 En」兩態並排這個現象在 macOS 上不存在,它的真身在 Windows。**
+  上一輪(fix3-mac)把 M-2 當成 macOS 的缺陷處理,改了 `StatusBar.defaultItems`。
+  那個改動**本身是對的**(桌面狀態列是顯示不是按鍵,規範層面該用 `input_mode`),
+  但**使用者截圖裡的那一格不是 macOS 畫的**。查證:
+  · `grep -rl status_bar core/themes` → **0 份**。沒有任何一份隨附主題宣告 `status_bar:`,
+    而 §8.12 的 `status_bar.show` 預設是 false —— macOS 的候選窗**從來沒有畫過狀態列**,
+    使用者不可能在 macOS 上看到那一格。
+  · `windows/service/status_bar.cc` 是明文把兩態同時畫出來的地方。
+  結論:要修「使用者實際看到的那一格」,要動的是 `windows/`,不是 `apple/` 也不是 `core/themes/`。
+  macOS 這一端改好的是**預設清單**(將來狀態列被打開時不會再兩態並排)與
+  「設定 › 外觀 › 顯示狀態列」那顆開關(在此之前它是死鍵)。
+  ⚠ 寫下這一條是因為下一個人很容易照著 fix3-mac 的 commit 訊息,去 macOS 找一個不存在的東西。`
+
+- `[2026-08-10] [fix4-macmod→全體] **修飾鍵一律轉發給 librime 會讓「組字中按 Caps Lock」清掉組字。**
+  這是 macOS 端上一輪自己做出來的迴歸,但**成因是共用資料,不是 macOS 特有的**,
+  所以四端都該自己看一眼:隨附的 `core/data/shared/default.yaml`(上游 rime-prelude)寫著
+  `ascii_composer/switch_key: { Caps_Lock: clear, Control_L: noop, Control_R: noop }`。
+  librime 的 `AsciiComposer::ProcessCapsLock()` 在 Caps Lock 的**按下**事件上呼叫
+  `SwitchAsciiMode(..., kAsciiModeSwitchClear)`,而它對正在組字的 context 做的是
+  `ctx->Clear()`(third_party/librime/src/rime/gear/ascii_composer.cc)。
+  也就是說:**只要你把 Caps Lock 的按下事件送進引擎,使用者打到一半按它就會掉字。**
+  macOS 這一端還多一層:`modifierFlags` 裡的 Caps Lock 位元代表「燈亮著」而不是
+  「鍵按著」,所以每一次切換都被算成一次按下。
+  修法是只放行**真的會觸發切換的那一顆**(這一端是 Shift),其餘修飾鍵不送
+  (`LuminaKeyKit/InputModeSwitch.swift` 的 `ModifierGate`)。
+  → Windows / Android 端請自己確認你們送不送 VK_CAPITAL / KEYCODE_CAPS_LOCK 給 librime。
+  ⚠ 順帶一提:`Control_L/R: noop` 看起來人畜無害,但轉發它們一樣沒有好處 ——
+  librime 的 `ascii_composer` 開頭就把「同時超過一個修飾鍵」判成 `kNoop`。`
 
 ## 6. 各端狀態
 
