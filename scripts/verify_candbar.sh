@@ -18,8 +18,15 @@
 #   這個專案已經吃過七次「單元測試綠、使用者打開看不到」的虧。
 #
 # ── 兩道關 ──────────────────────────────────────────────────────────────
-#   1  候選列那一條帶子上 **OCR 讀不到 `GAM`**(而且讀得到 `ni`/`hao` ——
-#      讀不到任何東西代表裁錯了地方,那種「空的就過」是最容易做的假綠燈)
+#   1  打完 MGGAM 之後,**第一個候選左邊沒有任何墨跡**。
+#      定位不靠寫死的座標,而是先找到高亮候選那一塊(整條上唯一的飽和色塊),
+#      再看它左邊那一段有沒有東西。有東西就是那一格組字串又冒出來了。
+#
+#      ⚠ 第一版是「把整條帶子裁下來 OCR,讀不到 GAM 就算過」,而它在 CI 上
+#      **紅得莫名其妙**:CI 的模擬器是 1080x2400、開發機是 1440x3120,
+#      同一段 OCR 前處理在兩邊讀出來的東西完全不同,CI 那次只讀到「ee」。
+#      有沒有墨跡是像素等級的事實,兩邊一樣;而且「找不到高亮塊」本身就是
+#      「這一關沒有東西可驗」的訊號,不會靜靜地變成綠燈。
 #   2  **翻得到第 2 頁,而且第 2 頁的候選選得下去**:
 #        第一輪  打 MGGAM → 直接選高亮那一個 → 記下上屏的詞 T1
 #        第二輪  打 MGGAM → 點下一頁 →(a)輸入框的內容不可以變
@@ -67,6 +74,9 @@ SCHEMA=t9_pinyin
 LAYOUT="${RIME_LAYOUT:-cn-t9-pinyin}"
 OUT_DIR="$ROOT/build/verify-candbar"
 APK=""
+# 抗鋸齒會在候選塊邊緣留下幾個灰像素,而裁切邊界就貼著它。留一點餘裕,
+# 但遠小於一個字元的墨跡量(`MG GAM` 在 1080 寬的螢幕上是數千個)。
+INK_TOLERANCE="${RIME_INK_TOLERANCE:-40}"
 TESSERACT="${RIME_TESSERACT:-$(command -v tesseract || true)}"
 TESSDATA="${TESSDATA_PREFIX:-}"
 
@@ -91,11 +101,12 @@ step() { echo; echo "── $* ──"; }
 
 [ -x "$ADB" ] || { echo "找不到 adb:$ADB" >&2; exit 2; }
 adbs get-state >/dev/null 2>&1 || { echo "$SERIAL 不在線" >&2; exit 2; }
-# ⚠ 工具缺席必須在這裡就停。「找不到 OCR 就跳過」跳過的關卡與綠燈長得一模一樣。
-if [ -z "$TESSERACT" ] || [ ! -x "$TESSERACT" ]; then
-  echo "找不到 tesseract。請安裝或設 RIME_TESSERACT。" >&2; exit 2
-fi
-python3 -c "import PIL" >/dev/null 2>&1 || { echo "python3 缺 Pillow" >&2; exit 2; }
+# ⚠ Pillow 缺席必須在這裡就停:所有斷言都靠它數像素,缺了就等於沒驗
+#   ——「工具缺席 → 跳過」跳過的關卡與綠燈長得一模一樣。
+python3 -c "import PIL" >/dev/null 2>&1 || { echo "python3 缺 Pillow(數像素要用)" >&2; exit 2; }
+# tesseract **不是**必需的:它只在第 1 關紅了之後把那一塊 OCR 出來寫進訊息,
+#   讓看日誌的人知道印的是什麼。斷言本身是像素數,沒有它照樣成立、照樣會紅。
+[ -n "$TESSERACT" ] && [ -x "$TESSERACT" ] || info "沒有 tesseract,失敗訊息裡不會有 OCR 佐證(斷言不受影響)"
 
 SRC_LAYOUT="$ROOT/core/layouts/$LAYOUT.yaml"
 [ -f "$SRC_LAYOUT" ] || { echo "找不到 $SRC_LAYOUT" >&2; exit 2; }
@@ -186,9 +197,19 @@ done
 sleep 3
 open_target
 
-ACTIVE="$(adbs logcat -d 2>/dev/null | tr -d '\r' | sed -n 's/.*佈局 . \([a-zA-Z0-9_-]*\).*/\1/p' | tail -1)"
+# ⚠ 等佈局**真的**換過來再往下走。IME 剛 attach 時畫的是預設的 qwerty,
+#   要等 librime 回報方案之後才換成九宮格 —— 中間那幾秒拿九宮格的座標打上去,
+#   會打在 qwerty 上(實測打出 `jddyj`),而症狀看起來像產品壞了。
+#   CI 的機器比開發機慢,這個空窗更長。
+ACTIVE=""
+for _ in $(seq 1 30); do
+  ACTIVE="$(adbs logcat -d 2>/dev/null | tr -d '\r' | sed -n 's/.*佈局 . \([a-zA-Z0-9_-]*\).*/\1/p' | tail -1)"
+  [ "$ACTIVE" = "$LAYOUT" ] && break
+  sleep 2
+done
 [ "$ACTIVE" = "$LAYOUT" ] || { echo "裝置上載入的是 ${ACTIVE:-<無>},不是 $LAYOUT" >&2; exit 2; }
 info "裝置確認:佈局=$ACTIVE"
+sleep 2
 
 # ═══════════════════════ 幾何 ═══════════════════════
 WM_SIZE="$(adbs shell wm size 2>/dev/null | tr -d '\r' | sed -n 's/.*: *\([0-9]*x[0-9]*\).*/\1/p' | tail -1)"
@@ -248,7 +269,8 @@ NEXT_X=$(( SCREEN_W - $(dp 20) ))
 #   而寫死的座標在那時候會點在一塊按不動的文字上 —— 於是「翻頁沒用」與
 #   「點錯地方」在輸出上長得一模一樣(實測踩過)。改成在那條帶子裡找**高亮塊**:
 #   它是整條上唯一的飽和色塊(主題的 item.highlight_background)。
-highlight_xy() {
+# `x0 y0 x1 y1 cx cy`;找不到就什麼都不印。
+highlight_box() {
   python3 "$HERE/lib/find_highlight.py" "$1" "$2" "$3"
 }
 
@@ -261,39 +283,39 @@ read_frame || { echo "讀不到 frame" >&2; exit 2; }
 adbs exec-out screencap -p > "$OUT_DIR/1-typed.png" 2>/dev/null
 BAR_TOP="$FRAME_TOP"; BAR_BOT="$GRID_TOP"
 
-# ── 第 1 關:OCR ──────────────────────────────────────────────────────
-step "1. 候選列那一條帶子上讀不到按鍵代碼"
-python3 - "$OUT_DIR/1-typed.png" "$OUT_DIR/bar.png" "$BAR_TOP" "$BAR_BOT" <<'PY'
-import sys
-from PIL import Image, ImageOps
-src, dst, top, bot = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
-im = Image.open(src).convert("L")
-top = max(0, min(top, im.height - 2))
-bot = max(top + 2, min(bot, im.height))
-crop = im.crop((0, top, im.width, bot))
-crop = ImageOps.autocontrast(crop, cutoff=1)
-crop = crop.resize((crop.width * 2, crop.height * 2), Image.LANCZOS)
-crop.save(dst)
-PY
-BAR_TXT="$("$TESSERACT" "$OUT_DIR/bar.png" stdout --psm 7 2>/dev/null | tr -d '\r' | tr '\n' ' ')"
-[ -n "$BAR_TXT" ] || BAR_TXT="$("$TESSERACT" "$OUT_DIR/bar.png" stdout --psm 6 2>/dev/null | tr -d '\r' | tr '\n' ' ')"
-printf '%s\n' "$BAR_TXT" > "$OUT_DIR/bar.txt"
-info "候選列 OCR:「$BAR_TXT」"
-# 讀不到任何東西 = 裁錯地方。那種「空的就過」是最容易做出來的假綠燈。
-if ! printf '%s' "$BAR_TXT" | grep -qiE 'ni|hao|gan'; then
-  fail "候選列那一條上什麼都讀不到($BAR_TOP..$BAR_BOT)—— 裁錯地方了,這一關等於沒驗"
-elif printf '%s' "$BAR_TXT" | grep -qE 'GAM|MG'; then
-  fail "候選列上印著按鍵代碼:「$BAR_TXT」"
+# ⚠ 先確認那五下真的進了引擎。打不進去的話後面每一關都會紅,而紅的理由
+#   會指向產品 —— 實際上是「鍵盤還沒換成九宮格就開始打」(CI 上踩過:
+#   IME 剛 attach 時畫的是 qwerty,拿九宮格的座標打上去會打出 jddyj)。
+COMPOSING="$(field_text)"
+[ -n "$COMPOSING" ] || {
+  echo "打完之後輸入框是空的 —— 那五下沒有進到引擎(鍵盤可能還不是 $LAYOUT)" >&2
+  exit 2
+}
+info "打完 MGGAM,輸入框(組字中)=「$COMPOSING」"
+
+# ── 第 1 關:第一個候選左邊不准有東西 ────────────────────────────────
+step "1. 候選列左端不印按鍵代碼"
+read -r HX0 HY0 HX1 HY1 HX HY <<<"$(highlight_box "$OUT_DIR/1-typed.png" "$BAR_TOP" "$BAR_BOT")"
+if [ -z "${HX0:-}" ]; then
+  # 找不到高亮塊 = 候選列上沒有候選。這不是「通過」,是這一關沒有東西可驗。
+  echo "候選列上找不到高亮候選(帶子 $BAR_TOP..$BAR_BOT)—— 沒有候選可驗,見 $OUT_DIR/1-typed.png" >&2
+  exit 2
+fi
+info "高亮候選 x=$HX0..$HX1 y=$HY0..$HY1"
+read -r INK TOTAL <<<"$(python3 "$HERE/lib/count_ink.py" "$OUT_DIR/1-typed.png" \
+                        0 "$HY0" "$((HX0 - 4))" "$HY1" "$OUT_DIR/left-of-first.png")"
+info "第一個候選左邊:墨跡 $INK / $TOTAL 像素"
+if [ "${INK:-0}" -gt "$INK_TOLERANCE" ]; then
+  EV=""
+  [ -n "$TESSERACT" ] && [ -x "$TESSERACT" ] &&
+    EV="$("$TESSERACT" "$OUT_DIR/left-of-first.png" stdout --psm 7 2>/dev/null | tr -d '\r' | tr '\n' ' ')"
+  fail "第一個候選左邊有東西($INK 個墨跡像素,OCR:「${EV:-讀不出來}」)—— " \
+       "那一格又在印按鍵代碼了。圖:$OUT_DIR/left-of-first.png"
 else
-  pass "候選列上讀得到拼音註解,讀不到 GAM/MG"
+  pass "第一個候選左邊乾淨($INK/$TOTAL 個墨跡像素)"
 fi
 
 # ── 選第一個,記下上屏的詞 ──────────────────────────────────────────
-read -r HX HY <<<"$(highlight_xy "$OUT_DIR/1-typed.png" "$BAR_TOP" "$BAR_BOT")"
-if [ -z "${HX:-}" ]; then
-  echo "候選列上找不到高亮候選 —— 沒有東西可選,後面的關卡都不算數" >&2; exit 2
-fi
-info "高亮候選在 ($HX,$HY)"
 adbs shell input tap "$HX" "$HY" >/dev/null 2>&1
 sleep 1.5
 T1="$(field_text)"
@@ -302,9 +324,11 @@ info "第 1 頁選第一個 → 上屏「${T1:-<空>}」"
 # ═══════════ 第二輪:翻一頁再選第一個 ═══════════
 step "2. 翻得到第 2 頁,而且第 2 頁選得下去"
 open_target
+sleep 2
 read_frame || { echo "讀不到 frame" >&2; exit 2; }
 type_nihao || { echo "點不到九宮格的鍵" >&2; exit 2; }
 read_frame || { echo "讀不到 frame" >&2; exit 2; }
+[ -n "$(field_text)" ] || { echo "第二輪打完之後輸入框是空的,按鍵沒進引擎" >&2; exit 2; }
 # ⚠ 點下去之前先記下輸入框。翻頁鍵**不會上屏任何東西**;那個位置若其實是
 #   一個候選,點下去會當場上屏 —— 而後面「T2 != T1」照樣成立(實測:拿掉
 #   翻頁鍵之後,那一點打在第 4 個候選上,上屏「米高」,整支腳本照樣全綠)。
@@ -318,7 +342,7 @@ if [ "$F_AFTER" != "$F_BEFORE" ]; then
 else
   pass "點了最右端那一點,沒有任何東西上屏(翻頁鍵的行為)"
 fi
-read -r HX2 HY2 <<<"$(highlight_xy "$OUT_DIR/2-page2.png" "$FRAME_TOP" "$GRID_TOP")"
+read -r _ _ _ _ HX2 HY2 <<<"$(highlight_box "$OUT_DIR/2-page2.png" "$FRAME_TOP" "$GRID_TOP")"
 if [ -z "${HX2:-}" ]; then
   fail "翻頁之後候選列上沒有高亮候選 —— 翻到了一頁不存在的地方"
   HX2="$NEXT_X"; HY2="$BAR_MID"
@@ -332,6 +356,10 @@ if [ -z "$T1" ]; then
   fail "第一輪就沒有上屏 —— 選字這條路本身壞了,後面比不出東西"
 elif [ -z "$T2" ]; then
   fail "翻頁之後選不出東西(上屏是空的)"
+elif [ "$T2" = "$COMPOSING" ]; then
+  # 輸入框在組字中本來就顯示 preedit(`MG GAM`)。拿它當「上屏的詞」會讓
+  # 「根本沒選到字」看起來像「選到了別的字」—— 實測踩過。
+  fail "翻頁之後那一下沒有選到任何候選(輸入框還是組字中的「$T2」)"
 elif [ "$T1" = "$T2" ]; then
   fail "點了下一頁再選第一個,拿到的還是「$T1」—— 翻頁鍵不存在或按不動,使用者永遠停在第 1 頁"
 else

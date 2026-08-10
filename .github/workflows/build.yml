@@ -447,6 +447,7 @@ jobs:
             build/release-check/
             build/verify-syllables/
             build/verify-syllables-plant/
+            build/verify-candbar/
             build/verify-backup/
           if-no-files-found: ignore
 
