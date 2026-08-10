@@ -33,6 +33,7 @@ on:
     # 單行陣列 [main, a, b] 會讓每一條都改同一行 = 必然衝突。
     branches:
       - main
+      - fix3-cand
       - fix-publish
       - fix2-gates
       - fix-gates
@@ -410,6 +411,12 @@ jobs:
             # 而且腳本會確認紅的是**指名的那一條**(踩紅別條照樣算失敗)。
             # ⚠ 一行寫完,理由同上面那一行(這個 action 逐行交給 sh -c)。
             bash ./scripts/verify_syllables.sh --plant bad-slot-ids --out build/verify-syllables-plant
+            # 候選列本身:左端不印按鍵代碼(真機回報 A-2)、翻得到第 2 頁而且
+            # 選得下去(A-4)。與上面那一支互補 —— 那一支驗的是消歧欄那一欄,
+            # 這一支驗的是候選列。兩條都只有畫面上才看得出來:純函式測試在
+            # CandidateBarModelTest,而「畫出來了沒、點不點得到」它驗不到。
+            # ⚠ 一行寫完,理由同上(這個 action 逐行交給 sh -c)。
+            bash ./scripts/verify_candbar.sh --apk "$APK_DEBUG_PATH"
             # 匯出/匯入的完整往返。**這一支以前沒有被任何 workflow 呼叫過**,
             # 而 docs/backup-format.md §343 把它當成「整條往返實跑過」的證據 ——
             # 那句話在它被跑的那一天是真的,之後沒有任何東西讓它保持為真。
