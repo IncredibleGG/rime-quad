@@ -55,6 +55,17 @@
 //     少了這一段,「放行」與「掉進黑洞」在文件內容上長得一模一樣 ——
 //     而那正是使用者回報的「可以打字,不能刪除」的形狀。
 //
+//   ── Ctrl+空白鍵(中英切換)────────────────────────────────────
+//
+//   --check-preserved-key        問 TSF「這顆鍵註冊了沒」(不呼叫產品)
+//   --press-preserved-key        **真的按下去**,並斷言 OnPreservedKey 有跑
+//   --toggle-mid-compose "nihao" 先打這幾個字讓引擎進入組字,再按那顆鍵
+//   --expect-toggle-doc "nihao"  按完之後文件必須完全等於這個
+//
+//   ⚠ 註冊與按下去是**兩件事**。只問註冊的話,把 OnPreservedKey 改成
+//     比對完 GUID 就 `return S_OK` —— CI 三個 job 全綠,而中英切換整條死掉。
+//     見下面 PressPreservedKey() 的說明。
+//
 //   rime_tsf_host.exe --hold-dll <dll路徑> --hold-ms <毫秒>
 //                     只 LoadLibrary 那個 DLL 然後睡著,不碰 TSF。
 //                     用來**重現使用者解除安裝時撞到的那個狀態**:
@@ -577,6 +588,113 @@ void CheckPreservedKey(ITfKeystrokeMgr* ks) {
          "     而他不會知道是輸入法幹的。保留鍵只准註冊真的要處理的那一顆。");
 }
 
+// ── ⚠ 註冊之外的另一半:那顆鍵**按下去**會怎樣 ──────────────────
+//
+// 上面 CheckPreservedKey() 問的是「TSF 收下註冊了沒」。它不會呼叫產品
+// 一行程式碼 —— 實測過:把 tsf/text_service.cc 的 OnPreservedKey 在比對完
+// GUID 之後直接 `return S_OK`(註冊留著、hotkey_policy 留著、服務端的攔截
+// 也留著),**CI 三個 job 全綠**。也就是說中英切換可以整條死掉而沒有人知道。
+//
+// 原因是中間那一段沒有任何自動化走過:
+//     OnPreservedKey → IPC → 服務 → 引擎切模式 → 快照 → edit session → 文件
+// verify_tsf.sh 只問註冊,verify_ime.sh 只走管道問服務端。這一節補的就是它。
+//
+// ── 「到底有沒有被呼叫」怎麼知道 ────────────────────────────────
+//
+// 沒有任何回傳值看得出來:TSF 收下按鍵、回 S_OK、pfEaten=FALSE ——
+// 與「文字服務把它直接 return S_OK 掉」長得一模一樣。唯一的證據是瘦 DLL
+// 自己在 OnPreservedKey 裡寫下的那一行記錄(寫完才返回)。所以這裡數
+// 記錄檔裡那句話多了幾筆,而不是猜。
+std::string ReadAll(const std::wstring& path);  // 定義在下面
+
+int CountIn(const std::string& hay, const char* needle) {
+  const std::string pat(needle);
+  if (pat.empty()) return 0;
+  int n = 0;
+  size_t at = 0;
+  while ((at = hay.find(pat, at)) != std::string::npos) {
+    ++n;
+    at += pat.size();
+  }
+  return n;
+}
+
+struct PreservedSend {
+  const char* route = "none";
+  bool delivered = false;
+  BOOL eaten = FALSE;
+};
+
+// 送出 Ctrl+空白鍵。
+//
+// ① 先送**真的按鍵**:把 Ctrl 壓進這條執行緒的鍵盤輸入狀態(瘦 DLL 的
+//    BuildKeyEvent 讀的就是 GetKeyboardState),再走與其他每一顆鍵完全
+//    同一條 TestKeyDown / KeyDown。TSF 認得那顆保留鍵的話,它會轉成
+//    OnPreservedKey 交給文字服務 —— 那是使用者機器上發生的事。
+//
+// ② 真的按鍵沒有到達時,退一步用 ITfKeystrokeMgr::SimulatePreservedKey。
+//    那是 TSF 為這件事準備的 API:一樣由 TSF 去比對註冊、一樣呼叫我們的
+//    OnPreservedKey。走哪一條都會**逼產品的那一整段跑一次**,而那正是
+//    這一輪之前沒有任何自動化走過的部分。
+//
+// ⚠ 走了哪一條要印出來。退到 ②「不算失敗」(這個 runner 是非互動的工作
+//   階段,而 TSF 的按鍵路由本來就與桌面上不保證一樣),但兩條都沒到達
+//   **就是失敗** —— 那代表 OnPreservedKey 根本沒有被呼叫。
+//
+// ⚠ 這一支刻意不呼叫 HostDefaultAction。真的宿主在 Ctrl 壓著的時候也不會
+//   把空白鍵插進文件 —— 讓它插進去的話,下面每一條文件斷言都會多一個空格,
+//   而那是測試自己製造的假象。
+PreservedSend PressPreservedKey(ITfKeystrokeMgr* ks, ITfContext* ctx,
+                                const std::wstring& trace_path) {
+  PreservedSend out;
+  static const char kMark[] = "保留鍵 Ctrl+Space:";
+  const int before = CountIn(ReadAll(trace_path), kMark);
+
+  BYTE saved[256] = {0};
+  BYTE state[256] = {0};
+  const bool got_state = ::GetKeyboardState(saved) != FALSE;
+  if (got_state) {
+    std::memcpy(state, saved, sizeof(state));
+    state[VK_CONTROL] |= 0x80;
+    state[VK_LCONTROL] |= 0x80;
+    ::SetKeyboardState(state);
+  }
+  const UINT scan = ::MapVirtualKeyW(VK_SPACE, MAPVK_VK_TO_VSC);
+  const LPARAM lp = static_cast<LPARAM>(1 | (static_cast<LPARAM>(scan) << 16));
+  BOOL test_eaten = FALSE;
+  BOOL eaten = FALSE;
+  BOOL up_eaten = FALSE;
+  ks->TestKeyDown(VK_SPACE, lp, &test_eaten);
+  ks->KeyDown(VK_SPACE, lp, &eaten);
+  ks->KeyUp(VK_SPACE, lp | 0xC0000000, &up_eaten);
+  if (got_state) ::SetKeyboardState(saved);
+  Pump(80);
+
+  const int after = CountIn(ReadAll(trace_path), kMark);
+  Say("  真的按鍵 Ctrl+Space:test=%d down=%d(記錄多了 %d 行)\n",
+      test_eaten ? 1 : 0, eaten ? 1 : 0, after - before);
+  if (after > before) {
+    out.route = "real";
+    out.delivered = true;
+    out.eaten = eaten;
+    return out;
+  }
+
+  BOOL sim_eaten = FALSE;
+  const HRESULT hr =
+      ks->SimulatePreservedKey(ctx, GUID_RimePreservedKeyToggle, &sim_eaten);
+  Pump(80);
+  const int after2 = CountIn(ReadAll(trace_path), kMark);
+  Say("  SimulatePreservedKey hr=0x%08lX eaten=%d(記錄多了 %d 行)\n",
+      static_cast<unsigned long>(hr), sim_eaten ? 1 : 0, after2 - after);
+  if (after2 > after) {
+    out.route = "simulated";
+    out.delivered = true;
+    out.eaten = sim_eaten;
+  }
+  return out;
+}
+
 SendOutcome SendKeyThrough(ITfKeystrokeMgr* ks, FakeDoc* doc, const SeqKey& sk) {
   SendOutcome o;
   ks->TestKeyDown(sk.vk, sk.lparam, &o.test_eaten);
@@ -721,6 +839,11 @@ static int Run(int argc, wchar_t** argv) {
   std::wstring pretext;
   // ⚠ Ctrl+空白鍵那顆保留鍵有沒有真的被 TSF 收下。見下面 CheckPreservedKey()。
   bool check_preserved = false;
+  // ⚠ 註冊之外的另一半:那顆鍵**按下去**會不會走完整條路。見 PressPreservedKey()。
+  bool press_preserved = false;
+  std::wstring toggle_keys;
+  std::wstring expect_toggle_doc;
+  bool have_expect_toggle = false;
   std::wstring expect_doc;
   bool have_expect_doc = false;
   std::wstring expect;
@@ -749,6 +872,15 @@ static int Run(int argc, wchar_t** argv) {
     else if (a == L"--expect" && i + 1 < argc) expect = argv[++i];
     else if (a == L"--trace" && i + 1 < argc) trace_path = argv[++i];
     else if (a == L"--check-preserved-key") check_preserved = true;
+    else if (a == L"--press-preserved-key") press_preserved = true;
+    else if (a == L"--toggle-mid-compose" && i + 1 < argc) {
+      toggle_keys = argv[++i];
+      press_preserved = true;
+    }
+    else if (a == L"--expect-toggle-doc" && i + 1 < argc) {
+      expect_toggle_doc = argv[++i];
+      have_expect_toggle = true;
+    }
     else if (a == L"--require-activate") require_activate = true;
     else if (a == L"--require-eaten") require_eaten = true;
     else if (a == L"--wait-ms" && i + 1 < argc)
@@ -1115,6 +1247,143 @@ static int Run(int argc, wchar_t** argv) {
     else
       Fail("文件裡是「%s」,預期「%s」", Narrow(doc->text).c_str(),
            Narrow(expect).c_str());
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  //  組字**進行中**按下 Ctrl+空白鍵
+  // ══════════════════════════════════════════════════════════════
+  //
+  // ⚠ common/hotkey_policy.h 的檔頭寫著這顆鍵存在的理由:
+  //   「中英切換發生在句子中間」。也就是說**唯一該驗的情境就是這一個**。
+  //
+  // librime 在切到英數的當下會把手上那一段組字**上屏並清掉**
+  // (實測:preedit="ni hao" → has_commit=1 commit="nihao" 組字中=0)。
+  // 那份 commit 在 rs_snapshot_acquire 的當下就被消費,只現身一次 ——
+  // 瘦 DLL 的 OnPreservedKey 沒有把它寫進文件,使用者打到一半的字就
+  // **永久消失**,而畫面上不會有任何錯誤。
+  //
+  // 所以這一節的斷言全部看**文件內容**與**按鍵的下場**,不看任何內部狀態:
+  //   1. 熱鍵之後,文件裡要有那段被上屏的字;
+  //   2. 接著按退格要**刪得掉**(組字收乾淨了、engine_composing_ 沒卡住);
+  //   3. 再按一次熱鍵要回得到中文(中英模式是行程層級的,留在英數的話
+  //      後面每一節都會以「打不出中文」的樣子紅,而原因在這裡)。
+  if (press_preserved) {
+    Say("\n══ 組字進行中按 Ctrl+空白鍵 ══\n");
+    if (!ks) {
+      const HRESULT khr = thread_mgr->QueryInterface(IID_ITfKeystrokeMgr,
+                                                     (void**)&ks);
+      Step("QueryInterface(ITfKeystrokeMgr)", khr);
+    }
+    if (!ks || !ctx) {
+      Fail("拿不到 ITfKeystrokeMgr(%p)或 ITfContext(%p)—— 這一節什麼都驗不到",
+           static_cast<void*>(ks), static_cast<void*>(ctx));
+    } else {
+      std::vector<SeqKey> pre;
+      if (!toggle_keys.empty() && !ParseSeq(toggle_keys, &pre)) return 2;
+      if (!pre.empty()) {
+        doc->text.clear();
+        doc->sel_start = doc->sel_end = 0;
+        int pre_eaten = 0;
+        for (const SeqKey& sk : pre) {
+          const SendOutcome o = SendKeyThrough(ks, doc, sk);
+          if (o.eaten) ++pre_eaten;
+          Pump(40);
+        }
+        Say("  TOGGLE_PRE_DOC=\"%s\"(引擎吃掉 %d/%d 顆)\n",
+            Narrow(doc->text).c_str(), pre_eaten,
+            static_cast<int>(pre.size()));
+        if (pre_eaten != static_cast<int>(pre.size()) || doc->text.empty())
+          Fail("那幾顆字母沒有進到組字裡(吃掉 %d/%d,文件=\"%s\")——\n"
+               "     對照組不成立:這一節測的是「**組字進行中**切中英」,\n"
+               "     沒有組字的話下面量到的東西一點意義都沒有。",
+               pre_eaten, static_cast<int>(pre.size()),
+               Narrow(doc->text).c_str());
+      }
+
+      const PreservedSend ps = PressPreservedKey(ks, ctx, trace_path);
+      Say("  PRESERVEDKEY_ROUTE=%s\n", ps.route);
+      Say("  PRESERVEDKEY_DELIVERED=%d\n", ps.delivered ? 1 : 0);
+      Say("  TOGGLE_DOC=\"%s\"\n", Narrow(doc->text).c_str());
+      if (!ps.delivered)
+        Fail("Ctrl+空白鍵**沒有到達 OnPreservedKey**:真的按鍵與\n"
+             "     SimulatePreservedKey 兩條路都沒有讓瘦 DLL 寫下任何一行記錄。\n"
+             "     註冊是好的(IsPreservedKey 說得到),壞的是後面那一段 ——\n"
+             "     這條功能可以整個死掉而沒有人發現,而這就是那個樣子。");
+
+      if (have_expect_toggle) {
+        if (doc->text == expect_toggle_doc)
+          Ok("組字中切中英:打到一半的「%s」被寫進文件了",
+             Narrow(expect_toggle_doc).c_str());
+        else
+          Fail("組字中按 Ctrl+空白鍵之後文件是「%s」,預期「%s」。\n"
+               "     librime 在切到英數的當下把手上那一段**上屏並清掉**,而那份\n"
+               "     commit 在 rs_snapshot_acquire 的當下就被消費 —— 只現身一次。\n"
+               "     瘦 DLL 的 OnPreservedKey 把快照丟掉的話,使用者打到一半的字\n"
+               "     就永久消失,而螢幕上那段底線組字還留著不收尾。\n"
+               "     修的地方是 tsf/text_service.cc 的 OnPreservedKey:\n"
+               "     那份快照要走與 HandleKey 同一段 ApplyPlan。",
+               Narrow(doc->text).c_str(), Narrow(expect_toggle_doc).c_str());
+
+        // ── 組字收乾淨了沒有:用**退格**問 ────────────────────────
+        //
+        // 不去讀任何內部狀態,問使用者感覺得到的那件事。engine_composing_
+        // 停在 true 的話,key_eat_policy 會把退格判成「組字中的鍵」而由我們
+        // 吃掉,可是引擎手上根本沒有組字 —— 那一格就是黑洞:按下去什麼都
+        // 不會發生。使用者的說法會是「可以打字,不能刪除」。
+        SeqKey bs;
+        if (NamedToKey(L"BS", &bs) && !doc->text.empty()) {
+          const std::wstring want_bs = doc->text.substr(0, doc->text.size() - 1);
+          const std::wstring had = doc->text;
+          SendKeyThrough(ks, doc, bs);
+          Pump(60);
+          Say("  TOGGLE_BS_DOC=\"%s\"\n", Narrow(doc->text).c_str());
+          if (doc->text == want_bs)
+            Ok("切完之後退格刪得掉字(組字收乾淨了,engine_composing_ 沒卡在 true)");
+          else
+            Fail("切完中英之後按退格,文件從「%s」變成「%s」,預期「%s」。\n"
+                 "     這是那個黑洞的形狀:引擎那一側的組字被切中英清掉了,而\n"
+                 "     瘦 DLL 的 engine_composing_ 還停在 true,於是退格被宣告\n"
+                 "     吃掉、又沒有人處理它。",
+                 Narrow(had).c_str(), Narrow(doc->text).c_str(),
+                 Narrow(want_bs).c_str());
+        }
+
+        // ── 再按一次要回得到中文 ──────────────────────────────────
+        //
+        // ⚠ 這不是收尾禮貌。中英是**行程層級**的模式(service/engine.h 的
+        //   SetAsciiModeAll),留在英數的話,這支宿主結束之後每一個新開的
+        //   session 都是英數 —— 後面每一節都會以「打不出中文」的樣子紅,
+        //   而真正的原因在這裡。
+        //
+        // 判準不是旗標而是**同一顆鍵的下場不一樣**:中文模式下 'n' 進組字、
+        // Esc 收得掉(文件回到原樣);英數模式下那個 'n' 是我們自己寫進文件
+        // 的字,Esc 收不掉它。
+        const PreservedSend back = PressPreservedKey(ks, ctx, trace_path);
+        Say("  PRESERVEDKEY_BACK_ROUTE=%s\n", back.route);
+        const std::wstring base = doc->text;
+        SeqKey probe;
+        SeqKey esc;
+        if (AsciiToKey(L'n', &probe.vk, &probe.lparam) &&
+            NamedToKey(L"ESC", &esc)) {
+          probe.label = L"n";
+          probe.ch = L'n';
+          SendKeyThrough(ks, doc, probe);
+          Pump(60);
+          SendKeyThrough(ks, doc, esc);
+          Pump(60);
+          Say("  TOGGLE_BACK_DOC=\"%s\"\n", Narrow(doc->text).c_str());
+          if (doc->text == base)
+            Ok("再按一次切回中文了('n' 進了組字,Esc 收得掉)");
+          else
+            Fail("再按一次**沒有**切回中文:打 'n' 再按 Esc 之後文件是「%s」,\n"
+                 "     預期「%s」。英數模式下那個 'n' 是我們自己寫進文件的字,\n"
+                 "     Esc 收不掉它。\n"
+                 "     ⚠ 中英是行程層級的模式:留在英數的話,後面每一節都會\n"
+                 "     以「打不出中文」的樣子紅,而真正的原因在這裡。",
+                 Narrow(doc->text).c_str(), Narrow(base).c_str());
+        }
+      }
+    }
   }
 
   // ── 這個進程到底載入了哪一份 DLL ──────────────────────────────

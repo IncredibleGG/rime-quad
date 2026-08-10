@@ -172,6 +172,20 @@ void ReportFailure(const IpcClient& ipc, const std::wstring& pipe_name,
 //
 // ⚠ DLL 那一半(Ctrl+空白鍵有沒有真的被 TSF 攔下來)在這裡驗不到,
 //   它在 windows/verify_tsf.sh 的 --check-preserved-key。兩半都要。
+//
+// ══ ⚠ 這一支**不可以**在送熱鍵之前先 SendClear ═══════════════════
+//
+// 舊版在每一次送熱鍵之前都先把組字清乾淨,於是量到的永遠是
+// 「沒有組字時切中英」—— 而 common/hotkey_policy.h 的檔頭寫得清清楚楚,
+// 這顆鍵存在的理由就是「中英切換發生在句子中間」。**唯一該驗的情境
+// 剛好被測試自己繞開了。**
+//
+// 實際上組字進行中按下去,librime 會把手上那一段**上屏並清掉**
+// (實測:preedit="ni hao" → handled=1 has_commit=1 commit="nihao"
+//  組字中=0)。那一份 commit 在 rs_snapshot_acquire 的當下就被消費掉,
+// 只會現身這麼一次 —— 誰沒有把它接住,使用者打到一半的字就永久消失。
+// 接住它是瘦 DLL 的責任(tsf/text_service.cc 的 OnPreservedKey);
+// **交出它**是服務端的責任,而那正是這裡要釘住的東西。
 int RunAsciiToggle(IpcClient& ipc, const std::string& keys) {
   auto composing_of = [](const Snapshot& s) {
     return (s.status_flags & kStComposing) != 0;
@@ -219,10 +233,10 @@ int RunAsciiToggle(IpcClient& ipc, const std::string& keys) {
     return 1;
   }
 
-  {
-    Result clear;
-    ipc.SendClear(&clear);
-  }
+  // ⚠ **刻意不清組字。** 上面那一輪剛打完 keys,引擎手上正握著一段組字 ——
+  //   那就是使用者按下這顆鍵的真實時刻(見上面檔頭那一節)。
+  std::printf("(按熱鍵時引擎手上有一段組字:preedit=\"%s\")\n",
+              before.preedit.c_str());
 
   // 這一行就是那顆鍵。keysym / 修飾鍵取自 common/hotkey_policy.cc ——
   // 與瘦 DLL 的 OnPreservedKey 送的是同一組值。
@@ -231,8 +245,12 @@ int RunAsciiToggle(IpcClient& ipc, const std::string& keys) {
     std::fprintf(stderr, "!! Ctrl+空白鍵送不出去\n");
     return 1;
   }
-  std::printf("Ctrl+空白鍵:handled=%d,英數=%d\n", hot.handled ? 1 : 0,
-              ascii_of(hot.snap) ? 1 : 0);
+  std::printf(
+      "Ctrl+空白鍵(組字中):handled=%d 英數=%d 組字中=%d has_commit=%d "
+      "commit=\"%s\" preedit=\"%s\"\n",
+      hot.handled ? 1 : 0, ascii_of(hot.snap) ? 1 : 0,
+      composing_of(hot.snap) ? 1 : 0, hot.snap.has_commit ? 1 : 0,
+      hot.snap.commit_text.c_str(), hot.snap.preedit.c_str());
   if (!hot.handled) {
     std::fprintf(stderr,
                  "!! 服務沒有處理 Ctrl+空白鍵 —— 它被當成一般按鍵交給引擎了\n");
@@ -244,6 +262,34 @@ int RunAsciiToggle(IpcClient& ipc, const std::string& keys) {
                  "   那一橫的第一格讀的就是這個旗標,它會說謊\n");
     return 1;
   }
+  // ── ⚠ 打到一半的那段字,服務**必須**在這一份快照裡交出來 ──────────
+  //
+  //   commit 在 rs_snapshot_acquire 的當下就被消費(engine.cc 的
+  //   TakeSnapshotLocked 檔頭),所以它只有這一次機會出現在線路上。
+  //   這一格空掉的話,使用者按 Ctrl+空白鍵的瞬間,他打到一半的
+  //   「ni hao」就**永久不見了** —— 而畫面上什麼錯誤都不會有。
+  if (!hot.snap.has_commit || hot.snap.commit_text.empty()) {
+    std::fprintf(stderr,
+                 "!! 組字進行中切中英,快照裡**沒有** commit ——\n"
+                 "   使用者打到一半的那段字沒有被交出來,它永久消失了。\n"
+                 "   (切換前 preedit=\"%s\")\n"
+                 "   ⚠ 順序也要查:engine.cc 的 ToggleAsciiMode 必須在\n"
+                 "     SetAsciiModeAll **之後**才取快照 —— 反過來的話,\n"
+                 "     上屏文字會落在下一次 acquire,而那一次沒有人在等。\n",
+                 before.preedit.c_str());
+    return 1;
+  }
+  // 上屏了就不會還在組字。兩者同時成立 = 引擎自相矛盾,而瘦 DLL 會照著
+  // 那份矛盾去開一段收不掉的組字。
+  if (composing_of(hot.snap) || !hot.snap.preedit.empty()) {
+    std::fprintf(stderr,
+                 "!! 切中英之後引擎說它還在組字(組字中=%d preedit=\"%s\")——\n"
+                 "   已經上屏的東西不該還留在組字裡\n",
+                 composing_of(hot.snap) ? 1 : 0, hot.snap.preedit.c_str());
+    return 1;
+  }
+  std::printf("組字中切過去:那段字被交出來了(commit=\"%s\"),組字也收乾淨了\n",
+              hot.snap.commit_text.c_str());
 
   Snapshot after{};
   int eaten_after = 0;
