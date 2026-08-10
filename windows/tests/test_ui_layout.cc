@@ -260,7 +260,11 @@ TEST(ui_layout_advanced_page_counts_the_last_button_in_its_height) {
   for (const PlacedControl& p : pl.items)
     if (!p.rect.empty() && p.rect.bottom() > max_bottom)
       max_bottom = p.rect.bottom();
-  CHECK_INT(max_bottom, 810);
+  // 2026-08-10:進階頁多了「連上網路」與「更新」兩區(13 顆控制項),
+  // 所以這個數字從 810 變成 1364。⚠ 它是**釘住**的:改版面時要一起改,
+  // 而那正是重點 —— 有人「順手重排」而讓最後那顆危險鍵又掉出捲動範圍時,
+  // 這一條會先攔下來。
+  CHECK_INT(max_bottom, 1364);
   CHECK_INT(pl.content_h_dip, max_bottom + kContentPadBottomDip);
   // 三顆固定寬度的按鈕都要在內容高度以內。
   for (int id : {IDC_REDEPLOY, IDC_DIAG_COPY, IDC_RESET}) {

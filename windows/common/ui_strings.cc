@@ -361,14 +361,208 @@ namespace {
     L"請執行安裝工具的 doctor 取得診斷。",                                     \
     L"LuminaKey:问不出这个程序的权限状态,保守起见没有启动输入法服务。"        \
     L"请执行安装工具的 doctor 取得诊断。")                                     \
-  /* ── 關於 ──────────────────────────────────────────────────── */          \
-  X(kAboutOffline,                                                             \
-    L"This build never goes online. Neither binary depends on any networking " \
-    L"library, and the build checks that automatically on every change.",      \
-    L"這個版本完全不連網:兩個程式都沒有相依任何網路元件,"                     \
-    L"而且每一次改動都會自動檢查這件事。",                                     \
-    L"这个版本完全不连网:两个程序都没有相依任何网络组件,"                     \
-    L"而且每一次改动都会自动检查这件事。")
+  /* ── 連上網路 ─────────────────────────────────────────────── */               \
+  X(kNetworkHeading,                                                          \
+    L"Going online",                                                          \
+    L"連上網路",                                                                  \
+    L"连上网络")                                                                  \
+  X(kNetworkBlurb,                                                            \
+    L"It stays offline until you turn the switch below on. Typing, choosing " \
+    L"words, and the words you add yourself all happen on this computer.",    \
+    L"不打開下面這個開關,它一次都不會連出去。打字、選字、你自己加的詞,全部在這台電腦上完成。",                          \
+    L"不打开下面这个开关,它一次都不会连出去。打字、选字、你自己加的词,全部在这台电脑上完成。")                          \
+  X(kNetworkSwitch,                                                           \
+    L"Let it go online",                                                      \
+    L"允許連上網路",                                                                \
+    L"允许连上网络")                                                                \
+  X(kNetworkLogBlurb,                                                         \
+    L"Every connection that really happens gets one line: when, which "       \
+    L"host, what for, and how it went. Attempts stopped by the switch "       \
+    L"are deliberately not written down, so if you have never turned it "     \
+    L"on, that file does not exist at all.",                                  \
+    L"每一次真的連出去都會記一行:時間、連到哪台主機、為了什麼、結果如何。被開關擋下來的嘗試刻意不記 —— 所以你從來沒打開過的話,那"       \
+    L"個檔案根本不存在。",                                                             \
+    L"每一次真的连出去都会记一行:时间、连到哪台主机、为了什么、结果如何。被开关挡下来的尝试刻意不记 —— 所以你从来没打开过的话,那"       \
+    L"个文件根本不存在。")                                                             \
+  X(kNetworkLogButton,                                                        \
+    L"Open the connection record",                                            \
+    L"開啟連線紀錄",                                                                \
+    L"打开连线记录")                                                                \
+  /* ── 更新 ─────────────────────────────────────────────────── */             \
+  X(kUpdateHeading,                                                           \
+    L"Updates",                                                               \
+    L"更新",                                                                    \
+    L"更新")                                                                    \
+  X(kUpdateBlurb,                                                             \
+    L"See whether a newer version exists. If you update, we download the "    \
+    L"same installer that sits on the download page and hand over to it "     \
+    L"- exactly what happens when you fetch it yourself.",                    \
+    L"看看有沒有新版本。要更新的話,我們會下載下載頁上的同一支安裝程式,然後把事情交給它 —— 跟你自己去下載一次完全一樣。",           \
+    L"看看有没有新版本。要更新的话,我们会下载下载页上的同一支安装程序,然后把事情交给它 —— 跟你自己去下载一次完全一样。")           \
+  X(kUpdateTrustAnchor,                                                       \
+    L"This program carries no signature. The only thing protecting the "      \
+    L"download is the encrypted connection itself. We do compare a checksum " \
+    L"afterwards, but that catches a cut-off or damaged download - not "      \
+    L"someone who can swap the file and the checksum together. You can "      \
+    L"always fetch it from the download page yourself instead.",              \
+    L"這個程式沒有數位簽章。保護這次下載的只有加密連線本身。下載完我們會核對摘要,但那擋得住斷線與壞掉的檔案,擋不住一個能同時換掉檔案"       \
+    L"與摘要的人。你也可以自己去下載頁拿,結果一樣。",                                               \
+    L"这个程序没有数字签名。保护这次下载的只有加密连线本身。下载完我们会核对摘要,但那挡得住断线与坏掉的文件,挡不住一个能同时换掉文件"       \
+    L"与摘要的人。你也可以自己去下载页拿,结果一样。")                                               \
+  X(kUpdateWhatHappens,                                                       \
+    L"While it updates: the input method stops, the files are replaced, "     \
+    L"and it starts again by itself. No restart, no signing out. Programs "   \
+    L"you already have open pick up the new one the next time you open "      \
+    L"them.",                                                                 \
+    L"更新的時候:輸入法會先停下來,換掉檔案,然後自己起來。不必重新開機,也不必登出。已經開著的程式要等你下一次開它,才會換成新的。",       \
+    L"更新的时候:输入法会先停下来,换掉文件,然后自己起来。不必重新开机,也不必登出。已经开着的程序要等你下一次开它,才会换成新的。")       \
+  X(kUpdateCheckButton,                                                       \
+    L"Check for a newer version",                                             \
+    L"看看有沒有新版本",                                                              \
+    L"看看有没有新版本")                                                              \
+  X(kUpdateInstallButton,                                                     \
+    L"Download and update",                                                   \
+    L"下載並更新",                                                                 \
+    L"下载并更新")                                                                 \
+  X(kUpdateInstallNowButton,                                                  \
+    L"Update now",                                                            \
+    L"現在更新",                                                                  \
+    L"现在更新")                                                                  \
+  X(kUpdateOpenPageButton,                                                    \
+    L"Open the download page",                                                \
+    L"開啟下載頁",                                                                 \
+    L"打开下载页")                                                                 \
+  X(kUpdateStatusIdle,                                                        \
+    L"Not checked yet.",                                                      \
+    L"還沒查過。",                                                                 \
+    L"还没查过。")                                                                 \
+  X(kUpdateStatusChecking,                                                    \
+    L"Checking...",                                                           \
+    L"正在查…",                                                                  \
+    L"正在查…")                                                                  \
+  X(kUpdateStatusUpToDate,                                                    \
+    L"You already have the newest one.",                                      \
+    L"你已經是最新的了。",                                                             \
+    L"你已经是最新的了。")                                                             \
+  X(kUpdateStatusAvailable,                                                   \
+    L"There is a newer version: %s",                                          \
+    L"有新版本:%s",                                                               \
+    L"有新版本:%s")                                                               \
+  X(kUpdateStatusDowngrade,                                                   \
+    L"The one online is older than the one you have, so there is nothing "    \
+    L"to install. That means something went wrong where we publish, not "     \
+    L"here.",                                                                 \
+    L"線上那一份比你手上這一份還舊,所以沒有東西可以裝。那代表發布那一端出了事,不是你這邊。",                           \
+    L"线上那一份比你手上这一份还旧,所以没有东西可以装。那代表发布那一端出了事,不是你这边。")                           \
+  X(kUpdateStatusDownloading,                                                 \
+    L"Downloading... (%s)",                                               \
+    L"正在下載…(%s)",                                                          \
+    L"正在下载…(%s)")                                                          \
+  X(kUpdateStatusVerifying,                                                   \
+    L"Checking what came down...",                                            \
+    L"正在核對下載回來的檔案…",                                                          \
+    L"正在核对下载回来的文件…")                                                          \
+  X(kUpdateStatusReady,                                                       \
+    L"Downloaded and checked. Once you press update, the input method "       \
+    L"stops for a moment and comes back by itself.",                          \
+    L"下載好了,也核對過了。按下更新之後,輸入法會停一下,然後自己回來。",                                     \
+    L"下载好了,也核对过了。按下更新之后,输入法会停一下,然后自己回来。")                                     \
+  X(kUpdateStatusHandedOff,                                                   \
+    L"The installer is running now. This window closes and comes back "       \
+    L"when it is finished.",                                                  \
+    L"安裝程式已經在跑了。這個視窗會關掉,做完會自己回來。",                                            \
+    L"安装程序已经在跑了。这个窗口会关掉,做完会自己回来。")                                            \
+  X(kUpdateStatusInstalled,                                                   \
+    L"Updated to %s.",                                                        \
+    L"已經更新到 %s。",                                                             \
+    L"已经更新到 %s。")                                                             \
+  X(kUpdateErrSwitchOff,                                                      \
+    L"The switch above is off, so not one byte went out. Turn it on first "   \
+    L"if you want to check.",                                                 \
+    L"上面那個開關是關的,所以一個位元組都沒有出去。要查的話,先把它打開。",                                    \
+    L"上面那个开关是关的,所以一个字节都没有出去。要查的话,先把它打开。")                                     \
+  X(kUpdateErrUnreachable,                                                    \
+    L"Could not reach the place that holds the version information. The "     \
+    L"network may be down, or that server may not be answering right now.",   \
+    L"連不到放版本資訊的地方。可能是網路不通,也可能是那台伺服器暫時沒有回應。",                                  \
+    L"连不到放版本信息的地方。可能是网络不通,也可能是那台服务器暂时没有回应。")                                  \
+  X(kUpdateErrUnreadable,                                                     \
+    L"The version information came back but does not make sense, so nothing " \
+    L"was downloaded.",                                                       \
+    L"版本資訊拿到了,但是讀不懂,所以什麼都沒有下載。",                                              \
+    L"版本信息拿到了,但是读不懂,所以什么都没有下载。")                                              \
+  X(kUpdateErrOwnVersionUnknown,                                              \
+    L"Cannot tell which version you are running, so there is no way to "      \
+    L"say whether the one online is newer. Install once from the download "   \
+    L"page and it will work from then on.",                                   \
+    L"查不出你現在裝的是哪一版,所以沒辦法判斷線上那一份是新是舊。從下載頁自己裝一次之後就查得到了。",                       \
+    L"查不出你现在装的是哪一版,所以没办法判断线上那一份是新是旧。从下载页自己装一次之后就查得到了。")                       \
+  X(kUpdateErrDownloadInterrupted,                                            \
+    L"The download stopped part way and what had come down was thrown "       \
+    L"away. Nothing on your computer was touched - press again to start "     \
+    L"over.",                                                                 \
+    L"下載中途停了,已經下載的部分丟掉了。你的電腦上一個檔案都沒有被動到,再按一次就重來。",                            \
+    L"下载中途停了,已经下载的部分丢掉了。你的电脑上一个文件都没有被动到,再按一次就重来。")                            \
+  X(kUpdateErrTooLarge,                                                       \
+    L"More came down than the version information said there would be, "      \
+    L"so it was stopped and thrown away. The one online does not match "      \
+    L"its own description.",                                                  \
+    L"收到的比版本資訊宣告的還多,所以停下來並且丟掉了。那代表線上那一份跟它自己的說明對不起來。",                         \
+    L"收到的比版本信息宣告的还多,所以停下来并且丢掉了。那代表线上那一份跟它自己的说明对不起来。")                         \
+  X(kUpdateErrSha256,                                                         \
+    L"What came down is not the file the version information describes, "     \
+    L"so the whole thing was thrown away and nothing was installed.",         \
+    L"下載回來的檔案跟版本資訊說的不是同一個,整包丟掉了,沒有安裝任何東西。",                                   \
+    L"下载回来的文件跟版本信息说的不是同一个,整包丢掉了,没有安装任何东西。")                                   \
+  X(kUpdateErrStagingWrite,                                                   \
+    L"Could not save what was downloaded. The disk may be full, or another "  \
+    L"program may be holding the file.",                                      \
+    L"存不下下載回來的檔案。可能是磁碟滿了,也可能是有別的程式正握著它。",                                     \
+    L"存不下下载回来的文件。可能是磁盘满了,也可能是有别的程序正握着它。")                                     \
+  X(kUpdateErrProductChanged,                                                 \
+    L"The version online calls itself a different product. Installing "       \
+    L"it would leave you with two copies instead of replacing this one, "     \
+    L"so it was not downloaded. Open the download page to see what to "       \
+    L"do.",                                                                   \
+    L"線上那一版把自己標成另一個產品。裝下去不會蓋掉你現在這一套,而是在旁邊多出一套,所以我們沒有下載它。請開下載頁看說明。",           \
+    L"线上那一版把自己标成另一个产品。装下去不会盖掉你现在这一套,而是在旁边多出一套,所以我们没有下载它。请开下载页看说明。")           \
+  X(kUpdateErrBusy,                                                           \
+    L"The words are being sorted out right now, so this cannot stop cleanly. " \
+    L"Wait for that to finish and try again - stopping half way would "       \
+    L"leave the work unfinished.",                                            \
+    L"現在正在整理字詞,停不下來。等它做完再更新 —— 中途停掉會留下做到一半的東西。",                              \
+    L"现在正在整理字词,停不下来。等它做完再更新 —— 中途停掉会留下做到一半的东西。")                              \
+  X(kUpdateErrElevationDeclined,                                              \
+    L"You answered no to the administrator prompt, so nothing was done. "     \
+    L"Replacing the installed files needs administrator rights.",             \
+    L"你在系統管理員的確認視窗按了否,所以什麼都沒有做。換掉已經裝好的檔案需要系統管理員權限。",                          \
+    L"你在系统管理员的确认窗口按了否,所以什么都没有做。换掉已经装好的文件需要系统管理员权限。")                          \
+  X(kUpdateErrHandoffFailed,                                                  \
+    L"Could not start the installer. What was downloaded is still there, "    \
+    L"and you can open it yourself.",                                         \
+    L"叫不起安裝程式。下載回來的那一份還在,你可以自己把它打開。",                                         \
+    L"叫不起安装程序。下载回来的那一份还在,你可以自己把它打开。")                                         \
+  X(kUpdateErrFileLocked,                                                     \
+    L"The update did not go in: something is still holding the installed "    \
+    L"files. Close those programs and try again. We will not push it to "     \
+    L"your next restart instead.",                                            \
+    L"更新沒有裝上去:還有程式握著已經裝好的檔案。把那些程式關掉再試一次。我們不會把它排到你下一次開機才做。",                   \
+    L"更新没有装上去:还有程序握着已经装好的文件。把那些程序关掉再试一次。我们不会把它排到你下一次开机才做。")                   \
+  X(kUpdateErrNotInstalled,                                                   \
+    L"The update did not go in, and we cannot tell why. The version you "     \
+    L"had is untouched.",                                                     \
+    L"更新沒有裝上去,而我們看不出原因。你原本那一版一點都沒有被動到。",                                      \
+    L"更新没有装上去,而我们看不出原因。你原本那一版一点都没有被动到。")                                      \
+  /* ── 關於 ─────────────────────────────────────────────────── */             \
+  X(kAboutOffline,                                                            \
+    L"The one piece that gets loaded into every program you type in has "     \
+    L"no networking in it at all, and every change is checked for that "      \
+    L"automatically. Everything else stays offline until you turn the "       \
+    L"switch above on.",                                                      \
+    L"被載入到每一個打字程式裡的那一顆,完全沒有連網能力,而且每一次改動都會自動檢查這件事。其餘的部分在你打開上面那個開關之前,一次都"       \
+    L"不會連出去。",                                                                \
+    L"被载入到每一个打字程序里的那一颗,完全没有连网能力,而且每一次改动都会自动检查这件事。其余的部分在你打开上面那个开关之前,一次都"       \
+    L"不会连出去。")
 
 // ── 由同一份清單長出 enum 順序表與三個語系 ──────────────────────
 

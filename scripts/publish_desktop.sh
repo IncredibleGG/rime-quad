@@ -16,6 +16,127 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # 產品識別、R2 路徑與 CI artifact 名字的唯一來源,見 scripts/lib/product.env。
 # shellcheck source=lib/product.sh
 . "$ROOT/scripts/lib/product.sh"
+# ══ 線上版本資訊(Windows 的應用內更新讀的那一份)═══════════════
+#
+# ⚠ **桌面端自己一份。** Android 那一份 rime/version.json 描述的是 APK:
+#   檔名、大小、sha256、package 沒有一個對得上桌面的安裝程式。共用一份的
+#   話,兩邊只要有一邊發版,另一邊就會拿到一個大小與摘要都不對的東西 ——
+#   而使用者看到的是「下載完說檔案壞了」,查起來會先怪到網路上。
+#
+# ⚠ **欄位一律選用(除了那五個必填)。** 這是 Android 那條線的教訓:
+#   使用者手上的**舊版**讀的是**新的**清單。把任何欄位改成必填,等於所有
+#   舊版本安靜地再也收不到更新,而畫面上寫的是「版本資訊格式錯誤」。
+#   讀取端的政策寫在 windows/common/update_manifest.h,並由
+#   windows/tests/test_update_manifest.cc 釘住。
+#
+# 從 version.txt 取一個欄位。⚠ 行首錨定 —— 一個 notes 裡寫著
+# "version_code=99" 的值不可以被抓成版本號(publish_apk.sh 踩過同一個坑)。
+# 找不到就**非零結束**,不吐空字串當成 0。
+version_txt_field() {   # $1 = version.txt 的內容, $2 = 欄位名
+  local v
+  v="$(printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -1)"
+  [ -n "$v" ] || return 1
+  printf '%s' "$v"
+}
+
+# 產生 version-windows.json。抽成函式的理由與 publish_apk.sh 的
+# render_version_json 相同:這份 JSON 是**真正送到使用者手上**的東西,
+# 埋在上傳流程中間的話,唯一的驗證方式就是「發一版出去」。
+render_win_version_json() {
+  local page_json=""
+  [ -z "${WIN_PAGE_URL:-}" ] || page_json="
+  \"page_url\": $(PU="$WIN_PAGE_URL" python3 -c 'import json,os;print(json.dumps(os.environ["PU"]))'),"
+  local notes_json
+  notes_json="$(NOTES="${WIN_NOTES:-}" python3 -c 'import json,os;print(json.dumps(os.environ["NOTES"]))')"
+  # ⚠ url 指的是**帶時間戳的那一份**,不是 -latest。-latest 會被下一次
+  #   發布蓋掉,而 sha256 是釘死的 —— 指著它等於「下一次發布之後,
+  #   所有還沒更新的人都會拿到摘要不符」。
+  cat <<JSON
+{
+  "version_code": $WIN_VERSION_CODE,
+  "version_name": "$WIN_VERSION_NAME",
+  "commit": "$SHA",
+  "file": "$SNAME",
+  "size": $WIN_SIZE,
+  "sha256": "$WIN_SHA256",
+  "url": "$BASE_URL/$RS_R2_WINDOWS_DIR/$SNAME",
+  "app_id": "$WIN_APP_ID",$page_json
+  "notes": $notes_json
+}
+JSON
+}
+
+# ── --self-check:不連網、不讀 artifact,只驗上面那兩支 ────────────
+if [ "${1:-}" = "--self-check" ]; then
+  sc_fail=0
+  sc() { # 名稱 期望值 命令...
+    local name="$1" want="$2"; shift 2
+    local got rc
+    set +e; got="$("$@" 2>&1)"; rc=$?; set -e
+    if [ "$rc" -eq 0 ] && [ "$got" = "$want" ]; then
+      printf '  \033[1;32mok\033[0m   %s\n' "$name"
+    else
+      printf '\033[1;31m  !! %s:得到 rc=%s「%s」,預期「%s」\033[0m\n' \
+             "$name" "$rc" "$got" "$want" >&2
+      sc_fail=1
+    fi
+  }
+  VT='# comment
+version_code=24101430
+version_name=0.1.0+20260810-1200.abc1234
+app_id={4D16C4D6-444A-40A7-953D-57BF873E8689}
+commit=abc1234'
+  sc "取 version_code" "24101430" version_txt_field "$VT" version_code
+  sc "取 app_id" "{4D16C4D6-444A-40A7-953D-57BF873E8689}" version_txt_field "$VT" app_id
+  # ⚠ 行首錨定:值裡出現同名的字不可以被抓走。
+  sc "不被值裡的同名字串騙走" "24101430" version_txt_field \
+     "$(printf 'notes=see version_code=99999999\nversion_code=24101430')" version_code
+  if version_txt_field "$VT" nonexistent >/dev/null 2>&1; then
+    printf '\033[1;31m  !! 缺欄位竟然以 0 結束(會被當成 0)\033[0m\n' >&2
+    sc_fail=1
+  else
+    printf '  \033[1;32mok\033[0m   缺欄位以非零結束\n'
+  fi
+
+  # 產出的 JSON 必須是合法 JSON,而且五個必填都在、值的型別正確。
+  # ⚠ 連自檢的假資料都不可以寫死產品名:寫死的那一份會在改名之後
+  #   繼續通過,而真正要發的東西已經叫別的名字了。
+  SHA=abc1234; SNAME="${RS_R2_ARTIFACT_BASE}-Setup-x64-20260810-1200-abc1234.exe"
+  WIN_VERSION_CODE=24101430
+  WIN_VERSION_NAME='0.1.0+20260810-1200.abc1234'
+  WIN_SIZE=20971520
+  WIN_SHA256=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+  WIN_APP_ID='{4D16C4D6-444A-40A7-953D-57BF873E8689}'
+  BASE_URL='https://pub-d6a54d2e5f5947e2b0b23fb8e27ce0a5.r2.dev/rime'
+  RS_R2_WINDOWS_DIR=windows
+  # notes 裡故意放引號與反斜線 —— 一份壞掉的 JSON 會讓**每一台**
+  # 裝了這個輸入法的機器從此再也查不到更新。
+  WIN_NOTES='修好 "更新" 的顯示 \ 以及路徑 C:\temp'
+  out="$(render_win_version_json)"
+  if printf '%s' "$out" | python3 -c '
+import json,sys
+m=json.load(sys.stdin)
+for k in ("version_code","version_name","size","sha256","url"):
+    assert k in m, "缺必填欄位 "+k
+assert isinstance(m["version_code"], int) and m["version_code"] > 0
+assert isinstance(m["size"], int) and m["size"] > 0
+assert len(m["sha256"]) == 64
+assert m["url"].startswith("https://")
+assert m["url"].endswith(".exe") and "latest" not in m["url"], "url 不可以指著 -latest"
+assert m["app_id"].startswith("{")
+assert "page_url" not in m, "沒給 WIN_PAGE_URL 時不該憑空生出這個欄位"
+' 2>&1; then
+    printf '  \033[1;32mok\033[0m   version-windows.json 是合法 JSON 而且欄位對\n'
+  else
+    printf '\033[1;31m  !! version-windows.json 不合格\033[0m\n' >&2
+    printf '%s\n' "$out" >&2
+    sc_fail=1
+  fi
+  [ "$sc_fail" -eq 0 ] || { echo "publish_desktop.sh --self-check 沒過" >&2; exit 1; }
+  echo "publish_desktop.sh --self-check 全部通過"
+  exit 0
+fi
+
 PLATFORM="${1:?用法: publish_desktop.sh <macos|windows> <run_id>}"
 RUN_ID="${2:?缺 run_id}"
 
@@ -342,6 +463,23 @@ $APP_BASE Windows x64  $STAMP  ($SHORT)
   3. 設定 → 時間與語言 → 語言與地區 → 中文 → 選項 → 新增鍵盤 → $APP_BASE
   4. Win+空白鍵切換輸入法。
 
+更新
+
+  設定視窗 → 進階 → 更新 → 「看看有沒有新版本」。
+  它下載的就是這一份 Setup.exe,然後交給它自己去換檔 ——
+  跟你在這裡手動下載一次的結果完全一樣。
+  更新的時候輸入法會停一下再自己回來:不必重新開機,也不必登出。
+  已經開著的程式要等你下一次開它,才會換成新的。
+
+  ⚠ 誠實話:**這個程式沒有數位簽章。** 保護那次下載的只有加密連線本身。
+    下載完會核對摘要,但那擋得住斷線與壞掉的檔案,擋不住一個能同時
+    換掉檔案與摘要的人。你也可以永遠只用這一頁自己下載,結果一樣。
+
+  ⚠ 它預設不連網。更新要先在同一頁把「允許連上網路」打開;
+    打開之後每一次真的連出去都會記一行(時間、主機、原因、結果),
+    你自己看得到。被開關擋下來的嘗試刻意不記 ——
+    所以你從來沒打開過的話,那個紀錄檔根本不存在。
+
 移除
 
   雙擊 uninstall.bat。
@@ -359,7 +497,7 @@ $APP_BASE Windows x64  $STAMP  ($SHORT)
 
 已知未完成
   - 候選窗不讀主題檔（規範還有六個缺口沒定義，先做等於各端自己發明一套）
-  - 沒有系統匣圖示、沒有設定介面、沒有安裝程式
+  - 沒有程式碼簽章：下載時 SmartScreen 會攔，而那個警告是對的
   - 只有 x64，arm64 還沒做
 
 commit: $SHA
@@ -386,6 +524,62 @@ TXT
   upload "$WORK/$SNAME" "$RS_R2_WINDOWS_DIR/$SNAME"
   upload "$WORK/$SNAME" "$RS_R2_WINDOWS_DIR/$LATEST_SETUP"
   upload "$PKG/README.txt" "$RS_R2_WINDOWS_DIR/README-latest.txt"
+
+  # ── 線上版本資訊 ────────────────────────────────────────────
+  #
+  # ⚠ 值**不重算**:version_code 與 app_id 逐字取自打包時寫出來的
+  #   version.txt(它同時被裝進使用者的安裝目錄)。兩邊各算一次的話,
+  #   哪天公式改了一邊,使用者就會永遠比線上舊或永遠比線上新 ——
+  #   兩種都讓更新這條路壞掉,而且都不會有錯誤訊息。
+  VTXT_FILE="$(find "$WORK/setup" -name version.txt | head -1)"
+  [ -n "$VTXT_FILE" ] || {
+    echo "artifact 裡沒有 version.txt —— 沒有它就寫不出正確的版本資訊。" >&2
+    echo "它由 windows/make_installer.sh 產生、由 windows.yml 上傳;" >&2
+    echo "缺了就是那條線斷了,**不要**在這裡猜一個版本號補上。" >&2
+    exit 1; }
+  VTXT="$(cat "$VTXT_FILE")"
+  WIN_VERSION_CODE="$(version_txt_field "$VTXT" version_code)" \
+    || { echo "version.txt 裡沒有 version_code" >&2; exit 1; }
+  WIN_VERSION_NAME="$(version_txt_field "$VTXT" version_name)" \
+    || { echo "version.txt 裡沒有 version_name" >&2; exit 1; }
+  WIN_APP_ID="$(version_txt_field "$VTXT" app_id)" \
+    || { echo "version.txt 裡沒有 app_id" >&2; exit 1; }
+  [ "$WIN_VERSION_CODE" -gt 0 ] 2>/dev/null || {
+    echo "version_code=$WIN_VERSION_CODE 不合理。0 代表打包時取不到 commit 時間," >&2
+    echo "而那樣發出去的話,所有使用者都會查到一個比自己舊的版本。" >&2
+    exit 1; }
+  WIN_SIZE="$(stat -c%s "$WORK/$SNAME")"
+  WIN_SHA256="$(sha256sum "$WORK/$SNAME" | cut -d' ' -f1)"
+  BASE_URL="https://pub-d6a54d2e5f5947e2b0b23fb8e27ce0a5.r2.dev/rime"
+
+  # 單調性。⚠ 線上那一份比要發的還新 = 有人正在覆蓋別人的發布,
+  #   或版本號的來源出了事。停下來,不要安靜地讓使用者降級。
+  ONLINE="$(curl -sS --max-time 20 "$BASE_URL/$RS_R2_WINDOWS_DIR/version-windows.json" 2>/dev/null || true)"
+  if [ -n "$ONLINE" ]; then
+    ONLINE_CODE="$(printf '%s' "$ONLINE" | python3 -c '
+import json,sys
+try:
+    v = json.load(sys.stdin).get("version_code")
+    print(v if isinstance(v, int) else "")
+except Exception:
+    print("")' 2>/dev/null || true)"
+    if [ -n "$ONLINE_CODE" ] && [ "$ONLINE_CODE" -ge "$WIN_VERSION_CODE" ] 2>/dev/null; then
+      echo "線上的 version_code 是 $ONLINE_CODE,要發的是 $WIN_VERSION_CODE —— 不是更新的。" >&2
+      echo "拒絕發布:蓋上去的話,已經裝了新版的人會被叫去裝一個更舊的。" >&2
+      exit 1
+    fi
+    echo "[ver] 線上 $ONLINE_CODE → 這一次 $WIN_VERSION_CODE"
+  else
+    echo "[ver] 線上還沒有 version-windows.json(第一次發)"
+  fi
+
+  render_win_version_json > "$WORK/version-windows.json"
+  # 發出去之前先確認它是合法 JSON。壞掉的那一份會讓**每一台**裝了這個
+  # 輸入法的機器從此查不到更新,而且畫面上寫的是「版本資訊讀不懂」。
+  python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$WORK/version-windows.json" \
+    || { echo "產生出來的 version-windows.json 不是合法 JSON" >&2; exit 1; }
+  upload "$WORK/version-windows.json" "$RS_R2_WINDOWS_DIR/version-windows.json"
+  echo "[ver] version_code=$WIN_VERSION_CODE  app_id=$WIN_APP_ID"
   ;;
 *)
   echo "未知平台: $PLATFORM" >&2; exit 1 ;;

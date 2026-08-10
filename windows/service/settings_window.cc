@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cwchar>
 
 #include "../common/schema_choice.h"
 #include "../common/schema_list_patch.h"
@@ -23,6 +24,9 @@ constexpr wchar_t kClass[] = L"LuminaKeySettingsWindow";
 constexpr UINT WM_RIME_OPEN = WM_APP + 1;
 constexpr UINT WM_RIME_TRAY = WM_APP + 2;
 constexpr UINT WM_RIME_SET_VARIANT = WM_APP + 3;
+// 更新的工作執行緒做完了。⚠ 它只是「回來了」的訊號 ——
+//   結果放在成員變數裡,而且只有 UI 執行緒讀得到。
+constexpr UINT WM_RIME_UPDATE_DONE = WM_APP + 4;
 constexpr UINT kTrayId = 1;
 constexpr UINT_PTR kDeployTimer = 1;
 constexpr UINT_PTR kStatusTimer = 2;
@@ -169,6 +173,27 @@ const ControlDef kControls[] = {
     {IDC_LANG_1, L"BUTTON", RADIO, UiString::kLanguageEnglish},
     {IDC_LANG_2, L"BUTTON", RADIO, UiString::kLanguageHant},
     {IDC_LANG_3, L"BUTTON", RADIO, UiString::kLanguageHans},
+    // ── 連上網路 ──
+    {IDC_NET_HEAD, L"STATIC", ST, UiString::kNetworkHeading},
+    {IDC_NET_BLURB, L"STATIC", ST, UiString::kNetworkBlurb},
+    {IDC_NET_SWITCH, L"BUTTON",
+     BS_AUTOCHECKBOX | BS_RIGHTBUTTON | BS_MULTILINE | WS_TABSTOP,
+     UiString::kNetworkSwitch},
+    {IDC_NET_LOG_BLURB, L"STATIC", ST, UiString::kNetworkLogBlurb},
+    {IDC_NET_LOG, L"BUTTON", BTN, UiString::kNetworkLogButton},
+
+    // ── 更新 ──
+    // ⚠ IDC_UPDATE_TRUST(沒有數位簽章那一句)是**永遠顯示**的靜態文字,
+    //   不是錯誤時才冒出來的東西。版面上它排在按鈕之前。
+    {IDC_UPDATE_HEAD, L"STATIC", ST, UiString::kUpdateHeading},
+    {IDC_UPDATE_BLURB, L"STATIC", ST, UiString::kUpdateBlurb},
+    {IDC_UPDATE_TRUST, L"STATIC", ST, UiString::kUpdateTrustAnchor},
+    {IDC_UPDATE_WHAT, L"STATIC", ST, UiString::kUpdateWhatHappens},
+    {IDC_UPDATE_STATUS, L"STATIC", ST, kNoText},
+    {IDC_UPDATE_CHECK, L"BUTTON", BTN, UiString::kUpdateCheckButton},
+    {IDC_UPDATE_ACTION, L"BUTTON", BTN, UiString::kUpdateInstallButton},
+    {IDC_UPDATE_PAGE, L"BUTTON", BTN, UiString::kUpdateOpenPageButton},
+
     {IDC_DIAG_HEAD, L"STATIC", ST, UiString::kDiagnosticsHeading},
     {IDC_DIAG_NOTE, L"STATIC", ST, UiString::kDiagnosticsNote},
     // §12.5.2:唯讀資訊 = EDIT + ES_READONLY|ES_MULTILINE|WS_VSCROLL。
@@ -238,7 +263,32 @@ int RadioSel(HWND parent, int first, int count) {
 
 SettingsWindow::SettingsWindow(Engine* engine, SettingsStore* store,
                                const std::string& shared_dir)
-    : engine_(engine), store_(store), shared_dir_(shared_dir) {}
+    : engine_(engine),
+      store_(store),
+      shared_dir_(shared_dir),
+      net_(store),
+      update_(&net_, store, ModuleDirectory(nullptr)) {
+  // ── 交棒之後的和解 ────────────────────────────────────────
+  //
+  // ⚠ 為什麼在**建構子**而不是視窗開起來的時候:安裝程式停掉的是整個
+  //   服務進程,回來的時候使用者不一定會去開設定視窗。這裡讀一次
+  //   交棒單,結果留著,等他下次打開設定就看得到。
+  //   (真的沒有更新過的話,ReconcileHandoff 回 kNoHandoff,一個字都不說。)
+  UpdateFailure why = UpdateFailure::kNone;
+  std::string name;
+  const UpdateOutcome out = update_.Reconcile(&why, &name);
+  if (out == UpdateOutcome::kInstalled) {
+    wchar_t buf[512];
+    std::swprintf(buf, 512, UiText(UiString::kUpdateStatusInstalled),
+                  Utf8ToWide(name).c_str());
+    update_note_ = buf;
+  } else if (out == UpdateOutcome::kNotInstalled) {
+    // ⚠ 這裡分得出「檔案被鎖住」與「不知道為什麼」,而那兩句話不一樣:
+    //   前者使用者做得到一件事(把握著檔案的程式關掉),後者只能回報。
+    update_failure_ = why;
+    update_note_ = UiText(UpdateFailureText(why));
+  }
+}
 
 SettingsWindow::~SettingsWindow() { Stop(); }
 
@@ -343,6 +393,7 @@ LRESULT CALLBACK SettingsWindow::WndProc(HWND hwnd, UINT msg, WPARAM w,
     case WM_CREATE:
       if (self) {
         self->CreateUi(hwnd);
+        self->RefreshNetworkAndUpdateCard();
         self->AddTray();
       }
       return 0;
@@ -380,6 +431,9 @@ LRESULT CALLBACK SettingsWindow::WndProc(HWND hwnd, UINT msg, WPARAM w,
           id == IDC_PUNCT_BLURB || id == IDC_REDEPLOY_BLURB ||
           id == IDC_FILES_BLURB || id == IDC_LANG_BLURB ||
           id == IDC_DIAG_NOTE || id == IDC_RESET_BLURB ||
+          id == IDC_NET_BLURB || id == IDC_NET_LOG_BLURB ||
+          id == IDC_UPDATE_BLURB || id == IDC_UPDATE_TRUST ||
+          id == IDC_UPDATE_WHAT || id == IDC_UPDATE_STATUS ||
           id == IDC_SCHEMAS_DEFAULT_LINE ||
           id == IDC_SCHEMAS_EMPTY;
       const bool disabled = ::IsWindowEnabled(ctl) == FALSE;
@@ -477,6 +531,10 @@ LRESULT CALLBACK SettingsWindow::WndProc(HWND hwnd, UINT msg, WPARAM w,
         self->SetStatus(std::wstring());
       }
       return 0;
+    case WM_RIME_UPDATE_DONE:
+      if (self) self->OnUpdateWorkerDone();
+      return 0;
+
     case WM_RIME_SET_VARIANT: {
       const int i = static_cast<int>(w);
       if (self && i >= 0 && i < kVariantCount)
@@ -605,7 +663,8 @@ void SettingsWindow::ApplyFonts() {
   for (int id : {IDC_SCHEMAS_LIST_HEAD, IDC_COUNT_HEAD, IDC_SCALE_HEAD,
                  IDC_THEME_HEAD, IDC_BAR_HEAD, IDC_VARIANT_HEAD,
                  IDC_PUNCT_HEAD, IDC_REDEPLOY_HEAD, IDC_FILES_HEAD,
-                 IDC_LANG_HEAD, IDC_DIAG_HEAD, IDC_RESET_HEAD})
+                 IDC_LANG_HEAD, IDC_NET_HEAD, IDC_UPDATE_HEAD,
+                 IDC_DIAG_HEAD, IDC_RESET_HEAD})
     set(id, head);
   for (int id : {IDC_SCHEMAS_SUB, IDC_APPEAR_SUB, IDC_TEXT_SUB, IDC_ADV_SUB,
                  IDC_SCHEMAS_LIST_BLURB, IDC_FOLLOW_BLURB, IDC_COUNT_BLURB,
@@ -613,6 +672,8 @@ void SettingsWindow::ApplyFonts() {
                  IDC_APPEAR_NOTE, IDC_VARIANT_BLURB, IDC_PUNCT_BLURB,
                  IDC_REDEPLOY_BLURB, IDC_FILES_BLURB, IDC_LANG_BLURB,
                  IDC_DIAG_NOTE, IDC_RESET_BLURB, IDC_STATUS,
+                 IDC_NET_BLURB, IDC_NET_LOG_BLURB, IDC_UPDATE_BLURB,
+                 IDC_UPDATE_TRUST, IDC_UPDATE_WHAT, IDC_UPDATE_STATUS,
                  IDC_SCHEMAS_DEFAULT_LINE,
                  IDC_SCHEMAS_EMPTY})
     set(id, small_f);
@@ -1290,6 +1351,7 @@ void SettingsWindow::ReloadFromSettings() {
                   engine_->deploy_done() ? 1 : 0, engine_->deploy_ok() ? 1 : 0);
     SetText(hwnd_, IDC_DIAG, Utf8ToWide(buf).c_str());
   }
+  RefreshNetworkAndUpdateCard();
   SetStatus(std::wstring());
 }
 
@@ -1735,6 +1797,27 @@ void SettingsWindow::OnCommand(int id, int code) {
     case IDC_REDEPLOY:
       StartRedeploy(UiString::kRedeployButton);
       return;
+    case IDC_NET_SWITCH:
+      ToggleNetwork();
+      return;
+    case IDC_NET_LOG:
+      OpenNetLog();
+      return;
+    case IDC_UPDATE_CHECK:
+      StartUpdateCheck();
+      return;
+    case IDC_UPDATE_ACTION:
+      // 一顆按鈕、兩下:還沒下載就下載並核對,核對過了才交棒。
+      // 為什麼不是一下做完 —— 交棒等於這個視窗與輸入法會消失一下,
+      // 那不該是一顆「下載」按鈕的副作用。
+      if (update_stage_ == UpdateStage::kReady && update_.verified())
+        DoUpdateHandOff();
+      else
+        StartUpdateDownload();
+      return;
+    case IDC_UPDATE_PAGE:
+      OpenDownloadPage();
+      return;
     case IDC_RESET:
       DoResetSettings();
       return;
@@ -1769,6 +1852,200 @@ void SettingsWindow::OnCommand(int id, int code) {
     default:
       return;
   }
+}
+
+// ──────────────────── 連上網路 / 線上更新 ────────────────────
+//
+// ⚠ 這一整段**不碰任何網路 API**。它只呼叫 NetGate(整個 windows/ 底下
+//   唯一開得了連線的地方)與 UpdateService。稽核腳本
+//   windows/audit_offline_win.sh 守著這件事。
+
+void SettingsWindow::ToggleNetwork() {
+  HWND c = Ctl(hwnd_, IDC_NET_SWITCH);
+  const bool want = c && ::SendMessageW(c, BM_GETCHECK, 0, 0) == BST_CHECKED;
+  if (!net_.SetEnabled(want)) {
+    // 安靜地失敗會變成「開關關了,重開又是開的」。
+    if (c)
+      ::SendMessageW(c, BM_SETCHECK,
+                     net_.Enabled() ? BST_CHECKED : BST_UNCHECKED, 0);
+    SetStatus(UiString::kStatusSaveFailed);
+    return;
+  }
+  // 開關一關,畫面上那顆「更新」按鈕就不該還在。
+  RefreshNetworkAndUpdateCard();
+}
+
+void SettingsWindow::OpenNetLog() {
+  // ⚠ 紀錄檔可能**根本不存在**,而那不是錯誤 —— 那正是「開關從沒開過」
+  //   的樣子,也是使用者驗證我們的方式。所以不在這裡建一個空檔案:
+  //   建了的話,「不存在」與「存在但空的」就再也分不出來了。
+  const std::wstring path = Utf8ToWide(net_.log_path());
+  if (::GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    SetTransientStatus(UiString::kNetworkLogBlurb);
+    return;
+  }
+  ::ShellExecuteW(hwnd_, L"open", L"notepad.exe", path.c_str(), nullptr,
+                  SW_SHOWNORMAL);
+}
+
+void SettingsWindow::OpenDownloadPage() {
+  std::string url = update_.have_manifest() ? update_.latest().page_url
+                                            : std::string();
+  if (url.empty() && update_.have_manifest()) url = update_.latest().url;
+  if (url.empty()) url = kWinUpdateManifestUrl;
+  ::ShellExecuteW(hwnd_, L"open", Utf8ToWide(url).c_str(), nullptr, nullptr,
+                  SW_SHOWNORMAL);
+}
+
+DWORD WINAPI SettingsWindow::UpdateWorkerEntry(LPVOID p) {
+  SettingsWindow* self = static_cast<SettingsWindow*>(p);
+  UpdateFailure why = UpdateFailure::kNone;
+  if (self->update_job_ == 1)
+    self->update_.Check(&why);
+  else
+    self->update_.DownloadAndVerify(&why);
+  self->update_failure_ = why;
+  ::PostMessageW(self->hwnd_, WM_RIME_UPDATE_DONE, 0, 0);
+  return 0;
+}
+
+void SettingsWindow::StartUpdateCheck() {
+  if (update_job_ != 0) return;
+  // 開關關著就**不要連**,而且要說 —— 他剛剛主動按了一顆按鈕,
+  // 什麼都不發生會被當成壞掉。
+  if (!net_.Enabled()) {
+    update_failure_ = UpdateFailure::kSwitchOff;
+    update_stage_ = UpdateStage::kIdle;
+    RefreshNetworkAndUpdateCard();
+    return;
+  }
+  update_failure_ = UpdateFailure::kNone;
+  update_stage_ = UpdateStage::kChecking;
+  update_job_ = 1;
+  RefreshNetworkAndUpdateCard();
+  if (update_thread_) ::CloseHandle(update_thread_);
+  update_thread_ = ::CreateThread(nullptr, 0, &UpdateWorkerEntry, this, 0,
+                                  nullptr);
+  if (!update_thread_) {
+    update_job_ = 0;
+    update_stage_ = UpdateStage::kIdle;
+    update_failure_ = UpdateFailure::kHandoffFailed;
+    RefreshNetworkAndUpdateCard();
+  }
+}
+
+void SettingsWindow::StartUpdateDownload() {
+  if (update_job_ != 0) return;
+  if (!net_.Enabled()) {
+    update_failure_ = UpdateFailure::kSwitchOff;
+    RefreshNetworkAndUpdateCard();
+    return;
+  }
+  if (!update_.have_manifest()) {
+    StartUpdateCheck();
+    return;
+  }
+  update_failure_ = UpdateFailure::kNone;
+  update_stage_ = UpdateStage::kDownloading;
+  update_job_ = 2;
+  RefreshNetworkAndUpdateCard();
+  if (update_thread_) ::CloseHandle(update_thread_);
+  update_thread_ = ::CreateThread(nullptr, 0, &UpdateWorkerEntry, this, 0,
+                                  nullptr);
+  if (!update_thread_) {
+    update_job_ = 0;
+    update_stage_ = UpdateStage::kIdle;
+    update_failure_ = UpdateFailure::kHandoffFailed;
+    RefreshNetworkAndUpdateCard();
+  }
+}
+
+void SettingsWindow::OnUpdateWorkerDone() {
+  const int job = update_job_;
+  update_job_ = 0;
+  if (update_failure_ != UpdateFailure::kNone) {
+    update_stage_ = UpdateStage::kIdle;
+  } else if (job == 2 && update_.verified()) {
+    update_stage_ = UpdateStage::kReady;
+  } else {
+    update_stage_ = UpdateStage::kIdle;
+  }
+  RefreshNetworkAndUpdateCard();
+}
+
+void SettingsWindow::DoUpdateHandOff() {
+  UpdateFailure why = UpdateFailure::kNone;
+  // ⚠ deploying_ 就是「服務現在停不下來」那一格:交棒之後安裝程式
+  //   第一件事就是停掉這個進程,而整理字詞做到一半被停掉會留下
+  //   半份資料。使用者看到的會是一句「等它做完再更新」。
+  if (!update_.HandOff(deploying_, &why)) {
+    update_failure_ = why;
+    RefreshNetworkAndUpdateCard();
+    return;
+  }
+  update_failure_ = UpdateFailure::kNone;
+  update_stage_ = UpdateStage::kHandedOff;
+  RefreshNetworkAndUpdateCard();
+}
+
+void SettingsWindow::RefreshNetworkAndUpdateCard() {
+  if (!hwnd_) return;
+
+  const bool on = net_.Enabled();
+  HWND sw = Ctl(hwnd_, IDC_NET_SWITCH);
+  if (sw) ::SendMessageW(sw, BM_SETCHECK, on ? BST_CHECKED : BST_UNCHECKED, 0);
+
+  UpdateUiState st;
+  st.stage = update_stage_;
+  st.failure = update_failure_;
+  st.network_enabled = on;
+  st.have_manifest = update_.have_manifest();
+  st.verdict = update_.verdict();
+  st.app_id = update_.app_id_verdict();
+  st.file_verified = update_.verified();
+  st.installed_version_known = update_.installed().valid();
+  const UpdateCard card = DescribeUpdateCard(st);
+
+  // 狀態那一行。⚠ 帶格式符的三條各自補上它的值 —— 直接把 %s 畫上去
+  // 是這個專案抓過的那種「看起來有做」。
+  std::wstring text;
+  if (card.status != UiString::kUiStringCount) {
+    wchar_t buf[1024];
+    if (card.status == UiString::kUpdateStatusAvailable) {
+      std::swprintf(buf, 1024, UiText(card.status),
+                    Utf8ToWide(update_.latest().version_name).c_str());
+      text = buf;
+    } else if (card.status == UiString::kUpdateStatusDownloading) {
+      wchar_t mb[64];
+      std::swprintf(mb, 64, L"%lld MB",
+                    static_cast<long long>(update_.latest().size / (1024 * 1024)));
+      std::swprintf(buf, 1024, UiText(card.status), mb);
+      text = buf;
+    } else {
+      text = UiText(card.status);
+    }
+  }
+  // 上一次交棒的結果比目前的狀態更值得說一次。
+  if (!update_note_.empty()) {
+    text = update_note_;
+    update_note_.clear();
+  }
+  SetText(hwnd_, IDC_UPDATE_STATUS, text.c_str());
+
+  HWND chk = Ctl(hwnd_, IDC_UPDATE_CHECK);
+  if (chk) {
+    ::EnableWindow(chk, card.show_check_button && on ? TRUE : FALSE);
+    ::ShowWindow(chk, SW_SHOW);
+  }
+  HWND act = Ctl(hwnd_, IDC_UPDATE_ACTION);
+  if (act) {
+    if (card.has_action()) ::SetWindowTextW(act, UiText(card.action));
+    // ⚠ 沒有動作時**停用**而不是隱藏:版面是靜態的(見 ui_layout.cc),
+    //   藏起來會在頁上留一個洞,而使用者會以為是畫壞了。
+    ::EnableWindow(act, card.has_action() ? TRUE : FALSE);
+  }
+  HWND pg = Ctl(hwnd_, IDC_UPDATE_PAGE);
+  if (pg) ::EnableWindow(pg, card.show_page_button ? TRUE : FALSE);
 }
 
 // ─────────────────────────── 系統匣 ───────────────────────────

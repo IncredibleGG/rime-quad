@@ -211,6 +211,60 @@ enum class UiString : int {
   kNotUserBlocked,
   kUnknownTokenBlocked,
 
+  // ── 連上網路(進階頁)──────────────────────────────────────
+  //
+  // ⚠ 這一區是「離線為預設」在畫面上的樣子。開關的預設是關,
+  //   而 kNetworkLogBlurb 那一句解釋了為什麼被擋下的嘗試**不**記錄:
+  //   記了的話,「開關從沒開過所以紀錄是空的」就不成立了。
+  kNetworkHeading,
+  kNetworkBlurb,
+  kNetworkSwitch,
+  kNetworkLogBlurb,
+  kNetworkLogButton,
+
+  // ── 更新(進階頁)──────────────────────────────────────────
+  //
+  // ⚠ kUpdateTrustAnchor 是**誠實那一句**:沒有程式碼簽章,TLS 是唯一的
+  //   信任錨,sha256 擋的是傳輸損壞而不是惡意替換。它必須出現在使用者
+  //   看得到的地方,不是只寫在註解裡 —— common/update_flow.cc 的
+  //   DescribeUpdateCard 每一條路徑都帶著它,並由測試釘住。
+  //
+  // ⚠ kUpdateErr* 每一條都是**不同的一句話**。這一整組存在的理由就是
+  //   「三種不同的失敗在畫面上是同一句紅字」那個缺陷 ——
+  //   test_update_flow.cc 逐對比對,兩格指到同一條就會紅。
+  kUpdateHeading,
+  kUpdateBlurb,
+  kUpdateTrustAnchor,
+  kUpdateWhatHappens,
+  kUpdateCheckButton,
+  kUpdateInstallButton,
+  kUpdateInstallNowButton,
+  kUpdateOpenPageButton,
+  kUpdateStatusIdle,
+  kUpdateStatusChecking,
+  kUpdateStatusUpToDate,
+  kUpdateStatusAvailable,
+  kUpdateStatusDowngrade,
+  kUpdateStatusDownloading,
+  kUpdateStatusVerifying,
+  kUpdateStatusReady,
+  kUpdateStatusHandedOff,
+  kUpdateStatusInstalled,
+  kUpdateErrSwitchOff,
+  kUpdateErrUnreachable,
+  kUpdateErrUnreadable,
+  kUpdateErrOwnVersionUnknown,
+  kUpdateErrDownloadInterrupted,
+  kUpdateErrTooLarge,
+  kUpdateErrSha256,
+  kUpdateErrStagingWrite,
+  kUpdateErrProductChanged,
+  kUpdateErrBusy,
+  kUpdateErrElevationDeclined,
+  kUpdateErrHandoffFailed,
+  kUpdateErrFileLocked,
+  kUpdateErrNotInstalled,
+
   // ── 關於 ────────────────────────────────────────────────────
   kAboutOffline,
 

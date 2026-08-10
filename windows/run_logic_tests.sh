@@ -38,6 +38,9 @@ SRCS=(
   "${SCRIPT_DIR}/common/settings.cc"
   "${SCRIPT_DIR}/common/net_policy.cc"
   "${SCRIPT_DIR}/common/net_gate_core.cc"
+  "${SCRIPT_DIR}/common/sha256.cc"
+  "${SCRIPT_DIR}/common/update_manifest.cc"
+  "${SCRIPT_DIR}/common/update_flow.cc"
   "${SCRIPT_DIR}/common/schema_list_patch.cc"
   "${SCRIPT_DIR}/common/elevation_policy.cc"
   "${SCRIPT_DIR}/common/key_eat_policy.cc"
@@ -59,6 +62,9 @@ SRCS=(
   "${SCRIPT_DIR}/tests/test_settings.cc"
   "${SCRIPT_DIR}/tests/test_net_policy.cc"
   "${SCRIPT_DIR}/tests/test_net_gate_core.cc"
+  "${SCRIPT_DIR}/tests/test_sha256.cc"
+  "${SCRIPT_DIR}/tests/test_update_manifest.cc"
+  "${SCRIPT_DIR}/tests/test_update_flow.cc"
   "${SCRIPT_DIR}/tests/test_proto_compat.cc"
   "${SCRIPT_DIR}/tests/test_schema_list_patch.cc"
   "${SCRIPT_DIR}/tests/test_elevation_policy.cc"
@@ -111,3 +117,27 @@ echo "==> 反向測試通過(離線稽核會紅)"
 echo
 echo "==> check_binaries.sh 的網路允許矩陣"
 "${SCRIPT_DIR}/verify_check_binaries.sh"
+
+# ── 安裝程式那兩條純文字判準 ────────────────────────────────────
+#
+# verify_installer.sh 整支只有 Windows 跑得動(它會真的裝一次),但它裡面
+# 兩條**判準本身**是純文字的,在這裡跑得完 —— 而它們守的正是這一輪最
+# 容易被改壞、又最不容易被發現的兩件事:
+#
+#   · 開機佇列:「升級沒有把任何東西排進開機佇列」問的是**整個安裝目錄**,
+#     不是只有 rime_tsf.dll 一個檔名。
+#   · 更新之後把服務叫回來:不可以用 Exec(會繼承提權權杖),
+#     要被 /RESTARTIME 守著,而且那一段不可以消失。
+#
+# 接在這裡的理由與上面幾支相同:開發時每一輪都會跑到,不必等 CI。
+echo
+echo "==> 線上更新那幾條規則的反向測試(真的把規則改壞,要求指定的測試變紅)"
+"${SCRIPT_DIR}/verify_update_gates.sh"
+
+echo
+echo "==> 安裝程式:開機佇列判準的反向測試"
+"${SCRIPT_DIR}/verify_installer.sh" --self-check-pending
+
+echo
+echo "==> 安裝程式:更新後重啟服務那一段的反向測試"
+"${SCRIPT_DIR}/verify_installer.sh" --self-check-restart

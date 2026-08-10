@@ -65,7 +65,9 @@
 #include "../common/ui_layout.h"
 #include "../common/ui_strings.h"
 #include "engine.h"
+#include "net_gate.h"
 #include "settings_store.h"
+#include "update_service.h"
 #include "ui_font.h"
 #include "ui_theme.h"
 
@@ -168,6 +170,24 @@ class SettingsWindow {
   void ApplyStatusBarVisibility();
   void DoResetSettings();
   bool ApplyOrderAndPageSize(std::string* error);
+  // ── 連上網路 / 更新 ──────────────────────────────────────
+  //
+  // ⚠ 檢查與下載都是**阻塞**的(見 net_gate.h),所以它們跑在自己的
+  //   執行緒上。UI 執行緒同時在跑候選窗 —— 卡住它就是
+  //   「打字打到一半整個沒反應」。
+  //
+  // 執行緒回來的方式是 PostMessage(WM_RIME_UPDATE_DONE),不是直接改狀態:
+  // 所有 UI 狀態一律只在 UI 執行緒上動。
+  void RefreshNetworkAndUpdateCard();
+  void StartUpdateCheck();
+  void StartUpdateDownload();
+  void DoUpdateHandOff();
+  void OnUpdateWorkerDone();
+  void ToggleNetwork();
+  void OpenNetLog();
+  void OpenDownloadPage();
+  static DWORD WINAPI UpdateWorkerEntry(LPVOID self);
+
   void StartRedeploy(UiString why);
   void SetStatus(const std::wstring& text);
   void SetStatus(UiString s) { SetStatus(UiText(s)); }
@@ -214,6 +234,18 @@ class SettingsWindow {
   // ⚠ 存著是為了**只在變動時**才呼叫 SetWindowRgn:那一支會重畫,
   //   每次 LayoutUi 都無條件呼叫的話,捲動時整頁會閃。
   std::vector<int> clip_h_;
+
+  // ⚠ 一個 NetGate,而且是**整個進程唯一**的那一個 —— 出口只有一個,
+  //   這裡不新開第二條路(見 net_gate.h 的「單一出口」)。
+  NetGate net_;
+  UpdateService update_;
+  // 0 = 沒有在跑;1 = 查;2 = 下載。UI 執行緒讀、工作執行緒不寫。
+  int update_job_ = 0;
+  HANDLE update_thread_ = nullptr;
+  UpdateStage update_stage_ = UpdateStage::kIdle;
+  UpdateFailure update_failure_ = UpdateFailure::kNone;
+  // 上一次交棒的結果(啟動時和解出來的)。只顯示一次。
+  std::wstring update_note_;
 
   bool deploying_ = false;
   uint32_t deploy_seq_ = 0;

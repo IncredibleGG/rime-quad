@@ -34,7 +34,7 @@ name: Windows (核心驗證 + TSF)
 
 on:
   push:
-    branches: [main, windows, fix-win, fix2-winmsg, fix2-gates, fix3-win, fix4-winkey, win-netgate]
+    branches: [main, windows, fix-win, fix2-winmsg, fix2-gates, fix3-win, fix4-winkey, win-netgate, win-update]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -436,7 +436,13 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.SETUP_ARTIFACT }}
-          path: third_party/build/windows-x64/installer/${{ env.SETUP_FILE }}
+          # ⚠ version.txt 跟著一起走。scripts/publish_desktop.sh 靠它寫出
+          #   線上的 version-windows.json —— 那個 version_code 必須與裝進
+          #   使用者機器的那一份**逐字相同**,所以它只在打包時算一次,
+          #   發布端讀,不重算。少了它,發布端會明確地拒絕發布。
+          path: |
+            third_party/build/windows-x64/installer/${{ env.SETUP_FILE }}
+            third_party/build/windows-x64/installer/version.txt
           if-no-files-found: error
 
   # ────────────────────────────────────────────────────────────────

@@ -265,6 +265,23 @@ enum SettingsControlId : int {
   IDC_LANG_1,
   IDC_LANG_2,
   IDC_LANG_3,
+  // 連上網路。⚠ 這一區在**診斷之前**是刻意的:它是這個產品的定位
+  //   (離線為預設),不是疑難排解。
+  IDC_NET_HEAD,
+  IDC_NET_BLURB,
+  IDC_NET_SWITCH,
+  IDC_NET_LOG_BLURB,
+  IDC_NET_LOG,
+  // 更新。IDC_UPDATE_TRUST 是「沒有數位簽章」那一句 ——
+  //   它是一個**永遠顯示**的靜態文字,不是錯誤狀態才出現的東西。
+  IDC_UPDATE_HEAD,
+  IDC_UPDATE_BLURB,
+  IDC_UPDATE_TRUST,
+  IDC_UPDATE_WHAT,
+  IDC_UPDATE_STATUS,
+  IDC_UPDATE_CHECK,
+  IDC_UPDATE_ACTION,
+  IDC_UPDATE_PAGE,
   IDC_DIAG_HEAD,
   IDC_DIAG_NOTE,
   IDC_DIAG,

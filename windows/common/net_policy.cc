@@ -72,6 +72,8 @@ const char* NetPurposeToken(NetPurpose p) {
   switch (p) {
     case NetPurpose::kStoreIndex: return "STORE_INDEX";
     case NetPurpose::kStorePackage: return "STORE_PACKAGE";
+    case NetPurpose::kUpdateManifest: return "UPDATE_MANIFEST";
+    case NetPurpose::kUpdateSetup: return "UPDATE_SETUP";
   }
   return "STORE_INDEX";
 }
@@ -80,6 +82,8 @@ const char* NetPurposeText(NetPurpose p) {
   switch (p) {
     case NetPurpose::kStoreIndex: return "瀏覽方案市集(取索引)";
     case NetPurpose::kStorePackage: return "下載方案套件";
+    case NetPurpose::kUpdateManifest: return "查有沒有新版本";
+    case NetPurpose::kUpdateSetup: return "下載新版本的安裝程式";
   }
   return "?";
 }
@@ -87,6 +91,8 @@ const char* NetPurposeText(NetPurpose p) {
 bool NetPurposeFromToken(const std::string& s, NetPurpose* out) {
   if (s == "STORE_INDEX") { *out = NetPurpose::kStoreIndex; return true; }
   if (s == "STORE_PACKAGE") { *out = NetPurpose::kStorePackage; return true; }
+  if (s == "UPDATE_MANIFEST") { *out = NetPurpose::kUpdateManifest; return true; }
+  if (s == "UPDATE_SETUP") { *out = NetPurpose::kUpdateSetup; return true; }
   return false;
 }
 

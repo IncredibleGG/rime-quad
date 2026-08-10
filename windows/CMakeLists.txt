@@ -100,6 +100,9 @@ add_library(rime_common STATIC
   # run_logic_tests.sh 驗得到「開關關著時傳輸層一次都沒被呼叫」。
   # 真的開 socket 的那一半在 service/net_gate.cc,只連進 rime_service。
   common/net_gate_core.cc
+  common/sha256.cc
+  common/update_manifest.cc
+  common/update_flow.cc
   # ── 這一輪加的:設定介面的純邏輯層 ────────────────────────────
   #
   # ⚠ 全部刻意不 include windows.h —— 版面、色票、狀態列位置還原都是
