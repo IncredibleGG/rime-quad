@@ -124,6 +124,41 @@ MUTATIONS=(
   "Sources/LuminaKeyKit/CandidatePaging.swift|return delta > 0 ? .previous : .next|return delta > 0 ? .next : .previous|ScrollPagerTests"
 )
 
+# 「這一組真的紅了嗎」。
+#
+# ⚠ **XCTest 的失敗行在兩個平台上不是同一個格式。** 實測(run #98):
+#     Darwin: /a/F.swift:76: error: -[LuminaKeyKitTests.KeyMapperTests testX] : XCTAssertEqual failed:
+#     Linux : /a/F.swift:76: error: KeyMapperTests.testX : XCTAssertEqual failed:
+#   第一版只寫了 Linux 那一種(在 Linux 沙盒上開發),於是在 macos runner 上
+#   **21 個變異全部被判成「紅的不是那一組」** —— 守門在該綠的時候紅。
+#   這是本專案第四次踩到「同一支工具在別台機器上不是同一支工具」。
+#
+# ⚠ 同樣不可以退回「整份輸出 grep 組名」:verbose 的輸出裡每一個**通過**的
+#   測試也印自己的名字,那一條會恆為真(那是這個比對器一開始存在的理由)。
+#
+# 所以底下自帶一個自我測試,而且**每一次都跑**:四個樣本,兩種平台的失敗行
+# 各一、一行通過的、一行別組的失敗。
+group_red_pattern() { printf 'error: (-\[[A-Za-z0-9_]+\.)?%s[ .]' "$1"; }
+
+group_went_red() {  # group_went_red <組名> <輸出>
+  grep -qE -- "$(group_red_pattern "$1")" <<< "$2"
+}
+
+self_test_matcher() {
+  local g="KeyMapperTests" bad=0
+  local darwin="/a/F.swift:76: error: -[LuminaKeyKitTests.KeyMapperTests testX] : XCTAssertEqual failed:"
+  local linuxln="/a/F.swift:76: error: KeyMapperTests.testX : XCTAssertEqual failed:"
+  local passing="Test Case '-[LuminaKeyKitTests.KeyMapperTests testX]' passed (0.001 seconds)"
+  local other="/a/F.swift:9: error: -[LuminaKeyKitTests.ThemeParserTests testY] : failed"
+  group_went_red "$g" "$darwin"  || { echo "!! 比對器認不得 Darwin 的失敗行" >&2; bad=1; }
+  group_went_red "$g" "$linuxln" || { echo "!! 比對器認不得 Linux 的失敗行" >&2; bad=1; }
+  group_went_red "$g" "$passing" && { echo "!! 比對器把「通過」也算成紅的" >&2; bad=1; }
+  group_went_red "$g" "$other"   && { echo "!! 比對器把別組的紅算到自己頭上" >&2; bad=1; }
+  [ "$bad" -eq 0 ] || exit 1
+  echo "  ✓ 「紅的是哪一組」比對器的自我測試通過（Darwin / Linux 兩種格式）"
+}
+self_test_matcher
+
 BACKUP_DIR="$(mktemp -d)"
 restore() {
   for f in "${BACKUP_DIR}"/*.bak; do
@@ -167,14 +202,8 @@ PY
   if [ "${MRC}" -eq 0 ]; then
     echo "!! 植入違規之後測試仍然通過 —— ${group} 沒有在測它宣稱在測的東西。" >&2
     mutation_failures=$((mutation_failures + 1))
-  # ⚠ **不可以用整份輸出 grep 組名。** verbose 的輸出裡每一個測試(含**通過**的)
-  #   都會印出自己的名字,`grep -q -- "ThemeParserTests"` 因此恆為真 ——
-  #   這一條檢查會永遠說「紅在對的地方」,不管實際紅的是誰。
-  #   這正是本專案被咬過四次的那個形狀(見 docs/coordination.md §3)。
-  #   XCTest 的失敗行長這樣:
-  #     /path/File.swift:332: error: ThemeParserTests.testX : XCTAssertEqual failed: ...
-  #   所以只認 `error: <組名>.` 這個形態。
-  elif ! grep -qE -- "error: ${group}\\." <<< "${MOUT}"; then
+  # 見檔案上方 group_went_red 的註解:只認失敗行,而且兩個平台的格式不同。
+  elif ! group_went_red "${group}" "${MOUT}"; then
     echo "!! 測試紅了,但紅的不是 ${group}。變異打到了別的地方:" >&2
     FAILED_LINES="$(grep -E "error:|failed" <<< "${MOUT}" || true)"
     printf '%s\n' "${FAILED_LINES}" | sed -n '1,5p' >&2

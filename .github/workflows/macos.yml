@@ -119,6 +119,55 @@ jobs:
       - name: 核心驗證 — 注音 su3cl3 → 你好
         run: ./apple/scripts/verify_console.sh su3cl3 bopomofo_tw 你好
 
+      # ── (a-2c) 候選翻頁:回答使用者的「翻不翻得了頁」 ────────────
+      # 一頁的候選數來自 core/data/shared/default.yaml 的 menu/page_size(=5),
+      # 四端同源;rs_snapshot 沒有任何天花板。所以「只有 5 個」是設定,
+      # 而「下一頁就沒了」是另一件事 —— 這一關用真的 librime 分開這兩件事。
+      # `=` / `-` 是 rime-prelude 的 paging_with_minus_equal(Page_Down / Page_Up)。
+      - name: 核心驗證 — 候選真的翻得了頁（= 下一頁、- 上一頁）
+        run: |
+          set -uo pipefail
+          set +e
+          C=./apple/build/rime_console
+          S=core/data/shared
+          U=core/data/user
+          # 抽 dump 那一行的「候選數」與「頁碼」。
+          # ⚠ 只用 POSIX BRE:\| \+ \? 與 grep -P/\K 在 BSD 上不成立
+          #   （docs/coordination.md §5 已經記過三次)。
+          pageinfo() {
+            printf '%s\n' "$1" \
+              | sed -n 's/.*\[組字後\] 候選 \([0-9][0-9]*\) 個 (page \([0-9][0-9]*\).*/\1 \2/p' \
+              | head -1
+          }
+          fail=0
+          expect_page() {  # expect_page <按鍵> <期待頁碼> <說明>
+            local out info count page
+            out="$("$C" "$S" "$U" "$1" 1 luna_pinyin_tw 2>&1)"
+            info="$(pageinfo "$out")"
+            if [ -z "$info" ]; then
+              echo "  !! [$3] 抽不出「候選 N 個 (page M」那一行 —— 抽取器壞了,不是沒有違規" >&2
+              printf '%s\n' "$out" | grep '組字後' >&2
+              fail=1; return
+            fi
+            count="${info%% *}"; page="${info##* }"
+            if [ "$count" -le 0 ]; then
+              echo "  !! [$3] 候選數是 $count —— 組字根本沒成立" >&2; fail=1; return
+            fi
+            if [ "$page" != "$2" ]; then
+              echo "  !! [$3] 頁碼是 $page,期待 $2（按鍵「$1」）" >&2; fail=1; return
+            fi
+            echo "  ✓ [$3] 按鍵「$1」→ 候選 $count 個, page $page"
+          }
+          expect_page 'nihao'   0 '不按翻頁鍵'
+          expect_page 'nihao='  1 '按 = 到下一頁'
+          expect_page 'nihao=-' 0 '再按 - 回上一頁'
+          # 一頁幾個是**設定**,不是上限。把它印出來當紀錄(不斷言數字,
+          # 那是 core/data/ 的決定,協調端隨時可以改)。
+          echo "一頁候選數的來源:"
+          grep -n -A1 '^menu:' "$S/default.yaml" | sed 's/^/    /'
+          [ "$fail" -eq 0 ] || exit 1
+          echo "候選翻頁在核心層是通的 ✓（畫面上有沒有路是另一回事,見 apple/README.md §3）"
+
       # ── (a-2b) 使用者加的詞:證明那份 TSV 真的會影響輸出 ────────
       # 這一關驗的是 docs/settings-model.md §5 的格式。純邏輯測試只能證明
       # 我們**寫出**了正確的檔案,證明不了 librime **讀得懂**它 ——
