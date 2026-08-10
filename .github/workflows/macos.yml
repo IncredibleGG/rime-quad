@@ -110,10 +110,10 @@ jobs:
 
       # ⚠ **M-3 的重現,用真的 librime 跑,不是用猜的。**
       #   兩臂只差使用者目錄:有 default.custom.yaml / 空目錄。
-      #   後者就是 .app 沒有附範本時使用者機器上的樣子 —— 斷言它**不會**
-      #   啟用我們打包的 luna_pinyin_tw。這一關證明的是「少了那個檔案真的會
-      #   改變引擎的清單」,而不只是「我們覺得會」。
-      - name: 重現 — 少了 default.custom.yaml,引擎啟用的就不是我們打包的方案
+      #   後者就是 .app 沒有附範本時使用者機器上的樣子。
+      #   實測(run #101)結果比原本預期的更糟:B 那一臂**部署直接失敗**,
+      #   一個方案都沒有 —— 上游 default.yaml 列了我們沒打包的 cangjie5/quick5。
+      - name: 重現 — 少了 default.custom.yaml,引擎連部署都過不了
         run: ./apple/scripts/verify_schema_seed.sh
 
       - name: 斷言本體的反向測試（證明它真的會紅）

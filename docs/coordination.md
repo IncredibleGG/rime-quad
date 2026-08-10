@@ -1077,7 +1077,10 @@ bash 端再剝一次 `\r`。(同一個檔案早就為了 cp1252 的 stdout 編�
   `core/data/shared`)。於是全新安裝的真機上同時發生三件事:
   (1) librime 照**上游** `default.yaml` 部署 —— 那份 `schema_list` 沒有
   luna_pinyin_tw / bopomofo_tw / t9_pinyin(我們真正打包的),卻有
-  cangjie5 / quick5(我們**沒有**打包的,部署會報錯);
+  cangjie5 / quick5(我們**沒有**打包的)。
+  ⚠ **實測(`apple/scripts/verify_schema_seed.sh`,CI run #101)比推測更糟:
+  那不是「清單長得不一樣」,是部署整個失敗、`rs_schema_list()` 回 0 個。**
+  也就是說沒有範本的真機上,引擎根本沒有可用的方案;
   (2) 設定畫面一列都沒有勾;
   (3) `applySchemaForInputMode()` 拿到空清單,上一輪修好的「繁/簡輸入來源→方案」
   整條靜靜地不做事。
