@@ -93,8 +93,10 @@ final class AppContext {
         ipc?.start()
     }
 
+    /// 主題 + 設定的覆寫。候選窗要畫的是**這一個**,不是 `themes.current` ——
+    /// 直接用主題的話,「設定 › 外觀 › 顯示狀態列」按了不會有任何事發生。
     var effectiveTheme: Theme {
-        themes.current
+        AppearanceOverrides.apply(themes.current, settings: settings.current)
     }
 
     /// 把設定套到目前這個 session 上。建 session 之後、以及設定變更時各叫一次。
@@ -109,7 +111,13 @@ final class AppContext {
     /// 依輸入模式與設定挑方案。回傳實際切過去的 id(沒切就是 nil)。
     @discardableResult
     func applySchemaForInputMode() -> String? {
-        let enabled = RimeConfigPatch.readSchemaList(userDir: userDataDir)
+        // ⚠ 不可以只讀 `default.custom.yaml`:那個檔案不存在時(全新安裝、
+        //   或使用者把它刪了)這裡會拿到空陣列,於是 `resolve()` 挑不出方案,
+        //   上一輪修好的「繁／簡輸入來源 → 對應方案」整條靜靜地不做事。
+        // ⚠ `sharedDir` 不可以省:退回上游那一份時讀的是**隨附的**
+        //   default.yaml,使用者目錄裡通常沒有那個檔案。
+        let lists = SchemaListReader.resolve(userDir: userDataDir, sharedDir: sharedDataDir)
+        let enabled = lists.ids
         let installed = SchemaCatalog.scan(userDir: userDataDir, sharedDir: sharedDataDir,
                                            languageTags: InstalledRegistry(userDir: userDataDir)
                                                .languageTags())

@@ -54,10 +54,26 @@ public enum SchemaListReader {
     ///
     /// 為什麼是「覆蓋」而不是「合併」：librime 的 `patch:` 對一個序列鍵是
     /// **整段取代**，不是附加。合併會讓使用者取消勾選的方案又冒出來。
-    public static func resolve(customText: String, baseText: String) -> EffectiveSchemaList {
+    ///
+    /// - Parameter installedIds: 這台機器上**真的有 `.schema.yaml`** 的方案。
+    ///   傳 `nil` 代表「不知道」(純文字的呼叫端),那時不過濾。
+    ///
+    /// ⚠ **只過濾退回上游的那一份,不過濾使用者的 patch。** 兩者來歷不同:
+    ///   · `default.custom.yaml` 是**使用者自己勾的**。裡面有一列檔案不見了,
+    ///     是他需要知道的事(同步或安裝出了問題),`SchemaCatalog.rows` 會把它
+    ///     畫成「已勾選 + 找不到檔案」—— 那是正確的。
+    ///   · 上游 `default.yaml` 的清單**不是任何人選的**。rime-prelude 列了
+    ///     `cangjie5` / `quick5`,而我們從來沒有打包過它們
+    ///     (`core/data/shared` 只有 7 個 `.schema.yaml`)。原樣端出去的後果
+    ///     不只是多兩列:全新安裝的使用者會看到兩列「已勾選 + 找不到檔案」,
+    ///     那兩列不是他弄壞的,也沒有任何辦法修好。那是這一層 fallback
+    ///     自己開出來的**新失敗面**,不是它要修的缺陷。
+    public static func resolve(customText: String, baseText: String,
+                               installedIds: Set<String>? = nil) -> EffectiveSchemaList {
         let patched = RimeConfigPatch.readSchemaList(text: customText)
         if !patched.isEmpty { return EffectiveSchemaList(ids: patched, source: .custom) }
-        let base = readBaseSchemaList(text: baseText)
+        var base = readBaseSchemaList(text: baseText)
+        if let ids = installedIds { base = base.filter { id in ids.contains(id) } }
         if !base.isEmpty { return EffectiveSchemaList(ids: base, source: .base) }
         return .empty
     }
@@ -114,6 +130,8 @@ public enum SchemaListReader {
         }
         let custom = read(userDir, RimeConfigPatch.fileName) ?? ""
         let base = read(userDir, baseFileName) ?? read(sharedDir, baseFileName) ?? ""
-        return resolve(customText: custom, baseText: base)
+        // 磁碟上真的有的方案。**只有退回上游那一份時才用得到**(見上)。
+        let installed = Set(SchemaCatalog.scan(userDir: userDir, sharedDir: sharedDir).map(\.id))
+        return resolve(customText: custom, baseText: base, installedIds: installed)
     }
 }

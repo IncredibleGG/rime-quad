@@ -22,8 +22,8 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PKG="${ROOT}/apple/LuminaKey"
 # ⚠ 下界訂得太鬆等於沒有下界(main 的 0072f4f 就是為了這件事)。
-# 這個數字是實測值減一點餘裕,不是隨手寫的:本輪實跑 298 項。
-MIN_TESTS="${MIN_TESTS:-290}"
+# 這個數字是實測值減一點餘裕,不是隨手寫的:本輪實跑 328 項。
+MIN_TESTS="${MIN_TESTS:-320}"
 
 cd "${PKG}" || exit 1
 
@@ -68,6 +68,10 @@ fi
 #   正好是兩個 —— 那一列會被拆成六段,group 變成一段程式碼碎片,
 #   而症狀是 verify_names.py 說「測試裡沒有 XxxTests」,看起來像測試不見了。
 #   已經踩過一次(換鍵那一條)。要變異含 `||` 的判斷,先把它拆成兩行。
+# ⚠ **原字串與替換字串裡也不可以出現錢字號。** 這些是 bash 的**雙引號**字面值,
+#   $0 會被展開成腳本名 —— 症狀同樣是「在檔案裡找不到要變異的字串」,
+#   而那時你會以為是錨點寫錯了。Swift 的 $0 很常見,要變異含它的行,
+#   先把閉包參數寫成具名的(fix4-macmod 的 EffectiveSchemaList 那一格就是)。
 # ⚠ **不要把 printf 接進會提早結束的指令(grep -q / head)。**
 #   本腳本開了 `pipefail`,而 `grep -q` 找到第一個符合就結束 ——
 #   輸出一大(207 項測試之後就夠大了)printf 就會吃到 SIGPIPE,
@@ -117,11 +121,45 @@ MUTATIONS=(
   # M-2:「設定 › 外觀 › 顯示狀態列」變回一顆死鍵。
   "Sources/LuminaKeyKit/AppearanceOverrides.swift|t.statusBar.show = settings.showStatusBar.resolved(themeValue: theme.statusBar.show)|t.statusBar.show = theme.statusBar.show|AppearanceOverridesTests"
   # M-3:沒有 default.custom.yaml 時回空清單 —— 這正是「引擎有方案、清單沒東西」。
-  "Sources/LuminaKeyKit/EffectiveSchemaList.swift|let base = readBaseSchemaList(text: baseText)|let base: [String] = []|EffectiveSchemaListTests"
+  "Sources/LuminaKeyKit/EffectiveSchemaList.swift|var base = readBaseSchemaList(text: baseText)|var base: [String] = []|EffectiveSchemaListTests"
   # M-3:範本覆蓋掉使用者自己的 default.custom.yaml(他勾的方案與候選數就沒了)。
   "Sources/LuminaKeyKit/UserDataSeed.swift|if fm.fileExists(atPath: dst.path) { kept.append(name); continue }|if false { kept.append(name); continue }|UserDataSeedTests"
   # M-4:滾輪方向反了 —— 這種缺陷畫面完全正常,只有真的去滾才知道。
   "Sources/LuminaKeyKit/CandidatePaging.swift|return delta > 0 ? .previous : .next|return delta > 0 ? .next : .previous|ScrollPagerTests"
+  # ── 這一輪(fix4-macmod)修的兩件事 ────────────────────────────────
+  #
+  # (1) 覆核者實測到的迴歸:組字中按 Caps Lock 會清掉組字。
+  #     把放行清單改回「每一顆修飾鍵都放行」就重演一次。
+  "Sources/LuminaKeyKit/InputModeSwitch.swift|public static let switchKeyCodes: Set<UInt16> = [56, 60]|public static let switchKeyCodes: Set<UInt16> = [54, 55, 56, 57, 58, 59, 60, 61, 62]|ModifierGateTests"
+  #
+  # (2) 九種拆法。**三處接線 × 三種拆法**,一格一種。
+  #     前三格(核心行為改壞)在上面已經有了:AppearanceOverrides / EffectiveSchemaList /
+  #     CandidatePaging 各一。底下六格是覆核者實測「拆得掉而 CI 不紅」的那五刀
+  #     加上第六刀,判準在 Tests/LuminaKeyKitTests/SwiftSourceScanner.swift。
+  #
+  # ⚠ 這六格變異的是 AppSources/,而 swift test 不編譯那個目錄 ——
+  #   紅的來源是那幾組守門真的去讀了原始碼的結構,不是編譯失敗。
+  #
+  # M-2 資料流切斷:effectiveTheme 不再套「設定 › 外觀」的覆寫(定義留著)。
+  "AppSources/AppContext.swift|AppearanceOverrides.apply(themes.current, settings: settings.current)|themes.current|StatusBarWiringTests"
+  # M-2 呼叫點刪掉:候選窗改畫 themes.current(effectiveTheme 定義留著、沒有人叫它)。
+  "AppSources/LuminaKeyInputController.swift|panel.show(theme: AppContext.shared.effectiveTheme, snapshot: snap,|panel.show(theme: AppContext.shared.themes.current, snapshot: snap,|StatusBarWiringTests"
+  # M-3 資料流切斷:sharedDir 傳 nil,退回上游那一份時永遠找不到 default.yaml。
+  "AppSources/AppContext.swift|SchemaListReader.resolve(userDir: userDataDir, sharedDir: sharedDataDir)|SchemaListReader.resolve(userDir: userDataDir, sharedDir: nil)|SchemaListWiringTests"
+  # M-3 呼叫點刪掉:退回只讀 default.custom.yaml(SchemaListReader 定義留著)。
+  "AppSources/AppContext.swift|let lists = SchemaListReader.resolve(userDir: userDataDir, sharedDir: sharedDataDir)|let lists = EffectiveSchemaList(ids: RimeConfigPatch.readSchemaList(userDir: userDataDir), source: .custom)|SchemaListWiringTests"
+  # M-4 資料流切斷:算出了要翻哪一頁,卻沒有送出去。
+  "AppSources/CandidateView.swift|if step != .none { onChangePage?(step) }|if step != .none { _ = step }|PagingWiringTests"
+  # M-4 呼叫點刪掉:activateServer 不再接 panel.onChangePage(changePage 定義留著)。
+  "AppSources/LuminaKeyInputController.swift|AppContext.shared.panel.onChangePage = { [weak self] step in|let pageSink: (PageStep) -> Void = { [weak self] step in|PagingWiringTests"
+  #
+  # (3) 退回上游那一份時只列磁碟上真的有的方案。
+  #     不濾的話,全新安裝的畫面上會出現兩列「已勾選 + 找不到檔案」。
+  "Sources/LuminaKeyKit/EffectiveSchemaList.swift|if let ids = installedIds { base = base.filter { id in ids.contains(id) } }|_ = installedIds|EffectiveSchemaListTests"
+  #
+  # (4) **判準自己**:把「抹掉註解與字串」拿掉,上面那六格就退化成 grep。
+  #     這一格在問:名字只寫在註解裡的時候,它還說不說得出「沒接線」。
+  "Tests/LuminaKeyKitTests/SwiftSourceScanner.swift|init(_ raw: String) { self.text = SwiftSource.blankOutNoise(raw) }|init(_ raw: String) { self.text = raw }|SwiftSourceTests"
 )
 
 # 「這一組真的紅了嗎」。

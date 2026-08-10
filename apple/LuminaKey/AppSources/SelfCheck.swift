@@ -120,6 +120,39 @@ enum SelfCheck {
               eventMask & IMKRecognizedEvents.keyDown != 0,
               String(format: "回傳 0x%llX", eventMask))
 
+        // 6b. **修飾鍵的旗標值與 AppKit 對得上。**
+        //
+        // `MacModifierFlags` 是手抄的(`1 << 16` 這種),而抄錯的症狀是
+        // 「某一顆修飾鍵永遠判成沒按」—— 畫面完全正常,單元測試也全綠,
+        // 因為測試用的是同一份手抄值。這裡拿 AppKit 自己那一份對一次。
+        let flagPairs: [(String, UInt, UInt)] = [
+            ("capsLock", MacModifierFlags.capsLock.rawValue,
+             NSEvent.ModifierFlags.capsLock.rawValue),
+            ("shift", MacModifierFlags.shift.rawValue, NSEvent.ModifierFlags.shift.rawValue),
+            ("control", MacModifierFlags.control.rawValue,
+             NSEvent.ModifierFlags.control.rawValue),
+            ("option", MacModifierFlags.option.rawValue, NSEvent.ModifierFlags.option.rawValue),
+            ("command", MacModifierFlags.command.rawValue,
+             NSEvent.ModifierFlags.command.rawValue),
+        ]
+        let badFlags = flagPairs.filter { $0.1 != $0.2 }
+        check("MacModifierFlags 與 AppKit 的旗標對得上", badFlags.isEmpty,
+              badFlags.map { "\($0.0): 我們 \($0.1) / AppKit \($0.2)" }.joined(separator: ", "))
+
+        // 6c. **組字中按 Caps Lock 不可以走到 librime。**
+        //
+        // 隨附的 default.yaml 綁了 `ascii_composer/switch_key: { Caps_Lock: clear }`,
+        // 而 librime 的 AsciiComposer 在 Caps Lock「按下」時對正在組字的
+        // context 做 `ctx->Clear()`。上一輪宣告要收 flagsChanged 之後,
+        // 每一顆修飾鍵都送進去了 —— 於是打到一半按 Caps Lock 會清掉組字。
+        check("Caps Lock 的 flagsChanged 不會變成送進引擎的按鍵",
+              !ModifierGate.shouldForward(keyCode: 57, flags: [.capsLock]))
+        check("輕點 Shift 仍然送得進引擎(切中英唯一的那條路)",
+              ModifierGate.shouldForward(keyCode: 56, flags: [.shift])
+                  && ModifierGate.shouldForward(keyCode: 60, flags: [.shift]))
+        check("⌘⇧ 之類的宿主快捷鍵不會被輸入法吃掉(與 process() 同一條護欄)",
+              !ModifierGate.shouldForward(keyCode: 56, flags: [.shift, .command]))
+
         // 7. **使用者初始配置的範本有沒有隨 .app 附上。**
         //
         // 沒有它的話,librime 會照上游 rime-prelude 的 default.yaml 部署:

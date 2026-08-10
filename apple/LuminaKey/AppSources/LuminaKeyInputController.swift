@@ -32,6 +32,12 @@ final class LuminaKeyInputController: IMKInputController {
         AppContext.shared.panel.onSelect = { [weak self] idx in
             self?.selectCandidate(index: idx, client: sender)
         }
+        // 一頁只有 `menu/page_size` 個候選(隨附設定是 5)。鍵盤上翻得了頁
+        // (`-`/`=`、`,`/`.`、Page_Up/Down 都送得進 librime),但畫面上沒有任何路 ——
+        // 使用者看到五個字就以為只有五個。滾輪是桌面上最不用學的那一條。
+        AppContext.shared.panel.onChangePage = { [weak self] step in
+            self?.changePage(step, client: sender)
+        }
         AppContext.shared.themes.reload()
         // 使用者可能在別的 app 裡改了設定,或剛剛才在系統設定裡換了輸入來源。
         _ = AppContext.shared.settings.reload()
@@ -172,6 +178,11 @@ final class LuminaKeyInputController: IMKInputController {
 
     private func processFlags(event: NSEvent, client sender: Any!) -> Bool {
         let flags = MacModifierFlags(rawValue: event.modifierFlags.rawValue)
+        // ⚠ **這裡沒有 Command 護欄不是漏掉,是它搬進 ModifierTracker 了。**
+        //   IMKit 會把每一顆修飾鍵的 flagsChanged 都送來,全部放行的後果是
+        //   「組字中按 Caps Lock 會清掉組字」(隨附 default.yaml 的
+        //   `Caps_Lock: clear`)。判斷在 LuminaKeyKit/InputModeSwitch.swift 的
+        //   `ModifierGate` —— 那一層有單元測試,這一層沒有。
         guard let t = tracker.transition(keyCode: event.keyCode, flags: flags) else {
             return false
         }
@@ -220,7 +231,7 @@ final class LuminaKeyInputController: IMKInputController {
         setMarkedText(snap.preedit, client: sender)
         // `effectiveTheme` = 主題 + 設定的覆寫(見 LuminaKeyKit/AppearanceOverrides.swift)。
         // 直接用 `themes.current` 的話,「設定 › 外觀 › 顯示狀態列」是一顆死鍵。
-        panel.show(theme: AppContext.shared.themes.current, snapshot: snap,
+        panel.show(theme: AppContext.shared.effectiveTheme, snapshot: snap,
                    caretRect: caretRect(client: sender))
     }
 

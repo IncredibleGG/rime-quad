@@ -54,6 +54,66 @@ public enum IMKRecognizedEvents {
     }
 }
 
+// ───────────────────────────────────────────────────────────────────────
+//  哪些修飾鍵的 flagsChanged 該送進 librime
+// ───────────────────────────────────────────────────────────────────────
+
+/// ⚠ **這一段修的是上一輪自己做出來的迴歸,而且是真機上按得出來的。**
+///
+/// `recognizedEvents(_:)` 一旦宣告要收 `flagsChanged`,IMKit 就會把
+/// **每一顆**修飾鍵的 flagsChanged 都送過來;而當時的 `processFlags()`
+/// 把它們全部餵給 librime。兩個後果,第一個是真的缺陷:
+///
+///  1. **組字打到一半按 Caps Lock,剛打的半句話會不見。**
+///     隨附的 `core/data/shared/default.yaml`(上游 rime-prelude)寫著
+///     `ascii_composer/switch_key: { Caps_Lock: clear }`,而
+///     `ModifierTracker` 把每一次 Caps Lock 的 flagsChanged 都當成「按下」
+///     —— 那顆鍵在 `modifierFlags` 裡的位元代表**燈亮著**,不是鍵按著。
+///     librime 那一半照著跑:`AsciiComposer::ProcessCapsLock()` 在
+///     `!release` 時呼叫 `SwitchAsciiMode(..., kAsciiModeSwitchClear)`,
+///     而它對正在組字的 context 做的事就是 `ctx->Clear()`
+///     (third_party/librime/src/rime/gear/ascii_composer.cc)。
+///     使用者按 Caps Lock 是要打大寫,不是要丟掉組字。
+///
+///  2. 沒有組字時,每一次 Shift/⌘/⌥/⌃ 的按下與放開都白跑一趟引擎。
+///     ⌘ 尤其不該進去:`process()` 有一條「Command 組合鍵一律讓宿主處理」
+///     的護欄,而 `processFlags()` 沒有 —— 同一個 app 對同一顆鍵有兩種立場。
+///
+/// 所以這裡只放行**真的會觸發切換的那一顆**,其餘一概不碰。
+/// 閘門刻意放在 `ModifierTracker.transition` 裡面而不是放在 controller:
+/// `AppSources/` 沒有單元測試(`swift test` 不編譯它),把判斷放在那裡
+/// 等於放在測不到的地方 —— 那正是這一輪要修的第二件事。
+public enum ModifierGate {
+
+    /// 切換鍵的 keyCode:左右 Shift。
+    ///
+    /// 為什麼不是「`default.yaml` 的 `switch_key` 列了誰就放行誰」:
+    /// 那份設定是**上游**的,它同時綁了 `Caps_Lock: clear` 與
+    /// `Control_L/R: noop`;照著放行等於把上面第 1 點原封不動再做一次。
+    /// 這一端的產品決定是「只實作輕點 Shift」(見本檔開頭),放行清單就該與
+    /// 那個決定一致 —— 不一致的話會多出一顆「按了會發生事情、
+    /// 但沒有人說得出它是什麼」的鍵。
+    public static let switchKeyCodes: Set<UInt16> = [56, 60]
+
+    /// 這些修飾鍵同時按著時,那就不是「輕點切換」而是宿主的快捷鍵。
+    ///
+    /// librime 自己也是這樣判的(`AsciiComposer::ProcessKeyEvent` 開頭:
+    /// shift/ctrl/alt/super 同時超過一個就直接 `kNoop`),擋在這裡只是把
+    /// 同一條規則提早一步,順便讓 `process()` 那條 Command 護欄在
+    /// flagsChanged 這條路上也成立。
+    ///
+    /// ⚠ **不含 `capsLock`。** 那個位元代表「大寫鎖定的燈亮著」,不是
+    ///   「有人按著一顆鍵」。把它算進來的話,開著大寫鎖定的使用者輕點 Shift
+    ///   會完全沒有反應 —— 那是把一個缺陷換成另一個。
+    public static let blockingFlags: MacModifierFlags = [.command, .control, .option]
+
+    /// 這一次 flagsChanged 該不該變成送進 librime 的按鍵事件。
+    public static func shouldForward(keyCode: UInt16, flags: MacModifierFlags) -> Bool {
+        guard switchKeyCodes.contains(keyCode) else { return false }
+        return flags.isDisjoint(with: blockingFlags)
+    }
+}
+
 /// 中／英切換這件事的**文字**面：現在是什麼、按哪一顆鍵。
 ///
 /// ⚠ 這一段的規則只有一條，而且它就是使用者的原話：

@@ -529,8 +529,15 @@ print()
 # ── 12. 變異測試的靶 ──────────────────────────────────────────
 print("=== 12. 變異測試的靶 ===")
 rkt = read("apple/scripts/run_kit_tests.sh")
-muts = re.findall(r'^\s*"(Sources/[^|]+)\|([^|]*)\|([^|]*)\|([^"]+)"\s*$', rkt, re.M)
-check(len(muts) >= 11, "run_kit_tests.sh 有 %d 個變異" % len(muts))
+# ⚠ 這一條原本只認 Sources/,而 fix4-macmod 之後有六個變異的靶在 AppSources/
+# (那幾處接線)、一個在 Tests/(判準自己)。只認 Sources/ 的話,「那幾格的錨點
+# 還在不在」就從來沒有被檢查過 —— 而錨點對不上的症狀是 run_kit_tests.sh 自己
+# 報「變異測試本身壞了」,那時已經在 CI 上,而且看起來像守門有問題。
+muts = re.findall(r'^\s*"((?:Sources|AppSources|Tests)/[^|]+)\|([^|]*)\|([^|]*)\|([^"]+)"\s*$',
+                  rkt, re.M)
+# ⚠ 下界訂得太鬆等於沒有下界(main 的 0072f4f 就是為了這件事)。
+# 這個數字是實測值減一點餘裕:本輪實有 30 格。
+check(len(muts) >= 28, "run_kit_tests.sh 有 %d 個變異" % len(muts))
 tests = ""
 tdir = os.path.join(PKG, "Tests/LuminaKeyKitTests")
 for f in sorted(os.listdir(tdir)):

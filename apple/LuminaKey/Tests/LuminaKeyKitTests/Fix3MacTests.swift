@@ -290,6 +290,49 @@ final class EffectiveSchemaListTests: XCTestCase {
             text: "schema_list:\n  - schema: a b c\n  - schema: ok_1\n"), ["ok_1"])
     }
 
+    /// **這一條是 fallback 自己開出來的新失敗面。**
+    ///
+    /// 上游 `default.yaml` 列了 `cangjie5` / `quick5`,而我們從來沒有打包過
+    /// 它們(`core/data/shared` 只有 7 個 `.schema.yaml`)。原樣端出去的後果
+    /// 不只是多兩列:`SchemaCatalog.rows` 會把它們畫成「已勾選 + 找不到檔案」,
+    /// 而使用者既沒有勾過它們、也沒有辦法修好。
+    func testFallbackListsOnlyWhatIsActuallyInstalled() {
+        let installed: Set<String> = ["luna_pinyin", "bopomofo", "stroke", "terra_pinyin"]
+        let r = SchemaListReader.resolve(customText: "", baseText: upstreamDefault,
+                                         installedIds: installed)
+        XCTAssertEqual(r.source, .base)
+        XCTAssertEqual(r.ids, ["luna_pinyin", "bopomofo", "stroke", "terra_pinyin"],
+                       "順序仍然照上游那一份,只是把沒打包的濾掉")
+        for missing in ["cangjie5", "quick5"] {
+            XCTAssertFalse(r.ids.contains(missing), "\(missing) 沒有打包,不可以出現在清單裡")
+        }
+        // 一個都不在磁碟上 = 真的「一個方案都沒有」,不是六個壞掉的。
+        XCTAssertEqual(SchemaListReader.resolve(customText: "", baseText: upstreamDefault,
+                                                installedIds: []), .empty)
+    }
+
+    /// **使用者自己勾的那一份不過濾。** 檔案不見了是他需要知道的事;
+    /// 偷偷拿掉會讓 schema_list 在他不知情的時候變短。
+    func testTheUserPatchIsNeverFilteredByWhatIsOnDisk() {
+        let r = SchemaListReader.resolve(customText: ourCustom, baseText: upstreamDefault,
+                                         installedIds: ["luna_pinyin"])
+        XCTAssertEqual(r.source, .custom)
+        XCTAssertEqual(r.ids, ["luna_pinyin_tw", "bopomofo_tw", "luna_pinyin", "t9_pinyin"])
+    }
+
+    /// 而畫面那一端要看得出差別:過濾之後不會再出現「已勾選 + 找不到檔案」。
+    func testNoPhantomCheckedRowsAfterTheFallback() {
+        let installed = [InstalledSchema(id: "luna_pinyin", name: "朙月拼音",
+                                         url: URL(fileURLWithPath: "/x/luna_pinyin.schema.yaml"),
+                                         isBuiltin: true)]
+        let r = SchemaListReader.resolve(customText: "", baseText: upstreamDefault,
+                                         installedIds: ["luna_pinyin"])
+        let rows = SchemaCatalog.rows(installed: installed, enabled: r.ids)
+        XCTAssertEqual(rows.map(\.id), ["luna_pinyin"])
+        XCTAssertTrue(rows.allSatisfy { $0.installed },
+                      "不得出現「已勾選但找不到檔案」的列")
+    }
+
     func testFilesOnDisk() throws {
         let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("lk-eff-\(UUID().uuidString)")
@@ -303,9 +346,16 @@ final class EffectiveSchemaListTests: XCTestCase {
                                   atomically: true, encoding: .utf8)
 
         // 全新安裝：使用者目錄裡什麼都沒有。
+        // 隨附目錄裡真的有的那幾個(對照 core/data/shared 的 7 個 .schema.yaml)。
+        for id in ["luna_pinyin", "bopomofo", "stroke", "terra_pinyin"] {
+            try "schema:\n  schema_id: \(id)\n"
+                .write(to: shared.appendingPathComponent("\(id).schema.yaml"),
+                       atomically: true, encoding: .utf8)
+        }
         var r = SchemaListReader.resolve(userDir: user, sharedDir: shared)
         XCTAssertEqual(r.source, .base)
-        XCTAssertEqual(r.ids.count, 6)
+        XCTAssertEqual(r.ids, ["luna_pinyin", "bopomofo", "stroke", "terra_pinyin"],
+                       "退回上游那一份時只列磁碟上真的有的 —— cangjie5 / quick5 沒打包")
 
         // 裝了範本之後。
         try ourCustom.write(to: user.appendingPathComponent("default.custom.yaml"),

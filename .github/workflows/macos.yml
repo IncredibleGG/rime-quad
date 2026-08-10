@@ -79,6 +79,26 @@ jobs:
       - name: 確認執行期資料真的齊全
         run: ./apple/scripts/verify_data.sh
 
+      # ⚠ **ModifierGate 的前提是一份上游檔案,所以它要被檢查,不是被相信。**
+      #   組字中按 Caps Lock 會清掉組字,靠的是隨附 default.yaml 裡的
+      #   `ascii_composer/switch_key: { Caps_Lock: clear }`。那份檔案來自
+      #   rime-prelude(上游),它哪天改了,ModifierGate 的理由就要重讀一次。
+      #   這一關不是在驗我們的程式碼,是在驗**那個前提還在不在**。
+      - name: 前提 — 隨附的 default.yaml 真的把 Caps Lock 綁成 clear
+        run: |
+          set -uo pipefail
+          F=core/data/shared/default.yaml
+          echo "== $F 的 ascii_composer =="
+          grep -n -A8 '^ascii_composer:' "$F" | sed 's/^/    /'
+          case "$(cat "$F")" in
+            *"Caps_Lock: clear"*)
+              echo "  ✓ 前提成立:Caps_Lock 綁的是 clear(librime 會 ctx->Clear())" ;;
+            *)
+              echo "!! 上游改了 ascii_composer/switch_key —— ModifierGate 的理由要重讀一次" >&2
+              echo "   (LuminaKeyKit/InputModeSwitch.swift 的 ModifierGate)" >&2
+              exit 1 ;;
+          esac
+
       - name: 確認四個方案真的部署成功
         run: |
           # rime_console 的 deploy-only 模式（keys 傳 "-"）會印出機器可讀的

@@ -206,6 +206,11 @@ public struct KeyMapper {
 /// **release**，所以少了這一段，那個所有 RIME 使用者都習慣的操作就不存在。
 ///
 /// 這是純狀態機，沒有 AppKit，可以直接單元測試。
+/// ⚠ **它同時是閘門。** 上一輪讓每一顆修飾鍵都走完這條路,而隨附
+///   `default.yaml` 的 `Caps_Lock: clear` 會在組字中把組字清掉
+///   (理由與 librime 那一半的出處見 `ModifierGate`)。閘門放在這裡而不是
+///   放在 `LuminaKeyInputController`:那個檔案沒有單元測試。
+///
 public struct ModifierTracker {
     private var lastFlags: MacModifierFlags = []
 
@@ -217,11 +222,15 @@ public struct ModifierTracker {
     public mutating func transition(keyCode: UInt16,
                                     flags: MacModifierFlags) -> (isKeyUp: Bool,
                                                                  flags: MacModifierFlags)? {
+        // ⚠ **每一次 flagsChanged 都要更新 lastFlags,包括不放行的那些。**
+        //   少了這一句,「按著 ⌘ 再按 Shift」之後的那一次會被算成放開,
+        //   而症狀是切換鍵偶爾反過來 —— 那種缺陷沒有人重現得出來。
         defer { lastFlags = flags }
+        // ⚠ **閘門在最前面。** 放行每一顆修飾鍵的後果不是「多做一點事」:
+        //   組字中按 Caps Lock 會被 `Caps_Lock: clear` 清掉整段組字。
+        //   見 ModifierGate(本檔的閘門唯一的呼叫點就是這裡)。
+        guard ModifierGate.shouldForward(keyCode: keyCode, flags: flags) else { return nil }
         guard let bit = PhysicalKeys.modifierKeyFlag[keyCode] else { return nil }
-        // Caps Lock 是切換鍵：flags 裡的位元代表「燈亮著」而不是「鍵按著」，
-        // 所以它的 flagsChanged 一律當按下處理（放開由下一次切換帶出）。
-        if bit == .capsLock { return (false, flags) }
         let nowDown = flags.contains(bit)
         let wasDown = lastFlags.contains(bit)
         if nowDown == wasDown { return nil }
