@@ -51,6 +51,22 @@ RectI SidebarListDip(int window_h_dip) {
 
 int TextLineBoxDip(int size_dip) { return size_dip * 4 / 3 + 2; }
 
+UiString SettingsPageName(int page) {
+  switch (page) {
+    case kPageAppearance:
+      return UiString::kNavAppearance;
+    case kPageText:
+      return UiString::kNavText;
+    case kPageNetwork:
+      return UiString::kNavNetwork;
+    case kPageAdvanced:
+      return UiString::kNavAdvanced;
+    case kPageSchemas:
+    default:
+      return UiString::kNavSchemas;
+  }
+}
+
 RectI SidebarStatusLineDip(int window_h_dip, int line) {
   const RectI strip = SidebarStatusDip(window_h_dip);
   RectI r;

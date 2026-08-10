@@ -652,6 +652,24 @@ PYSCRIPT
     printf '%s\n' "${w24diff}" | head -6 >&2
     w24bad=1
   fi
+  # ⚠ 頁名也是「哪一頁上有什麼」的一部分。它以前是 settings_window.cc 裡
+  #   一個與 SettingsPage 平行的陣列,順序錯開一格的樣子是「側欄寫著
+  #   『連網』,點下去出現的是進階頁」——而那個檔案在 Ubuntu 上編不起來。
+  # ⚠ 只禁**頁名**那五條。kNavStatus*(側欄底部那兩行狀態)是另一回事,
+  #   它本來就住在這個檔案的繪製碼裡 —— 一條會誤報的檢查,下一步就是
+  #   被關掉(§3.1 的教訓)。第一版寫成 `grep 'UiString::kNav'`,
+  #   當場就打到 kNavStatusOffline。
+  local w24names
+  w24names="$(grep -nE 'UiString::kNav(Schemas|Appearance|Text|Network|Advanced)\b' "${sw}" 2>/dev/null || true)"
+  if [ -n "${w24names}" ]; then
+    red "W24:settings_window.cc 又自己帶了一份側欄頁名 —— 它必須走 common/ui_layout.h 的 SettingsPageName()"
+    printf '%s\n' "${w24names}" | head -3 >&2
+    w24bad=1
+  fi
+  if ! grep -q 'UiString SettingsPageName(int page)' "${CODE_DIR}/common/ui_layout.cc" 2>/dev/null; then
+    red "W24:common/ui_layout.cc 沒有 SettingsPageName —— 頁名又不是純函式了"
+    w24bad=1
+  fi
   [ "${w24bad}" -eq 0 ] && ok "W24 版面全部在 common/ui_layout.cc;${ntable} 顆控制項與 ${npages} 頁的版面兩個方向都對得上,而且沒有一顆同時屬於兩頁"
 
   # ── W25:內容區必須捲得動,而且捲動量真的要套到控制項上 ──
@@ -1367,6 +1385,7 @@ self_check() {
 "W24a 版面回到 service|service/settings_window.cc|s=s.replace('void SettingsWindow::LayoutUi() {','void SettingsWindow::LayoutUi() { Stack sneaky(0, 0, 100); (void)sneaky.Push(10, 2);',1)"
 "W24b 版面上少三顆|common/ui_layout.cc|s=s.replace('      radios({IDC_THEME_0, IDC_THEME_1, IDC_THEME_2}, \"appearance_radio\");','',1)"
 "W24c 某頁多塞三顆|common/ui_layout.cc|s=s.replace('radios({IDC_THEME_0, IDC_THEME_1, IDC_THEME_2}, \"appearance_radio\");','radios({IDC_THEME_0, IDC_THEME_1, IDC_THEME_2, IDC_LANG_1, IDC_LANG_2, IDC_LANG_3}, \"appearance_radio\");',1)"
+"W24e 頁名回到 service|service/settings_window.cc|s=s.replace('  wc.lpszClassName = kClass;','  const UiString sneaky[] = {UiString::kNavSchemas}; (void)sneaky;' + chr(10) + '  wc.lpszClassName = kClass;',1)"
 "W24d 表上少三顆|service/settings_window.cc|s=s.replace('    {IDC_THEME_0, L\"BUTTON\", RADIO1, UiString::kThemeFollowSystem},','',1).replace('    {IDC_THEME_1, L\"BUTTON\", RADIO, UiString::kThemeLight},','',1).replace('    {IDC_THEME_2, L\"BUTTON\", RADIO, UiString::kThemeDark},','',1)"
 "W25 拿掉滾輪|service/settings_window.cc|s=s.replace('case WM_MOUSEWHEEL:','case WM_NULL + 4242:',1)"
 "W25b 又把高度丟掉|common/ui_layout.cc|s=s.replace('int ScrollMaxDip(int page, int window_w_dip, int window_h_dip,','int ScrollMaxDipRemoved(int page, int window_w_dip, int window_h_dip,',1)"

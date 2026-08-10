@@ -232,10 +232,10 @@ constexpr int kControlCount =
 #undef RADIO
 #undef RADIO1
 
-// 側欄上的頁名(順序 = 由上而下)。
-const UiString kPageNames[] = {UiString::kNavSchemas,
-                               UiString::kNavAppearance, UiString::kNavText,
-                               UiString::kNavNetwork, UiString::kNavAdvanced};
+// ⚠ 側欄上的頁名**不在這裡**。它在 common/ui_layout.h 的
+//   SettingsPageName() —— 一份與 SettingsPage 平行的陣列住在這個檔案裡的話,
+//   順序錯開一格就是「側欄寫著『連網』,點下去出現的是進階頁」,
+//   而那件事在 Ubuntu 上沒有任何東西看得到。
 
 const VariantPref kVariantOrder[] = {VariantPref::kFollowInputMode,
                                      VariantPref::kTraditional,
@@ -610,7 +610,8 @@ void SettingsWindow::CreateUi(HWND hwnd) {
           LVS_SHOWSELALWAYS | LVS_NOSCROLL | WS_TABSTOP);
   if (sidebar_) {
     std::vector<std::wstring> pages;
-    for (int i = 0; i < kPageCount; ++i) pages.push_back(UiText(kPageNames[i]));
+    for (int i = 0; i < kPageCount; ++i)
+      pages.push_back(UiText(SettingsPageName(i)));
     SetRowListItems(sidebar_, pages);
   }
 
@@ -1000,8 +1001,7 @@ LRESULT SettingsWindow::DrawSidebar(NMLVCUSTOMDRAW* cd) {
       HGDIOBJ oldf = ::SelectObject(hdc, fonts_.Get(text_size::t3, selected));
       RECT tr = item;
       tr.left += Dip(space::s4, dpi_);
-      const wchar_t* label =
-          (i >= 0 && i < kPageCount) ? UiText(kPageNames[i]) : L"";
+      const wchar_t* label = UiText(SettingsPageName(i));
       ::DrawTextW(hdc, label, -1, &tr,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
                       DT_NOPREFIX);

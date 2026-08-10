@@ -603,3 +603,37 @@ TEST(ui_layout_network_page_scrolls_at_the_default_size) {
   // 視窗長高,捲動上限跟著縮,高到某個程度歸零 —— 高度真的有參與。
   CHECK_INT(ScrollMaxDip(kPageNetwork, W, 4000, has_rows), 0);
 }
+
+
+// ── 側欄的名字與頁是同一份 ──────────────────────────────────────
+//
+// ⚠ 這一條是加第五頁(連網)時冒出來的洞。名字原本住在
+//   service/settings_window.cc 的一個平行陣列裡,順序必須與 SettingsPage
+//   一模一樣而沒有人守 —— 錯開一格的樣子是「側欄寫著『連網』,點下去
+//   出現的是進階頁」,而每一頁都有名字、每一頁都有內容,
+//   畫面上看起來完全正常。
+
+TEST(ui_layout_every_page_has_its_own_name) {
+  std::set<int> seen;
+  for (int p = 0; p < kPageCount; ++p) {
+    const UiString s = SettingsPageName(p);
+    // 兩頁不可以共用一個名字。
+    CHECK(seen.count(static_cast<int>(s)) == 0);
+    seen.insert(static_cast<int>(s));
+    // 三個語系都要有字 —— 空字串在側欄上是一列看不見的項目。
+    for (UiLang l : {UiLang::kEnUs, UiLang::kZhHant, UiLang::kZhHans})
+      CHECK(UiTextIn(l, s)[0] != L'\0');
+  }
+  CHECK_INT(static_cast<int>(seen.size()), static_cast<int>(kPageCount));
+
+  // 對應關係本身釘死:側欄第 n 列 = 第 n 頁的版面。
+  CHECK(SettingsPageName(kPageSchemas) == UiString::kNavSchemas);
+  CHECK(SettingsPageName(kPageAppearance) == UiString::kNavAppearance);
+  CHECK(SettingsPageName(kPageText) == UiString::kNavText);
+  CHECK(SettingsPageName(kPageNetwork) == UiString::kNavNetwork);
+  CHECK(SettingsPageName(kPageAdvanced) == UiString::kNavAdvanced);
+
+  // 越界不崩潰,而且回一個真的存在的名字(它在 WM_PAINT 路徑上)。
+  CHECK(UiTextIn(UiLang::kZhHant, SettingsPageName(-1))[0] != L'\0');
+  CHECK(UiTextIn(UiLang::kZhHant, SettingsPageName(999))[0] != L'\0');
+}

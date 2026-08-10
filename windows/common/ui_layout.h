@@ -38,6 +38,10 @@
 #include <cstdint>
 #include <vector>
 
+// ⚠ 版面碼**不用**字串,但「哪一頁叫什麼」屬於「哪一頁上有什麼」的一部分,
+//   而本檔是那件事唯一的來源(見 SettingsPageName)。
+#include "ui_strings.h"
+
 namespace rimewin {
 
 // ── §3.1 間距階梯(桌面欄)──────────────────────────────────────
@@ -184,6 +188,17 @@ enum SettingsPage : int {
   kPageAdvanced,
   kPageCount,
 };
+
+// 側欄上第 page 頁的名字。
+//
+// ⚠ **這是唯一的對應表。** 它以前是 service/settings_window.cc 裡一個與
+//   SettingsPage 平行的陣列,而「兩份平行的清單」在這個檔案裡已經害過一次
+//   (控制項表的 page 欄位 vs LayoutUi 的 switch)。順序錯開一格的樣子是
+//   「側欄寫著『連網』,點下去出現的是進階頁」—— 每一頁都有名字、
+//   每一頁都有內容,沒有任何東西看起來不對。
+//
+// ⚠ 越界回 kNavSchemas,不崩潰:它會在 WM_PAINT 的路徑上被呼叫。
+UiString SettingsPageName(int page);
 
 // ── 設定視窗的控制項 id ─────────────────────────────────────────
 //
