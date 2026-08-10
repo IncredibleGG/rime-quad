@@ -84,6 +84,7 @@ import org.luminakey.ime.theme.KeyStyle
 import org.luminakey.ime.theme.LabelSource
 import org.luminakey.ime.theme.LayoutKey
 import org.luminakey.ime.theme.LayoutLayer
+import org.luminakey.ime.theme.PageIndicatorStyle
 import org.luminakey.ime.theme.Popup
 import org.luminakey.ime.theme.PopupLayout
 import org.luminakey.ime.theme.SubKey
@@ -524,9 +525,20 @@ private fun CandidateBar(
                 return@Row
             }
 
-            if (bar.showPreeditInline && state.preedit.isNotEmpty()) {
+            // §8.6.6 的 show_preedit_inline。印的**不是**引擎的 preedit 原文:
+            // 九宮格那一格會印出 `MG GAM`（雙編碼方案的代表字母），對使用者
+            // 沒有任何意義，而且會讓人以為自己打出來的是那一串。判準與退化
+            // 規則見 [InlinePreedit]。
+            val inlinePreedit = remember(state.preedit, state.layout, state.layerId) {
+                if (!bar.showPreeditInline) null
+                else InlinePreedit.forDisplay(
+                    state.preedit,
+                    InlinePreedit.groupCodeChars(state.layer),
+                )
+            }
+            if (inlinePreedit != null) {
                 Text(
-                    text = state.preedit,
+                    text = inlinePreedit,
                     fontSize = scaler.sp(theme.preedit.size),
                     color = Color(theme.preedit.color),
                     maxLines = 1,
@@ -667,7 +679,80 @@ private fun CandidateBar(
                     }
                 }
             }
+
+            // §8.6.5 的 page_indicator。規範的預設本來就是 show:true / arrows,
+            // 本端一直沒有畫 —— 於是 rs_change_page 與 KeyboardEvent.Page
+            // 兩邊都做好了,中間沒有任何東西會送出它:使用者看到的就是
+            //「候選只有 5 個,下一頁就沒了」。判準抽在 [Pager]。
+            PageArrows(
+                state = Pager.state(
+                    kind = style.pageIndicator.kind,
+                    show = style.pageIndicator.show,
+                    pageNo = state.pageNo,
+                    isLastPage = state.isLastPage,
+                    candidateCount = state.candidates.size,
+                ),
+                style = style.pageIndicator,
+                scaler = scaler,
+                onEvent = onEvent,
+            )
         }
+    }
+}
+
+/**
+ * 候選列右端的上一頁／下一頁。
+ *
+ * 兩顆都**永遠留在原地**（不可用時變灰，用 §8.6.5 的 `disabled_color`）:
+ * 把不可用的那一顆藏起來，整條候選列會在翻頁的瞬間橫向位移，使用者剛瞄準的
+ * 候選就跑掉了。
+ */
+@Composable
+private fun PageArrows(
+    state: Pager.State,
+    style: PageIndicatorStyle,
+    scaler: Scaler,
+    onEvent: (KeyboardEvent) -> Unit,
+) {
+    if (!state.show) return
+    val prevDesc = stringResource(R.string.a11y_candidate_prev_page)
+    val nextDesc = stringResource(R.string.a11y_candidate_next_page)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        PageArrow("‹", prevDesc, state.prevEnabled, style, scaler) {
+            onEvent(KeyboardEvent.Page(backward = true))
+        }
+        PageArrow("›", nextDesc, state.nextEnabled, style, scaler) {
+            onEvent(KeyboardEvent.Page(backward = false))
+        }
+    }
+}
+
+@Composable
+private fun PageArrow(
+    glyph: String,
+    description: String,
+    enabled: Boolean,
+    style: PageIndicatorStyle,
+    scaler: Scaler,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxHeight()
+            // 觸控目標要夠大 —— 一個 14sp 的字元只有十幾 dp 寬,那是點不到的。
+            .width(40.dp)
+            .semantics(mergeDescendants = true) {
+                contentDescription = description
+                role = Role.Button
+            }
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = glyph,
+            fontSize = scaler.sp(style.size),
+            color = Color(if (enabled) style.color else style.disabledColor),
+        )
     }
 }
 
