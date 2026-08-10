@@ -117,13 +117,22 @@ namespace {
 //   而剛安裝完的使用者看到的正是那一個。
 struct Variant {
   int page;
-  bool schema_list_empty;
+  PageState state;
 };
 
+// ⚠ 每一個**會換掉整塊版面**的執行期狀態都要有一列。少一列不會紅,
+//   會安靜地少測一種畫面 —— 而少測的那一種通常就是新加的那一種。
+//   (`ui_layout_every_page_is_covered_by_the_variant_table` 只擋得住
+//    「少一頁」,擋不住「一頁少一種狀態」,所以下面兩對要一起讀。)
 const Variant kVariants[] = {
-    {kPageSchemas, false},    {kPageSchemas, true},
-    {kPageAppearance, false}, {kPageText, false},
-    {kPageAdvanced, false},
+    {kPageSchemas, PageState{false, true}},
+    {kPageSchemas, PageState{true, true}},
+    {kPageAppearance, PageState{false, true}},
+    {kPageText, PageState{false, true}},
+    // 連網頁的兩種:一次都沒有連過(空狀態)、以及有紀錄。
+    {kPageNetwork, PageState{false, true}},
+    {kPageNetwork, PageState{false, false}},
+    {kPageAdvanced, PageState{false, true}},
 };
 constexpr int kVariantCount =
     static_cast<int>(sizeof(kVariants) / sizeof(kVariants[0]));
@@ -147,7 +156,7 @@ TEST(ui_layout_every_clickable_target_meets_the_minimum) {
   for (const auto& s : sizes) {
     for (int v = 0; v < kVariantCount; ++v) {
       const std::vector<HitTarget> targets = ClickableTargetsDip(
-          s[0], s[1], kVariants[v].page, kVariants[v].schema_list_empty);
+          s[0], s[1], kVariants[v].page, kVariants[v].state);
       // ⚠ 範圍斷言:一頁上至少要有這麼多可點的東西。掃到零個而報
       //   「全部合格」正是 §2-G 講的那個失效方式。
       //   側欄 4 + 關閉鈕 1 = 5 是下限,再加上該頁自己的。
@@ -185,10 +194,10 @@ TEST(ui_layout_every_clickable_target_is_reachable) {
     CHECK(viewport > 0);
     for (int v = 0; v < kVariantCount; ++v) {
       const int page = kVariants[v].page;
-      const bool empty = kVariants[v].schema_list_empty;
-      const int reach = viewport + ScrollMaxDip(page, W, H, empty);
+      const PageState state = kVariants[v].state;
+      const int reach = viewport + ScrollMaxDip(page, W, H, state);
       const std::vector<HitTarget> targets =
-          ClickableTargetsDip(W, H, page, empty);
+          ClickableTargetsDip(W, H, page, state);
       CHECK(targets.size() >= 6);
       for (const HitTarget& t : targets) {
         ++checked;
@@ -212,23 +221,27 @@ TEST(ui_layout_scroll_range_actually_uses_the_window_height) {
   //   這一條把「高度真的有參與」釘住:視窗長高,捲動上限必須跟著縮,
   //   而且高到某個程度必須歸零。
   const int W = kWindowDefaultW;
-  const int prev_min = ScrollMaxDip(kPageAppearance, W, kWindowMinH, false);
-  const int prev_def = ScrollMaxDip(kPageAppearance, W, kWindowDefaultH, false);
+  const int prev_min =
+      ScrollMaxDip(kPageAppearance, W, kWindowMinH, PageState{});
+  const int prev_def =
+      ScrollMaxDip(kPageAppearance, W, kWindowDefaultH, PageState{});
   CHECK(prev_min > prev_def);
   CHECK(prev_def > 0);
   // 高度每多 1 DIP,捲動上限就少 1 DIP,直到 0。
   CHECK_INT(prev_min - prev_def, kWindowDefaultH - kWindowMinH);
-  const PageLayout pl = LayoutSettingsPageDip(kPageAppearance, W, false);
+  const PageLayout pl =
+      LayoutSettingsPageDip(kPageAppearance, W, PageState{});
   CHECK_INT(ScrollMaxDip(kPageAppearance, W, pl.content_h_dip + kBottomStripH,
-                         false),
+                         PageState{}),
             0);
-  CHECK_INT(ScrollMaxDip(kPageAppearance, W, 4000, false), 0);
+  CHECK_INT(ScrollMaxDip(kPageAppearance, W, 4000, PageState{}), 0);
 }
 
 TEST(ui_layout_appearance_page_still_needs_scrolling_at_the_default_size) {
   // 這一頁是缺陷回報的原始現場,數字全部釘住 —— 有人「順手重排」
   // 而讓它剛好又掉出可視範圍時,這一條會指著同一個地方。
-  const PageLayout pl = LayoutSettingsPageDip(kPageAppearance, 780, false);
+  const PageLayout pl =
+      LayoutSettingsPageDip(kPageAppearance, 780, PageState{});
   auto find = [&](int id) {
     for (const PlacedControl& p : pl.items)
       if (p.id == id) return p.rect;
@@ -247,7 +260,7 @@ TEST(ui_layout_appearance_page_still_needs_scrolling_at_the_default_size) {
   // 所以捲動不是選配。捲動上限必須真的蓋過那一段。
   const int reach =
       ContentViewportHeightDip(kWindowDefaultH) +
-      ScrollMaxDip(kPageAppearance, 780, kWindowDefaultH, false);
+      ScrollMaxDip(kPageAppearance, 780, kWindowDefaultH, PageState{});
   CHECK(reach >= find(IDC_APPEAR_NOTE).bottom());
 }
 
@@ -255,7 +268,7 @@ TEST(ui_layout_advanced_page_counts_the_last_button_in_its_height) {
   // ⚠ 舊版:`place(IDC_RESET, RectI{cx, st.y(), 220, btn_h})` 之後
   //   **不推進堆疊**。那一顆的 32 DIP 不進內容高度 = 不進捲動範圍,
   //   於是捲到最底仍然差 32 DIP 碰不到那顆危險鍵。
-  const PageLayout pl = LayoutSettingsPageDip(kPageAdvanced, 780, false);
+  const PageLayout pl = LayoutSettingsPageDip(kPageAdvanced, 780, PageState{});
   int max_bottom = 0;
   for (const PlacedControl& p : pl.items)
     if (!p.rect.empty() && p.rect.bottom() > max_bottom)
@@ -277,8 +290,12 @@ TEST(ui_layout_every_control_belongs_to_exactly_one_page) {
   int total = 0;
   for (int page = 0; page < kPageCount; ++page) {
     std::set<int> on_page;
-    for (bool empty : {false, true}) {
-      const PageLayout pl = LayoutSettingsPageDip(page, 780, empty);
+    // ⚠ **每一種**執行期狀態都要走一次。只走預設那一種的話,
+    //   「空狀態才出現的那幾顆同時也被別頁認領了」看不出來。
+    for (const PageState& state :
+         {PageState{false, false}, PageState{false, true},
+          PageState{true, false}, PageState{true, true}}) {
+      const PageLayout pl = LayoutSettingsPageDip(page, 780, state);
       for (const PlacedControl& p : pl.items) on_page.insert(p.id);
     }
     CHECK(on_page.size() >= 5);
@@ -306,7 +323,7 @@ TEST(ui_layout_stack_puts_danger_last_behind_a_divider) {
   CHECK(danger.y >= line.bottom() + space::s7);
 
   // 進階頁上真的是這個形狀:重設鈕是最後一顆,而且在那條線下面。
-  const PageLayout pl = LayoutSettingsPageDip(kPageAdvanced, 780, false);
+  const PageLayout pl = LayoutSettingsPageDip(kPageAdvanced, 780, PageState{});
   int reset_y = -1, diag_copy_bottom = -1;
   for (const PlacedControl& p : pl.items) {
     if (p.id == IDC_RESET) reset_y = p.rect.y;
@@ -386,8 +403,10 @@ TEST(ui_layout_scrolled_out_controls_stay_in_the_tab_order) {
   // (含捲到看不見的那幾顆)都必須 visible。
   const int W = kWindowDefaultW;
   const int vh = ContentViewportHeightDip(kWindowDefaultH);
-  const PageLayout pl = LayoutSettingsPageDip(kPageAppearance, W, false);
-  const int smax = ScrollMaxDip(kPageAppearance, W, kWindowDefaultH, false);
+  const PageLayout pl =
+      LayoutSettingsPageDip(kPageAppearance, W, PageState{});
+  const int smax =
+      ScrollMaxDip(kPageAppearance, W, kWindowDefaultH, PageState{});
   CHECK(smax > 0);  // 這一頁真的捲得動,否則下面測不到東西
   int off_screen = 0, hidden = 0;
   for (const PlacedControl& c : pl.items) {
@@ -473,4 +492,101 @@ TEST(ui_layout_text_line_box_leaves_room_for_han_characters) {
   CHECK_INT(n, 5);
   // 舊寫法(字級 + 4)在 t5 上不夠 —— 這一行說明為什麼要換掉它。
   CHECK(TextLineBoxDip(text_size::t5) > text_size::t5 + space::s2);
+}
+
+
+// ── 連網頁:空狀態不是「一片空白」,而且危險鍵跟著消失 ─────────────
+//
+// ⚠ 使用者的原話:「空的時候要說『一次都沒有連過』,不要只是一片空白 ——
+//   空白讓人分不出『沒連過』與『壞掉了』。」
+//
+//   那句話要成立,版面上必須**真的**換掉一塊:清單不出現、換上一段說明。
+//   只是「清單裡沒有列」不算 —— 那正是一片空白的定義。
+//   這一條就是那個差別的斷言。
+
+namespace {
+
+RectI FindOn(int page, PageState state, int id) {
+  const PageLayout pl = LayoutSettingsPageDip(page, 780, state);
+  for (const PlacedControl& p : pl.items)
+    if (p.id == id) return p.rect;
+  return RectI{};
+}
+
+}  // namespace
+
+TEST(ui_layout_network_page_empty_log_says_so_instead_of_showing_a_blank_list) {
+  const PageState empty{false, true};
+  const PageState has_rows{false, false};
+
+  // 一次都沒有連過:清單、欄名、計數**都不在版面上**,換成一段說明。
+  CHECK(FindOn(kPageNetwork, empty, IDC_NETLOG_LIST).empty());
+  CHECK(FindOn(kPageNetwork, empty, IDC_NETLOG_COLS).empty());
+  CHECK(FindOn(kPageNetwork, empty, IDC_NETLOG_SUMMARY).empty());
+  CHECK(!FindOn(kPageNetwork, empty, IDC_NETLOG_EMPTY).empty());
+  // 說明要放得下不只一行 —— 「為什麼是空的」講不完一行。
+  CHECK(FindOn(kPageNetwork, empty, IDC_NETLOG_EMPTY).h >=
+        2 * TextLineBoxDip(text_size::t5));
+
+  // ⚠ 沒有東西可以清的時候,**清除紀錄那一整塊也不在**。
+  //   留著的話就是一顆按下去什麼都不會發生的危險鍵。
+  CHECK(FindOn(kPageNetwork, empty, IDC_NETLOG_CLEAR).empty());
+  CHECK(FindOn(kPageNetwork, empty, IDC_NETLOG_CLEAR_HEAD).empty());
+  CHECK(FindOn(kPageNetwork, empty, IDC_NETLOG_CLEAR_BLURB).empty());
+
+  // 有紀錄:反過來。
+  CHECK(!FindOn(kPageNetwork, has_rows, IDC_NETLOG_LIST).empty());
+  CHECK(!FindOn(kPageNetwork, has_rows, IDC_NETLOG_COLS).empty());
+  CHECK(!FindOn(kPageNetwork, has_rows, IDC_NETLOG_SUMMARY).empty());
+  CHECK(!FindOn(kPageNetwork, has_rows, IDC_NETLOG_CLEAR).empty());
+  CHECK(FindOn(kPageNetwork, has_rows, IDC_NETLOG_EMPTY).empty());
+
+  // 兩種狀態下**都在**的東西:開關、它的兩句話、檢查更新、紀錄檔位置。
+  // (開關在空狀態下消失的話,使用者就再也打不開連網了。)
+  for (const PageState& state : {empty, has_rows}) {
+    CHECK(!FindOn(kPageNetwork, state, IDC_NET_SWITCH).empty());
+    CHECK(!FindOn(kPageNetwork, state, IDC_NET_STATE).empty());
+    CHECK(!FindOn(kPageNetwork, state, IDC_NET_DETAIL).empty());
+    CHECK(!FindOn(kPageNetwork, state, IDC_NET_UPDATE).empty());
+    CHECK(!FindOn(kPageNetwork, state, IDC_NETLOG_PATH).empty());
+  }
+}
+
+TEST(ui_layout_network_page_clear_button_is_last_and_behind_a_divider) {
+  // §4.9 / §2-C2:破壞性動作是該頁最後一個區塊,與上面隔一條 hairline + s7。
+  // 清除連網紀錄是破壞性的 —— 清掉之後,使用者用來稽核我們的那份證據
+  // 就找不回來了。
+  const PageState has_rows{false, false};
+  const PageLayout pl = LayoutSettingsPageDip(kPageNetwork, 780, has_rows);
+  RectI clear{}, path{};
+  int max_bottom = 0;
+  for (const PlacedControl& p : pl.items) {
+    if (p.id == IDC_NETLOG_CLEAR) clear = p.rect;
+    if (p.id == IDC_NETLOG_PATH) path = p.rect;
+    if (!p.rect.empty() && p.rect.bottom() > max_bottom)
+      max_bottom = p.rect.bottom();
+  }
+  CHECK(!clear.empty());
+  CHECK(!path.empty());
+  // 它是最後一顆。
+  CHECK_INT(clear.bottom(), max_bottom);
+  // 而且與上面隔著一條分隔線的距離(hairline + 兩段 s7)。
+  CHECK(clear.y >= path.bottom() + 2 * space::s7 + metric::kHairline);
+  // ⚠ 最後一顆的高度要真的進內容高度。舊版的「重設全部設定」就是
+  //   沒有推進堆疊,於是捲到底仍然差 32 DIP 碰不到。
+  CHECK_INT(pl.content_h_dip, max_bottom + kContentPadBottomDip);
+}
+
+TEST(ui_layout_network_page_scrolls_at_the_default_size) {
+  // 這一頁比外觀頁還長(開關 + 誠實說明 + 更新 + 紀錄)。捲不動的話,
+  // 「清除紀錄」與紀錄檔位置在預設視窗尺寸下碰不到。
+  const PageState has_rows{false, false};
+  const int W = kWindowDefaultW;
+  const int smax = ScrollMaxDip(kPageNetwork, W, kWindowDefaultH, has_rows);
+  CHECK(smax > 0);
+  const int reach = ContentViewportHeightDip(kWindowDefaultH) + smax;
+  const PageLayout pl = LayoutSettingsPageDip(kPageNetwork, W, has_rows);
+  CHECK(reach >= pl.content_h_dip - kContentPadBottomDip);
+  // 視窗長高,捲動上限跟著縮,高到某個程度歸零 —— 高度真的有參與。
+  CHECK_INT(ScrollMaxDip(kPageNetwork, W, 4000, has_rows), 0);
 }

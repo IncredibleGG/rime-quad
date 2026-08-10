@@ -65,9 +65,14 @@
 #include "../common/ui_layout.h"
 #include "../common/ui_strings.h"
 #include "engine.h"
+// ⚠ 連網出口。設定視窗**不自己讀寫** `network.enabled`,一律走 NetGate ——
+//   直接寫 settings_ 的話,出口那一側讀到的仍然是舊值,而那個差別的樣子是
+//   「開關看起來開了,按下去卻說被擋下」。
+#include "net_gate.h"
 #include "settings_store.h"
 #include "ui_font.h"
 #include "ui_theme.h"
+#include "update_check.h"
 
 namespace rimewin {
 
@@ -118,6 +123,23 @@ class SettingsWindow {
   void OnCommand(int id, int code);
   void OnNotify(NMHDR* nm, LRESULT* result);
   void OnDeployTick();
+
+  // ── 連網那一頁 ────────────────────────────────────────────
+  //
+  // ⚠ 「該不該開始檢查更新」「開關現在說哪一句話」「紀錄的四欄長什麼樣」
+  //   三件事的**決定權都不在這裡**,在 common/net_ui.h(純函式,有單元
+  //   測試)。這裡只負責把結果接到 Win32 上 —— 理由與捲動那三條接線
+  //   完全相同:這個檔案在 Ubuntu 上編不起來,寫在這裡就沒有人驗得到。
+  void RefreshNetworkPage();
+  void OnNetSwitchToggled();
+  void StartUpdateCheck();
+  void OnUpdateCheckDone(const UpdateCheckOutcome* result);
+  void DoClearNetLog();
+  static DWORD WINAPI UpdateThreadEntry(LPVOID param);
+  // 版面上那兩個執行期分支的**唯一**來源。⚠ 兩格都得是真的狀態:
+  // net_log_empty 寫死的話,一次都沒有連過的使用者會看到一個空表格
+  // 加一顆清除鍵,而那正是這一頁最不該有的樣子。
+  PageState PageStateNow() const;
   // ⚠ 側欄底部那一行以前只在 WM_PAINT 時算,而 WM_PAINT 要等使用者
   //   去碰視窗。首次安裝的人正好就坐在這一頁上等,於是「還沒好」
   //   會一直寫在那裡,直到他去點別的東西。
@@ -153,6 +175,7 @@ class SettingsWindow {
   // 自繪(§12.5.3 的六類裡的四類在這個檔案)。
   LRESULT DrawSidebar(NMLVCUSTOMDRAW* cd);
   LRESULT DrawSchemaList(NMLVCUSTOMDRAW* cd);
+  LRESULT DrawNetLogList(NMLVCUSTOMDRAW* cd);
   void DrawDangerButton(DRAWITEMSTRUCT* di);
 
   void AddTray();
@@ -181,6 +204,8 @@ class SettingsWindow {
   Engine* engine_;
   SettingsStore* store_;
   std::string shared_dir_;
+  // ⚠ 宣告順序 = 初始化順序,而它吃 store_ —— 所以它排在 store_ 後面。
+  NetGate net_gate_;
   CandidateWindow* cand_ = nullptr;
   StatusBar* bar_ = nullptr;
 
@@ -190,6 +215,7 @@ class SettingsWindow {
   HWND hwnd_ = nullptr;
   HWND sidebar_ = nullptr;
   HWND schema_list_ = nullptr;
+  HWND net_log_list_ = nullptr;
 
   // ⚠ **沒有 dpi_scale_。** 那個 double 正是舊版每一項各少 0~1 px、
   //   而誤差沿著版面累積的來源。一律 MulDivRound(dip, dpi_, 96)。
@@ -228,6 +254,18 @@ class SettingsWindow {
   Settings settings_;
   std::vector<std::pair<std::string, std::string>> schemas_;  // id, name
   std::vector<std::string> order_;   // 目前清單上的順序(id)
+
+  // ── 連網那一頁的狀態 ──────────────────────────────────────
+  //
+  // ⚠ 預設 true(= 一次都沒有連過)。方向是刻意的:還沒讀到紀錄之前,
+  //   畫面要說「一次都沒有連過」,不是給一個空表格。
+  bool net_log_empty_ = true;
+  // 畫紀錄那一列時要用的文字。與 SetRowListItems 餵進去的是同一份 ——
+  // 兩份會漂移,而漂移的症狀是「螢幕閱讀器念的與畫面上的不一樣」。
+  std::vector<std::wstring> net_log_lines_;
+  // 有一次檢查正在跑。⚠ 只在 UI 執行緒上讀寫(按鈕與完成訊息都在那裡),
+  // 所以不需要 atomic;背景執行緒**不碰它**。
+  bool update_running_ = false;
 };
 
 }  // namespace rimewin

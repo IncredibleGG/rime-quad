@@ -177,6 +177,10 @@ enum SettingsPage : int {
   kPageSchemas = 0,
   kPageAppearance,
   kPageText,
+  // ⚠ 「連網」排在「進階」前面。它不是進階功能 —— 這個輸入法的定位
+  //   就是離線為預設,那顆開關與那份紀錄是使用者**會去看**的東西,
+  //   不是藏在最後一頁的旋鈕。順序與 Android 的設定頁對得起來。
+  kPageNetwork,
   kPageAdvanced,
   kPageCount,
 };
@@ -272,6 +276,30 @@ enum SettingsControlId : int {
   IDC_RESET_HEAD,
   IDC_RESET_BLURB,
   IDC_RESET,
+
+  // 連網
+  //
+  // ⚠ 這一頁上有兩塊會隨執行期狀態整個換掉(見 PageState):
+  //   紀錄是空的時候,清單、欄名、計數與「清除紀錄」那一整個危險區塊
+  //   全部不出現,換成一句「一次都沒有連過」。
+  IDC_NET_TITLE = 600,
+  IDC_NET_SUB,
+  IDC_NET_SWITCH,
+  IDC_NET_STATE,
+  IDC_NET_DETAIL,
+  IDC_NET_UPDATE_HEAD,
+  IDC_NET_UPDATE_BLURB,
+  IDC_NET_UPDATE,
+  IDC_NETLOG_HEAD,
+  IDC_NETLOG_BLURB,
+  IDC_NETLOG_SUMMARY,
+  IDC_NETLOG_COLS,
+  IDC_NETLOG_LIST,
+  IDC_NETLOG_EMPTY,
+  IDC_NETLOG_PATH,
+  IDC_NETLOG_CLEAR_HEAD,
+  IDC_NETLOG_CLEAR_BLURB,
+  IDC_NETLOG_CLEAR,
 };
 
 // 底部固定列(狀態文字 + 關閉鈕)佔掉的高度,以及它上面那條 hairline。
@@ -299,10 +327,27 @@ struct PageLayout {
   int content_h_dip = 0;
 };
 
-// 一頁的完整版面。schema_list_empty 是「輸入方案」頁唯一的執行期分支
-// (清單是空的時候換成一句說明)。
-PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
-                                 bool schema_list_empty);
+// ── 版面上會隨執行期狀態換掉整塊的東西 ─────────────────────────
+//
+// ⚠ 這裡只放**真的會換掉一整塊**的狀態,不是所有會變的東西。
+//   文字變了(例如「現在預設是○○」)不算 —— 那不影響任何一個矩形,
+//   所以它不該讓版面多一個分支。多一個 bool 就多一種只有那個狀態下
+//   才走得到的版面,而走不到的版面就是沒有人看過的版面。
+struct PageState {
+  // 「輸入方案」頁:一種都沒有的時候,清單與三顆按鈕換成一段說明。
+  bool schema_list_empty = false;
+  // 「連網」頁:一次都沒有連過的時候,清單/欄名/計數與「清除紀錄」
+  // 那一整個危險區塊都不出現,換成一句「一次都沒有連過」。
+  //
+  // ⚠ 預設是 **true**,方向是刻意的:讀不到紀錄(檔案不存在、讀失敗)
+  //   時,畫面要說「一次都沒有連過」,而不是給一個空的表格再配一顆
+  //   清除鍵。空表格讓人分不出「沒連過」與「壞掉了」,而「開關從沒
+  //   開過所以紀錄是空的」正是使用者驗證我們的方式。
+  bool net_log_empty = true;
+};
+
+// 一頁的完整版面。
+PageLayout LayoutSettingsPageDip(int page, int window_w_dip, PageState state);
 
 // 內容區的可視高度。⚠ 視窗矮於底部固定列時回 0,不回負數。
 int ContentViewportHeightDip(int window_h_dip);
@@ -311,7 +356,7 @@ int ContentViewportHeightDip(int window_h_dip);
 // ⚠ 這一支**必須**吃 window_h_dip —— 舊版的 ClickableTargetsDip 把它
 //   `(void)` 掉,於是「排到視窗底部以外」對測試而言不存在。
 int ScrollMaxDip(int page, int window_w_dip, int window_h_dip,
-                 bool schema_list_empty);
+                 PageState state);
 
 // ── 捲動之後,一顆內容區控制項該擺在哪、露出多少、藏不藏 ─────────
 //
@@ -360,7 +405,7 @@ struct HitTarget {
 // ⚠ 第三個參數是**頁**,不是頁數 —— 舊版收的是 page_count,而那正是
 //   它從來沒有真的走過任何一頁版面的原因。
 std::vector<HitTarget> ClickableTargetsDip(int window_w_dip, int window_h_dip,
-                                           int page, bool schema_list_empty);
+                                           int page, PageState state);
 
 }  // namespace rimewin
 

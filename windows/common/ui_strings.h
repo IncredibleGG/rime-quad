@@ -214,6 +214,59 @@ enum class UiString : int {
   // ── 關於 ────────────────────────────────────────────────────
   kAboutOffline,
 
+  // ── 連網(側欄第四頁)──────────────────────────────────────
+  //
+  // ⚠ 用詞與 Android 對齊:那一端叫「連網」(network_switch_title),
+  //   所以這一端也叫「連網」—— 不可以一邊叫「離線模式」一邊叫
+  //   「允許連網」,那會讓兩台裝置上的同一件事看起來像兩件事。
+  kNavNetwork,
+  kNetworkTitle,
+  kNetworkSubtitle,
+  kNetworkSwitch,
+  // ⚠ 開與關**必須是兩條不同的字串**。合併成一條的話,使用者看不出
+  //   現在到底是哪一種狀態,而這一頁存在的理由就是讓他看得出來。
+  kNetworkOnSummary,
+  kNetworkOffSummary,
+  kNetworkOnDetail,
+  kNetworkTurnedOn,
+  kNetworkTurnedOff,
+
+  // 連網紀錄
+  kNetLogHeading,
+  kNetLogBlurb,
+  kNetLogColumns,
+  kNetLogCount,
+  // ⚠ 空狀態要**說話**,不可以是一片空白 —— 空白讓人分不出
+  //   「沒連過」與「壞掉了」。
+  kNetLogEmptyTitle,
+  kNetLogEmptyWhy,
+  kNetLogFileLine,
+  kNetLogClearHeading,
+  kNetLogClearBlurb,
+  kNetLogClearButton,
+  kNetLogCleared,
+  // ⚠ 紀錄的用途與結果在畫面上一律走這幾條,**不走**
+  //   net_policy.cc 的 NetPurposeText()/NetOutcomeText() —— 那兩支
+  //   回的是窄字串的中文,只有一種語言,是給紀錄檔與診斷用的。
+  kNetPurposeIndex,
+  kNetPurposePackage,
+  kNetOutcomeOk,
+  kNetOutcomeFailed,
+  kNetOutcomeRedirected,
+
+  // 檢查更新
+  kUpdateHeading,
+  kUpdateBlurb,
+  kUpdateButton,
+  kUpdateChecking,
+  // ⚠ 「開關是關的」與「連不上」是兩件事,兩句話。壓成同一句紅字
+  //   正是這個專案在 Windows 端犯過的錯。
+  kUpdateNeedsNetwork,
+  kUpdateUpToDate,
+  kUpdateAvailable,
+  kUpdateFailed,
+  kUpdateNotWired,
+
   kUiStringCount,
 };
 

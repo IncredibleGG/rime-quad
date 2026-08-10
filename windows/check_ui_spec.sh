@@ -1126,6 +1126,214 @@ PYSCRIPT
   #   ui_listview.cc 自己一定用得到它。
   need_scope "W28" "${n28}" 1 || w28bad=1
   [ "${w28bad}" -eq 0 ] && ok "W28 自繪的列矩形只從 RowRect() 來(${n28} 處 nmcd.rc 全在 ui_listview.cc 與它的測試裡)"
+
+  # ── W29:連網那一頁,三件事的決定權都不在繪製碼裡 ─────────────
+  #
+  # 這一頁上有三件事,寫壞了**畫面看起來完全正常**:
+  #
+  #   1. 開關關著時按「檢查更新」照樣連出去。畫面上多一句「正在檢查
+  #      更新…」,而那正是使用者以為不會發生的事。
+  #   2. 開關的狀態從 settings_ 讀而不是從 NetGate 讀。兩份真相會漂移,
+  #      症狀是「開關看起來開了,按下去卻說被擋下」。
+  #   3. 紀錄是空的那一個分支被寫死。使用者看到一個空表格加一顆清除鍵,
+  #      而「開關從沒開過所以紀錄是空的」那句話再也說不出口 ——
+  #      那句話正是使用者用來驗證我們的方式。
+  #
+  # ⚠ 所以這一條驗的是**呼叫位置與資料流**,不是「檔案裡有沒有這個字」。
+  #   settings_window.cc 在 Ubuntu 上編不起來,那三件事的判斷全部搬到
+  #   common/net_ui.cc(純函式,有單元測試);這裡驗的是那三條接線
+  #   真的接上了,而且沒有第二條路繞過去。
+  #
+  # ⚠ 這一段的 python 失敗時**必須是紅**(見 W25 的教訓),所以它先印
+  #   SCOPE_OK;沒有那一行就當作沒跑過。
+  check
+  local w29bad=0
+  local w29out; w29out="$("${PY}" - "${sw}" "${CODE_DIR}/common/net_ui.cc" <<'PYSCRIPT'
+import sys as _s
+_s.stdout.reconfigure(encoding='utf-8', newline='')
+import re, sys
+sw = open(sys.argv[1], encoding='utf-8', errors='replace').read()
+try:
+    net = open(sys.argv[2], encoding='utf-8', errors='replace').read()
+except OSError:
+    net = ''
+
+def body_of(src, head, endpat='\n}\n'):
+    i = src.find(head)
+    if i < 0:
+        return None
+    j = src.find(endpat, i)
+    return src[i:j] if j > 0 else src[i:]
+
+out = []
+
+# -- 1. 純函式那一側還在 common/,而且是這三支 --
+for name in ('UpdateAction DecideUpdateAction(',
+             'UiString NetSwitchSummary(',
+             'NetLogView BuildNetLogView('):
+    if name not in net:
+        out.append('NO_PUREFN=' + name.split(' ')[-1].rstrip('('))
+
+# -- 2. 開關:狀態從 NetGate 讀,那句話從純函式來 --
+ref = body_of(sw, 'void SettingsWindow::RefreshNetworkPage() {')
+if ref is None:
+    out.append('NO_REFRESH')
+else:
+    if 'net_gate_.Enabled()' not in ref:
+        out.append('SWITCH_NOT_FROM_GATE')
+    if not re.search(r'SetText\(hwnd_, IDC_NET_STATE, UiText\(NetSwitchSummary\(', ref):
+        out.append('SUMMARY_NOT_FROM_FN')
+    if not re.search(r'BuildNetLogView\(\s*net_gate_\.ReadLog\(\)', ref):
+        out.append('LOG_NOT_FROM_GATE')
+    if 'net_log_empty_ = view.empty;' not in ref:
+        out.append('EMPTY_NOT_STORED')
+
+# -- 3. 版面的執行期分支:兩格都要是真的狀態 --
+ps = body_of(sw, 'PageState SettingsWindow::PageStateNow() const {')
+if ps is None:
+    out.append('NO_PAGESTATE')
+else:
+    if 's.net_log_empty = net_log_empty_;' not in ps:
+        out.append('EMPTY_BRANCH_HARDCODED')
+    if 's.schema_list_empty = order_.empty();' not in ps:
+        out.append('SCHEMA_BRANCH_HARDCODED')
+n_ps = len(re.findall(r'LayoutSettingsPageDip\([^;]*?PageStateNow\(\)', sw, re.S))
+n_all = len(re.findall(r'LayoutSettingsPageDip\(', sw))
+if n_all == 0:
+    out.append('NO_LAYOUT_CALL')
+elif n_ps != n_all:
+    out.append('LAYOUT_STATE_BYPASSED=%d/%d' % (n_ps, n_all))
+
+# -- 4. 開關只能走 NetGate::SetEnabled,而且失敗要說出來 --
+tog = body_of(sw, 'void SettingsWindow::OnNetSwitchToggled() {')
+if tog is None:
+    out.append('NO_TOGGLE')
+else:
+    if 'net_gate_.SetEnabled(on)' not in tog:
+        out.append('TOGGLE_NOT_THROUGH_GATE')
+    if 'kStatusSaveFailed' not in tog:
+        out.append('TOGGLE_FAILS_SILENTLY')
+
+# -- 5. 檢查更新:開關先問,而且不在 UI 執行緒上跑 --
+up = body_of(sw, 'void SettingsWindow::StartUpdateCheck() {')
+if up is None:
+    out.append('NO_STARTUPDATE')
+else:
+    if not re.search(r'DecideUpdateAction\(\s*net_gate_\.Enabled\(\),\s*update_running_\s*\)', up):
+        out.append('UPDATE_SKIPS_THE_SWITCH')
+    if 'if (action != UpdateAction::kStart) return;' not in up:
+        out.append('UPDATE_IGNORES_THE_VERDICT')
+    if 'CreateThread' not in up:
+        out.append('UPDATE_NOT_ON_A_THREAD')
+    if 'RunUpdateCheck' in up:
+        out.append('UPDATE_RUNS_ON_THE_UI_THREAD')
+th = body_of(sw, 'DWORD WINAPI SettingsWindow::UpdateThreadEntry(LPVOID param) {')
+if th is None:
+    out.append('NO_UPDATE_THREAD')
+elif 'RunUpdateCheck(job->gate)' not in th:
+    out.append('THREAD_DOES_NOT_CHECK')
+done = body_of(sw, 'void SettingsWindow::OnUpdateCheckDone(')
+if done is None:
+    out.append('NO_UPDATE_DONE')
+else:
+    if 'UpdateStateText(' not in done:
+        out.append('RESULT_TEXT_HARDCODED')
+    if 'RefreshNetworkPage()' not in done:
+        out.append('RESULT_DOES_NOT_REFRESH')
+
+# -- 6. 清除紀錄要問一聲 --
+clr = body_of(sw, 'void SettingsWindow::DoClearNetLog() {')
+if clr is None:
+    out.append('NO_CLEAR')
+else:
+    if 'ConfirmDialog(' not in clr:
+        out.append('CLEAR_WITHOUT_CONFIRM')
+    if 'net_gate_.ClearLog()' not in clr:
+        out.append('CLEAR_DOES_NOTHING')
+
+print('SCOPE_OK')
+print('LAYOUTCALLS=%d' % n_all)
+for line in out:
+    print(line)
+PYSCRIPT
+)"
+  w29msg() { red "W29:$1"; w29bad=1; }
+  case "${w29out}" in
+    SCOPE_OK*) ;;
+    *) w29msg "這一條的掃描程式根本沒跑完(沒有 SCOPE_OK)。實際輸出:
+${w29out}" ;;
+  esac
+  local w29calls; w29calls="$(num "$(printf '%s\n' "${w29out}" | sed -n 's/^LAYOUTCALLS=//p')")"
+  need_scope "W29 版面呼叫點" "${w29calls}" 2 || w29bad=1
+  local line29
+  while IFS= read -r line29; do
+    line29="${line29%$'\r'}"
+    case "${line29}" in
+      ''|SCOPE_OK|LAYOUTCALLS=*) continue ;;
+      NO_PUREFN=*)
+        w29msg "common/net_ui.cc 裡沒有 ${line29#NO_PUREFN=} —— 那三件事的判斷又回到
+     繪製碼裡了,而那個檔案在 Ubuntu 上編不起來(= 沒有人驗得到)" ;;
+      NO_REFRESH)  w29msg "找不到 RefreshNetworkPage —— 掃描範圍錯了" ;;
+      SWITCH_NOT_FROM_GATE)
+        w29msg "開關的狀態不是從 NetGate::Enabled() 讀的 —— 兩份真相會漂移,
+     而漂移的樣子是「開關看起來開了,按下去卻說被擋下」" ;;
+      SUMMARY_NOT_FROM_FN)
+        w29msg "開關底下那一句話不是 NetSwitchSummary() 給的(預期
+     SetText(hwnd_, IDC_NET_STATE, UiText(NetSwitchSummary(...))))——
+     寫死一句的話,開與關會說同一句話" ;;
+      LOG_NOT_FROM_GATE)
+        w29msg "連網紀錄不是從 net_gate_.ReadLog() 經 BuildNetLogView() 來的 ——
+     自己拼一份的話,那一份與紀錄檔會不一樣" ;;
+      EMPTY_NOT_STORED)
+        w29msg "讀完紀錄之後沒有把 view.empty 存回 net_log_empty_ ——
+     版面那個分支永遠停在初值" ;;
+      NO_PAGESTATE) w29msg "找不到 PageStateNow —— 掃描範圍錯了" ;;
+      EMPTY_BRANCH_HARDCODED)
+        w29msg "版面的「紀錄是空的」分支被寫死(預期 s.net_log_empty = net_log_empty_;)
+     —— 一次都沒有連過的使用者會看到一個空表格加一顆清除鍵,
+     而「開關從沒開過所以紀錄是空的」那句話就再也說不出口了" ;;
+      SCHEMA_BRANCH_HARDCODED)
+        w29msg "版面的「一種方式都沒有」分支被寫死(預期 s.schema_list_empty = order_.empty();)" ;;
+      NO_LAYOUT_CALL) w29msg "settings_window.cc 裡找不到 LayoutSettingsPageDip 的呼叫 —— 掃描範圍錯了" ;;
+      LAYOUT_STATE_BYPASSED=*)
+        w29msg "有 LayoutSettingsPageDip 的呼叫沒有走 PageStateNow()(${line29#LAYOUT_STATE_BYPASSED=})
+     —— 繞過去的那一個會用一份與畫面無關的狀態排版" ;;
+      NO_TOGGLE) w29msg "找不到 OnNetSwitchToggled —— 掃描範圍錯了" ;;
+      TOGGLE_NOT_THROUGH_GATE)
+        w29msg "開關不是寫進 NetGate::SetEnabled() —— 出口那一側讀到的仍然是舊值" ;;
+      TOGGLE_FAILS_SILENTLY)
+        w29msg "開關寫不進去時沒有告訴使用者 —— 症狀會是「開關關了,重開又是開的」" ;;
+      NO_STARTUPDATE) w29msg "找不到 StartUpdateCheck —— 掃描範圍錯了" ;;
+      UPDATE_SKIPS_THE_SWITCH)
+        w29msg "「檢查更新」沒有把 net_gate_.Enabled() 送進 DecideUpdateAction() ——
+     **開關關著也會連出去**。這是這一頁上最嚴重的一種寫壞法,而且
+     畫面上看起來完全正常(只多一句「正在檢查更新…」)" ;;
+      UPDATE_IGNORES_THE_VERDICT)
+        w29msg "算出了判斷卻沒有據此收手(預期 if (action != UpdateAction::kStart) return;)" ;;
+      UPDATE_NOT_ON_A_THREAD)
+        w29msg "「檢查更新」沒有開背景執行緒 —— 同步阻塞跑在 UI 執行緒上就是
+     「打字打到一半整個沒反應」(候選窗與設定視窗共用那條執行緒)" ;;
+      UPDATE_RUNS_ON_THE_UI_THREAD)
+        w29msg "StartUpdateCheck 裡直接呼叫了 RunUpdateCheck —— 見上一條" ;;
+      NO_UPDATE_THREAD) w29msg "找不到 UpdateThreadEntry —— 掃描範圍錯了" ;;
+      THREAD_DOES_NOT_CHECK)
+        w29msg "背景執行緒沒有呼叫 RunUpdateCheck(job->gate) —— 那條路是死的" ;;
+      NO_UPDATE_DONE) w29msg "找不到 OnUpdateCheckDone —— 掃描範圍錯了" ;;
+      RESULT_TEXT_HARDCODED)
+        w29msg "檢查完的那一句話不是 UpdateStateText() 給的 —— 五種結果會被壓成同一句" ;;
+      RESULT_DOES_NOT_REFRESH)
+        w29msg "檢查完沒有重讀連網紀錄 —— 使用者按完更新,就在這一頁上,
+     卻看不到剛剛那幾筆連線" ;;
+      NO_CLEAR) w29msg "找不到 DoClearNetLog —— 掃描範圍錯了" ;;
+      CLEAR_WITHOUT_CONFIRM)
+        w29msg "清除連網紀錄沒有確認 —— 那份紀錄是使用者用來稽核我們的證據,
+     清掉就找不回來了(§2-C2/§2-C3)" ;;
+      CLEAR_DOES_NOTHING)
+        w29msg "「清除連網紀錄」沒有呼叫 net_gate_.ClearLog()" ;;
+      *) w29msg "未知的回報:${line29}" ;;
+    esac
+  done <<< "${w29out}"
+  [ "${w29bad}" -eq 0 ] && ok "W29 連網那一頁:開關讀寫都走 NetGate、那兩句話與空狀態分支都從純函式來、${w29calls} 個版面呼叫點全部走 PageStateNow(),而「檢查更新」在開關關著時走不到連線那一條路"
 }
 
 # ────────────────────────────────────────────────────────────────
@@ -1188,6 +1396,18 @@ self_check() {
 "W25h 純函式從 common/ 消失|common/ui_layout.cc|s=s.replace('ScrolledPlacement ScrollPlaceControlDip(','ScrolledPlacement ScrollPlaceControlDipGone(',1)"
 "W26c 简/繁 寫了狀態但不重畫(覆核者實測的拆法)|service/status_bar.cc|s=s.replace('                                      : VariantPref::kSimplified);\\n      Relayout();\\n      ::InvalidateRect(hwnd_, nullptr, TRUE);','                                      : VariantPref::kSimplified);',1)"
 "W26d 中/En 寫了狀態但不重畫|service/status_bar.cc|s=s.replace('      if (engine_) engine_->SetAsciiModeAll(!now);\\n      Relayout();\\n      ::InvalidateRect(hwnd_, nullptr, TRUE);','      if (engine_) engine_->SetAsciiModeAll(!now);',1)"
+"W29a 開關的狀態讀錯地方|service/settings_window.cc|s=s.replace('const bool on = net_gate_.Enabled();','const bool on = settings_.NetworkEnabled();',1)"
+"W29b 開關底下那句話寫死一條|service/settings_window.cc|s=s.replace('SetText(hwnd_, IDC_NET_STATE, UiText(NetSwitchSummary(on)));','SetText(hwnd_, IDC_NET_STATE, UiText(UiString::kNetworkOffSummary));',1)"
+"W29c 檢查更新不問開關(開關關著也連出去)|service/settings_window.cc|s=s.replace('DecideUpdateAction(net_gate_.Enabled(), update_running_)','DecideUpdateAction(true, update_running_)',1)"
+"W29d 算了判斷卻不收手|service/settings_window.cc|s=s.replace('  if (action != UpdateAction::kStart) return;','',1)"
+"W29e 檢查更新在 UI 執行緒上直接跑|service/settings_window.cc|s=s.replace('  update_running_ = true;','  (void)RunUpdateCheck(&net_gate_);' + chr(10) + '  update_running_ = true;',1)"
+"W29f 空狀態的版面分支被寫死|service/settings_window.cc|s=s.replace('  s.net_log_empty = net_log_empty_;','  s.net_log_empty = false;',1)"
+"W29g 紀錄不是從出口讀來的|service/settings_window.cc|s=s.replace('BuildNetLogView(net_gate_.ReadLog(), ui_lang_, LocalTzOffsetMinutes())','BuildNetLogView({}, ui_lang_, LocalTzOffsetMinutes())',1)"
+"W29h 檢查完的那一句話寫死|service/settings_window.cc|s=s.replace('  SetStatus(' + chr(10) + '      UpdateStateText(result ? result->state : UpdateCheckState::kFailed));','  SetStatus(UiString::kUpdateUpToDate);',1)"
+"W29i 清除紀錄不問一聲|service/settings_window.cc|s=s.replace('  if (!ConfirmDialog(hwnd_, &theme_, script(),' + chr(10) + '                     UiText(UiString::kNetLogClearHeading),' + chr(10) + '                     UiText(UiString::kNetLogClearBlurb),' + chr(10) + '                     UiText(UiString::kNetLogClearButton),' + chr(10) + '                     UiText(UiString::kCancel)))' + chr(10) + '    return;','',1)"
+"W29j 開關寫不進去卻不說|service/settings_window.cc|s=s.replace('    SetStatus(UiString::kStatusSaveFailed);' + chr(10) + '    RefreshNetworkPage();' + chr(10) + '    return;','    RefreshNetworkPage();' + chr(10) + '    return;',1)"
+"W29k 純函式從 common/ 消失|common/net_ui.cc|s=s.replace('UpdateAction DecideUpdateAction(','UpdateActionGone DecideUpdateActionGone(',1)"
+"W29l 版面呼叫點繞過真實狀態|service/settings_window.cc|s=s.replace('  const PageLayout pl = LayoutSettingsPageDip(page_, W, PageStateNow());','  const PageLayout pl = LayoutSettingsPageDip(page_, W, PageState{});',1)"
 "範圍|__SCOPE__|"
   )
 

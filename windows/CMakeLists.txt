@@ -100,6 +100,11 @@ add_library(rime_common STATIC
   # run_logic_tests.sh 驗得到「開關關著時傳輸層一次都沒被呼叫」。
   # 真的開 socket 的那一半在 service/net_gate.cc,只連進 rime_service。
   common/net_gate_core.cc
+  # net_ui.cc 是「連網」那一頁的**呈現邏輯**:開關現在說哪一句話、
+  # 紀錄的四欄長什麼樣、按下「檢查更新」時開關是關的該怎麼辦。
+  # ⚠ 它在 common/ 而不是 service/,理由與 ui_layout.cc 一樣:
+  #   那三件事寫壞了畫面看起來完全正常,而 service/ 在 Ubuntu 上編不起來。
+  common/net_ui.cc
   # ── 這一輪加的:設定介面的純邏輯層 ────────────────────────────
   #
   # ⚠ 全部刻意不 include windows.h —— 版面、色票、狀態列位置還原都是
@@ -152,6 +157,7 @@ add_executable(rime_tests
   tests/test_settings.cc
   tests/test_net_policy.cc
   tests/test_net_gate_core.cc
+  tests/test_net_ui.cc
   tests/test_proto_compat.cc
   tests/test_schema_list_patch.cc
   tests/test_elevation_policy.cc
@@ -346,6 +352,11 @@ add_executable(rime_service
   service/cand_window.cc
   service/settings_store.cc
   service/settings_window.cc
+  # ⚠ 「檢查更新」的接縫。**這個檔案是 win-update 那條線要換掉的那一份**:
+  #   本輪只交出介面與呼叫點(背景執行緒、完成訊息、失敗分類),
+  #   真的去問版本的那一段還沒有。它不碰網路 API —— 連出去只能走
+  #   service/net_gate.cc,那是唯一的出口(audit_offline_win.sh 守著)。
+  service/update_check.cc
   service/status_bar.cc
   service/ui_listview.cc
   service/ui_font.cc
