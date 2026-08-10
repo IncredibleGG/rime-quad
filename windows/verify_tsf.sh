@@ -210,7 +210,15 @@ echo "  後面的宿主會 activate ${LANGID}"
 #  3. 真的走一遍
 # ══════════════════════════════════════════════════════════════════
 log "3. 建 ITfThreadMgr、給文件焦點、啟用我們的設定檔、送按鍵"
+# ⚠ --press-preserved-key 與 --check-preserved-key 是**兩件事**。
+#   前者問「TSF 收下註冊了沒」,後者**真的把那顆鍵按下去**並要求
+#   OnPreservedKey 留下記錄。實測過:把 tsf/text_service.cc 的 OnPreservedKey
+#   在比對完 GUID 之後直接 return S_OK(註冊留著、hotkey_policy 留著、
+#   服務端攔截也留著),CI 三個 job 全綠 —— 中英切換整條死掉而沒有人知道。
+#   這個 job 沒有服務(logic 那一組不產 rime_service.exe),所以這裡只問
+#   「有沒有走到我們身上」;按下去之後文件會怎樣在 verify_installer.sh §6f。
 HOST_ARGS=(--langid "${LANGID}" --require-activate
+           --check-preserved-key --press-preserved-key
            --trace "$(w "${WORK}/trace-after.log")" --wait-ms 4000)
 if [ "${FULL}" -eq 1 ]; then
   # nihao 之後按 1 選第一個候選。與 verify_ime.sh / verify_console.sh
@@ -234,6 +242,59 @@ fi
 # 逐條斷言,不只看結束碼。結束碼只說「有東西不對」,
 # 而我們要的是「哪一格不對」——那才是下一步該往哪查的答案。
 after="$(tr -d '\r' < "${WORK}/host-after.log")"
+
+# ── Ctrl+空白鍵那顆保留鍵 ────────────────────────────────────────
+#
+# 使用者回報「ctrl+ 空格沒辦法切中英文」。這裡問的是**註冊**:
+# PreserveKey 是在 ActivateEx 裡呼叫的,所以只有在真的被系統啟用過的
+# 那一份文字服務上問得到。按下去會怎樣是另一半,在 verify_ime.sh。
+#
+# ⚠ 兩個方向都要:Ctrl+空白鍵**必須**在,Ctrl+C **必須不在** ——
+#   註冊得太寬的話,使用者每一個程式裡的複製都會消失,而他不會知道
+#   是輸入法幹的。兩條斷言都由 rime_tsf_host 自己印,這裡對它的字。
+case "${after}" in
+  *"IsPreservedKey(Ctrl+Space) hr=0x00000000 registered=1"*)
+    ok "Ctrl+空白鍵真的被註冊成保留鍵了(在真的 ActivateEx 之後問到的)" ;;
+  *) note_fail "Ctrl+空白鍵**沒有**註冊成保留鍵 —— 使用者按下去不會有任何事" ;;
+esac
+case "${after}" in
+  *"IsPreservedKey(Ctrl+C)     hr=0x00000000 registered=1"*)
+    note_fail "Ctrl+C 也被註冊成保留鍵了 —— 使用者的複製會消失" ;;
+  *) ok "Ctrl+C 沒有被搶走" ;;
+esac
+
+# ── ⚠ 註冊之外的另一半:那顆鍵**按下去**有沒有走到我們身上 ──────────
+#
+# 上面兩條問的都是「TSF 收下註冊了沒」,它們**不呼叫產品一行程式碼**。
+# 實測過:把 tsf/text_service.cc 的 OnPreservedKey 在比對完 GUID 之後直接
+# `return S_OK`(註冊留著、hotkey_policy 留著、服務端攔截也留著)——
+# CI 三個 job 全綠。中英切換可以整條死掉而沒有人知道,因為中間那一段
+#     OnPreservedKey → IPC → 服務 → 切模式 → 快照 → edit session → 文件
+# 沒有任何自動化走過。
+#
+# 這裡補的是它的第一格:那顆鍵按下去,OnPreservedKey **有沒有被呼叫**。
+# 判準是瘦 DLL 自己在那個函式裡寫下的記錄行(宿主數它多了幾筆),
+# 不是回傳值 —— TSF 對「沒人處理」與「處理了但什麼都沒做」回的東西一樣。
+#
+# ⚠ 這個 job 沒有服務(logic 那一組刻意不產 rime_service.exe),所以這裡
+#   問不到「模式有沒有真的變」;那一半在 verify_installer.sh 的 §6f,
+#   它用裝好的服務斷言**文件內容**。兩半都要。
+case "${after}" in
+  *"PRESERVEDKEY_DELIVERED=1"*)
+    ok "Ctrl+空白鍵按下去真的走到 OnPreservedKey 了(不只是註冊在那裡)" ;;
+  *) note_fail "Ctrl+空白鍵按下去**沒有到達 OnPreservedKey**。
+     註冊是好的(上面那一條過了),壞的是後面那一段 —— 使用者按下去
+     不會有任何事發生,而 IsPreservedKey 仍然回答『註冊了』。" ;;
+esac
+case "${after}" in
+  *"PRESERVEDKEY_ROUTE=real"*)
+    ok "  走的是**真的按鍵**那條路(TSF 自己把它認成保留鍵交回來)" ;;
+  *"PRESERVEDKEY_ROUTE=simulated"*)
+    echo "  · 真的按鍵沒有被 TSF 轉成保留鍵,改用 SimulatePreservedKey 走到"
+    echo "    (runner 是非互動的工作階段,按鍵路由與桌面上不保證一樣)——"
+    echo "    產品那一段仍然被完整走過,只是入口不同。" ;;
+esac
+
 case "${after}" in
   *"系統把 rime_tsf.dll 載入了這個進程"*)
     ok "DLL 被系統載入了(登錄檔 → COM → LoadLibrary 這一段是好的)" ;;

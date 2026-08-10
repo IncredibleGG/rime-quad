@@ -17,6 +17,7 @@
 // 用法:
 //   rime_probe.exe --keys nihao --select 1 --schema luna_pinyin_tw --expect 你好
 //   rime_probe.exe --connect-only            只驗「連得上、握得了手、開得了 session」
+//   rime_probe.exe --ascii-toggle --schema … 驗 Ctrl+空白鍵真的切得了中英
 //   rime_probe.exe --attempts N              最多做 N 次**真正的**連線嘗試
 //
 // ── --attempts 為什麼要存在,而且為什麼預設是 1 ──────────────────
@@ -46,6 +47,7 @@
 #include <string>
 #include <vector>
 
+#include "../common/hotkey_policy.h"
 #include "../tsf/ipc_client.h"
 #include "../winshared/winutil.h"
 
@@ -158,6 +160,177 @@ void ReportFailure(const IpcClient& ipc, const std::wstring& pipe_name,
 
 }  // namespace
 
+// ── Ctrl+空白鍵:中英切換 ────────────────────────────────────────
+//
+// 使用者回報「ctrl+ 空格沒辦法切中英文」。這一支驗的是**服務那一半**:
+// 那一顆鍵經由真的具名管道送進來之後,引擎有沒有真的換模式。
+//
+// ⚠ 判準不是「旗標變了」而已 —— 旗標可以變而行為不變。真正的判準是
+//   **同一串字母的下場不一樣**:中文模式下引擎會吃掉它們(開始組字),
+//   英數模式下引擎不處理(handled=false,沒有組字)。後者正是瘦 DLL
+//   自己把字元寫進文件的那條路(key_eat_policy.h 的 kCharacter)。
+//
+// ⚠ DLL 那一半(Ctrl+空白鍵有沒有真的被 TSF 攔下來)在這裡驗不到,
+//   它在 windows/verify_tsf.sh 的 --check-preserved-key。兩半都要。
+//
+// ══ ⚠ 這一支**不可以**在送熱鍵之前先 SendClear ═══════════════════
+//
+// 舊版在每一次送熱鍵之前都先把組字清乾淨,於是量到的永遠是
+// 「沒有組字時切中英」—— 而 common/hotkey_policy.h 的檔頭寫得清清楚楚,
+// 這顆鍵存在的理由就是「中英切換發生在句子中間」。**唯一該驗的情境
+// 剛好被測試自己繞開了。**
+//
+// 實際上組字進行中按下去,librime 會把手上那一段**上屏並清掉**
+// (實測:preedit="ni hao" → handled=1 has_commit=1 commit="nihao"
+//  組字中=0)。那一份 commit 在 rs_snapshot_acquire 的當下就被消費掉,
+// 只會現身這麼一次 —— 誰沒有把它接住,使用者打到一半的字就永久消失。
+// 接住它是瘦 DLL 的責任(tsf/text_service.cc 的 OnPreservedKey);
+// **交出它**是服務端的責任,而那正是這裡要釘住的東西。
+int RunAsciiToggle(IpcClient& ipc, const std::string& keys) {
+  auto composing_of = [](const Snapshot& s) {
+    return (s.status_flags & kStComposing) != 0;
+  };
+  auto ascii_of = [](const Snapshot& s) {
+    return (s.status_flags & kStAsciiMode) != 0;
+  };
+
+  // 送一串字母,回報「引擎吃掉了幾顆」與最後的快照。每一輪之前先清乾淨。
+  auto type = [&](Snapshot* out, int* eaten) -> bool {
+    Result clear;
+    ipc.SendClear(&clear);
+    *eaten = 0;
+    for (char c : keys) {
+      Result r;
+      if (!ipc.SendKey(static_cast<int32_t>(static_cast<unsigned char>(c)), 0,
+                       &r)) {
+        std::fprintf(stderr, "!! 送 '%c' 失敗\n", c);
+        return false;
+      }
+      if (r.handled) ++(*eaten);
+      *out = r.snap;
+    }
+    return true;
+  };
+
+  std::printf("=== Ctrl+空白鍵:中英切換 ===\n");
+
+  Snapshot before{};
+  int eaten_before = 0;
+  if (!type(&before, &eaten_before)) return 1;
+  std::printf("切換前:引擎吃掉 %d/%d 顆,組字中=%d,英數=%d\n", eaten_before,
+              static_cast<int>(keys.size()), composing_of(before) ? 1 : 0,
+              ascii_of(before) ? 1 : 0);
+  if (ascii_of(before)) {
+    std::fprintf(stderr,
+                 "!! 一開始就在英數模式 —— 這一輪測不到「切過去」\n");
+    return 1;
+  }
+  if (eaten_before != static_cast<int>(keys.size()) || !composing_of(before)) {
+    std::fprintf(stderr,
+                 "!! 中文模式下那串字母沒有被引擎吃掉(吃了 %d/%d)——\n"
+                 "   對照組不成立,下面的比較沒有意義\n",
+                 eaten_before, static_cast<int>(keys.size()));
+    return 1;
+  }
+
+  // ⚠ **刻意不清組字。** 上面那一輪剛打完 keys,引擎手上正握著一段組字 ——
+  //   那就是使用者按下這顆鍵的真實時刻(見上面檔頭那一節)。
+  std::printf("(按熱鍵時引擎手上有一段組字:preedit=\"%s\")\n",
+              before.preedit.c_str());
+
+  // 這一行就是那顆鍵。keysym / 修飾鍵取自 common/hotkey_policy.cc ——
+  // 與瘦 DLL 的 OnPreservedKey 送的是同一組值。
+  Result hot;
+  if (!ipc.SendKey(AsciiToggleKeysym(), AsciiToggleModifiers(), &hot)) {
+    std::fprintf(stderr, "!! Ctrl+空白鍵送不出去\n");
+    return 1;
+  }
+  std::printf(
+      "Ctrl+空白鍵(組字中):handled=%d 英數=%d 組字中=%d has_commit=%d "
+      "commit=\"%s\" preedit=\"%s\"\n",
+      hot.handled ? 1 : 0, ascii_of(hot.snap) ? 1 : 0,
+      composing_of(hot.snap) ? 1 : 0, hot.snap.has_commit ? 1 : 0,
+      hot.snap.commit_text.c_str(), hot.snap.preedit.c_str());
+  if (!hot.handled) {
+    std::fprintf(stderr,
+                 "!! 服務沒有處理 Ctrl+空白鍵 —— 它被當成一般按鍵交給引擎了\n");
+    return 1;
+  }
+  if (!ascii_of(hot.snap)) {
+    std::fprintf(stderr,
+                 "!! 切換之後回的快照仍然說「不是英數模式」——\n"
+                 "   那一橫的第一格讀的就是這個旗標,它會說謊\n");
+    return 1;
+  }
+  // ── ⚠ 打到一半的那段字,服務**必須**在這一份快照裡交出來 ──────────
+  //
+  //   commit 在 rs_snapshot_acquire 的當下就被消費(engine.cc 的
+  //   TakeSnapshotLocked 檔頭),所以它只有這一次機會出現在線路上。
+  //   這一格空掉的話,使用者按 Ctrl+空白鍵的瞬間,他打到一半的
+  //   「ni hao」就**永久不見了** —— 而畫面上什麼錯誤都不會有。
+  if (!hot.snap.has_commit || hot.snap.commit_text.empty()) {
+    std::fprintf(stderr,
+                 "!! 組字進行中切中英,快照裡**沒有** commit ——\n"
+                 "   使用者打到一半的那段字沒有被交出來,它永久消失了。\n"
+                 "   (切換前 preedit=\"%s\")\n"
+                 "   ⚠ 順序也要查:engine.cc 的 ToggleAsciiMode 必須在\n"
+                 "     SetAsciiModeAll **之後**才取快照 —— 反過來的話,\n"
+                 "     上屏文字會落在下一次 acquire,而那一次沒有人在等。\n",
+                 before.preedit.c_str());
+    return 1;
+  }
+  // 上屏了就不會還在組字。兩者同時成立 = 引擎自相矛盾,而瘦 DLL 會照著
+  // 那份矛盾去開一段收不掉的組字。
+  if (composing_of(hot.snap) || !hot.snap.preedit.empty()) {
+    std::fprintf(stderr,
+                 "!! 切中英之後引擎說它還在組字(組字中=%d preedit=\"%s\")——\n"
+                 "   已經上屏的東西不該還留在組字裡\n",
+                 composing_of(hot.snap) ? 1 : 0, hot.snap.preedit.c_str());
+    return 1;
+  }
+  std::printf("組字中切過去:那段字被交出來了(commit=\"%s\"),組字也收乾淨了\n",
+              hot.snap.commit_text.c_str());
+
+  Snapshot after{};
+  int eaten_after = 0;
+  if (!type(&after, &eaten_after)) return 1;
+  std::printf("切換後:引擎吃掉 %d/%d 顆,組字中=%d,英數=%d\n", eaten_after,
+              static_cast<int>(keys.size()), composing_of(after) ? 1 : 0,
+              ascii_of(after) ? 1 : 0);
+  if (eaten_after != 0 || composing_of(after)) {
+    std::fprintf(stderr,
+                 "!! 英數模式下引擎還在吃字母(吃了 %d/%d,組字中=%d)——\n"
+                 "   模式旗標變了而行為沒變,使用者打出來的還是中文\n",
+                 eaten_after, static_cast<int>(keys.size()),
+                 composing_of(after) ? 1 : 0);
+    return 1;
+  }
+
+  // 再按一次要切回來。⚠ 少了這一條,「只能單向切」會全綠 ——
+  //   那正是這一輪在懸浮狀態列第二格上抓到的同一種缺陷。
+  Result back;
+  if (!ipc.SendKey(AsciiToggleKeysym(), AsciiToggleModifiers(), &back)) {
+    std::fprintf(stderr, "!! 第二次 Ctrl+空白鍵送不出去\n");
+    return 1;
+  }
+  if (ascii_of(back.snap)) {
+    std::fprintf(stderr, "!! 再按一次沒有切回中文模式 —— 這顆鍵只能單向\n");
+    return 1;
+  }
+  Snapshot again{};
+  int eaten_again = 0;
+  if (!type(&again, &eaten_again)) return 1;
+  std::printf("再切回來:引擎吃掉 %d/%d 顆,組字中=%d\n", eaten_again,
+              static_cast<int>(keys.size()), composing_of(again) ? 1 : 0);
+  if (eaten_again != static_cast<int>(keys.size()) || !composing_of(again)) {
+    std::fprintf(stderr, "!! 切回中文之後字母又打不進去了\n");
+    return 1;
+  }
+
+  std::printf("\n>>> ASCII TOGGLE OK\n");
+  return 0;
+}
+
 int main(int /*narrow_argc*/, char** /*narrow_argv*/) {
   // ⚠ 參數必須從 CommandLineToArgvW 取,不可以用窄字元的 argv。
   //   窄字元 argv 走的是系統 ANSI 代碼頁,而我們要比對的預期值是「你好」——
@@ -183,6 +356,7 @@ int main(int /*narrow_argc*/, char** /*narrow_argv*/) {
   int select = 1;
   int attempts = 1;
   bool connect_only = false;
+  bool ascii_toggle = false;
   for (int i = 1; i < argc; ++i) {
     const std::string& a = args[static_cast<size_t>(i)];
     if (a == "--keys" && i + 1 < argc) keys = args[static_cast<size_t>(++i)];
@@ -193,6 +367,7 @@ int main(int /*narrow_argc*/, char** /*narrow_argv*/) {
     else if (a == "--attempts" && i + 1 < argc)
       attempts = std::atoi(args[static_cast<size_t>(++i)].c_str());
     else if (a == "--connect-only") connect_only = true;
+    else if (a == "--ascii-toggle") ascii_toggle = true;
     else {
       std::fprintf(stderr, "未知參數: %s\n", a.c_str());
       return 2;
@@ -261,6 +436,8 @@ int main(int /*narrow_argc*/, char** /*narrow_argv*/) {
     }
   }
   std::printf("\n");
+
+  if (ascii_toggle) return RunAsciiToggle(ipc, keys);
 
   std::string committed;
   Snapshot last;

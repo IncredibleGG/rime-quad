@@ -316,7 +316,12 @@ run_checks() {
       "test_ui_layout.cc:ui_layout_every_control_belongs_to_exactly_one_page" \
       "test_statusbar_place.cc:statusbar_falls_back_when_the_monitor_disappears" \
       "test_statusbar_place.cc:statusbar_growing_wider_stays_inside_the_work_area" \
-      "test_ui_palette.cc:palette_every_pair_meets_its_threshold_in_both_modes" ; do
+      "test_ui_palette.cc:palette_every_pair_meets_its_threshold_in_both_modes" \
+      "test_status_cells.cc:status_cells_input_mode_shows_exactly_one_label" \
+      "test_status_cells.cc:status_cells_mode_and_variant_speak_the_same_way" \
+      "test_ui_layout.cc:ui_layout_sidebar_list_never_covers_the_status_lines" \
+      "test_hotkey_policy.cc:hotkey_does_not_swallow_anything_else" \
+      "test_win32_listview.cc:win32_listview_custom_draw_actually_paints_rows" ; do
     local file="${WIN}/tests/${t%%:*}"
     local name="${t##*:}"
     if [ ! -f "${file}" ] || ! grep -q "TEST(${name})" "${file}"; then
@@ -332,14 +337,17 @@ run_checks() {
   # ── W10:狀態字面兩個方向都驗 ───────────────────────────────
   check
   local bar="${CODE_DIR}/service/status_bar.cc"
-  local in_bar; in_bar="$(num "$(num "$(grep -c 'kGlyphChinese\|kGlyphAscii\|kGlyphSimplified\|kGlyphTraditional' "${bar}" 2>/dev/null || true)")")"
+  # ⚠ 數的是**字面本身**,不是常數名。數常數名的話,「把四個定義整組刪掉」
+  #   仍然是綠的 —— 那些名字在別處(交給 status_cells.cc 的那一段)還在,
+  #   而反向測試 2026-08-10 正好抓到這件事。四個字面**各**要出現過。
+  local in_bar; in_bar="$(num "$(grep -o 'L"中"\|L"En"\|L"简"\|L"繁"' "${bar}" 2>/dev/null | sort -u | grep -c . || true)")"
   local in_cat; in_cat="$(num "$(grep -o 'L"中"\|L"简"\|L"繁"' "${cat}" 2>/dev/null | grep -c . || true)")"
-  if [ "${in_bar}" -lt 4 ]; then
-    red "W10:狀態列繪製碼裡找不到四個狀態字面(命中 ${in_bar})—— 兩邊都是 0 代表掃錯檔案"
+  if [ "${in_bar}" -ne 4 ]; then
+    red "W10:狀態列繪製碼裡找不到四個狀態字面(找到 ${in_bar}/4 種)—— 0 代表掃錯檔案"
   elif [ "${in_cat}" -ne 0 ]; then
     red "W10:狀態字面跑進 catalog 了(命中 ${in_cat})—— §8.12 規定它們四端一致、不得在地化"
   else
-    ok "W10 狀態字面在繪製碼裡(${in_bar} 處),而且不在 catalog 裡"
+    ok "W10 四個狀態字面都在繪製碼裡,而且不在 catalog 裡"
   fi
 
   # ── W11:版面碼裡不得有 is_dark 分支;兩份色票同構 ───────────
@@ -1091,6 +1099,33 @@ PYSCRIPT
     w27bad=1
   fi
   [ "${w27bad}" -eq 0 ] && ok "W27 三種處境三句話:${nfuncs} 個函式本體逐一驗過呼叫位置與資料流,而且那一橫與側欄都會自己更新"
+
+  # ── W28:自繪的列矩形只准從 RowRect() 來 ─────────────────────
+  #
+  # **2026-08-10 在 windows-latest 上實測**(見 tests/test_win32_listview.cc):
+  # report 模式的 ListView 在 CDDS_ITEMPREPAINT 給的 NMCUSTOMDRAW::rc 是
+  # (0,0,0,0)。拿它去 FillRect + DrawTextW 什麼都不會畫,而 CDRF_SKIPDEFAULT
+  # 又把控制項自己的繪製擋掉 —— 結果是**一整片空白而且沒有任何錯誤**。
+  # 使用者截圖裡「啟用的方式底下是一個空白的 list」就是這樣來的。
+  #
+  # ⚠ 這一條擋的是**下一個** ListView。像素那一條(真的畫、真的數)在
+  #   rime_tests.exe 裡,但它只認得現有那兩個;有人第三次寫同一段自繪碼時,
+  #   會先撞到這裡。
+  check
+  local w28; w28="$(hits 'nmcd\.rc')"
+  local n28; n28="$(count_of "${w28}")"
+  local w28bad=0
+  for f in $(printf '%s\n' "${w28}" | grep . | cut -d: -f1 | sort -u); do
+    case "${f}" in
+      */service/ui_listview.cc) ;;
+      */tests/test_win32_listview.cc) ;;
+      *) red "W28:${f#${CODE_DIR}/} 直接用 NMCUSTOMDRAW::rc —— 它在 report 模式下是 (0,0,0,0),那一列會畫成空白。改走 RowRect()"; w28bad=1 ;;
+    esac
+  done
+  # ⚠ 範圍非空:一處都沒有的話,不是「都很乾淨」,是掃錯地方了 ——
+  #   ui_listview.cc 自己一定用得到它。
+  need_scope "W28" "${n28}" 1 || w28bad=1
+  [ "${w28bad}" -eq 0 ] && ok "W28 自繪的列矩形只從 RowRect() 來(${n28} 處 nmcd.rc 全在 ui_listview.cc 與它的測試裡)"
 }
 
 # ────────────────────────────────────────────────────────────────
@@ -1133,6 +1168,8 @@ self_check() {
 "W27b 那一橫的字寫死一句|service/status_bar.cc|s=s.replace('    c.text = UiText(StatusTextFor(service_state_));','    c.text = UiText(UiString::kBarNotRunning);',1)"
 "W27c 不讀線路上的旗標|service/status_bar.cc|s=s.replace('SnapshotSaysNotReady(snap.status_flags)','false',1)"
 "W27d 事實少餵一格|service/status_bar.cc|s=s.replace('  facts.engine_says_not_ready = engine_not_ready_.load();','  facts.engine_says_not_ready = false;',1)"
+"W28 自繪直接用 nmcd.rc|service/settings_window.cc|s=s.replace('LRESULT SettingsWindow::DrawSchemaList(NMLVCUSTOMDRAW* cd) {','LRESULT SettingsWindow::DrawSchemaList(NMLVCUSTOMDRAW* cd) { RECT sneaky = cd->nmcd.rc; (void)sneaky;',1)"
+"W9 少一條單元測試|tests/test_status_cells.cc|s=s.replace('TEST(status_cells_input_mode_shows_exactly_one_label)','TEST(status_cells_renamed_away)',1)"
 "W27e 拿掉那一橫自己更新的計時器|service/status_bar.cc|s=s.replace('  ::SetTimer(hwnd_, kStateTimer, kStatePollMs, nullptr);','',1)"
 "W27f 計時器還在但不再比對狀態|service/status_bar.cc|s=s.replace('      if (now != self->service_state_) {','      if (false) {',1)"
 "W27g 側欄又變回兩句|service/settings_window.cc|s=s.replace('  ::DrawTextW(hdc, UiText(SidebarStatusTextFor(state)),','  ::DrawTextW(hdc, UiText(UiString::kNavStatusNotRunning),',1)"

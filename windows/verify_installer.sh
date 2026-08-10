@@ -37,6 +37,9 @@
 #     自己先把服務跑起來,所以那條路從來沒有被驗過一次
 #   · **冷啟動**:空的使用者資料目錄 + 沒有人先部署 → 第一次打字(§5c)
 #   · 「每一顆鍵是不是都真的做了它宣稱的事」(§6d 的按鍵矩陣)
+#   · **組字進行中按 Ctrl+空白鍵**(§6f)—— 註冊之外的那一半。
+#     以前只問「TSF 收下註冊了沒」,而那不呼叫產品一行程式碼:
+#     把 OnPreservedKey 改成比對完 GUID 就 return S_OK,三個 job 全綠。
 #
 # 用法(Git Bash,需要系統管理員權限):
 #   windows/verify_installer.sh --setup <安裝程式.exe> \
@@ -1398,6 +1401,74 @@ if [ -n "${HOST}" ]; then
   fi
 else
   log "6c. (沒有給 --host,跳過「經由真的 TSF」那一段)"
+fi
+
+# ══════════════════════════════════════════════════════════════════
+#  6f. 組字**進行中**按 Ctrl+空白鍵(中英切換)
+# ══════════════════════════════════════════════════════════════════
+#
+# ⚠ common/hotkey_policy.h 的檔頭寫著這顆鍵存在的理由:「中英切換發生在
+#   句子中間」。也就是說**唯一該驗的情境就是這一個** —— 而在這之前:
+#
+#     · verify_tsf.sh 只問「TSF 收下註冊了沒」(不呼叫產品一行程式碼);
+#     · verify_ime.sh 只走具名管道問服務端(繞過整個 TSF 與文件);
+#     · rime_probe 的 --ascii-toggle 在每一次送熱鍵之前先 SendClear,
+#       把最該測的情境主動繞開了。
+#
+#   實測:把 tsf/text_service.cc 的 OnPreservedKey 在比對完 GUID 之後直接
+#   `return S_OK`,CI 三個 job 全綠。這一節就是那個洞。
+#
+# 斷言全部看**文件內容**,不看任何內部狀態:
+#   1. 熱鍵之後,打到一半的那段字要在文件裡(librime 在切到英數的當下
+#      把它上屏並清掉,而那份 commit 在 acquire 當下就被消費 —— 只現身
+#      一次。沒接住就是永久消失);
+#   2. 接著按退格要刪得掉(組字收乾淨、engine_composing_ 沒卡在 true);
+#   3. 再按一次要回得到中文。
+if [ -n "${HOST}" ]; then
+  log "6f. 組字進行中按 Ctrl+空白鍵:那段字不可以消失"
+  TRACE_TOGGLE="${WORK}/tsf-trace-toggle.log"
+  rm -f "${TRACE_TOGGLE}"
+  set +e
+  "${HOST}" --langid "${ACTIVE_LANGID}" --require-activate \
+            --toggle-mid-compose nihao --expect-toggle-doc nihao \
+            --trace "$(w "${TRACE_TOGGLE}")" --wait-ms 4000 \
+            > "${WORK}/tsf-toggle.log" 2>&1
+  rc_toggle=$?
+  set -e
+  tr -d '\r' < "${WORK}/tsf-toggle.log" | sed 's/^/    /'
+  toggle_out="$(tr -d '\r' < "${WORK}/tsf-toggle.log")"
+  case "${toggle_out}" in
+    *"PRESERVEDKEY_DELIVERED=1"*)
+      ok "Ctrl+空白鍵按下去真的走到 OnPreservedKey 了" ;;
+    *) note_fail "Ctrl+空白鍵按下去**沒有到達 OnPreservedKey** —— 註冊在那裡,
+     而那顆鍵不接到任何東西。使用者按下去不會有任何事發生。" ;;
+  esac
+  case "${toggle_out}" in
+    *"組字中切中英:打到一半的「nihao」被寫進文件了"*)
+      ok "組字中切中英:打到一半的字被寫進文件了(沒有消失)" ;;
+    *) note_fail "組字進行中按 Ctrl+空白鍵,打到一半的字**沒有進到文件**(結束碼 ${rc_toggle})。
+     librime 在切到英數的當下把手上那一段上屏並清掉,而那份 commit 在
+     rs_snapshot_acquire 的當下就被消費 —— 只現身一次。瘦 DLL 的
+     OnPreservedKey 把快照丟掉的話,使用者打到一半的字就永久消失。" ;;
+  esac
+  case "${toggle_out}" in
+    *"切完之後退格刪得掉字"*)
+      ok "切完之後退格刪得掉字(組字收乾淨了)" ;;
+    *) note_fail "切完中英之後退格刪不掉字 —— engine_composing_ 卡在 true,
+     那顆鍵掉進黑洞。使用者的說法會是「可以打字,不能刪除」。" ;;
+  esac
+  case "${toggle_out}" in
+    *"再按一次切回中文了"*)
+      ok "再按一次切回中文了(中英模式是行程層級的,沒有留在英數)" ;;
+    *) note_fail "再按一次沒有切回中文。⚠ 中英是行程層級的模式:留在英數的話,
+     後面每一節都會以「打不出中文」的樣子紅,而真正的原因在這裡。" ;;
+  esac
+  if [ "${rc_toggle}" -ne 0 ]; then
+    note_fail "6f 的宿主以 ${rc_toggle} 結束 —— 見上面逐條的結論"
+  fi
+else
+  note_fail "沒有給 --host,§6f 驗不到。Ctrl+空白鍵在組字中按下去會不會把
+     使用者打到一半的字弄丟,只有這一條路問得到。"
 fi
 
 # ══════════════════════════════════════════════════════════════════

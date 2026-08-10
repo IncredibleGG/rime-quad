@@ -150,6 +150,11 @@ class TextService : public ITfTextInputProcessorEx,
 
   // 還可以把幾顆按鍵寫進除錯記錄。
   //
+  // Ctrl+空白鍵那顆保留鍵註冊成功了沒有。⚠ 只有註冊成功才可以
+  // UnpreserveKey —— 對一顆沒註冊過的鍵反註冊會拿到錯誤碼,而那則錯誤
+  // 會蓋掉真正的問題。理由與整個做法見 common/hotkey_policy.h。
+  bool preserved_key_ok_ = false;
+
   // ⚠ **不可以每一顆都寫。** OnTestKeyDown 跑在宿主的 UI 執行緒上,
   //   每一顆按鍵一次磁碟寫入是不能接受的。而診斷需要的資訊在前幾顆就齊了:
   //   「vk 進來了、映出的 keysym 是什麼、有沒有被吃掉」——

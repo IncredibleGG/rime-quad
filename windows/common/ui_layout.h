@@ -81,6 +81,10 @@ constexpr int t5 = 11;  // 白話說明、小標題
 constexpr int t6 = 11;  // 診斷(等寬)
 }  // namespace text_size
 
+// 側欄底部狀態區的一行有多高。⚠ 它必須 >= TextLineBoxDip(text_size::t5),
+// 而且兩行加上留白要放得進 metric::kSidebarStatusH —— 兩條都由 W26 驗。
+constexpr int kSidebarStatusLineH = 20;
+
 // 視窗尺寸(DIP)。§5.1。
 constexpr int kWindowDefaultW = 780;
 constexpr int kWindowDefaultH = 560;
@@ -114,6 +118,32 @@ int ContentXDip(int window_w_dip);
 RectI SidebarItemDip(int index);
 // 側欄底部的狀態區(兩行 t5:「可以打字」/「離線」)。
 RectI SidebarStatusDip(int window_h_dip);
+
+// ── ⚠ 側欄清單與底部狀態區**不可以重疊** ────────────────────────
+//
+// 側欄那條清單是**子視窗**,而設定視窗開著 WS_CLIPCHILDREN ——
+// 也就是說,父視窗畫在子視窗底下那一塊的東西**整個被裁掉**,
+// 不是被蓋住而是根本沒畫。底部那兩行狀態文字是父視窗在 WM_PAINT 裡畫的。
+//
+// 實機回報:側欄底部那兩行「可以打字」「離線」是**斷的**,使用者把
+// 第一行讀成「⼝以打字」—— 那正是「可」的上緣被裁掉之後剩下的形狀。
+// 算式很簡單:清單擺在 y = s5(12),高度給了 H - kSidebarStatusH,
+// 所以它的下緣在 H - 52,而狀態區從 H - 64 開始 —— **重疊 12 DIP**,
+// 剛好吃掉第一行的上半。
+//
+// 這件事以前沒有任何自動化看得到,因為位置是在 settings_window.cc 裡算的
+// (那個檔案在 Ubuntu 上編不起來)。現在它在這裡,而 W26 就是那個算式。
+RectI SidebarListDip(int window_h_dip);
+
+// 狀態區裡的第 line 行(0 = 現在能不能打字,1 = 連線狀態)。
+RectI SidebarStatusLineDip(int window_h_dip, int line);
+
+// 一行 size_dip 的文字**至少**要多高才不會被切到。
+//
+// 漢字的行高(ascent + descent)大約是字級的 4/3,不是字級本身 ——
+// 給一個「字級 + 4」的格子看起來剛好夠,實際上是零餘裕:換一套字體、
+// 換一個 DPI 的捨入方向,字就被削掉一條。+2 是那條餘裕。
+int TextLineBoxDip(int size_dip);
 
 // ── 內容區的直向堆疊 ────────────────────────────────────────────
 //

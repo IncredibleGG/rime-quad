@@ -8,6 +8,7 @@
 #include <algorithm>
 
 #include "../common/settings.h"
+#include "../common/status_cells.h"
 #include "../common/ui_dip.h"
 #include "../common/ui_layout.h"
 #include "../common/ui_strings.h"
@@ -53,8 +54,11 @@ constexpr int kBarBorder = metric::kHairline;  // 1
 // 這四個字是**狀態指示**,不是介面文字。
 //
 // W10 兩個方向都驗:它們必須出現在這裡,而且不得出現在 catalog 裡。
-// 「中」與「En」**兩態同時顯示**:只顯示一個字的話,「中」有兩種讀法
-// (「現在是中文」還是「按下去變中文」),Android 被真機回報過。
+//
+// ⚠ 第一格**只畫其中一個**(§8.12 的 `input_mode`,不是 `input_mode_pair`)。
+//   哪一個由 common/status_cells.cc 決定 —— 那是純函式,在 Ubuntu 上
+//   測得到,而「畫了兩個字面」正是使用者實機回報的缺陷,以前這裡沒有
+//   任何自動化看得到。理由與取捨寫在 common/status_cells.h 的檔頭。
 constexpr wchar_t kGlyphChinese[] = L"中";
 constexpr wchar_t kGlyphAscii[] = L"En";
 constexpr wchar_t kGlyphSimplified[] = L"简";
@@ -264,26 +268,26 @@ void StatusBar::Relayout() {
     c.text = UiText(StatusTextFor(service_state_));
     cells_.push_back(c);
   } else {
-    Cell mode;
-    mode.pair = true;
-    mode.text = kGlyphChinese;
-    mode.text2 = kGlyphAscii;
-    mode.second_active = ascii;
-    cells_.push_back(mode);
-
-    Cell variant;
-    variant.text = simp ? kGlyphSimplified : kGlyphTraditional;
-    cells_.push_back(variant);
-
-    Cell schema;
-    // ⚠ 空狀態**整項略過**(§8.12 規範性):方案名還沒載入完成時,
-    //   那一格完全不佔位置,不得畫成一塊看不出用途的空白。
-    schema.text = name.empty() ? std::wstring() : Utf8ToWide(name);
-    cells_.push_back(schema);
-
-    Cell settings;
-    settings.text = UiText(UiString::kBarSettings);
-    cells_.push_back(settings);
+    // ⚠ 四格畫什麼由 common/status_cells.cc 決定(純函式)。
+    //   這裡只負責把四個規範性字面交出去、把結果貼進 cells_ ——
+    //   一格畫幾個字面不是繪製碼可以自己決定的事。
+    StatusGlyphs glyphs;
+    glyphs.chinese = kGlyphChinese;
+    glyphs.ascii = kGlyphAscii;
+    glyphs.simplified = kGlyphSimplified;
+    glyphs.traditional = kGlyphTraditional;
+    StatusBarState st;
+    st.ascii_mode = ascii;
+    st.simplified = simp;
+    // 空狀態**整項略過**(§8.12 規範性):方案名還沒載入完成時,
+    // 那一格完全不佔位置,不得畫成一塊看不出用途的空白。
+    st.schema_name = name.empty() ? std::wstring() : Utf8ToWide(name);
+    st.settings_label = UiText(UiString::kBarSettings);
+    for (const std::wstring& text : StatusBarCellTexts(glyphs, st)) {
+      Cell c;
+      c.text = text;
+      cells_.push_back(c);
+    }
   }
 
   HDC hdc = ::GetDC(hwnd_);
@@ -295,12 +299,11 @@ void StatusBar::Relayout() {
   int x = Dip(kBarBorder + space::s2, dpi_);
 
   for (Cell& c : cells_) {
-    if (c.text.empty() && !c.pair) {
+    if (c.text.empty()) {
       c.rc = RECT{0, 0, 0, 0};  // 略過:不佔位置
       continue;
     }
-    std::wstring measure = c.text;
-    if (c.pair) measure += L" " + c.text2;
+    const std::wstring& measure = c.text;
     SIZE sz{};
     if (hdc)
       ::GetTextExtentPoint32W(hdc, measure.c_str(),
@@ -471,35 +474,12 @@ void StatusBar::Paint(HDC hdc) {
       continue;
     }
 
-    if (c.pair) {
-      // 兩態同時顯示:當前那一態用「當前態文字」色,另一態用次要色。
-      // ⚠ 兩段之間留一個空白,而且**兩段都畫** —— 只畫一個字的話,
-      //   使用者分不出那是「現在的狀態」還是「按下去會變成的狀態」。
-      std::wstring first = c.text;
-      std::wstring second = c.text2;
-      SIZE s1{}, ssp{};
-      ::GetTextExtentPoint32W(mem, first.c_str(),
-                              static_cast<int>(first.size()), &s1);
-      ::GetTextExtentPoint32W(mem, L" ", 1, &ssp);
-      const int total_w = r.right - r.left;
-      SIZE s2{};
-      ::GetTextExtentPoint32W(mem, second.c_str(),
-                              static_cast<int>(second.size()), &s2);
-      int x = r.left + (total_w - (s1.cx + ssp.cx + s2.cx)) / 2;
-      const int y = r.top + ((r.bottom - r.top) - s1.cy) / 2;
-      ::SetTextColor(mem, theme_.Color(c.second_active ? kOnSurfaceVariant
-                                                       : kOnSurface));
-      ::TextOutW(mem, x, y, first.c_str(), static_cast<int>(first.size()));
-      x += s1.cx + ssp.cx;
-      ::SetTextColor(mem, theme_.Color(c.second_active ? kOnSurface
-                                                       : kOnSurfaceVariant));
-      ::TextOutW(mem, x, y, second.c_str(), static_cast<int>(second.size()));
-    } else {
-      ::SetTextColor(mem, theme_.Color(hot || down ? kOnSurface
-                                                   : kOnSurfaceVariant));
-      ::DrawTextW(mem, c.text.c_str(), -1, &r,
-                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-    }
+    // ⚠ 每一格都是**一個**字面,四格畫法一致。以前第一格是兩段並排、
+    //   用顏色深淺表示哪一段生效,而使用者看不出來(見 status_cells.h)。
+    ::SetTextColor(mem, theme_.Color(hot || down ? kOnSurface
+                                                 : kOnSurfaceVariant));
+    ::DrawTextW(mem, c.text.c_str(), -1, &r,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
   }
 
   ::SelectObject(mem, oldf);

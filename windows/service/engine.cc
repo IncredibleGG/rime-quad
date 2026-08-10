@@ -471,6 +471,44 @@ Snapshot Engine::TakeSnapshot(uint64_t id) {
   return TakeSnapshotLocked(sess);
 }
 
+Result Engine::ToggleAsciiMode(uint64_t id) {
+  Result r;
+  // ── ⚠ 部署還沒做完就不要宣稱切過了 ──────────────────────────────
+  //
+  //   與 ProcessKey 同一條規則(見下面)。少了這一格,使用者在首次部署
+  //   那幾分鐘按下 Ctrl+空白鍵會拿到 handled=true 配一份**空快照** ——
+  //   瘦 DLL 於是宣告吃掉那顆鍵,而懸浮狀態列那一格讀的就是快照上的旗標,
+  //   它會顯示「中」而引擎其實什麼都沒做。按鍵被吃掉、畫面說謊、
+  //   而使用者只會覺得「這個開關壞了」。
+  //
+  //   回 handled=false 的話,瘦 DLL 會把那顆鍵放行給宿主(key_eat_policy 的
+  //   同一條規矩:做不到的事就不要吃掉那顆鍵)。
+  if (deploy_state_.load() != 1) {
+    r.handled = false;
+    r.snap.status_flags = kStDisabled;
+    return r;
+  }
+  const bool now = ascii_mode_.load();
+  SetAsciiModeAll(!now);
+  r.handled = true;
+  // ── ⚠ 快照要在切換**之後**取,而且必須在**引擎執行緒**上取 ──────
+  //
+  //   順序:狀態列那一格顯示的是快照上的旗標(status_bar.h:「顯示的是
+  //   引擎說的狀態」),取早了就是一個說謊的指示器。更要緊的是,librime
+  //   在切到英數的當下會把手上那段組字上屏,而那份 commit 在
+  //   rs_snapshot_acquire 的當下就被消費 —— 取早了它會落在下一次 acquire,
+  //   而下一次沒有人在等,使用者打到一半的字就永久消失。
+  //
+  //   執行緒:TakeSnapshot 直接碰 sessions_ 與 rs_*,而 engine.h 在它的
+  //   宣告上面寫著「以下三個只在引擎執行緒上呼叫」。這個函式是在**管道
+  //   執行緒**上跑的(pipe_server.cc 每個 client 一條 std::thread),所以
+  //   直接呼叫等於無鎖讀 sessions_,並與引擎執行緒上的 rs_process_key
+  //   並行呼叫 rs_*。SetAsciiModeAll 內部是 Post 進佇列的,這一句不是 ——
+  //   「兩者都排在同一條佇列上」那句舊註解是錯的,只有前者是。
+  Post("切中英後取快照", [&] { r.snap = TakeSnapshot(id); });
+  return r;
+}
+
 Result Engine::ProcessKey(uint64_t id, int32_t keysym, uint32_t mods) {
   Result r;
   Post("按鍵", [&] {

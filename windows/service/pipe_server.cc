@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <string>
 
+#include "../common/hotkey_policy.h"
 #include "../common/schema_choice.h"
 #include "../winshared/winutil.h"
 #include "rime_shell.h"
@@ -615,7 +616,18 @@ void PipeServer::ServeClient(HANDLE pipe) {
       case Op::kKey: {
         KeyReq k;
         if (!DecodeKey(payload, &seq, &k)) goto done;
-        Result r = engine_->ProcessKey(k.session, k.keysym, k.mods);
+        // ── Ctrl+空白鍵:中英切換 ────────────────────────────────
+        //
+        // ⚠ 攔在 librime **之前**,而且判斷來自 common/hotkey_policy.cc
+        //   那一份 —— 瘦 DLL 的 OnPreservedKey 用的是同一支。各寫一份就是
+        //   兩份真相,而漂移的樣子是「按下去沒有反應」。
+        //
+        // ⚠ 這裡不需要新的協議操作:那一顆鍵就走既有的 kKey,所以線路
+        //   格式一個位元都沒有變 —— 舊 DLL 配新服務、新 DLL 配舊服務
+        //   兩個方向都仍然連得起來。
+        Result r = IsAsciiToggleHotkey(k.keysym, k.mods)
+                       ? engine_->ToggleAsciiMode(k.session)
+                       : engine_->ProcessKey(k.session, k.keysym, k.mods);
         note_schema(r.snap);
         push_ui(r.snap);
         if (!send(EncodeResult(seq, r))) goto done;

@@ -167,6 +167,28 @@ class Engine {
   //   ⚠ 這是**模式**不是偏好,所以刻意**不落地**:重開機回到中文,
   //     與每一家中文輸入法的行為一致。
   void SetAsciiModeAll(bool on);
+
+  // Ctrl+空白鍵走這一條:切掉行程層級的中英模式,並回一份**新的**快照。
+  //
+  // ⚠ 一定要回快照,而且要在切換**之後**才取。兩個理由:
+  //
+  //   1. 懸浮狀態列那一格顯示的是快照上的旗標(status_bar.h:「顯示的是
+  //      引擎說的狀態,不是我們以為的」),回一份切換前的快照就是一個
+  //      說謊的指示器 —— 使用者按了鍵、模式真的變了,而畫面上還是舊的。
+  //   2. **更要緊的**:這顆鍵存在的理由是「中英切換發生在句子中間」
+  //      (common/hotkey_policy.h 的檔頭),而 librime 在切到英數的當下會
+  //      把手上那一段組字上屏。那份 commit 在 rs_snapshot_acquire 的當下
+  //      就被消費(見 TakeSnapshotLocked 的檔頭),所以它只會現身一次 ——
+  //      取早了,它落在下一次 acquire,而那一次沒有人在等。
+  //
+  // ⚠ 這一支是在**管道執行緒**上被呼叫的(pipe_server.cc 每個 client 一條
+  //   std::thread),所以裡面碰 sessions_ / rs_* 的每一步都必須包在 Post()
+  //   裡。不包的話是無鎖讀 sessions_,而且與引擎執行緒上的 rs_process_key
+  //   並行呼叫 rs_*。
+  //
+  // ⚠ 部署還沒完成時回 handled=false(與 ProcessKey 同一條規則)——
+  //   宣稱切過了卻拿不出東西,狀態列就會說謊,而那顆鍵已經被吃掉了。
+  Result ToggleAsciiMode(uint64_t id);
   bool AsciiMode() const { return ascii_mode_.load(); }
   void SelectSchemaAll(const std::string& schema_id);
 

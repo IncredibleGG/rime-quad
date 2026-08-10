@@ -113,7 +113,14 @@ add_library(rime_common STATIC
   #   同一句紅字「輸入法沒有在跑」——而第一種那句話是假的。
   #   判斷寫成純函式是刻意的:留在繪製碼裡的話,只有真人在
   #   Windows 上才驗得到,也就是實際上沒有人驗。
-  common/service_state.cc)
+  common/service_state.cc
+  # ⚠ 那一橫每一格畫什麼。以前寫在 service/status_bar.cc 的繪製碼裡,
+  #   而那個檔案在 Ubuntu 上編不起來 —— 「第一格畫了兩個字面」這種
+  #   只有人看得出來的缺陷,沒有任何自動化碰得到。
+  common/status_cells.cc
+  # ⚠ Ctrl+空白鍵。判斷只有這一份:瘦 DLL 與服務各要問一次,
+  #   兩邊各寫一份就是兩份真相。走 PreserveKey,**不動 key_eat_policy**。
+  common/hotkey_policy.cc)
 target_include_directories(rime_common PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/common"
   "${RIME_ROOT}/core/include")
@@ -149,11 +156,19 @@ add_executable(rime_tests
   tests/test_statusbar_place.cc
   tests/test_ui_strings.cc
   tests/test_service_state.cc
+  tests/test_status_cells.cc
+  tests/test_hotkey_policy.cc
   # 這一支用**真的**鍵盤佈局(LoadKeyboardLayout + ToUnicodeEx),
   # 是 CI 上唯一驗得到「有沒有真的問佈局」的地方。
   tests/test_win32_layouts.cc
+  # 自繪的 ListView **真的畫得出東西嗎**。使用者實機回報「方案清單一列
+  # 都沒有」,而 windows/ 底下所有 UI 測試都刻意不 include windows.h ——
+  # 也就是「畫得出來嗎」以前在 CI 上完全不存在。這一支開真的控制項、
+  # 走真的 comctl32、把畫面渲染進點陣圖數像素,數的是產品碼本身。
+  tests/test_win32_listview.cc
+  service/ui_listview.cc
   tsf/win32_oracle.cc)
-target_link_libraries(rime_tests PRIVATE rime_common user32)
+target_link_libraries(rime_tests PRIVATE rime_common user32 gdi32 comctl32)
 
 # ── TSF 瘦 DLL ────────────────────────────────────────────────────────
 #
@@ -319,6 +334,7 @@ add_executable(rime_service
   service/settings_store.cc
   service/settings_window.cc
   service/status_bar.cc
+  service/ui_listview.cc
   service/ui_font.cc
   service/ui_theme.cc
   service/ui_confirm.cc
