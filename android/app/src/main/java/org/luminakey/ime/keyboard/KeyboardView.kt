@@ -164,7 +164,13 @@ fun RimeKeyboard(
     // 只有一個讀音時**不出現**：點下去什麼都不會發生的東西不該畫出來。
     // 方案沒有 spelling_hints 時 readings 一定是空的，於是整條自然不出現
     // ——那就是退化規則(二)在本端的實際效果。
-    val hasReadings = readings.size >= 2
+    //
+    // ⚠ **退化規則(三):引擎改寫不了的方案,一樣不出現。** 同一條理由的另一種
+    // 形狀。裝置上若還是舊的單編碼 `t9_pinyin`（`scripts/collect_data.sh` 沒跑
+    // 過），comment 照樣有 `ni hao`,讀音因此照樣列得出來 —— 但點下去引擎接不
+    // 住,前端只能什麼都不做。那就是一排念得出名字、按下去沒反應的鍵。
+    // [KeyboardUiState.syllableRewriteReady] 由 IME service 的啟動探針回答。
+    val hasReadings = readings.size >= 2 && state.syllableRewriteReady
     val effectivePlacement = when (syllableStyle.placement) {
         SyllablePlacement.NONE -> SyllablePlacement.NONE
         SyllablePlacement.ABOVE_CANDIDATES -> SyllablePlacement.ABOVE_CANDIDATES

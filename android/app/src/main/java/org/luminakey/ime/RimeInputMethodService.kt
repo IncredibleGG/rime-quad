@@ -160,6 +160,19 @@ class RimeInputMethodService : InputMethodService() {
      */
     private var confirmedSyllables: List<String> = emptyList()
 
+    /**
+     * 音節改寫的方案探針:**每個 (session, 方案) 只問一次**的結果。
+     *
+     * 問的是「這個方案接不接得了精確拼音」（[T9Syllables.probeAccepted]）。
+     * 那是**方案的性質**,與使用者這一下點了什麼無關 —— 每次選字都重問一次,
+     * 就是原本那個把「改寫成功」判成失敗的東西的形狀。
+     *
+     * 還沒問到答案時是 false（fail-safe）:消歧欄不出現,而不是出現一排
+     * 按下去會產生垃圾的鍵。
+     */
+    private var syllableProbeSchema: String? = null
+    private var syllableRewriteOk = false
+
     /** onKeyDown 消費掉的 keycode，onKeyUp 要對應吃掉，否則宿主會收到落單的 up。 */
     private val consumedKeys = HashSet<Int>()
 
@@ -513,6 +526,10 @@ class RimeInputMethodService : InputMethodService() {
         }
         // 新 session 不記得上一個 session 的開關,偏好要重新推一次。
         applyRimeOptions()
+        // 探針的答案綁在 session 上（部署過後方案可能整個換了一份）,
+        // 重建就要重問。忘記重設的樣子是「舊方案的答案套在新方案上」。
+        syllableProbeSchema = null
+        syllableRewriteOk = false
     }
 
     /** 部署後舊 session 會失效（見 rime_shell.h），這裡負責重建。 */
@@ -705,20 +722,24 @@ class RimeInputMethodService : InputMethodService() {
     /**
      * 消歧欄按下一個讀音：把引擎的輸入串改寫成「已確定的音節 + 這個音節 + 剩下的模糊碼」。
      *
-     * ⚠ **不能只信 `rs_set_input()` 的回傳值。** 標頭寫著「字串裡有 alphabet
-     * 不認得的字元就回 false」，這裡原本就靠那一句擋。實測**不成立**：裝置上
-     * 若還是舊的單編碼方案（`alphabet: 'ADGJMPTW'`），`rs_set_input("niGAM")`
-     * 回的是 **true**，而引擎把 `ni` 當成一段翻不出東西的原文、只替 `GAM` 出
-     * 候選 —— 使用者點下第一個候選，上屏的是**「ni好」**。那正是真機回報的
-     * 「我選擇 ni 他就直接給我輸入了」：錯字直接進了輸入框，而畫面上沒有任何
-     * 東西說出事了。
+     * ── 驗收分兩層,而且**都不看 comment** ────────────────────────────────
+     * 這裡原本只有一層:改寫完回頭問候選的 comment 有沒有以那幾個音節開頭。
+     * 那一層在多音節上是對的,在單音節上**必定誤判** —— `PGM → pin` 改寫完
+     * 之後輸入已經是精確拼音,`spelling_hints` 沒有提示可給,候選一個 comment
+     * 都沒有,於是「引擎完全聽懂了」被讀成「引擎不認得」,輸入串被還原。
+     * 使用者點下 `pin`,畫面一動也不動。理由與實測值見 [T9Syllables] 的
+     * 「改寫成功了沒」那一段。
      *
-     * 所以改寫之後要**回頭問候選**（[T9Syllables.rewriteAccepted]）：引擎真的
-     * 聽懂了的話，comment 必然以那幾個音節開頭。沒有的話就把輸入串還原，
-     * 寧可這一下沒有反應，也不能讓使用者拿到他從頭到尾沒看過的字。
+     * 現在是:
+     *   ① **方案能不能改寫** —— [syllableRewriteOk],啟動時問一次。
+     *      它擋的是「裝置上還是舊的單編碼方案」那一種(`rs_set_input()` 照樣
+     *      回 true,而使用者會上屏「ni好」)。
+     *   ② **引擎收下了沒** —— 問 `rs_get_input()` 回來的是不是我們寫進去的
+     *      那一串。`Context::set_input()` 就一行 `input_ = value`,成功時
+     *      逐位元組相等,不會有正規化把它變成別的樣子。
      *
-     * （舊方案為什麼會留在裝置上：見 [org.luminakey.ime.core.RimeRuntime] 的
-     * shared 資料摘要。那是這條回報的**根因**，本函式是第二道防線。）
+     * 判準本身是純函式（[T9Syllables.rewriteOutcome]）,決策表由單元測試守著;
+     * 這裡只負責把引擎的三個事實餵給它,並照結果決定要不要還原。
      */
     private fun selectSyllable(syllable: String) {
         val current = RimeCore.getInput(session)
@@ -729,28 +750,74 @@ class RimeInputMethodService : InputMethodService() {
             Log.w(TAG, "音節 $syllable 改寫不出合法的輸入串（現在是 $current），不動作")
             return
         }
-        if (!RimeCore.setInput(session, next)) {
-            Log.w(TAG, "引擎拒絕輸入串改寫：$current → $next")
+
+        // 方案過不了探針就連寫都不要寫進去 —— 這一路上唯一安全的動作是什麼都不做。
+        val accepted = syllableRewriteOk && RimeCore.setInput(session, next)
+        val held = if (accepted) RimeCore.getInput(session) else current
+        val wanted = confirmed + syllable
+        if (accepted) {
+            confirmedSyllables = wanted
+            // 只 acquire 一次（refreshFromRime 是唯一的取值點），拿到的候選就留在
+            // uiState 裡 —— 驗收讀的是那一份，不會為了檢查再開一次快照。
+            refreshFromRime()
+        }
+        val outcome = T9Syllables.rewriteOutcome(
+            schemaCanRewrite = syllableRewriteOk,
+            setInputReturned = accepted,
+            inputAfterRewrite = held,
+            wantedInput = next,
+            candidateCount = if (accepted) uiState.candidates.size else 0,
+        )
+        if (outcome == T9Syllables.Rewrite.OK) {
+            Log.i(TAG, "音節消歧：$current → $next（已確定 ${wanted.joinToString("/")}）")
             return
         }
-        val wanted = confirmed + syllable
-        confirmedSyllables = wanted
-        // 只 acquire 一次（refreshFromRime 是唯一的取值點），拿到的候選就留在
-        // uiState 裡 —— 驗收讀的是那一份，不會為了檢查再開一次快照。
-        refreshFromRime()
-        if (!T9Syllables.rewriteAccepted(uiState.candidates, wanted)) {
-            Log.w(
-                TAG,
-                "引擎沒有把「$syllable」當成拼音（$current → $next 之後候選是 " +
-                    uiState.candidates.take(3).joinToString("／") { "${it.text}#${it.comment}" } +
-                    "）—— 還原輸入串。裝置上的 t9_pinyin 多半還是舊的單編碼版。",
-            )
+        Log.w(
+            TAG,
+            "音節改寫沒有成立（$outcome）：$current → $next，引擎手上是 $held，候選 " +
+                uiState.candidates.take(3).joinToString("／") { "${it.text}#${it.comment}" } +
+                (
+                    if (outcome == T9Syllables.Rewrite.SCHEMA_CANNOT) {
+                        " —— 裝置上的 $lastSchemaId 多半還是舊的單編碼版，先跑 scripts/collect_data.sh。"
+                    } else {
+                        " —— 還原輸入串。"
+                    }
+                    ),
+        )
+        if (accepted) {
             confirmedSyllables = confirmed
             RimeCore.setInput(session, current)
             refreshFromRime()
-            return
         }
-        Log.i(TAG, "音節消歧：$current → $next（已確定 ${wanted.joinToString("/")}）")
+    }
+
+    /**
+     * 啟動探針：這個方案接不接得了精確拼音（[T9Syllables.probeAccepted]）。
+     *
+     * ⚠ **只在引擎手上沒有東西的時候呼叫。** 探針會真的送按鍵進去,呼叫端
+     *   （[refreshFromRime]）已經確認過「沒有在組字、也沒有待讀的 commit」;
+     *   這裡再問一次 `rs_get_input()` 當作最後一道 —— 探針把使用者打到一半的
+     *   字清掉,是比「消歧欄不出現」嚴重得多的事。
+     *
+     * ⚠ 探針產生的 commit **絕不會上屏**:這裡拿到的快照沒有交給
+     *   InputConnection,而 `rs_clear_composition()` 把組字狀態清乾淨。
+     */
+    private fun probeSyllableRewrite(): Boolean {
+        if (session == RimeCore.INVALID_SESSION) return false
+        if (RimeCore.getInput(session).isNotEmpty()) return false
+        var consumed = true
+        for (c in T9Syllables.PROBE_KEYS) {
+            // X11 規則：Latin-1 範圍內 keysym == 碼位，探針的字元都在那個範圍裡。
+            if (!RimeCore.processKey(session, c.code)) {
+                consumed = false
+                break
+            }
+        }
+        val probe = RimeCore.snapshot(session)
+        val ok = probe != null && T9Syllables.probeAccepted(consumed, probe.menu.candidates)
+        RimeCore.clearComposition(session)
+        if (RimeCore.getInput(session).isNotEmpty()) RimeCore.setInput(session, "")
+        return ok
     }
 
     private fun handleEvent(event: KeyboardEvent) {
@@ -1217,6 +1284,7 @@ class RimeInputMethodService : InputMethodService() {
                 candidates = emptyList(),
                 highlighted = -1,
                 confirmedSyllables = emptyList(),
+                syllableRewriteReady = false,
                 isStub = RimeCore.isStub(),
                 theme = effectiveTheme(),
                 layout = layoutHost.layout,
@@ -1272,6 +1340,20 @@ class RimeInputMethodService : InputMethodService() {
             Log.i(TAG, "方案 $schemaId → 佈局 ${layoutHost.layout?.id}")
         }
 
+        // 音節改寫的方案探針。放在這裡是因為「現在是哪個方案」只有快照知道,
+        // 而探針會送按鍵進引擎 —— 所以只在**沒有在組字、也沒有待讀的 commit**
+        // 的時候問。組字中換方案（罕見）就等下一次空檔,在那之前
+        // syllableRewriteOk 是 false、消歧欄不出現,不會有「按了沒反應」。
+        if (schemaId.isNotEmpty() &&
+            schemaId != syllableProbeSchema &&
+            !snapshot.status.isComposing &&
+            snapshot.commitText.isNullOrEmpty()
+        ) {
+            syllableProbeSchema = schemaId
+            syllableRewriteOk = probeSyllableRewrite()
+            Log.i(TAG, "音節改寫探針：$schemaId → $syllableRewriteOk")
+        }
+
         // 引擎才是中英模式的權威。`input_mode:toggle` 之外還有別的路徑會動它
         // ——換方案會重置 session 的選項、方案自己的 switcher 也可能切 ——
         // 那些路徑不經過我們那顆鍵。不同步的話使用者會看到「鍵面亮著 En、
@@ -1300,6 +1382,7 @@ class RimeInputMethodService : InputMethodService() {
             preedit = snapshot.composition.preedit,
             candidates = visible,
             confirmedSyllables = confirmedSyllables,
+            syllableRewriteReady = syllableRewriteOk,
             highlighted = snapshot.menu.highlighted,
             pageNo = snapshot.menu.pageNo,
             isLastPage = snapshot.menu.isLastPage,

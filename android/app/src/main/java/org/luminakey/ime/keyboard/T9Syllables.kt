@@ -366,39 +366,125 @@ object T9Syllables {
         return out
     }
 
-    /**
-     * 改寫送進引擎之後，引擎是不是**真的**把那一段當成拼音了。
+    /* ════════ 改寫成功了沒:這其實是兩個問題,原本混成了一個 ════════
      *
-     * ── 為什麼不能只看 `rs_set_input()` 的回傳值 ────────────────────────────
-     * `rime_shell.h` 寫著「回傳 false 代表引擎拒絕（⋯字串裡有 alphabet 不認得的
-     * 字元）」，[org.luminakey.ime.RimeInputMethodService] 原本就靠這一句擋。
-     * **實測不成立**：模擬器上用單編碼的舊方案（alphabet 只有 `ADGJMPTW`）餵
-     * `rs_set_input("niGAM")`，回傳的是 **true**，而引擎把 `ni` 當成一段翻不出
-     * 東西的原文、只替 `GAM` 出候選：
+     * 這一段原本是 `rewriteAccepted()`:改寫送進引擎之後,回頭問候選 ——
+     * 「comment 有沒有以那幾個音節開頭」。理由聽起來很硬:引擎真的聽懂了的話,
+     * `spelling_hints` 給的 comment 必然是 `ni hao`。
      *
-     *     preedit = "niGAM"，候選 = 好#hao／號#hao／高#gao／搞#gao／汗#han
-     *     使用者點第一個 → 上屏 **「ni好」**
+     * **但 comment 只在「拼寫與輸入不同」的時候才有。** 實測(rime_console,
+     * x86_64 模擬器,雙編碼方案):
      *
-     * 那就是真機回報的原話：「我選擇 ni 他就直接給我輸入了」。畫面上沒有任何
-     * 東西說出事了，錯字直接進了使用者的輸入框 —— 這個專案最不能再出的那一種。
-     * （`rs_set_input` 的回傳值與檔頭不符這件事屬 `core/`，已寫進
-     * `docs/coordination.md` §5。本函式是前端這一側**不依賴那個承諾**的檢查。）
+     *     PGM → 1. 品 # pin   2. 親 # qin   3. 秦 # qin …   ← 有 comment
+     *     pin → 1. 品         2. 拼         3. 浜 …         ← 沒有 comment
      *
-     * ── 判準：候選自己會招 ──────────────────────────────────────────────
-     * 引擎真的接受了那幾個音節的話，`spelling_hints` 給的 comment 必然以它們
-     * 開頭（`ni hao` / `ni gan`）。一個都沒有，就代表引擎讀到的東西與使用者
-     * 點的不是同一回事，呼叫端必須把輸入串**還原**。
+     * 也就是說 **改寫得越徹底,那個判準越確定它失敗**。單音節的 `PGM → pin`
+     * 改寫完之後輸入已經是精確拼音,librime 沒有提示可給,於是「引擎完全聽懂
+     * 了」被讀成「引擎不認得」,輸入串被還原 —— 使用者點下 `pin`,畫面一動也
+     * 不動,候選也沒變。那正是真機回報的那一條。
      *
-     * 只要求「至少一個候選」而不是全部：篩選是後面的事，這裡問的是
-     * 「引擎有沒有聽懂」。
+     * ⚠ 但那個保護擋的是**真的**東西,不能拿掉:裝置上的方案可能還是舊的
+     *   單編碼版(`alphabet: 'ADGJMPTW'`,`scripts/collect_data.sh` 沒跑過時
+     *   就會這樣)。那時 `rs_set_input("niGAM")` 照樣回 true,引擎把 `ni` 當成
+     *   一段翻不出東西的原文、只替 `GAM` 出候選,使用者點第一個就上屏
+     *   **「ni好」**。畫面上沒有任何東西說出事了。
+     *
+     * 所以修法是**把一個問題拆成兩個**,各問各的:
+     *
+     *   ① 「這個方案有沒有辦法接受精確拼音?」
+     *      —— 這是**方案的性質**,與使用者這一下點了什麼無關,
+     *         所以是**啟動時問一次**的事。見 [PROBE_KEYS] / [probeAccepted]。
+     *   ② 「引擎有沒有把我寫進去的那一串原封不動收下?」
+     *      —— 這是**輸入串自己**的事,問 `rs_get_input()` 就好,
+     *         不必去猜候選長什麼樣。見 [rewriteOutcome]。
+     *
+     * ⚠ **為什麼 ② 不會在「成功」的時候誤判。** `RimeSetInput()` 的實作只有
+     *   `ctx->set_input(input)`,而 `Context::set_input()` 就一行
+     *   `input_ = value`(librime `src/rime/context.cc:280`);`rs_get_input()`
+     *   回的是同一個 `input_`。成功時兩者**逐位元組相等**,中間沒有任何正規化
+     *   會介入。而 ①、② 都不看「改寫完之後還有沒有 comment」——
+     *   那個會隨著改寫變徹底而消失的東西,已經不在判準裡了。
      */
-    fun rewriteAccepted(candidates: List<RimeCandidate>, confirmed: List<String>): Boolean {
-        if (confirmed.isEmpty()) return true
-        if (candidates.isEmpty()) return false
-        return candidates.any { c ->
-            val syllables = syllablesOf(c.comment)
-            syllables.size >= confirmed.size &&
-                confirmed.indices.all { syllables[it] == confirmed[it] }
-        }
+
+    /**
+     * 啟動探針要送進引擎的按鍵。
+     *
+     * 形狀是**一個精確拼音音節 + 一個仍然模糊的 T9 碼**,因為要問到兩件事:
+     * 小寫拼音進不進得了 `speller/alphabet`,以及 `ni` 切不切得出一個音節。
+     * 尾巴刻意留一個模糊碼 —— 這樣 `spelling_hints` 才一定給得出 comment,
+     * 不會踩到上面那個「全部精確就沒有提示」的坑。
+     *
+     * 為什麼是 `ni` 與 `G`:`G` 是 [T9_OF] 裡 `ghi` 的代表字母,而 `ni` 的 T9
+     * 編碼是 `MG` —— 兩者都落在本檔改寫得出來的字元集裡。哪天方案換了一套
+     * T9 字母而沒有同步 [T9_OF],探針會失敗、消歧欄整條不出現,**而不是**讓
+     * 改寫在使用者手上產生一串垃圾。
+     */
+    const val PROBE_SYLLABLE = "ni"
+    const val PROBE_KEYS = "niG"
+
+    /**
+     * 探針的判讀。這個方案能做音節改寫 ⇔ 下面兩件事同時成立:
+     *
+     * · **每一個探針按鍵都被引擎消費了。** 小寫不在 alphabet 裡時,`n` 與 `i`
+     *   會被 speller 直接放行。
+     * · **有候選的 comment 以 [PROBE_SYLLABLE] 開頭。** 字元集收下了字母不代表
+     *   `ni` 切得出一個音節;這一條問的是切分,不是字元集。
+     *
+     * ⚠ 這裡**不能**改用 `rs_set_input()` 去問。`rs_set_input()` 繞過 speller,
+     *   舊方案上餵 `niGAM` 一樣回 true(見
+     *   [org.luminakey.ime.core.RimeCore.setInput] 的註解)—— 它問不出
+     *   alphabet 這一題,而那正是這裡要問的那一題。`rs_process_key()` 才問得到。
+     *
+     * 兩種方案上都實測過(`rime_console`,emulator-5554):
+     *
+     *     雙編碼 niG → n/i/G 全部消費,preedit="ni G",候選 你好 # ni hao …
+     *     單編碼 niG → n、i **未消費**,preedit="G",候選 和 # he／好 # hao …
+     */
+    fun probeAccepted(allKeysConsumed: Boolean, candidates: List<RimeCandidate>): Boolean {
+        if (!allKeysConsumed) return false
+        return candidates.any { syllablesOf(it.comment).firstOrNull() == PROBE_SYLLABLE }
+    }
+
+    /**
+     * 一次改寫的結果。**三種失敗要有三個名字** —— 全印成同一句話的話,
+     * 下一個人得把整條路徑重查一次才知道是哪一種(這個專案在 Windows 那一端
+     * 正在還這筆帳)。
+     */
+    enum class Rewrite {
+        /** 引擎收下了,留著。 */
+        OK,
+
+        /** 方案沒通過啟動探針:它接不了精確拼音,改寫只會產生一串垃圾。 */
+        SCHEMA_CANNOT,
+
+        /** `rs_set_input()` 自己回 false。 */
+        ENGINE_REFUSED,
+
+        /** 回了 true,但引擎手上的輸入串不是我們寫進去的那一串。 */
+        ENGINE_DROPPED,
+
+        /** 收下了,卻一個候選都翻不出來 —— 使用者會看到一條空的候選列。 */
+        EMPTY_RESULT,
+    }
+
+    /**
+     * 這一次改寫算不算成立。純判準,沒有副作用 —— 呼叫端照結果決定要不要還原。
+     *
+     * ⚠ [candidateCount] 這一條**不會**在成功時誤判:消歧欄上那個讀音本來就是
+     *   從某個候選的 comment 第 [confirmed]`.size` 個音節取出來的,所以改寫之後
+     *   那個候選必定還在。翻不出任何候選只可能是改寫寫壞了。
+     */
+    fun rewriteOutcome(
+        schemaCanRewrite: Boolean,
+        setInputReturned: Boolean,
+        inputAfterRewrite: String,
+        wantedInput: String,
+        candidateCount: Int,
+    ): Rewrite = when {
+        !schemaCanRewrite -> Rewrite.SCHEMA_CANNOT
+        !setInputReturned -> Rewrite.ENGINE_REFUSED
+        inputAfterRewrite != wantedInput -> Rewrite.ENGINE_DROPPED
+        candidateCount <= 0 -> Rewrite.EMPTY_RESULT
+        else -> Rewrite.OK
     }
 }

@@ -317,59 +317,155 @@ class T9SyllablesTest {
 
     /* ── 改寫之後,引擎到底有沒有聽懂 ─────────────────────────────────── */
 
+    /* ── 啟動探針:這個方案接不接得了精確拼音 ──────────────────────────── */
+
     /**
-     * 這一組數字是**模擬器上實測**出來的，不是想像的。
+     * 兩組數字都是**模擬器上實測**出來的,不是想像的（`rime_console`,
+     * emulator-5554,`./rime_console <shared> <user> niG 1 t9_pinyin`）:
      *
-     * 裝置上放一份舊的單編碼 `t9_pinyin`（`alphabet: 'ADGJMPTW'`），
-     * 送 `MGGAM` 再 `rs_set_input("niGAM")`：
+     *     雙編碼 alphabet: 'abc…xyzADGJMPTW'
+     *         n/i/G 全部消費,preedit="ni G"
+     *         候選 你好 # ni hao／你會 # ni hui／你還 # ni hai…
      *
-     *     rs_set_input 回傳 = **true**（標頭說會回 false,實測不會）
-     *     preedit = "niGAM"
-     *     候選    = 好#hao／號#hao／高#gao／搞#gao／汗#han
-     *     選第一個 → COMMIT "ni好"
+     *     單編碼 alphabet: 'ADGJMPTW'（collect_data.sh 沒跑過的裝置）
+     *         'n' -> 未消費、'i' -> 未消費,preedit="G"
+     *         候選 和 # he／好 # hao／還 # hai…
      *
-     * 使用者拿到的就是那個 —— 真機回報的「我選擇 ni 他就直接給我輸入了」。
-     * 前端不能靠 `rs_set_input` 的回傳值，只能回頭問候選。
+     * 兩個訊號各擋一種:未消費擋的是**字元集**,comment 擋的是**切分**。
      */
     @Test
-    fun `引擎沒把那段當拼音時要認得出來`() {
-        val staleSchemaPage = page(
-            "好" to "hao", "號" to "hao", "高" to "gao", "搞" to "gao", "汗" to "han",
+    fun `探針分得出雙編碼與單編碼`() {
+        val dual = page(
+            "你好" to "ni hao", "你會" to "ni hui", "你還" to "ni hai",
+            "妳好" to "ni hao", "你個" to "ni ge",
         )
-        assertFalse(
-            "第二音節的單字被當成「ni 被接受了」—— 使用者會上屏 ni好",
-            T9Syllables.rewriteAccepted(staleSchemaPage, listOf("ni")),
-        )
+        assertTrue(T9Syllables.probeAccepted(allKeysConsumed = true, candidates = dual))
 
-        // 雙編碼方案上同一次改寫的實測結果:候選是 ni 開頭的**詞**。
-        val goodPage = page(
-            "你好" to "ni hao", "妳好" to "ni hao", "你敢" to "ni gan",
-            "你搞" to "ni gao", "擬稿" to "ni gao",
-        )
-        assertTrue(T9Syllables.rewriteAccepted(goodPage, listOf("ni")))
-        assertTrue("兩個音節都定了也要認得", T9Syllables.rewriteAccepted(goodPage, listOf("ni", "hao")))
+        // 單編碼:小寫根本進不去,speller 放行了 n 與 i。
+        val single = page("和" to "he", "好" to "hao", "還" to "hai", "個" to "ge", "會" to "hui")
         assertFalse(
-            "第二個音節對不上就是沒聽懂",
-            T9Syllables.rewriteAccepted(goodPage, listOf("ni", "mao")),
+            "n、i 未被消費就代表 alphabet 沒有小寫 —— 改寫一定會產生垃圾",
+            T9Syllables.probeAccepted(allKeysConsumed = false, candidates = single),
+        )
+        // 就算按鍵全被別的處理器吃掉了,切不出 ni 這個音節一樣不算過。
+        assertFalse(
+            "字元集收下了不等於切得出音節",
+            T9Syllables.probeAccepted(allKeysConsumed = true, candidates = single),
         )
     }
 
     @Test
-    fun `沒有候選就是沒聽懂,不是沒意見`() {
-        assertFalse(T9Syllables.rewriteAccepted(emptyList(), listOf("ni")))
-        // 一個音節都還沒定的時候本來就沒有東西要驗收。
-        assertTrue(T9Syllables.rewriteAccepted(emptyList(), emptyList()))
+    fun `探針的音節要在第一個位置`() {
+        // `hao ni` 有 ni,但不在第一個音節 —— 那代表引擎切的與我們送的對不上。
+        assertFalse(
+            T9Syllables.probeAccepted(true, page("好你" to "hao ni")),
+        )
+        // 探針送的尾巴是模糊碼,所以 comment 必定是多音節的;單音節也要認。
+        assertTrue(T9Syllables.probeAccepted(true, page("你" to "ni")))
+        assertFalse("一個候選都沒有就是沒聽懂", T9Syllables.probeAccepted(true, emptyList()))
+    }
+
+    /* ── 一次改寫算不算成立 ───────────────────────────────────────────── */
+
+    /**
+     * **這一條就是真機回報的那個 bug。**
+     *
+     * 使用者打 `PGM`、點 `pin`,輸入串改寫成 `pin`。引擎完全聽懂了 ——
+     * 實測（`rime_console shared user pin 1 t9_pinyin`）:
+     *
+     *     preedit="pin"  候選 1.品 2.拼 3.浜 4.頻 5.貧    ← **一個 comment 都沒有**
+     *
+     * `spelling_hints` 只在拼寫與輸入**不同**時才給 comment,而改寫成 `pin`
+     * 之後輸入已經是精確拼音。舊的驗收判準問的正是「comment 有沒有以 pin
+     * 開頭」,於是把這個**最成功**的結果判成失敗、把輸入串還原 ——
+     * 使用者點下 `pin`,候選一個都沒變。改寫得越徹底,它越確定失敗。
+     *
+     * 新的判準不看 comment,所以這裡必須是 OK。
+     */
+    @Test
+    fun `改寫成功時候選沒有 comment 也算成功`() {
+        val afterPin = page("品" to "", "拼" to "", "浜" to "", "頻" to "", "貧" to "")
+        assertEquals(
+            T9Syllables.Rewrite.OK,
+            T9Syllables.rewriteOutcome(
+                schemaCanRewrite = true,
+                setInputReturned = true,
+                inputAfterRewrite = "pin",
+                wantedInput = "pin",
+                candidateCount = afterPin.size,
+            ),
+        )
+        // 對照組:同一頁候選拿去餵探針的判準會說「沒聽懂」——
+        // 那個判準本身沒壞,壞的是把它用在每一次選字上。
+        assertFalse(
+            "comment 判準在改寫成功時就是會說 false,所以它不能當選字的驗收",
+            T9Syllables.probeAccepted(true, afterPin),
+        )
     }
 
     /**
-     * 沒有 `spelling_hints` 的方案 comment 是空的 —— 那種方案連消歧欄都不會
-     * 出現（[readingsOf] 回空清單），所以走不到驗收。萬一走到了，答案必須是
-     * 「沒聽懂」而不是「算你過」:寧可這一下沒反應,也不能讓使用者上屏一段
-     * 他沒看過的字。
+     * 多音節那一條要照舊走:`MGGAM` 點 `ni` → `niGAM`,尾巴還是模糊碼,
+     * 所以 comment 仍然在（實測 你好 # ni hao …）。判準換了以後它一樣是 OK。
      */
     @Test
-    fun `comment 是空的一律當成沒聽懂`() {
-        assertFalse(T9Syllables.rewriteAccepted(page("你好" to "", "米高" to ""), listOf("ni")))
+    fun `多音節改寫仍然成立`() {
+        assertEquals(
+            T9Syllables.Rewrite.OK,
+            T9Syllables.rewriteOutcome(true, true, "niGAM", "niGAM", 5),
+        )
+    }
+
+    /**
+     * 三種失敗要有三個名字,而且每一種都要真的被判出來。
+     *
+     * `SCHEMA_CANNOT` 擋的是實測過的那一種:裝置上放一份舊的單編碼
+     * `t9_pinyin`,`rs_set_input("niGAM")` 回的是 **true**（標頭說會回 false,
+     * 實測不會）,引擎把 `ni` 當成翻不出東西的原文、只替 `GAM` 出候選,
+     * 使用者點第一個就上屏 **「ni好」**。所以「方案能不能改寫」必須在寫進去
+     * 之前就決定,不能靠回傳值。
+     */
+    @Test
+    fun `每一種失敗都有自己的名字`() {
+        assertEquals(
+            "方案過不了探針時,連 set_input 的回傳值都不該被採信",
+            T9Syllables.Rewrite.SCHEMA_CANNOT,
+            T9Syllables.rewriteOutcome(false, true, "niGAM", "niGAM", 5),
+        )
+        assertEquals(
+            T9Syllables.Rewrite.ENGINE_REFUSED,
+            T9Syllables.rewriteOutcome(true, false, "MGGAM", "niGAM", 5),
+        )
+        assertEquals(
+            "引擎手上不是我們寫進去的那一串",
+            T9Syllables.Rewrite.ENGINE_DROPPED,
+            T9Syllables.rewriteOutcome(true, true, "MGGAM", "niGAM", 5),
+        )
+        assertEquals(
+            "收下了卻翻不出候選 —— 使用者會看到一條空的候選列",
+            T9Syllables.Rewrite.EMPTY_RESULT,
+            T9Syllables.rewriteOutcome(true, true, "niGAM", "niGAM", 0),
+        )
+    }
+
+    /**
+     * 判準的順序也是規格:方案過不了探針時,**其他三個訊號一律不算數**。
+     * 少了這一條,有人把 `!schemaCanRewrite` 挪到最後面,單編碼方案上就會
+     * 因為「set_input 回 true、輸入串也對」而一路走到 OK —— 而那正是
+     * 「ni好」上屏的那條路。
+     */
+    @Test
+    fun `方案過不了探針時其他訊號一律不算數`() {
+        for (setInputOk in listOf(true, false)) {
+            for (held in listOf("niGAM", "MGGAM")) {
+                for (count in listOf(0, 5)) {
+                    assertEquals(
+                        "schemaCanRewrite=false 必須是最先判的",
+                        T9Syllables.Rewrite.SCHEMA_CANNOT,
+                        T9Syllables.rewriteOutcome(false, setInputOk, held, "niGAM", count),
+                    )
+                }
+            }
+        }
     }
 
     private fun reading(s: String) = T9Syllables.Cell.Reading(s)

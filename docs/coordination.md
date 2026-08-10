@@ -1256,6 +1256,50 @@ bash 端再剝一次 `\r`。(同一個檔案早就為了 cp1252 的 stdout 編�
   ⚠ 順帶一提:`Control_L/R: noop` 看起來人畜無害,但轉發它們一樣沒有好處 ——
   librime 的 `ascii_composer` 開頭就把「同時超過一個修飾鍵」判成 `kNoop`。`
 
+- `[2026-08-11] [fix5-t9guard→全體] **共用模擬器上,別條線會蓋掉你剛裝的 APK,而守門腳本不會發現。**
+  這一輪實際發生:`verify_syllables.sh --apk …` 裝上去之後大約一分鐘,另一條線
+  (`rime-fix5-preedit`)對同一台 emulator-5554 `adb install` 了它自己的 build。
+  接下來三份佈局驗的全是**別人的 APK** —— 新加的關卡三份佈局一致地紅,
+  看起來像修正沒生效,查到 logcat 裡的訊息字串才發現裝置上跑的是舊程式碼。
+  `adb install` 說 Success、`pm clear` 不會換掉程式碼,所以**沒有任何一步會叫**。
+  `scripts/verify_syllables.sh` 已補上 `check_apk_identity`:用 sha256
+  (檔案大小會撞、versionCode 四條線都一樣、`pm path` 只給得出路徑),
+  安裝後記基準,每一份佈局開跑前與第 4 關前各驗一次。
+  → **其他會碰裝置的守門腳本有同一個洞**(`verify_candbar.sh`、
+  `verify_input_matrix.sh`、`verify_rime_compose.sh`、`verify_backup_roundtrip.sh` …),
+  請各自照著補。這件事跟哪一端無關,是共用資源的問題。`
+
+- `[2026-08-11] [fix5-t9guard→macOS/Windows] **消歧欄多一條退化規則(三):引擎改寫不了的方案,整條不出現。**
+  Android 這一端在 IME 啟動時對當前方案送一次探針(`ni` + 一個模糊碼 `G`),
+  問兩件事:小寫拼音進不進得了 `speller/alphabet`、`ni` 切不切得出一個音節。
+  過不了就**不畫消歧欄** —— 因為讀音是從候選的 comment 來的,舊的單編碼方案
+  照樣給得出 `ni hao`,列得出讀音卻改寫不了;那會是一排念得出名字、
+  按下去只會讓引擎收到垃圾的鍵(真機回報過「我選擇 ni 他就直接給我輸入了」)。
+  ⚠ **不能用 `rs_set_input()` 的回傳值代替這個探針。** 它繞過 speller,
+  舊方案上餵 `niGAM` 一樣回 true(`core/include/rime_shell.h` 的檔頭與實測不符,
+  已在 §5 記過)。要問 alphabet 這一題只能用 `rs_process_key()`。
+  桌面兩端若要做消歧欄,這一條與判準的實作在
+  `android/app/src/main/java/org/luminakey/ime/keyboard/T9Syllables.kt`
+  的「改寫成功了沒」那一段。`
+
+- `[2026-08-11] [fix5-t9guard→Android 各支線] **開 worktree 只 symlink `core/data/shared` 不夠,`core/data/user` 也要。**
+  交接文件寫的是
+  `ln -sfn /home/lc/rime/core/data/shared <worktree>/core/data/shared`,
+  但 `core/data/user`(裡面只有一個 `default.custom.yaml`)同樣在 `.gitignore`
+  第 40 行、同樣由 `scripts/collect_data.sh` 產生,而且 `android/app/build.gradle.kts`
+  第 35 行也把它同步進 assets。
+  少了它建出來的 APK **裝得起來、鍵盤起得來、一個字都打不出來**:
+  `default.custom.yaml` 是把 `schema_list` 收斂成本專案實際打包那幾個方案的地方,
+  沒有它 librime 會照上游 `default.yaml` 去找 `cangjie5` / `quick5`,
+  部署直接 FAILED,鍵盤停在 qwerty。
+  ⚠ 難查的地方在於**畫面上看不出來**:APK 照樣裝得上去、`adb install` 說 Success,
+  而守門腳本報的是「裝置上載入的卻是 qwerty」—— 那句話會把人送去查佈局。
+  `scripts/verify_syllables.sh` 已經把這一種失敗與另外兩種分開報(見
+  「等不到 RimeRuntime READY」那一段,它會順便把 librime 的 ERROR log 印出來)。
+  所以開 Android worktree 時**兩條 symlink 都要**:
+      ln -sfn /home/lc/rime/core/data/shared <worktree>/core/data/shared
+      ln -sfn /home/lc/rime/core/data/user   <worktree>/core/data/user`
+
 ## 6. 各端狀態
 
 > 自己更新自己那一行。
