@@ -705,10 +705,20 @@ class RimeInputMethodService : InputMethodService() {
     /**
      * 消歧欄按下一個讀音：把引擎的輸入串改寫成「已確定的音節 + 這個音節 + 剩下的模糊碼」。
      *
-     * ⚠ **引擎拒絕就什麼都不做。** `rs_set_input()` 回 false 代表那一串沒有整個
-     * 落在方案的 alphabet 裡（例如方案還是舊的單編碼版本，或 stub）。這時若照樣
-     * 更新畫面，使用者會看到候選收斂、而引擎一個字元都沒改 —— 空白鍵送出去的
-     * 還是原本那個字。那正是這個專案抓過七次的「畫面與事實不符」。
+     * ⚠ **不能只信 `rs_set_input()` 的回傳值。** 標頭寫著「字串裡有 alphabet
+     * 不認得的字元就回 false」，這裡原本就靠那一句擋。實測**不成立**：裝置上
+     * 若還是舊的單編碼方案（`alphabet: 'ADGJMPTW'`），`rs_set_input("niGAM")`
+     * 回的是 **true**，而引擎把 `ni` 當成一段翻不出東西的原文、只替 `GAM` 出
+     * 候選 —— 使用者點下第一個候選，上屏的是**「ni好」**。那正是真機回報的
+     * 「我選擇 ni 他就直接給我輸入了」：錯字直接進了輸入框，而畫面上沒有任何
+     * 東西說出事了。
+     *
+     * 所以改寫之後要**回頭問候選**（[T9Syllables.rewriteAccepted]）：引擎真的
+     * 聽懂了的話，comment 必然以那幾個音節開頭。沒有的話就把輸入串還原，
+     * 寧可這一下沒有反應，也不能讓使用者拿到他從頭到尾沒看過的字。
+     *
+     * （舊方案為什麼會留在裝置上：見 [org.luminakey.ime.core.RimeRuntime] 的
+     * shared 資料摘要。那是這條回報的**根因**，本函式是第二道防線。）
      */
     private fun selectSyllable(syllable: String) {
         val current = RimeCore.getInput(session)
@@ -723,9 +733,24 @@ class RimeInputMethodService : InputMethodService() {
             Log.w(TAG, "引擎拒絕輸入串改寫：$current → $next")
             return
         }
-        confirmedSyllables = confirmed + syllable
-        Log.i(TAG, "音節消歧：$current → $next（已確定 ${confirmedSyllables.joinToString("/")}）")
+        val wanted = confirmed + syllable
+        confirmedSyllables = wanted
+        // 只 acquire 一次（refreshFromRime 是唯一的取值點），拿到的候選就留在
+        // uiState 裡 —— 驗收讀的是那一份，不會為了檢查再開一次快照。
         refreshFromRime()
+        if (!T9Syllables.rewriteAccepted(uiState.candidates, wanted)) {
+            Log.w(
+                TAG,
+                "引擎沒有把「$syllable」當成拼音（$current → $next 之後候選是 " +
+                    uiState.candidates.take(3).joinToString("／") { "${it.text}#${it.comment}" } +
+                    "）—— 還原輸入串。裝置上的 t9_pinyin 多半還是舊的單編碼版。",
+            )
+            confirmedSyllables = confirmed
+            RimeCore.setInput(session, current)
+            refreshFromRime()
+            return
+        }
+        Log.i(TAG, "音節消歧：$current → $next（已確定 ${wanted.joinToString("/")}）")
     }
 
     private fun handleEvent(event: KeyboardEvent) {

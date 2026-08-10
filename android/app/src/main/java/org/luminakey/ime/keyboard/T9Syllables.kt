@@ -365,4 +365,40 @@ object T9Syllables {
         }
         return out
     }
+
+    /**
+     * 改寫送進引擎之後，引擎是不是**真的**把那一段當成拼音了。
+     *
+     * ── 為什麼不能只看 `rs_set_input()` 的回傳值 ────────────────────────────
+     * `rime_shell.h` 寫著「回傳 false 代表引擎拒絕（⋯字串裡有 alphabet 不認得的
+     * 字元）」，[org.luminakey.ime.RimeInputMethodService] 原本就靠這一句擋。
+     * **實測不成立**：模擬器上用單編碼的舊方案（alphabet 只有 `ADGJMPTW`）餵
+     * `rs_set_input("niGAM")`，回傳的是 **true**，而引擎把 `ni` 當成一段翻不出
+     * 東西的原文、只替 `GAM` 出候選：
+     *
+     *     preedit = "niGAM"，候選 = 好#hao／號#hao／高#gao／搞#gao／汗#han
+     *     使用者點第一個 → 上屏 **「ni好」**
+     *
+     * 那就是真機回報的原話：「我選擇 ni 他就直接給我輸入了」。畫面上沒有任何
+     * 東西說出事了，錯字直接進了使用者的輸入框 —— 這個專案最不能再出的那一種。
+     * （`rs_set_input` 的回傳值與檔頭不符這件事屬 `core/`，已寫進
+     * `docs/coordination.md` §5。本函式是前端這一側**不依賴那個承諾**的檢查。）
+     *
+     * ── 判準：候選自己會招 ──────────────────────────────────────────────
+     * 引擎真的接受了那幾個音節的話，`spelling_hints` 給的 comment 必然以它們
+     * 開頭（`ni hao` / `ni gan`）。一個都沒有，就代表引擎讀到的東西與使用者
+     * 點的不是同一回事，呼叫端必須把輸入串**還原**。
+     *
+     * 只要求「至少一個候選」而不是全部：篩選是後面的事，這裡問的是
+     * 「引擎有沒有聽懂」。
+     */
+    fun rewriteAccepted(candidates: List<RimeCandidate>, confirmed: List<String>): Boolean {
+        if (confirmed.isEmpty()) return true
+        if (candidates.isEmpty()) return false
+        return candidates.any { c ->
+            val syllables = syllablesOf(c.comment)
+            syllables.size >= confirmed.size &&
+                confirmed.indices.all { syllables[it] == confirmed[it] }
+        }
+    }
 }

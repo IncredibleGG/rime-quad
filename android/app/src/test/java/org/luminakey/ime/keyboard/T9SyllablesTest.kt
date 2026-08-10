@@ -315,6 +315,63 @@ class T9SyllablesTest {
         assertEquals(emptyList<String>(), T9Syllables.slotKeys(null, "t9"))
     }
 
+    /* ── 改寫之後,引擎到底有沒有聽懂 ─────────────────────────────────── */
+
+    /**
+     * 這一組數字是**模擬器上實測**出來的，不是想像的。
+     *
+     * 裝置上放一份舊的單編碼 `t9_pinyin`（`alphabet: 'ADGJMPTW'`），
+     * 送 `MGGAM` 再 `rs_set_input("niGAM")`：
+     *
+     *     rs_set_input 回傳 = **true**（標頭說會回 false,實測不會）
+     *     preedit = "niGAM"
+     *     候選    = 好#hao／號#hao／高#gao／搞#gao／汗#han
+     *     選第一個 → COMMIT "ni好"
+     *
+     * 使用者拿到的就是那個 —— 真機回報的「我選擇 ni 他就直接給我輸入了」。
+     * 前端不能靠 `rs_set_input` 的回傳值，只能回頭問候選。
+     */
+    @Test
+    fun `引擎沒把那段當拼音時要認得出來`() {
+        val staleSchemaPage = page(
+            "好" to "hao", "號" to "hao", "高" to "gao", "搞" to "gao", "汗" to "han",
+        )
+        assertFalse(
+            "第二音節的單字被當成「ni 被接受了」—— 使用者會上屏 ni好",
+            T9Syllables.rewriteAccepted(staleSchemaPage, listOf("ni")),
+        )
+
+        // 雙編碼方案上同一次改寫的實測結果:候選是 ni 開頭的**詞**。
+        val goodPage = page(
+            "你好" to "ni hao", "妳好" to "ni hao", "你敢" to "ni gan",
+            "你搞" to "ni gao", "擬稿" to "ni gao",
+        )
+        assertTrue(T9Syllables.rewriteAccepted(goodPage, listOf("ni")))
+        assertTrue("兩個音節都定了也要認得", T9Syllables.rewriteAccepted(goodPage, listOf("ni", "hao")))
+        assertFalse(
+            "第二個音節對不上就是沒聽懂",
+            T9Syllables.rewriteAccepted(goodPage, listOf("ni", "mao")),
+        )
+    }
+
+    @Test
+    fun `沒有候選就是沒聽懂,不是沒意見`() {
+        assertFalse(T9Syllables.rewriteAccepted(emptyList(), listOf("ni")))
+        // 一個音節都還沒定的時候本來就沒有東西要驗收。
+        assertTrue(T9Syllables.rewriteAccepted(emptyList(), emptyList()))
+    }
+
+    /**
+     * 沒有 `spelling_hints` 的方案 comment 是空的 —— 那種方案連消歧欄都不會
+     * 出現（[readingsOf] 回空清單），所以走不到驗收。萬一走到了，答案必須是
+     * 「沒聽懂」而不是「算你過」:寧可這一下沒反應,也不能讓使用者上屏一段
+     * 他沒看過的字。
+     */
+    @Test
+    fun `comment 是空的一律當成沒聽懂`() {
+        assertFalse(T9Syllables.rewriteAccepted(page("你好" to "", "米高" to ""), listOf("ni")))
+    }
+
     private fun reading(s: String) = T9Syllables.Cell.Reading(s)
 
     private fun page(vararg pairs: Pair<String, String>): List<RimeCandidate> =
