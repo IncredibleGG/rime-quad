@@ -109,14 +109,16 @@ enum SelfCheck {
         check("事件遮罩常數與 AppKit 對得上", IMKRecognizedEvents.mask == appkitMask,
               "Kit \(IMKRecognizedEvents.mask) / AppKit \(appkitMask)")
 
+        // ⚠ 變數名不要叫 declared —— 這個函式上面已經有一個
+        //   (Info.plist 宣告的類別名),撞名是編譯錯誤。
         let probe = LuminaKeyInputController()
-        let declared = UInt64(bitPattern: Int64(probe.recognizedEvents(nil)))
+        let eventMask = UInt64(bitPattern: Int64(probe.recognizedEvents(nil)))
         check("controller 宣告要收 flagsChanged（輕點 Shift 才會有反應）",
-              IMKRecognizedEvents.includesFlagsChanged(declared),
-              String(format: "回傳 0x%llX", declared))
+              IMKRecognizedEvents.includesFlagsChanged(eventMask),
+              String(format: "回傳 0x%llX", eventMask))
         check("controller 仍然要收 keyDown（少了它一個字都打不出來）",
-              declared & IMKRecognizedEvents.keyDown != 0,
-              String(format: "回傳 0x%llX", declared))
+              eventMask & IMKRecognizedEvents.keyDown != 0,
+              String(format: "回傳 0x%llX", eventMask))
 
         // 7. **使用者初始配置的範本有沒有隨 .app 附上。**
         //
