@@ -505,7 +505,7 @@ Result Engine::ToggleAsciiMode(uint64_t id) {
   //   直接呼叫等於無鎖讀 sessions_,並與引擎執行緒上的 rs_process_key
   //   並行呼叫 rs_*。SetAsciiModeAll 內部是 Post 進佇列的,這一句不是 ——
   //   「兩者都排在同一條佇列上」那句舊註解是錯的,只有前者是。
-  Post("切中英後取快照", [&] { r.snap = TakeSnapshot(id); });
+  r.snap = TakeSnapshot(id);  // [植入 M5] 回到管道執行緒上直接碰 sessions_/rs_*
   return r;
 }
 
