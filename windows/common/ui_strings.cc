@@ -363,12 +363,129 @@ namespace {
     L"请执行安装工具的 doctor 取得诊断。")                                     \
   /* ── 關於 ──────────────────────────────────────────────────── */          \
   X(kAboutOffline,                                                             \
-    L"This build never goes online. Neither binary depends on any networking " \
-    L"library, and the build checks that automatically on every change.",      \
-    L"這個版本完全不連網:兩個程式都沒有相依任何網路元件,"                     \
-    L"而且每一次改動都會自動檢查這件事。",                                     \
-    L"这个版本完全不连网:两个程序都没有相依任何网络组件,"                     \
-    L"而且每一次改动都会自动检查这件事。")
+    L"This input method is offline by default: the network switch starts "  \
+    L"off, and while it is off not one byte goes out. Every connection that "  \
+    L"really happens is written into the log on the Network page.",            \
+    L"這個輸入法預設離線:連網開關一開始是關的,關著的時候一個位元組都不會"     \
+    L"送出去。每一次真的連過網,都寫在「連網」那一頁的紀錄裡。",                \
+    L"这个输入法默认离线:连网开关一开始是关的,关着的时候一个字节都不会"       \
+    L"送出去。每一次真的连过网,都写在“连网”那一页的纪录里。")                  \
+  /* ── 連網 ──────────────────────────────────────────────────── */          \
+  X(kNavNetwork, L"Network", L"連網", L"连网")                                 \
+  X(kNetworkTitle, L"Network", L"連網", L"连网")                               \
+  X(kNetworkSubtitle,                                                          \
+    L"When this may go online, and every time it really did.",                 \
+    L"這個輸入法什麼時候會連上網路,以及每一次真的連過的紀錄。",                \
+    L"这个输入法什么时候会连上网络,以及每一次真的连过的纪录。")                \
+  X(kNetworkSwitch, L"Network", L"連網", L"连网")                              \
+  X(kNetworkOnSummary,                                                         \
+    L"On: it can go online, and only when you press a button that says so. "   \
+    L"What you type never leaves this computer.",                              \
+    L"已開啟:現在可以連網,而且只有你按下明說要連的那顆按鈕時才會。"           \
+    L"你打的字永遠不會離開這台電腦。",                                          \
+    L"已开启:现在可以连网,而且只有你按下明说要连的那颗按钮时才会。"           \
+    L"你打的字永远不会离开这台电脑。")                                          \
+  X(kNetworkOffSummary,                                                        \
+    L"Off (the default): fully offline. Nothing reaches the internet, and "    \
+    L"the buttons that would need it say so instead of failing quietly.",      \
+    L"已關閉(預設):完全離線。什麼都不會連出去;需要連網的按鈕會直接告訴你"    \
+    L"開關是關的,而不是安靜地失敗。",                                          \
+    L"已关闭(默认):完全离线。什么都不会连出去;需要连网的按钮会直接告诉你"    \
+    L"开关是关的,而不是安静地失败。")                                          \
+  X(kNetworkOnDetail,                                                          \
+    L"The honest cost: the moment a connection really happens, your network "  \
+    L"learns that this computer reached a domain. Our requests do not carry "  \
+    L"this program's name, but which domain was reached travels in the clear " \
+    L"by design. We cannot hide that and will not pretend otherwise.",         \
+    L"誠實的代價:只要真的連了一次,你的網路(電信業者、這個無線網路的主人、"   \
+    L"中間的任何人)就會知道這台電腦連到了某個網域。我們送出去的請求不帶這個"  \
+    L"程式的名字,但「連到哪個網域」在設計上就是明文的 —— 我們藏不了,"        \
+    L"也不會假裝藏得了。",                                                      \
+    L"诚实的代价:只要真的连了一次,你的网络(电信业者、这个无线网络的主人、"   \
+    L"中间的任何人)就会知道这台电脑连到了某个网域。我们送出去的请求不带这个"  \
+    L"程序的名字,但“连到哪个网域”在设计上就是明文的 —— 我们藏不了,"          \
+    L"也不会假装藏得了。")                                                      \
+  X(kNetworkTurnedOn, L"Network is on now.", L"連網已經打開。",                \
+    L"连网已经打开。")                                                          \
+  X(kNetworkTurnedOff, L"Network is off - fully offline again.",               \
+    L"連網已經關掉 —— 又回到完全離線。",                                        \
+    L"连网已经关掉 —— 又回到完全离线。")                                        \
+  X(kNetLogHeading, L"Connection log", L"連網紀錄", L"连网纪录")                \
+  X(kNetLogBlurb,                                                              \
+    L"Every connection that really happened is in here, one line each, "       \
+    L"redirect hops included. Only the host name and the reason - nothing "    \
+    L"you typed, and no part of the address after the host.",                  \
+    L"每一次真的連過網都在裡面,轉址的每一跳也各記一筆。"                       \
+    L"裡面只有主機名與原因 —— 沒有你打過的任何東西,"                           \
+    L"也沒有網址主機後面那一段。",                                              \
+    L"每一次真的连过网都在里面,转址的每一跳也各记一笔。"                       \
+    L"里面只有主机名与原因 —— 没有你打过的任何东西,"                           \
+    L"也没有网址主机后面那一段。")                                              \
+  X(kNetLogColumns, L"Time  ·  Host  ·  Reason  ·  Result",                    \
+    L"時間  ·  主機  ·  原因  ·  結果", L"时间  ·  主机  ·  原因  ·  结果")     \
+  X(kNetLogCount, L"%d connections, newest first.",                            \
+    L"共 %d 次連線,由新到舊。", L"共 %d 次连线,由新到旧。")                    \
+  X(kNetLogEmptyTitle, L"Nothing has ever connected.", L"一次都沒有連過。",     \
+    L"一次都没有连过。")                                                        \
+  X(kNetLogEmptyWhy,                                                           \
+    L"If the switch has never been on, this is supposed to be empty - that "   \
+    L"is exactly the result you came here to see. The log file itself has "    \
+    L"not been created either.",                                               \
+    L"開關從來沒開過的話,這裡本來就會是空的 —— 這正是你要看到的結果。"        \
+    L"紀錄檔本身也還沒有被建立。",                                              \
+    L"开关从来没开过的话,这里本来就会是空的 —— 这正是你要看到的结果。"        \
+    L"纪录文件本身也还没有被建立。")                                            \
+  X(kNetLogFileLine, L"Log file: ", L"紀錄檔:", L"纪录文件:")                 \
+  X(kNetLogClearHeading, L"Clear the connection log", L"清除連網紀錄",          \
+    L"清除连网纪录")                                                            \
+  X(kNetLogClearBlurb,                                                         \
+    L"Once cleared, the lines above cannot be brought back. Your settings "    \
+    L"and the words you added are not touched.",                               \
+    L"清掉之後,上面那些紀錄就找不回來了。你的設定與你自己加的詞不受影響。",     \
+    L"清掉之后,上面那些纪录就找不回来了。你的设置与你自己加的词不受影响。")     \
+  X(kNetLogClearButton, L"Clear the connection log", L"清除連網紀錄",           \
+    L"清除连网纪录")                                                            \
+  X(kNetLogCleared, L"The connection log is empty now.",                       \
+    L"連網紀錄已經清空。", L"连网纪录已经清空。")                               \
+  X(kNetPurposeIndex, L"Browsing the store", L"瀏覽市集", L"浏览市集")          \
+  X(kNetPurposePackage, L"Downloading a typing method", L"下載打字方式",        \
+    L"下载打字方式")                                                            \
+  X(kNetOutcomeOk, L"succeeded", L"成功", L"成功")                             \
+  X(kNetOutcomeFailed, L"failed", L"失敗", L"失败")                            \
+  X(kNetOutcomeRedirected, L"redirected", L"轉址", L"转址")                     \
+  /* ── 檢查更新 ──────────────────────────────────────────────── */          \
+  X(kUpdateHeading, L"Check for updates", L"檢查更新", L"检查更新")             \
+  X(kUpdateBlurb,                                                              \
+    L"Nothing is checked on its own. Press this and it fetches one small "     \
+    L"file that says which version is the newest - that is all this step "     \
+    L"downloads.",                                                             \
+    L"平常不會自己去問。按下去才會連,而且只取一份很小的檔案來看最新是哪一"     \
+    L"版 —— 這一步只下載這個。",                                                \
+    L"平常不会自己去问。按下去才会连,而且只取一份很小的文件来看最新是哪一"     \
+    L"版 —— 这一步只下载这个。")                                                \
+  X(kUpdateButton, L"Check for updates", L"檢查更新", L"检查更新")              \
+  X(kUpdateChecking, L"Checking...", L"正在檢查更新…", L"正在检查更新…")        \
+  X(kUpdateNeedsNetwork,                                                       \
+    L"The network switch is off, so nothing was sent. Turn the switch above "  \
+    L"on first.",                                                              \
+    L"連網開關是關的,所以什麼都沒有送出去。要檢查更新,"                       \
+    L"先把上面那個開關打開。",                                                  \
+    L"连网开关是关的,所以什么都没有送出去。要检查更新,"                       \
+    L"先把上面那个开关打开。")                                                  \
+  X(kUpdateUpToDate, L"You already have the newest one.",                      \
+    L"已經是最新的了。", L"已经是最新的了。")                                   \
+  X(kUpdateAvailable, L"There is a newer one.", L"有比較新的版本。",            \
+    L"有比较新的版本。")                                                        \
+  X(kUpdateFailed,                                                             \
+    L"Could not ask - the network may be down, or the other side did not "     \
+    L"answer.",                                                                \
+    L"問不到 —— 可能是網路不通,也可能是對方沒有回應。",                        \
+    L"问不到 —— 可能是网络不通,也可能是对方没有回应。")                        \
+  X(kUpdateNotWired,                                                           \
+    L"This build has no update source wired up yet: nothing was sent, and "    \
+    L"there is nothing to download.",                                          \
+    L"這個版本還沒有接上更新來源:沒有連出去,也沒有東西可以下載。",             \
+    L"这个版本还没有接上更新来源:没有连出去,也没有东西可以下载。")
 
 // ── 由同一份清單長出 enum 順序表與三個語系 ──────────────────────
 

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstdio>
 
+#include "../common/net_ui.h"
 #include "../common/schema_choice.h"
 #include "../common/schema_list_patch.h"
 #include "../common/ui_dip.h"
@@ -15,6 +16,7 @@
 #include "status_bar.h"
 #include "ui_confirm.h"
 #include "ui_listview.h"
+#include "update_check.h"
 
 namespace rimewin {
 namespace {
@@ -23,6 +25,9 @@ constexpr wchar_t kClass[] = L"LuminaKeySettingsWindow";
 constexpr UINT WM_RIME_OPEN = WM_APP + 1;
 constexpr UINT WM_RIME_TRAY = WM_APP + 2;
 constexpr UINT WM_RIME_SET_VARIANT = WM_APP + 3;
+// 背景執行緒檢查完更新之後把結果送回 UI 執行緒。lParam 是一份 new 出來的
+// UpdateCheckOutcome,由收訊的那一邊 delete。
+constexpr UINT WM_RIME_UPDATE_DONE = WM_APP + 4;
 constexpr UINT kTrayId = 1;
 constexpr UINT_PTR kDeployTimer = 1;
 constexpr UINT_PTR kStatusTimer = 2;
@@ -187,6 +192,37 @@ const ControlDef kControls[] = {
     //   額外的狀態要維護),所以這一格是六類自繪裡最便宜的一格。
     {IDC_RESET, L"BUTTON", BS_OWNERDRAW | WS_TABSTOP,
      UiString::kResetButton},
+
+    // ── 連網 ──
+    {IDC_NET_TITLE, L"STATIC", ST, UiString::kNetworkTitle},
+    {IDC_NET_SUB, L"STATIC", ST, UiString::kNetworkSubtitle},
+    // §12.5.2:開關 = BUTTON + BS_AUTOCHECKBOX | BS_RIGHTBUTTON。
+    // ⚠ 不可以 owner-draw(與 BS_AUTOCHECKBOX 互斥),見 IDC_FOLLOW_MODE。
+    {IDC_NET_SWITCH, L"BUTTON",
+     BS_AUTOCHECKBOX | BS_RIGHTBUTTON | WS_TABSTOP, UiString::kNetworkSwitch},
+    // 開著/關著各一句,文字在執行期填(NetSwitchSummary 決定是哪一句)。
+    {IDC_NET_STATE, L"STATIC", ST, kNoText},
+    {IDC_NET_DETAIL, L"STATIC", ST, UiString::kNetworkOnDetail},
+    {IDC_NET_UPDATE_HEAD, L"STATIC", ST, UiString::kUpdateHeading},
+    {IDC_NET_UPDATE_BLURB, L"STATIC", ST, UiString::kUpdateBlurb},
+    {IDC_NET_UPDATE, L"BUTTON", BTN, UiString::kUpdateButton},
+    {IDC_NETLOG_HEAD, L"STATIC", ST, UiString::kNetLogHeading},
+    {IDC_NETLOG_BLURB, L"STATIC", ST, UiString::kNetLogBlurb},
+    {IDC_NETLOG_SUMMARY, L"STATIC", ST, kNoText},
+    {IDC_NETLOG_COLS, L"STATIC", ST, UiString::kNetLogColumns},
+    {IDC_NETLOG_LIST, WC_LISTVIEWW,
+     LVS_REPORT | LVS_SINGLESEL | LVS_NOCOLUMNHEADER | LVS_SHOWSELALWAYS |
+         WS_TABSTOP | WS_BORDER,
+     kNoText},
+    {IDC_NETLOG_EMPTY, L"STATIC", ST, kNoText},
+    {IDC_NETLOG_PATH, L"STATIC", ST, kNoText},
+    {IDC_NETLOG_CLEAR_HEAD, L"STATIC", ST, UiString::kNetLogClearHeading},
+    {IDC_NETLOG_CLEAR_BLURB, L"STATIC", ST, UiString::kNetLogClearBlurb},
+    // ⚠ 清除連網紀錄是**破壞性**的:清掉之後,使用者拿來稽核我們的那份
+    //   證據就找不回來了。所以它與「把設定回復成預設」同一種樣子 ——
+    //   owner-draw 的危險鍵(§4.9),而且排在該頁最後、隔一條分隔線。
+    {IDC_NETLOG_CLEAR, L"BUTTON", BS_OWNERDRAW | WS_TABSTOP,
+     UiString::kNetLogClearButton},
 };
 constexpr int kControlCount =
     static_cast<int>(sizeof(kControls) / sizeof(kControls[0]));
@@ -196,9 +232,10 @@ constexpr int kControlCount =
 #undef RADIO
 #undef RADIO1
 
-// 側欄上的頁名(順序 = 由上而下)。
-const UiString kPageNames[] = {UiString::kNavSchemas, UiString::kNavAppearance,
-                               UiString::kNavText, UiString::kNavAdvanced};
+// ⚠ 側欄上的頁名**不在這裡**。它在 common/ui_layout.h 的
+//   SettingsPageName() —— 一份與 SettingsPage 平行的陣列住在這個檔案裡的話,
+//   順序錯開一格就是「側欄寫著『連網』,點下去出現的是進階頁」,
+//   而那件事在 Ubuntu 上沒有任何東西看得到。
 
 const VariantPref kVariantOrder[] = {VariantPref::kFollowInputMode,
                                      VariantPref::kTraditional,
@@ -232,13 +269,25 @@ int RadioSel(HWND parent, int first, int count) {
   return 0;
 }
 
+// 交給背景執行緒的那一份。⚠ 它**不帶** SettingsWindow* ——
+// 視窗可能在檢查跑完之前就被關掉,而背景執行緒不可以碰一個可能已經
+// 不在的物件。它只帶 HWND(PostMessage 對死掉的 HWND 是安全的失敗)
+// 與 NetGate*(它活得跟服務進程一樣久)。
+struct UpdateJob {
+  HWND hwnd;
+  NetGate* gate;
+};
+
 }  // namespace
 
 // ────────────────────────────────────────────────────────────────
 
 SettingsWindow::SettingsWindow(Engine* engine, SettingsStore* store,
                                const std::string& shared_dir)
-    : engine_(engine), store_(store), shared_dir_(shared_dir) {}
+    : engine_(engine),
+      store_(store),
+      shared_dir_(shared_dir),
+      net_gate_(store) {}
 
 SettingsWindow::~SettingsWindow() { Stop(); }
 
@@ -381,7 +430,12 @@ LRESULT CALLBACK SettingsWindow::WndProc(HWND hwnd, UINT msg, WPARAM w,
           id == IDC_FILES_BLURB || id == IDC_LANG_BLURB ||
           id == IDC_DIAG_NOTE || id == IDC_RESET_BLURB ||
           id == IDC_SCHEMAS_DEFAULT_LINE ||
-          id == IDC_SCHEMAS_EMPTY;
+          id == IDC_SCHEMAS_EMPTY ||
+          id == IDC_NET_SUB || id == IDC_NET_STATE || id == IDC_NET_DETAIL ||
+          id == IDC_NET_UPDATE_BLURB || id == IDC_NETLOG_BLURB ||
+          id == IDC_NETLOG_SUMMARY || id == IDC_NETLOG_COLS ||
+          id == IDC_NETLOG_EMPTY || id == IDC_NETLOG_PATH ||
+          id == IDC_NETLOG_CLEAR_BLURB;
       const bool disabled = ::IsWindowEnabled(ctl) == FALSE;
       ::SetTextColor(hdc, self->theme_.Color(disabled ? kDisabledText
                                              : secondary ? kOnSurfaceVariant
@@ -392,7 +446,8 @@ LRESULT CALLBACK SettingsWindow::WndProc(HWND hwnd, UINT msg, WPARAM w,
     }
     case WM_DRAWITEM: {
       DRAWITEMSTRUCT* di = reinterpret_cast<DRAWITEMSTRUCT*>(l);
-      if (self && di && di->CtlID == IDC_RESET) {
+      if (self && di &&
+          (di->CtlID == IDC_RESET || di->CtlID == IDC_NETLOG_CLEAR)) {
         self->DrawDangerButton(di);
         return TRUE;
       }
@@ -477,6 +532,13 @@ LRESULT CALLBACK SettingsWindow::WndProc(HWND hwnd, UINT msg, WPARAM w,
         self->SetStatus(std::wstring());
       }
       return 0;
+    case WM_RIME_UPDATE_DONE: {
+      // ⚠ 這一份是背景執行緒 new 出來的,**不論視窗還在不在都要 delete**。
+      UpdateCheckOutcome* r = reinterpret_cast<UpdateCheckOutcome*>(l);
+      if (self) self->OnUpdateCheckDone(r);
+      delete r;
+      return 0;
+    }
     case WM_RIME_SET_VARIANT: {
       const int i = static_cast<int>(w);
       if (self && i >= 0 && i < kVariantCount)
@@ -548,7 +610,8 @@ void SettingsWindow::CreateUi(HWND hwnd) {
           LVS_SHOWSELALWAYS | LVS_NOSCROLL | WS_TABSTOP);
   if (sidebar_) {
     std::vector<std::wstring> pages;
-    for (int i = 0; i < kPageCount; ++i) pages.push_back(UiText(kPageNames[i]));
+    for (int i = 0; i < kPageCount; ++i)
+      pages.push_back(UiText(SettingsPageName(i)));
     SetRowListItems(sidebar_, pages);
   }
 
@@ -563,12 +626,16 @@ void SettingsWindow::CreateUi(HWND hwnd) {
                                    static_cast<INT_PTR>(d.id)),
                                inst, nullptr);
     if (d.id == IDC_SCHEMA_LIST) schema_list_ = h;
+    if (d.id == IDC_NETLOG_LIST) net_log_list_ = h;
   }
 
   // ⚠ report 模式沒有欄的話,每一列的矩形都是空的 —— 清單裡有列而畫面
   //   是空白的。寬度在這裡給不準(此刻的 client 還是 10×10),
   //   真正的對齊在 LayoutUi() 的 place():控制項一改大小就跟著改。
   EnsureRowListColumn(schema_list_);
+  // ⚠ 同一個理由:report 模式沒有欄的話,每一列的矩形都是空的 ——
+  //   紀錄裡有列而畫面是一片空白,而那正是這一頁最不該出現的樣子。
+  EnsureRowListColumn(net_log_list_);
 
   ApplyFonts();
 
@@ -615,12 +682,13 @@ void SettingsWindow::ApplyFonts() {
   for (int i = 0; i < kControlCount; ++i) set(kControls[i].id, body);
 
   for (int id : {IDC_SCHEMAS_TITLE, IDC_APPEAR_TITLE, IDC_TEXT_TITLE,
-                 IDC_ADV_TITLE})
+                 IDC_NET_TITLE, IDC_ADV_TITLE})
     set(id, title);
   for (int id : {IDC_SCHEMAS_LIST_HEAD, IDC_COUNT_HEAD, IDC_SCALE_HEAD,
                  IDC_THEME_HEAD, IDC_BAR_HEAD, IDC_VARIANT_HEAD,
                  IDC_PUNCT_HEAD, IDC_REDEPLOY_HEAD, IDC_FILES_HEAD,
-                 IDC_LANG_HEAD, IDC_DIAG_HEAD, IDC_RESET_HEAD})
+                 IDC_LANG_HEAD, IDC_DIAG_HEAD, IDC_RESET_HEAD,
+                 IDC_NET_UPDATE_HEAD, IDC_NETLOG_HEAD, IDC_NETLOG_CLEAR_HEAD})
     set(id, head);
   for (int id : {IDC_SCHEMAS_SUB, IDC_APPEAR_SUB, IDC_TEXT_SUB, IDC_ADV_SUB,
                  IDC_SCHEMAS_LIST_BLURB, IDC_FOLLOW_BLURB, IDC_COUNT_BLURB,
@@ -629,9 +697,14 @@ void SettingsWindow::ApplyFonts() {
                  IDC_REDEPLOY_BLURB, IDC_FILES_BLURB, IDC_LANG_BLURB,
                  IDC_DIAG_NOTE, IDC_RESET_BLURB, IDC_STATUS,
                  IDC_SCHEMAS_DEFAULT_LINE,
-                 IDC_SCHEMAS_EMPTY})
+                 IDC_SCHEMAS_EMPTY,
+                 IDC_NET_SUB, IDC_NET_STATE, IDC_NET_DETAIL,
+                 IDC_NET_UPDATE_BLURB, IDC_NETLOG_BLURB, IDC_NETLOG_SUMMARY,
+                 IDC_NETLOG_COLS, IDC_NETLOG_EMPTY, IDC_NETLOG_CLEAR_BLURB})
     set(id, small_f);
   set(IDC_DIAG, mono);
+  // 紀錄檔的路徑是給人抄去查的,不是介面文案 —— 等寬(§4.11 的形狀)。
+  set(IDC_NETLOG_PATH, mono);
   if (sidebar_)
     ::SendMessageW(sidebar_, WM_SETFONT, reinterpret_cast<WPARAM>(body), TRUE);
 }
@@ -655,8 +728,8 @@ void SettingsWindow::LayoutUi() {
   //   單元測試看不到 —— 外觀頁的深淺三態排在 574/604/634,
   //   可視高度 506,那三顆在畫面上不存在而 W18 全綠。
   //   check_ui_spec.sh 的 W24 會擋下任何一個回到這裡的 Stack。
-  const PageLayout page_layout =
-      LayoutSettingsPageDip(page_, W, order_.empty());
+  const PageLayout page_layout = LayoutSettingsPageDip(page_, W,
+                                                      PageStateNow());
   int viewport_h = ContentViewportHeightDip(H);
   scroll_max_ = std::max(0, page_layout.content_h_dip - viewport_h);
   if (scroll_ > scroll_max_) scroll_ = scroll_max_;
@@ -690,7 +763,9 @@ void SettingsWindow::LayoutUi() {
                    Dip(r.h, dpi), SWP_NOZORDER);
     // ⚠ 單欄的 report 清單,欄寬**不會**跟著控制項走。不補這一句的話,
     //   建立時那個寬度會一直用下去,而使用者看到的是一個空白的清單。
-    if (id == IDC_SCHEMA_LIST) SyncRowListColumn(c);
+    // ⚠ 兩個單欄清單都要。少一句的話,那個清單的欄寬會停在建立時的值,
+    //   而使用者看到的是一個**空白的清單**(實機回報過一次了)。
+    if (id == IDC_SCHEMA_LIST || id == IDC_NETLOG_LIST) SyncRowListColumn(c);
   };
 
   // 側欄:整條左邊,狀態區留在下面。
@@ -855,7 +930,7 @@ void SettingsWindow::EnsureFocusVisible() {
   const int W = MulDivRound(rc.right - rc.left, 96, static_cast<int>(dpi_));
   const int H = MulDivRound(rc.bottom - rc.top, 96, static_cast<int>(dpi_));
   const int viewport_h = ContentViewportHeightDip(H);
-  const PageLayout pl = LayoutSettingsPageDip(page_, W, order_.empty());
+  const PageLayout pl = LayoutSettingsPageDip(page_, W, PageStateNow());
   for (const PlacedControl& p : pl.items) {
     if (p.id != id || p.rect.empty()) continue;
     if (p.rect.y < scroll_ + space::s3)
@@ -941,8 +1016,7 @@ LRESULT SettingsWindow::DrawSidebar(NMLVCUSTOMDRAW* cd) {
       HGDIOBJ oldf = ::SelectObject(hdc, fonts_.Get(text_size::t3, selected));
       RECT tr = item;
       tr.left += Dip(space::s4, dpi_);
-      const wchar_t* label =
-          (i >= 0 && i < kPageCount) ? UiText(kPageNames[i]) : L"";
+      const wchar_t* label = UiText(SettingsPageName(i));
       ::DrawTextW(hdc, label, -1, &tr,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
                       DT_NOPREFIX);
@@ -1019,6 +1093,198 @@ LRESULT SettingsWindow::DrawSchemaList(NMLVCUSTOMDRAW* cd) {
     default:
       return CDRF_DODEFAULT;
   }
+}
+
+LRESULT SettingsWindow::DrawNetLogList(NMLVCUSTOMDRAW* cd) {
+  switch (cd->nmcd.dwDrawStage) {
+    case CDDS_PREPAINT:
+      return CDRF_NOTIFYITEMDRAW;
+    case CDDS_ITEMPREPAINT: {
+      const size_t i = static_cast<size_t>(cd->nmcd.dwItemSpec);
+      const bool selected = (cd->nmcd.uItemState & CDIS_SELECTED) != 0;
+      const bool hot = (cd->nmcd.uItemState & CDIS_HOT) != 0;
+      const bool focused =
+          show_focus_ && (cd->nmcd.uItemState & CDIS_FOCUS) != 0;
+
+      HDC hdc = cd->nmcd.hdc;
+      // ⚠ 見 ui_listview.h 的 RowRect():report 模式下 nmcd.rc 是
+      //   (0,0,0,0),拿它去畫的結果是一片空白而且沒有任何錯誤。
+      RECT r{};
+      if (!RowRect(net_log_list_, cd, &r)) return CDRF_DODEFAULT;
+      const Role bg = selected ? (hot ? kRowSelectedHover : kPrimaryContainer)
+                               : (hot ? kRowHover : kSurface);
+      ::FillRect(hdc, &r, theme_.Brush(bg));
+
+      if (focused) {
+        HPEN pen = theme_.Pen(kPrimary, Dip(2, dpi_));
+        HGDIOBJ oldp = ::SelectObject(hdc, pen);
+        HGDIOBJ oldb = ::SelectObject(hdc, ::GetStockObject(NULL_BRUSH));
+        ::Rectangle(hdc, r.left, r.top, r.right, r.bottom);
+        ::SelectObject(hdc, oldb);
+        ::SelectObject(hdc, oldp);
+      }
+
+      ::SetBkMode(hdc, TRANSPARENT);
+      ::SetTextColor(hdc, theme_.Color(kOnSurface));
+      // 等寬:四欄靠對齊才讀得出來。
+      HGDIOBJ oldf =
+          ::SelectObject(hdc, fonts_.Get(text_size::t6, false, FontRole::kMono));
+      RECT tr = r;
+      tr.left += Dip(space::s4, dpi_);
+      tr.right -= Dip(space::s4, dpi_);
+      // ⚠ 畫的是與 SetRowListItems 餵進去的**同一份**字串。另外拼一份的話,
+      //   螢幕閱讀器念的與畫面上的會不一樣。
+      const wchar_t* line =
+          i < net_log_lines_.size() ? net_log_lines_[i].c_str() : L"";
+      ::DrawTextW(hdc, line, -1, &tr,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                      DT_NOPREFIX);
+      ::SelectObject(hdc, oldf);
+      return CDRF_SKIPDEFAULT;
+    }
+    default:
+      return CDRF_DODEFAULT;
+  }
+}
+
+// ───────────────────────── 連網那一頁 ─────────────────────────
+
+PageState SettingsWindow::PageStateNow() const {
+  PageState s;
+  s.schema_list_empty = order_.empty();
+  // ⚠ 這一格**一定要**從真的紀錄來(net_log_empty_ 由 RefreshNetworkPage
+  //   從 NetGate::ReadLog() 填)。寫死 false 的話,一次都沒有連過的使用者
+  //   看到的是一個空表格加一顆清除鍵 —— 而「開關從沒開過所以紀錄是空的」
+  //   正是使用者驗證我們的方式,那句話必須在畫面上說得出來。
+  s.net_log_empty = net_log_empty_;
+  return s;
+}
+
+void SettingsWindow::RefreshNetworkPage() {
+  if (!hwnd_) return;
+
+  // ⚠ 開關的真相只有一個來源:NetGate。設定視窗不自己讀 settings_ ——
+  //   兩份真相會漂移,而漂移的樣子是「開關看起來開了,按下去卻說被擋下」。
+  const bool on = net_gate_.Enabled();
+  HWND sw = Ctl(hwnd_, IDC_NET_SWITCH);
+  if (sw) ::SendMessageW(sw, BM_SETCHECK, on ? BST_CHECKED : BST_UNCHECKED, 0);
+  // 開著一句、關著一句。哪一句由純函式決定(common/net_ui.h),
+  // 而「兩種狀態說同一句話」有單元測試擋著。
+  SetText(hwnd_, IDC_NET_STATE, UiText(NetSwitchSummary(on)));
+
+  // ⚠ 讀紀錄**不會**建立檔案(見 settings_store.h):「開關從沒開過 →
+  //   紀錄檔根本不存在」與「檔案存在但是空的」對稽核的人不是同一句話。
+  const NetLogView view =
+      BuildNetLogView(net_gate_.ReadLog(), ui_lang_, LocalTzOffsetMinutes());
+  net_log_empty_ = view.empty;
+  net_log_lines_.clear();
+  for (const NetLogRow& row : view.rows) net_log_lines_.push_back(row.line);
+  if (net_log_list_) SetRowListItems(net_log_list_, net_log_lines_);
+
+  if (view.empty) {
+    // §4.7 的空狀態:為什麼是空的、這是不是正常。
+    std::wstring text = view.summary;
+    text += L"\r\n";
+    text += UiText(UiString::kNetLogEmptyWhy);
+    SetText(hwnd_, IDC_NETLOG_EMPTY, text.c_str());
+  } else {
+    SetText(hwnd_, IDC_NETLOG_SUMMARY, view.summary.c_str());
+  }
+  {
+    std::wstring line = UiText(UiString::kNetLogFileLine);
+    line += Utf8ToWide(net_gate_.log_path());
+    SetText(hwnd_, IDC_NETLOG_PATH, line.c_str());
+  }
+  // 空/不空會換掉整塊版面(清單 ↔ 說明、清除鍵在不在),所以要重排。
+  LayoutUi();
+}
+
+void SettingsWindow::OnNetSwitchToggled() {
+  HWND sw = Ctl(hwnd_, IDC_NET_SWITCH);
+  const bool on =
+      sw && ::SendMessageW(sw, BM_GETCHECK, 0, 0) == BST_CHECKED;
+  // ⚠ **只能**走 NetGate::SetEnabled。這裡不碰 settings_ ——
+  //   出口那一側每一跳都會重問 NetGate,兩邊必須是同一個值。
+  if (!net_gate_.SetEnabled(on)) {
+    // 安靜地失敗會變成「開關關了,重開又是開的」。撥回真正的狀態,
+    // 不要在畫面上留一個假的開關。
+    SetStatus(UiString::kStatusSaveFailed);
+    RefreshNetworkPage();
+    return;
+  }
+  // 這一份設定被別人(出口)改過了,重讀一次免得後面覆寫掉。
+  settings_ = store_->Load();
+  RefreshNetworkPage();
+  SetTransientStatus(NetSwitchStatus(on));
+}
+
+void SettingsWindow::StartUpdateCheck() {
+  // ⚠ 決定權在 common/net_ui.h 的 DecideUpdateAction():開關關著時
+  //   **絕不可以**走到 kStart —— 那一條路後面接的是真的連線。
+  //   這裡不自己寫 if:自己寫的那一版在 Ubuntu 上沒有任何東西看得到,
+  //   而它壞掉的樣子是「開關關著,按下去照樣連出去」。
+  const UpdateAction action =
+      DecideUpdateAction(net_gate_.Enabled(), update_running_);
+  SetStatus(UpdateActionText(action));
+  if (action != UpdateAction::kStart) return;
+
+  update_running_ = true;
+  // §2-D1:停用了控制項,同一頁就要有一句說明 —— 上面那一行正在說。
+  ::EnableWindow(Ctl(hwnd_, IDC_NET_UPDATE), FALSE);
+
+  UpdateJob* job = new UpdateJob{hwnd_, &net_gate_};
+  HANDLE t = ::CreateThread(nullptr, 0, &SettingsWindow::UpdateThreadEntry, job,
+                            0, nullptr);
+  if (!t) {
+    delete job;
+    update_running_ = false;
+    ::EnableWindow(Ctl(hwnd_, IDC_NET_UPDATE), TRUE);
+    SetStatus(UpdateStateText(UpdateCheckState::kFailed));
+    return;
+  }
+  ::CloseHandle(t);
+}
+
+DWORD WINAPI SettingsWindow::UpdateThreadEntry(LPVOID param) {
+  UpdateJob* job = static_cast<UpdateJob*>(param);
+  // ⚠ **這裡是背景執行緒。** RunUpdateCheck 是同步阻塞的,放在 UI 執行緒上
+  //   跑就是「打字打到一半整個沒反應」—— 服務進程的 UI 執行緒同時在跑
+  //   候選窗(見 service/net_gate.h 檔頭)。
+  UpdateCheckOutcome* out =
+      new UpdateCheckOutcome(RunUpdateCheck(job->gate));
+  if (!::PostMessageW(job->hwnd, WM_RIME_UPDATE_DONE, 0,
+                      reinterpret_cast<LPARAM>(out)))
+    delete out;  // 視窗已經沒了。這一份仍然要收掉。
+  delete job;
+  return 0;
+}
+
+void SettingsWindow::OnUpdateCheckDone(const UpdateCheckOutcome* result) {
+  update_running_ = false;
+  ::EnableWindow(Ctl(hwnd_, IDC_NET_UPDATE), TRUE);
+  // ⚠ 五種結果五句話:「開關是關的」「連不上」「已經最新」「有新版本」
+  //   「還沒接上更新來源」。壓成同一句紅字正是這個專案在 Windows 端
+  //   犯過的錯 —— 而那五句話由 UpdateStateText() 對應,有單元測試釘著。
+  SetStatus(
+      UpdateStateText(result ? result->state : UpdateCheckState::kFailed));
+  // 真的連過的話,紀錄裡多了幾筆。使用者按完更新就在這一頁上,
+  // 那幾筆要立刻看得到 —— 那是這一頁的全部意義。
+  RefreshNetworkPage();
+}
+
+void SettingsWindow::DoClearNetLog() {
+  // §2-C3:確認鍵寫出它會做什麼(「清除連網紀錄」),不是「是」。
+  // ⚠ 這一步一定要有確認:清掉之後,使用者拿來稽核我們的那份證據
+  //   就找不回來了。
+  if (!ConfirmDialog(hwnd_, &theme_, script(),
+                     UiText(UiString::kNetLogClearHeading),
+                     UiText(UiString::kNetLogClearBlurb),
+                     UiText(UiString::kNetLogClearButton),
+                     UiText(UiString::kCancel)))
+    return;
+  net_gate_.ClearLog();
+  RefreshNetworkPage();
+  SetTransientStatus(UiString::kNetLogCleared);
 }
 
 void SettingsWindow::DrawDangerButton(DRAWITEMSTRUCT* di) {
@@ -1305,6 +1571,9 @@ void SettingsWindow::ReloadFromSettings() {
                   engine_->deploy_done() ? 1 : 0, engine_->deploy_ok() ? 1 : 0);
     SetText(hwnd_, IDC_DIAG, Utf8ToWide(buf).c_str());
   }
+  // ⚠ 連網那一頁**每次打開設定都要重讀**:開關可能被別的地方改過,
+  //   而紀錄在使用者上一次看之後又長了幾筆。
+  RefreshNetworkPage();
   SetStatus(std::wstring());
 }
 
@@ -1616,6 +1885,10 @@ void SettingsWindow::OnNotify(NMHDR* nm, LRESULT* result) {
     *result = DrawSchemaList(reinterpret_cast<NMLVCUSTOMDRAW*>(nm));
     return;
   }
+  if (nm->idFrom == IDC_NETLOG_LIST && nm->code == NM_CUSTOMDRAW) {
+    *result = DrawNetLogList(reinterpret_cast<NMLVCUSTOMDRAW*>(nm));
+    return;
+  }
 }
 
 void SettingsWindow::OnCommand(int id, int code) {
@@ -1746,6 +2019,15 @@ void SettingsWindow::OnCommand(int id, int code) {
     }
     case IDC_BAR_SHOW:
       ApplyStatusBarVisibility();
+      return;
+    case IDC_NET_SWITCH:
+      OnNetSwitchToggled();
+      return;
+    case IDC_NET_UPDATE:
+      StartUpdateCheck();
+      return;
+    case IDC_NETLOG_CLEAR:
+      DoClearNetLog();
       return;
     case IDC_REDEPLOY:
       StartRedeploy(UiString::kRedeployButton);

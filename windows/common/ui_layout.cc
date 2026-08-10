@@ -51,6 +51,22 @@ RectI SidebarListDip(int window_h_dip) {
 
 int TextLineBoxDip(int size_dip) { return size_dip * 4 / 3 + 2; }
 
+UiString SettingsPageName(int page) {
+  switch (page) {
+    case kPageAppearance:
+      return UiString::kNavAppearance;
+    case kPageText:
+      return UiString::kNavText;
+    case kPageNetwork:
+      return UiString::kNavNetwork;
+    case kPageAdvanced:
+      return UiString::kNavAdvanced;
+    case kPageSchemas:
+    default:
+      return UiString::kNavSchemas;
+  }
+}
+
 RectI SidebarStatusLineDip(int window_h_dip, int line) {
   const RectI strip = SidebarStatusDip(window_h_dip);
   RectI r;
@@ -97,7 +113,7 @@ RectI Stack::PushDivider() {
 // ────────────────────────────────────────────────────────────────
 
 PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
-                                 bool schema_list_empty) {
+                                 PageState state) {
   PageLayout out;
   const int cx = ContentXDip(window_w_dip);
   const int cw = ContentWidthDip(window_w_dip);
@@ -147,7 +163,7 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
       title_block(IDC_SCHEMAS_TITLE, IDC_SCHEMAS_SUB);
       heading(IDC_SCHEMAS_LIST_HEAD, IDC_SCHEMAS_LIST_BLURB, 2);
       const int list_h = 4 * metric::kSidebarItemH + space::s3;
-      if (schema_list_empty) {
+      if (state.schema_list_empty) {
         hide(IDC_SCHEMA_LIST);
         hide(IDC_UP);
         hide(IDC_DOWN);
@@ -199,6 +215,56 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
       radios({IDC_PUNCT_0, IDC_PUNCT_1, IDC_PUNCT_2}, "punct_radio");
       break;
     }
+    case kPageNetwork: {
+      title_block(IDC_NET_TITLE, IDC_NET_SUB);
+      // ⚠ 開關**沒有**自己的區段標題。頁標題已經是「連網」,再寫一次
+      //   只是把同一個詞說三遍 —— 而 §4.1 要的是「開關在右、標題說明
+      //   在左」,那個標題就是開關自己的文字。
+      emit(IDC_NET_SWITCH, st.Push(metric::kSidebarItemH, space::s1), true,
+           "network_switch");
+      // 開著/關著各一句,由 common/net_ui.h 的 NetSwitchSummary() 決定
+      // 哪一句 —— 那是純函式,而「兩種狀態說同一句話」有單元測試擋著。
+      emit(IDC_NET_STATE, st.Push(t5h * 3, space::s3), false, "network_state");
+      // 誠實的代價(DNS/SNI 是明文)。⚠ 這一段**開著關著都在**:
+      // 只在開著時才出現的話,使用者是在按下開關**之後**才讀到代價,
+      // 而那等於沒說。
+      emit(IDC_NET_DETAIL, st.Push(t5h * 5, space::s7), false,
+           "network_cost_note");
+
+      heading(IDC_NET_UPDATE_HEAD, IDC_NET_UPDATE_BLURB, 3);
+      button(IDC_NET_UPDATE, 180, space::s7, "check_update_button");
+
+      heading(IDC_NETLOG_HEAD, IDC_NETLOG_BLURB, 4);
+      if (state.net_log_empty) {
+        hide(IDC_NETLOG_SUMMARY);
+        hide(IDC_NETLOG_COLS);
+        hide(IDC_NETLOG_LIST);
+        // §4.7 的空狀態:為什麼是空的、這是不是正常。
+        emit(IDC_NETLOG_EMPTY, st.Push(t5h * 4, space::s3), false,
+             "empty_state");
+        emit(IDC_NETLOG_PATH, st.Push(t5h * 2, 0), false, "log_file_path");
+        // ⚠ 沒有東西可以清的時候**不給**清除鍵。一顆按下去什麼都不會
+        //   發生的危險鍵,比沒有那顆鍵更難理解。
+        hide(IDC_NETLOG_CLEAR_HEAD);
+        hide(IDC_NETLOG_CLEAR_BLURB);
+        hide(IDC_NETLOG_CLEAR);
+      } else {
+        hide(IDC_NETLOG_EMPTY);
+        emit(IDC_NETLOG_SUMMARY, st.Push(t5h, space::s3), false, "log_count");
+        emit(IDC_NETLOG_COLS, st.Push(t5h, space::s2), false, "log_columns");
+        emit(IDC_NETLOG_LIST,
+             st.Push(6 * metric::kSidebarItemH + space::s3, space::s3), true,
+             "net_log_list");
+        emit(IDC_NETLOG_PATH, st.Push(t5h * 2, 0), false, "log_file_path");
+        // ⚠ 危險操作一律是該頁最後一個區塊,上面隔一條 hairline + s7
+        //   (§4.9 / §2-C2)。清除紀錄是破壞性的:清掉之後,使用者拿來
+        //   稽核我們的那份證據就找不回來了。
+        st.PushDivider();
+        heading(IDC_NETLOG_CLEAR_HEAD, IDC_NETLOG_CLEAR_BLURB, 2);
+        button(IDC_NETLOG_CLEAR, 220, 0, "clear_log_button");
+      }
+      break;
+    }
     case kPageAdvanced: {
       title_block(IDC_ADV_TITLE, IDC_ADV_SUB);
       heading(IDC_REDEPLOY_HEAD, IDC_REDEPLOY_BLURB, 2);
@@ -239,9 +305,8 @@ int ContentViewportHeightDip(int window_h_dip) {
 }
 
 int ScrollMaxDip(int page, int window_w_dip, int window_h_dip,
-                 bool schema_list_empty) {
-  const PageLayout pl =
-      LayoutSettingsPageDip(page, window_w_dip, schema_list_empty);
+                 PageState state) {
+  const PageLayout pl = LayoutSettingsPageDip(page, window_w_dip, state);
   return std::max(0, pl.content_h_dip - ContentViewportHeightDip(window_h_dip));
 }
 
@@ -261,7 +326,7 @@ ScrolledPlacement ScrollPlaceControlDip(const RectI& content_rect,
 }
 
 std::vector<HitTarget> ClickableTargetsDip(int window_w_dip, int window_h_dip,
-                                           int page, bool schema_list_empty) {
+                                           int page, PageState state) {
   std::vector<HitTarget> out;
   // 側欄的每一頁(不捲動)。
   for (int i = 0; i < kPageCount; ++i)
@@ -275,8 +340,7 @@ std::vector<HitTarget> ClickableTargetsDip(int window_w_dip, int window_h_dip,
                                 metric::kMinTarget},
                           IDC_CLOSE, false});
 
-  const PageLayout pl =
-      LayoutSettingsPageDip(page, window_w_dip, schema_list_empty);
+  const PageLayout pl = LayoutSettingsPageDip(page, window_w_dip, state);
   for (const PlacedControl& p : pl.items) {
     if (!p.clickable || p.rect.empty()) continue;
     out.push_back(HitTarget{p.what, p.rect, p.id, true});
