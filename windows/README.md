@@ -82,7 +82,15 @@
 也只有在「清單非空」那條版面分支上才會被擺 —— 也就是說**資料在、版面在,
 而畫面上一列都沒有**。
 
-**重現到了,在 windows-latest 上**(`tests/test_win32_listview.cc`,CI run #137):
+**重現到了,在 windows-latest 上**(`tests/test_win32_listview.cc`,CI run #137)。
+同一支測試把兩條路的像素數並排印出來,那一行就是整條缺陷的縮影:
+
+```
+對照:rc 直用 black=0(itemprepaint=3) / RowRect black=30
+```
+
+`itemprepaint=3` 代表三列的自繪**都被呼叫了**,而畫出來的黑色像素是 **0** ——
+「每一層都成功、畫面上什麼都沒有」。逐列的座標:
 
 ```
 [sidebar-like]  itemprepaint=3  items=3  colw=200  client=(0,0,200,100)
