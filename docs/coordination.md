@@ -28,6 +28,20 @@ cd /home/lc/rime-<你的端>
 
 之後**只在自己的 worktree 裡工作**。`/home/lc/rime` 是協調端的,不要動。
 
+⚠ **要建 Android 的話,`core/data/` 底下**兩個**目錄都要 symlink,不只 `shared`:**
+
+```bash
+cp /home/lc/rime/android/local.properties /home/lc/rime-<端>/android/
+ln -sfn /home/lc/rime/core/data/shared /home/lc/rime-<端>/core/data/shared
+ln -sfn /home/lc/rime/core/data/user   /home/lc/rime-<端>/core/data/user
+```
+
+`core/data/` 整個在 `.gitignore` 裡(`collect_data.sh` 的產物),而 Gradle 的
+`syncRimeData` 兩個都吃。只 link 了 `shared` 的話,APK 裡會**少掉**
+`rime/user/default.custom.yaml` —— 而那份 patch 正是把 `t9_pinyin` 加進
+`schema_list` 的地方。症狀不是建置失敗,是「方案清單裡沒有九宮格、鍵盤退回
+qwerty、`verify_syllables.sh` 三份佈局全紅」。詳見 §5 的 2026-08-10 fix3-cand 條目。
+
 推送到 GitHub 用自己的分支:
 
 ```bash
