@@ -1,0 +1,24 @@
+name: 覆核 rev4-macmod(守門有沒有牙齒)
+
+# 這個 workflow **只在覆核分支上存在**,不打算併進 main。
+# 它問的是一件事:換八刀實作者沒有登記過的拆法,守門還說不說得出話。
+#
+# 刻意不跑 librime / 不建 .app —— 那四分鐘與這個問題無關。
+
+on:
+  push:
+    branches: [rev4-macmod]
+  workflow_dispatch:
+
+jobs:
+  cuts:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 工具鏈
+        run: swift --version
+
+      - name: 覆核者的八刀
+        run: ./apple/scripts/rev4_review_cuts.sh
