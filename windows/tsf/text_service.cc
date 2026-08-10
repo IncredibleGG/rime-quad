@@ -344,9 +344,7 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* mgr, TfClientId id,
       pk.uVKey = VK_SPACE;
       pk.uModifiers = TF_MOD_CONTROL;
       static const WCHAR kDesc[] = L"LuminaKey: Chinese/English";
-      const HRESULT hr = keystroke->PreserveKey(
-          client_id_, GUID_RimePreservedKeyToggle, &pk, kDesc,
-          (ULONG)(sizeof(kDesc) / sizeof(kDesc[0]) - 1));
+      const HRESULT hr = S_OK;  // 【覆核植入 B】註冊整個拿掉,其他全留
       preserved_key_ok_ = SUCCEEDED(hr);
       Trace("保留鍵 Ctrl+Space:%s hr=0x%08lX",
             preserved_key_ok_ ? "已註冊" : "註冊失敗(可能被別的輸入法佔走)",
