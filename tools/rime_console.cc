@@ -176,6 +176,40 @@ int main(int argc, char** argv) {
     }
   }
 
+  // ── 由環境變數指定要開/關哪些方案選項 ────────────────────────────────
+  //
+  // ⚠ 為什麼需要它:簡繁、全半形這一類東西是**方案的開關**,而「設定頁寫著
+  //   簡體、候選卻全是繁體」這種回報,隔著 app 的 UI 是分不出
+  //   「開關沒送到引擎」還是「送到了但方案不吃」的。這裡直接對 librime 送,
+  //   一次就能定案。
+  //
+  //   用法:RIME_SET_OPTIONS="zh_hans=1,ascii_punct=0" rime_console …
+  //   每一個都會印出設定前後的實際值 —— 送進去不等於生效,方案沒有那個
+  //   開關的話 rs_get_option 事後仍然是 false,而那正是要看的東西。
+  if (const char* opts = std::getenv("RIME_SET_OPTIONS")) {
+    std::printf("\n--- 套用方案選項 ---\n");
+    std::string spec(opts);
+    size_t pos = 0;
+    while (pos <= spec.size()) {
+      size_t comma = spec.find(',', pos);
+      std::string one = spec.substr(pos, comma == std::string::npos
+                                             ? std::string::npos
+                                             : comma - pos);
+      pos = (comma == std::string::npos) ? spec.size() + 1 : comma + 1;
+      size_t eq = one.find('=');
+      if (eq == std::string::npos || eq == 0) continue;
+      std::string name = one.substr(0, eq);
+      bool want = one.substr(eq + 1) != "0";
+      bool before = rs_get_option(sess, name.c_str());
+      bool ok = rs_set_option(sess, name.c_str(), want);
+      bool after = rs_get_option(sess, name.c_str());
+      std::printf("  %s: %d -> 想要 %d,rs_set_option=%s,實際 %d%s\n",
+                  name.c_str(), before ? 1 : 0, want ? 1 : 0,
+                  ok ? "true" : "false", after ? 1 : 0,
+                  (after == want) ? "" : "   ← 沒有生效");
+    }
+  }
+
   // 有些方案預設就停在英文（ASCII）模式 —— 鍵道·我流 的 ascii_mode 初值是 1。
   // 這種方案在真實使用上，使用者第一件事就是按中英切換；但自動化測試沒有那顆鍵，
   // 於是每個按鍵都「未被消費」，看起來像方案壞掉。這裡等同於幫它按一下。
