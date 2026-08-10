@@ -485,6 +485,25 @@ for LAYOUT in "${T9_LAYOUTS[@]}"; do
     fi
     info "情境已植入:$SCHEMA.custom.yaml → alphabet 'ADGJMPTW'"
   fi
+  # 收掉植入的方案。呼叫兩次也沒關係(rm -f);沒有植入時是 no-op。
+  unplant_stale_schema() {
+    [ "$SCENARIO" = "stale-schema" ] || return 0
+    adbs shell "run-as $IME_PKG rm -f files/rime/user/$SCHEMA.custom.yaml" >/dev/null 2>&1
+    # ⚠ 確認用 `test -f`,**不可以 grep `ls` 的輸出**:檔案不存在時 ls 印的是
+    #   `ls: files/rime/user/t9_pinyin.custom.yaml: No such file or directory`
+    #   —— 那句話裡就有那個檔名,於是「刪掉了」被判成「還在」。
+    #   第一版就是這樣寫的,實測把一次**乾淨的**清理報成失敗。
+    local left
+    left="$(adbs shell \
+      "run-as $IME_PKG sh -c 'test -f files/rime/user/$SCHEMA.custom.yaml && echo YES || echo NO'" \
+      2>/dev/null | tr -d '\r' | tail -1)"
+    if [ "$left" != "NO" ]; then
+      fail "$LAYOUT:情境植入的 $SCHEMA.custom.yaml 刪不掉(test -f 回「$left」)——"
+      fail "  它會變成下一支腳本的地雷:共用模擬器上,下一支會對著一個單編碼方案跑。"
+      return 1
+    fi
+    info "情境植入的 $SCHEMA.custom.yaml 已移除"
+  }
 
   SRC_LAYOUT="$ROOT/core/layouts/$LAYOUT.yaml"
   adbs shell "run-as $IME_PKG mkdir -p files/rime/user/layouts" >/dev/null 2>&1
@@ -1004,6 +1023,12 @@ PY
       continue
     fi
     pass "$LAYOUT:正向對照 —— 候選列上讀得到 ni(\"$TC\"),app 確實在組字"
+    # ⚠ **植入的方案一定要收掉,而且要在斷言之前收。** emulator 是四條線共用的,
+    #   而 `pm clear` 只有這一支自己會下 —— 留在那裡的 `t9_pinyin.custom.yaml`
+    #   會讓下一支守門腳本(verify_candbar.sh …)對著一個**單編碼方案**跑,
+    #   而它完全不知道。那不是它的 bug,是我們留下的地雷。
+    #   放在斷言之前,是因為斷言可能 `continue` 掉。
+    unplant_stale_schema
     if echo "$T1" | grep -qwE 'ni|mi'; then
       fail "$LAYOUT:方案改寫不了精確拼音,消歧欄卻還是畫出來了(OCR:「$T1」)。"
       fail "  那是一排按下去只會讓引擎收到垃圾的鍵 —— 真機回報過「我選擇 ni 他就直接給我輸入了」。"
@@ -1131,6 +1156,11 @@ PY
   fi
 done
 
+# 收尾的保險:上面每一條 `continue` 都可能跳過迴圈裡那一次移除。
+# 留一份單編碼方案在共用模擬器上,下一支腳本會對著它跑而且不知道。
+if [ "$SCENARIO" = "stale-schema" ] && [ -x "$ADB" ]; then
+  adbs shell "run-as $IME_PKG rm -f files/rime/user/$SCHEMA.custom.yaml" >/dev/null 2>&1 || true
+fi
 if [ -n "$SCENARIO" ]; then
   finish "情境 $SCENARIO:方案改寫不了的時候,消歧欄整條沒有出現(斷言的是畫面像素)"
 else
