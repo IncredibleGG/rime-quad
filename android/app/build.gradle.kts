@@ -1,4 +1,5 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.security.MessageDigest
 import java.util.Properties
 
 plugins {
@@ -63,6 +64,60 @@ val syncRimeData = tasks.register<Sync>("syncRimeData") {
         if (!rimeLayouts.asFile.isDirectory || !rimeThemes.asFile.isDirectory) {
             logger.warn("[rime] 找不到 core/layouts 或 core/themes，鍵盤將畫不出來。")
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// shared 資料的內容摘要
+//
+// 執行期靠它判斷「裝置上那份 shared 還是不是這一版 APK 的那一份」
+// （見 RimeRuntime.ASSET_SHARED_DIGEST）。從前那裡是一個手寫的
+// `ASSET_REVISION = 3`，於是**改**方案內容而沒改那個常數時，升級上來的裝置
+// 一個檔案都不重解 —— 真機回報「選了 ni 卻上屏 ni好」就是這麼來的，
+// 而全新安裝的機器（CI、模擬器）永遠重現不出來。
+//
+// ⚠ 刻意**不做** up-to-date 檢查（`upToDateWhen { false }`）：這支任務存在的
+// 唯一理由就是「摘要不可以過期」，讓 Gradle 幫它跳過等於把同一個坑再挖一次。
+// 代價是每次建置多雜湊一次 13MB，量到約 40ms。
+// ─────────────────────────────────────────────────────────────────────────────
+val rimeAssetStamp = layout.buildDirectory.dir("generated/rimeAssetStamp")
+
+val stampRimeData = tasks.register("stampRimeData") {
+    description = "把 core/data/shared 的內容摘要寫進 assets"
+    val src = rimeSharedData
+    val outDir = rimeAssetStamp
+    outputs.dir(outDir)
+    outputs.upToDateWhen { false }
+    doLast {
+        val root = src.asFile
+        val md = MessageDigest.getInstance("SHA-256")
+        if (root.isDirectory) {
+            root.walkTopDown()
+                .filter { it.isFile }
+                .map { it.toRelativeString(root).replace(File.separatorChar, '/') to it }
+                // 排序是必要的:目錄走訪順序不保證，沒排的話同一份資料在兩台
+                // 機器上會算出兩個摘要，於是每次換機器建置都強迫使用者重解一次。
+                .sortedBy { it.first }
+                .forEach { (rel, f) ->
+                    md.update(rel.toByteArray(Charsets.UTF_8))
+                    md.update(0)
+                    f.inputStream().use { ins ->
+                        val buf = ByteArray(1 shl 16)
+                        while (true) {
+                            val n = ins.read(buf)
+                            if (n <= 0) break
+                            md.update(buf, 0, n)
+                        }
+                    }
+                }
+        } else {
+            logger.warn("[rime] 找不到 ${root}，shared 摘要會是空目錄的摘要。")
+        }
+        val hex = md.digest().joinToString("") { "%02x".format(it) }
+        val out = outDir.get().file("rime/shared.digest").asFile
+        out.parentFile.mkdirs()
+        out.writeText(hex)
+        logger.lifecycle("[rime] shared 摘要 $hex")
     }
 }
 
@@ -301,12 +356,15 @@ android {
     }
 
     sourceSets.getByName("main").assets.srcDir(rimeGeneratedAssets)
+    // 摘要走**另一個** srcDir，不寫進 syncRimeData 的目的地:Sync 會刪掉
+    // 目的地裡不屬於它的檔案，摘要放進去每次建置都會被刪掉再寫回來。
+    sourceSets.getByName("main").assets.srcDir(rimeAssetStamp)
 }
 
 // assets 合併之前必須先同步完資料。
 tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }
-    .configureEach { dependsOn(syncRimeData) }
-tasks.named("preBuild") { dependsOn(syncRimeData) }
+    .configureEach { dependsOn(syncRimeData, stampRimeData) }
+tasks.named("preBuild") { dependsOn(syncRimeData, stampRimeData) }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 單元測試也吃 core/layouts 與 core/themes

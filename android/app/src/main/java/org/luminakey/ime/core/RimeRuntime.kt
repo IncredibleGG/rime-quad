@@ -54,24 +54,42 @@ object RimeRuntime {
     private const val APP_NAME = "rime.android"
 
     /**
-     * assets 內容有變時遞增，強制重新解壓 shared。
-     * 1 → 只有佔位檔
-     * 2 → 併入 core/data/shared（54 檔）與 core/data/user 初始內容
-     * 3 → 加入自撰的 t9_pinyin（九宮格）方案檔
+     * 隨附 shared 資料的**內容摘要**（SHA-256），由 `app/build.gradle.kts` 的
+     * `stampRimeData` 在建置時算出來寫進 assets。
      *
-     * ⚠ **加東西進 core/data/shared 就必須遞增這個數字。** 這不是慣例問題，
-     * 是使用者拿不拿得到新方案的問題：舊裝置的 `.revision` 檔若還等於同一個
-     * 數字，整個 shared 目錄就會被判定「已是最新」而完全不解壓，新方案檔
-     * 永遠不會落地。
+     * ── 為什麼不是一個手動遞增的版本號 ──────────────────────────────────
+     * 這裡原本是 `ASSET_REVISION = 3`，配一段警語：「加東西進 core/data/shared
+     * 就必須遞增這個數字」。那段警語本身就是這個機制的墓誌銘 —— 它要求每一個
+     * 改資料的人**記得**改另一個檔案裡的一個常數，而漏掉的樣子是「什麼都沒發生」。
      *
-     * 九宮格加進來時漏了這一步，實測後果是升級的使用者 shared 目錄裡沒有
-     * `t9_pinyin.schema.yaml`，於是 [BuiltinMigration] 把它加進 schema_list
-     * 之後 librime 部署直接失敗（回滾機制救了回來，但九宮格還是沒有）。
+     * 實際發生的事（真機回報 A-3 的根因）：九宮格方案從單編碼改成**雙編碼**
+     * （`alphabet` 補上小寫拼音，`362054d`）時沒有動這個數字 —— 警語只說了
+     * 「加東西」，沒說「改東西」。於是所有升級上來的裝置 `.revision` 仍然是 `3`，
+     * 整個 shared **一個檔案都不解**，裝置上留著舊的單編碼 `t9_pinyin`。
+     * 症狀不是「九宮格不見了」，而是：消歧欄點下 `ni` 之後，引擎把 `ni` 當成
+     * 一段翻不出東西的原文，使用者上屏拿到 **「ni好」**。
+     * 全新安裝的機器（含 CI 與模擬器）永遠重現不出來。
+     *
+     * 摘要不會漏。改了任何一個位元組，數字就不一樣，裝置就重解一次。
+     *
+     * ⚠ 舊裝置存的是字串 `"3"`，與任何摘要都不相等 → 升級上來時會重解一次，
+     * 這正是要的效果。摘要取不到（asset 缺了）時 [prepareDataDirs] 一律當成
+     * 過期：每次啟動多花幾百毫秒，但不會讓使用者卡在舊資料上。
      */
-    private const val ASSET_REVISION = 3
+    private const val ASSET_SHARED_DIGEST = "rime/shared.digest"
 
     private const val ASSET_SHARED = "rime/shared"
     private const val ASSET_USER = "rime/user"
+
+    /** 讀不到就回空字串 —— 呼叫端據此判定「不確定，重解一次」。 */
+    private fun shippedSharedDigest(context: Context): String = runCatching {
+        context.assets.open(ASSET_SHARED_DIGEST).use {
+            it.readBytes().toString(Charsets.UTF_8).trim()
+        }
+    }.getOrElse {
+        Log.w(TAG, "讀不到 $ASSET_SHARED_DIGEST，shared 會在每次啟動時重解", it)
+        ""
+    }
 
     enum class Phase {
         /** 還沒開始。 */
@@ -440,13 +458,17 @@ object RimeRuntime {
             }
         }
 
+        // 裝置上的 shared 與這一版 APK 裡的 shared 是不是同一份 —— 比的是
+        // **內容摘要**，不是人手維護的版本號。理由見 [ASSET_SHARED_DIGEST]。
+        val want = shippedSharedDigest(context)
         val stamp = File(sharedDataDir, ".revision")
-        val upToDate = stamp.exists() && stamp.readText().trim() == ASSET_REVISION.toString()
+        val have = if (stamp.exists()) stamp.readText().trim() else ""
+        val upToDate = want.isNotEmpty() && have == want
 
         if (!upToDate) {
             copyAssetTree(context, ASSET_SHARED, sharedDataDir, overwrite = true)
-            stamp.writeText(ASSET_REVISION.toString())
-            Log.i(TAG, "shared 已解到 ${sharedDataDir.absolutePath}")
+            stamp.writeText(want)
+            Log.i(TAG, "shared 已解到 ${sharedDataDir.absolutePath}（摘要 $have → $want）")
         }
 
         // user 目錄：只補不覆蓋。使用者改過 default.custom.yaml 之後，
