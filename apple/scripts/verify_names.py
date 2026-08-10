@@ -121,9 +121,14 @@ SELF_TEST = [
      "build_app.sh 建的是 Resources/UserTemplate"),
     ("範本的複製目的地被改掉(目錄建了,東西沒進去)",
      "apple/scripts/build_app.sh",
-     '-exec cp {} "${APP}/Contents/Resources/UserTemplate/"',
-     '-exec cp {} "${APP}/Contents/Resources/UserTemplateX/"',
+     'cp "${ROOT}/core/data/user/${f}" "${APP}/Contents/Resources/UserTemplate/${f}"',
+     'cp "${ROOT}/core/data/user/${f}" "${APP}/Contents/Resources/UserTemplateX/${f}"',
      "build_app.sh 複製的目的地也是 Resources/UserTemplate"),
+    ("範本又改回「掃一遍那個目錄」(會把 installation.yaml 與測試詞一起打包)",
+     "apple/scripts/build_app.sh",
+     'TEMPLATE_FILES=( "default.custom.yaml" )',
+     'TEMPLATE_FILES=( )',
+     "build_app.sh 用白名單挑範本檔"),
     ("補範本那一步被拿掉(全新安裝的方案清單會是錯的)",
      "apple/LuminaKey/AppSources/AppContext.swift",
      "UserDataSeed.run(templateDir: userTemplateDir, userDir: userDataDir)",
@@ -456,6 +461,7 @@ for pat, why in [
     (r"^\s*run: \./apple/scripts/run_kit_tests\.sh\s*$", "單元測試 + 變異測試"),
     (r"^\s*run: \./apple/scripts/build_macos\.sh\s*$", "編原生層"),
     (r"^\s*run: \./apple/scripts/verify_data\.sh\s*$", "執行期資料"),
+    (r"^\s*run: \./apple/scripts/verify_schema_seed\.sh\s*$", "範本缺席的兩臂對照"),
     (r"\./apple/scripts/verify_console\.sh --expect-fail", "核心層斷言的反向測試"),
     (r"\./apple/scripts/verify_console\.sh nihao", "核心層:拼音"),
     (r"\./apple/scripts/verify_console\.sh su3cl3", "核心層:注音"),
@@ -503,8 +509,11 @@ if m:
     #   (這一條是被本檔自己的 --self-test 抓出來的:第一版就是只 grep 名字。)
     check('mkdir -p "${APP}/Contents/Resources/%s"' % tname in ba,
           "build_app.sh 建的是 Resources/%s" % tname)
-    check('-exec cp {} "${APP}/Contents/Resources/%s/"' % tname in ba,
+    check('cp "${ROOT}/core/data/user/${f}" "${APP}/Contents/Resources/%s/${f}"' % tname in ba,
           "build_app.sh 複製的目的地也是 Resources/%s" % tname)
+    # 白名單,不是掃目錄 —— core/data/user 在 CI 上同時是 librime 的使用者目錄。
+    check('TEMPLATE_FILES=( "default.custom.yaml" )' in ba,
+          "build_app.sh 用白名單挑範本檔(不掃整個 core/data/user)")
     check("Contents/Resources/%s/default.custom.yaml" % tname in vab,
           "verify_app_bundle.sh 檢查 Resources/%s/default.custom.yaml" % tname)
     ac = read("apple/LuminaKey/AppSources/AppContext.swift")

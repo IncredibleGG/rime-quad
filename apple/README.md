@@ -132,6 +132,16 @@ librime 的靜態庫沒有指定部署目標,實際最低系統版本可能高�
 - ⭐ **使用者初始配置的範本真的在 bundle 裡,而且列的方案都打包了。**
   少了它,librime 會照上游 `default.yaml` 部署,而那份清單沒有我們實際打包的
   臺灣字形方案、卻有兩個我們沒打包的 —— 本輪 M-3 的真身。
+  範本也在 `.pkg` **裝完之後**被斷言一次(使用者拿到的是那一份,不是 build 目錄裡那一份)。
+- ⭐ **那個缺陷本身被重現成一個可重跑的事實**(`verify_schema_seed.sh`):
+  同一支 `rime_console`、同一份 shared 資料,只差使用者目錄 ——
+  有範本的那一臂列得出 `luna_pinyin_tw`,空目錄那一臂列不出來。
+  ⚠ 它同時擋住空洞的通過:空目錄那一臂**必須列出至少一個方案**,
+  否則判定為「這一關自己壞了」而不是「沒有違規」。
+- ⭐ **候選真的翻得了頁**:`rime_console` 直接問 librime,
+  `nihao` → page 0、`nihao=` → page 1、`nihao=-` → page 0。
+  「一頁 5 個」是 `core/data/shared/default.yaml` 的 `menu/page_size`(印出來當紀錄,
+  不斷言數字 —— 那是 `core/data/` 的決定)。
 - 二進位真的連上 InputMethodKit,且 librime 是**靜態**連結
 - `LuminaKey --self-check`:向真的 librime 問 keysym 表裡每一個名稱
 - **`.pkg` 真的裝到 `~/Library/Input Methods`**,圖示解得開,三種語言的
