@@ -471,6 +471,17 @@ Snapshot Engine::TakeSnapshot(uint64_t id) {
   return TakeSnapshotLocked(sess);
 }
 
+Result Engine::ToggleAsciiMode(uint64_t id) {
+  const bool now = ascii_mode_.load();
+  SetAsciiModeAll(!now);
+  Result r;
+  r.handled = true;
+  // ⚠ 在 SetAsciiModeAll **之後**取。兩者都排在引擎執行緒的同一條佇列上,
+  //   所以這裡拿到的一定是切換後的狀態。
+  r.snap = TakeSnapshot(id);
+  return r;
+}
+
 Result Engine::ProcessKey(uint64_t id, int32_t keysym, uint32_t mods) {
   Result r;
   Post("按鍵", [&] {

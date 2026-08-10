@@ -113,7 +113,14 @@ add_library(rime_common STATIC
   #   同一句紅字「輸入法沒有在跑」——而第一種那句話是假的。
   #   判斷寫成純函式是刻意的:留在繪製碼裡的話,只有真人在
   #   Windows 上才驗得到,也就是實際上沒有人驗。
-  common/service_state.cc)
+  common/service_state.cc
+  # ⚠ 那一橫每一格畫什麼。以前寫在 service/status_bar.cc 的繪製碼裡,
+  #   而那個檔案在 Ubuntu 上編不起來 —— 「第一格畫了兩個字面」這種
+  #   只有人看得出來的缺陷,沒有任何自動化碰得到。
+  common/status_cells.cc
+  # ⚠ Ctrl+空白鍵。判斷只有這一份:瘦 DLL 與服務各要問一次,
+  #   兩邊各寫一份就是兩份真相。走 PreserveKey,**不動 key_eat_policy**。
+  common/hotkey_policy.cc)
 target_include_directories(rime_common PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/common"
   "${RIME_ROOT}/core/include")
@@ -149,6 +156,8 @@ add_executable(rime_tests
   tests/test_statusbar_place.cc
   tests/test_ui_strings.cc
   tests/test_service_state.cc
+  tests/test_status_cells.cc
+  tests/test_hotkey_policy.cc
   # 這一支用**真的**鍵盤佈局(LoadKeyboardLayout + ToUnicodeEx),
   # 是 CI 上唯一驗得到「有沒有真的問佈局」的地方。
   tests/test_win32_layouts.cc

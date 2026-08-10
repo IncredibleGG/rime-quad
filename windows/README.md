@@ -23,6 +23,111 @@
 
 ---
 
+## 2026-08-10:真機回報的三條
+
+這三條都是使用者拿真 Windows 測出來的,每一條都附了截圖。**三條都先重現、再修。**
+
+### W-1 Ctrl+空白鍵切不了中英文
+
+> 「ctrl+ 空格沒辦法切中英文 這個應該是所有輸入法的基本配置」
+
+他是對的。上一輪才剛把 `ascii_mode` 接上懸浮狀態列的第一格(在那之前 Windows
+端**完全沒有**中英切換),但那是一個要放開鍵盤去點的入口,而中英切換發生在
+句子中間。
+
+做法:TSF 的 `ITfKeystrokeMgr::PreserveKey` + `OnPreservedKey`。
+
+* **不掛 `WH_KEYBOARD_LL`。** 它會看到使用者在每一個程式裡的每一次按鍵,
+  與「離線、經得起審計」的定位直接衝突。PreserveKey 只在我們自己的文字服務
+  被啟用時生效,而且**只有命中的那一顆**會交回來。
+* **不動 `OnTestKeyDown` / `common/key_eat_policy.h`。** 那張真值表是
+  「不要再吃掉 Ctrl+C、退格」的唯一防線。PreserveKey 在 key event sink 之前
+  就把那一顆挑走了,所以那張表一個字都不用改。
+* 判斷抽成 `common/hotkey_policy.{h,cc}` —— 瘦 DLL 與服務各要問一次,
+  兩邊各寫一份就是兩份真相。
+
+驗證分兩半,兩半都是真的:
+
+| 哪一半 | 在哪 | 驗什麼 |
+|---|---|---|
+| 註冊 | `verify_tsf.sh`(真的 ActivateEx 之後) | `IsPreservedKey` 說 Ctrl+空白鍵**在**、Ctrl+C **不在** |
+| 行為 | `verify_ime.sh` → `rime_probe --ascii-toggle`(真的具名管道) | 中文模式吃掉字母、英數模式不吃、**再按一次要切得回來** |
+| 判斷本身 | `rime_tests` 的 `test_hotkey_policy.cc` | 一張逐鍵真值表:26 個 Ctrl+字母、10 個 Ctrl+數字、9 種空白鍵的修飾鍵組合、19 顆功能鍵、94 個可列印字元,**全部必須不命中** |
+
+⚠ **Shift 單擊切中英(微軟拼音的預設)刻意沒做。** 技術上不需要 hook ——
+`TF_PRESERVEDKEY` 的 `uModifiers` 有 `TF_MOD_ON_KEYUP`,配 `VK_SHIFT` 就是
+「Shift 放開時」。沒做的理由是**驗不到**:那顆鍵的正確行為是「Shift 單獨按放
+才算,拿它打大寫字母時不算」,而這裡沒有辦法證明 TSF 是不是這樣分辨的。
+猜錯的後果是使用者每打一個大寫字母就切一次中英 —— 比沒有這個功能糟得多。
+要做就要連同一顆「關掉它」的開關與真機驗證一起做。
+
+### W-2 那一橫的第一格「中 En」兩個都畫出來
+
+> 「中/en 應該是現在是什麼輸入法就顯示什麼什麼輸入法,簡繁 就做得很好」
+
+改成只畫當前那一個,與第二格一致。**這不是違反規範**:`docs/theme-format.md`
+§8.12 本來就有兩個 source,`input_mode`(只畫一個)與 `input_mode_pair`
+(兩個並排),原本選的是後者,現在換成前者。完整的取捨寫在
+`common/status_cells.h` 的檔頭與 `docs/ui-design.md` §12.10.1。
+
+守門:`common/status_cells.{h,cc}` 是純函式,`test_status_cells.cc` 直接斷言
+「第一格裡不會同時出現兩個字面」,而且第一格與第二格的**字面數必須相等**。
+`service/status_bar.h` 的 `Cell` 也把 `text2` / `pair` / `second_active`
+三個欄位拿掉了 —— 要再畫兩段就得先把欄位加回來,那是看得見的改動。
+
+### W-3 設定視窗的「啟用的方式」是一個空白的清單
+
+截圖裡:清單一列都沒有,而下面那句「現在預設是『朙月拼音·臺灣正體』」是滿的,
+上移/下移/套用三顆鈕也排出來了。那句話是拿 `schemas_[0]` 組出來的,三顆鈕
+也只有在「清單非空」那條版面分支上才會被擺 —— 也就是說**資料在、版面在,
+而畫面上一列都沒有**。
+
+**重現到了,在 windows-latest 上**(`tests/test_win32_listview.cc`,CI run #137):
+
+```
+[sidebar-like]  itemprepaint=3  items=3  colw=200  client=(0,0,200,100)
+  row0  custom_draw_rc=(0,0,0,0)   ← report 模式給的矩形是空的
+  row1  custom_draw_rc=(0,0,0,0)
+  row2  custom_draw_rc=(0,0,0,0)
+[schema-like]   itemprepaint=3  items=3  colw=198  client=(0,0,198,98)
+  row0  custom_draw_rc=(0,0,0,0)
+  …
+```
+
+**根因:report 模式的 SysListView32 在 `CDDS_ITEMPREPAINT` 交給 custom draw 的
+`NMCUSTOMDRAW::rc` 是 `(0,0,0,0)`。** 拿它去 `FillRect` + `DrawTextW` 什麼都
+不會畫,而 `CDRF_SKIPDEFAULT` 又把控制項自己的繪製擋掉 —— 於是一整片空白,
+而且每一層都回報成功。側欄與方案清單是同一段複製過去的自繪碼,所以**兩個
+清單都是空的**;使用者截圖裡側欄看得到的那兩行字是父視窗在 `WM_PAINT` 裡畫的,
+不是側欄的項目。
+
+⚠ **為什麼 CI 到現在都沒發現:`windows/` 底下所有 UI 的單元測試都刻意不
+include windows.h。** 那讓版面、色票、狀態列位置在 Ubuntu 上驗得到(W18/W19/W20),
+但也讓「畫得出來嗎」這件事在 CI 上**完全不存在** —— 而這個缺陷裡,每一個
+矩形都算對了。
+
+修法:
+
+* `service/ui_listview.{h,cc}` —— 建立 / 填列 / 欄寬對齊 / `RowRect()` 收成一份,
+  側欄與方案清單共用。`RowRect()` 的順序是「rc 可用就用;不可用就
+  `LVM_GETITEMRECT` 自己問;問到的寬度是 0(單欄清單的欄寬沒跟上)就撐成
+  client 寬」,而且拿不到矩形時**交回控制項自己畫**,不是畫一片空白。
+* `tests/test_win32_listview.cc` —— 開真的 ListView、走真的 comctl32、
+  用 `WM_PRINTCLIENT` 渲染進點陣圖**數黑色像素**。零 = 使用者看到的症狀。
+  它同時把 custom draw 給的 rc 與 `RowRect()` 給的那一份並排印出來。
+* `check_ui_spec.sh` 的 **W28**:`nmcd.rc` 只准出現在 `ui_listview.cc` 與它的
+  測試裡。像素那一條只認得現有那兩個 ListView,W28 擋的是**第三個**。
+
+**順帶修掉同一張截圖裡的另一件事**:側欄底部那兩行被截斷的字。使用者把第一行
+讀成「⼝以打字」—— 那是「可」的上緣被裁掉之後剩下的形狀。根因是算式:側欄清單
+擺在 `y = 12`,高度卻給了 `H - 64`,下緣落在 `H - 52`,而狀態區從 `H - 64`
+開始,**重疊 12 DIP**;清單是子視窗而視窗開著 `WS_CLIPCHILDREN`,父視窗畫在
+那一塊的東西不是被蓋住,是根本不會被畫。位置從 `settings_window.cc` 搬進
+`common/ui_layout.cc`(`SidebarListDip` / `SidebarStatusLineDip` /
+`TextLineBoxDip`),一行的高度也從「字級 + 4」(漢字行高的零餘裕)改成 20。
+
+---
+
 ## 一個根因,兩個症狀
 
 使用者回報的是兩句話:「無論什麼語言都不能打中文」「也沒有任何 UI 界面」。

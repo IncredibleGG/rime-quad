@@ -152,7 +152,14 @@ void EnsureClass() {
 // 把控制項畫進一張點陣圖,回傳「列的區域裡有幾個黑色像素」。
 // ⚠ 用 WM_PRINTCLIENT 而不是螢幕擷取:runner 上沒有人在看畫面,
 //   離螢幕的視窗有沒有有效的內容取決於 DWM,那不是可以依賴的東西。
-long BlackPixels(HWND ctl, int w, int h) {
+long BlackPixels(ListProbe* p, int w, int h) {
+  HWND ctl = p->list;
+  if (!ctl) return -1;
+  // ⚠ 計數器在這裡歸零:下面斷言的 itemprepaint 必須是**這一趟**收到的。
+  //   不歸零的話,「WM_PRINTCLIENT 根本沒有走繪製」會被稍早那次正常
+  //   重畫的數字蓋掉,而 harness 壞掉會偽裝成產品壞掉。
+  p->prepaint = 0;
+  p->itemprepaint = 0;
   HDC screen = ::GetDC(nullptr);
   if (!screen) return -1;
   HDC mem = ::CreateCompatibleDC(screen);
@@ -268,8 +275,8 @@ TEST(win32_listview_custom_draw_actually_paints_rows) {
   CHECK(g_sidebar_like.list != nullptr);
   CHECK(g_schema_like.list != nullptr);
 
-  const long black_side = BlackPixels(g_sidebar_like.list, 200, 100);
-  const long black_schema = BlackPixels(g_schema_like.list, 200, 100);
+  const long black_side = BlackPixels(&g_sidebar_like, 200, 100);
+  const long black_schema = BlackPixels(&g_schema_like, 200, 100);
   Report("sidebar-like", g_sidebar_like, black_side);
   Report("schema-like", g_schema_like, black_schema);
 
@@ -291,26 +298,44 @@ TEST(win32_listview_paints_even_without_a_column_width_refresh) {
   Harness hn = Build(/*schema_like_resets_column=*/false);
   CHECK(hn.parent != nullptr);
   if (!hn.parent) return;
-  const long black = BlackPixels(g_schema_like.list, 200, 100);
+  const long black = BlackPixels(&g_schema_like, 200, 100);
   Report("schema-like(欄寬未重設)", g_schema_like, black);
   CHECK(g_schema_like.itemprepaint >= kRows);
   CHECK(black > 0);
   Destroy(hn);
 }
 
-// ── 反向:直接用 custom draw 給的 rc(= 修正被拿掉)────────────────
+// ── 前 / 後對照:直接用 custom draw 的 rc,對上走 RowRect() ────────
 //
-// ⚠ 這一條**不**斷言 rc 是空的。它斷言的是「RowRect() 給的那一份與
-//   直接用 rc 不是同一件事就要被看見」—— 兩者一致時它照樣綠,
-//   不一致時 CI 的記錄裡有兩組座標可以對。真正的守門是上面那兩條。
-TEST(win32_listview_row_rect_matches_or_repairs_custom_draw_rect) {
+// **2026-08-10 在 windows-latest 上實測**(CI run #137,job logic-x64):
+// report 模式的 ListView 在 `CDDS_ITEMPREPAINT` 給的 `NMCUSTOMDRAW::rc`
+// 是 **(0,0,0,0)** —— 側欄與方案清單兩邊、每一列都一樣。
+// 拿它去 FillRect + DrawTextW 什麼都不會畫,而 `CDRF_SKIPDEFAULT` 又
+// 把控制項自己的繪製擋掉了,所以結果是**一整片空白而且沒有任何錯誤**。
+// 那就是使用者截圖裡的那個空清單。
+//
+// 這一條把兩條路的像素數並排印出來,讓紀錄自己說話;
+// 斷言只有一條:**RowRect() 不管 custom draw 給什麼,都要畫得出東西。**
+TEST(win32_listview_row_rect_is_usable_whatever_custom_draw_hands_over) {
   Harness hn = Build(/*schema_like_resets_column=*/true);
   CHECK(hn.parent != nullptr);
   if (!hn.parent) return;
-  (void)BlackPixels(g_schema_like.list, 200, 100);
-  for (int i = 0; i < kRows; ++i) {
-    // RowRect() 不管 custom draw 給什麼,都必須給出一個非空的矩形。
-    CHECK(!RectEmpty(g_schema_like.used[i]));
-  }
+
+  g_schema_like.use_row_rect = false;
+  const long raw_black = BlackPixels(&g_schema_like, 200, 100);
+  Report("schema-like(直接用 custom draw 的 rc)", g_schema_like, raw_black);
+  const int raw_items = g_schema_like.itemprepaint;
+
+  g_schema_like.use_row_rect = true;
+  const long fixed_black = BlackPixels(&g_schema_like, 200, 100);
+  Report("schema-like(走 RowRect)", g_schema_like, fixed_black);
+
+  std::printf(
+      "    對照:rc 直用 black=%ld(itemprepaint=%d) / RowRect black=%ld\n",
+      raw_black, raw_items, fixed_black);
+
+  CHECK(g_schema_like.itemprepaint >= kRows);
+  for (int i = 0; i < kRows; ++i) CHECK(!RectEmpty(g_schema_like.used[i]));
+  CHECK(fixed_black > 0);
   Destroy(hn);
 }

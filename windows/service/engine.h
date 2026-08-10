@@ -167,6 +167,14 @@ class Engine {
   //   ⚠ 這是**模式**不是偏好,所以刻意**不落地**:重開機回到中文,
   //     與每一家中文輸入法的行為一致。
   void SetAsciiModeAll(bool on);
+
+  // Ctrl+空白鍵走這一條:切掉行程層級的中英模式,並回一份**新的**快照。
+  //
+  // ⚠ 一定要回快照,而且要在切換**之後**才取。懸浮狀態列那一格顯示的是
+  //   快照上的旗標(status_bar.h:「顯示的是引擎說的狀態,不是我們以為
+  //   的」),回一份切換前的快照就是一個說謊的指示器 —— 使用者按了鍵、
+  //   模式真的變了,而畫面上那一格還是舊的。
+  Result ToggleAsciiMode(uint64_t id);
   bool AsciiMode() const { return ascii_mode_.load(); }
   void SelectSchemaAll(const std::string& schema_id);
 

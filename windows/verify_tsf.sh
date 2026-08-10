@@ -211,6 +211,7 @@ echo "  後面的宿主會 activate ${LANGID}"
 # ══════════════════════════════════════════════════════════════════
 log "3. 建 ITfThreadMgr、給文件焦點、啟用我們的設定檔、送按鍵"
 HOST_ARGS=(--langid "${LANGID}" --require-activate
+           --check-preserved-key
            --trace "$(w "${WORK}/trace-after.log")" --wait-ms 4000)
 if [ "${FULL}" -eq 1 ]; then
   # nihao 之後按 1 選第一個候選。與 verify_ime.sh / verify_console.sh
@@ -234,6 +235,27 @@ fi
 # 逐條斷言,不只看結束碼。結束碼只說「有東西不對」,
 # 而我們要的是「哪一格不對」——那才是下一步該往哪查的答案。
 after="$(tr -d '\r' < "${WORK}/host-after.log")"
+
+# ── Ctrl+空白鍵那顆保留鍵 ────────────────────────────────────────
+#
+# 使用者回報「ctrl+ 空格沒辦法切中英文」。這裡問的是**註冊**:
+# PreserveKey 是在 ActivateEx 裡呼叫的,所以只有在真的被系統啟用過的
+# 那一份文字服務上問得到。按下去會怎樣是另一半,在 verify_ime.sh。
+#
+# ⚠ 兩個方向都要:Ctrl+空白鍵**必須**在,Ctrl+C **必須不在** ——
+#   註冊得太寬的話,使用者每一個程式裡的複製都會消失,而他不會知道
+#   是輸入法幹的。兩條斷言都由 rime_tsf_host 自己印,這裡對它的字。
+case "${after}" in
+  *"IsPreservedKey(Ctrl+Space) hr=0x00000000 registered=1"*)
+    ok "Ctrl+空白鍵真的被註冊成保留鍵了(在真的 ActivateEx 之後問到的)" ;;
+  *) note_fail "Ctrl+空白鍵**沒有**註冊成保留鍵 —— 使用者按下去不會有任何事" ;;
+esac
+case "${after}" in
+  *"IsPreservedKey(Ctrl+C)     hr=0x00000000 registered=1"*)
+    note_fail "Ctrl+C 也被註冊成保留鍵了 —— 使用者的複製會消失" ;;
+  *) ok "Ctrl+C 沒有被搶走" ;;
+esac
+
 case "${after}" in
   *"系統把 rime_tsf.dll 載入了這個進程"*)
     ok "DLL 被系統載入了(登錄檔 → COM → LoadLibrary 這一段是好的)" ;;

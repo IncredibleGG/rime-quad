@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <string>
 
+#include "../common/hotkey_policy.h"
 #include "../common/schema_choice.h"
 #include "../winshared/winutil.h"
 #include "rime_shell.h"

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "../common/ime_policy.h"
+#include "../common/hotkey_policy.h"
 #include "../common/key_eat_policy.h"
 #include "../winshared/winutil.h"
 #include "guids.h"
@@ -318,6 +319,42 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* mgr, TfClientId id,
     }
   }
 
+  // ══ 保留鍵:Ctrl+空白鍵切中英 ════════════════════════════════════
+  //
+  // 使用者原話:「ctrl+ 空格沒辦法切中英文 這個應該是所有輸入法的
+  // 基本配置」。做法與**不可以**用的做法,理由都在
+  // common/hotkey_policy.h 的檔頭:
+  //
+  //   · **不掛 WH_KEYBOARD_LL。** 那會看到使用者在每一個程式裡的
+  //     每一次按鍵,與「離線、經得起審計」的定位直接衝突。
+  //   · **不動 OnTestKeyDown / key_eat_policy。** 那張真值表是
+  //     「不要再吃掉別人的鍵」的唯一防線,而 Ctrl+C 曾經真的被吃掉過。
+  //
+  // PreserveKey 只在**我們自己的文字服務被啟用時**生效,而且只有命中的
+  // 那一顆會經由 OnPreservedKey 回來 —— 其餘按鍵我們一個都看不到。
+  //
+  // ⚠ 失敗不是致命的(別的 TIP 可能已經佔走這個組合)。記下來就好:
+  //   使用者仍然點得到那一橫的第一格,而記錄會說明為什麼熱鍵沒反應。
+  {
+    ITfKeystrokeMgr* keystroke = nullptr;
+    if (SUCCEEDED(thread_mgr_->QueryInterface(IID_ITfKeystrokeMgr,
+                                              (void**)&keystroke)) &&
+        keystroke) {
+      TF_PRESERVEDKEY pk{};
+      pk.uVKey = VK_SPACE;
+      pk.uModifiers = TF_MOD_CONTROL;
+      static const WCHAR kDesc[] = L"LuminaKey: Chinese/English";
+      const HRESULT hr = keystroke->PreserveKey(
+          client_id_, GUID_RimePreservedKeyToggle, &pk, kDesc,
+          (ULONG)(sizeof(kDesc) / sizeof(kDesc[0]) - 1));
+      preserved_key_ok_ = SUCCEEDED(hr);
+      Trace("保留鍵 Ctrl+Space:%s hr=0x%08lX",
+            preserved_key_ok_ ? "已註冊" : "註冊失敗(可能被別的輸入法佔走)",
+            (unsigned long)hr);
+      keystroke->Release();
+    }
+  }
+
   // 語言設定檔變更的通知。見 text_service.h 的說明:三份設定檔共用一個
   // CLSID,所以切換語言時**只有**這一則通知會來。
   {
@@ -430,6 +467,16 @@ STDMETHODIMP TextService::Deactivate() {
     if (SUCCEEDED(thread_mgr_->QueryInterface(IID_ITfKeystrokeMgr,
                                               (void**)&keystroke))) {
       keystroke->UnadviseKeyEventSink(client_id_);
+      // ⚠ 保留鍵一定要還回去。不還的話,這個宿主接下來的 Ctrl+空白鍵
+      //   會被一個已經不存在的文字服務攔著 —— 使用者看到的是
+      //   「某個程式裡空白鍵偶爾失靈」,而那查不到我們頭上。
+      if (preserved_key_ok_) {
+        TF_PRESERVEDKEY pk{};
+        pk.uVKey = VK_SPACE;
+        pk.uModifiers = TF_MOD_CONTROL;
+        keystroke->UnpreserveKey(GUID_RimePreservedKeyToggle, &pk);
+        preserved_key_ok_ = false;
+      }
       keystroke->Release();
     }
     if (thread_mgr_cookie_ != TF_INVALID_COOKIE) {
@@ -482,9 +529,36 @@ STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr* focus,
 
 STDMETHODIMP TextService::OnSetFocus(BOOL /*foreground*/) { return S_OK; }
 
-STDMETHODIMP TextService::OnPreservedKey(ITfContext*, REFGUID, BOOL* eaten) {
+STDMETHODIMP TextService::OnPreservedKey(ITfContext* ctx, REFGUID guid,
+                                        BOOL* eaten) {
+  RIME_GUARD_BEGIN
   if (eaten) *eaten = FALSE;
+  (void)ctx;
+  if (!IsEqualGUID(guid, GUID_RimePreservedKeyToggle)) return S_OK;
+
+  // ⚠ 連不上服務就**不要**宣稱吃掉這顆鍵。宿主的 Ctrl+空白鍵可能有
+  //   它自己的用途(有些編輯器是自動完成),吃掉又不做事就是一顆
+  //   壞掉的鍵 —— 這正是 key_eat_policy.h 檔頭那一課。
+  if (!ipc_.EnsureReady()) {
+    Trace("保留鍵 Ctrl+Space:連不上服務,放行給宿主");
+    return S_OK;
+  }
+
+  // 送的是**一顆按鍵**,不是一個新的協議操作:服務端用同一份
+  // common/hotkey_policy.cc 認出它,所以線路格式一個位元都沒有變
+  // (舊的服務配新的 DLL 仍然連得起來,只是那顆鍵會被交給 librime,
+  //  而 librime 不處理 Control+space —— 也就是「沒有作用」,不是壞掉)。
+  Result r;
+  if (!ipc_.SendKey(AsciiToggleKeysym(), AsciiToggleModifiers(), &r)) {
+    Trace("保留鍵 Ctrl+Space:送不出去,放行給宿主");
+    return S_OK;
+  }
+  // 中英切換不會產生上屏文字,也不會動組字 —— 這裡刻意不碰文件。
+  if (eaten) *eaten = r.handled ? TRUE : FALSE;
+  Trace("保留鍵 Ctrl+Space:已切換 handled=%d 英數=%d", r.handled ? 1 : 0,
+        (r.snap.status_flags & kStAsciiMode) ? 1 : 0);
   return S_OK;
+  RIME_GUARD_END_HR
 }
 
 STDMETHODIMP TextService::OnTestKeyDown(ITfContext* ctx, WPARAM w, LPARAM l,

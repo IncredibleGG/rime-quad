@@ -532,6 +532,51 @@ struct SendOutcome {
   bool host_did = false;
 };
 
+// ── Ctrl+空白鍵那顆保留鍵,TSF 到底收下了沒有 ────────────────────
+//
+// 使用者回報「ctrl+ 空格沒辦法切中英文」。做法是 ITfKeystrokeMgr::PreserveKey
+// (**不是**低階鍵盤 hook,理由見 common/hotkey_policy.h),而那一次呼叫
+// 發生在 ActivateEx 裡面 —— 也就是說「有沒有註冊成功」只有在**真的被
+// 系統啟用過的那一份文字服務**上問得到。
+//
+// ⚠ 這一支問的是註冊,不是按下去會怎樣。用 IsPreservedKey 向 TSF 反問:
+//   它認不認得 {我們的 GUID, VK_SPACE + TF_MOD_CONTROL}。
+//
+// ⚠ 第二問同樣重要:{VK_C + TF_MOD_CONTROL} **必須不認得**。這個專案吃過
+//   「宣稱每一個 keysym 都要,結果吃掉 Ctrl+C」的虧,而保留鍵是同一種
+//   權力 —— 註冊得太寬的話,使用者在每一個程式裡的 Ctrl+C 都會消失,
+//   而他不會知道是輸入法幹的。
+void CheckPreservedKey(ITfKeystrokeMgr* ks) {
+  Say("\n--- 保留鍵(Ctrl+空白鍵)---\n");
+  if (!ks) {
+    Fail("拿不到 ITfKeystrokeMgr —— 問不了保留鍵");
+    return;
+  }
+  TF_PRESERVEDKEY want{};
+  want.uVKey = VK_SPACE;
+  want.uModifiers = TF_MOD_CONTROL;
+  BOOL registered = FALSE;
+  HRESULT hr = ks->IsPreservedKey(GUID_RimePreservedKeyToggle, &want,
+                                  &registered);
+  Say("  IsPreservedKey(Ctrl+Space) hr=0x%08lX registered=%d\n",
+      static_cast<unsigned long>(hr), registered ? 1 : 0);
+  if (FAILED(hr) || !registered)
+    Fail("Ctrl+空白鍵**沒有**被註冊成保留鍵 —— 使用者按下去不會有任何事發生。\n"
+         "     註冊在 TextService::ActivateEx 裡(見 common/hotkey_policy.h);\n"
+         "     那裡失敗時記錄會有一行『保留鍵 Ctrl+Space:註冊失敗』。");
+
+  TF_PRESERVEDKEY nope{};
+  nope.uVKey = 'C';
+  nope.uModifiers = TF_MOD_CONTROL;
+  BOOL stolen = FALSE;
+  hr = ks->IsPreservedKey(GUID_RimePreservedKeyToggle, &nope, &stolen);
+  Say("  IsPreservedKey(Ctrl+C)     hr=0x%08lX registered=%d\n",
+      static_cast<unsigned long>(hr), stolen ? 1 : 0);
+  if (SUCCEEDED(hr) && stolen)
+    Fail("Ctrl+C 也被註冊成保留鍵了 —— 使用者在每一個程式裡的複製都會消失,\n"
+         "     而他不會知道是輸入法幹的。保留鍵只准註冊真的要處理的那一顆。");
+}
+
 SendOutcome SendKeyThrough(ITfKeystrokeMgr* ks, FakeDoc* doc, const SeqKey& sk) {
   SendOutcome o;
   ks->TestKeyDown(sk.vk, sk.lparam, &o.test_eaten);
@@ -674,6 +719,8 @@ static int Run(int argc, wchar_t** argv) {
   std::wstring keys;
   std::wstring seq;
   std::wstring pretext;
+  // ⚠ Ctrl+空白鍵那顆保留鍵有沒有真的被 TSF 收下。見下面 CheckPreservedKey()。
+  bool check_preserved = false;
   std::wstring expect_doc;
   bool have_expect_doc = false;
   std::wstring expect;
@@ -701,6 +748,7 @@ static int Run(int argc, wchar_t** argv) {
     }
     else if (a == L"--expect" && i + 1 < argc) expect = argv[++i];
     else if (a == L"--trace" && i + 1 < argc) trace_path = argv[++i];
+    else if (a == L"--check-preserved-key") check_preserved = true;
     else if (a == L"--require-activate") require_activate = true;
     else if (a == L"--require-eaten") require_eaten = true;
     else if (a == L"--wait-ms" && i + 1 < argc)
@@ -990,6 +1038,7 @@ static int Run(int argc, wchar_t** argv) {
                "     文字服務,所以底下量到的東西**不能拿來判斷產品好壞**。\n"
                "     這是測試台/工作階段的問題,不是輸入法的問題。");
       }
+      if (check_preserved) CheckPreservedKey(ks);
       Say("\n--- 送按鍵 ---\n");
       for (const SeqKey& sk : plan) {
         const SendOutcome o = SendKeyThrough(ks, doc, sk);
