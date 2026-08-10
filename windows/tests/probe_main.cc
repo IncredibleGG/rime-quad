@@ -281,6 +281,46 @@ int RunAsciiToggle(IpcClient& ipc, const std::string& keys) {
     return 1;
   }
 
+  // ══ 【覆核診斷 C】組字**進行中**按下 Ctrl+空白鍵會怎樣 ══════════
+  //
+  // hotkey_policy.h 自己寫著「中英切換發生在句子中間」,而上面每一次
+  // 送熱鍵之前都先 SendClear 把組字清乾淨了 —— 也就是說最該驗的那個
+  // 情境剛好被繞過。這一段不斷言,只把事實印出來。
+  {
+    std::printf("\n=== 【診斷】組字中按 Ctrl+空白鍵 ===\n");
+    Result c0;
+    ipc.SendClear(&c0);
+    Snapshot mid{};
+    int eaten_mid = 0;
+    for (char c : keys) {
+      Result r;
+      if (!ipc.SendKey(static_cast<int32_t>(static_cast<unsigned char>(c)), 0,
+                       &r))
+        break;
+      if (r.handled) ++eaten_mid;
+      mid = r.snap;
+    }
+    std::printf("按鍵之前:組字中=%d preedit=\"%s\" 吃掉=%d/%d\n",
+                composing_of(mid) ? 1 : 0, mid.preedit.c_str(), eaten_mid,
+                static_cast<int>(keys.size()));
+    Result t;
+    if (ipc.SendKey(AsciiToggleKeysym(), AsciiToggleModifiers(), &t)) {
+      std::printf(
+          "熱鍵之後:handled=%d 英數=%d 組字中=%d has_commit=%d "
+          "commit=\"%s\" preedit=\"%s\"\n",
+          t.handled ? 1 : 0, ascii_of(t.snap) ? 1 : 0,
+          composing_of(t.snap) ? 1 : 0, t.snap.has_commit ? 1 : 0,
+          t.snap.commit_text.c_str(), t.snap.preedit.c_str());
+      std::printf(
+          "   ⚠ 瘦 DLL 的 OnPreservedKey 把整份 r.snap 丟掉:"
+          "commit 不寫進文件、組字不收尾、engine_composing_ 不更新。\n");
+    }
+    Result t2;
+    ipc.SendKey(AsciiToggleKeysym(), AsciiToggleModifiers(), &t2);  // 切回中文
+    Result c1;
+    ipc.SendClear(&c1);
+  }
+
   std::printf("\n>>> ASCII TOGGLE OK\n");
   return 0;
 }
