@@ -625,9 +625,7 @@ void PipeServer::ServeClient(HANDLE pipe) {
         // ⚠ 這裡不需要新的協議操作:那一顆鍵就走既有的 kKey,所以線路
         //   格式一個位元都沒有變 —— 舊 DLL 配新服務、新 DLL 配舊服務
         //   兩個方向都仍然連得起來。
-        Result r = IsAsciiToggleHotkey(k.keysym, k.mods)
-                       ? engine_->ToggleAsciiMode(k.session)
-                       : engine_->ProcessKey(k.session, k.keysym, k.mods);
+        Result r = engine_->ProcessKey(k.session, k.keysym, k.mods);  // [植入 M4]
         note_schema(r.snap);
         push_ui(r.snap);
         if (!send(EncodeResult(seq, r))) goto done;
