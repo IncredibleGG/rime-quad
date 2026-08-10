@@ -1051,6 +1051,73 @@ bash 端再剝一次 `\r`。(同一個檔案早就為了 cp1252 的 stdout 編�
   (它們經 `StoreController.finish()` 進 snackbar 或結果對話框),一樣是寫死的中文,
   **本輪沒有修**(不在這三則缺陷的範圍內,而且那是市集那條線的檔案)。誰接手都行,但要有人接。`
 
+- `[2026-08-10] [fix3-cand → 協調端] ⚠ **`rs_set_input()` 的回傳值與 `rime_shell.h` 檔頭不符,而不符的方式會讓使用者拿到錯字。**
+  檔頭寫著「回傳 false 代表引擎拒絕(session 無效,**或字串裡有 alphabet 不認得的字元**)」,
+  Android 端的音節消歧就靠這一句擋。**實測不成立。** 模擬器上放一份舊的單編碼
+  `t9_pinyin`(`alphabet: 'ADGJMPTW'`,沒有小寫拼音),送 `MGGAM` 之後
+  `rs_set_input("niGAM")` 回傳的是 **true**;引擎把 `ni` 當成一段翻不出東西的原文,
+  只替 `GAM` 出候選(好#hao／號#hao／高#gao／搞#gao／汗#han),
+  使用者點第一個 → 上屏 **「ni好」**。這正是真機回報的「我選擇 ni 他就直接給我輸入了」。
+  重現用的探針與完整輸出見 commit 訊息;`core/src/rime_shell.cc` 的 `rs_set_input`
+  等於直接把 `RimeSetInput` 的回傳值傳出來,而 librime 那一支不驗 alphabet。
+  **兩條路擇一,請協調端裁決:**(a)在 rime_shell 這一層真的驗一次 alphabet 再回 false;
+  (b)把檔頭那一句改掉,明說「本層不驗 alphabet,前端必須自己驗收」。
+  Android 端已經**不再依賴那個承諾**:改寫之後回頭問候選(`T9Syllables.rewriteAccepted`),
+  對不上就把輸入串還原(實機上驗過:同樣的舊方案下現在上屏的是「你好」,不是「ni好」)。
+  桌面端若也要做逐音節消歧,會踩到同一顆地雷。
+
+- `[2026-08-10] [fix3-cand → 協調端] **`menu/page_size` 是 5,而規範 §8.6.6.3.6 寫的是 9。**
+  真機回報「候選詞只有 5 個」。查下去:`core/data/shared/default.yaml` 的
+  `menu: page_size: 5`(上游 rime-prelude 的預設),`core/data/schemas/t9_pinyin.schema.yaml`
+  裡沒有 `menu:` 區塊,所以九宮格拿到的就是 5。
+  `core/data/` 是協調端的檔案,**本輪沒有動它**。
+  行動端一頁 5 個偏少(三星/搜狗的九宮格一頁 6~9 個),而九宮格因為折疊重碼特別多,
+  一頁 5 個要翻很多次。建議協調端裁決:改 `default.yaml` 的全域值,或只在
+  `t9_pinyin.schema.yaml` 加 `menu: page_size: 9`(後者影響面小)。
+  ⚠ 改之前請留意規範 §8.6.7.1 那句「本格式**不得**改變 page_size —— 改了會讓候選的
+  序號標籤與使用者按的數字鍵對不上」:那說的是**主題**不得改,方案自己定義它是正常的。
+  Android 端這一輪補的是**翻頁入口**(§8.6.5 的 `page_indicator`,規範預設就是
+  `show: true` / `style: arrows`,本端一直沒畫),所以 page_size 維持 5 也已經翻得到後面。
+
+- `[2026-08-10] [fix3-cand → 協調端 / 桌面兩端] **`rs_snapshot` 給不出總頁數,`page_indicator` 的 `dots` 與 `text` 兩種樣式做不出來。**
+  規範 §8.6.5 的 `style: text` 是「以 `n/m` 形式顯示頁碼」、`dots` 是一排點,
+  兩者都需要 **m(總頁數)**,而 `rs_menu` 只有 `page_no` 與 `is_last_page`。
+  Android 這一輪把這兩種樣式**退化成箭頭**(寫在 `keyboard/CandidateBarModel.kt` 的
+  `Pager.degradesToArrows`,不是靜靜發生;隨附主題沒有任何一份用這兩種)。
+  這與規範 §8.6.6.3.5 已經記著的兩個 `core/` 缺口(消歧列的分頁、桌面端的展開候選網格)
+  是同一件事 —— 都是「一次只看得到當前那一頁」。要補的話建議一起補
+  (`rs_menu` 加 `page_count`,或加一支「不動頁碼走完整份候選」的 API)。
+
+- `[2026-08-10] [fix3-cand → macOS(規範持有者)] **§8.6.6 的 `show_preedit_inline` 在雙編碼方案上印出來的東西沒有意義,Android 已改變那一格的內容。**
+  規範說那一格印的是「組字串」。全拼 `nihao`、注音 ㄋㄧˇ 都是使用者剛剛按過的東西;
+  九宮格不是 —— `t9_pinyin` 是雙編碼方案,鍵送出去的是代表字母 `A/D/G/J/M/P/T/W`,
+  於是那一格印的是 **`MG GAM`**。使用者鍵面上按的是 `mno`/`ghi`。真機原話:
+  「紅色的沒意義 就沒必要出現」。
+  Android 的做法(`keyboard/CandidateBarModel.kt` 的 `InlinePreedit`):
+  **送出這個字元的那顆鍵,鍵面上若是一整組字母而不是它自己,這個字元就砍掉**;
+  砍掉之後補一個 `⋯` 表示「後面還沒定」。於是 `MG GAM` → 那一格不出現、
+  `ni GAM` → `ni⋯`、`你GAM` → `你⋯`,而 `nihao`(全拼)與 `ㄋㄧˇㄏㄠˇ`(注音)原封不動。
+  刻意不綁方案 id、也不寫死那八個字母(理由寫在該檔)。
+  **這是本端對規範文字的偏離,請規範持有者裁決要不要收進 §8.6.6**
+  (若收,建議寫成「實作**不得**在該區塊顯示使用者按不出來的按鍵代碼」這種形式,
+  而不是規定演算法)。桌面端目前沒有九宮格,踩不到。
+  ⚠ **同一串字也出現在宿主 app 的組字區**(`ic.setComposingText(preedit)`)。
+  本輪**沒有動它**:那是 RIME 的既有契約、四端一致,而且改了會影響宿主 app 的
+  復原/自動完成行為,不在這三條回報的範圍內。要不要一併改,建議與規範一起裁決。
+
+- `[2026-08-10] [fix3-cand → 全體] ⚠ **開 worktree 時 `core/data/user` 也要 symlink,不只 `shared`。**
+  `core/data/` 整個在 `.gitignore` 裡(`collect_data.sh` 的產物),而
+  `android/app/build.gradle.kts` 的 `syncRimeData` 同時吃 `core/data/shared` 與
+  `core/data/user`。只 link 了 `shared` 的 worktree 建出來的 APK **沒有**
+  `rime/user/default.custom.yaml`,而那份 patch 正是把 `t9_pinyin` 加進 `schema_list` 的地方。
+  症狀不是「建置失敗」,是:裝上去之後方案清單裡沒有九宮格、`pending_schema` 設不上去、
+  鍵盤退回 qwerty,`verify_syllables.sh` 三份佈局全紅並宣稱「裝置上載入的卻是 qwerty」。
+  查了半小時才發現是 worktree 少了一條 symlink。兩條都要:
+  ```bash
+  ln -sfn /home/lc/rime/core/data/shared /home/lc/rime-<代號>/core/data/shared
+  ln -sfn /home/lc/rime/core/data/user   /home/lc/rime-<代號>/core/data/user
+  ```
+
 ## 6. 各端狀態
 
 > 自己更新自己那一行。
