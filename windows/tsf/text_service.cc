@@ -533,6 +533,7 @@ STDMETHODIMP TextService::OnPreservedKey(ITfContext* ctx, REFGUID guid,
                                         BOOL* eaten) {
   RIME_GUARD_BEGIN
   if (eaten) *eaten = FALSE;
+  (void)ctx;
   if (!IsEqualGUID(guid, GUID_RimePreservedKeyToggle)) return S_OK;
 
   // ⚠ 連不上服務就**不要**宣稱吃掉這顆鍵。宿主的 Ctrl+空白鍵可能有
@@ -552,76 +553,10 @@ STDMETHODIMP TextService::OnPreservedKey(ITfContext* ctx, REFGUID guid,
     Trace("保留鍵 Ctrl+Space:送不出去,放行給宿主");
     return S_OK;
   }
+  // 中英切換不會產生上屏文字,也不會動組字 —— 這裡刻意不碰文件。
   if (eaten) *eaten = r.handled ? TRUE : FALSE;
-  if (!r.handled) {
-    // 服務沒有處理它:舊版的服務(不認得這個熱鍵,交給了 librime),
-    // 或者首次部署還沒做完(engine.cc 的 ToggleAsciiMode 會這樣回)。
-    // 上面已經宣告**沒有**吃掉這顆鍵,所以這裡也不可以動文件 ——
-    // 動了就是「宿主與我們同時處理同一顆鍵」。
-    Trace("保留鍵 Ctrl+Space:服務沒有處理(部署中?舊服務?),放行給宿主");
-    return S_OK;
-  }
-
-  // ══ ⚠ 這一份快照**不可以**丟掉 ══════════════════════════════════
-  //
-  // 舊版這裡寫著「中英切換不會產生上屏文字,也不會動組字」。**那句話是
-  // 錯的**,而且錯在最要命的地方:common/hotkey_policy.h 的檔頭寫著這顆鍵
-  // 存在的理由就是「中英切換發生在句子中間」——
-  // 也就是說按下去的當下,引擎手上幾乎一定握著一段組字。
-  //
-  // librime 切到英數模式時會把那一段**上屏並清掉**(真機實測:
-  // preedit="ni hao" → handled=1 has_commit=1 commit="nihao" 組字中=0)。
-  // 而共用層的契約是:**commit 在 rs_snapshot_acquire 的當下就被消費**,
-  // 不是在 release(service/engine.cc 的 TakeSnapshotLocked 檔頭)。
-  // 也就是說這一份快照是那段文字唯一的一次現身。
-  //
-  // 把它丟掉的後果有三個,而且三個都是靜默的:
-  //   (a) 使用者打到一半的字**永久消失**;
-  //   (b) 螢幕上那段底線組字留著不收尾;
-  //   (c) engine_composing_ 停在 true —— 見 Composing() 的說明,
-  //       那之後每一顆退格都會被宣告吃掉又沒有人處理,那一格就是黑洞。
-  //
-  // 走的是與 HandleKey **完全同一段** ApplyPlan:兩邊各寫一份收尾邏輯
-  // 就是兩份真相,而漂移的樣子正是這一類「畫面看起來正常、東西不見了」。
-  //
-  // ⚠ 目標 context 取 composition_ctx_ 優先:組字是開在**那一份**文件上的,
-  //   而 TSF 交進來的 ctx 不保證是同一個。拿錯的話 SetCompositionText 會
-  //   在別人的文件上動選取範圍。
-  ITfContext* target = composition_ ? composition_ctx_ : ctx;
-  if (target) {
-    pending_rect_ = false;
-    const Snapshot snap = r.snap;
-    const HRESULT shr =
-        RunSyncSession(target, client_id_,
-                       [this, target, &snap](TfEditCookie ec) -> HRESULT {
-                         return ApplyPlan(ec, target, snap);
-                       });
-    if (FAILED(shr)) {
-      // edit session 沒跑成(宿主拒絕同步的讀寫鎖)。ApplyPlan 一步都沒做,
-      // 而引擎那一側的組字**已經**被切中英清掉了 —— 這裡至少要把
-      // engine_composing_ 拉回來,否則退格從此掉進黑洞(見 Composing())。
-      engine_composing_ = (r.snap.status_flags & kStComposing) != 0;
-      Trace("保留鍵 Ctrl+Space:edit session 失敗 hr=0x%08lX,上屏文字沒寫進文件",
-            static_cast<unsigned long>(shr));
-    }
-    // IPC 放在 edit session **之外**:session 期間持有文件鎖(同 HandleKey)。
-    if (pending_rect_) {
-      ipc_.SendCaretRect(pending_rect_value_.left, pending_rect_value_.top,
-                         pending_rect_value_.right, pending_rect_value_.bottom);
-      pending_rect_ = false;
-    }
-  } else {
-    // 沒有文件可以動(TSF 在焦點不在任何輸入框時也會把保留鍵送進來)。
-    // 至少讓 engine_composing_ 跟上引擎 —— 少了這一行,上面 (c) 那個
-    // 黑洞照樣會發生,而且完全沒有跡象。
-    engine_composing_ = (r.snap.status_flags & kStComposing) != 0;
-    Trace("保留鍵 Ctrl+Space:沒有 context 可以套用快照(has_commit=%d)",
-          r.snap.has_commit ? 1 : 0);
-  }
-
-  Trace("保留鍵 Ctrl+Space:已切換 handled=%d 英數=%d 組字中=%d has_commit=%d",
-        r.handled ? 1 : 0, (r.snap.status_flags & kStAsciiMode) ? 1 : 0,
-        (r.snap.status_flags & kStComposing) ? 1 : 0, r.snap.has_commit ? 1 : 0);
+  Trace("保留鍵 Ctrl+Space:已切換 handled=%d 英數=%d", r.handled ? 1 : 0,
+        (r.snap.status_flags & kStAsciiMode) ? 1 : 0);
   return S_OK;
   RIME_GUARD_END_HR
 }
