@@ -94,9 +94,35 @@ for path in \
   "${DEST}/Contents/Resources/zh-Hans.lproj/InfoPlist.strings" \
   "${DEST}/Contents/Resources/LuminaKeySettings.app/Contents/MacOS/LuminaKey" \
   "${DEST}/Contents/Resources/LuminaKeySettings.app/Contents/Info.plist" \
+  "${DEST}/Contents/Resources/UserTemplate/default.custom.yaml" \
 ; do
   if [ -e "${path}" ]; then ok "存在:${path#${HOME}/}"; else bad "缺少:${path#${HOME}/}"; fi
 done
+
+# ⚠ 「installer 回報成功,而東西不在那裡」是**裝到別的地方去了**,不是沒裝。
+#   少了這一段診斷,那一片 ✗ 看起來像 pkgbuild 壞了,而真正的線索
+#   (收據裡的安裝路徑)完全沒有被印出來。2026-08-10 run #100 因此查了一輪。
+if [ ! -e "${DEST}/Contents/MacOS/LuminaKey" ]; then
+  echo "  ── 診斷:那它到底裝到哪裡去了 ──"
+  echo "  installer 的輸出:"
+  sed 's/^/      /' /tmp/luminakey-install.log | tail -20
+  PKG_ID_GUESS="$(pkgutil --pkgs 2>/dev/null | grep -i luminakey || true)"
+  if [ -n "${PKG_ID_GUESS}" ]; then
+    for p in ${PKG_ID_GUESS}; do
+      echo "  收據 ${p}:"
+      pkgutil --pkg-info "${p}" 2>/dev/null | sed 's/^/      /'
+      echo "      前幾個檔案:"
+      pkgutil --files "${p}" 2>/dev/null | head -5 | sed 's/^/        /'
+    done
+  else
+    echo "      pkgutil 一個 luminakey 的收據都沒有 —— 那是真的沒裝"
+  fi
+  echo "  家目錄底下實際有的 .app:"
+  find "${HOME}/Library/Input Methods" -maxdepth 2 -name '*.app' 2>/dev/null \
+    | sed 's/^/      /' || true
+  echo "  這台機器上所有叫 LuminaKey.app 的東西(relocation 會裝到這些地方):"
+  mdfind -name LuminaKey.app 2>/dev/null | head -10 | sed 's/^/      /' || true
+fi
 
 # 圖示真的讀得出來嗎。**這一條是為了上一輪那個「空白方框」而加的** ——
 # 檔案存在不等於 ImageIO 讀得懂(手寫的 TIFF 就是讀不懂)。

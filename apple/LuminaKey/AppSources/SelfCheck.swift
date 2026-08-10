@@ -95,6 +95,88 @@ enum SelfCheck {
                   r.diagnostics.map(\.developerMessage).joined(separator: "; "))
         }
 
+        // 6. **中／英切換的事件真的收得到嗎。**
+        //
+        // 這一組驗的是 `LuminaKeyInputController.recognizedEvents(_:)`。
+        // 少了那個 override,IMKit 的預設是「只有 keyDown」,而修飾鍵在 macOS
+        // 不產生 keyDown —— 於是輕點 Shift 切中英**整條路徑不存在**,
+        // 而畫面完全正常、單元測試也全綠(它們測的是純邏輯,不是 IMKit)。
+        //
+        // ⚠ 不是 grep 原始碼:那種守門被「名字在別處出現一次」餵飽過四次。
+        //   這裡是**問這個二進位裡的類別實際回傳什麼**。
+        let appkitMask = NSEvent.EventTypeMask.keyDown.rawValue
+            | NSEvent.EventTypeMask.flagsChanged.rawValue
+        check("事件遮罩常數與 AppKit 對得上", IMKRecognizedEvents.mask == appkitMask,
+              "Kit \(IMKRecognizedEvents.mask) / AppKit \(appkitMask)")
+
+        // ⚠ 變數名不要叫 declared —— 這個函式上面已經有一個
+        //   (Info.plist 宣告的類別名),撞名是編譯錯誤。
+        let probe = LuminaKeyInputController()
+        let eventMask = UInt64(bitPattern: Int64(probe.recognizedEvents(nil)))
+        check("controller 宣告要收 flagsChanged（輕點 Shift 才會有反應）",
+              IMKRecognizedEvents.includesFlagsChanged(eventMask),
+              String(format: "回傳 0x%llX", eventMask))
+        check("controller 仍然要收 keyDown（少了它一個字都打不出來）",
+              eventMask & IMKRecognizedEvents.keyDown != 0,
+              String(format: "回傳 0x%llX", eventMask))
+
+        // 6b. **修飾鍵的旗標值與 AppKit 對得上。**
+        //
+        // `MacModifierFlags` 是手抄的(`1 << 16` 這種),而抄錯的症狀是
+        // 「某一顆修飾鍵永遠判成沒按」—— 畫面完全正常,單元測試也全綠,
+        // 因為測試用的是同一份手抄值。這裡拿 AppKit 自己那一份對一次。
+        let flagPairs: [(String, UInt, UInt)] = [
+            ("capsLock", MacModifierFlags.capsLock.rawValue,
+             NSEvent.ModifierFlags.capsLock.rawValue),
+            ("shift", MacModifierFlags.shift.rawValue, NSEvent.ModifierFlags.shift.rawValue),
+            ("control", MacModifierFlags.control.rawValue,
+             NSEvent.ModifierFlags.control.rawValue),
+            ("option", MacModifierFlags.option.rawValue, NSEvent.ModifierFlags.option.rawValue),
+            ("command", MacModifierFlags.command.rawValue,
+             NSEvent.ModifierFlags.command.rawValue),
+        ]
+        let badFlags = flagPairs.filter { $0.1 != $0.2 }
+        check("MacModifierFlags 與 AppKit 的旗標對得上", badFlags.isEmpty,
+              badFlags.map { "\($0.0): 我們 \($0.1) / AppKit \($0.2)" }.joined(separator: ", "))
+
+        // 6c. **組字中按 Caps Lock 不可以走到 librime。**
+        //
+        // 隨附的 default.yaml 綁了 `ascii_composer/switch_key: { Caps_Lock: clear }`,
+        // 而 librime 的 AsciiComposer 在 Caps Lock「按下」時對正在組字的
+        // context 做 `ctx->Clear()`。上一輪宣告要收 flagsChanged 之後,
+        // 每一顆修飾鍵都送進去了 —— 於是打到一半按 Caps Lock 會清掉組字。
+        check("Caps Lock 的 flagsChanged 不會變成送進引擎的按鍵",
+              !ModifierGate.shouldForward(keyCode: 57, flags: [.capsLock]))
+        check("輕點 Shift 仍然送得進引擎(切中英唯一的那條路)",
+              ModifierGate.shouldForward(keyCode: 56, flags: [.shift])
+                  && ModifierGate.shouldForward(keyCode: 60, flags: [.shift]))
+        check("⌘⇧ 之類的宿主快捷鍵不會被輸入法吃掉(與 process() 同一條護欄)",
+              !ModifierGate.shouldForward(keyCode: 56, flags: [.shift, .command]))
+
+        // 7. **使用者初始配置的範本有沒有隨 .app 附上。**
+        //
+        // 沒有它的話,librime 會照上游 rime-prelude 的 default.yaml 部署:
+        // 那份清單裡沒有我們實際打包的 luna_pinyin_tw / bopomofo_tw / t9_pinyin,
+        // 卻列了兩個我們沒有打包的(cangjie5 / quick5)。
+        // 後果是「引擎有方案、設定畫面一列都沒勾」,而且繁簡綁定挑不出方案。
+        let resources = Bundle.main.resourceURL ?? URL(fileURLWithPath: ".")
+        let templateDir = resources.appendingPathComponent(UserDataSeed.templateDirectoryName)
+        let customURL = templateDir.appendingPathComponent(RimeConfigPatch.fileName)
+        let templateText = (try? String(contentsOf: customURL, encoding: .utf8)) ?? ""
+        let templateIds = RimeConfigPatch.readSchemaList(text: templateText)
+        check("隨附了 \(UserDataSeed.templateDirectoryName)/\(RimeConfigPatch.fileName)",
+              !templateIds.isEmpty, templateIds.joined(separator: ", "))
+
+        // 範本裡列的每一個方案都要真的在 SharedSupport 裡,否則部署會報錯 ——
+        // 那正是這一份範本存在的理由,寫錯了等於沒有它。
+        let sharedDir = resources.appendingPathComponent("SharedSupport")
+        let missing = templateIds.filter {
+            !FileManager.default.fileExists(
+                atPath: sharedDir.appendingPathComponent("\($0)\(SchemaCatalog.suffix)").path)
+        }
+        check("範本列的方案都有對應的 .schema.yaml", missing.isEmpty,
+              missing.joined(separator: ", "))
+
         print(ok ? "=== self-check 通過 ===" : "=== self-check 失敗 ===")
         return ok
     }

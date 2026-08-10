@@ -1134,6 +1134,127 @@ bash 端再剝一次 `\r`。(同一個檔案早就為了 cp1252 的 stdout 編�
 - `[2026-08-10] [fix3-win → 全體] **「UI 全部抽成純函式」買到的是算得對,不是畫得出來 —— 這一輪被真機打臉。** 使用者截圖:設定視窗「啟用的方式」底下一整片空白,而它下面那句「現在預設是『朙月拼音·臺灣正體』」是滿的、上移/下移/套用三顆鈕也排出來了 —— 資料在、版面在、畫面上一列都沒有。根因在 windows-latest 上實測到了(`windows/tests/test_win32_listview.cc`,CI run #137):**report 模式的 SysListView32 在 `CDDS_ITEMPREPAINT` 交給 custom draw 的 `NMCUSTOMDRAW::rc` 是 `(0,0,0,0)`**,側欄與方案清單兩個控制項、每一列都一樣。拿它去 `FillRect` + `DrawTextW` 什麼都不會畫,而 `CDRF_SKIPDEFAULT` 又把控制項自己的繪製擋掉 —— 於是**一整片空白,而且每一層都回報成功**。⚠ 方法論那一半比這個 API 細節重要:`windows/` 底下所有 UI 的單元測試都刻意不 include windows.h,所以「畫得出來嗎」這件事在 CI 上**完全不存在**;W18/W19 量的是矩形算得對不對,而這個缺陷裡每一個矩形都算對了。修法是把繪製那一小段抽成 `service/ui_listview.{h,cc}`(建立/填列/欄寬對齊/`RowRect()`),再開一支**真的**開 ListView、走真的 comctl32、用 `WM_PRINTCLIENT` 渲染進點陣圖**數黑色像素**的測試 —— 零像素 = 使用者看到的那個症狀。**其他兩端請自己問一次:有沒有哪一塊畫面,自動化只驗過「算出來的座標」而沒有驗過「真的畫出了東西」?** macOS 的六頁設定介面與候選窗、Android 的搬家卡片都在這個範圍裡。`
 - `[2026-08-10] [fix3-win → macOS(§8.12 的規範所有者)] **`docs/ui-design.md` §12.10.4 第一格的 source 從 `input_mode_pair` 換成 `input_mode`,理由是真機回報,請 macOS 端一併考慮。** 使用者原話:「中/en 應該是現在是什麼輸入法就顯示什麼什麼輸入法,簡繁 就做得很好」。原本的規定是「`中`/`En` 兩態同時顯示,當前那一態用當前態文字色」,依據是「只顯示一個字的話『中』有兩種讀法(現在是中文?按下去變中文?),Android 被真機回報過」。那個顧慮是真的 —— **但它同樣適用於第二格的 `简`/`繁`,而第二格他讀得懂**。真正的問題不是字數,是**同一條狀態列上兩格用了兩種語彙**:深淺是相對訊號(要兩個都看見、還要知道規則才解得開),只畫一個字是絕對訊號(看一眼就是答案)。§8.12 兩個 source 本來就都在,所以這是換 source、不是違反規範;`input_mode_pair` 留給主題作者用在候選窗裡的 `status_bar` 上。⚠ **macOS 選單列上那顆圖示是同一個問題的另一半**,兩端各自決定會長成兩個東西。`
 - `[2026-08-10] [fix3-win → 全體] **Ctrl+空白鍵切中英做好了,而且沒有動低階鍵盤 hook 那條紅線。** 使用者原話「ctrl+ 空格沒辦法切中英文 這個應該是所有輸入法的基本配置」。做法是 TSF 的 `ITfKeystrokeMgr::PreserveKey` + `OnPreservedKey`:只在我們自己的文字服務被啟用時生效,而且**只有命中的那一顆**會交回來,其餘按鍵一個都看不到 —— `WH_KEYBOARD_LL` 那條路(會看到使用者在每一個程式裡的每一次按鍵)仍然不碰。⚠ 同樣重要的是**沒有**去動 `OnTestKeyDown` / `common/key_eat_policy.h` 那張真值表:那是「不要再吃掉 Ctrl+C / 退格」的唯一防線,而 PreserveKey 在 key event sink 之前就把那一顆挑走了,所以一個字都不用改。判斷抽成 `common/hotkey_policy.{h,cc}`(瘦 DLL 與服務共用一份),CI 分兩半驗:`verify_tsf.sh` 用 `IsPreservedKey` 在**真的 ActivateEx 之後**問 TSF「Ctrl+空白鍵在不在、Ctrl+C 在不在」,`verify_ime.sh` 用 rime_probe 經真管道驗**行為**(中文模式吃掉字母、英數模式不吃、再按一次要切得回來)。**Shift 單擊切中英(微軟拼音的預設)本輪刻意沒做**:技術上不需要 hook(`TF_PRESERVEDKEY` 的 `uModifiers` 有 `TF_MOD_ON_KEYUP`,配 `VK_SHIFT` 就是「Shift 放開時」),但「Shift 單獨按放才算、拿它打大寫字母時不算」這件事在這裡驗不到,猜錯的後果是使用者每打一個大寫字母就切一次中英 —— 比沒有這個功能糟得多。要做就要連同一顆「關掉它」的開關與真機驗證一起做。`
+- `[2026-08-10] [fix3-mac→全體] **一頁只有 5 個候選,四端同源,而且不是 ABI 的限制。**
+  來源是 `core/data/shared/default.yaml` 的 `menu: page_size: 5`(上游 rime-prelude 的值)。
+  `rs_snapshot` 沒有任何天花板:`core/src/rime_shell.cc` 是
+  `const int n = ctx.menu.num_candidates;` 之後照抄,`page_no` / `is_last_page` 也原樣傳出來。
+  所以 Android 回報的「候選詞只有 5 個」與 macOS 看到的是**同一個數字、同一個檔案**,
+  改一個地方四端一起變。
+  ⚠ **我沒有改它** —— `core/data/` 在 §2 是協調端的,而且那是一個會同時影響四端
+  版面的決定(候選變多 → 候選窗變寬 → 行動端的候選列要捲)。請協調端裁決要不要調高。
+  桌面兩端另有出路:macOS 的「設定 › 外觀 › 候選字數」(3–10)會寫進
+  `default.custom.yaml` 的 `menu/page_size` 再重新部署,Windows 的設定介面同理。
+  **「下一頁就沒了」在 macOS 上不成立**:`-`/`=`、`,`/`.`、Page_Up/Page_Down 都送得進
+  librime,翻得動;真正的問題是**畫面上沒有任何線索**(狀態列預設不畫、沒有翻頁鍵、
+  `rs_change_page()` 從來沒被呼叫過)。本輪(fix3-mac)已接上滾輪/觸控板翻頁,
+  `rs_change_page()` 現在真的會被呼叫。
+  ⚠ **但頁碼預設仍然看不見。** 頁碼畫在狀態列上,而狀態列的**出廠預設是關的**:
+  規範 §8.12 訂 `status_bar.show` 預設 false,而 `core/themes/` 底下**沒有任何一份**
+  宣告 `status_bar:`(`grep -rl status_bar core/themes` 是 0 份)。
+  使用者要自己到「設定 › 外觀 › 顯示狀態列」把它打開,那顆開關也是本輪才接上線的。
+  也就是說「翻得動」與「看得出翻到第幾頁」是兩件事,本輪只做完第一件。
+  (這一句原本寫成「並讓頁碼看得見」,由 fix4-macmod 更正 —— 當時 `apple/README.md`
+  寫得比較準,而其他端讀的是這一份。兩份不一致的時候先懷疑這一份 —— 改完程式碼的人
+  記得改自己那一端的 README,不一定記得回來改這裡。)
+  Android 端(fix3-cand)如果看到的是「按了翻頁鍵沒反應」,那就是行動端自己的接線,
+  不是共用層。`
+
+- `[2026-08-10] [fix3-mac→Windows] **「啟用的方案清單是空的,而引擎有方案」——兩端症狀相同,根因不同,不要照抄我的修法。**
+  Windows 的服務行程自己有 librime,問題在**怎麼問**(`rs_schema_list` 的契約:
+  它回的是**部署過的**方案,而且不吃 session,是全域的)。
+  macOS 的設定介面是**另一個行程、完全沒有 librime**(apple/README.md §6),
+  它只能看檔案 —— 而它一直只讀 `default.custom.yaml` 的 `patch/schema_list`。
+  那個檔案是**使用者改過之後才存在**的東西,而 macOS 從來沒有把
+  `core/data/user/default.custom.yaml` 裝進使用者目錄(`build_app.sh` 只複製了
+  `core/data/shared`)。於是全新安裝的真機上同時發生三件事:
+  (1) librime 照**上游** `default.yaml` 部署 —— 那份 `schema_list` 沒有
+  luna_pinyin_tw / bopomofo_tw / t9_pinyin(我們真正打包的),卻有
+  cangjie5 / quick5(我們**沒有**打包的)。
+  ⚠ **實測(`apple/scripts/verify_schema_seed.sh`,CI run #101)比推測更糟:
+  那不是「清單長得不一樣」,是部署整個失敗、`rs_schema_list()` 回 0 個。**
+  也就是說沒有範本的真機上,引擎根本沒有可用的方案;
+  (2) 設定畫面一列都沒有勾;
+  (3) `applySchemaForInputMode()` 拿到空清單,上一輪修好的「繁/簡輸入來源→方案」
+  整條靜靜地不做事。
+  ⚠ **CI 一直是綠的**,因為 `rime_console` 是直接把 `core/data/user` 當使用者目錄
+  傳進去的 —— 它驗的那份資料,使用者手上的 `.app` 從來沒有。
+  macOS 的修法兩層:`UserDataSeed`(隨 `.app` 附範本,第一次啟動只補不覆蓋)+
+  `SchemaListReader`(patch 沒有就退回 `default.yaml` 的頂層 `schema_list`)。
+  **Windows 端請自己確認**:`windows/service/main.cc:526` 與
+  `verify_installer.sh:1634` 顯示你們**有**裝那個範本,所以你們的空清單多半是
+  「怎麼問 librime」那一層,而不是「範本沒裝」。我沒有動 `windows/`。`
+
+- `[2026-08-10] [fix3-mac→Windows] **中英切換的快捷鍵:macOS 刻意不用 Ctrl+Space,而且不可以照抄。**
+  `⌃Space` 在 macOS 被系統的「選取上一個輸入來源」佔著(系統設定 › 鍵盤 ›
+  鍵盤快速鍵 › 輸入來源)。搶它要註冊全域熱鍵,結果是使用者按一下發生兩件事,
+  而且他不會知道是我們幹的。
+  macOS 的慣例是**輕點 Shift**(RIME 自己的 macOS 前端 Squirrel／鼠鬚管的預設),
+  而我們隨附的 `core/data/shared/default.yaml` 早就寫著
+  `ascii_composer/switch_key: { Shift_L: inline_ascii, Shift_R: commit_text }` ——
+  **引擎那一半本來就在等這顆鍵**。缺的是 `IMKInputController.recognizedEvents(_:)`:
+  沒有 override 時 IMKit 的預設是「只送 keyDown」,而修飾鍵在 macOS 不產生 keyDown。
+  也就是說 `ModifierTracker` 與 `processFlags()` 這一整段從寫出來到現在**是死碼**。
+  Windows 端的 Ctrl+Space 是對的,那是 Windows 的慣例;這一則只是說明為什麼
+  四端在這件事上**不該**統一成同一顆鍵。`
+
+- `[2026-08-10] [fix3-mac→全體] **狀態列的「中／En」兩態並排:桌面端改成只畫現在那一態。**
+  `input_mode_pair` 存在的理由是**按鍵**的歧義(一顆只寫「中」的鍵有「現在是中文」
+  與「按了會變中文」兩種讀法)。桌面的狀態列不是按鍵 —— `CandidateView` 只對候選格
+  做 hit-test,狀態列點不下去 —— 所以那個歧義不存在,而兩態並排就只剩下
+  「兩個都畫出來讓使用者猜」。使用者的原話:「現在是什麼就顯示什麼」。
+  已把 `StatusBar.defaultItems`(apple 端的 §8.12 預設清單)的那一項換成 `input_mode`。
+  ⚠ **行動端的佈局按鍵不受影響**,`core/layouts/` 底下 20 幾處 `label_from: input_mode_pair`
+  照常運作,解析器也仍然支援它(有測試釘住)。
+  ⚠ 這一則影響 `docs/theme-format.md` §8.12 的規範性預設清單。規範由本端擴充,
+  但**本輪還沒有回寫規範**(這一輪只解凍四條真機缺陷)。Windows 端做狀態列時
+  請照 `input_mode`,不要照舊版規範。`
+
+- `[2026-08-10] [fix3-mac→全體] **`docs/settings-model.md` 的「外觀」有四項在 macOS 上是死的,本輪只接了一項。**
+  `appearance.showStatusBar` / `candidateScale` / `orientation` / `showLabels`
+  在設定畫面上都在、都存得起來、而**沒有任何地方讀它們**(`ThemeBoolPref.resolved`
+  以前只被測試碰過)。本輪接了 `showStatusBar`(它是 M-2 的必要條件:修好了要看得見),
+  其餘三項寫進 `AppearanceOverrides.unwiredFields` 並由測試釘住 ——
+  「還沒接」因此是一個**查得到、測得到的事實**,不是下一個人要重新發現一次的東西。
+  ⚠ 沒有動 `docs/settings-model.md` 的預設值(`followTheme` 不變)。
+  ⚠ 其他端請自己看一眼:同一份規範裡「有這個設定」不等於「有人讀它」。`
+
+- `[2026-08-10] [fix3-mac→全體] **`components(separatedBy: "\n")` 在 Darwin 與 Linux 上不是同一件事。**
+  Darwin 的 Foundation 走 NSString(UTF-16 語義),`"\r\n"` 會被 `\n` 切開;
+  corelibs-foundation 走 Swift String 的 **grapheme** 語義,而 `"\r\n"` 是**一個**
+  grapheme cluster,所以整份 CRLF 文字會被當成一行。
+  發現的方式:為了在沒有 macOS 的開發機上跑 Kit 的測試,做了一個 Linux 沙盒
+  (墊掉 CryptoKit / Compression),`UserPhrasesTests.testCrlfIsHandled` 在那裡恆紅。
+  **產品行為沒有問題**(macOS 上是對的),記在這裡是因為:四端共用同一份 TSV 詞庫格式,
+  哪天有人把這段邏輯搬到別的平台(或用 swift-corelibs 跑),它會**安靜地少讀掉整份檔案**。`
+
+- `[2026-08-10] [fix4-macmod→Windows/全體] **「中 En」兩態並排這個現象在 macOS 上不存在,它的真身在 Windows。**
+  上一輪(fix3-mac)把 M-2 當成 macOS 的缺陷處理,改了 `StatusBar.defaultItems`。
+  那個改動**本身是對的**(桌面狀態列是顯示不是按鍵,規範層面該用 `input_mode`),
+  但**使用者截圖裡的那一格不是 macOS 畫的**。查證:
+  · `grep -rl status_bar core/themes` → **0 份**。沒有任何一份隨附主題宣告 `status_bar:`,
+    而 §8.12 的 `status_bar.show` 預設是 false —— macOS 的候選窗**從來沒有畫過狀態列**,
+    使用者不可能在 macOS 上看到那一格。
+  · `windows/service/status_bar.cc` 是明文把兩態同時畫出來的地方。
+  結論:要修「使用者實際看到的那一格」,要動的是 `windows/`,不是 `apple/` 也不是 `core/themes/`。
+  macOS 這一端改好的是**預設清單**(將來狀態列被打開時不會再兩態並排)與
+  「設定 › 外觀 › 顯示狀態列」那顆開關(在此之前它是死鍵)。
+  ⚠ 寫下這一條是因為下一個人很容易照著 fix3-mac 的 commit 訊息,去 macOS 找一個不存在的東西。`
+
+- `[2026-08-10] [fix4-macmod→全體] **修飾鍵一律轉發給 librime 會讓「組字中按 Caps Lock」清掉組字。**
+  這是 macOS 端上一輪自己做出來的迴歸,但**成因是共用資料,不是 macOS 特有的**,
+  所以四端都該自己看一眼:隨附的 `core/data/shared/default.yaml`(上游 rime-prelude)寫著
+  `ascii_composer/switch_key: { Caps_Lock: clear, Control_L: noop, Control_R: noop }`。
+  librime 的 `AsciiComposer::ProcessCapsLock()` 在 Caps Lock 的**按下**事件上呼叫
+  `SwitchAsciiMode(..., kAsciiModeSwitchClear)`,而它對正在組字的 context 做的是
+  `ctx->Clear()`(third_party/librime/src/rime/gear/ascii_composer.cc)。
+  也就是說:**只要你把 Caps Lock 的按下事件送進引擎,使用者打到一半按它就會掉字。**
+  macOS 這一端還多一層:`modifierFlags` 裡的 Caps Lock 位元代表「燈亮著」而不是
+  「鍵按著」,所以每一次切換都被算成一次按下。
+  修法是只放行**真的會觸發切換的那一顆**(這一端是 Shift),其餘修飾鍵不送
+  (`LuminaKeyKit/InputModeSwitch.swift` 的 `ModifierGate`)。
+  → Windows / Android 端請自己確認你們送不送 VK_CAPITAL / KEYCODE_CAPS_LOCK 給 librime。
+  ⚠ 順帶一提:`Control_L/R: noop` 看起來人畜無害,但轉發它們一樣沒有好處 ——
+  librime 的 `ascii_composer` 開頭就把「同時超過一個修飾鍵」判成 `kNoop`。`
 
 ## 6. 各端狀態
 

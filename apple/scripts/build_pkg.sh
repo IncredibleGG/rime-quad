@@ -94,9 +94,29 @@ cat > "${WORK}/resources/conclusion.html" <<'HTML'
 HTML
 
 # ---------------------------------------------------------------- 元件
-log "pkgbuild"
+# ⚠ **BundleIsRelocatable 必須是 false。**(2026-08-10 用單獨的對照組驗過:
+#   run #103 只把這一段拿掉,verify_pkg 立刻回到同一片紅;放回去 → run #104 綠。
+#   診斷印出來的是 `installer: The install was successful.` 加上
+#   「pkgutil 一個 luminakey 的收據都沒有」—— 它連裝都沒裝。)
+#   `pkgbuild --root` 自動產生的元件清單把 app bundle 標成「可搬移」,
+#   於是 installer 會先問 LaunchServices「這個 bundle id 現在在哪一份」,
+#   找到就**裝到那裡去**,而不是 `--install-location` 指的地方。
+#   症狀:`installer` 回報成功,而 `~/Library/Input Methods` 底下什麼都沒有 ——
+#   這支腳本的驗證端(verify_pkg.sh)自己把這個形態叫做「裝在錯的地方」。
+#   輸入法**只能**住在 Library/Input Methods,所以搬移在這裡永遠是錯的。
+log "pkgbuild(先關掉 BundleIsRelocatable)"
+pkgbuild --analyze --root "${WORK}/payload" "${WORK}/component.plist" >/dev/null \
+  || die "pkgbuild --analyze 失敗"
+/usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" "${WORK}/component.plist" \
+  >/dev/null 2>&1 \
+  || /usr/libexec/PlistBuddy -c "Add :0:BundleIsRelocatable bool false" "${WORK}/component.plist" \
+  || die "改不動 component.plist 的 BundleIsRelocatable"
+grep -q "BundleIsRelocatable" "${WORK}/component.plist" \
+  || die "component.plist 裡沒有 BundleIsRelocatable —— 這一步沒有生效"
+
 pkgbuild \
   --root "${WORK}/payload" \
+  --component-plist "${WORK}/component.plist" \
   --install-location "Library/Input Methods" \
   --scripts "${WORK}/scripts" \
   --identifier "${PKG_ID}" \

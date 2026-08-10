@@ -45,7 +45,16 @@ final class CandidatePanel {
         set { view.onSelect = newValue }
     }
 
+    /// 滾輪／觸控板要求翻頁。
+    var onChangePage: ((PageStep) -> Void)? {
+        get { view.onChangePage }
+        set { view.onChangePage = newValue }
+    }
+
     func hide() {
+        // 窗收起來 = 這一段組字結束了。留著上一段的滾動累積量,
+        // 會讓下一次組字的第一個微小滾動直接翻頁。
+        view.resetPaging()
         panel.orderOut(nil)
     }
 

@@ -108,12 +108,17 @@ final class KeyMapperTests: XCTestCase {
         XCTAssertNil(t.transition(keyCode: 56, flags: [.shift]), "狀態沒變就沒有事件")
     }
 
-    /// Caps Lock 的旗標代表「燈亮著」而不是「鍵按著」，
-    /// 兩次切換都必須各產生一個事件（否則第二次按下去毫無反應）。
-    func testCapsLockAlwaysProducesAnEvent() {
+    /// ⚠ **這一條這一輪反過來了,而且它就是覆核者實測到的迴歸。**
+    ///
+    /// 舊版把每一次 Caps Lock 的 flagsChanged 都當成「按下」送進 librime,
+    /// 而隨附 `default.yaml` 的 `ascii_composer/switch_key: { Caps_Lock: clear }`
+    /// 會讓 `AsciiComposer` 對正在組字的 context 做 `ctx->Clear()` ——
+    /// **組字打到一半按 Caps Lock,剛打的半句話就沒了。**
+    /// 現在它一顆都不放行,理由與 librime 那一半的出處見 `ModifierGate`。
+    func testCapsLockNeverProducesAnEvent() {
         var t = ModifierTracker()
-        XCTAssertEqual(t.transition(keyCode: 57, flags: [.capsLock])?.isKeyUp, false)
-        XCTAssertEqual(t.transition(keyCode: 57, flags: [])?.isKeyUp, false)
+        XCTAssertNil(t.transition(keyCode: 57, flags: [.capsLock]), "亮燈那一次")
+        XCTAssertNil(t.transition(keyCode: 57, flags: []), "熄燈那一次")
     }
 
     func testEveryModifierKeyCodeHasAName() {

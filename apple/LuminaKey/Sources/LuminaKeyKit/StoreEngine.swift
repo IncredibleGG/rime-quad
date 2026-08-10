@@ -93,7 +93,17 @@ public final class StoreEngine {
 
     var searchDirs: [URL] { [userDir, sharedDir] }
 
-    public var enabledSchemas: [String] { RimeConfigPatch.readSchemaList(userDir: userDir) }
+    /// 目前**實際生效**的方案清單。
+    ///
+    /// ⚠ 不可以只讀 `default.custom.yaml`：那個檔案是使用者改過之後才存在的，
+    ///   而沒有它時 librime 照樣有一整份清單（`default.yaml` 的 `schema_list`）。
+    ///   只讀 patch 的話，全新安裝會得到「引擎有方案、設定畫面一列都沒勾」——
+    ///   Windows 端使用者拍到的正是這一張。理由的完整版在 EffectiveSchemaList.swift。
+    public var enabledSchemas: [String] { effectiveSchemas.ids }
+
+    public var effectiveSchemas: EffectiveSchemaList {
+        SchemaListReader.resolve(userDir: userDir, sharedDir: sharedDir)
+    }
 
     // MARK: - 安裝
 

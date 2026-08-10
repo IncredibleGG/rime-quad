@@ -32,6 +32,12 @@ final class LuminaKeyInputController: IMKInputController {
         AppContext.shared.panel.onSelect = { [weak self] idx in
             self?.selectCandidate(index: idx, client: sender)
         }
+        // 一頁只有 `menu/page_size` 個候選(隨附設定是 5)。鍵盤上翻得了頁
+        // (`-`/`=`、`,`/`.`、Page_Up/Down 都送得進 librime),但畫面上沒有任何路 ——
+        // 使用者看到五個字就以為只有五個。滾輪是桌面上最不用學的那一條。
+        AppContext.shared.panel.onChangePage = { [weak self] step in
+            self?.changePage(step, client: sender)
+        }
         AppContext.shared.themes.reload()
         // 使用者可能在別的 app 裡改了設定,或剛剛才在系統設定裡換了輸入來源。
         _ = AppContext.shared.settings.reload()
@@ -99,6 +105,26 @@ final class LuminaKeyInputController: IMKInputController {
 
     // ───────────────────────── 按鍵 ─────────────────────────
 
+    /// IMKit 只送**我們宣告要收**的事件。
+    ///
+    /// ⚠ **這一個 override 就是「輕點 Shift 切中英」的全部前提。**
+    ///   不寫它的話 IMKit 的預設是「只有 keyDown」,而修飾鍵在 macOS 上
+    ///   不產生 keyDown —— 只產生 `flagsChanged`。於是底下的
+    ///   `processFlags()`、`ModifierTracker`、以及 librime 隨附設定裡
+    ///   `ascii_composer/switch_key: { Shift_L: inline_ascii }` 這一整條路徑
+    ///   **一次都不會被走到**:使用者輕點 Shift,什麼都不會發生,
+    ///   沒有錯誤訊息、沒有 log,而每一份程式碼看起來都是對的。
+    ///
+    ///   為什麼不是 ⌃Space(Windows 端使用者要的那一顆):那個組合在 macOS
+    ///   被系統的「選取上一個輸入來源」佔著,搶它要註冊全域熱鍵,
+    ///   結果會是按一下發生兩件事。理由的完整版在 LuminaKeyKit/InputModeSwitch.swift。
+    ///
+    ///   由 `LuminaKey --self-check` 驗:它會拿真的 `NSEvent.EventTypeMask`
+    ///   對一次常數,再問這個 controller 實際回傳什麼。
+    override func recognizedEvents(_ sender: Any!) -> Int {
+        Int(IMKRecognizedEvents.mask)
+    }
+
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
         guard let event, engine.hasSession else { return false }
         switch event.type {
@@ -152,6 +178,11 @@ final class LuminaKeyInputController: IMKInputController {
 
     private func processFlags(event: NSEvent, client sender: Any!) -> Bool {
         let flags = MacModifierFlags(rawValue: event.modifierFlags.rawValue)
+        // ⚠ **這裡沒有 Command 護欄不是漏掉,是它搬進 ModifierTracker 了。**
+        //   IMKit 會把每一顆修飾鍵的 flagsChanged 都送來,全部放行的後果是
+        //   「組字中按 Caps Lock 會清掉組字」(隨附 default.yaml 的
+        //   `Caps_Lock: clear`)。判斷在 LuminaKeyKit/InputModeSwitch.swift 的
+        //   `ModifierGate` —— 那一層有單元測試,這一層沒有。
         guard let t = tracker.transition(keyCode: event.keyCode, flags: flags) else {
             return false
         }
@@ -198,7 +229,9 @@ final class LuminaKeyInputController: IMKInputController {
         // 組字串**一定**交給宿主(規範 §8.7 的桌面端裁決):插入點定位、
         // 宿主自己的重繪、無障礙工具讀得到組字內容,都只有這條路徑做得到。
         setMarkedText(snap.preedit, client: sender)
-        panel.show(theme: AppContext.shared.themes.current, snapshot: snap,
+        // `effectiveTheme` = 主題 + 設定的覆寫(見 LuminaKeyKit/AppearanceOverrides.swift)。
+        // 直接用 `themes.current` 的話,「設定 › 外觀 › 顯示狀態列」是一顆死鍵。
+        panel.show(theme: AppContext.shared.effectiveTheme, snapshot: snap,
                    caretRect: caretRect(client: sender))
     }
 
@@ -237,6 +270,14 @@ final class LuminaKeyInputController: IMKInputController {
         return rect
     }
 
+    private func changePage(_ step: PageStep, client sender: Any!) {
+        guard step != .none else { return }
+        guard engine.changePage(backward: step.backward) else { return }
+        // ⚠ 一個動作只 acquire 一次(見 rime_shell.h 的記憶體約定)。
+        guard let snap = engine.snapshot() else { return }
+        deliver(snap, to: sender)
+    }
+
     private func selectCandidate(index: Int, client sender: Any!) {
         guard engine.selectCandidate(Int32(index)) else { return }
         guard let snap = engine.snapshot() else { return }
@@ -261,8 +302,27 @@ final class LuminaKeyInputController: IMKInputController {
         menu.addItem(settings)
         menu.addItem(.separator())
 
+        // ⚠ **整個 menu() 只 acquire 一次快照。** commit 在 acquire 當下就被消費,
+        //   分兩次拿會把上一次還沒上屏的字吃掉(見 rime_shell.h 的記憶體約定)。
+        let snap = engine.snapshot()
+
+        // 「現在是中文還是英文」。
+        //
+        // ⚠ 這一行**只講一個狀態**,不是把「中／En」兩態並排。兩態並排是給
+        //   行動端**按鍵**用的(一顆只寫「中」的鍵有「現在是中文」與
+        //   「按了會變中文」兩種讀法),而選單列是**顯示** —— 兩個都畫出來
+        //   只會變成讓使用者猜。使用者的原話:「現在是什麼就顯示什麼」。
+        //   括號裡順便回答「那要怎麼切」,那是 macOS 上唯一找得到這個功能的地方。
+        let mode = NSMenuItem(
+            title: InputModeSwitch.menuTitle(isAsciiMode: snap?.status.isAsciiMode ?? false,
+                                             lang: lang),
+            action: #selector(toggleInputModeFromMenu(_:)), keyEquivalent: "")
+        mode.target = self
+        menu.addItem(mode)
+        menu.addItem(.separator())
+
         // 方案切換。目前這一個打勾 —— 沒有打勾的話使用者不知道自己在哪。
-        let currentId = engine.snapshot()?.status.schemaId ?? ""
+        let currentId = snap?.status.schemaId ?? ""
         let schemas = engine.schemaList()
         if schemas.isEmpty {
             let none = NSMenuItem(title: T("(還沒有任何方案)", "(还没有任何方案)",
@@ -298,6 +358,12 @@ final class LuminaKeyInputController: IMKInputController {
         about.target = self
         menu.addItem(about)
         return menu
+    }
+
+    /// 選單裡那一行點下去 = 切中英。與輕點 Shift 走的是同一個 librime 開關,
+    /// 所以兩條路徑不會打架。
+    @objc private func toggleInputModeFromMenu(_ sender: NSMenuItem) {
+        engine.setOption("ascii_mode", !engine.getOption("ascii_mode"))
     }
 
     @objc private func selectSchemaFromMenu(_ sender: NSMenuItem) {

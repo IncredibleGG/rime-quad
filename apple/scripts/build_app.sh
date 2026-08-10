@@ -149,6 +149,36 @@ else
   echo "[warn] core/data/shared 不存在,.app 裡不會有方案資料(先跑 scripts/collect_data.sh)" >&2
 fi
 
+# 使用者初始配置的**範本**。第一次啟動時由 UserDataSeed 補進
+# ~/Library/Application Support/LuminaKey/(只補不覆蓋)。
+#
+# ⚠ 這一段以前**不存在**,而後果不是「少一個檔案」:
+#   librime 會改照上游 rime-prelude 的 default.yaml 部署,那份 schema_list
+#   沒有 luna_pinyin_tw / bopomofo_tw / t9_pinyin(我們真正打包的),
+#   卻有 cangjie5 / quick5(我們沒有打包的)。使用者看到的是
+#   「設定裡一列方案都沒有勾,而引擎在用一個他沒選過的方案」。
+#   CI 一直是綠的,因為 rime_console 是直接把 core/data/user 當使用者目錄傳進去的。
+#
+# ⚠ **白名單,不是「掃一遍那個目錄」。** `core/data/user` 在 CI 上同時是
+#   rime_console 的**使用者目錄** —— 跑完 verify_console / verify_user_dict
+#   之後,那裡還會有 librime 寫下的 `installation.yaml`(帶著這台機器的
+#   installation_id)、`user.yaml`、以及測試用的 `custom_phrase.txt`
+#   (裡面有「測試詞彙鑰匙」)。把它們一起打包 = 每一個使用者都拿到
+#   同一組安裝 id 與一個莫名其妙的詞。第一版就是 `find -type f` 掃一遍。
+TEMPLATE_FILES=( "default.custom.yaml" )
+if [[ -d "${ROOT}/core/data/user" ]]; then
+  mkdir -p "${APP}/Contents/Resources/UserTemplate"
+  for f in "${TEMPLATE_FILES[@]}"; do
+    if [[ -s "${ROOT}/core/data/user/${f}" ]]; then
+      cp "${ROOT}/core/data/user/${f}" "${APP}/Contents/Resources/UserTemplate/${f}"
+    else
+      echo "[warn] core/data/user/${f} 不存在或是空的" >&2
+    fi
+  done
+else
+  echo "[warn] core/data/user 不存在,.app 裡不會有使用者初始配置範本" >&2
+fi
+
 # ---------------------------------------------------------------- 設定介面
 log "組裝 LuminaKeySettings.app"
 mkdir -p "${SETTINGS_APP}/Contents/MacOS" "${SETTINGS_APP}/Contents/Resources"

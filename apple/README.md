@@ -120,8 +120,52 @@ librime 的靜態庫沒有指定部署目標,實際最低系統版本可能高�
   ⚠ 這裡**不是** grep 符號表:實測 `swiftc -O` 單模組編譯把
   `_OBJC_CLASS_$_…` 設成 **local** 符號,`nm -g` 看不到它,而 `.app` 是好的 ——
   也就是那條斷言會**在該綠的時候紅**。腳本裡只留一個不判定成敗的 `nm` 診斷。
-- bundle 驗證的 5 個反向變異,每一個都斷言紅的是**它自己那一條**
-  (含「多打包了 `core/layouts/`」這條反過來的斷言)
+- ⭐ **UI 接線拆掉都會紅(fix4-macmod 補的)。**
+  fix3-mac 四條缺陷的修法裡有五處接線落在 `AppSources/`,而 `swift test` 不編譯那個目錄,
+  變異測試也只跑 Kit —— 覆核者實測「五處全部拆得掉而 CI 全綠」(run #105 重現過一次)。
+  現在 `run_kit_tests.sh` 有**九格**在問這件事:三處接線 ×
+  (核心行為改壞 / 資料流切斷 / 呼叫點刪掉定義留著)。
+  判準在 `Tests/LuminaKeyKitTests/SwiftSourceScanner.swift`,而且**不是 grep**:
+  先抹掉註解與字串字面值,只在指定的函式主體裡看,問的是引數標籤收到什麼、
+  以及值有沒有真的流到終點。**那份判準自己也有一格變異**
+  (把「抹掉註解」拿掉 → 名字寫在註解裡就會被當成接了線 → `SwiftSourceTests` 必須紅)。
+- ⭐ **組字中按 Caps Lock 不會被送進引擎。** `--self-check` 直接問 `ModifierGate`,
+  另外拿 AppKit 的 `NSEvent.ModifierFlags` 對一次我們手抄的旗標值。
+  隨附 `default.yaml` 真的把 Caps Lock 綁成 `clear` 這個**前提**也在 CI 上被檢查
+  (上游哪天改了,那條理由就要重讀一次)。
+- bundle 驗證的 7 個反向變異,每一個都斷言紅的是**它自己那一條**
+  (含「多打包了 `core/layouts/`」這條反過來的斷言,以及
+  「少了使用者初始配置範本」「範本列了沒有打包的方案」)
+- ⭐ **輸入法真的宣告要收 `flagsChanged`。** `--self-check` 會建一個
+  `LuminaKeyInputController` 並問它 `recognizedEvents(_:)` 實際回傳什麼,
+  再拿真的 `NSEvent.EventTypeMask` 對一次常數。**而且那道守門自己被反向驗過**:
+  workflow 把那一行換成 IMKit 的預設值、重建、斷言 `--self-check` 紅在那一條,
+  再還原重建、斷言變綠。少了那一行,輕點 Shift 切中英**整條路徑不存在**,
+  而畫面完全正常、單元測試全綠 —— 這正是本輪 M-1 的真身。
+- ⭐ **使用者初始配置的範本真的在 bundle 裡,而且列的方案都打包了。**
+  少了它,librime 會照上游 `default.yaml` 部署,而那份清單沒有我們實際打包的
+  臺灣字形方案、卻有兩個我們沒打包的 —— 本輪 M-3 的真身。
+  範本也在 `.pkg` **裝完之後**被斷言一次(使用者拿到的是那一份,不是 build 目錄裡那一份)。
+- ⭐ **那個缺陷本身被重現成一個可重跑的事實**(`verify_schema_seed.sh`):
+  同一支 `rime_console`、同一份 shared 資料,只差使用者目錄。
+  實測(run #101)比原本推測的更糟 —— 空目錄那一臂**部署直接失敗、
+  一個方案都沒有**,因為上游 `default.yaml` 列了我們沒打包的 cangjie5/quick5。
+  也就是說真機上的症狀不是「清單長得不一樣」,是**引擎根本沒有可用的方案**,
+  而畫面上只看得到一個空清單。
+  ⚠ 它同時擋住空洞的通過:「B 沒有 luna_pinyin_tw」單獨看是空洞的
+  (什麼都沒印也成立),所以 B 必須落在「部署失敗(印出原因)」或
+  「部署成功且列得出方案」之一;「結束碼 0 又一個方案都沒有」判為
+  **這一關自己壞了**。
+- ⭐ **`.pkg` 真的把東西放進 `~/Library/Input Methods`。**
+  ⚠ 這一條在 2026-08-10 抓到一個真的缺陷:`pkgbuild --root` 自動產生的元件清單
+  把 app bundle 標成 `BundleIsRelocatable`,於是 `installer` 回報成功卻**什麼都沒裝**。
+  已用單獨的對照組確認因果(只拿掉那一段 → 立刻回到同一片紅)。
+  失敗時會印出 `installer` 的輸出、`pkgutil` 的收據、以及這台機器上所有
+  `LuminaKey.app` 的位置 —— 少了這段診斷,那一片 ✗ 讀起來像 pkgbuild 壞了。
+- ⭐ **候選真的翻得了頁**:`rime_console` 直接問 librime,
+  `nihao` → page 0、`nihao=` → page 1、`nihao=-` → page 0。
+  「一頁 5 個」是 `core/data/shared/default.yaml` 的 `menu/page_size`(印出來當紀錄,
+  不斷言數字 —— 那是 `core/data/` 的決定)。
 - 二進位真的連上 InputMethodKit,且 librime 是**靜態**連結
 - `LuminaKey --self-check`:向真的 librime 問 keysym 表裡每一個名稱
 - **`.pkg` 真的裝到 `~/Library/Input Methods`**,圖示解得開,三種語言的
@@ -181,7 +225,37 @@ librime 的靜態庫沒有指定部署目標,實際最低系統版本可能高�
    有些宿主回報 `NSRect.zero`,本實作會退回滑鼠位置 —— 那條退路從沒被真的走過。
 8. **實體鍵盤佈局。** 映射邏輯有 Dvorak / AZERTY 的單元測試,但那是**餵假資料**。
 9. **修飾鍵。** 「輕點 Shift 切中英」靠的是 `flagsChanged` 的 release 事件。
-   狀態機有測試,真的按下去會不會動沒驗過。⌘C / ⌘V 有沒有被吃掉也沒驗過。
+   ⚠ **2026-08-10 更新:上一輪它根本不會動,而且是結構上的。**
+   `IMKInputController` 預設只送 keyDown(`recognizedEvents(_:)` 沒有被 override),
+   而修飾鍵在 macOS **不產生 keyDown** —— `ModifierTracker` 與 `processFlags()`
+   是死碼。已補上宣告,並由 `--self-check` 守住(見上)。
+   **但「真的按下去會不會切」仍然只有人驗得到**:
+   → 驗收步驟:在任何文字框裡輕點一下左 Shift,選單列的輸入法選單最上面
+   那一行應該從「目前:中文」變成「目前:英文」,再打字要出英文;
+   再輕點一次要切回來。**按住 Shift 打大寫字母不可以觸發切換。**
+   → **也要試這一條**:組字打到一半按 Caps Lock。**剛打的半句話必須留著。**
+   fix3-mac 讓每一顆修飾鍵的 flagsChanged 都進 librime,而隨附 `default.yaml` 的
+   `Caps_Lock: clear` 會在那時清掉組字;fix4-macmod 改成只放行 Shift
+   (`ModifierGate`),但「真的按下去會怎樣」還是只有人試得出來。
+   ⌘C / ⌘V 有沒有被吃掉也還是沒驗過 —— 現在 ⌘ 的 flagsChanged 不會進 librime 了,
+   但 `process()` 那條護欄擋的是 keyDown,兩條路要分開試。
+14. **候選窗的翻頁。** 一頁只有 `menu/page_size` 個候選(隨附設定是 5)。
+    這一輪接上了滾輪/觸控板翻頁(`ScrollPager` 有單元測試),
+    但**沒有人真的滾過**。鍵盤那一條(`-`/`=`、`,`/`.`、Page_Up/Down)
+    也從來沒有人按過。
+    → 驗收步驟:打 `nihao` 之後在候選窗上滾一下,應該翻到下一頁;
+    往回滾要回到上一頁。到最後一頁再滾應該沒有反應而不是清空組字。
+15. **狀態列。** ⚠ **出廠預設是關的**:規範 §8.12 的 `status_bar.show` 預設 false,
+    而 `core/themes/` 底下沒有任何一份宣告 `status_bar:`。
+    **所以頁碼預設看不見** —— 第 14 條的翻頁「翻得動」與「看得出翻到第幾頁」
+    是兩件事,目前只做完第一件。
+    「設定 › 外觀 › 顯示狀態列」這一輪才真的接上線
+    (在此之前它是一顆死鍵)。打開之後候選窗上會出現
+    「方案名 中 繁 頁碼」,而且**輸入模式只顯示現在那一態**。
+    → 驗收步驟:打開它、輕點 Shift,那個字應該在「中」與「En」之間換,
+    而不是兩個一起畫出來。
+    ⚠ 同一頁的**候選字級、橫直排、顯示序號**三項**仍然沒有接線**
+    (`AppearanceOverrides.unwiredFields` 把這件事寫成了一個測得到的事實)。
 10. **librime 內建的方案選單(switcher)。** `Control+grave` 與 `F4` 送得進
     librime(它們沒有被 Command 那條規則擋掉,keysym 表也有 F4),
     但**沒有人按過**。這是「看得到但摸不到」最典型的候選。

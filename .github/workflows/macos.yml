@@ -17,7 +17,7 @@ name: macOS (核心 + 輸入法 + 設定介面)
 
 on:
   push:
-    branches: [main, macos, rename-apple, dictfix, fix-gates]
+    branches: [main, macos, rename-apple, dictfix, fix-gates, fix3-mac, fix4-macmod]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -79,6 +79,26 @@ jobs:
       - name: 確認執行期資料真的齊全
         run: ./apple/scripts/verify_data.sh
 
+      # ⚠ **ModifierGate 的前提是一份上游檔案,所以它要被檢查,不是被相信。**
+      #   組字中按 Caps Lock 會清掉組字,靠的是隨附 default.yaml 裡的
+      #   `ascii_composer/switch_key: { Caps_Lock: clear }`。那份檔案來自
+      #   rime-prelude(上游),它哪天改了,ModifierGate 的理由就要重讀一次。
+      #   這一關不是在驗我們的程式碼,是在驗**那個前提還在不在**。
+      - name: 前提 — 隨附的 default.yaml 真的把 Caps Lock 綁成 clear
+        run: |
+          set -uo pipefail
+          F=core/data/shared/default.yaml
+          echo "== $F 的 ascii_composer =="
+          grep -n -A8 '^ascii_composer:' "$F" | sed 's/^/    /'
+          case "$(cat "$F")" in
+            *"Caps_Lock: clear"*)
+              echo "  ✓ 前提成立:Caps_Lock 綁的是 clear(librime 會 ctx->Clear())" ;;
+            *)
+              echo "!! 上游改了 ascii_composer/switch_key —— ModifierGate 的理由要重讀一次" >&2
+              echo "   (LuminaKeyKit/InputModeSwitch.swift 的 ModifierGate)" >&2
+              exit 1 ;;
+          esac
+
       - name: 確認四個方案真的部署成功
         run: |
           # rime_console 的 deploy-only 模式（keys 傳 "-"）會印出機器可讀的
@@ -108,6 +128,14 @@ jobs:
           done
           exit $fail
 
+      # ⚠ **M-3 的重現,用真的 librime 跑,不是用猜的。**
+      #   兩臂只差使用者目錄:有 default.custom.yaml / 空目錄。
+      #   後者就是 .app 沒有附範本時使用者機器上的樣子。
+      #   實測(run #101)結果比原本預期的更糟:B 那一臂**部署直接失敗**,
+      #   一個方案都沒有 —— 上游 default.yaml 列了我們沒打包的 cangjie5/quick5。
+      - name: 重現 — 少了 default.custom.yaml,引擎連部署都過不了
+        run: ./apple/scripts/verify_schema_seed.sh
+
       - name: 斷言本體的反向測試（證明它真的會紅）
         run: |
           # 先證明斷言會失敗，再相信它的成功。
@@ -118,6 +146,55 @@ jobs:
 
       - name: 核心驗證 — 注音 su3cl3 → 你好
         run: ./apple/scripts/verify_console.sh su3cl3 bopomofo_tw 你好
+
+      # ── (a-2c) 候選翻頁:回答使用者的「翻不翻得了頁」 ────────────
+      # 一頁的候選數來自 core/data/shared/default.yaml 的 menu/page_size(=5),
+      # 四端同源;rs_snapshot 沒有任何天花板。所以「只有 5 個」是設定,
+      # 而「下一頁就沒了」是另一件事 —— 這一關用真的 librime 分開這兩件事。
+      # `=` / `-` 是 rime-prelude 的 paging_with_minus_equal(Page_Down / Page_Up)。
+      - name: 核心驗證 — 候選真的翻得了頁（= 下一頁、- 上一頁）
+        run: |
+          set -uo pipefail
+          set +e
+          C=./apple/build/rime_console
+          S=core/data/shared
+          U=core/data/user
+          # 抽 dump 那一行的「候選數」與「頁碼」。
+          # ⚠ 只用 POSIX BRE:\| \+ \? 與 grep -P/\K 在 BSD 上不成立
+          #   （docs/coordination.md §5 已經記過三次)。
+          pageinfo() {
+            printf '%s\n' "$1" \
+              | sed -n 's/.*\[組字後\] 候選 \([0-9][0-9]*\) 個 (page \([0-9][0-9]*\).*/\1 \2/p' \
+              | head -1
+          }
+          fail=0
+          expect_page() {  # expect_page <按鍵> <期待頁碼> <說明>
+            local out info count page
+            out="$("$C" "$S" "$U" "$1" 1 luna_pinyin_tw 2>&1)"
+            info="$(pageinfo "$out")"
+            if [ -z "$info" ]; then
+              echo "  !! [$3] 抽不出「候選 N 個 (page M」那一行 —— 抽取器壞了,不是沒有違規" >&2
+              printf '%s\n' "$out" | grep '組字後' >&2
+              fail=1; return
+            fi
+            count="${info%% *}"; page="${info##* }"
+            if [ "$count" -le 0 ]; then
+              echo "  !! [$3] 候選數是 $count —— 組字根本沒成立" >&2; fail=1; return
+            fi
+            if [ "$page" != "$2" ]; then
+              echo "  !! [$3] 頁碼是 $page,期待 $2（按鍵「$1」）" >&2; fail=1; return
+            fi
+            echo "  ✓ [$3] 按鍵「$1」→ 候選 $count 個, page $page"
+          }
+          expect_page 'nihao'   0 '不按翻頁鍵'
+          expect_page 'nihao='  1 '按 = 到下一頁'
+          expect_page 'nihao=-' 0 '再按 - 回上一頁'
+          # 一頁幾個是**設定**,不是上限。把它印出來當紀錄(不斷言數字,
+          # 那是 core/data/ 的決定,協調端隨時可以改)。
+          echo "一頁候選數的來源:"
+          grep -n -A1 '^menu:' "$S/default.yaml" | sed 's/^/    /'
+          [ "$fail" -eq 0 ] || exit 1
+          echo "候選翻頁在核心層是通的 ✓（畫面上有沒有路是另一回事,見 apple/README.md §3）"
 
       # ── (a-2b) 使用者加的詞:證明那份 TSV 真的會影響輸出 ────────
       # 這一關驗的是 docs/settings-model.md §5 的格式。純邏輯測試只能證明
@@ -144,7 +221,7 @@ jobs:
       #   改成一次一個違規,而且斷言紅的是**它自己那一行**。
       #   其中「多打包了 core/layouts/」那條反向斷言在這之前從來沒有被
       #   反向驗過 —— 它可以整條被刪掉而 CI 全綠。
-      - name: bundle 驗證的反向測試（5 個變異,每個都要紅在自己那一條）
+      - name: bundle 驗證的反向測試（7 個變異,每個都要紅在自己那一條）
         run: |
           set -uo pipefail
           # ⚠ Actions 的預設 shell 是 `bash -e {0}` —— errexit **本來就開著**,
@@ -210,12 +287,92 @@ jobs:
           mkdir -p "$BROKEN/Contents/Resources/layouts"
           expect "多打包了 core/layouts/" "✗ 沒有打包 core/layouts"
 
+          # 6. **沒有使用者初始配置範本。** 少了它,librime 會照上游
+          #    rime-prelude 的 default.yaml 部署,而那份 schema_list 裡沒有
+          #    我們實際打包的臺灣字形方案,卻有兩個我們沒有打包的 ——
+          #    真機上的症狀是「設定裡一列方案都沒有勾」。
+          fresh
+          rm -rf "$BROKEN/Contents/Resources/UserTemplate"
+          expect "少了使用者初始配置範本" "✗ 隨附了使用者初始配置範本"
+
+          # 7. **範本在,但寫錯了。** 後果與第 6 條一模一樣,而「檔案在不在」
+          #    這種斷言完全看不出差別 —— 這一條就是為了不讓第 6 條變成
+          #    「只要有個檔案就好」。
+          fresh
+          cat > "$BROKEN/Contents/Resources/UserTemplate/default.custom.yaml" <<'YAML'
+          patch:
+            schema_list:
+              - schema: luna_pinyin_tw
+              - schema: no_such_schema
+          YAML
+          expect "範本列了沒有打包的方案" "✗ 範本列的方案都有對應的 .schema.yaml"
+
           rm -rf "$BROKEN"
           if [ "$fails" -ne 0 ]; then
             echo "!! $fails 個反向測試沒有紅在對的地方" >&2
             exit 1
           fi
-          echo "5 個變異全部紅在自己那一條 ✓"
+          echo "7 個變異全部紅在自己那一條 ✓"
+
+      # ⚠ **「輕點 Shift 切中英」這件事的守門,自己必須被驗過。**
+      #
+      #   `LuminaKeyInputController.recognizedEvents(_:)` 少了那一行,IMKit
+      #   就只送 keyDown,而修飾鍵在 macOS **不產生 keyDown** —— 於是
+      #   ModifierTracker、processFlags()、librime 的 ascii_composer 這一整條
+      #   路徑一次都不會被走到:使用者輕點 Shift 什麼都不會發生,沒有錯誤訊息,
+      #   而單元測試照樣全綠(它們測的是純邏輯,碰不到 IMKit)。
+      #
+      #   所以這裡把那一行換成「IMKit 的預設值」、**真的重建一次**,
+      #   斷言 `--self-check` 紅在它自己那一條;然後還原、再建一次、必須綠。
+      #   植入之後先斷言檔案真的變了 —— 沒植入成功的樹當然是綠的,
+      #   而報表上會寫成「守門不算數」,讀起來像守門有問題。
+      - name: 中英切換守門的反向測試（拿掉宣告 → 重建 → --self-check 必須紅）
+        run: |
+          set -uo pipefail
+          set +e
+          SRC=apple/LuminaKey/AppSources/LuminaKeyInputController.swift
+          BIN=apple/build/LuminaKey.app/Contents/MacOS/LuminaKey
+          cp "$SRC" /tmp/controller.bak
+
+          sed -i '' 's/Int(IMKRecognizedEvents\.mask)/Int(IMKRecognizedEvents.imkitDefault)/' "$SRC"
+          if cmp -s "$SRC" /tmp/controller.bak; then
+            echo "!! 變異沒有植入成功（錨點對不上）—— 這一關不算數" >&2
+            cp /tmp/controller.bak "$SRC"
+            exit 1
+          fi
+
+          ./apple/scripts/build_app.sh >/tmp/mutbuild.log 2>&1
+          if [ $? -ne 0 ]; then
+            echo "!! 變異版建不起來,反向測試無法進行" >&2
+            tail -30 /tmp/mutbuild.log >&2
+            cp /tmp/controller.bak "$SRC"
+            exit 1
+          fi
+
+          OUT="$("$BIN" --self-check 2>&1)"; RC=$?
+          cp /tmp/controller.bak "$SRC"
+
+          rc_ok=1
+          if [ "$RC" -eq 0 ]; then
+            echo "!! 拿掉宣告之後 --self-check 竟然還是綠的 —— 那道守門沒有在守" >&2
+            printf '%s\n' "$OUT" >&2
+            rc_ok=0
+          fi
+          # ⚠ 不用 grep -q（本步驟的 pipeline 會 SIGPIPE，本專案被咬過兩次）。
+          case "$OUT" in
+            *"✗ controller 宣告要收 flagsChanged"*)
+              echo "  ✓ 紅在對的那一條" ;;
+            *) echo "!! 紅了,但不是因為那一條:" >&2
+               printf '%s\n' "$OUT" >&2
+               rc_ok=0 ;;
+          esac
+
+          echo "== 還原並重建 =="
+          ./apple/scripts/build_app.sh >/tmp/rebuild.log 2>&1 \
+            || { echo "!! 還原之後建不起來" >&2; tail -30 /tmp/rebuild.log >&2; exit 1; }
+          "$BIN" --self-check || { echo "!! 還原之後 --self-check 仍然是紅的" >&2; exit 1; }
+          [ "$rc_ok" -eq 1 ] || exit 1
+          echo "中英切換的守門:拿掉會紅、放回去會綠 ✓"
 
       # ── (a-4) 安裝:這一輪新增,對應真機回報的兩個缺陷 ──────────
       - name: 做出 .pkg 安裝檔
