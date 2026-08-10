@@ -41,6 +41,7 @@ on:
       - fix2-release
       - fix2-deadend
       - fix3-install
+      - fix5-t9guard
   pull_request:
     branches:
       - main
@@ -332,6 +333,10 @@ jobs:
     #   (候選列的畫面/行為守門),而**一支從來沒有在 CI 上跑過的關卡,
     #   看起來與一切正常一模一樣** —— 那正是這個專案 verify_syllables.sh
     #   的三個反向測試踩過的坑(檔頭寫著、workflow 沒接)。
+    # ⚠ fix5-t9guard 暫時列在這裡,而且**合併回 main 之後就該拿掉**。
+    #   理由同下:這一輪在慢車道新增了第 4 關(單音節收斂)與
+    #   `--scenario stale-schema`,兩條都只有模擬器跑得了。開發機上跑過了,
+    #   但「只在開發機上跑過」與「CI 上從來沒跑過」在日誌上長得一樣。
     # ⚠ fix-gates 暫時列在這裡,而且**合併回 main 之後就該拿掉**。
     #   理由:這一輪在慢車道新增了 `--plant bad-slot-ids`(消歧欄關卡的第三個
     #   反向測試,它斷言的是畫面像素,只有模擬器跑得了)。開發機沒有 tesseract,
@@ -343,7 +348,8 @@ jobs:
        (github.ref == 'refs/heads/main' ||
         github.ref == 'refs/heads/fix3-cand' ||
         github.ref == 'refs/heads/fix-gates' ||
-        github.ref == 'refs/heads/fix2-release'))
+        github.ref == 'refs/heads/fix2-release' ||
+        github.ref == 'refs/heads/fix5-t9guard'))
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
@@ -455,6 +461,13 @@ jobs:
             # 而且腳本會確認紅的是**指名的那一條**(踩紅別條照樣算失敗)。
             # ⚠ 一行寫完,理由同上面那一行(這個 action 逐行交給 sh -c)。
             bash ./scripts/verify_syllables.sh --plant bad-slot-ids --out build/verify-syllables-plant
+            # 情境:裝置上放一份舊的單編碼方案(collect_data.sh 沒跑過的機器)。
+            # 那種方案上 rs_set_input("niGAM") 照樣回 true,而使用者點下第一個
+            # 候選就上屏「ni好」—— 真機回報過的那一條。斷言的是**消歧欄整條
+            # 不得出現**:引擎接不住的東西,不可以在畫面上長成一顆可以按的鍵。
+            # ⚠ 這不是 --plant,退出碼不反轉:植入的是環境,不是缺陷。
+            # ⚠ 一行寫完,理由同上(這個 action 逐行交給 sh -c)。
+            bash ./scripts/verify_syllables.sh --scenario stale-schema --out build/verify-syllables-stale
             # 候選列本身:左端不印按鍵代碼(真機回報 A-2)、翻得到第 2 頁而且
             # 選得下去(A-4)。與上面那一支互補 —— 那一支驗的是消歧欄那一欄,
             # 這一支驗的是候選列。兩條都只有畫面上才看得出來:純函式測試在

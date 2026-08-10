@@ -134,6 +134,16 @@ data class KeyboardUiState(
      * 它的長度就是「現在該問第幾個音節」，也是消歧欄要顯示哪一批讀音的依據。
      */
     val confirmedSyllables: List<String> = emptyList(),
+    /**
+     * 這個方案**做得到**逐音節改寫嗎（由 IME service 的啟動探針回答）。
+     *
+     * 為什麼是 UI 的事:做不到的時候消歧欄**整條不出現**。做得到與做不到,
+     * 畫面上的差別必須看得出來 —— 畫一排按下去什麼都不會發生的讀音,
+     * 就是這個專案抓過六次的那種「念得出名字、按下去沒反應」的鍵。
+     *
+     * 預設 false 是 fail-safe:還沒問到答案之前不要畫。
+     */
+    val syllableRewriteReady: Boolean = false,
 ) {
     val layer: LayoutLayer? get() = layout?.layer(layerId) ?: layout?.layers?.firstOrNull()
 }
