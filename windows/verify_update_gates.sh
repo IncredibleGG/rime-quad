@@ -138,6 +138,10 @@ mutate "下載網址不先驗自己的 scheme" common/update_manifest.cc \
   'if (!LocationSchemeAllowed(raw_url)) {' 'if (false) {' \
   update_manifest_required_fields_reject_the_whole_thing
 
+mutate "安裝程式網址收回 http" common/update_manifest.cc \
+  'if (!HttpsOnly(m.url)) {' 'if (!SchemeAllowed(m.url)) {' \
+  update_manifest_setup_url_must_be_https
+
 mutate "選用欄位格式不對就整份拒收" common/update_manifest.cc \
   '  const std::string app_id = Trim(TopString(root, "app_id"));
   if (LooksLikeAppId(app_id)) m.app_id = app_id;' \

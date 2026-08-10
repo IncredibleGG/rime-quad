@@ -135,6 +135,18 @@ std::string HostOf(const std::string& url);
 // scheme 是不是 http / https(大小寫不拘)。
 bool SchemeAllowed(const std::string& url);
 
+// scheme 是不是 **https**(大小寫不拘)。
+//
+// ⚠ 為什麼線上更新那條線不能用 SchemeAllowed:那一支連 http 也收,而
+//   http 對**市集索引**還過得去 —— 索引裡的每一包另有 sha256,而索引
+//   本身不會被執行。線上更新下載的是一支**會提權執行**的安裝程式,
+//   而 net_gate.h 開頭寫得很清楚:這一端沒有程式碼簽章,**TLS 是唯一的
+//   信任錨**。走明文的話那條線上一個信任來源都不剩 —— sha256 是從同一
+//   個地方拿的,對方換得掉安裝程式就換得掉它的 sha256,那是同一個動作。
+//
+// ⚠ 這不是「多一層保險」,是那條線的**唯一**一層。
+bool HttpsOnly(const std::string& url);
+
 // 相對網址解析。base 必須是絕對網址。
 // 解析不出來就回傳 rel 原樣(呼叫端下一跳會再驗一次 scheme)。
 std::string ResolveUrl(const std::string& base, const std::string& rel);

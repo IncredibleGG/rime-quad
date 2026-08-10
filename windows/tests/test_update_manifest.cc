@@ -142,6 +142,52 @@ TEST(update_manifest_required_fields_reject_the_whole_thing) {
   }
 }
 
+TEST(update_manifest_setup_url_must_be_https) {
+  // ⚠ 這一條守的是**信任錨本身**,不是一個格式規則。
+  //
+  //   這一端沒有程式碼簽章(見 service/net_gate.h 開頭那一段)。
+  //   使用者按下「現在更新」之後會有一支安裝程式以系統管理員身分跑起來,
+  //   而我們對「那真的是我們發的那一支」的全部根據,就是那條 TLS 連線。
+  //   sha256 擋不住這一段:它是從同一份清單裡拿的,而清單走明文的話,
+  //   換掉安裝程式與換掉它的 sha256 是同一個動作。
+  {
+    std::string bad = Good();
+    const size_t i = bad.find("\"url\": \"https://");
+    CHECK(i != std::string::npos);
+    bad = bad.substr(0, i) + "\"url\": \"http://" +
+          bad.substr(i + std::string("\"url\": \"https://").size());
+    const ManifestParseResult r = ParseWinUpdateManifest(bad, kUrl);
+    CHECK(!r.ok);
+    CHECK(!r.error.empty());
+  }
+  // 相對網址仍然可以 —— 它會被接到清單自己的 https 主機上。
+  {
+    std::string rel = Good();
+    const size_t i = rel.find("\"url\": \"https://example.invalid/rime/windows/"
+                              "LuminaKey-Setup-x64.exe\"");
+    CHECK(i != std::string::npos);
+    rel.replace(i, std::string("\"url\": \"https://example.invalid/rime/windows/"
+                               "LuminaKey-Setup-x64.exe\"").size(),
+                "\"url\": \"LuminaKey-Setup-x64.exe\"");
+    const ManifestParseResult r = ParseWinUpdateManifest(rel, kUrl);
+    CHECK(r.ok);
+    CHECK_STR(r.manifest.url,
+              "https://example.invalid/rime/windows/LuminaKey-Setup-x64.exe");
+  }
+  // 下載頁是選用欄位:明文的話**當成沒有**,不整份拒收 ——
+  // 它只是一個連結,而一份少了連結的清單仍然是可用的。
+  {
+    std::string p = Good();
+    const size_t i = p.find("\"page_url\": \"https://");
+    CHECK(i != std::string::npos);
+    p = p.substr(0, i) + "\"page_url\": \"http://" +
+        p.substr(i + std::string("\"page_url\": \"https://").size());
+    const ManifestParseResult r = ParseWinUpdateManifest(p, kUrl);
+    CHECK(r.ok);
+    CHECK(r.manifest.page_url.empty());
+  }
+}
+
 TEST(update_manifest_is_not_fooled_by_nested_objects_or_strings) {
   // ⚠ 發布端那一側踩過同一個坑(publish_apk.sh 的 --self-check B2):
   //   用貪婪的字串比對抓 version_code,會被巢狀物件裡更大的那個騙走。

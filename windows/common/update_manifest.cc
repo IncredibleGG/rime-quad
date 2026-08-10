@@ -391,8 +391,12 @@ ManifestParseResult ParseWinUpdateManifest(const std::string& text,
     return r;
   }
   m.url = ResolveUrl(manifest_url, raw_url);
-  if (!SchemeAllowed(m.url)) {
-    r.error = "下載網址只接受 http 或 https。";
+  // ⚠ **https,不是 http-or-https。** 這個網址指向的是一支會提權執行的
+  //   安裝程式,而這一端沒有程式碼簽章 —— TLS 是唯一的信任錨
+  //   (見 service/net_gate.h 開頭)。走明文的話,對方換得掉安裝程式
+  //   就換得掉下面那個 sha256,那是同一個動作。
+  if (!HttpsOnly(m.url)) {
+    r.error = "安裝程式的網址必須是 https。";
     return r;
   }
 
@@ -426,7 +430,10 @@ ManifestParseResult ParseWinUpdateManifest(const std::string& text,
   const std::string page = Trim(TopString(root, "page_url"));
   if (!page.empty() && LocationSchemeAllowed(page)) {
     const std::string abs = ResolveUrl(manifest_url, page);
-    if (SchemeAllowed(abs)) m.page_url = abs;
+    // 這一個是拿去開瀏覽器的,同樣只收 https:一個明文的下載頁,
+    // 使用者在上面按下的每一顆鍵都可以被路上的人換掉。
+    // ⚠ 格式不對 = 當成沒有(選用欄位不整份拒收),與上面那幾條一致。
+    if (HttpsOnly(abs)) m.page_url = abs;
   }
 
   r.ok = true;

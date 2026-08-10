@@ -241,6 +241,15 @@ bool SchemeAllowed(const std::string& url) {
   return CheckHop(true, url) == HopVerdict::kProceed;
 }
 
+bool HttpsOnly(const std::string& url) {
+  // 先走同一條 CheckHop(scheme 先於 authority、空 authority 算壞網址),
+  // 免得這裡多出第二份「什麼算合法網址」的判斷。
+  if (CheckHop(true, url) != HopVerdict::kProceed) return false;
+  std::string scheme, authority, rest;
+  if (!SplitUrl(url, &scheme, &authority, &rest)) return false;
+  return scheme == "https";
+}
+
 std::string ResolveUrl(const std::string& base, const std::string& rel) {
   if (rel.empty()) return base;
   const std::string lower = Lower(rel);
