@@ -1572,7 +1572,7 @@ true;寫成「等於 true 才算開」的話,全新安裝的機器上自動挑�
 
 | 沒做 | 為什麼 |
 |---|---|
-| **方案市集(下載)** | 見下面一整段 |
+| **方案市集的「介面」** | 引擎(下載/驗章/解壓/預檢/回滾)這一輪做完了,設定視窗那一頁還沒有。見下面一整段 |
 | **連網分頁** | 沒有東西會用到那個開關。一個什麼都不影響的開關就是一顆死鍵 |
 | **候選窗主題 / 外觀分頁** | 規範的六個缺口 macOS 端正在補(`coordination.md` §5)。規範落地前做等於自己發明一套 |
 | **詞庫匯出匯入** | `docs/backup-format.md` 還不在 `main` 上(`dict` 支線還沒產出) |
@@ -1580,36 +1580,75 @@ true;寫成「等於 true 才算開」的話,全新安裝的機器上自動挑�
 | **語言列按鈕的下拉選單** | 一顆按鈕、一件事。選單項目是「看得到但摸不到」最容易長出來的地方;要多做幾件事的入口是系統匣的右鍵選單(在服務進程那一側,改壞了不會把宿主帶走) |
 | **自己的系統匣圖示** | 目前用 `IDI_APPLICATION`。要換得加一份 `.rc`,那會把資源編譯器拉進建置 —— 留給有美術資源的時候 |
 
-### 方案市集為什麼沒做
+### 方案市集:引擎做完了,介面還沒有
 
-它是這一輪明著砍掉的最大一塊,理由值得寫下來,因為下一輪會再撞到:
+上一輪這一節叫「方案市集為什麼沒做」,理由是「Windows 上沒有現成的 zip
+解壓路徑可以用,而且不能用現成的」。**那一段仍然成立,而這一輪就是照著
+它說的做法把它做掉了。**
 
-**Windows 上沒有現成的 zip 解壓路徑可以用,而且不能用現成的。**
+已經完成、而且在 Ubuntu 上跑得完的部分(`windows/run_logic_tests.sh`):
 
-- 我們的相依裡沒有 zlib(librime 的五個相依是 glog / yaml-cpp / leveldb /
-  marisa / opencc,一個都不含 DEFLATE)。
-- Windows 內建的 Compression API(`cabinet.dll`)只有 XPRESS / MSZIP / LZMS,
-  **沒有 raw DEFLATE**,對 zip 沒有用。
-- Shell 的 zip folders(`IShellDispatch::CopyHere`)可以解壓,但它會
-  **繞過我們自己的 `ArchiveGuard`** —— 而 zip slip 的防護必須是我們的,
-  不能是解壓器的。`docs/schema-store.md` §4 把那條列成「缺一不可」。
+| 檔案 | 做什麼 |
+|---|---|
+| `common/mini_json.cc` | 索引的 JSON。巢狀深度上限是安全控制 |
+| `common/sha256.cc` | 自己算(不走 BCrypt),所以雜湊對不上時真的拒收這件事測得到 |
+| `common/zip_reader.cc` | **自己解 DEFLATE**。Windows 沒有 zlib,系統只給 XPRESS/LZMS |
+| `common/archive_guard.cc` | 路徑穿越、符號連結、解壓炸彈、副檔名,外加 Win32 專屬的四條 |
+| `common/schema_preflight.cc` | 部署前算出缺哪一本詞典(規範 §4 的硬性要求) |
+| `common/store_index.cc` | 索引解析 + 相依展開(循環相依是**合法**的) |
+| `common/store_engine.cc` | 整條流程與**失敗的分類** |
+| `service/schema_store.cc` | Windows 側的接線:NetGate、原子寫、部署 |
 
-所以正確的做法是**自己寫一份 inflate**(純邏輯,可以在 Ubuntu 上對
-Python 產生的 deflate 串流跑測試,而且每一個 entry 的 CRC32 都驗一次 ——
-inflate 有 bug 會被抓到而不是安靜地寫出壞詞庫)。那大約是
-「zip 中央目錄解析 + inflate + SHA-256 + WinHTTP + 安裝與回滾 + 市集 UI」
-六塊,不是這一輪塞得下的量。**做一半的下載按鈕比沒有更糟。**
+驗證的方式(數字是實跑出來的):
 
-已經先落地的地基(有測試,沒接上):
+- **對真的 34 個套件**跑一次:380 個 entry 全部解出來,與 python 的
+  `zipfile` **逐位元組相同**;`ArchiveGuard` 34 包全部放行(零誤報)。
+- **對真的 98 個方案**跑預檢:擋下 19 個 —— 17 個是 lua(見下),
+  2 個是 `sautungva` 系列缺 `hangul.yaml`(**不是誤報**,見下)。
+- `windows/verify_store_mutations.sh`:把 11 道防線逐一拿掉,
+  每一條都必須讓測試變紅。11/11。
 
-- `common/net_policy.cc` —— 開關(未設 == 關)、fail-closed、
-  每一跳的 scheme 檢查、轉址上限、大小上限、以及**連網紀錄只記真的
-  發生過的連線**(被開關擋下的嘗試不記 —— 記了的話「開關從沒開過 →
-  紀錄是空的」這句話就不成立,而那句話正是使用者稽核我們的方式)。
-- `common/schema_list_patch.cc` —— 裝好之後要把方案加進 `schema_list`,
-  失敗要回滾。改寫與回滾用的是同一支函式。
-- `audit_offline_win.sh` —— 在還沒有連線的今天就先立好那道牆,
-  哪天有人加了連線它會紅,而檔頭寫了必須同時做完哪三件事。
+**還沒做的是介面。** 設定視窗還沒有「市集」那一頁,所以使用者現在**還是
+下載不到方案** —— 引擎有了、按鈕還沒有。要接的東西寫在
+`service/schema_store.h`(三個同步阻塞的 API,都要放到背景執行緒)。
+按這個專案的規矩,寧可先交出一個測得完的引擎,也不要交出一顆按下去
+會做出無法解釋的事的按鈕。
+
+#### ⚠ lua:Windows 版目前**不收**需要 lua 的方案
+
+Windows 這一輪沒有編 `librime-lua`(見上面「已知限制」)。宣告了
+`lua_translator` / `lua_filter` / `lua_processor` / `lua_segmentor` 的方案在
+Windows 上會**部署成功但一個候選都沒有** —— 畫面上沒有任何錯誤,使用者
+只會覺得輸入法壞了。所以預檢把它當成**擋下**,並在訊息裡說明原因。
+
+實測目前索引:34 個套件裡 6 個帶 `.lua` 檔,但只有 4 個套件、98 個方案裡的
+**17 個**真的宣告了 lua 元件(`ice` 的雙拼系列與 `rime_ice`、`moran` 系列、
+`keydo`、`wubi86_jidian` 系列)。`radical-pinyin` 與 `zrm` 帶 lua 檔但方案沒用到,
+照樣能用 —— 所以判斷做在**方案**這一層,不是整包擋掉。
+
+要解掉它只有一條路:真的把 `librime-lua` 連同
+`patches/librime-lua@sandbox.patch` 編進 Windows 版(`build.sh` 已經有一道
+會擋下建置的檢查,沙盒沒套就不准編)。
+
+#### ⚠ 實測推翻了一句四端共用的註解
+
+Android 的 `SchemaPreflight.kt` 與 macOS 的 `SchemaPreflight.swift` 都寫著
+「`__include` / `import_preset` 的目標缺 → 配置編譯器回 false → **部署失敗**」。
+這一輪拿 host 版 `rime_console` 對真的 librime 量過,那句話不成立:
+
+| 情境 | 量到的 |
+|---|---|
+| `translator/dictionary` 缺 | `[deploy] FAILURE` ✔ 與註解相符 |
+| `import_preset` 目標缺 | **`[deploy] SUCCESS`**,方案照樣出現在清單裡 |
+| `__include` 目標缺 | **`[deploy] SUCCESS`** |
+
+對照實驗(同一份 schema,只改 `punctuator/__include` 的目標存不存在):
+目標在 → 輸入 `nihao` 得到 **5 個候選**;目標不在 → **0 個候選**。
+
+也就是說**結論是對的(該擋),理由是錯的**:它的症狀不是「部署失敗」,
+而是與 lua 同一種 —— 部署成功、沒有錯誤、打不出字。Windows 端的註解已經
+改成量到的事實;要不要回頭改另外兩端的註解,**由規範所有權方決定**。
+這件事重要的地方在於:那句理由是下一個人拿來分類新情況的依據。
 
 ---
 
