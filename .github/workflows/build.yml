@@ -41,7 +41,6 @@ on:
       - fix2-release
       - fix2-deadend
       - fix3-install
-      - fix5-t9guard
   pull_request:
     branches:
       - main
@@ -333,23 +332,13 @@ jobs:
     #   (候選列的畫面/行為守門),而**一支從來沒有在 CI 上跑過的關卡,
     #   看起來與一切正常一模一樣** —— 那正是這個專案 verify_syllables.sh
     #   的三個反向測試踩過的坑(檔頭寫著、workflow 沒接)。
-    # ⚠ fix5-t9guard 暫時列在這裡,而且**合併回 main 之後就該拿掉**。
-    #   理由同下:這一輪在慢車道新增了第 4 關(單音節收斂)與
-    #   `--scenario stale-schema`,兩條都只有模擬器跑得了。開發機上跑過了,
-    #   但「只在開發機上跑過」與「CI 上從來沒跑過」在日誌上長得一樣。
-    # ⚠ fix-gates 暫時列在這裡,而且**合併回 main 之後就該拿掉**。
-    #   理由:這一輪在慢車道新增了 `--plant bad-slot-ids`(消歧欄關卡的第三個
-    #   反向測試,它斷言的是畫面像素,只有模擬器跑得了)。開發機沒有 tesseract,
-    #   那一條在本機驗不了 —— 而「沒驗過的新關卡直接進 main」正好是這一輪
-    #   在修的那類問題。所以讓它在自己的分支上先真的跑一次。
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' &&
        (github.ref == 'refs/heads/main' ||
         github.ref == 'refs/heads/fix3-cand' ||
         github.ref == 'refs/heads/fix-gates' ||
-        github.ref == 'refs/heads/fix2-release' ||
-        github.ref == 'refs/heads/fix5-t9guard'))
+        github.ref == 'refs/heads/fix2-release'))
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
