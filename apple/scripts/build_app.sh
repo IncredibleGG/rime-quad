@@ -149,6 +149,24 @@ else
   echo "[warn] core/data/shared 不存在,.app 裡不會有方案資料(先跑 scripts/collect_data.sh)" >&2
 fi
 
+# 使用者初始配置的**範本**。第一次啟動時由 UserDataSeed 補進
+# ~/Library/Application Support/LuminaKey/(只補不覆蓋)。
+#
+# ⚠ 這一段以前**不存在**,而後果不是「少一個檔案」:
+#   librime 會改照上游 rime-prelude 的 default.yaml 部署,那份 schema_list
+#   沒有 luna_pinyin_tw / bopomofo_tw / t9_pinyin(我們真正打包的),
+#   卻有 cangjie5 / quick5(我們沒有打包的)。使用者看到的是
+#   「設定裡一列方案都沒有勾,而引擎在用一個他沒選過的方案」。
+#   CI 一直是綠的,因為 rime_console 是直接把 core/data/user 當使用者目錄傳進去的。
+if [[ -d "${ROOT}/core/data/user" ]]; then
+  mkdir -p "${APP}/Contents/Resources/UserTemplate"
+  # 只帶第一層的一般檔案:build/ 與 *.userdb 是執行期產物,不可以進 bundle。
+  find "${ROOT}/core/data/user" -maxdepth 1 -type f ! -name '.*' \
+    -exec cp {} "${APP}/Contents/Resources/UserTemplate/" \;
+else
+  echo "[warn] core/data/user 不存在,.app 裡不會有使用者初始配置範本" >&2
+fi
+
 # ---------------------------------------------------------------- 設定介面
 log "組裝 LuminaKeySettings.app"
 mkdir -p "${SETTINGS_APP}/Contents/MacOS" "${SETTINGS_APP}/Contents/Resources"

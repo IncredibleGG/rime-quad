@@ -17,7 +17,7 @@ name: macOS (核心 + 輸入法 + 設定介面)
 
 on:
   push:
-    branches: [main, macos, rename-apple, dictfix, fix-gates]
+    branches: [main, macos, rename-apple, dictfix, fix-gates, fix3-mac]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -144,7 +144,7 @@ jobs:
       #   改成一次一個違規,而且斷言紅的是**它自己那一行**。
       #   其中「多打包了 core/layouts/」那條反向斷言在這之前從來沒有被
       #   反向驗過 —— 它可以整條被刪掉而 CI 全綠。
-      - name: bundle 驗證的反向測試（5 個變異,每個都要紅在自己那一條）
+      - name: bundle 驗證的反向測試（7 個變異,每個都要紅在自己那一條）
         run: |
           set -uo pipefail
           # ⚠ Actions 的預設 shell 是 `bash -e {0}` —— errexit **本來就開著**,
@@ -210,12 +210,92 @@ jobs:
           mkdir -p "$BROKEN/Contents/Resources/layouts"
           expect "多打包了 core/layouts/" "✗ 沒有打包 core/layouts"
 
+          # 6. **沒有使用者初始配置範本。** 少了它,librime 會照上游
+          #    rime-prelude 的 default.yaml 部署,而那份 schema_list 裡沒有
+          #    我們實際打包的臺灣字形方案,卻有兩個我們沒有打包的 ——
+          #    真機上的症狀是「設定裡一列方案都沒有勾」。
+          fresh
+          rm -rf "$BROKEN/Contents/Resources/UserTemplate"
+          expect "少了使用者初始配置範本" "✗ 隨附了使用者初始配置範本"
+
+          # 7. **範本在,但寫錯了。** 後果與第 6 條一模一樣,而「檔案在不在」
+          #    這種斷言完全看不出差別 —— 這一條就是為了不讓第 6 條變成
+          #    「只要有個檔案就好」。
+          fresh
+          cat > "$BROKEN/Contents/Resources/UserTemplate/default.custom.yaml" <<'YAML'
+          patch:
+            schema_list:
+              - schema: luna_pinyin_tw
+              - schema: no_such_schema
+          YAML
+          expect "範本列了沒有打包的方案" "✗ 範本列的方案都有對應的 .schema.yaml"
+
           rm -rf "$BROKEN"
           if [ "$fails" -ne 0 ]; then
             echo "!! $fails 個反向測試沒有紅在對的地方" >&2
             exit 1
           fi
-          echo "5 個變異全部紅在自己那一條 ✓"
+          echo "7 個變異全部紅在自己那一條 ✓"
+
+      # ⚠ **「輕點 Shift 切中英」這件事的守門,自己必須被驗過。**
+      #
+      #   `LuminaKeyInputController.recognizedEvents(_:)` 少了那一行,IMKit
+      #   就只送 keyDown,而修飾鍵在 macOS **不產生 keyDown** —— 於是
+      #   ModifierTracker、processFlags()、librime 的 ascii_composer 這一整條
+      #   路徑一次都不會被走到:使用者輕點 Shift 什麼都不會發生,沒有錯誤訊息,
+      #   而單元測試照樣全綠(它們測的是純邏輯,碰不到 IMKit)。
+      #
+      #   所以這裡把那一行換成「IMKit 的預設值」、**真的重建一次**,
+      #   斷言 `--self-check` 紅在它自己那一條;然後還原、再建一次、必須綠。
+      #   植入之後先斷言檔案真的變了 —— 沒植入成功的樹當然是綠的,
+      #   而報表上會寫成「守門不算數」,讀起來像守門有問題。
+      - name: 中英切換守門的反向測試（拿掉宣告 → 重建 → --self-check 必須紅）
+        run: |
+          set -uo pipefail
+          set +e
+          SRC=apple/LuminaKey/AppSources/LuminaKeyInputController.swift
+          BIN=apple/build/LuminaKey.app/Contents/MacOS/LuminaKey
+          cp "$SRC" /tmp/controller.bak
+
+          sed -i '' 's/Int(IMKRecognizedEvents\.mask)/Int(IMKRecognizedEvents.imkitDefault)/' "$SRC"
+          if cmp -s "$SRC" /tmp/controller.bak; then
+            echo "!! 變異沒有植入成功（錨點對不上）—— 這一關不算數" >&2
+            cp /tmp/controller.bak "$SRC"
+            exit 1
+          fi
+
+          ./apple/scripts/build_app.sh >/tmp/mutbuild.log 2>&1
+          if [ $? -ne 0 ]; then
+            echo "!! 變異版建不起來,反向測試無法進行" >&2
+            tail -30 /tmp/mutbuild.log >&2
+            cp /tmp/controller.bak "$SRC"
+            exit 1
+          fi
+
+          OUT="$("$BIN" --self-check 2>&1)"; RC=$?
+          cp /tmp/controller.bak "$SRC"
+
+          rc_ok=1
+          if [ "$RC" -eq 0 ]; then
+            echo "!! 拿掉宣告之後 --self-check 竟然還是綠的 —— 那道守門沒有在守" >&2
+            printf '%s\n' "$OUT" >&2
+            rc_ok=0
+          fi
+          # ⚠ 不用 grep -q（本步驟的 pipeline 會 SIGPIPE，本專案被咬過兩次）。
+          case "$OUT" in
+            *"✗ controller 宣告要收 flagsChanged"*)
+              echo "  ✓ 紅在對的那一條" ;;
+            *) echo "!! 紅了,但不是因為那一條:" >&2
+               printf '%s\n' "$OUT" >&2
+               rc_ok=0 ;;
+          esac
+
+          echo "== 還原並重建 =="
+          ./apple/scripts/build_app.sh >/tmp/rebuild.log 2>&1 \
+            || { echo "!! 還原之後建不起來" >&2; tail -30 /tmp/rebuild.log >&2; exit 1; }
+          "$BIN" --self-check || { echo "!! 還原之後 --self-check 仍然是紅的" >&2; exit 1; }
+          [ "$rc_ok" -eq 1 ] || exit 1
+          echo "中英切換的守門:拿掉會紅、放回去會綠 ✓"
 
       # ── (a-4) 安裝:這一輪新增,對應真機回報的兩個缺陷 ──────────
       - name: 做出 .pkg 安裝檔

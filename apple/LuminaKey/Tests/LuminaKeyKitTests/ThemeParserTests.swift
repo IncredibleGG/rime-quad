@@ -329,8 +329,11 @@ final class ThemeParserTests: XCTestCase {
           show: true
         """]).value!
         XCTAssertTrue(t.statusBar.show)
+        // ⚠ 輸入模式那一項是 `input_mode`（單一狀態）而不是 `input_mode_pair`。
+        //   桌面的狀態列是顯示不是按鍵 —— 理由與後果見 ThemeModel.swift 的
+        //   `StatusBar.defaultItems`，行為由 DesktopStatusBarTests 驗。
         XCTAssertEqual(t.statusBar.items.map(\.source),
-                       [.schemaName, .inputModePair, .variant, .page])
+                       [.schemaName, .inputMode, .variant, .page])
         XCTAssertEqual(t.statusBar.items[0].tap?.verb, .schemaPicker)
     }
 

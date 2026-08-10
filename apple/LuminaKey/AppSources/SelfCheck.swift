@@ -95,6 +95,53 @@ enum SelfCheck {
                   r.diagnostics.map(\.developerMessage).joined(separator: "; "))
         }
 
+        // 6. **中／英切換的事件真的收得到嗎。**
+        //
+        // 這一組驗的是 `LuminaKeyInputController.recognizedEvents(_:)`。
+        // 少了那個 override,IMKit 的預設是「只有 keyDown」,而修飾鍵在 macOS
+        // 不產生 keyDown —— 於是輕點 Shift 切中英**整條路徑不存在**,
+        // 而畫面完全正常、單元測試也全綠(它們測的是純邏輯,不是 IMKit)。
+        //
+        // ⚠ 不是 grep 原始碼:那種守門被「名字在別處出現一次」餵飽過四次。
+        //   這裡是**問這個二進位裡的類別實際回傳什麼**。
+        let appkitMask = NSEvent.EventTypeMask.keyDown.rawValue
+            | NSEvent.EventTypeMask.flagsChanged.rawValue
+        check("事件遮罩常數與 AppKit 對得上", IMKRecognizedEvents.mask == appkitMask,
+              "Kit \(IMKRecognizedEvents.mask) / AppKit \(appkitMask)")
+
+        let probe = LuminaKeyInputController()
+        let declared = UInt64(bitPattern: Int64(probe.recognizedEvents(nil)))
+        check("controller 宣告要收 flagsChanged（輕點 Shift 才會有反應）",
+              IMKRecognizedEvents.includesFlagsChanged(declared),
+              String(format: "回傳 0x%llX", declared))
+        check("controller 仍然要收 keyDown（少了它一個字都打不出來）",
+              declared & IMKRecognizedEvents.keyDown != 0,
+              String(format: "回傳 0x%llX", declared))
+
+        // 7. **使用者初始配置的範本有沒有隨 .app 附上。**
+        //
+        // 沒有它的話,librime 會照上游 rime-prelude 的 default.yaml 部署:
+        // 那份清單裡沒有我們實際打包的 luna_pinyin_tw / bopomofo_tw / t9_pinyin,
+        // 卻列了兩個我們沒有打包的(cangjie5 / quick5)。
+        // 後果是「引擎有方案、設定畫面一列都沒勾」,而且繁簡綁定挑不出方案。
+        let resources = Bundle.main.resourceURL ?? URL(fileURLWithPath: ".")
+        let templateDir = resources.appendingPathComponent(UserDataSeed.templateDirectoryName)
+        let customURL = templateDir.appendingPathComponent(RimeConfigPatch.fileName)
+        let templateText = (try? String(contentsOf: customURL, encoding: .utf8)) ?? ""
+        let templateIds = RimeConfigPatch.readSchemaList(text: templateText)
+        check("隨附了 \(UserDataSeed.templateDirectoryName)/\(RimeConfigPatch.fileName)",
+              !templateIds.isEmpty, templateIds.joined(separator: ", "))
+
+        // 範本裡列的每一個方案都要真的在 SharedSupport 裡,否則部署會報錯 ——
+        // 那正是這一份範本存在的理由,寫錯了等於沒有它。
+        let sharedDir = resources.appendingPathComponent("SharedSupport")
+        let missing = templateIds.filter {
+            !FileManager.default.fileExists(
+                atPath: sharedDir.appendingPathComponent("\($0)\(SchemaCatalog.suffix)").path)
+        }
+        check("範本列的方案都有對應的 .schema.yaml", missing.isEmpty,
+              missing.joined(separator: ", "))
+
         print(ok ? "=== self-check 通過 ===" : "=== self-check 失敗 ===")
         return ok
     }

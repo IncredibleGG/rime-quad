@@ -26,6 +26,8 @@ final class AppContext {
 
     /// 隨附資料:`LuminaKey.app/Contents/Resources/SharedSupport`
     let sharedDataDir: URL
+    /// 使用者初始配置的範本:`…/Contents/Resources/UserTemplate`
+    let userTemplateDir: URL
     /// 使用者資料。
     ///
     /// 刻意**不用** `~/Library/Rime` —— 那是 Squirrel 的目錄,
@@ -42,6 +44,7 @@ final class AppContext {
     private init() {
         let res = Bundle.main.resourceURL ?? URL(fileURLWithPath: ".")
         sharedDataDir = res.appendingPathComponent("SharedSupport")
+        userTemplateDir = res.appendingPathComponent(UserDataSeed.templateDirectoryName)
         themesDir = res.appendingPathComponent("themes")
         let home = FileManager.default.homeDirectoryForCurrentUser
         let appSupport = home.appendingPathComponent("Library/Application Support")
@@ -54,6 +57,15 @@ final class AppContext {
         }
         userDataDir = appSupport
             .appendingPathComponent(LegacyDataMigration.currentDirectoryName)
+        // ⚠ **順序**:先搬遷(舊目錄可能已經有使用者改過的 default.custom.yaml),
+        //   再補範本(只補不覆蓋),最後才輪到 rs_init()／rs_deploy()。
+        //   反過來的話,librime 會照上游 default.yaml 部署 —— 那份清單裡沒有
+        //   我們實際打包的臺灣字形方案,而且列了兩個我們沒有的。
+        //   理由與後果的完整版在 LuminaKeyKit/UserDataSeed.swift。
+        if let line = UserDataSeed.logLine(
+            UserDataSeed.run(templateDir: userTemplateDir, userDir: userDataDir)) {
+            NSLog("LuminaKey: \(line)")
+        }
         themes = ThemeStore(searchPaths: [
             userDataDir.appendingPathComponent("themes"),   // §2.3 使用者目錄優先
             themesDir,                                       // 隨附
@@ -81,6 +93,12 @@ final class AppContext {
         ipc?.start()
     }
 
+    /// 主題 + 設定的覆寫。候選窗要畫的是**這一個**,不是 `themes.current` ——
+    /// 直接用主題的話,「設定 › 外觀 › 顯示狀態列」按了不會有任何事發生。
+    var effectiveTheme: Theme {
+        AppearanceOverrides.apply(themes.current, settings: settings.current)
+    }
+
     /// 把設定套到目前這個 session 上。建 session 之後、以及設定變更時各叫一次。
     func applySettings() {
         let opts = SessionOptions.resolve(settings: settings.current,
@@ -93,7 +111,11 @@ final class AppContext {
     /// 依輸入模式與設定挑方案。回傳實際切過去的 id(沒切就是 nil)。
     @discardableResult
     func applySchemaForInputMode() -> String? {
-        let enabled = RimeConfigPatch.readSchemaList(userDir: userDataDir)
+        // ⚠ 不可以只讀 `default.custom.yaml`:那個檔案不存在時(全新安裝、
+        //   或使用者把它刪了)這裡會拿到空陣列,於是 `resolve()` 挑不出方案,
+        //   上一輪修好的「繁／簡輸入來源 → 對應方案」整條靜靜地不做事。
+        let enabled = SchemaListReader.resolve(userDir: userDataDir,
+                                               sharedDir: sharedDataDir).ids
         let installed = SchemaCatalog.scan(userDir: userDataDir, sharedDir: sharedDataDir,
                                            languageTags: InstalledRegistry(userDir: userDataDir)
                                                .languageTags())

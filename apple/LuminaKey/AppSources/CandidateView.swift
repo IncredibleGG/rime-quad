@@ -26,6 +26,8 @@ final class CandidateView: NSView {
     private var a11yElements: [NSAccessibilityElement] = []
 
     var onSelect: ((Int) -> Void)?
+    var onChangePage: ((PageStep) -> Void)?
+    private var pager = ScrollPager()
 
     override var isFlipped: Bool { true }   // y 向下，與 CandidateLayout 一致
 
@@ -267,6 +269,19 @@ final class CandidateView: NSView {
         let p = convert(event.locationInWindow, from: nil)
         if let idx = hitTestCandidate(p) { onSelect?(idx) }
     }
+
+    /// 滾輪／觸控板翻頁。**「滾多少算一頁」在 LuminaKeyKit/CandidatePaging.swift**
+    /// （純函式、有測試）—— NSEvent 在 CI 上造不出來,這裡只負責餵數字。
+    ///
+    /// 橫排的候選窗上,直向與橫向滾動都該翻頁:使用者在觸控板上會兩種都試。
+    override func scrollWheel(with event: NSEvent) {
+        let dy = Double(event.scrollingDeltaY)
+        let delta = dy != 0 ? dy : Double(event.scrollingDeltaX)
+        let step = pager.feed(delta: delta, isPrecise: event.hasPreciseScrollingDeltas)
+        if step != .none { onChangePage?(step) }
+    }
+
+    func resetPaging() { pager.reset() }
 
     private func hitTestCandidate(_ p: NSPoint) -> Int? {
         let ox = CGFloat(theme.window.padding)

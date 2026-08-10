@@ -157,6 +157,50 @@ if [ -d "${ROOT}/core/data/shared" ]; then
   check "SharedSupport 裡有 .schema.yaml" $?
 fi
 
+# 使用者初始配置的**範本**。少了它,librime 會照上游 rime-prelude 的
+# default.yaml 部署,而那份 schema_list 與我們實際打包的方案對不上 ——
+# 使用者看到的是「設定裡一列方案都沒有勾,引擎卻在用一個他沒選過的方案」。
+# 完整的理由在 apple/scripts/build_app.sh 與 LuminaKeyKit/UserDataSeed.swift。
+if [ -d "${ROOT}/core/data/user" ]; then
+  TEMPLATE="${APP}/Contents/Resources/UserTemplate/default.custom.yaml"
+  [ -s "${TEMPLATE}" ]
+  check "隨附了使用者初始配置範本 UserTemplate/default.custom.yaml" $?
+
+  if [ -s "${TEMPLATE}" ]; then
+    # 範本存在但寫錯,與範本不存在的後果一模一樣,而「檔案在不在」看不出差別。
+    #
+    # ⚠ 用 awk 不用 grep -oP '...\K...':-P 與 \K 是 GNU/PCRE 專屬,而 BSD grep
+    #   （就是這一支腳本跑的地方）直接 exit 2。本專案已經被同一件事咬過三次
+    #   （見 docs/coordination.md §5）。
+    TEMPLATE_IDS="$(awk '
+      /^[[:space:]]*schema_list:[[:space:]]*$/ { inlist = 1; next }
+      inlist && /^[[:space:]]*-[[:space:]]/ {
+        line = $0
+        sub(/#.*/, "", line)
+        sub(/^[[:space:]]*-[[:space:]]*/, "", line)
+        sub(/^schema:[[:space:]]*/, "", line)
+        gsub(/[[:space:]]/, "", line)
+        if (line != "") print line
+        next
+      }
+      inlist && /^[[:space:]]*[^-[:space:]]/ { inlist = 0 }
+    ' "${TEMPLATE}")"
+    # ⚠ 抽到 0 個要當作失敗,不是「沒有違規」。抽取器在別的平台上壞掉時,
+    #   輸出是空的,而「零個缺檔」會被印成通過 —— 這一行就是那道保險。
+    N_IDS="$(printf '%s\n' "${TEMPLATE_IDS}" | awk 'NF' | wc -l | tr -d ' ')"
+    [ "${N_IDS}" -gt 0 ]
+    check "範本的 schema_list 抽得出方案（抽到 ${N_IDS} 個）" $?
+
+    MISSING=""
+    for sid in ${TEMPLATE_IDS}; do
+      [ -s "${APP}/Contents/Resources/SharedSupport/${sid}.schema.yaml" ] \
+        || MISSING="${MISSING} ${sid}"
+    done
+    [ -z "${MISSING}" ]
+    check "範本列的方案都有對應的 .schema.yaml（缺:${MISSING:-無}）" $?
+  fi
+fi
+
 # ── 7. 二進位的自我檢查 ────────────────────────────────────
 # 這一步真的**執行**了 .app 的二進位（--self-check 模式不啟動 NSApplication）。
 # 它會向 librime 問 PhysicalKeys 表裡的每一個 keysym 名稱,並解析隨附主題。

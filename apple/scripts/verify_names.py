@@ -114,6 +114,21 @@ SELF_TEST = [
      "appSupportDir.appendingPathComponent(LegacyDataMigration.currentDirectoryName)",
      'appSupportDir.appendingPathComponent("Library/Application Support/LuminaKey")',
      "SettingsApp.swift 不自己拼資料目錄的字面值"),
+    ("範本目錄名在 build_app.sh 那一側被改掉(放在 A、去 B 找)",
+     "apple/scripts/build_app.sh",
+     'mkdir -p "${APP}/Contents/Resources/UserTemplate"',
+     'mkdir -p "${APP}/Contents/Resources/UserTemplateX"',
+     "build_app.sh 建的是 Resources/UserTemplate"),
+    ("範本的複製目的地被改掉(目錄建了,東西沒進去)",
+     "apple/scripts/build_app.sh",
+     '-exec cp {} "${APP}/Contents/Resources/UserTemplate/"',
+     '-exec cp {} "${APP}/Contents/Resources/UserTemplateX/"',
+     "build_app.sh 複製的目的地也是 Resources/UserTemplate"),
+    ("補範本那一步被拿掉(全新安裝的方案清單會是錯的)",
+     "apple/LuminaKey/AppSources/AppContext.swift",
+     "UserDataSeed.run(templateDir: userTemplateDir, userDir: userDataDir)",
+     "UserDataSeed.Outcome.noTemplate",
+     "AppContext 真的會補範本"),
     ("變異測試的靶被改掉了(靶沒了 = 那一組沒在測)",
      "apple/LuminaKey/Sources/LuminaKeyKit/KeyMapper.swift",
      "public static let unicodeKeysymBase: Int32 = 0x0100_0000",
@@ -136,7 +151,7 @@ SELF_TEST = [
      ".github/workflows/macos.yml",
      'expect "多打包了 core/layouts/" "✗ 沒有打包 core/layouts"',
      'echo skip',
-     "bundle 反向測試有 5 個變異"),
+     "bundle 反向測試至少有 7 個變異"),
 ]
 
 
@@ -456,15 +471,51 @@ for pat, why in [
 ]:
     check(re.search(pat, wf, re.M) is not None, "workflow 還有「%s」" % why)
 
-# bundle 反向測試的 5 個變異,每一個都要斷言**不同的**一行 ✗,
+# bundle 反向測試的每一個變異都要斷言**不同的**一行 ✗,
 # 而且那一行必須真的是 verify_app_bundle.sh 印得出來的。
+#
+# ⚠ 用**下界**而不是等號:加一個變異不必回來改數字,而刪掉一個照樣會紅。
+#   寫等號的話,下一個人加變異時最省事的做法是把數字改大 —— 那時這一條
+#   就退化成「數字對不對」而不是「有沒有人偷偷刪掉一關」。
 wants = re.findall(r'expect "[^"]*" "(✗ [^"]+)"', wf)
-check(len(wants) == 5, "bundle 反向測試有 5 個變異(找到 %d)" % len(wants))
-check(len(set(wants)) == len(wants), "5 段期待文字互不相同")
+check(len(wants) >= 7, "bundle 反向測試至少有 7 個變異(找到 %d)" % len(wants))
+check(len(set(wants)) == len(wants), "每一段期待文字互不相同")
 for w in wants:
     check(w[2:] in vab, "verify_app_bundle.sh 真的印得出「%s」" % w[2:])
 check(any("core/layouts" in w for w in wants),
       "「多帶了東西」那條反過來的斷言有被反向驗到")
+
+# ── 11b. 使用者初始配置範本的目錄名 ───────────────────────────
+# 這個名字同時出現在三個地方,而改一個而不改另外兩個的症狀是
+# **靜靜地什麼都不會發生**:.app 裡放在 A,程式去 B 找,守門檢查 C。
+# 後果不是「少一個檔案」,是 librime 改照上游 default.yaml 部署 ——
+# 使用者看到「設定裡一列方案都沒有勾」。
+print("=== 11b. 使用者初始配置範本 ===")
+seed = read("apple/LuminaKey/Sources/LuminaKeyKit/UserDataSeed.swift")
+m = re.search(r'templateDirectoryName = "([^"]+)"', seed)
+check(m is not None, "UserDataSeed 宣告了 templateDirectoryName")
+if m:
+    tname = m.group(1)
+    ba = read("apple/scripts/build_app.sh")
+    # ⚠ **不可以只 grep 名字。** build_app.sh 裡這個名字出現兩次(建目錄、複製
+    #   目的地),只查「有沒有這個字」的話,把其中一個改掉照樣是綠的 ——
+    #   而那正是「.app 裡放在 A、程式去 B 找」的形態。這裡兩個接線點各查一次。
+    #   (這一條是被本檔自己的 --self-test 抓出來的:第一版就是只 grep 名字。)
+    check('mkdir -p "${APP}/Contents/Resources/%s"' % tname in ba,
+          "build_app.sh 建的是 Resources/%s" % tname)
+    check('-exec cp {} "${APP}/Contents/Resources/%s/"' % tname in ba,
+          "build_app.sh 複製的目的地也是 Resources/%s" % tname)
+    check("Contents/Resources/%s/default.custom.yaml" % tname in vab,
+          "verify_app_bundle.sh 檢查 Resources/%s/default.custom.yaml" % tname)
+    ac = read("apple/LuminaKey/AppSources/AppContext.swift")
+    check("UserDataSeed.templateDirectoryName" in ac,
+          "AppContext 用常數而不是字面值去找範本")
+    check("UserDataSeed.run(" in ac,
+          "AppContext 真的會補範本(少了它 = 全新安裝的清單是錯的)")
+    sa = read("apple/LuminaKey/SettingsSources/SettingsApp.swift")
+    check("UserDataSeed.run(" in sa, "設定 app 也會補一次(它可能被直接打開)")
+
+print()
 
 # ── 12. 變異測試的靶 ──────────────────────────────────────────
 print("=== 12. 變異測試的靶 ===")

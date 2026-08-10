@@ -21,7 +21,9 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PKG="${ROOT}/apple/LuminaKey"
-MIN_TESTS="${MIN_TESTS:-180}"
+# ⚠ 下界訂得太鬆等於沒有下界(main 的 0072f4f 就是為了這件事)。
+# 這個數字是實測值減一點餘裕,不是隨手寫的:本輪實跑 298 項。
+MIN_TESTS="${MIN_TESTS:-290}"
 
 cd "${PKG}" || exit 1
 
@@ -106,6 +108,20 @@ MUTATIONS=(
   "Sources/LuminaKeyKit/KeyRemap.swift|if mods.contains(.super_) { return stroke }    // ⌘A 是全選,不是儲存|if false { return stroke }                     // ⌘A 是全選,不是儲存|KeyRemapTests"
   "Sources/LuminaKeyKit/KeyRemap.swift|        exchangeAtPositions(position(of: a), position(of: b))|        exchangeAtPositions(a, b)|KeyRemapTests"
   "Sources/LuminaKeyKit/LegacyDataMigration.swift|for name in names where !shouldSkip(name) {|for name in names where !skippedNames.contains(name) {|LegacyDataMigrationTests"
+  # ── 這一輪(fix3-mac)的四條真機缺陷,一條一格 ───────────────────────
+  # M-1:少要 flagsChanged = 輕點 Shift 切中英整條路徑不存在。
+  # ⚠ 不能變異 `mask = keyDown | flagsChanged` —— 分隔字元就是 `|`(見上方警告)。
+  "Sources/LuminaKeyKit/InputModeSwitch.swift|public static let flagsChanged: UInt64 = 1 << 12|public static let flagsChanged: UInt64 = 1 << 10|InputModeSwitchTests"
+  # M-2:狀態列把「中／En」兩態並排 = 讓使用者猜現在是哪一個。
+  "Sources/LuminaKeyKit/ThemeModel.swift|StatusItem(source: .inputMode, tap: KeyAction(.inputModeToggle, raw: \"input_mode:toggle\")),|StatusItem(source: .inputModePair, tap: KeyAction(.inputModeToggle, raw: \"input_mode:toggle\")),|DesktopStatusBarTests"
+  # M-2:「設定 › 外觀 › 顯示狀態列」變回一顆死鍵。
+  "Sources/LuminaKeyKit/AppearanceOverrides.swift|t.statusBar.show = settings.showStatusBar.resolved(themeValue: theme.statusBar.show)|t.statusBar.show = theme.statusBar.show|AppearanceOverridesTests"
+  # M-3:沒有 default.custom.yaml 時回空清單 —— 這正是「引擎有方案、清單沒東西」。
+  "Sources/LuminaKeyKit/EffectiveSchemaList.swift|let base = readBaseSchemaList(text: baseText)|let base: [String] = []|EffectiveSchemaListTests"
+  # M-3:範本覆蓋掉使用者自己的 default.custom.yaml(他勾的方案與候選數就沒了)。
+  "Sources/LuminaKeyKit/UserDataSeed.swift|if fm.fileExists(atPath: dst.path) { kept.append(name); continue }|if false { kept.append(name); continue }|UserDataSeedTests"
+  # M-4:滾輪方向反了 —— 這種缺陷畫面完全正常,只有真的去滾才知道。
+  "Sources/LuminaKeyKit/CandidatePaging.swift|return delta > 0 ? .previous : .next|return delta > 0 ? .next : .previous|ScrollPagerTests"
 )
 
 BACKUP_DIR="$(mktemp -d)"
@@ -151,7 +167,14 @@ PY
   if [ "${MRC}" -eq 0 ]; then
     echo "!! 植入違規之後測試仍然通過 —— ${group} 沒有在測它宣稱在測的東西。" >&2
     mutation_failures=$((mutation_failures + 1))
-  elif ! grep -q -- "${group}" <<< "${MOUT}"; then
+  # ⚠ **不可以用整份輸出 grep 組名。** verbose 的輸出裡每一個測試(含**通過**的)
+  #   都會印出自己的名字,`grep -q -- "ThemeParserTests"` 因此恆為真 ——
+  #   這一條檢查會永遠說「紅在對的地方」,不管實際紅的是誰。
+  #   這正是本專案被咬過四次的那個形狀(見 docs/coordination.md §3)。
+  #   XCTest 的失敗行長這樣:
+  #     /path/File.swift:332: error: ThemeParserTests.testX : XCTAssertEqual failed: ...
+  #   所以只認 `error: <組名>.` 這個形態。
+  elif ! grep -qE -- "error: ${group}\\." <<< "${MOUT}"; then
     echo "!! 測試紅了,但紅的不是 ${group}。變異打到了別的地方:" >&2
     FAILED_LINES="$(grep -E "error:|failed" <<< "${MOUT}" || true)"
     printf '%s\n' "${FAILED_LINES}" | sed -n '1,5p' >&2

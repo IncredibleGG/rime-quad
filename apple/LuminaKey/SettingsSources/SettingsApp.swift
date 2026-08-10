@@ -32,6 +32,11 @@ enum SettingsPaths {
         (hostAppURL?.appendingPathComponent("Contents/Resources/SharedSupport"))
             ?? userDir.appendingPathComponent("SharedSupport")
     }
+    static var userTemplateDir: URL {
+        (hostAppURL?.appendingPathComponent("Contents/Resources/"
+                                            + UserDataSeed.templateDirectoryName))
+            ?? userDir.appendingPathComponent(UserDataSeed.templateDirectoryName)
+    }
     static var themesDir: URL {
         (hostAppURL?.appendingPathComponent("Contents/Resources/themes"))
             ?? userDir.appendingPathComponent("themes")
@@ -344,6 +349,13 @@ enum SettingsAppMain {
         // 直接打開。搬遷本身是冪等的,所以兩邊都叫一次,不必去猜誰先跑。
         if let line = LegacyDataMigration.logLine(
             LegacyDataMigration.run(appSupportDir: SettingsPaths.appSupportDir)) {
+            NSLog("LuminaKey Settings: \(line)")
+        }
+        // 同一個理由:設定介面可能被直接打開(使用者還沒把 LuminaKey 選成
+        // 輸入來源時,輸入法本體根本沒跑過)。補範本是冪等的,兩邊都叫。
+        if let line = UserDataSeed.logLine(
+            UserDataSeed.run(templateDir: SettingsPaths.userTemplateDir,
+                             userDir: SettingsPaths.userDir)) {
             NSLog("LuminaKey Settings: \(line)")
         }
         let app = NSApplication.shared

@@ -1051,6 +1051,87 @@ bash 端再剝一次 `\r`。(同一個檔案早就為了 cp1252 的 stdout 編�
   (它們經 `StoreController.finish()` 進 snackbar 或結果對話框),一樣是寫死的中文,
   **本輪沒有修**(不在這三則缺陷的範圍內,而且那是市集那條線的檔案)。誰接手都行,但要有人接。`
 
+- `[2026-08-10] [fix3-mac→全體] **一頁只有 5 個候選,四端同源,而且不是 ABI 的限制。**
+  來源是 `core/data/shared/default.yaml` 的 `menu: page_size: 5`(上游 rime-prelude 的值)。
+  `rs_snapshot` 沒有任何天花板:`core/src/rime_shell.cc` 是
+  `const int n = ctx.menu.num_candidates;` 之後照抄,`page_no` / `is_last_page` 也原樣傳出來。
+  所以 Android 回報的「候選詞只有 5 個」與 macOS 看到的是**同一個數字、同一個檔案**,
+  改一個地方四端一起變。
+  ⚠ **我沒有改它** —— `core/data/` 在 §2 是協調端的,而且那是一個會同時影響四端
+  版面的決定(候選變多 → 候選窗變寬 → 行動端的候選列要捲)。請協調端裁決要不要調高。
+  桌面兩端另有出路:macOS 的「設定 › 外觀 › 候選字數」(3–10)會寫進
+  `default.custom.yaml` 的 `menu/page_size` 再重新部署,Windows 的設定介面同理。
+  **「下一頁就沒了」在 macOS 上不成立**:`-`/`=`、`,`/`.`、Page_Up/Page_Down 都送得進
+  librime,翻得動;真正的問題是**畫面上沒有任何線索**(狀態列預設不畫、沒有翻頁鍵、
+  `rs_change_page()` 從來沒被呼叫過)。本輪已接上滾輪/觸控板翻頁並讓頁碼看得見。
+  Android 端(fix3-cand)如果看到的是「按了翻頁鍵沒反應」,那就是行動端自己的接線,
+  不是共用層。`
+
+- `[2026-08-10] [fix3-mac→Windows] **「啟用的方案清單是空的,而引擎有方案」——兩端症狀相同,根因不同,不要照抄我的修法。**
+  Windows 的服務行程自己有 librime,問題在**怎麼問**(`rs_schema_list` 的契約:
+  它回的是**部署過的**方案,而且不吃 session,是全域的)。
+  macOS 的設定介面是**另一個行程、完全沒有 librime**(apple/README.md §6),
+  它只能看檔案 —— 而它一直只讀 `default.custom.yaml` 的 `patch/schema_list`。
+  那個檔案是**使用者改過之後才存在**的東西,而 macOS 從來沒有把
+  `core/data/user/default.custom.yaml` 裝進使用者目錄(`build_app.sh` 只複製了
+  `core/data/shared`)。於是全新安裝的真機上同時發生三件事:
+  (1) librime 照**上游** `default.yaml` 部署 —— 那份 `schema_list` 沒有
+  luna_pinyin_tw / bopomofo_tw / t9_pinyin(我們真正打包的),卻有
+  cangjie5 / quick5(我們**沒有**打包的,部署會報錯);
+  (2) 設定畫面一列都沒有勾;
+  (3) `applySchemaForInputMode()` 拿到空清單,上一輪修好的「繁/簡輸入來源→方案」
+  整條靜靜地不做事。
+  ⚠ **CI 一直是綠的**,因為 `rime_console` 是直接把 `core/data/user` 當使用者目錄
+  傳進去的 —— 它驗的那份資料,使用者手上的 `.app` 從來沒有。
+  macOS 的修法兩層:`UserDataSeed`(隨 `.app` 附範本,第一次啟動只補不覆蓋)+
+  `SchemaListReader`(patch 沒有就退回 `default.yaml` 的頂層 `schema_list`)。
+  **Windows 端請自己確認**:`windows/service/main.cc:526` 與
+  `verify_installer.sh:1634` 顯示你們**有**裝那個範本,所以你們的空清單多半是
+  「怎麼問 librime」那一層,而不是「範本沒裝」。我沒有動 `windows/`。`
+
+- `[2026-08-10] [fix3-mac→Windows] **中英切換的快捷鍵:macOS 刻意不用 Ctrl+Space,而且不可以照抄。**
+  `⌃Space` 在 macOS 被系統的「選取上一個輸入來源」佔著(系統設定 › 鍵盤 ›
+  鍵盤快速鍵 › 輸入來源)。搶它要註冊全域熱鍵,結果是使用者按一下發生兩件事,
+  而且他不會知道是我們幹的。
+  macOS 的慣例是**輕點 Shift**(RIME 自己的 macOS 前端 Squirrel／鼠鬚管的預設),
+  而我們隨附的 `core/data/shared/default.yaml` 早就寫著
+  `ascii_composer/switch_key: { Shift_L: inline_ascii, Shift_R: commit_text }` ——
+  **引擎那一半本來就在等這顆鍵**。缺的是 `IMKInputController.recognizedEvents(_:)`:
+  沒有 override 時 IMKit 的預設是「只送 keyDown」,而修飾鍵在 macOS 不產生 keyDown。
+  也就是說 `ModifierTracker` 與 `processFlags()` 這一整段從寫出來到現在**是死碼**。
+  Windows 端的 Ctrl+Space 是對的,那是 Windows 的慣例;這一則只是說明為什麼
+  四端在這件事上**不該**統一成同一顆鍵。`
+
+- `[2026-08-10] [fix3-mac→全體] **狀態列的「中／En」兩態並排:桌面端改成只畫現在那一態。**
+  `input_mode_pair` 存在的理由是**按鍵**的歧義(一顆只寫「中」的鍵有「現在是中文」
+  與「按了會變中文」兩種讀法)。桌面的狀態列不是按鍵 —— `CandidateView` 只對候選格
+  做 hit-test,狀態列點不下去 —— 所以那個歧義不存在,而兩態並排就只剩下
+  「兩個都畫出來讓使用者猜」。使用者的原話:「現在是什麼就顯示什麼」。
+  已把 `StatusBar.defaultItems`(apple 端的 §8.12 預設清單)的那一項換成 `input_mode`。
+  ⚠ **行動端的佈局按鍵不受影響**,`core/layouts/` 底下 20 幾處 `label_from: input_mode_pair`
+  照常運作,解析器也仍然支援它(有測試釘住)。
+  ⚠ 這一則影響 `docs/theme-format.md` §8.12 的規範性預設清單。規範由本端擴充,
+  但**本輪還沒有回寫規範**(這一輪只解凍四條真機缺陷)。Windows 端做狀態列時
+  請照 `input_mode`,不要照舊版規範。`
+
+- `[2026-08-10] [fix3-mac→全體] **`docs/settings-model.md` 的「外觀」有四項在 macOS 上是死的,本輪只接了一項。**
+  `appearance.showStatusBar` / `candidateScale` / `orientation` / `showLabels`
+  在設定畫面上都在、都存得起來、而**沒有任何地方讀它們**(`ThemeBoolPref.resolved`
+  以前只被測試碰過)。本輪接了 `showStatusBar`(它是 M-2 的必要條件:修好了要看得見),
+  其餘三項寫進 `AppearanceOverrides.unwiredFields` 並由測試釘住 ——
+  「還沒接」因此是一個**查得到、測得到的事實**,不是下一個人要重新發現一次的東西。
+  ⚠ 沒有動 `docs/settings-model.md` 的預設值(`followTheme` 不變)。
+  ⚠ 其他端請自己看一眼:同一份規範裡「有這個設定」不等於「有人讀它」。`
+
+- `[2026-08-10] [fix3-mac→全體] **`components(separatedBy: "\n")` 在 Darwin 與 Linux 上不是同一件事。**
+  Darwin 的 Foundation 走 NSString(UTF-16 語義),`"\r\n"` 會被 `\n` 切開;
+  corelibs-foundation 走 Swift String 的 **grapheme** 語義,而 `"\r\n"` 是**一個**
+  grapheme cluster,所以整份 CRLF 文字會被當成一行。
+  發現的方式:為了在沒有 macOS 的開發機上跑 Kit 的測試,做了一個 Linux 沙盒
+  (墊掉 CryptoKit / Compression),`UserPhrasesTests.testCrlfIsHandled` 在那裡恆紅。
+  **產品行為沒有問題**(macOS 上是對的),記在這裡是因為:四端共用同一份 TSV 詞庫格式,
+  哪天有人把這段邏輯搬到別的平台(或用 swift-corelibs 跑),它會**安靜地少讀掉整份檔案**。`
+
 ## 6. 各端狀態
 
 > 自己更新自己那一行。

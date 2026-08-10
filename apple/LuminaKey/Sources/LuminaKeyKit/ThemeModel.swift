@@ -247,9 +247,18 @@ public struct StatusBar: Sendable {
     public var items: [StatusItem] = StatusBar.defaultItems
 
     /// §8.12 的規範性預設清單。`items` 缺席時必須產生這一份。
+    ///
+    /// ⚠ **輸入模式那一項用 `input_mode` 而不是 `input_mode_pair`，而且是刻意的。**
+    ///   `input_mode_pair`（同時畫「中」與「En」、強調當前那一態）存在的理由是
+    ///   **按鍵**的歧義：一顆只寫「中」的鍵有兩種讀法（「現在是中文」與
+    ///   「按了會變中文」），而它們指向相反的操作。
+    ///   桌面的狀態列不是按鍵 —— 它是**顯示**（`CandidateView` 只對候選格
+    ///   做 hit-test，狀態列點不下去），所以那個歧義不存在，而兩態並排反而
+    ///   變成「兩個都畫出來讓使用者猜現在是哪一個」。真機回報過同一件事。
+    ///   行動端的佈局按鍵仍然用 `input_mode_pair`，兩者不衝突。
     public static let defaultItems: [StatusItem] = [
         StatusItem(source: .schemaName, tap: KeyAction(.schemaPicker, raw: "schema:picker")),
-        StatusItem(source: .inputModePair, tap: KeyAction(.inputModeToggle, raw: "input_mode:toggle")),
+        StatusItem(source: .inputMode, tap: KeyAction(.inputModeToggle, raw: "input_mode:toggle")),
         StatusItem(source: .variant, tap: KeyAction(.toggleOption, ["simplification"],
                                                     raw: "toggle:simplification")),
         StatusItem(source: .page),
