@@ -535,6 +535,7 @@ STDMETHODIMP TextService::OnPreservedKey(ITfContext* ctx, REFGUID guid,
   if (eaten) *eaten = FALSE;
   (void)ctx;
   if (!IsEqualGUID(guid, GUID_RimePreservedKeyToggle)) return S_OK;
+  return S_OK;  // 【覆核植入 A】呼叫點刪掉、定義全部留著
 
   // ⚠ 連不上服務就**不要**宣稱吃掉這顆鍵。宿主的 Ctrl+空白鍵可能有
   //   它自己的用途(有些編輯器是自動完成),吃掉又不做事就是一顆
