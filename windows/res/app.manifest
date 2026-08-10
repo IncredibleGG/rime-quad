@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+
+  <!--
+    ⚠ 這份資訊清單的第一段是整個 Windows 端外觀的分水嶺。
+
+    沒有 `Microsoft.Windows.Common-Controls 6.0.0.0` 這個相依,
+    `InitCommonControlsEx` 拿到的是系統目錄裡的 **comctl32 v5** ——
+    那是 Windows 95/2000 那一代的控制項。立體灰按鈕、鑿進去的清單外框、
+    非佈景的核取方塊與捲軸,全部是它畫的。
+
+    **自繪救不了那些東西** —— 它們是 comctl32/user32 自己畫的,
+    我們的 WM_DRAWITEM 根本拿不到。使用者的原話是「感覺就是 win95 的方案」,
+    而他看到的正是這件事,不是配色沒調好。
+
+    MSVC 預設產生的資訊清單**不含**這一段,所以必須自己給。
+    順帶:v5 沒有 LVS_EX_DOUBLEBUFFER,清單捲動會閃 —— 同一個根因。
+  -->
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+          type="win32"
+          name="Microsoft.Windows.Common-Controls"
+          version="6.0.0.0"
+          processorArchitecture="*"
+          publicKeyToken="6595b64144ccf1df"
+          language="*" />
+    </dependentAssembly>
+  </dependency>
+
+  <!--
+    DPI:每個螢幕各自感知(v2)。
+
+    ⚠ 這裡宣告的東西必須與程式碼的假設一致。`settings_window.cc` 已經在處理
+    `WM_DPICHANGED`、版面全部走 `MulDivRound(…, dpi)`,也就是說**程式碼假設的
+    就是 per-monitor v2**。宣告與實作不一致的後果不是「比較模糊」,
+    是跨螢幕拖動之後版面比例整個錯掉。
+
+    `<dpiAwareness>` 是 Win10 1607 起才認得的鍵;舊系統看 `<dpiAware>`。
+    兩個都寫,系統挑它認得的那一個。
+  -->
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">permonitorv2,permonitor</dpiAwareness>
+      <!--
+        UTF-8 行程碼頁。這支程式內部一律 UTF-8(rime_shell 的 C ABI 是 UTF-8),
+        而窄字串的 API 預設走系統的 ANSI 碼頁 —— 在中文版 Windows 上是 950/936。
+        宣告成 UTF-8 之後,`fopen` 這類窄字串 API 才吃得下我們手上的路徑。
+      -->
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+    </windowsSettings>
+  </application>
+
+  <!--
+    相容性:明確宣告支援到 Windows 10/11。
+
+    ⚠ 不宣告的話,`GetVersionEx` 一類的查詢會被系統謊報成 Windows 8,
+    而更要緊的是某些 shell 行為會走相容模式。我們沒有依賴版本查詢,
+    但 `DwmSetWindowAttribute(33, DWMWCP_ROUND)`(圓角)與
+    `DwmSetWindowAttribute(20)`(深色標題列)只在宣告過的系統上才保證生效。
+  -->
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 / 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+      <!-- Windows 8.1 -->
+      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}"/>
+    </application>
+  </compatibility>
+
+  <!--
+    ⚠ **刻意不宣告 requestedExecutionLevel**(也就是留在 asInvoker)。
+
+    rime_service.exe 是使用者工作階段裡的一般程式,提權它會讓那一橫與候選窗
+    畫在錯的完整性等級上、而且輸入法無法與一般權限的宿主程式互動。
+    需要管理員權限的只有安裝與註冊,那是 rime_ime_setup.exe 的事,
+    它自己另外處理(見 common/elevation_policy.cc)。
+  -->
+
+</assembly>

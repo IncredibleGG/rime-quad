@@ -90,6 +90,10 @@ class StatusBar {
   //   那一格必須跟著動,否則它會變成一個「說謊的指示器」。
   void OnSnapshot(const Snapshot& snap);
 
+  /// 在還沒有任何宿主連上來之前,先讓那一橫知道方案叫什麼。
+  /// 見底下 schema_name_ 的說明:**不是權威**,第一份快照到就被覆蓋。
+  void SeedSchemaName(const std::string& name);
+
  private:
   static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l);
   static LRESULT CALLBACK PopupProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l);
@@ -137,6 +141,16 @@ class StatusBar {
   bool ascii_mode_ = false;
   bool simplified_ = false;
   std::string schema_name_;
+
+  // ⚠ 種子:引擎在管道打開之前就知道方案叫什麼了(WarmUpEngine 選好了),
+  //   而這一橫在**第一個宿主連上來、而且使用者真的按了一顆鍵**之前不知道。
+  //   `schema_name_` 唯一的寫入路徑是 OnSnapshot ← push_ui ← 連線執行緒,
+  //   所以手動啟動服務(或剛裝完還沒去打字)時它一直是空字串,
+  //   而空的那一格照 §8.12 整格略過 —— 使用者看到的就是「中 简 設定」三格,
+  //   方案名憑空消失。使用者實機回報過這一則。
+  //
+  //   種子**不是**權威:OnSnapshot 一到就覆蓋它。這裡只解決「還沒有人打過字」
+  //   那一段空窗期。
   // 位置錨點的快取。Relayout 在使用者打字的路徑上,不可以每次去讀設定檔。
   BarAnchor anchor_;
   bool anchor_loaded_ = false;

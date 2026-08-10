@@ -587,6 +587,21 @@ void SettingsWindow::CreateUi(HWND hwnd) {
 }
 
 void SettingsWindow::ApplyFonts() {
+  // ⚠ 列高與字型一起設,因為它們一起隨 DPI 變。
+  //
+  //   列高從來沒有被設定過 —— comctl32 依字型自己算,在 t3 下約 20 px。
+  //   而版面(ui_layout.cc 的 SidebarListDip)是照 **一列 36 DIP** 算的,
+  //   「預設」徽章的高度也是從列高扣出來的(列高 − 12),於是徽章只剩
+  //   8 px 而字要 16 —— 使用者看到的是被切掉一半的那兩個字。
+  //   一列 20 px 同時也低於 §3.6 的 28 最小點擊目標。
+  //
+  //   放在 ApplyFonts 裡是刻意的:這支函式在建立時、WM_DPICHANGED、
+  //   換介面語言、換主題四條路上都會被呼叫,而列高在那四種情況下都要重算。
+  //   放在建立處的話,換一次 DPI 就退回 comctl32 的預設值。
+  const int row_px = Dip(metric::kSidebarItemH, dpi_);
+  SetRowListRowHeight(sidebar_, row_px);
+  SetRowListRowHeight(schema_list_, row_px);
+
   HFONT body = fonts_.Get(text_size::t3);
   HFONT small_f = fonts_.Get(text_size::t5);
   HFONT title = fonts_.Get(text_size::t1, true);

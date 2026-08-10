@@ -309,7 +309,8 @@ int SeedUserDir(const std::string& seed_utf8, const std::string& user_utf8) {
 // ⚠ 那份 langid 清單在 common/schema_choice.h(純邏輯層),不在這裡 ——
 //   放在那裡,tests/test_schema_choice.cc 才驗得到「暖的那一組與真的用的
 //   那一組是同一組」,而那是 Ubuntu 上跑得動的純邏輯,不必等一輪 CI。
-void WarmUpEngine(rimewin::Engine* engine, rimewin::SettingsStore* store) {
+void WarmUpEngine(rimewin::Engine* engine, rimewin::SettingsStore* store,
+                  rimewin::StatusBar* bar) {
   const ULONGLONG t0 = ::GetTickCount64();
   std::vector<std::string> ids;
   for (const auto& kv : engine->SchemaList()) ids.push_back(kv.first);
@@ -342,6 +343,15 @@ void WarmUpEngine(rimewin::Engine* engine, rimewin::SettingsStore* store) {
     //   session 留下來當備用 —— 管道一打開,第一個連上來的宿主直接拿走,
     //   一次上鎖就好,完全不進引擎佇列。
     engine->PrimeSpareSession(langid, choice.schema_id, opts);
+    // ⚠ 順手把方案名種給那一橫。引擎到這裡已經知道要用哪一份方案了,
+    //   而那一橫要等第一個宿主連上來、而且使用者真的按了一顆鍵才知道
+    //   —— 中間那段空窗期它會少畫一格(使用者實機回報過「方案名不見了」)。
+    //   種子不是權威:第一份快照一到就覆蓋。只種一次,用第一個 langid 的結果。
+    if (bar && warmed == 0 && !choice.schema_id.empty()) {
+      for (const auto& kv : engine->SchemaList()) {
+        if (kv.first == choice.schema_id) { bar->SeedSchemaName(kv.second); break; }
+      }
+    }
     ++warmed;
     Say("[service] 預熱 langid=0x%04X 方案=%s 選項=%d 個 耗時=%llu ms(留作備用)\n",
         static_cast<unsigned>(langid),
@@ -691,14 +701,17 @@ static int RunService(int argc, wchar_t** argv) {
   //   的程式碼 —— 綠燈驗到的是使用者永遠不會走的那條路。
   std::thread warm_thread;
   std::atomic<bool> warm_stop{false};
+  // ⚠  時沒有那一橫(CI 的某些 job 這樣跑),傳 nullptr 而不是漏傳 ——
+  //   漏傳會變成「有 UI 的時候也沒種」,而那正是要修的缺陷。
+  rimewin::StatusBar* const warm_bar = no_ui ? nullptr : &status_bar;
   if (engine.deploy_ok()) {
-    WarmUpEngine(&engine, &settings_store);
+    WarmUpEngine(&engine, &settings_store, warm_bar);
   } else {
     warm_thread = std::thread([&]() {
       while (!warm_stop.load() && !engine.deploy_done())
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
       if (!warm_stop.load() && engine.deploy_ok())
-        WarmUpEngine(&engine, &settings_store);
+        WarmUpEngine(&engine, &settings_store, warm_bar);
     });
   }
 

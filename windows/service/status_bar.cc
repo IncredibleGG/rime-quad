@@ -241,6 +241,17 @@ void StatusBar::ThreadMain() {
 
 // ─────────────────────────── 版面 ───────────────────────────
 
+void StatusBar::SeedSchemaName(const std::string& name) {
+  // 只在還沒有任何快照進來過的時候種。有快照之後那一份才是真的 ——
+  // 使用者可能已經自己換過方案了,種子會把畫面倒退回啟動時的樣子。
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (have_snapshot_ || name.empty() || name == schema_name_) return;
+    schema_name_ = name;
+  }
+  if (hwnd_) ::PostThreadMessageW(thread_id_, WM_RIME_REFRESH, 0, 0);
+}
+
 void StatusBar::Relayout() {
   bool ascii, simp;
   std::string name;

@@ -43,6 +43,12 @@ void EnsureRowListColumn(HWND list);
 
 // 換掉全部的列。文字仍然要寫進 item(自繪畫的是同一份文字,但
 // 螢幕閱讀器讀的是 item 上的那一份)。
+/// 把一列的高度釘成 `px` 像素(**不是 DIP** —— 呼叫端自己換算)。
+///
+/// ⚠ 不設的話 comctl32 依字型算,在 t3 下約 20 px,而版面是照 36 算的。
+///   後果是「預設」徽章被切掉一半,而且一列低於 28 的最小點擊目標。
+void SetRowListRowHeight(HWND list, int px);
+
 void SetRowListItems(HWND list, const std::vector<std::wstring>& rows);
 
 // ⚠ **控制項一改大小就要呼叫這一支。**

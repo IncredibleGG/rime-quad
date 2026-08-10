@@ -355,6 +355,37 @@ target_link_libraries(rime_service PRIVATE
 # 唯一查得動的辦法 —— 而 Windows 端的建置機器正是這種機器。
 target_link_options(rime_service PRIVATE /MAP)
 
+# ── 應用程式資訊清單 ────────────────────────────────────────────────────
+#
+# ⚠ **這是整個 Windows 端外觀的分水嶺,不是可有可無的收尾。**
+#
+# 在這一段之前,`windows/` 底下 .manifest 0 個、.rc 0 個、
+# manifestdependency 0 處 —— 而 MSVC 預設產生的資訊清單**不含**
+# `Microsoft.Windows.Common-Controls 6.0.0.0`。於是
+# `InitCommonControlsEx` 拿到的是系統目錄裡的 **comctl32 v5**,
+# 也就是 Windows 95/2000 那一代的控制項:立體灰按鈕、鑿進去的清單外框、
+# 非佈景的核取方塊與捲軸。
+#
+# 使用者的原話是「感覺就是 win95 的方案」。他看到的是這件事,
+# 不是配色沒調好 —— 而且**自繪救不了**,那幾顆是 comctl32/user32 自己畫的。
+#
+# 掛在有視窗的三支上:
+#   · rime_service  設定視窗、懸浮狀態列、候選窗
+#   · rime_tsf_host CI 上用真的 TSF 跑的宿主(要與 service 同一組控制項)
+#   · rime_tests    test_win32_listview.cc 會開**真的** ListView 量像素 ——
+#                   它拿到 v5 而 service 拿到 v6 的話,那支測試量的就不是
+#                   使用者看到的東西。這一條比前兩條更容易被忽略。
+foreach(_tgt rime_service rime_tsf_host rime_tests)
+  if(TARGET ${_tgt})
+    target_sources(${_tgt} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/res/app.manifest")
+    # MSVC 會把 .manifest 當成輸入清單併進最終的資訊清單。
+    # ⚠ 不可以同時讓 linker 自己產生一份預設的 —— 兩份會衝突,
+    #   而症狀是 mt.exe 回 1090650081 然後整個連結失敗。
+    set_property(TARGET ${_tgt} APPEND_STRING PROPERTY
+                 LINK_FLAGS " /MANIFEST:EMBED /MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/res/app.manifest")
+  endif()
+endforeach()
+
 message(STATUS "rime    : ${RIME_LIB}")
 message(STATUS "opencc  : ${OPENCC_LIB}")
 message(STATUS "marisa  : ${MARISA_LIB}")
