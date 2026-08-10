@@ -488,6 +488,8 @@ Result Engine::ToggleAsciiMode(uint64_t id) {
     r.snap.status_flags = kStDisabled;
     return r;
   }
+  // [植入 B] 把快照挪到切換**之前**取:上屏文字會落在下一次 acquire
+  Post("切中英後取快照", [&] { r.snap = TakeSnapshot(id); });
   const bool now = ascii_mode_.load();
   SetAsciiModeAll(!now);
   r.handled = true;
@@ -505,7 +507,6 @@ Result Engine::ToggleAsciiMode(uint64_t id) {
   //   直接呼叫等於無鎖讀 sessions_,並與引擎執行緒上的 rs_process_key
   //   並行呼叫 rs_*。SetAsciiModeAll 內部是 Post 進佇列的,這一句不是 ——
   //   「兩者都排在同一條佇列上」那句舊註解是錯的,只有前者是。
-  Post("切中英後取快照", [&] { r.snap = TakeSnapshot(id); });
   return r;
 }
 
