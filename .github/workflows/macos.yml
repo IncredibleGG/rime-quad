@@ -17,7 +17,7 @@ name: macOS (核心 + 輸入法 + 設定介面)
 
 on:
   push:
-    branches: [main, macos, rename-apple, dictfix, fix-gates, fix3-mac]
+    branches: [main, macos, rename-apple, dictfix, fix-gates, fix3-mac, fix4-macmod]
   pull_request:
     branches: [main]
   workflow_dispatch:
