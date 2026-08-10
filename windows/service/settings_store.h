@@ -55,6 +55,15 @@ class SettingsStore {
   //   這句話是使用者驗證我們的方式,而一個被讀取動作創造出來的空檔案
   //   會讓那句話變成「紀錄檔存在但是空的」—— 意思不一樣。
   std::vector<NetLogEntry> ReadNetLog();
+  // 追加一筆並套用上限(超過就丟最舊的)。回傳 false = 沒寫成功。
+  //
+  // ⚠ 呼叫端只有一個:service/net_gate.cc,而且只在**真的送出過請求**
+  //   之後才呼叫。被開關擋下的嘗試不可以走到這裡 —— 理由見
+  //   common/net_policy.h 檔頭「只記錄真的發生過的連線」那一段。
+  //
+  // ⚠ 寫不進去**不該讓下載失敗**(與 Android NetworkGate.record 的
+  //   catch 同一個取捨):使用者要的是那個方案,不是那一行紀錄。
+  bool AppendNetLog(const NetLogEntry& e);
   void ClearNetLog();
 
  private:

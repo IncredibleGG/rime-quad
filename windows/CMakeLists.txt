@@ -95,6 +95,11 @@ add_library(rime_common STATIC
   #   放進來是因為它有測試,而且是下一輪的地基。CI 會斷言**兩個二進位
   #   都沒有任何網路相依**,所以「Windows 端不連網」這句話仍然成立而且驗得到。
   common/net_policy.cc
+  # net_gate_core.cc 是連網出口的**流程**(問開關 → 送出 → 跟轉址 →
+  # 邊收邊數 → 記一筆)。它同樣不含任何網路 API,所以 Ubuntu 上的
+  # run_logic_tests.sh 驗得到「開關關著時傳輸層一次都沒被呼叫」。
+  # 真的開 socket 的那一半在 service/net_gate.cc,只連進 rime_service。
+  common/net_gate_core.cc
   # ── 這一輪加的:設定介面的純邏輯層 ────────────────────────────
   #
   # ⚠ 全部刻意不 include windows.h —— 版面、色票、狀態列位置還原都是
@@ -146,6 +151,7 @@ add_executable(rime_tests
   tests/test_schema_choice.cc
   tests/test_settings.cc
   tests/test_net_policy.cc
+  tests/test_net_gate_core.cc
   tests/test_proto_compat.cc
   tests/test_schema_list_patch.cc
   tests/test_elevation_policy.cc
@@ -328,6 +334,13 @@ target_link_libraries(rime_console PRIVATE ${RIME_STATIC_LIBS} ${RIME_SYSTEM_LIB
 
 add_executable(rime_service
   service/main.cc
+  # ⚠ net_gate.cc 是**整個 windows/ 底下唯一會開 socket 的檔案**,
+  #   而且它只進 rime_service.exe。瘦 DLL 那一側永遠是零 ——
+  #   rime_tsf.dll 住在每一個接受文字輸入的進程裡(含瀏覽器與提權
+  #   進程),它有網路能力這件事光讀原始碼不會有人發現。
+  #   兩層守著:windows/audit_offline_win.sh 看原始碼,
+  #   windows/check_binaries.sh 看產物的匯入表。
+  service/net_gate.cc
   service/engine.cc
   service/pipe_server.cc
   service/cand_window.cc
@@ -349,7 +362,10 @@ target_link_libraries(rime_service PRIVATE
   # ⚠ **沒有** dwmapi:深色標題列那支是動態載入的(見 ui_theme.cc)——
   #   靜態連結會讓這支程式在沒有 dwmapi.dll 的舊系統上根本載不起來,
   #   而症狀是「安裝完什麼都沒發生」。
-  user32 gdi32 shell32 comctl32)
+  user32 gdi32 shell32 comctl32
+  # winhttp:service/net_gate.cc 的唯一出口。**只在這一個目標上** ——
+  # 加到 rime_tsf 上是這個專案最不該發生的事,見 check_binaries.sh。
+  winhttp)
 # /MAP:服務進程崩掉時,崩潰過濾器印的是 RVA;要把 RVA 變成函式名就需要這份
 # 對照表。CI 會把它一起上傳。這是在沒有偵錯器、沒有符號伺服器的機器上
 # 唯一查得動的辦法 —— 而 Windows 端的建置機器正是這種機器。

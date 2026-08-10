@@ -37,6 +37,7 @@ SRCS=(
   "${SCRIPT_DIR}/common/schema_choice.cc"
   "${SCRIPT_DIR}/common/settings.cc"
   "${SCRIPT_DIR}/common/net_policy.cc"
+  "${SCRIPT_DIR}/common/net_gate_core.cc"
   "${SCRIPT_DIR}/common/schema_list_patch.cc"
   "${SCRIPT_DIR}/common/elevation_policy.cc"
   "${SCRIPT_DIR}/common/key_eat_policy.cc"
@@ -57,6 +58,7 @@ SRCS=(
   "${SCRIPT_DIR}/tests/test_schema_choice.cc"
   "${SCRIPT_DIR}/tests/test_settings.cc"
   "${SCRIPT_DIR}/tests/test_net_policy.cc"
+  "${SCRIPT_DIR}/tests/test_net_gate_core.cc"
   "${SCRIPT_DIR}/tests/test_proto_compat.cc"
   "${SCRIPT_DIR}/tests/test_schema_list_patch.cc"
   "${SCRIPT_DIR}/tests/test_elevation_policy.cc"
@@ -87,3 +89,25 @@ if "${OUT}/rime_tests" --self-check; then
   exit 1
 fi
 echo "==> 反向測試通過(框架會紅)"
+
+# ── 守門腳本自己也要被驗 ────────────────────────────────────────
+#
+# 這個專案吃虧的形狀一向不是「程式碼寫錯」,是「守門的東西沒有人守」。
+# 下面兩支都是 shell,不需要編譯,所以順手接在這裡 —— 開發時每一輪
+# 都會跑到,不必等 CI。
+
+echo
+echo "==> 離線稽核(原始碼層面:只有 service/net_gate.cc 碰得到網路 API)"
+"${SCRIPT_DIR}/audit_offline_win.sh"
+
+echo
+echo "==> 反向測試(離線稽核必須抓得到植入的違規)"
+if "${SCRIPT_DIR}/audit_offline_win.sh" --self-check; then
+  echo "!! 植入了真的 WinHttpOpen 呼叫,稽核腳本卻以 0 結束 —— 它不會紅" >&2
+  exit 1
+fi
+echo "==> 反向測試通過(離線稽核會紅)"
+
+echo
+echo "==> check_binaries.sh 的網路允許矩陣"
+"${SCRIPT_DIR}/verify_check_binaries.sh"

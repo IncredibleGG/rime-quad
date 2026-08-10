@@ -113,22 +113,32 @@ FORBIDDEN="vcruntime140.dll msvcp140.dll ucrtbase.dll msvcr120.dll msvcrt.dll"
 # 輸入的進程裡,包括瀏覽器與提權的進程。它有網路能力這件事,
 # 光靠讀原始碼是不會有人發現的。
 #
-# 目前 Windows 端**沒有任何一行程式碼會開連線**(方案市集還沒做,
-# windows/common/net_policy.cc 只有判斷邏輯,不含任何網路 API)。
-# 哪天要做,這條會紅 —— 那時要做的是:
-#   1. 把連線集中在**唯一一個** .cc(服務進程那一側),
-#   2. 把 winhttp.dll 加進 rime_service.exe 的例外(**不是** DLL 的),
-#   3. 補上開關、fail-closed 與連網紀錄(見 common/net_policy.h)。
-# 在那三件事做完之前,這條紅著是對的。
+# Windows 端現在**有一個**連線出口:windows/service/net_gate.cc,而且它
+# 只連進 rime_service.exe。所以這一條不再是「全部都要是零」,而是三句話,
+# 三句都要成立 —— 每一支二進位各自宣告准許哪些網路 DLL,**沒宣告就是不准**:
 #
-# ws2_32.dll 是唯一的例外,而且只給服務進程:leveldb 與 glog 在 Windows 上
-# 為了取主機名連結它(見 CMakeLists 的 RIME_SYSTEM_LIBS)。那是 librime
-# 的相依,不是我們開的連線 —— 但它**不准**出現在瘦 DLL 上。
-NET_DLLS="winhttp.dll wininet.dll urlmon.dll ws2_32.dll ws2_32.dll wsock32.dll dnsapi.dll winsock.dll iphlpapi.dll httpapi.dll"
+#   1. rime_tsf.dll      —— **零**。連 ws2_32.dll 都不行。
+#      那支住在每一個接受文字輸入的進程裡,包括瀏覽器與提權進程;
+#      它有網路能力這件事,光讀原始碼是不會有人發現的。
+#   2. rime_service.exe  —— winhttp.dll(我們的出口)+ ws2_32.dll。
+#      ws2_32 是 leveldb 與 glog 為了取主機名連結的(見 CMakeLists 的
+#      RIME_SYSTEM_LIBS),那是 librime 的相依,不是我們開的連線。
+#   3. rime_ime_setup.exe —— 只有 ws2_32.dll。安裝與診斷不連網。
+#
+# ⚠ 允許那個出口存在的前提(開關預設關、fail-closed、只記錄真的發生過的
+#   連線、瘦 DLL 永遠是零)寫在 windows/audit_offline_win.sh 的檔頭。
+#   那一支看原始碼,這一支看產物 —— 兩層都要,因為靜態連結進來的第三方
+#   在原始碼裡看不到。
+NET_DLLS="winhttp.dll wininet.dll urlmon.dll ws2_32.dll wsock32.dll dnsapi.dll winsock.dll iphlpapi.dll httpapi.dll"
 
+# check_deps <檔案> <strict|loose> <准許的網路 DLL,空白分隔>
+#
+# ⚠ 第三個參數刻意**必填而且沒有預設值**。有預設值的話,新增一支二進位
+#   的人不必表態就會拿到某種允許 —— 而「誰可以連網」正是這裡唯一在守的事。
 check_deps() {
   local file="$1"; shift
   local strict="$1"; shift
+  local net_ok="$1"; shift
   [ -f "${file}" ] || { echo "  (略過不存在的 ${file})"; return; }
   local deps
   deps="$(dumpbin.exe //dependents "$(cygpath -w "${file}")" | tr -d '\r' \
@@ -151,13 +161,17 @@ check_deps() {
     esac
     case " ${NET_DLLS} " in
       *" ${d} "*)
-        if [ "${strict}" = "strict" ] || [ "${d}" != "ws2_32.dll" ]; then
-          echo "  !! ${d} —— 這支二進位有網路能力。" >&2
-          echo "     Windows 端目前不連網,而「不連網」這件事是靠這一條" >&2
-          echo "     從外面驗證的(見本腳本 NET_DLLS 那一段的說明)。" >&2
-          echo "     真的要加連網功能的話,那一段寫了要先做完哪三件事。" >&2
-          fail=1
-        fi ;;
+        case " ${net_ok} " in
+          *" ${d} "*) ;;   # 這一支明著宣告過的
+          *)
+            echo "  !! ${d} —— 這支二進位多了網路能力,而它沒有宣告過。" >&2
+            echo "     這一支准許的是:${net_ok:-(什麼都不准)}" >&2
+            echo "     「離線為預設」這件事是靠這一條從外面驗證的" >&2
+            echo "     (見本腳本 NET_DLLS 那一段的三句話)。" >&2
+            echo "     ⚠ 若這裡是 rime_tsf.dll,那它住在每一個接受文字輸入的" >&2
+            echo "       進程裡 —— 這一條永遠是零,不要放寬它。" >&2
+            fail=1 ;;
+        esac ;;
     esac
     if [ "${strict}" = "strict" ]; then
       case " ${ALLOWED} " in
@@ -177,19 +191,19 @@ check_deps() {
 }
 
 echo
-log "檢查 rime_tsf.dll 的相依(嚴格)"
-check_deps "${DLL}" strict
+log "檢查 rime_tsf.dll 的相依(嚴格;網路 DLL 一個都不准)"
+check_deps "${DLL}" strict ""
 
 echo
-log "檢查 rime_service.exe 的相依(只擋 CRT;服務進程的相依不受限)"
-check_deps "${BIN_DIR}/rime_service.exe" loose
+log "檢查 rime_service.exe 的相依(只擋 CRT;網路只准 winhttp + ws2_32)"
+check_deps "${BIN_DIR}/rime_service.exe" loose "winhttp.dll ws2_32.dll"
 
 echo
 # rime_ime_setup.exe 由安裝程式在**使用者剛裝好、什麼都還沒設定**的機器上執行。
 # 它若相依動態 CRT,症狀是「安裝程式跑到註冊那一步就失敗」,而錯誤訊息會是
 # 一個沒有人看得懂的 HRESULT。/MT 同樣不可少。
-log "檢查 rime_ime_setup.exe 的相依(只擋 CRT)"
-check_deps "${BIN_DIR}/rime_ime_setup.exe" loose
+log "檢查 rime_ime_setup.exe 的相依(只擋 CRT;網路只准 ws2_32)"
+check_deps "${BIN_DIR}/rime_ime_setup.exe" loose "ws2_32.dll"
 
 echo
 [ "${fail}" -eq 0 ] || die "二進位檢查失敗,見上。"

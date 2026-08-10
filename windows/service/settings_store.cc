@@ -116,6 +116,15 @@ std::vector<NetLogEntry> SettingsStore::ReadNetLog() {
   return DecodeLog(ReadFileUtf8(net_log_path()));
 }
 
+bool SettingsStore::AppendNetLog(const NetLogEntry& e) {
+  std::lock_guard<std::mutex> lock(mu_);
+  // 整份重寫,理由與 Android 的 NetworkLogStore 相同:有上限就得裁頭,
+  // 而整份檔案最多幾十 KB,重寫遠比維護一份「什麼時候該壓縮」便宜。
+  // 寫入本身是原子的(先寫暫存檔再 rename),中途斷電不會留下半行。
+  const std::vector<NetLogEntry> cur = DecodeLog(ReadFileUtf8(net_log_path()));
+  return WriteFileAtomic(net_log_path(), EncodeLog(AppendCapped(cur, e)));
+}
+
 void SettingsStore::ClearNetLog() {
   std::lock_guard<std::mutex> lock(mu_);
   ::DeleteFileW(Utf8ToWide(net_log_path()).c_str());
