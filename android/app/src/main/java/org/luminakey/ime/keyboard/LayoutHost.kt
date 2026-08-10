@@ -5,6 +5,7 @@ import org.luminakey.ime.theme.SendSpec
 import org.luminakey.ime.theme.Appearance
 import org.luminakey.ime.theme.DiagnosticText
 import org.luminakey.ime.theme.KeyboardLayout
+import org.luminakey.ime.theme.LayoutLayer
 import org.luminakey.ime.theme.LoadResult
 import org.luminakey.ime.theme.Theme
 
@@ -48,6 +49,9 @@ class LayoutHost(private val repo: LayoutRepository) {
 
     var layerId: String = ""
         private set
+
+    /** 現在畫的是哪一層。與 [KeyboardUiState.layer] 同一條規則,見 [currentLayerOf]。 */
+    val currentLayer: LayoutLayer? get() = currentLayerOf(layout, layerId)
 
     var theme: Theme? = null
         private set

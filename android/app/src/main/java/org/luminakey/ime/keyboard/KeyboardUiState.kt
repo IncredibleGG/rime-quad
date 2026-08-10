@@ -135,8 +135,20 @@ data class KeyboardUiState(
      */
     val confirmedSyllables: List<String> = emptyList(),
 ) {
-    val layer: LayoutLayer? get() = layout?.layer(layerId) ?: layout?.layers?.firstOrNull()
+    val layer: LayoutLayer? get() = currentLayerOf(layout, layerId)
 }
+
+/**
+ * 「現在畫的是哪一層」的**唯一**定義。
+ *
+ * [KeyboardUiState.layer]（鍵盤那一端）與 [LayoutHost.currentLayer]
+ * （IME service 那一端，宿主輸入框用）都走這一條。各寫一次的話,
+ * `layerId` 失效時兩邊會挑到不同的層 —— 而 [PreeditParts] 的判準正是
+ * 「這一層的鍵面長什麼樣」,兩邊挑不同層就等於兩邊判準不同,
+ * 候選列與宿主輸入框會顯示不一樣的組字串。
+ */
+fun currentLayerOf(layout: KeyboardLayout?, layerId: String): LayoutLayer? =
+    layout?.layer(layerId) ?: layout?.layers?.firstOrNull()
 
 /** 鍵盤送出的事件。IME service 是唯一的處理者。 */
 sealed interface KeyboardEvent {

@@ -27,6 +27,8 @@ import org.luminakey.ime.core.RimeCore
 import org.luminakey.ime.core.RimeRuntime
 import org.luminakey.ime.keyboard.T9Syllables
 import org.luminakey.ime.keyboard.ConfigRepository
+import org.luminakey.ime.keyboard.HostPreedit
+import org.luminakey.ime.keyboard.InlinePreedit
 import org.luminakey.ime.keyboard.KeyboardEvent
 import org.luminakey.ime.keyboard.KeyboardTypes
 import org.luminakey.ime.keyboard.SchemaLanguages
@@ -406,6 +408,19 @@ class RimeInputMethodService : InputMethodService() {
         if (session != RimeCore.INVALID_SESSION) {
             RimeCore.clearComposition(session)
         }
+        // ⚠ 這一句救不回組字區裡的字 —— `finishComposingText()` 只是**結束**
+        //   組字區,內容原樣留在使用者的輸入框裡。組字到一半按 BACK 收鍵盤,
+        //   組字區裡當時是什麼就留下什麼 —— 本次改動之後是 `⋯`（實測）,
+        //   之前則是同一條路上的 preedit 原文 `MG GAM`。兩種都是垃圾。
+        //
+        //   ⚠ **在這裡補 `setComposingText("")` 沒有用,實測過。**
+        //   emulator-5556、打完 MGGAM 按 BACK:onFinishInputView 確實有被呼叫、
+        //   `currentInputConnection` 非 null、`setComposingText("",1)` 與
+        //   `finishComposingText()` **都回 true**,而輸入框裡的 `⋯` 原封不動。
+        //   （同一輪的 `getTextBeforeCursor(20,0)` 讀回來還是 `⋯`。）
+        //   HOME／切到別的 app 再回來這兩條路則是乾淨的,只有 BACK 這一條會留。
+        //   要修得換一個時機（onWindowHidden／自己接管 BACK），那是另一件事,
+        //   已回報。這裡保留原樣,不放一個看起來有修、其實沒有的呼叫。
         currentInputConnection?.finishComposingText()
         // 面板不跨編輯框存活：使用者切去別的 app 再回來，看到的是鍵盤，
         // 不是他上次忘了關的設定面板。
@@ -1249,15 +1264,6 @@ class RimeInputMethodService : InputMethodService() {
             }
         }
 
-        // 組字串以 composing text 呈現，讓宿主應用看得到未上屏的內容。
-        if (ic != null) {
-            if (snapshot.composition.preedit.isNotEmpty()) {
-                ic.setComposingText(snapshot.composition.preedit, 1)
-            } else {
-                ic.finishComposingText()
-            }
-        }
-
         // §9.1.1：方案變了就換佈局。放在這裡而不是 selectSchema，
         // 是因為方案也可能由 librime 自己切（例如 schema 的 switcher）。
         val schemaId = snapshot.status.schemaId
@@ -1279,6 +1285,29 @@ class RimeInputMethodService : InputMethodService() {
         // 一般情形下這裡是 no-op（那顆鍵已經先設好了）。
         if (snapshot.status.isAsciiMode != layoutHost.asciiMode) {
             layoutHost.setInputMode(snapshot.status.isAsciiMode)
+        }
+
+        // 組字串以 composing text 呈現，讓宿主應用看得到未上屏的內容。
+        //
+        // ⚠ 送進去的**不是** librime 的 preedit 原文。九宮格是雙編碼方案，
+        //   它的 preedit 是代表字母 `MG GAM` / `PGM` —— 那是我們的內部編碼，
+        //   使用者鍵面上按的是 `mno`/`ghi`。判準、切分與呈現全在
+        //   [HostPreedit]（純函式，PreeditDisplayTest 直接驗）。
+        //
+        // ⚠ 位置在 applySchema 之後不是隨意的：判準吃的是**當前佈局**的鍵面，
+        //   而換方案的那一拍,layoutHost 上還掛著前一個方案的佈局。
+        //   放在前面的話,切到九宮格之後的第一顆鍵會拿舊佈局判斷 ——
+        //   代碼漏一次進宿主輸入框,而那一次看起來就只是「閃了一下」。
+        if (ic != null) {
+            val shown = HostPreedit.forHost(
+                snapshot.composition.preedit,
+                InlinePreedit.groupCodeChars(layoutHost.currentLayer),
+            )
+            if (shown != null) {
+                ic.setComposingText(shown.text, shown.cursor)
+            } else {
+                ic.finishComposingText()
+            }
         }
 
         // §8.6.6 的 max_visible(可被使用者偏好覆寫):0 = 有多少畫多少。

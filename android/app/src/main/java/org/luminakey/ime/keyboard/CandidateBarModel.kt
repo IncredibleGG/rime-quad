@@ -32,28 +32,11 @@ import org.luminakey.ime.theme.SendSpec
  * 它會讓人以為「我打出來的是這個」。真機回報的原話：「紅色的沒意義
  * 就沒必要出現」。
  *
- * ── 判準：**這個字元是「一整組字母的代表」嗎** ──────────────────────────
- * 刻意**不**寫成「t9_pinyin 就不要印」，也不寫成「大寫的 ADGJMPTW 就砍掉」：
- *
- *   * 綁方案 id 的話，市集裡任何第三方九宮格方案都不受惠；
- *   * 綁那八個字母的話，哪天方案換一組代表字母，這裡會**靜靜地**恢復成
- *     印代碼 —— 而畫面看起來一切正常。
- *
- * 判準改成一句能一直成立的話：**送出這個字元的那顆鍵，鍵面上是一整組字母
- * 而不是它自己。** 那就是九宮格的定義 —— 送 `M` 的那顆鍵印的是 `mno`
- * （或 `MNO`，兩份佈局的大小寫不同，判準不看大小寫）。使用者按的是「那一組」，
- * 畫面上冒出來的卻是組的**代號**，於是那個字元對他沒有意義。
- *
- * 反過來，全鍵盤送 `n` 的鍵印的就是 `n`、大寫層送 `M` 的鍵印的就是 `M`
- * —— 一鍵一字母，preedit 印什麼就是他按了什麼，原封不動。
- *
- * 沒有任何鍵送得出的字元**一律保留**：那是引擎給的東西，不是按鍵代碼。
- * 已確定的拼音 `ni`（九宮格上沒有任何一顆鍵送 `n`）、漢字、注音符號、
- * 聲調符號、標點都走這一條。`你GAM` 於是變成 `你⋯`。
- *
- * ⚠ 大小寫**要**分:`niGAM` 裡的 `M` 是代碼、`mi` 裡的 `m` 是拼音，
- * 而九宮格的鍵送的是大寫 `M`。只砍掉鍵真的送得出的那一個字元，
- * 小寫拼音不會被連坐。
+ * ── 判準與切分都在 [PreeditParts] ──────────────────────────────────────
+ * 「哪些字元是一整組字母的代號」這條判準，以及照它切出來的
+ * 「讀得懂的一段 / 還是代碼的一段」，**與宿主 app 輸入框那一端共用**
+ * （見 [HostPreedit]）。各切各的話，同一串按鍵在鍵盤上是 `ni⋯`、
+ * 在使用者的 app 裡卻是 `ni GAM` —— 上一輪就是只修了這一格。
  *
  * ── 為什麼砍掉之後要留一個 `⋯` ──────────────────────────────────────────
  * `ni` 與 `ni⋯` 是兩種不同的狀態：前者代表「我打完了，就是 ni」，
@@ -96,29 +79,18 @@ object InlinePreedit {
     /**
      * 要印在候選列左端的字；**null = 那一格整個不要出現**。
      *
+     * 與宿主輸入框（[HostPreedit.forHost]）唯一的差別就在這個 null：
+     * 候選列上沒有東西可印時整格收掉，候選往左靠；而宿主的組字區**不能空**
+     * ——空字串會讓組字區當場消失。兩邊其餘部分走的是同一個 [PreeditParts.of]。
+     *
      * @param groupCodes [groupCodeChars] 的結果。
      */
     fun forDisplay(preedit: String, groupCodes: Set<Char>): String? {
         if (preedit.isEmpty()) return null
-        if (groupCodes.isEmpty()) return preedit
-        val sb = StringBuilder(preedit.length + ELLIPSIS.length)
-        var dropped = false
-        var kept = false
-        for (ch in preedit) {
-            if (ch in groupCodes) {
-                dropped = true
-                continue
-            }
-            sb.append(ch)
-            if (!ch.isWhitespace() && ch != '\'') kept = true
-        }
-        if (!dropped) return preedit
-        if (!kept) return null
-        // 砍掉代碼之後留在頭尾的分隔符（speller 插進去的空白與 `'`）是懸空的，
-        // 一起收掉；中間連續的空白也收成一個。
-        val body = sb.toString().trim(' ', '\'').replace(Regex(" {2,}"), " ")
-        if (body.isEmpty()) return null
-        return body + ELLIPSIS
+        val split = PreeditParts.of(preedit, groupCodes)
+        if (!split.hasPending) return split.raw
+        if (split.settled.isEmpty()) return null
+        return split.settled + ELLIPSIS
     }
 }
 
