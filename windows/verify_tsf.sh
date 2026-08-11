@@ -217,8 +217,20 @@ log "3. 建 ITfThreadMgr、給文件焦點、啟用我們的設定檔、送按�
 #   服務端攔截也留著),CI 三個 job 全綠 —— 中英切換整條死掉而沒有人知道。
 #   這個 job 沒有服務(logic 那一組不產 rime_service.exe),所以這裡只問
 #   「有沒有走到我們身上」;按下去之後文件會怎樣在 verify_installer.sh §6f。
+#
+# ⚠ --press-shift 是**量測**,不是斷言。使用者實機回報「我用 shift 切換
+#   中英文,但是他不變」,而要不要做那顆鍵取決於一個至今沒有人量過的
+#   事實:TSF 到底會不會把純修飾鍵交給 key event sink?
+#
+#   這棵樹裡有兩份互相矛盾的答案,兩份都沒有實測在背書:
+#     tsf/text_service.cc 的 OnTestKeyUp:「TSF 本來就不會…」
+#     common/key_eat_policy.cc:「不太會…但交過來時」
+#   擋著那條路的不是技術,是這一句沒有人量過的話。
+#
+#   它不會讓這個 job 紅 —— 它只把 SHIFT_TRACE_LINES 印出來,由那個數字
+#   決定下一輪走哪一條(見下面的判讀)。
 HOST_ARGS=(--langid "${LANGID}" --require-activate
-           --check-preserved-key --press-preserved-key
+           --check-preserved-key --press-preserved-key --press-shift
            --trace "$(w "${WORK}/trace-after.log")" --wait-ms 4000)
 if [ "${FULL}" -eq 1 ]; then
   # nihao 之後按 1 選第一個候選。與 verify_ime.sh / verify_console.sh
@@ -242,6 +254,40 @@ fi
 # 逐條斷言,不只看結束碼。結束碼只說「有東西不對」,
 # 而我們要的是「哪一格不對」——那才是下一步該往哪查的答案。
 after="$(tr -d '\r' < "${WORK}/host-after.log")"
+
+# ── Shift 的量測結果:印出來,不判合格 ──────────────────────────
+#
+# ⚠ 這一段刻意**不會讓 job 紅**。它問的是「事實是什麼」,不是
+#   「合不合格」,而兩種結果都有對應的下一步:
+#
+#     > 0  key event sink 收得到純修飾鍵 → P1-乙 可以走 ShiftTapDetector
+#          那條純函式的路(四支 sink 各餵一次,*eaten 一律 FALSE,
+#          偵測到輕點就送既有的正規形式 Ctrl+空白鍵)。
+#     = 0  收不到 → 走降級版(PreserveKey{VK_SHIFT, TF_MOD_ON_KEYUP}),
+#          或**乾脆不做 Shift**,靠設定裡那一句文案把 Ctrl + 空白鍵
+#          教出來。那是誠實的退路,不是失敗。
+#
+# ⚠ 而且它證不到「真實宿主的訊息迴圈會不會把 VK_SHIFT 送進 TSF」——
+#   這支 harness 走的是 ITfKeystrokeMgr::KeyDown,那是**宿主呼叫的入口**。
+#   後者只有人在記事本 / Chrome / Word 上試得出來,已列進 #48。
+shift_lines="$(printf '%s\n' "${after}" | sed -n 's/^ *SHIFT_TRACE_LINES=//p' | head -1)"
+if [ -n "${shift_lines}" ]; then
+  echo
+  echo "── Shift 量測(不判合格)────────────────────────────────"
+  printf '%s\n' "${after}" | grep -E '^ *SHIFT_' || true
+  if [ "${shift_lines}" -gt 0 ] 2>/dev/null; then
+    echo "  → key event sink **收得到**純修飾鍵。text_service.cc 的"
+    echo "    OnTestKeyUp 那句註解(「TSF 本來就不會…」)與這個結果矛盾,"
+    echo "    要照這裡量到的改寫。P1-乙 可以走 ShiftTapDetector 那條路。"
+  else
+    echo "  → key event sink **收不到**純修飾鍵。P1-乙 走降級版,"
+    echo "    或乾脆不做 Shift、靠文案把 Ctrl + 空白鍵教出來。"
+  fi
+  echo "────────────────────────────────────────────────────────"
+  echo
+else
+  echo "  (沒有 SHIFT_TRACE_LINES —— rime_tsf_host 可能還不認得 --press-shift)"
+fi
 
 # ── Ctrl+空白鍵那顆保留鍵 ────────────────────────────────────────
 #
