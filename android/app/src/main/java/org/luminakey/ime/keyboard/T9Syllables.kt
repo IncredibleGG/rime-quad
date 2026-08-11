@@ -6,6 +6,7 @@ import org.luminakey.ime.theme.KeyboardLayout
 import org.luminakey.ime.theme.KeyAction
 import org.luminakey.ime.theme.LabelSource
 import org.luminakey.ime.theme.LayoutKey
+import org.luminakey.ime.theme.Popup
 
 /**
  * 九宮格的**拼音消歧欄** —— 純邏輯那一半。
@@ -169,17 +170,22 @@ object T9Syllables {
         if (requested != null && readings.contains(requested)) requested else null
 
     /**
-     * 這一輪填進格位的內容。**長度恆等於 [slots]**,呼叫端才能一格對一格地
-     * zip 上去 —— 少一格就是少一個 key id 被接管,而那個 id 會靜靜地照佈局
-     * 畫,沒有任何東西會叫。
+     * 這一輪填進格位的內容。**長度恆等於 [slots]**（[slots] ≤ 0 才是空清單）,
+     * 呼叫端才能一格對一格地 zip 上去 —— 少一格就是少一個 key id 被接管,
+     * 而那個 id 會靜靜地照佈局畫,沒有任何東西會叫。
      *
      * 讀音填不滿時,剩下的是 [Cell.Original]（**原本那顆鍵**,不是空洞);
      * 讀音多於格位時,最後一格讓給「⋯」。
      *
+     * ⚠ **一個讀音都沒有**時每一格也是 [Cell.Original],不是空清單。
+     * 這裡一度回 `emptyList()`,與上面那句「長度恆等於 slots」互相矛盾 ——
+     * 文件與碼不符時,對的是文件那一邊:呼叫端真的在 `zip`,而 zip 遇到
+     * 短清單不會叫,只會少接管幾個 key id。
+     *
      * @param offset 目前捲到第幾個讀音（見 [nextOffset]）。
      */
     fun cells(readings: List<String>, slots: Int, offset: Int): List<Cell> {
-        if (slots <= 0 || readings.isEmpty()) return emptyList()
+        if (slots <= 0) return emptyList()
         val out = ArrayList<Cell>(slots)
         if (readings.size <= slots || slots < MIN_SLOTS) {
             readings.take(slots).forEach { out += Cell.Reading(it) }
@@ -265,6 +271,77 @@ object T9Syllables {
             longPress = null,
             popup = null,
             swipe = emptyMap(),
+        )
+    }
+
+    /**
+     * 一格在畫面上的**四個決定**,一次算完。
+     *
+     * ── 為什麼要有這個型別 ─────────────────────────────────────────────
+     * 一格被消歧欄接管與否,同時決定四件事:**鍵面**、**點下去做什麼**、
+     * **長按盤開不開**、**朗讀名念什麼**。四件必須同進同出。
+     *
+     * 這四件原本散在 KeyGrid 的四個三元運算式裡,各自判斷一次
+     * `cell == null` —— 四個判斷點意味著它們**可以分岔**,而分岔的樣子在
+     * 螢幕上看不出來:鍵面完全正確、按下去什麼都不做、長按盤也開不出來的
+     * 標點鍵（task #78 的孿生兄弟）。
+     *
+     * 收成一個純函式之後,四件事只剩**一個**判斷點,而那個判斷點是單元測試
+     * 摸得到的 —— `@Composable` 那一層在這個模組裡沒有任何東西摸得到。
+     */
+    data class SlotRender(
+        /** 要畫的鍵。沒被接管時**就是原鍵本人**（同一個實例）,不是複製品。 */
+        val key: LayoutKey,
+        /**
+         * 點下去要交給消歧欄的 cell;`null` = 走原鍵自己的 `onEvent`。
+         *
+         * ⚠ 沒被接管的格位這裡**一定要是 null**。給了 [Cell.Original],
+         * 呼叫端會把點擊導進 `onSlot`,而 `onSlot` 對 [Cell.Original] 是
+         * `Unit` —— 那顆標點鍵就變成按下去什麼都不會發生。
+         */
+        val tapCell: Cell?,
+        /** 長按盤;`null` = 沒有盤。恆等於 [key] 自己那一份。 */
+        val popup: Popup?,
+        /** 朗讀名要換成哪一格的說法;`null` = 念原鍵自己的名字。 */
+        val speaks: Cell?,
+        /** 這一格是不是使用者釘住的那個讀音(鍵面要看得出來)。 */
+        val pinned: Boolean,
+    ) {
+        /** 消歧欄有沒有接管這一格。 */
+        val takenOver: Boolean get() = tapCell != null
+    }
+
+    /**
+     * 這一格該畫什麼、按下去該怎麼反應。**純函式;呼叫端只照著做,不再自己判斷。**
+     *
+     * @param original 佈局檔裡的那顆鍵。
+     * @param declared 消歧欄替這個 `key.id` 宣告了什麼;`null` = 它不是格位。
+     * @param pinnedSyllable 使用者釘住的讀音,沒釘就 null。
+     */
+    fun renderSlot(original: LayoutKey, declared: Cell?, pinnedSyllable: String?): SlotRender {
+        // 三條「不歸消歧欄管」的路徑,結果**必須一模一樣**:
+        //   · spacer:它本來就沒有鍵面、沒有行為;
+        //   · 這顆鍵根本不在格位清單裡;
+        //   · 是格位,但這一輪讀音不夠用（[Cell.Original],見 task #78）。
+        // 第三條就是那個沒有守門的缺口:少折這一次,鍵面照樣對(slotKey 會把
+        // Cell.Original 原封退回),但點擊與長按盤被交給了消歧欄。
+        if (original.spacer || declared == null || declared == Cell.Original) {
+            return SlotRender(
+                key = original,
+                tapCell = null,
+                popup = original.popup,
+                speaks = null,
+                pinned = false,
+            )
+        }
+        val pinned = declared is Cell.Reading && declared.syllable == pinnedSyllable
+        val face = slotKey(original, declared, pinned)
+        return SlotRender(
+            key = face,
+            tapCell = declared,
+            popup = face.popup,
+            speaks = declared,
+            pinned = pinned,
         )
     }
 

@@ -5,9 +5,13 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.luminakey.ime.core.RimeCandidate
+import org.luminakey.ime.theme.LayoutKey
+import org.luminakey.ime.theme.RepoFixtures
+import java.io.File
 
 /**
  * 拼音消歧欄。
@@ -177,14 +181,22 @@ class T9SyllablesTest {
      */
     @Test
     fun `消歧欄的格數恆等於宣告的格位數`() {
-        for (n in 1..6) {
+        for (n in 0..6) {
             val readings = (1..n).map { "s$it" }
             for (slots in T9Syllables.MIN_SLOTS..4) {
                 val cells = T9Syllables.cells(readings, slots, offset = 0)
                 assertEquals("n=$n slots=$slots 的格數不對", slots, cells.size)
             }
         }
-        assertEquals("沒有讀音就整欄不接管", emptyList<T9Syllables.Cell>(), T9Syllables.cells(emptyList(), 3, 0))
+        // ⚠ 一個讀音都沒有時**也**是一格對一格 —— 每一格都是 Original(照佈局畫)。
+        // 這裡一度斷言「回空清單」,而 [T9Syllables.cells] 的 kdoc 寫的是
+        // 「長度恆等於 slots」:文件與碼不符。改的是碼那一邊,因為呼叫端真的在
+        // zip,而 zip 遇到短清單不會叫,只會少接管幾個 key id。
+        assertEquals(
+            "沒有讀音時仍然要一格對一格(每一格都是 Original = 照佈局畫)",
+            List(3) { T9Syllables.Cell.Original },
+            T9Syllables.cells(emptyList(), 3, 0),
+        )
     }
 
     /**
@@ -304,46 +316,60 @@ class T9SyllablesTest {
      * 「它不會靜靜地失效」的唯一保證：有人把 `pu_comma` 改名，消歧欄會整欄
      * 消失，而畫面上只是照常顯示標點 —— 沒有任何東西會叫。
      *
-     * ⚠ 清單寫死在這裡是**故意**的：它就是「哪幾份佈局應該有消歧欄」的規格。
-     * 新增一份九宮格佈局時要**同時**加進這裡，漏了就等於漏了驗證。
+     * ⚠ 這裡的佈局清單原本是**寫死的** `listOf("cn-t9-pinyin",
+     * "cn-t9-pinyin-numrow")`,而白名單搬進 YAML 的**理由**正是「新增一份
+     * 九宮格佈局不必再改 Kotlin」（見 [T9Syllables] 的 kdoc）—— 寫死的清單
+     * 把那個好處原封還了回去:新佈局把 key id 宣告錯了,這條測試掃不到它,
+     * 使用者拿到的是一份沒有消歧欄的九宮格,而畫面只是照常顯示標點。
+     * 所以改成從 `core/layouts` 掃（[RepoFixtures.layoutIds] 本身也是掃的）。
+     *
+     * ⚠ 掃出來的東西要有**下界**:掃到 0 份必須是紅。否則有人把 YAML 欄位
+     * 改名、或解析器不再讀它,這條測試會在「一份都沒掃到」的情況下全綠 ——
+     * 那正是本專案的舊帳「測試安靜地跳過自己」。
      */
     @Test
     fun `每一個宣告的格位都真的存在於它宣告的那一層`() {
         val repo = FixtureRepo()
-        val declaring = listOf("cn-t9-pinyin", "cn-t9-pinyin-numrow")
-        for (layoutId in declaring) {
+        val declaring = ArrayList<Pair<String, org.luminakey.ime.theme.LayoutLayer>>()
+        for (layoutId in RepoFixtures.layoutIds) {
             val layout = repo.loadLayout(layoutId).value
             assertNotNull("佈局 $layoutId 載不起來", layout)
-            val layer = layout!!.layer("t9")
-            assertNotNull("佈局 $layoutId 沒有 t9 層", layer)
-            val keyIds = layer!!.syllableSlots
+            for (layer in layout!!.layers) {
+                if (layer.syllableSlots.isNotEmpty()) declaring += layoutId to layer
+            }
+        }
+        assertTrue(
+            "掃遍 core/layouts（${RepoFixtures.layoutIds.size} 份）只有 ${declaring.size} 層" +
+                "宣告了 syllable_slots，少於下界 $MIN_DECLARING_LAYERS —— " +
+                "九宮格少了消歧欄，而畫面上只是照常顯示標點，不會有任何東西叫",
+            declaring.size >= MIN_DECLARING_LAYERS,
+        )
+        for ((layoutId, layer) in declaring) {
+            val where = "$layoutId/${layer.id}"
+            val keyIds = layer.syllableSlots
             assertTrue(
-                "$layoutId/t9 沒有宣告 syllable_slots —— 九宮格少了消歧欄，" +
-                    "而畫面上只是照常顯示標點，不會有任何東西叫",
-                keyIds.isNotEmpty(),
-            )
-            assertTrue(
-                "$layoutId/t9 只宣告了 ${keyIds.size} 格，" +
+                "$where 只宣告了 ${keyIds.size} 格，" +
                     "少於 ${T9Syllables.MIN_SLOTS} 格就翻不了頁，會有讀音摸不到",
                 keyIds.size >= T9Syllables.MIN_SLOTS,
             )
+            assertEquals("$where 宣告了重複的 key id", keyIds.size, keyIds.distinct().size)
             val rows = layer.rows
             val rowOf = HashMap<String, Int>()
             rows.forEachIndexed { i, r -> r.keys.forEach { k -> k.id?.let { rowOf[it] = i } } }
             for (id in keyIds) {
                 assertTrue(
-                    "$layoutId/t9 裡沒有 id 為 $id 的鍵 —— " +
+                    "$where 裡沒有 id 為 $id 的鍵 —— " +
                         "消歧欄會整欄消失，而畫面上只是照常顯示標點",
                     rowOf.containsKey(id),
                 )
             }
             assertEquals(
-                "$layoutId 的格位必須落在不同列上（那是一整條直欄）",
+                "$where 的格位必須落在不同列上（那是一整條直欄）",
                 keyIds.size,
                 keyIds.mapNotNull { rowOf[it] }.distinct().size,
             )
             assertFalse(
-                "$layoutId 的消歧欄吃到了**底列**。底列是導覽列（!@# 是 " +
+                "$where 的消歧欄吃到了**底列**。底列是導覽列（!@# 是 " +
                     "switch_layout），而 LayoutEscape 走的是佈局檔的靜態內容、" +
                     "看不見執行期替換 —— 在那裡動手就是在死路檢查上開一個測不到的洞。",
                 keyIds.any { rowOf[it] == rows.lastIndex },
@@ -523,6 +549,248 @@ class T9SyllablesTest {
         }
     }
 
+    /* ── 那一格**按下去**會怎樣（不是它畫成什麼樣）───────────────────── */
+
+    /**
+     * ⚠ **這一節守的是 task #78 的孿生兄弟,而它一度一條守門都沒有。**
+     *
+     * 上面每一條都只看得到**鍵面與幾何**。把 `KeyboardView.kt` 裡
+     * 「Cell.Original 折回原鍵那一邊」的那一步拿掉、[T9Syllables.slotKey] 的
+     * 修正完整保留,604 條測試一條都不紅 —— 而使用者拿到的是一顆**畫得對、
+     * 按下去什麼都不做、長按盤也開不出來**的標點鍵:
+     *
+     *   · 鍵面對:`slotKey` 對 [T9Syllables.Cell.Original] 原封退回原鍵;
+     *   · 點擊死:點擊被導進 `onSlot`,而 `onSlot` 對 Cell.Original 是 `Unit`;
+     *   · 長按死:`if (cell != null) null else key.popup` 把盤關掉。
+     *
+     * 那正是這個專案抓過七次的形狀:**本來摸得到,現在只剩看得到**。
+     * 決定因此收進純函式 [T9Syllables.renderSlot],這一節直接驗**行為**。
+     */
+    @Test
+    fun `沒用到的格位,鍵面、點擊、長按盤、朗讀名四件全部走原鍵`() {
+        val layer = FixtureRepo().loadLayout(T9_LAYOUT).value!!.layer("t9")!!
+        val keys = layer.rows.flatMap { it.keys }
+        val slotIds = layer.syllableSlots
+        assertTrue("夾具前提:這一層要有格位", slotIds.isNotEmpty())
+        for (id in slotIds) {
+            val original = keys.first { it.id == id }
+            assertNotNull(
+                "夾具前提:「${original.label}」本來就有長按盤,否則這條測試驗不到長按",
+                original.popup,
+            )
+            assertUntouched(
+                "$id/讀音不夠用",
+                original,
+                T9Syllables.renderSlot(original, T9Syllables.Cell.Original, null),
+            )
+            assertUntouched(
+                "$id/根本不是格位",
+                original,
+                T9Syllables.renderSlot(original, null, null),
+            )
+            assertUntouched(
+                "$id/別人被釘住了",
+                original,
+                T9Syllables.renderSlot(original, T9Syllables.Cell.Original, "ni"),
+            )
+            val holed = original.copy(spacer = true)
+            assertUntouched("$id/spacer", holed, T9Syllables.renderSlot(holed, reading("ni"), "ni"))
+        }
+    }
+
+    /**
+     * 反向:被真正接管的那幾格,四件事也要**同時**換過去。
+     *
+     * 少了這一條,一份把每一格都無條件當成「不歸消歧欄管」的實作照樣全綠 ——
+     * 那樣消歧欄整條不會有反應,而鍵盤看起來完全正常。
+     */
+    @Test
+    fun `被接管的格位,點擊交給消歧欄、長按盤收起來、朗讀名換成讀音`() {
+        val layer = FixtureRepo().loadLayout(T9_LAYOUT).value!!.layer("t9")!!
+        val original = layer.rows.flatMap { it.keys }.first { it.id == "pu_question" }
+        for (cell in listOf(reading("ni"), T9Syllables.Cell.More)) {
+            val slot = T9Syllables.renderSlot(original, cell, pinnedSyllable = null)
+            assertTrue("$cell 沒有被接管", slot.takenOver)
+            assertEquals("$cell 點下去要把 cell 交給 onSlot", cell, slot.tapCell)
+            assertNull(
+                "「${original.label}」的長按盤在組字中不該還開得出來",
+                slot.popup,
+            )
+            assertEquals("$cell 的朗讀名要念讀音,不是念「${original.label}」", cell, slot.speaks)
+            assertNotEquals("$cell 沒有換掉鍵面", original.label, slot.key.label)
+            assertTrue("$cell 必須點得下去", slot.key.hasTapBehavior)
+            assertEquals("幾何一格都不能動", original.width, slot.key.width, 0.0001f)
+        }
+    }
+
+    @Test
+    fun `釘住的那一格看得出來,而且只有那一格`() {
+        val layer = FixtureRepo().loadLayout(T9_LAYOUT).value!!.layer("t9")!!
+        val original = layer.rows.flatMap { it.keys }.first { it.id == "pu_comma" }
+        val pinned = T9Syllables.renderSlot(original, reading("ni"), pinnedSyllable = "ni")
+        assertTrue("釘住的那一格要看得出來", pinned.pinned)
+        assertTrue("釘住的那一格鍵面要是 active", pinned.key.active)
+        val other = T9Syllables.renderSlot(original, reading("mi"), pinnedSyllable = "ni")
+        assertFalse("沒被釘住的格位也亮起來 = 兩格同時反白", other.pinned)
+        assertFalse("沒被釘住的格位也亮起來 = 兩格同時反白", other.key.active)
+        val more = T9Syllables.renderSlot(original, T9Syllables.Cell.More, pinnedSyllable = "ni")
+        assertFalse("翻頁鍵不是讀音,不該被當成釘住的那一個", more.pinned)
+    }
+
+    /**
+     * **性質,不是例子**:掃遍 `core/layouts` 每一份宣告了 `syllable_slots`
+     * 的層 × 每一種讀音數 × 每一個 offset,每一格的行為都要與它的 cell 一致。
+     *
+     * 「一致」對 [T9Syllables.Cell.Original] 的意思是**四件事全部走原鍵**,
+     * 而那正是實機截圖（task #78）指著的那一格。
+     */
+    @Test
+    fun `整層掃一遍,沒用到的格位在任何一種讀音數下都還按得動`() {
+        assertSlotsBehave { key, declared, pin -> T9Syllables.renderSlot(key, declared, pin) }
+    }
+
+    /**
+     * 同一條檢查餵一份**故意寫壞的實作**必須失敗,否則它什麼都沒在守。
+     *
+     * 這份壞掉的實作就是植入 M3 的形狀:少了「Cell.Original 折回原鍵那一邊」
+     * 那一步,其餘完整保留 —— 鍵面照樣正確,點擊與長按盤卻交給了消歧欄。
+     */
+    @Test
+    fun `少了「Original 折回原鍵」那一步會被同一條檢查擋下`() {
+        var caught = false
+        try {
+            assertSlotsBehave { key, declared, pin ->
+                if (declared == null) {
+                    T9Syllables.SlotRender(key, null, key.popup, null, false)
+                } else {
+                    val pinned =
+                        declared is T9Syllables.Cell.Reading && declared.syllable == pin
+                    val face = T9Syllables.slotKey(key, declared, pinned)
+                    T9Syllables.SlotRender(face, declared, face.popup, declared, pinned)
+                }
+            }
+        } catch (e: AssertionError) {
+            caught = true
+        }
+        assertTrue(
+            "『沒用到的格位還按得動』這條檢查在該紅的時候沒有紅 —— " +
+                "那顆標點鍵可以變成按下去什麼都不做,而沒有任何東西會叫",
+            caught,
+        )
+    }
+
+    private fun assertSlotsBehave(
+        render: (LayoutKey, T9Syllables.Cell?, String?) -> T9Syllables.SlotRender,
+    ) {
+        val repo = FixtureRepo()
+        var untouched = 0
+        var taken = 0
+        for (layoutId in RepoFixtures.layoutIds) {
+            val layout = repo.loadLayout(layoutId).value ?: continue
+            for (layer in layout.layers) {
+                val slotIds = layer.syllableSlots
+                if (slotIds.isEmpty()) continue
+                val keys = layer.rows.flatMap { it.keys }.associateBy { it.id }
+                for (n in 0..6) {
+                    val readings = (1..n).map { "s$it" }
+                    for (offset in 0 until maxOf(n, 1)) {
+                        val cells = T9Syllables.cells(readings, slotIds.size, offset)
+                        assertEquals(
+                            "$layoutId/${layer.id} n=$n:格數與宣告的格位數對不上",
+                            slotIds.size,
+                            cells.size,
+                        )
+                        for ((i, id) in slotIds.withIndex()) {
+                            // 「宣告的 id 真的存在」由另一條測試守,這裡不重複。
+                            val original = keys[id] ?: continue
+                            val where = "$layoutId/${layer.id}/$id n=$n offset=$offset"
+                            val slot = render(original, cells[i], readings.firstOrNull())
+                            if (cells[i] == T9Syllables.Cell.Original) {
+                                untouched++
+                                assertUntouched(where, original, slot)
+                            } else {
+                                taken++
+                                assertTrue("$where 該被消歧欄接管卻沒有", slot.takenOver)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // 下界:一格都沒掃到的話,上面每一條斷言都沒跑過,而這條測試會全綠。
+        assertTrue("一個「沒用到的格位」都沒掃到,這條檢查是空轉的", untouched > 0)
+        assertTrue("一個「被接管的格位」都沒掃到,這條檢查是空轉的", taken > 0)
+    }
+
+    /** 「這一格不歸消歧欄管」的完整意思:四件事全部走原鍵那一份。 */
+    private fun assertUntouched(
+        where: String,
+        original: LayoutKey,
+        slot: T9Syllables.SlotRender,
+    ) {
+        assertSame("$where 的鍵面不是原鍵本人", original, slot.key)
+        assertNull(
+            "$where 的點擊被交給了消歧欄 —— onSlot 對 Cell.Original 是 Unit," +
+                "使用者按下這顆標點鍵什麼都不會發生(畫面完全正常)",
+            slot.tapCell,
+        )
+        assertSame(
+            "$where 的長按盤被關掉了 —— 那顆鍵的長按盤在組字中應該還開得出來",
+            original.popup,
+            slot.popup,
+        )
+        assertNull("$where 的朗讀名被換掉了,TalkBack 會把標點念成讀音", slot.speaks)
+        assertFalse("$where 不是使用者釘住的讀音,不該亮起來", slot.pinned)
+    }
+
+    /**
+     * **KeyGrid 只准照著做。**
+     *
+     * [T9Syllables.renderSlot] 是純函式,上面那幾條測試摸得到它;但
+     * 「KeyGrid 有沒有真的照著做」摸不到 —— 本模組沒有 Robolectric、
+     * 也沒有 androidTest,`@Composable` 一行都執行不到。植入 M3 之所以全綠,
+     * 缺的就是這一段:專門為側欄寫的測試走的是自己的 ProbeProc,不是產品碼。
+     *
+     * 所以這裡掃原始碼,守**一件事**:那四個決定不准在 KeyGrid 裡重新做一次。
+     * 把 `slotCells` 直接拿去判斷（M3 的形狀）、自己合成鍵面、或從原鍵拿
+     * 長按盤,三種都會在這裡紅。
+     */
+    @Test
+    fun `KeyGrid 不自己決定那一格的行為`() {
+        val src = KEYBOARD_VIEW.readText(Charsets.UTF_8)
+        assertTrue("讀不到 ${KEYBOARD_VIEW.path}（工作目錄變了?）", src.length > 1000)
+        val grid = src.substringAfter("private fun KeyGrid(", "")
+            .substringBefore("private fun syllableDescription")
+        assertTrue("在 KeyboardView.kt 裡找不到 KeyGrid 的本體", grid.length in 500..40000)
+
+        assertEquals(
+            "KeyGrid 只准查一次 slotCells,而且要把查到的東西整個交給 renderSlot",
+            1,
+            Regex("""slotCells\[""").findAll(grid).count(),
+        )
+        assertTrue(
+            "那一格的四個決定必須由 T9Syllables.renderSlot 一次算完 —— " +
+                "在 KeyGrid 裡自己判斷 Cell.Original,少同步一件就是一顆" +
+                "畫得對、按下去什麼都不做的標點鍵",
+            Regex("""T9Syllables\.renderSlot\(\s*key,\s*slotCells\[key\.id],\s*pinnedSyllable\s*\)""")
+                .containsMatchIn(grid),
+        )
+        assertFalse(
+            "鍵面不准在 KeyGrid 自己合成:slotKey 只該由 renderSlot 呼叫," +
+                "否則鍵面與行為又變成兩個判斷點",
+            src.contains("T9Syllables.slotKey("),
+        )
+        assertEquals(
+            "長按盤必須走 slot.popup。在 KeyGrid 裡從原鍵拿 key.popup," +
+                "就是把「這一格有沒有被接管」又判斷了一次,而它可以與鍵面分岔",
+            0,
+            Regex("""\bkey\.popup\b""").findAll(grid).count(),
+        )
+        for (needle in listOf("slot.key", "slot.tapCell", "slot.speaks", "slot.pinned", "slot.popup")) {
+            assertTrue("KeyGrid 沒有用到 $needle —— 那個決定跑到別的地方去了", grid.contains(needle))
+        }
+    }
+
     private fun reading(s: String) = T9Syllables.Cell.Reading(s)
 
     private fun page(vararg pairs: Pair<String, String>): List<RimeCandidate> =
@@ -532,5 +800,18 @@ class T9SyllablesTest {
 
     private companion object {
         const val T9_LAYOUT = "cn-t9-pinyin"
+
+        /**
+         * 「有幾層宣告了 syllable_slots」的**下界**,不是清單。
+         *
+         * 目前是 `cn-t9-pinyin` 與 `cn-t9-pinyin-numrow` 各一層。新增九宮格
+         * 佈局時**不必**動它（那正是把宣告搬進 YAML 的用意）;它只擋一件事:
+         * 掃到 0 份時整條檢查空轉全綠。
+         */
+        const val MIN_DECLARING_LAYERS = 2
+
+        /** 工作目錄在 Gradle 下是模組目錄（android/app）。 */
+        val KEYBOARD_VIEW =
+            File("src/main/java/org/luminakey/ime/keyboard/KeyboardView.kt")
     }
 }

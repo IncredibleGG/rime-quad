@@ -1083,21 +1083,23 @@ private fun KeyGrid(
                         // 拼音消歧欄：只換鍵面與行為，幾何一格都不動 ——
                         // 組字途中自己重排的鍵盤比看不到讀音更糟。
                         //
-                        // ⚠ **Cell.Original 要在這裡就折成 null。** 它的意思是
-                        // 「這一格不歸消歧欄管」(讀音比格位少),而下面每一個
-                        // `if (cell == null)` 分支 —— 點擊行為、長按盤、無障礙
-                        // 朗讀名 —— 都得走原鍵那一邊。只在 slotKey 裡退回原鍵是
-                        // 不夠的:鍵面會對,但點下去被導進 onSlot 變成什麼都不做,
-                        // 長按盤也被關掉,做出來的是一顆「看得到摸不到」的標點鍵。
-                        val cell = if (key.spacer) {
-                            null
-                        } else {
-                            slotCells[key.id]?.takeIf { it != T9Syllables.Cell.Original }
-                        }
-                        val pinnedHere =
-                            cell is T9Syllables.Cell.Reading && cell.syllable == pinnedSyllable
-                        val shownKey =
-                            if (cell == null) key else T9Syllables.slotKey(key, cell, pinnedHere)
+                        // ⚠ **這一格的四個決定不在這裡做。** 鍵面、點下去做
+                        // 什麼、長按盤開不開、朗讀名念什麼 —— 四件必須同進
+                        // 同出,而它們原本是四個各自判斷 `cell == null` 的
+                        // 運算式,可以分岔。分岔的樣子在螢幕上看不出來:一顆
+                        // 畫得對、按下去什麼都不做、長按盤也開不出來的標點鍵
+                        // （task #78 的孿生兄弟）。
+                        //
+                        // 四件事現在由 [T9Syllables.renderSlot] 一次算完 ——
+                        // 那是純函式,單元測試摸得到;這一層(@Composable)在
+                        // 本模組裡沒有任何東西摸得到。KeyGrid 只准照著做,
+                        // 由 T9SyllablesTest 的「KeyGrid 不自己決定那一格的
+                        // 行為」守著。
+                        val slot =
+                            T9Syllables.renderSlot(key, slotCells[key.id], pinnedSyllable)
+                        val shownKey = slot.key
+                        val tapCell = slot.tapCell
+                        val speaks = slot.speaks
                         if (shownKey.spacer) {
                             Spacer(Modifier.weight(shownKey.width).fillMaxHeight())
                         } else {
@@ -1109,22 +1111,21 @@ private fun KeyGrid(
                                 layerLabels = layerLabels,
                                 // 消歧欄不是 §9.5 的動作動詞（它沒有 YAML 表示法），
                                 // 所以行為由這一層包起來，而不是發明一個動詞。
-                                onEvent = if (cell == null) onEvent else ({ onSlot(cell) }),
-                                descriptionOverride = if (cell == null) {
-                                    null
-                                } else {
-                                    syllableDescription(cell)
-                                },
-                                stateOverride = if (pinnedHere) {
+                                onEvent =
+                                    if (tapCell == null) onEvent else ({ onSlot(tapCell) }),
+                                descriptionOverride =
+                                    if (speaks == null) null else syllableDescription(speaks),
+                                stateOverride = if (slot.pinned) {
                                     stringResource(R.string.a11y_syllable_pinned)
                                 } else {
                                     null
                                 },
                                 onPopup = { left, top, w ->
-                                    // 被消歧欄接管的格位沒有長按盤（slotKey 清掉了
-                                    // popup），這裡一併寫明，免得日後有人以為
-                                    // 「，」的長按盤在組字中還開得出來。
-                                    val p = if (cell != null) null else key.popup
+                                    // 長按盤一律走 slot.popup:被接管的格位沒有盤
+                                    // （slotKey 清掉了）,沒被接管的格位**盤要還
+                                    // 開得出來** —— 把「，」的長按盤在組字中關掉,
+                                    // 就是一顆看得到卻摸不到的鍵。
+                                    val p = slot.popup
                                     if (p != null) {
                                         val originDp = with(density) {
                                             Offset(
@@ -1140,7 +1141,7 @@ private fun KeyGrid(
                                         )
                                     }
                                 },
-                                modifier = Modifier.weight(key.width).fillMaxHeight(),
+                                modifier = Modifier.weight(shownKey.width).fillMaxHeight(),
                             )
                         }
                     }
