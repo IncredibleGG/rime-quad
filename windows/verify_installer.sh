@@ -1437,7 +1437,12 @@ log "6. 端到端:用安裝好的服務與資料打出「你好」"
 #
 #   實測(2026-08-12,run 31526574022 / install-x64):把 service/main.cc
 #   的 RedirectStdIoIfDetached 從 %LOCALAPPDATA% 改成 %ProgramFiles%,
-#   服務真的把 diagnostics/service.log 寫進了 C:\Program Files\LuminaKey,
+#   服務真的把 diagnostics/service.log 寫進了安裝目錄(${INSTALL_DIR}),
+#   ⚠ 這一行原本把安裝路徑連同產品名一起寫成字面值,而 scripts/
+#     verify_product_ids.sh §3 與 windows/verify_product_names.sh §5
+#     連註解一起掃 —— 那是對的:改名時漏掉的正是註解裡那一份,
+#     而它會在下一個人讀的時候變成錯的說明。識別碼一律向
+#     product.env 那條線要(這裡直接用已經讀好的 ${INSTALL_DIR})。
 #   而這一條照樣印
 #
 #       ✓ 安裝目錄跑完之後一個檔案都沒變(使用者資料沒有寫進 Program Files)
