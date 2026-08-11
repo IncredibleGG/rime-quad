@@ -238,8 +238,9 @@ fun RimeKeyboard(
                         T9Syllables.Cell.More ->
                             syllableOffset =
                                 T9Syllables.nextOffset(readings, slotIds.size, syllableOffset)
-                        // 空格是 spacer，收不到點擊。
-                        T9Syllables.Cell.Empty -> Unit
+                        // 沒被接管的格位走原鍵自己的 onEvent，到不了這裡；
+                        // 留著讓 when 維持窮盡。
+                        T9Syllables.Cell.Original -> Unit
                     }
                 },
             )
@@ -1081,10 +1082,18 @@ private fun KeyGrid(
                     for (key in row.keys) {
                         // 拼音消歧欄：只換鍵面與行為，幾何一格都不動 ——
                         // 組字途中自己重排的鍵盤比看不到讀音更糟。
-                        // ⚠ 替換要在 spacer 判斷**之前**：讀音比格位少時，多出來的
-                        // 格子變成 spacer（見 T9Syllables.Cell.Empty），順序寫反
-                        // 就會畫出一顆沒有字的鍵。
-                        val cell = if (key.spacer) null else slotCells[key.id]
+                        //
+                        // ⚠ **Cell.Original 要在這裡就折成 null。** 它的意思是
+                        // 「這一格不歸消歧欄管」(讀音比格位少),而下面每一個
+                        // `if (cell == null)` 分支 —— 點擊行為、長按盤、無障礙
+                        // 朗讀名 —— 都得走原鍵那一邊。只在 slotKey 裡退回原鍵是
+                        // 不夠的:鍵面會對,但點下去被導進 onSlot 變成什麼都不做,
+                        // 長按盤也被關掉,做出來的是一顆「看得到摸不到」的標點鍵。
+                        val cell = if (key.spacer) {
+                            null
+                        } else {
+                            slotCells[key.id]?.takeIf { it != T9Syllables.Cell.Original }
+                        }
                         val pinnedHere =
                             cell is T9Syllables.Cell.Reading && cell.syllable == pinnedSyllable
                         val shownKey =
@@ -1171,8 +1180,9 @@ private fun KeyGrid(
 private fun syllableDescription(cell: T9Syllables.Cell): String? = when (cell) {
     is T9Syllables.Cell.Reading -> stringResource(R.string.a11y_syllable, cell.syllable)
     T9Syllables.Cell.More -> stringResource(R.string.a11y_syllable_more)
-    // 空格是 spacer，根本不會被畫成鍵，這裡到不了；留著讓 when 維持窮盡。
-    T9Syllables.Cell.Empty -> null
+    // 沒被接管的格位念的是它原本的名字（「，」「。」「？」），走 KeyA11y
+    // 那一條，不會進來這裡；留著讓 when 維持窮盡。
+    T9Syllables.Cell.Original -> null
 }
 
 private fun dispatchSubKey(sub: SubKey, onEvent: (KeyboardEvent) -> Unit) {

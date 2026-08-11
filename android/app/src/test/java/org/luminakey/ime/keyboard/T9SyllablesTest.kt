@@ -2,6 +2,7 @@ package org.luminakey.ime.keyboard
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -132,19 +133,50 @@ class T9SyllablesTest {
     @Test
     fun `讀音塞得下就不出現翻頁鍵`() {
         val cells = T9Syllables.cells(listOf("ni", "mi"), slots = 3, offset = 0)
-        assertEquals(listOf(reading("ni"), reading("mi"), T9Syllables.Cell.Empty), cells)
+        assertEquals(listOf(reading("ni"), reading("mi"), T9Syllables.Cell.Original), cells)
         assertEquals("塞得下時 offset 不該漂移", 0, T9Syllables.nextOffset(listOf("ni", "mi"), 3, 0))
     }
 
     /**
-     * **一欄只能有一種意思。**
+     * ⚠ **task #78 的紅線:沒有用到的格位要還原成它原本的鍵。**
      *
-     * 第一版讓多出來的格位維持原本的標點，實機截圖立刻看出問題：讀音只有
-     * ni / mi 時，整欄是「ni / mi / ？」—— 使用者沒有理由知道第三個不是第三個
-     * 讀音。所以 [T9Syllables.cells] 的長度恆等於格位數，多的是 [Cell.Empty]。
+     * 實機截圖(`build/look/android/04-t9-composing-ime.png`)上,九宮格左欄
+     * 原本是「，。？!@#」,打了 PGM 之後變成「qin / pin / □ / !@#」——
+     * 第三格的「？」整顆消失,留下一個空的灰色方塊。使用者看到的是鍵盤
+     * 破了一個洞,而那個洞按下去什麼都不會發生。
+     *
+     * 空洞比「一欄兩種意思」更糟:標點還在的話,最壞情況是使用者多看一眼;
+     * 空洞則是**把一顆本來就在的鍵拿走**,而且沒有任何東西說它去哪了。
      */
     @Test
-    fun `消歧欄是全有或全無,不會半邊讀音半邊標點`() {
+    fun `讀音比格位少時沒用到的格位還原成原本的鍵`() {
+        val layer = FixtureRepo().loadLayout(T9_LAYOUT).value!!.layer("t9")!!
+        val keys = layer.rows.flatMap { it.keys }
+        val slotIds = layer.syllableSlots
+        assertEquals("這條測試假設三格", 3, slotIds.size)
+
+        // 兩個讀音配三格 —— 正是實機截圖那一幕(qin / pin / ?)。
+        val cells = T9Syllables.cells(listOf("qin", "pin"), slots = slotIds.size, offset = 0)
+        val third = keys.first { it.id == slotIds[2] }
+        val shown = T9Syllables.slotKey(third, cells[2], pinned = false)
+
+        assertEquals("第三格的鍵面要還是「${third.label}」,不是空的", third.label, shown.label)
+        assertFalse("第三格變成 spacer = 畫面上一個灰色空洞", shown.spacer)
+        assertTrue("還原的格位必須還按得出標點", shown.hasTapBehavior)
+        assertEquals("還原的格位連長按盤都要留著", third.popup, shown.popup)
+    }
+
+    /**
+     * **格數恆等於宣告的格位數。**
+     *
+     * 呼叫端是 `slotIds.zip(cells(...))`：短一格就是短一個 key id 沒被接管，
+     * 而那個 id 會靜靜地照佈局畫 —— 沒有任何東西會叫。
+     *
+     * ⚠ 填不滿時補的是 [T9Syllables.Cell.Original]（原本那顆鍵),不是空洞。
+     * 反過來做過一版,使用者在實機上看到的是鍵盤破了一個洞(task #78)。
+     */
+    @Test
+    fun `消歧欄的格數恆等於宣告的格位數`() {
         for (n in 1..6) {
             val readings = (1..n).map { "s$it" }
             for (slots in T9Syllables.MIN_SLOTS..4) {
@@ -155,15 +187,38 @@ class T9SyllablesTest {
         assertEquals("沒有讀音就整欄不接管", emptyList<T9Syllables.Cell>(), T9Syllables.cells(emptyList(), 3, 0))
     }
 
-    /** 空格必須是 §9.6 的 spacer，不是一顆沒有字、按下去沒反應的鍵。 */
+    /**
+     * 沒用到的格位是**原鍵本人**,不是複製品 —— 少一個欄位就少一種行為,
+     * 而少掉的那一種(長按盤、朗讀名、`send`)在畫面上都看不出來。
+     */
     @Test
-    fun `多出來的格位是空的,不是一顆啞鍵`() {
+    fun `沒用到的格位退回的是原鍵本人`() {
+        val layout = FixtureRepo().loadLayout(T9_LAYOUT).value!!
+        for (id in listOf("pu_comma", "pu_period", "pu_question")) {
+            val original = layout.layer("t9")!!.rows.flatMap { it.keys }.first { it.id == id }
+            val kept = T9Syllables.slotKey(original, T9Syllables.Cell.Original, pinned = false)
+            assertEquals("$id 沒有原封不動退回來", original, kept)
+            assertFalse("$id 變成 spacer = 畫面上一個灰色空洞", kept.spacer)
+            assertTrue("$id 必須還按得出標點", kept.hasTapBehavior)
+        }
+    }
+
+    /**
+     * 反向:被真正接管的那幾格**不可以**是 spacer。
+     *
+     * 上面那條只說「沒用到的要還原」,一份把每一格都無條件 return original 的
+     * 實作照樣過 —— 那樣消歧欄整條不會出現。這一條把另一半釘住。
+     */
+    @Test
+    fun `被接管的格位一定畫得出鍵面`() {
         val layout = FixtureRepo().loadLayout(T9_LAYOUT).value!!
         val original = layout.layer("t9")!!.rows.flatMap { it.keys }.first { it.id == "pu_question" }
-        val empty = T9Syllables.slotKey(original, T9Syllables.Cell.Empty, pinned = false)
-        assertTrue("空格要走 spacer,否則 TalkBack 會停在一顆念作「按鈕」的鍵上", empty.spacer)
-        assertFalse("空格不可以是按得下去的鍵", empty.hasTapBehavior)
-        assertEquals("寬度仍要保留,否則整列會重排", original.width, empty.width, 0.0001f)
+        for (cell in listOf(reading("ni"), T9Syllables.Cell.More)) {
+            val slot = T9Syllables.slotKey(original, cell, pinned = false)
+            assertFalse("$cell 被畫成 spacer,消歧欄會整條看不見", slot.spacer)
+            assertNotEquals("$cell 沒有換掉鍵面", original.label, slot.label)
+            assertTrue("$cell 必須點得下去", slot.hasTapBehavior)
+        }
     }
 
     @Test

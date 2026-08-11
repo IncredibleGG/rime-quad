@@ -108,17 +108,29 @@ object T9Syllables {
         data object More : Cell
 
         /**
-         * 這一格空著（讀音比格位少）。
+         * 這一格**不歸消歧欄管**（讀音比格位少），維持佈局檔原本的鍵。
          *
-         * ⚠ **不是「維持原本的標點」。** 一開始就是那樣做的，實機截圖立刻看出
-         * 問題：讀音只有 ni / mi 兩個時，第三格還印著「？」，一整欄變成
-         * 「ni / mi / ？」—— 使用者沒有理由知道第三個不是第三個讀音。
-         * 一欄只能有一種意思。
+         * ── ⚠ 這裡翻過一次案,兩個方向都上過實機 ───────────────────────────
+         * 第一版就是「維持原本的標點」。當時的實機截圖看到「ni / mi / ？」,
+         * 判斷是「一欄只能有一種意思 —— 使用者沒有理由知道第三個不是第三個
+         * 讀音」,於是改成空白。
          *
-         * 也不是「畫一顆沒有字的鍵」：那是一顆按得到、念得出「按鈕」、
-         * 按下去沒反應的鍵。空格就讓它是空的。
+         * **那個改法更糟,而且是使用者拿著實機截圖回報的(task #78)。**
+         * `build/look/android/04-t9-composing-ime.png`:打了 PGM 之後左欄變成
+         * 「qin / pin / □ / !@#」—— 第三格的「？」整顆消失,留下一個空的灰色
+         * 方塊。使用者看到的不是「這一格沒有讀音」,是**鍵盤破了一個洞**,
+         * 而且那顆本來按得到的標點鍵在組字途中被無聲拿走了。
+         *
+         * 兩害相權很清楚:留著標點,最壞是使用者多看一眼 —— 而「？」長得就
+         * 不像拼音,分辨成本接近零;挖成空洞,則是把一顆既有的鍵拿掉而沒有
+         * 任何東西說它去哪了。那正是這個專案抓過七次的「看得到但摸不到」
+         * 的鏡像:**本來摸得到,現在連看都看不到。**
+         *
+         * 所以這一格是**原封不動**:鍵面、長按盤、`send`、無障礙朗讀名全部走
+         * 佈局檔自己那一份。[slotKey] 直接回傳原鍵,KeyGrid 也把它當成
+         * 「這一格沒有 cell」處理 —— 消歧欄完全不碰它。
          */
-        data object Empty : Cell
+        data object Original : Cell
     }
 
     /** 目前這一層有沒有消歧欄；沒有就回空清單，呼叫端照常畫標點。 */
@@ -157,9 +169,12 @@ object T9Syllables {
         if (requested != null && readings.contains(requested)) requested else null
 
     /**
-     * 這一輪填進格位的內容。**長度恆等於 [slots]** —— 消歧欄是全有或全無，
-     * 不會有一半讀音一半標點的混合欄（見 [Cell.Empty]）。
-     * 讀音多於格位時，最後一格讓給「⋯」。
+     * 這一輪填進格位的內容。**長度恆等於 [slots]**,呼叫端才能一格對一格地
+     * zip 上去 —— 少一格就是少一個 key id 被接管,而那個 id 會靜靜地照佈局
+     * 畫,沒有任何東西會叫。
+     *
+     * 讀音填不滿時,剩下的是 [Cell.Original]（**原本那顆鍵**,不是空洞);
+     * 讀音多於格位時,最後一格讓給「⋯」。
      *
      * @param offset 目前捲到第幾個讀音（見 [nextOffset]）。
      */
@@ -174,7 +189,8 @@ object T9Syllables {
             for (i in 0 until window) out += Cell.Reading(readings[(start + i) % readings.size])
             out += Cell.More
         }
-        while (out.size < slots) out += Cell.Empty
+        // 沒用到的格位**還原成原本的鍵**,不是留空(task #78)。
+        while (out.size < slots) out += Cell.Original
         return out
     }
 
@@ -225,29 +241,32 @@ object T9Syllables {
      * ACTION_CLICK** —— 少了那個，做出來的又是一顆念得出名字、按下去沒反應的
      * 鍵。實際要做什麼由呼叫端包一層 onEvent 決定（見 KeyGrid）。
      */
-    fun slotKey(original: LayoutKey, cell: Cell, pinned: Boolean): LayoutKey =
-        original.copy(
+    fun slotKey(original: LayoutKey, cell: Cell, pinned: Boolean): LayoutKey {
+        // 不歸消歧欄管的格位**原封不動退回去**。少了這一行,沒用到的格位會被
+        // 換成一顆沒有鍵面的 spacer —— 使用者看到的是鍵盤上一個灰色的洞,
+        // 而原本的標點鍵在組字途中消失了(task #78)。
+        if (cell == Cell.Original) return original
+        return original.copy(
             label = when (cell) {
                 is Cell.Reading -> cell.syllable
                 Cell.More -> MORE_LABEL
-                Cell.Empty -> ""
+                Cell.Original -> original.label   // 上面已經 return,這裡到不了
             },
             hint = "",
             icon = null,
             labelFrom = LabelSource.NONE,
-            // 空格走 §9.6 的 spacer：**不是**一顆沒有字的鍵。spacer 佔一樣的寬度
-            // （整列不會重排），但它不是按鈕、沒有語意節點、TalkBack 不會停在
-            // 上面念「按鈕」。
-            spacer = cell == Cell.Empty,
+            // 被接管的格位一定畫得出鍵面（讀音或「⋯」),不會是 spacer。
+            spacer = false,
             active = pinned,
             repeat = false,
             send = null,
-            tap = if (cell == Cell.Empty) null else KeyAction(ActionVerb.NOOP, emptyList(), ""),
+            tap = KeyAction(ActionVerb.NOOP, emptyList(), ""),
             doubleTap = null,
             longPress = null,
             popup = null,
             swipe = emptyMap(),
         )
+    }
 
     /** 鍵面上的「還有更多」。與 `faceOf` 一樣是鍵面字，不是介面文案，故不進 strings。 */
     const val MORE_LABEL = "⋯"
