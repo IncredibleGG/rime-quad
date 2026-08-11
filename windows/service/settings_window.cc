@@ -1989,7 +1989,13 @@ ServiceState SettingsWindow::SidebarServiceState() const {
   // ⚠ 設定視窗收不到快照(那是狀態列的路),所以線路上那個旗標
   //   這裡拿不到。它在「按下重新整理字詞之後」那一段,而**那一段
   //   這個視窗自己知道**:底下那行狀態訊息正在數秒數。
-  facts.engine_says_not_ready = deploying_;
+  //
+  // ⚠ deploying_ 一個人不夠(#90):它在 PollDeploy 回報終局的那一刻就
+  //   變成 false,而那時 session 還沒建回來 —— 中間那一段仍然打不出
+  //   中文,側欄不可以在那時候就說「可以打字」。
+  facts.engine_says_not_ready =
+      deploying_ ||
+      (engine_ && PhaseSaysPreparing(engine_->redeploy_phase()));
   return ServiceStateOf(facts);
 }
 

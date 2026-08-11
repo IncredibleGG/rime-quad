@@ -9,6 +9,7 @@
 #include <string>
 
 #include "../common/hotkey_policy.h"
+#include "../common/redeploy_flow.h"
 #include "../common/schema_choice.h"
 #include "../winshared/winutil.h"
 #include "rime_shell.h"
@@ -62,10 +63,61 @@ bool WaitOverlapped(HANDLE pipe, OVERLAPPED* ov, HANDLE stop_event,
 PipeServer::PipeServer(Engine* engine, CandidateUi* ui, SettingsStore* settings)
     : engine_(engine), ui_(ui), settings_(settings) {
   stop_event_ = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  // ⚠ 部署之後引擎要把 session 建回來,而「該套什麼」只有這裡讀得到
+  //   (設定檔 + 語言設定檔 + 方案清單)。把同一支函式交給它,
+  //   兩條路就不可能漂移。
+  // ⚠ this 的壽命:PipeServer 由 service/main.cc 持有,而它比 Engine
+  //   晚建、早收(Stop() 在 Engine::Stop() 之前)。回呼只會在引擎執行緒
+  //   上被叫到,而引擎在 Stop() 時會把佇列排乾再 join。
+  if (engine_) {
+    engine_->SetSessionPlanner(
+        [this](uint32_t langid,
+               const std::vector<std::pair<std::string, std::string>>& s) {
+          return PlanForLang(langid, s);
+        });
+  }
+}
+
+Engine::SessionPlan PipeServer::PlanForLang(
+    uint32_t langid,
+    const std::vector<std::pair<std::string, std::string>>& schemas) const {
+  std::vector<std::string> ids;
+  for (const auto& kv : schemas) ids.push_back(kv.first);
+  const Settings st = settings_ ? settings_->Load() : Settings();
+  const SchemaChoice choice = ChooseSchema(langid, ids, st.SchemaPref());
+  Engine::SessionPlan plan;
+  plan.schema_id = choice.schema_id;
+  if (choice.set_variant) plan.options = PlanVariant(choice.simplified, langid);
+  // 標點是獨立的一項(不屬於簡繁那一組)。
+  // ⚠ kUnset = followSchema = **完全不呼叫 rs_set_option**。
+  //   設成 false 不是同一件事:很多方案根本沒有那個開關,
+  //   而有些方案的預設是 true。
+  const Tri punct = st.Punctuation();
+  if (punct != Tri::kUnset)
+    plan.options.push_back({"ascii_punct", punct == Tri::kTrue});
+  // ── 中英模式 ────────────────────────────────────────────────
+  //
+  // ⚠ 使用者用懸浮狀態列切成英文之後開一個新程式,那個程式**也**要是
+  //   英文的 —— 少了它,症狀是「這個開關會自己跳回去」,而使用者不會把
+  //   「我開了一個新視窗」與那件事聯想在一起。
+  //
+  // ⚠ 放進 options(而不是建完 session 再設一次)是刻意的:
+  //   options 同時是備用 session 的**計畫**,而 TakeSpareSession 會比對
+  //   計畫合不合。不放進來的話,備用池裡那個照舊狀態配好的 session
+  //   會被判成「計畫相同」而直接交出去。
+  //
+  // ⚠ 與標點不同,這裡**沒有**「不干預」那一態:中英是一個模式,
+  //   不是一個三態偏好,而它的預設(false = 中文)就是 librime 的預設。
+  plan.options.push_back({"ascii_mode", engine_ && engine_->AsciiMode()});
+  return plan;
 }
 
 PipeServer::~PipeServer() {
   Stop();
+  // ⚠ 引擎手上那個回呼捕捉的是 this。它比我們晚死(main.cc 的區域變數
+  //   宣告順序),所以走之前要把它收回來 —— 不然引擎關閉時排乾佇列的
+  //   那一下,重建工作會呼叫一個已經不在的物件。
+  if (engine_) engine_->SetSessionPlanner(nullptr);
   if (stop_event_) ::CloseHandle(stop_event_);
 }
 
@@ -479,7 +531,6 @@ void PipeServer::ServeClient(HANDLE pipe) {
         //
         // 兩件事都要用到它:比對備用 session 的計畫合不合,以及(沒有
         // 備用時)當場套上去。方案清單走快取,所以這一段不進引擎佇列。
-        std::vector<std::string> ids;
         // ⚠ 拿不到清單(引擎在停)與「一個方案都沒有」不可以混成同一件事:
         //   兩者都會讓 ChooseSchema 挑不到東西,而前者是暫時的。
         //   這裡不能擋著不放行(宿主那一側只有 50 毫秒的預算),但要
@@ -488,33 +539,11 @@ void PipeServer::ServeClient(HANDLE pipe) {
         const WorkQueue::Status schema_st = engine_->SchemaListCached(&schemas);
         if (schema_st != WorkQueue::Status::kDone)
           Log("[pipe] 方案清單拿不到(引擎沒有回應)—— 這一個 session 不套方案\n");
-        for (const auto& kv : schemas) ids.push_back(kv.first);
-        const Settings st = settings_ ? settings_->Load() : Settings();
-        const SchemaChoice choice = ChooseSchema(langid, ids, st.SchemaPref());
-        std::vector<OptionAssign> opts;
-        if (choice.set_variant) opts = PlanVariant(choice.simplified, langid);
-        // 標點是獨立的一項(不屬於簡繁那一組)。
-        // ⚠ kUnset = followSchema = **完全不呼叫 rs_set_option**。
-        //   設成 false 不是同一件事:很多方案根本沒有那個開關,
-        //   而有些方案的預設是 true。
-        const Tri punct = st.Punctuation();
-        if (punct != Tri::kUnset)
-          opts.push_back({"ascii_punct", punct == Tri::kTrue});
-        // ── 中英模式 ────────────────────────────────────────────
-        //
-        // ⚠ 這一行是這一輪補上的功能的另一半。使用者用懸浮狀態列切成
-        //   英文之後開一個新程式,那個程式**也**要是英文的 ——
-        //   少了它,症狀是「這個開關會自己跳回去」,而使用者不會把
-        //   「我開了一個新視窗」與那件事聯想在一起。
-        //
-        // ⚠ 放進 opts(而不是建完 session 再設一次)是刻意的:
-        //   opts 同時是備用 session 的**計畫**,而 TakeSpareSession 會比對
-        //   計畫合不合。不放進來的話,備用池裡那個照舊狀態配好的 session
-        //   會被判成「計畫相同」而直接交出去。
-        //
-        // ⚠ 與標點不同,這裡**沒有**「不干預」那一態:中英是一個模式,
-        //   不是一個三態偏好,而它的預設(false = 中文)就是 librime 的預設。
-        opts.push_back({"ascii_mode", engine_->AsciiMode()});
+        // ⚠ **與部署後重建走同一支**(PlanForLang / engine.h 的 SessionPlanner)。
+        //   算法留在這裡而重建那條路自己算一次的話,兩份就會漂移。
+        const Engine::SessionPlan plan = PlanForLang(langid, schemas);
+        const std::string& chosen_schema = plan.schema_id;
+        const std::vector<OptionAssign>& opts = plan.options;
 
         // ── 有沒有預先建好的可以直接拿 ────────────────────────
         //
@@ -523,7 +552,7 @@ void PipeServer::ServeClient(HANDLE pipe) {
         //   那不是排程解得掉的,只能**不要在使用者等著的時候建**。
         SessionOk ok;
         bool from_spare = false;
-        ok.session = engine_->TakeSpareSession(langid, choice.schema_id, opts);
+        ok.session = engine_->TakeSpareSession(langid, chosen_schema, opts);
         if (ok.session != 0) {
           from_spare = true;
         } else {
@@ -544,9 +573,11 @@ void PipeServer::ServeClient(HANDLE pipe) {
           //   除錯記錄 —— fail-open 之下那是唯一留得下來的線索。
           ErrorMsg e;
           e.code = 4;
-          e.text = engine_->deploy_done()
-                       ? "引擎建不出 session"
-                       : "引擎還在部署,現在建不出 session";
+          // ⚠ 三種原因要分得開(common/redeploy_flow.h)。舊版把
+          //   「使用者剛按了重新整理字詞」說成「引擎建不出 session」,
+          //   而看記錄的人會去查管道與編解碼 —— 那兩段都是好的。
+          e.text = SessionRefusedReason(engine_->redeploy_phase(),
+                                        engine_->deploy_ok());
           Log("[pipe] SESSION_NEW 失敗:%s(等了 %lu ms)\n", e.text.c_str(),
               static_cast<unsigned long>(t_created - t_begin));
           send(EncodeError(seq, e));
@@ -578,7 +609,7 @@ void PipeServer::ServeClient(HANDLE pipe) {
             //   正確的做法是**根本不要在使用者等著的時候做** ——
             //   也就是上面那個備用 session。這裡是它拿不到時的退路,
             //   而退路本來就該是「和以前一樣」。
-            engine_->ApplyChoice(ok.session, choice.schema_id, opts);
+            engine_->ApplyChoice(ok.session, chosen_schema, opts);
           }
           // ⚠ 原本這裡還有一趟 engine_->SchemaOfSession(),目的只是讓
           //   note_schema 不要把「我們剛選的方案」誤判成「使用者按了
@@ -586,7 +617,7 @@ void PipeServer::ServeClient(HANDLE pipe) {
           //   看到的第一份快照就是答案,不必再問引擎一次。
           schema_seeded = false;
           // 把剛拿走的那一個補回去(低優先,要等引擎真的閒下來)。
-          engine_->RequestSpareSession(langid, choice.schema_id, opts);
+          engine_->RequestSpareSession(langid, chosen_schema, opts);
         }
         // ⚠⚠ **記錄一定要在 send 之前。**
         //

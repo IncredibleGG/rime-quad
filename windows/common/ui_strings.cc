@@ -195,9 +195,12 @@ namespace {
   X(kRedeployHeading, L"Rebuild words", L"重新整理字詞", L"重新整理字词")      \
   X(kRedeployBlurb,                                                            \
     L"Do this after you change files by hand, or if typing stops finding "     \
-    L"words. Takes ten seconds or so.",                                        \
-    L"你手動改過檔案、或是打字時找不到詞了,就按一下。約十幾秒。",             \
-    L"你手动改过文件、或是打字时找不到词了,就按一下。约十几秒。")             \
+    L"words. Takes ten seconds or so, and you cannot type Chinese while it "   \
+    L"runs.",                                                                  \
+    L"你手動改過檔案、或是打字時找不到詞了,就按一下。約十幾秒,"               \
+    L"整理期間打不出中文。",                                                   \
+    L"你手动改过文件、或是打字时找不到词了,就按一下。约十几秒,"               \
+    L"整理期间打不出中文。")                                                   \
   X(kRedeployButton, L"Rebuild words", L"重新整理字詞", L"重新整理字词")       \
   X(kFilesHeading, L"Your files", L"你的檔案", L"你的文件")                    \
   X(kFilesBlurb,                                                               \
@@ -306,8 +309,10 @@ namespace {
     L"还在处理刚才那一下,现在还没生效。")                                     \
   X(kStatusOrderNotApplied, L"The order was not applied.",                     \
     L"順序沒有套用。", L"顺序没有套用。")                                      \
-  X(kStatusRedeployRunning, L"Rebuilding words... %u seconds so far",          \
-    L"正在整理字詞…已耗時 %u 秒", L"正在整理字词…已耗时 %u 秒")                \
+  X(kStatusRedeployRunning,                                                    \
+    L"Rebuilding words... %u seconds so far. You cannot type Chinese yet.",    \
+    L"正在整理字詞…已耗時 %u 秒,這段期間打不出中文",                          \
+    L"正在整理字词…已耗时 %u 秒,这段期间打不出中文")                          \
   X(kStatusRedeployDone, L"%s finished in %.1f seconds.",                      \
     L"%s完成(耗時 %.1f 秒)。", L"%s完成(耗时 %.1f 秒)。")                  \
   X(kStatusRedeployFailed, L"Rebuilding failed; your settings were restored.", \

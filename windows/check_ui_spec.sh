@@ -1033,7 +1033,8 @@ want('StatusBar::CurrentServiceState', bar,
      ['facts.engine_present = engine_ != nullptr;',
       'facts.deploy_done = engine_ && engine_->deploy_done();',
       'facts.deploy_ok = engine_ && engine_->deploy_ok();',
-      'facts.engine_says_not_ready = engine_not_ready_.load();',
+      'facts.engine_says_not_ready = engine_not_ready_.load() || '
+      '(engine_ && PhaseSaysPreparing(engine_->redeploy_phase()));',
       'return ServiceStateOf(facts);'])
 
 want('StatusBar::OnSnapshot', bar, 'void StatusBar::OnSnapshot(',
@@ -1064,7 +1065,8 @@ want('SettingsWindow::SidebarServiceState', sw,
      ['facts.engine_present = engine_ != nullptr;',
       'facts.deploy_done = engine_ && engine_->deploy_done();',
       'facts.deploy_ok = engine_ && engine_->deploy_ok();',
-      'facts.engine_says_not_ready = deploying_;',
+      'facts.engine_says_not_ready = deploying_ || '
+      '(engine_ && PhaseSaysPreparing(engine_->redeploy_phase()));',
       'return ServiceStateOf(facts);'])
 
 want('SettingsWindow::WndProc', sw, 'LRESULT CALLBACK SettingsWindow::WndProc(',
@@ -2310,6 +2312,255 @@ PYSCRIPT
     esac
   done <<< "${w35out}"
   [ "${w35bad}" -eq 0 ] && ok "W35 ${ntrans} 句會自己消失的訊息裡沒有一句是失敗,${nperm} 句失敗訊息全部留在畫面上等使用者自己看完"
+
+  # ── W36:詞庫檔被改寫的那一刻,一個 session 都不可以在 ────────────
+  #
+  # #90。librime 的 dict_compiler 重編時第一件事是刪掉 *.table.bin /
+  # *.prism.bin,而 Windows 不允許刪除或 resize 一個還有 section mapping
+  # 掛著的檔案 —— 於是那一發失敗,而**回傳值沒有人看**
+  # (dict_compiler.cc:265 / :358)。接下來 MappedFile::Create() 落進
+  # overwriting 分支,Resize 一樣失敗、一樣沒有人看,最後它用讀寫模式
+  # 重新映射舊檔,把新表寫進一段還有 session 正在讀的記憶體。
+  #
+  # ⚠ **這種壞法在執行期看不出來。** librime 從頭到尾回報成功,使用者
+  #   那一側是打字打到一半候選變成亂碼、或者服務直接消失。所以這條線
+  #   沒有「跑一次看看」這個選項,只能靠呼叫點的形狀守住。
+  #
+  # ⚠ 而且它有一半只有 Windows 驗得到(mmap 的行為)。純函式那一半在
+  #   common/redeploy_flow.{h,cc} + tests/test_redeploy_flow.cc;
+  #   **這裡守的是接線**:那個階段機有沒有真的被接在 engine.cc 上。
+  #
+  # 六條判準,分母全部從程式碼數出來:
+  #
+  #   1. 每一個 rs_session_create() 呼叫點,所在的函式都要在呼叫**之前**
+  #      問過 SessionCreationAllowed()。一個例外都沒有 —— 有例外就得
+  #      維護一份名單,而名單會過期。
+  #   2. BeginDeploy 不可以自己呼叫 rs_deploy()(它跑在設定視窗的 UI
+  #      執行緒上),要把「收乾淨 + 開始部署」整包丟給引擎執行緒;
+  #      而那一包裡收乾淨要在 rs_deploy() **之前**、拒絕啟動時要重建、
+  #      而且要讓畫面知道這一場結束了。
+  #   3. CloseAllSessionsOnEngineThread 要真的 destroy 並清空 sessions_。
+  #   4. OnDeployTerminal(部署終局)要重建 —— 而且**不可以**掛在設定
+  #      視窗的計時器上:那個視窗可以被關掉。
+  #   5. RebuildSessionsOnEngineThread 要重套方案與選項(#85)。
+  #   6. ProcessKey / ToggleAsciiMode 那道門要用 ShouldFailOpen(phase_...),
+  #      而且在 ProcessKey 裡要排在 Find() **之前**。
+  check
+  local w36bad=0
+  local w36out; w36out="$("${PY}" - "${CODE_DIR}" <<'PYSCRIPT'
+import os, re, sys
+root = sys.argv[1]
+
+def read(rel):
+    try:
+        return open(os.path.join(root, rel), encoding='utf-8',
+                    errors='replace').read()
+    except OSError:
+        return None
+
+en = read('service/engine.cc')
+if en is None:
+    print('NOSRC=1')
+    raise SystemExit(0)
+
+def match_from(src, i):
+    depth = 0
+    for j in range(i, len(src)):
+        if src[j] == '{':
+            depth += 1
+        elif src[j] == '}':
+            depth -= 1
+            if depth == 0:
+                return (i, j + 1)
+    return (i, len(src))
+
+def body_of(src, sig):
+    i = src.find(sig)
+    if i < 0:
+        return None
+    b = src.find('{', i)
+    if b < 0:
+        return None
+    ob, cb = match_from(src, b)
+    return src[ob + 1:cb - 1]
+
+def where(src, pos):
+    last = None
+    for m in re.finditer(r'Engine::(\w+)\s*\(', src[:pos]):
+        last = m.group(1)
+    return last or '(檔案開頭)'
+
+# ── 1. 每一個 rs_session_create() 都要先問過門 ────────────────────
+creates = list(re.finditer(r'rs_session_create\s*\(', en))
+print('NCREATE=%d' % len(creates))
+for m in creates:
+    fn = where(en, m.start())
+    bd = body_of(en, 'Engine::%s(' % fn)
+    if bd is None:
+        print('NOFN=%s' % fn)
+        continue
+    i_gate = bd.find('SessionCreationAllowed(')
+    i_new = bd.find('rs_session_create(')
+    if i_gate < 0:
+        print('UNGATED=%s' % fn)
+    elif i_gate > i_new:
+        print('GATEAFTERCREATE=%s' % fn)
+
+# ── 2. BeginDeploy 只負責關門與丟工作 ────────────────────────────
+bd = body_of(en, 'bool Engine::BeginDeploy(')
+if bd is None:
+    print('NOBEGINDEPLOY=1')
+else:
+    if 'kRequested' not in bd:
+        print('NOREQUESTED=1')
+    if 'rs_deploy(' in bd:
+        print('DEPLOYONCALLERTHREAD=1')
+    if 'PostAsync(' not in bd:
+        print('NOASYNC=1')
+    if 'kTeardownFailed' not in bd:
+        print('NOOPENBACK=1')
+
+# ── 2b. 收乾淨 + 開始部署那一包 ──────────────────────────────────
+cd2 = body_of(en, 'void Engine::CloseThenDeployOnEngineThread(')
+if cd2 is None:
+    print('NOCLOSEDEPLOYFN=1')
+else:
+    i_close = cd2.find('CloseAllSessionsOnEngineThread()')
+    i_deploy = cd2.find('rs_deploy(')
+    if i_close < 0:
+        print('NOCLOSESTEP=1')
+    elif i_deploy < 0:
+        print('NODEPLOYCALL=1')
+    elif i_close > i_deploy:
+        print('DEPLOYBEFORECLOSE=1')
+    elif 'RebuildSessionsOnEngineThread()' not in cd2[i_deploy:]:
+        print('NOREBUILD=CloseThenDeployOnEngineThread')
+    if 'kSessionsClosed' not in cd2:
+        print('NOCLOSEDEVENT=1')
+    if 'deploy_seq_' not in cd2:
+        print('NOTELLUI=1')
+
+# ── 3. 收乾淨那一支 ──────────────────────────────────────────────
+cb = body_of(en, 'void Engine::CloseAllSessionsOnEngineThread(')
+if cb is None:
+    print('NOCLOSEFN=1')
+else:
+    if 'rs_session_destroy(' not in cb:
+        print('NODESTROY=1')
+    if 'sessions_.clear()' not in cb:
+        print('NOCLEAR=1')
+
+# ── 4. 部署終局要重建 ────────────────────────────────────────────
+ob = body_of(en, 'void Engine::OnDeployTerminal(')
+if ob is None:
+    print('NOTERMINALFN=1')
+else:
+    if 'kDeployFinished' not in ob:
+        print('NOFINISHEVENT=1')
+    if 'RebuildSessionsAsync()' not in ob:
+        print('NOREBUILD=OnDeployTerminal')
+
+# ── 5. 重建要重套設定(#85)──────────────────────────────────────
+rb = body_of(en, 'void Engine::RebuildSessionsOnEngineThread(')
+if rb is None:
+    print('NOREBUILDFN=1')
+else:
+    if 'planner_(' not in rb:
+        print('NOPLANNER=1')
+    if 'rs_select_schema(' not in rb or 'rs_set_option(' not in rb:
+        print('NOREAPPLY=1')
+
+# ── 6. 按鍵那道門 ────────────────────────────────────────────────
+gates = ('ProcessKey', 'ToggleAsciiMode')
+print('NGATE=%d' % len(gates))
+for fn in gates:
+    gb = body_of(en, 'Engine::%s(' % fn)
+    if gb is None:
+        print('NOGATEFN=%s' % fn)
+        continue
+    i_gate = gb.find('ShouldFailOpen(')
+    if i_gate < 0:
+        print('NOGATE=%s' % fn)
+        continue
+    if not re.search(r'ShouldFailOpen\(\s*phase_\.load\(\)', gb):
+        print('STALEPHASE=%s' % fn)
+    i_find = gb.find('Find(id)')
+    if i_find >= 0 and i_find < i_gate:
+        print('GATEAFTERFIND=%s' % fn)
+    if re.search(r'deploy_state_\.load\(\)\s*!=\s*1', gb):
+        print('OLDJUDGE=%s' % fn)
+PYSCRIPT
+)"
+  local ncreate; ncreate="$(num "$(printf '%s\n' "${w36out}" | grep '^NCREATE=' | cut -d= -f2)")"
+  local ngate;   ngate="$(num "$(printf '%s\n' "${w36out}" | grep '^NGATE=' | cut -d= -f2)")"
+  # ⚠ 分母:三個建 session 的呼叫點(當場建、備用池、部署後重建)、
+  #   兩道按鍵的門。掃不到就是範圍寫錯,而那必須是紅的。
+  need_scope "W36 建 session 的呼叫點" "${ncreate}" 3 || w36bad=1
+  need_scope "W36 按鍵那道門" "${ngate}" 2 || w36bad=1
+  local w36line
+  while IFS= read -r w36line; do
+    case "${w36line}" in
+      NOSRC=*)
+        red "W36:找不到 service/engine.cc —— 掃描範圍錯了"; w36bad=1 ;;
+      NOFN=*)
+        red "W36:找不到 Engine::${w36line#NOFN=} 的本體 —— 掃描範圍錯了"; w36bad=1 ;;
+      UNGATED=*)
+        red "W36:Engine::${w36line#UNGATED=} 建 session 之前沒有問過 SessionCreationAllowed() —— 部署期間建起來的 session 會對正在被改寫的 *.table.bin 開一個 mmap,而 librime 刪不掉舊檔時**不會報錯**,它會把新表寫進那段記憶體"; w36bad=1 ;;
+      GATEAFTERCREATE=*)
+        red "W36:Engine::${w36line#GATEAFTERCREATE=} 問門問在 rs_session_create() **之後** —— session 已經建出來了,那一問擋不掉任何東西"; w36bad=1 ;;
+      NOBEGINDEPLOY=*)
+        red "W36:找不到 Engine::BeginDeploy —— 掃描範圍錯了"; w36bad=1 ;;
+      NOCLOSESTEP=*)
+        red "W36:BeginDeploy 裡沒有「部署前收乾淨 session」那一步 —— 部署會在活著的 session 腳下抽換詞庫檔(#90 的本體)"; w36bad=1 ;;
+      NODEPLOYCALL=*)
+        red "W36:BeginDeploy 裡找不到 rs_deploy() —— 掃描範圍錯了"; w36bad=1 ;;
+      DEPLOYBEFORECLOSE=*)
+        red "W36:BeginDeploy 先呼叫 rs_deploy() 才去收 session —— 順序反了就等於沒收"; w36bad=1 ;;
+      DEPLOYONCALLERTHREAD=*)
+        red "W36:BeginDeploy 自己呼叫了 rs_deploy() —— 那一支跑在設定視窗的 UI 執行緒上,而收 session(把使用者剛學到的詞寫回去)必須排在它前面。在那條執行緒上同步等就是 #79 的形狀"; w36bad=1 ;;
+      NOASYNC=*)
+        red "W36:BeginDeploy 沒有把「收乾淨 + 開始部署」丟給引擎執行緒(PostAsync)—— 見上一條"; w36bad=1 ;;
+      NOOPENBACK=*)
+        red "W36:BeginDeploy 在工作沒排進佇列時沒有把門打開(kTeardownFailed)—— session 一個都沒收掉,而那道門會一直關著,引擎再起來也沒有人去開它"; w36bad=1 ;;
+      NOCLOSEDEPLOYFN=*)
+        red "W36:找不到 Engine::CloseThenDeployOnEngineThread —— 掃描範圍錯了"; w36bad=1 ;;
+      NOCLOSEDEVENT=*)
+        red "W36:CloseThenDeployOnEngineThread 沒有走 AdvanceRedeploy(kSessionsClosed) —— 階段沒有進到 kDeploying,而那是「詞庫檔現在可以被改寫」唯一的說法"; w36bad=1 ;;
+      NOTELLUI=*)
+        red "W36:CloseThenDeployOnEngineThread 在 rs_deploy() 拒絕啟動時沒有推 deploy_seq_ —— 設定視窗會永遠停在「正在整理字詞…已耗時 N 秒」,而那個數字一直往上跳"; w36bad=1 ;;
+      NOREQUESTED=*)
+        red "W36:BeginDeploy 沒有走 AdvanceRedeploy(kRequested) —— 那道門沒有關上,收乾淨與 rs_deploy() 之間新開的程式會拿到一個活過整場部署的 session"; w36bad=1 ;;
+      NOREBUILD=*)
+        red "W36:Engine::${w36line#NOREBUILD=} 沒有把 session 建回來(RebuildSessionsAsync)—— 使用者手上會是一個一個 session 都沒有的引擎,從此打不出中文,而且重開機也沒用"; w36bad=1 ;;
+      NOCLOSEFN=*)
+        red "W36:找不到 Engine::CloseAllSessionsOnEngineThread —— 掃描範圍錯了"; w36bad=1 ;;
+      NODESTROY=*)
+        red "W36:CloseAllSessionsOnEngineThread 沒有 rs_session_destroy —— mmap 沒有放掉,而且使用者剛學到的詞不會落地(destroy_session 才是它落地的時機)"; w36bad=1 ;;
+      NOCLEAR=*)
+        red "W36:CloseAllSessionsOnEngineThread 沒有清空 sessions_ —— 裡面留著的是已經失效的指標"; w36bad=1 ;;
+      NOTERMINALFN=*)
+        red "W36:找不到 Engine::OnDeployTerminal —— 掃描範圍錯了"; w36bad=1 ;;
+      NOFINISHEVENT=*)
+        red "W36:OnDeployTerminal 沒有走 AdvanceRedeploy(kDeployFinished) —— 階段會永遠停在 kDeploying,而那道門是關的"; w36bad=1 ;;
+      NOREBUILDFN=*)
+        red "W36:找不到 Engine::RebuildSessionsOnEngineThread —— 掃描範圍錯了"; w36bad=1 ;;
+      NOPLANNER=*)
+        red "W36:重建沒有問過 planner_ —— 建 session 時套什麼與重建時套什麼會變成兩份,而漂移是靜默的(#85)"; w36bad=1 ;;
+      NOREAPPLY=*)
+        red "W36:重建沒有重套方案與選項(rs_select_schema / rs_set_option)—— 使用者按一次「重新整理字詞」,他釘的方案、選的簡繁、剛切到的英數全部回到預設,而畫面上寫的是「完成」(#85)"; w36bad=1 ;;
+      NOGATEFN=*)
+        red "W36:找不到 Engine::${w36line#NOGATEFN=} —— 掃描範圍錯了"; w36bad=1 ;;
+      NOGATE=*)
+        red "W36:Engine::${w36line#NOGATE=} 沒有走 ShouldFailOpen() —— 按鍵會被交給一個正在被抽換的詞庫"; w36bad=1 ;;
+      STALEPHASE=*)
+        red "W36:Engine::${w36line#STALEPHASE=} 傳給 ShouldFailOpen() 的不是 phase_.load() —— 那道門讀不到重新部署走到哪一格,等於永遠開著"; w36bad=1 ;;
+      GATEAFTERFIND=*)
+        red "W36:Engine::${w36line#GATEAFTERFIND=} 的門排在 Find() 之後 —— 重新部署期間 session 是真的不見了,先 Find() 就會走進「找不到」那條路,回給宿主一份 status_flags 全 0 的快照,而狀態列會把它當成「一切正常」"; w36bad=1 ;;
+      OLDJUDGE=*)
+        red "W36:Engine::${w36line#OLDJUDGE=} 還在用 deploy_state_ != 1 判斷 —— 那個值首次部署成功之後**永遠**是 1,重新部署期間這道門是開的(#90 的原始形狀)"; w36bad=1 ;;
+    esac
+  done <<< "${w36out}"
+  [ "${w36bad}" -eq 0 ] && ok "W36 ${ncreate} 個建 session 的呼叫點全部先問過 SessionCreationAllowed(),BeginDeploy 不在 UI 執行緒上部署而是整包丟給引擎執行緒,那一包收乾淨才 rs_deploy()、拒絕啟動時會建回來也會讓畫面知道,部署終局那一條不靠任何視窗,重建會重套方案與選項,${ngate} 道按鍵的門都讀 phase_ 而且排在 Find() 之前"
 }
 
 # ────────────────────────────────────────────────────────────────
@@ -2368,7 +2619,7 @@ self_check() {
 "W27a Relayout 不再問狀態|service/status_bar.cc|s=s.replace('  service_state_ = CurrentServiceState();','  service_state_ = ServiceState::kReady;',1)"
 "W27b 那一橫的字寫死一句|service/status_bar.cc|s=s.replace('    c.text = UiText(StatusTextFor(service_state_));','    c.text = UiText(UiString::kBarNotRunning);',1)"
 "W27c 不讀線路上的旗標|service/status_bar.cc|s=s.replace('SnapshotSaysNotReady(snap.status_flags)','false',1)"
-"W27d 事實少餵一格|service/status_bar.cc|s=s.replace('  facts.engine_says_not_ready = engine_not_ready_.load();','  facts.engine_says_not_ready = false;',1)"
+"W27d 事實少餵一格|service/status_bar.cc|s=s.replace('  facts.engine_says_not_ready =' + chr(10) + '      engine_not_ready_.load() ||','  facts.engine_says_not_ready = false ||',1)"
 "W28 自繪直接用 nmcd.rc|service/settings_window.cc|s=s.replace('LRESULT SettingsWindow::DrawSchemaList(NMLVCUSTOMDRAW* cd) {','LRESULT SettingsWindow::DrawSchemaList(NMLVCUSTOMDRAW* cd) { RECT sneaky = cd->nmcd.rc; (void)sneaky;',1)"
 "W32 那一橫又擋 UI 執行緒 1.5 秒|service/status_bar.cc|s=s.replace('  popup_loading_ = !engine_->SchemaListFromCache(&popup_items_);','  popup_loading_ = !engine_->SchemaListForUi(1500, &popup_items_);',1)"
 "W32b 每按一次就多排一件|service/status_bar.cc|s=s.replace('if (popup_loading_ && !schema_query_inflight_) {','if (popup_loading_) {',1)"
@@ -2433,6 +2684,20 @@ self_check() {
 "W35a 套用失敗那一句改回會自己消失|service/settings_window.cc|s=s.replace('    SetStatus(UiString::kStatusApplyFailed);','    SetTransientStatus(UiString::kStatusApplyFailed);',1)"
 "W35b 存檔失敗那一句也改成會自己消失|service/settings_window.cc|s=s.replace('    SetStatus(UiString::kStatusSaveFailed);','    SetTransientStatus(UiString::kStatusSaveFailed);',1)"
 "W35c 失敗訊息從 BeginApply 那一頭混進 transient|service/settings_window.cc|s=s.replace('  const unsigned seq = BeginApply(UiString::kStatusResetDone);','  const unsigned seq = BeginApply(UiString::kStatusRedeployFailed);',1)"
+"W27k 那一橫的 EngineFacts 不再讀重新部署的階段|service/status_bar.cc|s=s.replace('      engine_not_ready_.load() ||' + chr(10) + '      (engine_ && PhaseSaysPreparing(engine_->redeploy_phase()));','      engine_not_ready_.load();',1)"
+"W27l 側欄的 EngineFacts 不再讀重新部署的階段|service/settings_window.cc|s=s.replace('      deploying_ ||' + chr(10) + '      (engine_ && PhaseSaysPreparing(engine_->redeploy_phase()));','      deploying_;',1)"
+"W36a 部署前不再收 session|service/engine.cc|s=s.replace('  CloseAllSessionsOnEngineThread();' + chr(10),'',1)"
+"W36j BeginDeploy 自己在 UI 執行緒上部署|service/engine.cc|s=s.replace('  if (PostAsync(' + chr(34) + '收乾淨 session 再開始部署' + chr(34) + ',','  if (rs_deploy() && PostAsync(' + chr(34) + '收乾淨 session 再開始部署' + chr(34) + ',',1)"
+"W36k 拒絕啟動時不讓畫面知道|service/engine.cc|s=s.replace('  redeploy_start_failed_.store(true);' + chr(10) + '  deploy_seq_.fetch_add(1);' + chr(10),'',1)"
+"W36l 收乾淨與開始部署之間沒有進到 kDeploying|service/engine.cc|s=s.replace('RedeployEvent::kSessionsClosed','RedeployEvent::kRebuilt',1)"
+"W36b 當場建 session 那一處的門被拿掉|service/engine.cc|s=s.replace('    if (!SessionCreationAllowed(phase_.load())) return;' + chr(10) + '    const rs_session s = rs_session_create();','    const rs_session s = rs_session_create();',1)"
+"W36c 備用 session 那一處的門被拿掉|service/engine.cc|s=s.replace('  if (!SessionCreationAllowed(phase_.load())) return;' + chr(10) + '  const rs_session s = rs_session_create();','  const rs_session s = rs_session_create();',1)"
+"W36d 部署終局不再把 session 建回來|service/engine.cc|s=s.replace('  RebuildSessionsAsync();' + chr(10) + '}','}',1)"
+"W36e 按鍵那道門排到 Find() 後面|service/engine.cc|s=s.replace('    if (ShouldFailOpen(phase_.load(), deploy_state_.load() == 1,' + chr(10) + '                       &r.snap.status_flags)) {','    (void)Find(id);' + chr(10) + '    if (ShouldFailOpen(phase_.load(), deploy_state_.load() == 1,' + chr(10) + '                       &r.snap.status_flags)) {',1)"
+"W36f 重建不再重套方案與選項(#85)|service/engine.cc|s=s.replace('      if (!plan.schema_id.empty()) rs_select_schema(s, plan.schema_id.c_str());' + chr(10) + '      for (const OptionAssign& a : plan.options)' + chr(10) + '        rs_set_option(s, a.option, a.value);','      (void)plan;',1)"
+"W36g 那道門讀不到階段|service/engine.cc|s=s.replace('ShouldFailOpen(phase_.load(), deploy_state_.load() == 1,','ShouldFailOpen(RedeployPhase::kIdle, deploy_state_.load() == 1,',1)"
+"W36h BeginDeploy 沒有先把門關上|service/engine.cc|s=s.replace('RedeployEvent::kRequested','RedeployEvent::kRebuilt',1)"
+"W36i 收乾淨那一支不再銷毀 session|service/engine.cc|s=s.replace('    rs_session_destroy(kv.second);' + chr(10) + '  }' + chr(10) + '  const int total','  }' + chr(10) + '  const int total',1)"
 "範圍|__SCOPE__|"
   )
 

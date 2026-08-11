@@ -143,6 +143,11 @@ add_library(rime_common STATIC
   #   判斷寫成純函式是刻意的:留在繪製碼裡的話,只有真人在
   #   Windows 上才驗得到,也就是實際上沒有人驗。
   common/service_state.cc
+  # ⚠ 「詞庫檔正在被改寫的那一刻,一個 session 都不可以在」。那是一個
+  #   時序性質,而時序性質留在 service/ 裡等於沒有人驗得到 ——
+  #   librime 那一側刪不掉舊檔時**不會報錯**,它會把新表寫進一段還有
+  #   session 在讀的記憶體。
+  common/redeploy_flow.cc
   # ⚠ 那一橫每一格畫什麼。以前寫在 service/status_bar.cc 的繪製碼裡,
   #   而那個檔案在 Ubuntu 上編不起來 —— 「第一格畫了兩個字面」這種
   #   只有人看得出來的缺陷,沒有任何自動化碰得到。
@@ -197,6 +202,7 @@ add_executable(rime_tests
   tests/test_statusbar_place.cc
   tests/test_ui_strings.cc
   tests/test_service_state.cc
+  tests/test_redeploy_flow.cc
   tests/test_status_cells.cc
   tests/test_hotkey_policy.cc
   tests/test_work_queue.cc

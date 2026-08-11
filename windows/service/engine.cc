@@ -1,5 +1,7 @@
 #include "engine.h"
 
+#include <set>
+
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -44,6 +46,9 @@ void ReportSlowJob(const char* label, int64_t waited_ms, int64_t ran_ms) {
 
 std::atomic<int>* g_deploy_slot = nullptr;
 std::atomic<uint32_t>* g_deploy_seq = nullptr;
+// ⚠ 只給 OnDeploy 用,而且只用來排一件工作。與上面兩個同進同出
+//   (Start 設、Stop 清)。
+Engine* g_deploy_engine = nullptr;
 
 void OnDeploy(rs_deploy_status status, void* /*ud*/) {
   // ⚠ 這個回呼**不在**呼叫端的執行緒上,而且可能在 rs_deploy() 早已返回
@@ -56,6 +61,24 @@ void OnDeploy(rs_deploy_status status, void* /*ud*/) {
   // 序號一定要在狀態之後才加:讀的那一邊先看序號再讀狀態,
   // 反過來的話它會看到新序號配舊狀態。
   if (g_deploy_seq) g_deploy_seq->fetch_add(1);
+
+  // ── #90:把 session 建回來 ──────────────────────────────────
+  //
+  // ⚠ **這件事不可以掛在設定視窗的計時器上。** 那個視窗是可以被關掉的,
+  //   而關掉之後就再也沒有人會把 session 建回來 —— 使用者從此打不出
+  //   中文,重開機也沒用(每次啟動又走一次同樣的路)。所以觸發點在
+  //   這裡:終局有沒有人在看都會到。
+  //
+  // ⚠ 這一句是**排一件工作**,不是做事。它不碰 sessions_、不呼叫任何
+  //   rs_*,所以「回呼只碰 atomic」那條約定沒有被打破。
+  //   (rime_shell 呼叫這個回呼時**持有** g_global_mutex —— 見 #91 ——
+  //    所以在這裡直接呼叫 rs_* 會是一個真的死鎖。)
+  //
+  // ⚠ 首次部署也會走到這裡,而那時階段是 kIdle,狀態機會把
+  //   kDeployFinished 判成不合法並原地不動 —— 於是不會有任何重建。
+  //   那正是要的:首次部署之前本來就一個 session 都沒有。
+  if (status != RS_DEPLOY_RUNNING && g_deploy_engine)
+    g_deploy_engine->OnDeployTerminal();
 }
 
 uint32_t FlagsOf(const rs_status& s) {
@@ -118,6 +141,7 @@ bool Engine::Start(const std::string& shared_dir, const std::string& user_dir,
                    const std::string& log_dir) {
   g_deploy_slot = &deploy_state_;
   g_deploy_seq = &deploy_seq_;
+  g_deploy_engine = this;
 
   // ⚠ rs_init 在**呼叫端的執行緒**上做,不丟給引擎執行緒。
   //
@@ -186,6 +210,7 @@ void Engine::Stop() {
   queue_.Stop();
   started_ = false;
   g_deploy_slot = nullptr;
+  g_deploy_engine = nullptr;
   // rs_finalize 與 rs_init 在同一條執行緒上。引擎執行緒已經 join,
   // 所以它先前建立的 session 都已經在它身上銷毀了,順序是對的。
   rs_finalize();
@@ -224,6 +249,10 @@ uintptr_t Engine::Find(uint64_t id) const {
 uint64_t Engine::NewSession() {
   uint64_t id = 0;
   Post("建 session", [&] {
+    // ⚠ #90:部署期間**不可以**建 session。建起來的話它會對正在被
+    //   改寫的 *.table.bin 開一個 mmap,而我們剛剛才把所有 session
+    //   收掉就是為了不要有它。回 0,呼叫端會送一則帶原因的 ERROR。
+    if (!SessionCreationAllowed(phase_.load())) return;
     const rs_session s = rs_session_create();
     if (s == RS_INVALID_SESSION) return;
     id = next_id_++;
@@ -234,6 +263,10 @@ uint64_t Engine::NewSession() {
 
 void Engine::EndSession(uint64_t id) {
   Post("收 session", [&] {
+    // ⚠ #90:部署期間這個 id 在 sessions_ 裡是不存在的(它被收走了),
+    //   但它還在 parked_ 裡等著被建回來。宿主這時候關掉了 —— 那就
+    //   不要再建了,不然重建之後會多出一個沒有人認得的 session。
+    ForgetParked(id);
     auto it = sessions_.find(id);
     if (it == sessions_.end()) return;
     rs_session_destroy(it->second);
@@ -305,6 +338,10 @@ void Engine::RequestSpareSession(uint32_t langid, const std::string& schema_id,
 void Engine::MakeSpareOnEngineThread(uint32_t langid,
                                      const std::string& schema_id,
                                      const std::vector<OptionAssign>& options) {
+  // ⚠ #90:低優先那條路是「等引擎閒下來 1.5 秒」,而部署期間引擎正好
+  //   一直是閒的 —— 少了這一格,補充備用 session 會在部署進行到一半時
+  //   醒過來,對正在被改寫的詞庫檔開一個 mmap。
+  if (!SessionCreationAllowed(phase_.load())) return;
   const rs_session s = rs_session_create();
   if (s == RS_INVALID_SESSION) return;
   const uint64_t id = next_id_++;
@@ -342,6 +379,7 @@ void Engine::EndSessionAsync(uint64_t id) {
   // ⚠ **不進一般佇列。** 進去的話它就排在下一個宿主的 SESSION_NEW 前面,
   //   而那正是要修的東西(理由寫在 common/work_queue.h 的 PostLow)。
   PostLow("收 session", [this, id] {
+    ForgetParked(id);  // 見 EndSession 的說明。
     auto it = sessions_.find(id);
     if (it == sessions_.end()) return;
     rs_session_destroy(it->second);
@@ -396,9 +434,13 @@ Result Engine::ToggleAsciiMode(uint64_t id) {
   //
   //   回 handled=false 的話,瘦 DLL 會把那顆鍵放行給宿主(key_eat_policy 的
   //   同一條規矩:做不到的事就不要吃掉那顆鍵)。
-  if (deploy_state_.load() != 1) {
+  //
+  // ⚠ #90:判準不是 `deploy_state_ == 1`。那個值首次部署成功之後**永遠**
+  //   是 1,所以重新部署期間這道門是開的。要問的是 common/redeploy_flow.h
+  //   的 ShouldFailOpen(階段 + 有沒有能用的詞庫),而它在 Ubuntu 上驗得到。
+  if (ShouldFailOpen(phase_.load(), deploy_state_.load() == 1,
+                     &r.snap.status_flags)) {
     r.handled = false;
-    r.snap.status_flags = kStDisabled;
     return r;
   }
   const bool now = ascii_mode_.load();
@@ -425,12 +467,26 @@ Result Engine::ToggleAsciiMode(uint64_t id) {
 Result Engine::ProcessKey(uint64_t id, int32_t keysym, uint32_t mods) {
   Result r;
   Post("按鍵", [&] {
+    // ── ⚠ 這一格必須在 Find() **之前**(#90)────────────────────
+    //
+    //   部署還沒完成時 librime 給不出任何候選。這時**立刻**回「沒處理」,
+    //   讓宿主自己收下那顆鍵 —— 不要讓 DLL 那邊逾時。逾時會讓連線被
+    //   關掉重建,而首次部署要好幾分鐘,那段時間會一直重連。
+    //
+    //   順序不是風格問題。重新部署期間 session 是**真的不見了**,
+    //   舊版先 Find() 就會走進下面那條 `if (!sess) return;` —— 回給宿主的
+    //   是 handled=false 配一份 status_flags **全 0** 的快照,而狀態列
+    //   會把它當成「一切正常,而且什麼都沒開」,把使用者剛切好的中英
+    //   打回預設,同時一句「還沒好」都不說。
+    if (ShouldFailOpen(phase_.load(), deploy_state_.load() == 1,
+                       &r.snap.status_flags)) {
+      r.handled = false;
+      return;
+    }
     const uintptr_t sess = Find(id);
-    if (!sess) return;
-    // 部署還沒完成時 librime 給不出任何候選。這時**立刻**回「沒處理」,
-    // 讓宿主自己收下那顆鍵 —— 不要讓 DLL 那邊逾時。
-    // 逾時會讓連線被關掉重建,而首次部署要好幾分鐘,那段時間會一直重連。
-    if (deploy_state_.load() != 1) {
+    if (!sess) {
+      // 引擎不認得這個 id(部署後重建那一個失敗了,或宿主拿著過期的 id)。
+      // ⚠ 同樣不可以回一份全 0 的快照 —— 理由與上面那一段一模一樣。
       r.handled = false;
       r.snap.status_flags = kStDisabled;
       return;
@@ -661,6 +717,10 @@ void Engine::SetAsciiModeAll(bool on) {
   });
 }
 
+void Engine::SetSessionPlanner(SessionPlanner p) {
+  Post("記下重建 session 的計畫", [&] { planner_ = std::move(p); });
+}
+
 void Engine::SetSessionLangId(uint64_t id, uint32_t langid) {
   Post("記下 session 的語言", [&] { session_lang_[id] = langid; });
 }
@@ -741,28 +801,232 @@ std::string Engine::ApplyChoice(uint64_t id, const std::string& schema_id,
 
 int Engine::AbiVersion() const { return rs_abi_version(); }
 
+void Engine::ForgetParked(uint64_t id) {
+  for (size_t i = 0; i < parked_.size(); ++i) {
+    if (parked_[i].id != id) continue;
+    parked_.erase(parked_.begin() + static_cast<long>(i));
+    return;
+  }
+}
+
+// ⚠ 只能在引擎執行緒上呼叫。
+void Engine::CloseAllSessionsOnEngineThread() {
+  // 備用池先處理:它的 session 也在 sessions_ 裡,但沒有任何宿主認得
+  // 它們 —— 建回來是浪費,下一個 SESSION_NEW 會自己要一個。
+  std::set<uint64_t> spares;
+  {
+    std::lock_guard<std::mutex> lock(spare_mu_);
+    for (const auto& kv : spare_) spares.insert(kv.second.session);
+    spare_.clear();
+    // ⚠ 清 spare_pending_ 只是不要讓補充工作被永久擋住;真正擋住
+    //   「部署期間醒過來的那一件」的是 MakeSpareOnEngineThread 裡的
+    //   SessionCreationAllowed()。
+    spare_pending_.clear();
+  }
+  parked_.clear();
+  int host_sessions = 0;
+  for (const auto& kv : sessions_) {
+    if (spares.find(kv.first) == spares.end()) {
+      ParkedSession ps;
+      ps.id = kv.first;
+      auto it = session_lang_.find(kv.first);
+      ps.langid = (it == session_lang_.end()) ? 0u : it->second;
+      parked_.push_back(ps);
+      ++host_sessions;
+    }
+    // ⚠ 這一句同時做兩件事,而第二件在這一輪之前是**壞的**:
+    //   (1) 放掉這個 session 對 *.table.bin / *.prism.bin 的 mmap ——
+    //       沒有它,librime 重編時刪不掉舊檔(而且不會說),
+    //       最後把新表寫進一段還有人在讀的記憶體;
+    //   (2) rs_session_destroy 走 librime 的 destroy_session,而**那才是
+    //       使用者剛學到的詞落地的時機**。舊版是拿一份缺了最近學習
+    //       成果的詞庫去重編。
+    rs_session_destroy(kv.second);
+  }
+  const int total = static_cast<int>(sessions_.size());
+  sessions_.clear();
+  session_lang_.clear();
+  std::fprintf(stderr,
+               "[engine] 部署前收乾淨 session:共 %d 個(其中 %d 個要建回來)\n",
+               total, host_sessions);
+  std::fflush(stderr);
+}
+
+// ⚠ 只能在引擎執行緒上呼叫。
+void Engine::RebuildSessionsOnEngineThread() {
+  // ⚠ **一個例外都不留。** 每一個 rs_session_create() 的呼叫點都先問過
+  //   這道門 —— 在這裡答案本來就是 true(kRebuilding 允許建)。留著這
+  //   一問是為了讓守門掃得到「呼叫點的形狀」:有例外就得寫一份「這幾個
+  //   不算」的名單,而名單會過期,然後下一個呼叫點就沒有人守。
+  //   真的答 false 的話代表階段被誰推歪了 —— 那時什麼都不要建,
+  //   把門打開讓使用者至少打得出字比較要緊。
+  if (!SessionCreationAllowed(phase_.load())) {
+    parked_.clear();
+    std::fprintf(stderr, "[engine] 部署後重建:階段是 %s,不建了\n",
+                 RedeployPhaseName(phase_.load()));
+    std::fflush(stderr);
+    phase_.store(RedeployPhase::kIdle);
+    return;
+  }
+  // ⚠ 方案清單要在**這裡**重新問一次,而不是叫 planner_ 自己去問:
+  //   planner_ 在引擎執行緒上跑,再丟一件工作進佇列就是自己等自己。
+  //   順帶把快取填回去 —— 部署很可能剛改過那份清單。
+  const std::vector<std::pair<std::string, std::string>> schemas =
+      ListSchemasOnWorker();
+  int made = 0;
+  int failed = 0;
+  for (const ParkedSession& ps : parked_) {
+    const rs_session s = rs_session_create();
+    if (s == RS_INVALID_SESSION) {
+      ++failed;
+      continue;
+    }
+    // ⚠ 用**原來那個 id**。宿主手上拿的就是它,而它是我們自己發的
+    //   (next_id_),不是 librime 的 —— 所以底下那個 session 可以在
+    //   宿主完全不知情的情況下被換掉一次。
+    sessions_[ps.id] = s;
+    session_lang_[ps.id] = ps.langid;
+    // ── #85:重套方案 / 簡繁 / 標點 / 中英 ────────────────────
+    //
+    // ⚠ 不重套的話,使用者按一次「重新整理字詞」就會靜靜地回到預設:
+    //   他釘的方案、他選的簡繁、他剛切到的英數全部不見,而畫面上
+    //   寫的是「完成」。
+    if (planner_) {
+      const SessionPlan plan = planner_(ps.langid, schemas);
+      // 字形要在選方案**之後**才設(換方案會重建 context)。
+      if (!plan.schema_id.empty()) rs_select_schema(s, plan.schema_id.c_str());
+      for (const OptionAssign& a : plan.options)
+        rs_set_option(s, a.option, a.value);
+    }
+    ++made;
+  }
+  parked_.clear();
+  std::fprintf(stderr, "[engine] 部署後重建 session:成功 %d 個,失敗 %d 個\n",
+               made, failed);
+  std::fflush(stderr);
+  // ⚠ 這一句是使用者重新打得出中文的那一刻。放在最後 —— 中間任何一步
+  //   多花時間,門就多關一下,而關著的門有話說(kStDisabled → 「正在準備」)。
+  RedeployPhase p = phase_.load();
+  if (AdvanceRedeploy(&p, RedeployEvent::kRebuilt)) phase_.store(p);
+}
+
+void Engine::RebuildSessionsAsync() {
+  if (PostAsync("部署後重建 session",
+                [this] { RebuildSessionsOnEngineThread(); }))
+    return;
+  // ⚠ 排不進去 = 引擎在停。那時 session 本來就會被工作者的收尾清掉,
+  //   但階段不能留在 kRebuilding —— 留著的話,只要引擎再起來,
+  //   那道門就是關的而沒有任何人會去開它。
+  parked_.clear();
+  RedeployPhase p = phase_.load();
+  if (AdvanceRedeploy(&p, RedeployEvent::kRebuilt)) phase_.store(p);
+}
+
+void Engine::OnDeployTerminal() {
+  // ⚠ 從**部署回呼的執行緒**上被呼叫(rime_shell 那時還持有它的全域鎖,
+  //   見 #91)。所以這裡只准動一個 atomic 與排一件工作。
+  RedeployPhase p = phase_.load();
+  if (!AdvanceRedeploy(&p, RedeployEvent::kDeployFinished)) return;
+  phase_.store(p);
+  // ⚠ 成功**與失敗**都要建回來。失敗那一條尤其重要:使用者手上是一個
+  //   一個 session 都沒有的引擎,不建回去他從此打不出中文。
+  RebuildSessionsAsync();
+}
+
+// ⚠ 只能在引擎執行緒上呼叫。
+//
+// ⚠ **收乾淨與開始部署在同一件工作裡**,而那是刻意的:兩者分成兩件的話
+//   中間就有一段引擎執行緒閒著、session 已經沒了、詞庫檔還沒被鎖住的
+//   空檔,而一個剛開起來的程式正好會在那時候要 session —— 建起來的話
+//   它會活著撐過整場部署,而我們收掉所有 session 就是為了不要有它。
+//   (門也關著,但那是第二道;第一道是「中間插不進任何東西」。)
+void Engine::CloseThenDeployOnEngineThread() {
+  CloseAllSessionsOnEngineThread();
+  {
+    RedeployPhase p = phase_.load();
+    if (AdvanceRedeploy(&p, RedeployEvent::kSessionsClosed)) phase_.store(p);
+  }
+  // ⚠ 這一句**不會**佔住引擎執行緒:rs_deploy() 自己開一條 detached
+  //   執行緒(core/src/rime_shell.cc:360),馬上就返回。
+  //   ——「部署會佔住引擎好幾分鐘」那個說法是錯的,查證過了。
+  if (rs_deploy()) return;
+
+  // ── 拒絕啟動:session 已經收掉了,一定要建回來 ────────────────
+  {
+    std::lock_guard<std::mutex> lock(err_mu_);
+    const char* e = rs_last_error();
+    last_error_ = e ? e : "";
+    if (last_error_.empty())
+      last_error_ = "引擎沒有給原因(多半是已經有一次同步或整理在進行中)";
+  }
+  {
+    RedeployPhase p = phase_.load();
+    if (AdvanceRedeploy(&p, RedeployEvent::kStartRefused)) phase_.store(p);
+  }
+  // 已經在引擎執行緒上了,直接跑,不要再排一件。
+  RebuildSessionsOnEngineThread();
+  // ⚠ **一定要讓畫面知道這一場結束了。** 設定視窗只看 deploy_seq_,
+  //   少了這兩句它會永遠停在「正在整理字詞…已耗時 N 秒」,而那個數字
+  //   會一直往上跳 —— 使用者面前是一個永遠不會結束的進度。
+  //   順序與 OnDeploy 一樣:先寫結果,後推序號。
+  redeploy_start_failed_.store(true);
+  deploy_seq_.fetch_add(1);
+}
+
 bool Engine::BeginDeploy(uint32_t* out_seq) {
   if (out_seq) *out_seq = deploy_seq_.load();
   // 部署會改寫方案清單(使用者可能剛勾掉一個方案)。清掉快取,
   // 下一次問的時候會退回真的問一次引擎 —— 寧可慢一次,
   // 也不要拿一份舊清單去替使用者挑方案。
   InvalidateSchemaCache();
-  // rs_deploy 是唯一允許跨執行緒呼叫的函式(rime_shell.h),
-  // 所以不必進引擎佇列 —— 而且**不該**進:部署要好幾分鐘,
-  // 佔住引擎執行緒等於整個輸入法停擺。
-  if (rs_deploy()) return true;
+
+  // ── 1. 先把門關上(#90)──────────────────────────────────────
+  //
+  // 關門要在收 session 之前:從這一刻起,建 session 的每一條路都會被
+  // SessionCreationAllowed() 擋下來。
   {
-    std::lock_guard<std::mutex> lock(err_mu_);
-    const char* e = rs_last_error();
-    last_error_ = e ? e : "";
-    if (last_error_.empty())
-      last_error_ = "引擎沒有給原因(多半是已經有一個部署在進行中)";
+    RedeployPhase p = phase_.load();
+    if (!AdvanceRedeploy(&p, RedeployEvent::kRequested)) {
+      std::lock_guard<std::mutex> lock(err_mu_);
+      last_error_ = "已經有一次整理字詞在進行中";
+      return false;
+    }
+    phase_.store(p);
   }
+
+  // ── 2. 收乾淨 + 開始部署,丟給引擎執行緒 ──────────────────────
+  //
+  // ⚠ **非同步。** 呼叫端是設定視窗的 UI 執行緒,而收 session 要把
+  //   使用者剛學到的詞寫回去(rs_session_destroy 才是它落地的時機)——
+  //   在那條執行緒上同步等就是 #79 的形狀,而且這裡等的東西比誰都久。
+  //   engine.h 的 Post() 上面寫著「設定視窗與懸浮狀態列不可以用它」。
+  //
+  // ⚠ 而 rs_deploy() 也在那一件工作裡跑,理由見上面那一支的說明。
+  if (PostAsync("收乾淨 session 再開始部署",
+                [this] { CloseThenDeployOnEngineThread(); }))
+    return true;
+
+  // 沒有入列 = 那件事永遠不會發生(引擎在停)。session 一個都沒被收掉,
+  // 所以**不必重建**,但門一定要打開 —— 留著關的話,引擎再起來時
+  // 沒有任何人會去開它。
+  {
+    RedeployPhase p = phase_.load();
+    if (AdvanceRedeploy(&p, RedeployEvent::kTeardownFailed)) phase_.store(p);
+  }
+  std::lock_guard<std::mutex> lock(err_mu_);
+  last_error_ = "引擎沒有回應,session 沒有收掉 —— 不開始整理字詞";
   return false;
 }
 
 bool Engine::PollDeploy(uint32_t since_seq, int* status) {
   if (deploy_seq_.load() == since_seq) return false;
+  // ⚠ 「這一次整理連開始都失敗了」要問在讀 deploy_state_ **之前**:
+  //   那一格還停在上一次成功的 1,照著它讀會把失敗說成完成。
+  if (redeploy_start_failed_.exchange(false)) {
+    if (status) *status = -1;
+    InvalidateSchemaCache();
+    return true;
+  }
   const int v = deploy_state_.load();
   if (v == 0) return false;
   if (status) *status = v;
@@ -773,7 +1037,11 @@ bool Engine::PollDeploy(uint32_t since_seq, int* status) {
   if (v != 1) {
     std::lock_guard<std::mutex> lock(err_mu_);
     const char* e = rs_last_error();
-    last_error_ = e ? e : "";
+    // ⚠ **不要用空字串蓋掉已經有的原因。** rs_last_error() 是 thread_local
+    //   (rime_shell.h 檔頭),而這一支跑在設定視窗的執行緒上 —— 失敗的
+    //   原因(如果有)留在**引擎執行緒**的那一份裡。舊版無條件覆寫,
+    //   連我們自己記下來的那一句也一起被抹掉,畫面上就變成「沒有給原因」。
+    if (e && *e) last_error_ = e;
   }
   return true;
 }

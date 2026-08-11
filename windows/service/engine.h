@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "../common/protocol.h"
+#include "../common/redeploy_flow.h"
 #include "../common/schema_choice.h"
 #include "../common/work_queue.h"
 
@@ -51,6 +52,48 @@ class Engine {
 
   bool deploy_done() const { return deploy_state_.load() != 0; }
   bool deploy_ok() const { return deploy_state_.load() == 1; }
+
+  // ── 重新部署現在走到哪一格(#90)────────────────────────────
+  //
+  // ⚠ deploy_done() / deploy_ok() **答不了這個問題**:deploy_state_ 首次
+  //   部署成功之後永遠是 1,使用者按「重新整理字詞」時它不會退回去。
+  //   「現在能不能打字」「現在能不能建 session」「詞庫檔現在能不能被
+  //   改寫」三個問題全部由這一格 + common/redeploy_flow.h 的純函式回答。
+  RedeployPhase redeploy_phase() const { return phase_.load(); }
+
+  // ── 部署之後 session 要照什麼重建(#90 / #85)──────────────
+  //
+  // 重建時要重套方案 / 簡繁 / 標點 / 中英。那些是由設定檔 + 語言設定檔
+  // 決定的,而只有 pipe_server 讀得到它們 —— 所以由它注入。
+  //
+  // ⚠ **必須與建 session 時走同一支**。兩份會漂移,而漂移的症狀是
+  //   「重新整理字詞之後,設定悄悄回到預設」,使用者不會把那兩件事
+  //   聯想在一起。
+  //
+  // ⚠ 這個回呼在**引擎執行緒**上被呼叫,所以它**不可以**再丟工作進引擎
+  //   佇列(那是自己等自己)。方案清單由引擎先問好再傳進去。
+  struct SessionPlan {
+    std::string schema_id;
+    std::vector<OptionAssign> options;
+  };
+  using SessionPlanner = std::function<SessionPlan(
+      uint32_t langid,
+      const std::vector<std::pair<std::string, std::string>>& schemas)>;
+  // ⚠ **走引擎執行緒設定,不是就地指派。** planner_ 是在那條執行緒上被讀
+  //   的(重建 session 那一件工作),從別條執行緒直接寫就是一個資料競爭,
+  //   而它的形狀是「服務關閉時偶爾崩一次」—— 那種崩潰查起來最貴。
+  //   傳一個空的 std::function 進來就是解除註冊(PipeServer 的解構子)。
+  void SetSessionPlanner(SessionPlanner p);
+
+  // 部署有了終局(成功或失敗)時由部署回呼呼叫。
+  //
+  // ⚠ **從部署回呼的執行緒**上呼叫,而 rime_shell 那時還持有它的全域鎖
+  //   (見 #91)。所以這一支只准動一個 atomic 與排一件工作 ——
+  //   在這裡直接呼叫任何 rs_* 都是一個真的死鎖。
+  //
+  // ⚠ 觸發點在這裡而不是設定視窗的計時器上,是刻意的:那個視窗可以被
+  //   關掉,而關掉之後就再也沒有人會把 session 建回來。
+  void OnDeployTerminal();
   // 等待首次部署完成。只給 --selftest 用;正常執行不等。
   bool WaitDeploy(int seconds);
 
@@ -354,6 +397,24 @@ class Engine {
   void MakeSpareOnEngineThread(uint32_t langid, const std::string& schema_id,
                                const std::vector<OptionAssign>& options);
 
+  // ── #90:部署前後的 session 生命週期 ────────────────────────
+  //
+  // ⚠ 兩支都**只能在引擎執行緒上呼叫**。
+  //
+  // 收乾淨:把每一個 session(含備用池)銷毀,並把**宿主的**那些記進
+  // parked_。銷毀同時是使用者剛學到的詞落地的唯一時機。
+  void CloseAllSessionsOnEngineThread();
+  // 建回來:照 parked_ 重建,並用 planner_ 重套方案 / 簡繁 / 標點 / 中英。
+  void RebuildSessionsOnEngineThread();
+  // 收乾淨 → 開始部署。**兩件事在同一件工作裡**,所以中間插不進任何
+  // 東西 —— 這是「詞庫檔被改寫時一個 session 都不在」唯一的保證。
+  // ⚠ 只能在引擎執行緒上呼叫。
+  void CloseThenDeployOnEngineThread();
+  // 把重建排進佇列。部署的終局回呼走它。
+  void RebuildSessionsAsync();
+  // 宿主在部署期間關掉了 —— 把它從「等著被建回來」的名單上劃掉。
+  void ForgetParked(uint64_t id);
+
   // 以下三個只在引擎執行緒上呼叫。
   Snapshot TakeSnapshot(uint64_t id);
   Snapshot TakeSnapshotLocked(uintptr_t sess);
@@ -365,6 +426,31 @@ class Engine {
   std::map<uint64_t, uintptr_t> sessions_;
   std::map<uint64_t, uint32_t> session_lang_;
   uint64_t next_id_ = 1;
+
+  // ── #90 ─────────────────────────────────────────────────────
+  //
+  // 重新部署的階段。判斷全部在 common/redeploy_flow.h(純函式,
+  // Ubuntu 上驗得到);這裡只存那一格值。
+  std::atomic<RedeployPhase> phase_{RedeployPhase::kIdle};
+  // 部署前收掉、部署後要建回來的 session。
+  //
+  // ⚠ 只收**宿主的**那些。備用池裡那幾個沒有任何人認得,建回來是浪費;
+  //   下一個 SESSION_NEW 會自己要一個。
+  //
+  // ⚠ 這裡存的是我們自己的 id(next_id_ 發的),不是 librime 的 ——
+  //   所以 session 可以在宿主完全不知情的情況下被換掉一次。
+  struct ParkedSession {
+    uint64_t id = 0;
+    uint32_t langid = 0;
+  };
+  std::vector<ParkedSession> parked_;
+  SessionPlanner planner_;
+  // 這一次「重新整理字詞」連開始都失敗了(rs_deploy() 拒絕啟動)。
+  //
+  // ⚠ **不可以**拿 deploy_state_ 來表示這件事。那一格回答的是「有沒有
+  //   一份能用的詞庫」,而按鍵那道門讀它 —— 把它寫成 -1,使用者就
+  //   **永久**打不出中文了,而失敗的其實只是這一次整理。
+  std::atomic<bool> redeploy_start_failed_{false};
 
   // 0 = 還沒有結果, 1 = 成功, -1 = 失敗。只由部署回呼寫,別處只讀。
   // 中英模式。行程層級,不落地(見 SetAsciiModeAll)。

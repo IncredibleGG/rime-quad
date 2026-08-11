@@ -70,6 +70,19 @@ class PipeServer {
   // 的修法完全不同,而「建不起來」三個字對兩者都成立。
   HANDLE CreateInstance(bool first, DWORD* err);
 
+  // 「這個語言該用哪個方案、要套哪些選項」。
+  //
+  // ⚠ **兩個呼叫點共用這一支**:宿主的 SESSION_NEW,以及部署之後把
+  //   session 建回來時的重套(engine.h 的 SessionPlanner / #85)。
+  //   寫成兩份的話會漂移,而漂移的症狀是「按一次重新整理字詞,
+  //   釘好的方案與簡繁悄悄回到預設」——使用者不會把那兩件事聯想在一起。
+  //
+  // ⚠ 方案清單由呼叫端傳進來,不在這裡問。重建那條路是在**引擎執行緒**
+  //   上跑的,在那裡再丟一件工作進引擎佇列就是自己等自己。
+  Engine::SessionPlan PlanForLang(
+      uint32_t langid,
+      const std::vector<std::pair<std::string, std::string>>& schemas) const;
+
   Engine* engine_;
   CandidateUi* ui_;
   StatusBar* bar_ = nullptr;

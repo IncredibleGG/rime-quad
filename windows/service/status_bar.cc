@@ -152,7 +152,18 @@ ServiceState StatusBar::CurrentServiceState() const {
   facts.engine_present = engine_ != nullptr;
   facts.deploy_done = engine_ && engine_->deploy_done();
   facts.deploy_ok = engine_ && engine_->deploy_ok();
-  facts.engine_says_not_ready = engine_not_ready_.load();
+  // ⚠ 兩個來源要 or 起來,而第二個是這一輪(#90)補的。
+  //
+  //   線路上那個旗標只有在**使用者按了鍵**時才會更新。而重新部署是從
+  //   設定視窗按下去的 —— 他按完之後多半就回去看那一橫,一顆鍵都沒按。
+  //   少了第二個來源,那一橫會一直畫著四格(說「可以打字」),
+  //   而每一顆鍵其實都會被退回來。
+  //
+  //   這一格由 kStatePollMs 的計時器每半秒問一次,所以部署開始與結束
+  //   那一橫都會自己動,不必等使用者去戳它。
+  facts.engine_says_not_ready =
+      engine_not_ready_.load() ||
+      (engine_ && PhaseSaysPreparing(engine_->redeploy_phase()));
   return ServiceStateOf(facts);
 }
 

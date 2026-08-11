@@ -1300,6 +1300,13 @@ bash 端再剝一次 `\r`。(同一個檔案早就為了 cp1252 的 stdout 編�
       ln -sfn /home/lc/rime/core/data/shared <worktree>/core/data/shared
       ln -sfn /home/lc/rime/core/data/user   <worktree>/core/data/user`
 
+- `[2026-08-11] [Windows] **重新部署會在活著的 session 腳下抽換詞庫檔(mmap)。這件事四端都成立,我只修了 Windows。** (task #90)`
+  - `事實(逐條查證過,不必再查):`core/src/rime_shell.cc` 的 `rs_deploy()` 走 librime 的 `s_api.deploy = RimeDeployWorkspace`,而它是 `deployer.RunTask(...)` 連續四次**同步就地跑完**,**從不呼叫 StartWork() / StartMaintenance()**。後果有三個:(a) `maintenance_mode_` 沒被設起來,`Service::disabled()` 全程 false,所以**所有 session 全程活著**;(b) librime **一個 deploy 通知都不發**(message_sink_ 只在 `Deployer::Run()` 裡),上層拿得到終局純粹靠 rime_shell.cc:370–376 自己補的那一個;(c) `dict_compiler.cc:265 / :358` 的 `table->Remove()` / `prism_->Remove()` **回傳值沒有人看**,而 `MappedFile::Remove()` 就是刪檔。`
+  - `⚠ Windows 上不能刪除也不能 resize 一個還有 section mapping 的檔案 → Remove 失敗(被忽略)→ `MappedFile::Create()` 落進 mapped_file.cc:54–57 的 overwriting 分支 → Resize 失敗(回傳值同樣沒人看)→ **用讀寫模式重新映射舊檔,把新表寫進一個活著的 session 正在讀的記憶體**。librime 從頭到尾回報成功。這正是 weasel / squirrel 用 `RimeStartMaintenance` 而不是 `RimeDeployWorkspace` 的理由。`
+  - `POSIX(Android / macOS)不會刪不掉 —— unlink 一個還有 mapping 的檔案是合法的。但**後果不是「沒事」**:舊的 inode 還活著,活著的 session 從此讀的是一份已經被取代的詞庫(而使用者以為他剛剛才更新過),而新檔是另一個 inode。行動端與 macOS 端請自行判斷要不要一起收 session。`
+  - `**我沒有動 core/。** 評估過把 `api->deploy()` 換成 `api->start_maintenance(True)`:那一條動的是四端共用的門面,而且**換完之後前端該做的事一件都沒少** —— `RimeStartMaintenance` 內部的 `CleanupAllSessions()` 只清 librime 那一側,`rime_shell` 的 `Session*` 與上層的 session 表仍然指著已經失效的 id,收 session 與重建 session 照樣要做。既然前端該做的事一樣多,就不值得為它動共用層。`
+  - `Windows 這一側的做法(可以照抄的形狀):新增純邏輯的階段機 `windows/common/redeploy_flow.{h,cc}`(kIdle → kClosingSessions → kDeploying → kRebuilding),不變量是「可以改寫詞庫檔」與「可以有 session」永遠互補;部署前在引擎執行緒上把**所有** session(含備用池)銷毀 —— 那同時修好一件本來就壞的事:**使用者剛學到的詞要 destroy_session 才落地,舊版是拿一份缺了最近學習成果的詞庫去重編**;期間的按鍵走既有的 fail-open,並在畫面上說「正在準備」;部署完成後照原本的 id 把 session 建回來並**重套方案 / 簡繁 / 標點 / 中英**(task #85)。`
+
 ## 6. 各端狀態
 
 > 自己更新自己那一行。
