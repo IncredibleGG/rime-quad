@@ -33,24 +33,59 @@ bool WorkQueue::started() const {
   return started_;
 }
 
+// ── ⚠ Start/Stop 之間不可以有中間態 ────────────────────────────
+//
+// 舊版是這樣的:
+//
+//     void Start() {
+//       { lock(mu_); if (started_) return; started_ = true; ... }  // 鎖裡
+//       thread_ = std::thread(&ThreadMain, this);                  // 鎖外
+//     }
+//
+// 中間那一格是「started_ 已經是 true,而 thread_ 還是空的」。一次 Stop()
+// 插進來:看到 started_ → 設 stop_ → `thread_.joinable()` 是 false 所以
+// **跳過 join** → 把 started_ 設回 false。Start() 接著才把執行緒建出來,
+// 而那是一條**沒有人會 join** 的執行緒。下一次 Start() 對一個 joinable 的
+// std::thread 做指派 = `std::terminate`:服務當場消失,沒有訊息、沒有記錄。
+//
+// 修法有兩層:
+//   1. **執行緒在 mu_ 裡建**,所以「started_ 是 true」與「thread_ 有東西」
+//      是同一個原子步驟。工作者一起跑就會在 mu_ 上等,不會有事。
+//   2. life_mu_ 把 Start 與 Stop **整支**互斥。少了它,Stop 走到「放掉
+//      mu_、還沒 join」的時候 Start 會看到 started_ 仍是 true 而直接返回
+//      —— 使用者要的那次啟動被靜靜地吃掉,佇列停在停止狀態。
+//   ⚠ 不能改用 mu_ 來做第 2 層:join 要等工作者跑完,而工作者要拿 mu_。
+//
+// ⚠ **老實說:第 2 層自己就夠了。** Start 與 Stop 整支互斥之後,那個中間態
+//   根本沒有機會被別人看到,所以第 1 層是多的 —— 而多出來的那一層
+//   **沒有自己的守門**:把執行緒搬回鎖外、life_mu_ 留著,測試全綠
+//   (實跑過)。留著它的理由只有一個:那個不變式因此**寫在這個函式裡**,
+//   不必靠另一把鎖的記性。哪天有人覺得 life_mu_ 是多餘的而拿掉它,
+//   會被 work_queue_start_during_a_pending_stop_is_not_swallowed 擋下來,
+//   而不是被一次線上的 std::terminate 擋下來。
 void WorkQueue::Start() {
-  {
-    std::lock_guard<std::mutex> lock(mu_);
-    if (started_) return;
-    started_ = true;
-    stop_ = false;
-    last_normal_ms_ = WorkQueueNowMs();
-  }
+  std::lock_guard<std::mutex> life(life_mu_);
+  std::lock_guard<std::mutex> lock(mu_);
+  if (started_) return;
+  stop_ = false;
+  last_normal_ms_ = WorkQueueNowMs();
+  // ⚠ 先建執行緒再設 started_:std::thread 的建構會丟例外(執行緒建不出來),
+  //   而丟出去之後這個物件必須還是「沒有啟動」的樣子,不是半啟動的。
   thread_ = std::thread(&WorkQueue::ThreadMain, this);
+  started_ = true;
 }
 
 void WorkQueue::Stop() {
+  std::lock_guard<std::mutex> life(life_mu_);
   {
     std::lock_guard<std::mutex> lock(mu_);
     if (!started_) return;
     stop_ = true;
   }
   cv_.notify_all();
+  // ⚠ join **不可以**握著 mu_:工作者要拿它才跑得完。
+  //   started_ 到這裡都還是 true,而 life_mu_ 擋著 Start ——
+  //   所以「正在停」這段期間沒有第二條工作者被建出來的路。
   if (thread_.joinable()) thread_.join();
   std::lock_guard<std::mutex> lock(mu_);
   started_ = false;

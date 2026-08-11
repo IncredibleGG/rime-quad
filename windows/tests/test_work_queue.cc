@@ -414,3 +414,137 @@ TEST(work_queue_post_says_whether_the_job_was_actually_queued) {
   CHECK(!q.Post("測試:停了之後", [&] { ran.fetch_add(1); }));
   CHECK_INT(ran.load(), 2);
 }
+
+// ── 12. Start() 與 Stop() 交錯:不可以有中間態 ───────────────────
+//
+// 出事的形狀(這一輪之前的碼):
+//
+//     void WorkQueue::Start() {
+//       { lock(mu_); if (started_) return; started_ = true; ... }   // ← 鎖裡
+//       thread_ = std::thread(&WorkQueue::ThreadMain, this);        // ← 鎖外
+//     }
+//
+// 中間那一格是「`started_` 已經是 true,而 `thread_` 還是空的」。
+// 一次 Stop() 插進來就會:看到 started_ → 設 stop_ → `thread_.joinable()`
+// 是 **false** 所以**跳過 join** → 把 started_ 設回 false。
+// Start() 接著才把執行緒建出來 —— 一條**沒有人會 join** 的執行緒。
+//
+// 代價不是漏掉一次停止。下一次 Start() 會對一個 joinable 的 std::thread
+// 做指派,而那是 `std::terminate`:整個服務當場消失,沒有訊息、沒有記錄。
+//
+// ⚠ 今天 Start/Stop 都在 main 上,所以它構不成 —— 但那是**呼叫端**的
+//   性質,不是這個類別的。這一支是給別人拿去用的執行緒工具,
+//   而「只要沒有人從兩條執行緒碰它就沒事」不是一個執行緒工具該有的合約。
+//
+// ⚠ 這一條刻意用**壓**的(200 輪 × 50 次交錯)而不是插樁:那個窗口是
+//   兩行程式碼寬,插樁進去就等於把要驗的東西自己寫一遍。
+//   壓不出來的那一次是漏網,不是綠燈 —— 所以下面還接了一段
+//   「壓完之後這個佇列必須還是好的」,它是確定性的。
+TEST(work_queue_start_and_stop_interleaved_never_terminates) {
+  for (int round = 0; round < 200; ++round) {
+    WorkQueue q;
+    std::thread a([&q] {
+      for (int i = 0; i < 50; ++i) q.Start();
+    });
+    std::thread b([&q] {
+      for (int i = 0; i < 50; ++i) q.Stop();
+    });
+    a.join();
+    b.join();
+    q.Stop();
+    // 壓完之後不可以還有人自稱啟動著。
+    CHECK(!q.started());
+
+    // ── 確定性的那一半 ────────────────────────────────────────
+    // 壓過之後這個佇列必須還是**完好的**:再 Start 一次要拿得到一個
+    // 真的在跑的工作者,而不是一條沒人 join 的殘骸(對 joinable 的
+    // std::thread 指派 = std::terminate),也不是一個永遠不收工作的空殼。
+    std::atomic<int> ran{0};
+    q.Start();
+    CHECK(q.started());
+    CHECK(q.Post("測試:壓完之後還收得下工作", [&ran] { ran.fetch_add(1); }));
+    q.Stop();  // Stop 保證把佇列排乾
+    CHECK_INT(ran.load(), 1);
+    CHECK(!q.started());
+  }
+}
+
+// ── 13. 一次 Start/Stop 循環只會有一條工作者 ─────────────────────
+//
+// 上面那一條驗的是「不會炸」,這一條驗的是「不會多」。
+// 工作者離開時會呼叫 SetOnWorkerExit,所以離開的次數數得出來 ——
+// 而它必須剛好等於**成功啟動過幾次**。多了 = 有人被重複建出來,
+// 少了 = 有人沒有離開(那條執行緒還握著 session,而服務以為它結束了)。
+//
+// ⚠ 重複的 Start() 必須是 no-op(第二次不可以再建一條)。
+TEST(work_queue_start_is_idempotent_and_every_worker_exits) {
+  std::atomic<int> exits{0};
+  {
+    WorkQueue q;
+    q.SetOnWorkerExit([&exits] { exits.fetch_add(1); });
+    for (int i = 0; i < 20; ++i) {
+      q.Start();
+      q.Start();  // 第二次是 no-op
+      q.Start();
+      CHECK(q.started());
+      q.Stop();
+      q.Stop();  // 第二次是 no-op
+      CHECK(!q.started());
+    }
+  }
+  CHECK_INT(exits.load(), 20);
+}
+
+// ── 14. 正在停的時候有人要啟動,那次啟動不可以被靜靜吃掉 ──────────
+//
+// 第 12 條壓的是「會不會炸」。這一條驗的是同一個中間態的**另一面**,
+// 而它不會炸、只會安靜地錯:
+//
+//   Stop() 放掉 mu_ 之後要 join,而 join 要等工作者跑完手上那件事
+//   (可能是好幾秒的部署)。那段期間 `started_` 仍然是 true,所以一次
+//   Start() 會**看到 true 而直接返回** —— 呼叫端以為啟動了。等 Stop()
+//   join 完,它把 started_ 設回 false:佇列停在停止狀態,而沒有人知道。
+//   之後每一件 Post 都回 false,設定視窗那一頭是一句永遠停在
+//   「正在套用…」的話。
+//
+// 修法是 life_mu_:Start 與 Stop **整支**互斥,所以這次 Start 會等 Stop
+// 做完,然後真的啟動一條工作者。
+//
+// ⚠ 這一條是確定性的,不是壓出來的:工作者被閘門釘死,所以 Stop() 一定
+//   卡在 join 裡,而主執行緒那次 Start() 一定落在那個窗口內。
+TEST(work_queue_start_during_a_pending_stop_is_not_swallowed) {
+  WorkQueue q;
+  q.Start();
+  Gate gate;
+  std::atomic<bool> entered{false};
+  BlockWorker(&q, &gate, &entered);
+
+  std::atomic<bool> stopping{false};
+  std::thread stopper([&] {
+    stopping.store(true);
+    q.Stop();  // 卡在 join 裡,直到閘門打開
+  });
+  // 開閘的人是第三條執行緒 —— 主執行緒等一下要進 Start(),不能由它來開。
+  std::thread opener([&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    gate.Open();
+  });
+
+  for (int i = 0; i < 2000 && !stopping.load(); ++i)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  CHECK(stopping.load());
+  // 這 50 毫秒之後 Stop() 一定已經在 join 裡(閘門還要 250 毫秒才開)。
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+  q.Start();  // ← 要的就是這一次:它不可以被那個中間態吃掉
+
+  stopper.join();
+  opener.join();
+
+  // 啟動過了就得真的啟動著,而且收得下工作。
+  CHECK(q.started());
+  std::atomic<int> ran{0};
+  CHECK(q.Post("測試:停止之後重新啟動", [&ran] { ran.fetch_add(1); }));
+  q.Stop();
+  CHECK_INT(ran.load(), 1);
+}

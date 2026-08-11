@@ -74,6 +74,18 @@ class WorkQueue {
   // 低優先的工作要等佇列閒下來多久才做。見 PostLow。
   void SetLowPriorityIdleMs(int64_t ms) { low_idle_ms_ = ms; }
 
+  // ── ⚠ Start/Stop 這一對是**執行緒安全**的,而且刻意如此 ──────────
+  //
+  // 今天它們兩支都在 main 上被呼叫,所以下面說的那件事構不成。但那是
+  // **呼叫端**的性質,不是這個類別的 —— 這一支是給別人拿去用的執行緒
+  // 工具,而「只要沒有人從兩條執行緒碰它就沒事」不是一個執行緒工具
+  // 該有的合約,尤其是當違反的代價是 `std::terminate`。
+  //
+  // 保證兩件事:
+  //   · Start 與 Stop 整支互斥,沒有「started_ 是 true 而工作者還沒建」
+  //     那種中間態(見 .cc 的說明:那一格會生出一條沒有人 join 的執行緒,
+  //     而下一次 Start 就是 std::terminate)。
+  //   · 重複的 Start / 重複的 Stop 都是 no-op。
   void Start();
   // 停止並 join。**已經入列的工作保證都會被執行**(見 ThreadMain)。
   void Stop();
@@ -173,6 +185,10 @@ class WorkQueue {
   void ThreadMain();
 
   std::thread thread_;
+  // ⚠ 只給 Start()/Stop() 用:把那兩支**整支**互斥掉。
+  //   不能改用 mu_ —— Stop 的 join 要等工作者跑完,而工作者要拿 mu_,
+  //   握著 mu_ 去 join 就是死鎖。層級固定:life_mu_ 一定在 mu_ 外面。
+  std::mutex life_mu_;
   mutable std::mutex mu_;
   std::condition_variable cv_;
   std::deque<Job> queue_;
