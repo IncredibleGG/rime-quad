@@ -239,6 +239,8 @@ KEYBOARD_VIEW="$ROOT/android/app/src/main/java/org/luminakey/ime/keyboard/Keyboa
 CLEAN_APK_PATH="$ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
 PLANT_SRC_BACKUP=""
 PLANT_APK_BACKUP=""
+# 原始碼植入把**裝置上**那一份也換掉了。這裡記著「跑完要把哪一份裝回去」。
+DEVICE_RESTORE_APK=""
 # ⚠ 還原是 trap 保證的。植入的原始碼留在 worktree 裡,下一個人(或下一條線)
 #   會拿它當基準改東西,而 git diff 上看起來就是「有人動了接線」。
 restore_planted_tree() {
@@ -253,6 +255,21 @@ restore_planted_tree() {
   if [ -n "$PLANT_APK_BACKUP" ] && [ -f "$PLANT_APK_BACKUP" ]; then
     cp "$PLANT_APK_BACKUP" "$CLEAN_APK_PATH"
     PLANT_APK_BACKUP=""
+  fi
+  # 檔案還原了,**裝置上跑的還是植入的那一份**。而慢車道在這一支後面還接著
+  # 候選列、匯出/匯入,以及不帶 --apk 的 --scenario —— 它們不會知道這件事,
+  # 會驗得好好的,只是驗錯了東西(「驗到別份 APK 卻照樣報結果,比沒測更糟」)。
+  if [ -n "$DEVICE_RESTORE_APK" ] && [ -f "$DEVICE_RESTORE_APK" ] && [ -x "$ADB" ]; then
+    local back="$DEVICE_RESTORE_APK"
+    DEVICE_RESTORE_APK=""
+    echo "[syllables] 把裝置上的 $IME_PKG 還原成乾淨的那一份($back)" >&2
+    adbs uninstall "$IME_PKG" >/dev/null 2>&1
+    if adbs install -r -g -t "$back" >/dev/null 2>&1; then
+      adbs shell ime enable "$IME_ID" >/dev/null 2>&1
+      adbs shell ime set "$IME_ID" >/dev/null 2>&1
+    else
+      echo "!! 還原不了裝置上的 APK —— 下一支腳本若說「裝置上的不是要驗的那一份」,原因在這裡。" >&2
+    fi
   fi
 }
 trap restore_planted_tree EXIT INT TERM
@@ -713,9 +730,53 @@ if [ -n "$PLANT" ] && plant_is_source "$PLANT"; then
   build_planted_apk "$PLANT"
 fi
 require_device_tools
+
+# 裝一份 APK 上去。
+#
+# ⚠ adb 的原話一定要留下來。這裡以前是
+#     `adbs install … >/dev/null 2>&1 || { echo "安裝失敗"; exit 2; }`
+#   於是 CI 上只剩「安裝失敗」四個字 —— 簽章不合、版本降級、空間不足在日誌上
+#   長得一模一樣,而這一支跑在模擬器車道上,現場不會留到下一次。
+#
+# ⚠ 原始碼植入建出來的那一份,**與裝置上那一份不見得是同一把金鑰簽的**:
+#   慢車道沒有「還原簽章環境」那一步(那是快車道的),所以 runner 上的
+#   assembleDebug 會退回 Android 預設的 debug 金鑰,而裝置上跑的是快車道用
+#   正式金鑰簽的那一份 → INSTALL_FAILED_UPDATE_INCOMPATIBLE。版本號同理
+#   (`rime.versionCode` 也只在快車道寫進 ~/.gradle)。
+#   這兩種都不是產品缺陷,是「同一支 app 的兩份建置」的必然結果 ——
+#   所以撞到它們就先解除安裝再裝一次,而且**把原因說出來**,不要靜靜重試:
+#   靜靜重試會把「使用者升級時真的裝不上去」也一起吞掉,而那是承重的一條。
+install_apk() {
+  local apk="$1" out rc
+  info "安裝 $apk"
+  out="$(adbs install -r -g -t "$apk" 2>&1)"; rc=$?
+  if [ "$rc" -eq 0 ] && ! printf '%s' "$out" | grep -qi "failure"; then
+    return 0
+  fi
+  info "安裝沒成功,adb 說:$(printf '%s' "$out" | tr '\n' ' ')"
+  case "$out" in
+    *UPDATE_INCOMPATIBLE*|*INCONSISTENT_CERTIFICATES*|*VERSION_DOWNGRADE*|*signatures*)
+      info "→ 這是同一支 app 的兩份建置(金鑰或版本號不同),不是產品問題:先解除安裝再裝一次。"
+      adbs uninstall "$IME_PKG" >/dev/null 2>&1
+      out="$(adbs install -r -g -t "$apk" 2>&1)"; rc=$?
+      if [ "$rc" -eq 0 ] && ! printf '%s' "$out" | grep -qi "failure"; then
+        info "→ 解除安裝之後裝上去了。"
+        return 0
+      fi
+      ;;
+  esac
+  echo "安裝 $apk 失敗(exit $rc):$(printf '%s' "$out" | tr '\n' ' ')" >&2
+  exit 2
+}
+
 if [ -n "$APK" ]; then
-  info "安裝 $APK"
-  adbs install -r -g -t "$APK" >/dev/null 2>&1 || { echo "安裝失敗" >&2; exit 2; }
+  install_apk "$APK"
+  # 裝上去的是植入的那一份 → 這一輪結束時要把乾淨的那一份裝回裝置(見
+  # restore_planted_tree)。CLEAN_APK_PATH 在 build_planted_apk 收尾時
+  # 已經被還原成乾淨的那一份了。
+  if [ -n "$PLANT" ] && plant_is_source "$PLANT" && [ -f "$CLEAN_APK_PATH" ]; then
+    DEVICE_RESTORE_APK="$CLEAN_APK_PATH"
+  fi
 fi
 
 # ── 裝置上跑的是不是同一份 APK ────────────────────────────────────────────
@@ -1653,7 +1714,14 @@ if [ "$SCENARIO" = "stale-schema" ] && [ -x "$ADB" ]; then
 fi
 # 第 5 關一次都沒跑到,和它每次都通過,在日誌上長得一模一樣。
 # 情境那一條只驗服務層(消歧欄本來就不該出現),不適用這個下界。
-if [ -z "$SCENARIO" ] && [ "$GATE5_RAN" -eq 0 ]; then
+#
+# ⚠ 帶 --plant 時也不適用,而且不是「順手放寬」:植入本來就會讓前面幾關紅掉、
+#   讓那一份佈局 `continue` 掉,於是第 5 關**理所當然**跑不到。把它算成一條
+#   FAIL 只會在植入的失敗清單裡多兩條不相干的紅 —— 而這一支的規矩是
+#   「紅的必須是指名的那一條」,多出來的紅會讓下一個人以為植入踩到了別的東西。
+#   (CI 第一次跑 --plant bad-slot-ids 就正好長這樣:2 條指名的 + 2 條這個。)
+#   真正守住 tap-swallowed 的是 plant_expect_re 指名的那句話,不是這個下界。
+if [ -z "$SCENARIO" ] && [ -z "$PLANT" ] && [ "$GATE5_RAN" -eq 0 ]; then
   fail "第 5 關一次都沒有跑到 —— 「沒被接管的那一格」在任何一份佈局上都沒驗過。"
   fail "  多半是所有佈局都退化成上方橫排、或第 2/3/4 關先 continue 掉了。"
 fi
