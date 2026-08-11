@@ -79,9 +79,21 @@ enum class UiString : int {
   kSchemasApplyOrder,
   kSchemasFollowTitle,
   kSchemasFollowBlurb,
+  // ── 「輸入方案」頁那一格說明的三種說法 ──────────────────────
+  //
+  // ⚠ 三種以前在畫面上是**同一句話**(下面第一組),而它們的下一步
+  //   完全不同:真的一種都沒有 / 還在問引擎 / 問不到(引擎在停,
+  //   那件工作根本沒有入列,所以沒有人會回來)。
+  //   對應關係只有一個來源:ui_layout.h 的 SchemaNoteLines()。
   kSchemasEmptyTitle,
   kSchemasEmptyWhy,
   kSchemasEmptyNext,
+  kSchemasLoadingTitle,
+  kSchemasLoadingWhy,
+  kSchemasLoadingNext,
+  kSchemasUnavailableTitle,
+  kSchemasUnavailableWhy,
+  kSchemasUnavailableNext,
   kSchemasOrderChangedHint,
 
   // ── 外觀 ────────────────────────────────────────────────────

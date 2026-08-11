@@ -123,7 +123,18 @@ class Engine {
   // rs_schema_list 不吃 session(方案清單是全域的),但仍然走引擎執行緒:
   // 它回傳的字串有生命週期,而別的執行緒同時在呼叫 rs_* 的話那份緩衝
   // 會被踩掉。這裡在引擎執行緒上把字串複製出來再回來。
-  std::vector<std::pair<std::string, std::string>> SchemaList();
+  // ── ⚠ 回傳的是**狀態**,不是一個分不出來的空 vector ──────────
+  //
+  //   舊版是 `std::vector<...> SchemaList()`,而它把 `queue_.Call()` 的
+  //   `WorkQueue::Status` 整個丟掉。於是「引擎在停,這件工作根本沒有
+  //   入列」與「一個方案都沒有」在呼叫端是**同一個空 vector** ——
+  //   這個專案反覆吃虧的形狀:三種不同的失敗在畫面上是同一句話。
+  //
+  //   kDone    = out 是答案(可能真的是空的,那也是答案)
+  //   kStopped = 工作沒有入列也沒有跑,**out 一個位元組都沒有被動過**
+  //   (timeout 是 0 = 永遠等,所以這一支不會回 kTimeout。)
+  [[nodiscard]] WorkQueue::Status SchemaList(
+      std::vector<std::pair<std::string, std::string>>* out);
 
   // ── ⚠ 建 session 那條路徑要用**這一支**,不是上面那一支 ──────────
   //
@@ -141,7 +152,9 @@ class Engine {
   //
   // 快取由 SchemaList() 自己填,並在部署開始/結束時清掉 ——
   // 清掉之後下一次呼叫會退回真的問一次,所以最壞情況只是回到原本的成本。
-  std::vector<std::pair<std::string, std::string>> SchemaListCached();
+  // 回傳值的意思與 SchemaList 相同(快取命中一律是 kDone)。
+  [[nodiscard]] WorkQueue::Status SchemaListCached(
+      std::vector<std::pair<std::string, std::string>>* out);
   void InvalidateSchemaCache();
 
   // ── ⚠ 有介面掛在上面的那三支 ────────────────────────────────
@@ -154,7 +167,13 @@ class Engine {
   //
   // 所以介面走的是下面這三支,而不是上面那兩支:
 
-  // 快取命中就填 out 並回 true。**純記憶體,不碰工作者。**
+  // 快取**有效**就填 out 並回 true。**純記憶體,不碰工作者。**
+  //
+  // ⚠ 「有效」不等於「不是空的」。舊版的判準是 `schema_cache_.empty()`,
+  //   於是「真的一種方案都沒有」永遠被當成「還沒問過」:設定視窗每次
+  //   打開都再排一件查詢,懸浮狀態列那個選單永遠停在「正在讀方案…」,
+  //   而使用者永遠看不到「目前一種都沒有」那句實話。
+  //   現在空與無效是兩件事,由 schema_cache_valid_ 分開。
   bool SchemaListFromCache(
       std::vector<std::pair<std::string, std::string>>* out) const;
 
@@ -316,7 +335,10 @@ class Engine {
   //
   // ⚠ 沒有標籤的那個多載**故意拿掉了**。它讓「哪一件工作卡住」在記錄裡
   //   變成「(沒有標籤)」,而那正是出事時唯一有用的一格。
-  void Post(const char* label, std::function<void()> fn);
+  // ⚠ 回傳 kStopped = 引擎在停(或還沒起來),**工作沒有入列也沒有跑**。
+  //   呼叫端讀到的 out 是它自己初始化的那個值,不是答案 —— 丟掉這個
+  //   回傳值就是把「引擎沒有回應」變成「答案是空的」。
+  WorkQueue::Status Post(const char* label, std::function<void()> fn);
   // 丟了就走,**不等**。⚠ fn 捕捉的東西一律傳值(見 common/work_queue.h):
   //   這一支返回時工作通常還沒開始跑,呼叫端的框隨時會消失。
   // ⚠ 回傳 false = **沒有入列**,那件工作永遠不會跑。等完成通知的
@@ -355,6 +377,8 @@ class Engine {
   // 而讀快取的人(連線執行緒)完全不該碰引擎的佇列鎖。
   mutable std::mutex cache_mu_;
   std::vector<std::pair<std::string, std::string>> schema_cache_;
+  // ⚠ 「問過了」與「答案不是空的」是兩件事。見 SchemaListFromCache。
+  bool schema_cache_valid_ = false;
 
   // 預先建好的備用 session,一個 langid 一個。
   //

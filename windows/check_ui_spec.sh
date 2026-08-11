@@ -1337,7 +1337,7 @@ UI = ['service/status_bar.cc', 'service/settings_window.cc']
 #   裡就含有 `SchemaList()` —— 純子字串比對會把它報成違規,而一條永遠
 #   紅的檢查最後一定會被關掉(§3.1 的教訓)。
 BLOCKING = [r'\bSchemaListForUi\(', r'\bSchemaListCached\(',
-            r'\bSchemaList\(\)', r'\bWaitDeploy\(']
+            r'\bSchemaList\(', r'\bWaitDeploy\(']
 ASYNC = [r'\bSchemaListFromCache\(', r'\bRefreshSchemaListAsync\(',
          r'\bPostAsync\(']
 
@@ -1410,6 +1410,191 @@ PYSCRIPT
     esac
   done <<< "${w32out}"
   [ "${w32bad}" -eq 0 ] && ok "W32 介面執行緒上沒有會等引擎的呼叫(${nasync} 處走不等的那幾支),而且方案查詢不會每按一次就多排一件"
+
+  # ── W33:三種不同的情況,畫面上不可以是同一句話 ────────────────
+  #
+  # `Engine::Post` 以前把 `queue_.Call()` 的 `WorkQueue::Status` 整個丟掉,
+  # 而那個 Status 是「有沒有人會做這件事」唯一的答案。後果一路傳到畫面上:
+  #
+  #   · `SchemaList()` 回一個空 vector,而「引擎在停,這件工作根本沒有
+  #     入列」與「一個方案都沒有」是**同一個空 vector**;
+  #   · 快取的判準是 `schema_cache_.empty()`,所以「真的一種都沒有」
+  #     永遠被當成「還沒問過」—— 每次打開設定都再排一件查詢,
+  #     而懸浮那一橫的選單永遠停在「正在讀方案…」;
+  #   · 設定視窗把 `RefreshSchemaListAsync` 的回傳值丟掉,於是排不進去
+  #     (沒有人會回來)的時候畫面上說的是「目前一種都沒有,到進階按
+  #     重新整理字詞」—— 一句對這個情況完全沒有用的話,而且它永遠不會變。
+  #
+  # 這一條守的就是那條鏈:Status 交得出來、空與無效分得開、三種說法
+  # 各有各的字,而那一格的高度從它自己的字算出來(#76 的形狀)。
+  check
+  local w33bad=0
+  local w33out; w33out="$("${PY}" - "${CODE_DIR}" <<'PYSCRIPT'
+import os, re, sys
+root = sys.argv[1]
+
+def read(rel):
+    try:
+        return open(os.path.join(root, rel), encoding='utf-8',
+                    errors='replace').read()
+    except OSError:
+        return None
+
+def body_of(txt, sig):
+    i = txt.find(sig)
+    if i < 0:
+        return None
+    j = txt.find('{', i)
+    depth = 0
+    for k in range(j, len(txt)):
+        if txt[k] == '{':
+            depth += 1
+        elif txt[k] == '}':
+            depth -= 1
+            if depth == 0:
+                return txt[j:k + 1]
+    return None
+
+eh = read('service/engine.h')
+ec = read('service/engine.cc')
+sw = read('service/settings_window.cc')
+ul = read('common/ui_layout.cc')
+for name, txt in (('engine.h', eh), ('engine.cc', ec),
+                  ('settings_window.cc', sw), ('ui_layout.cc', ul)):
+    if txt is None:
+        print('NOFILE=%s' % name)
+
+n_scope = 0
+if eh:
+    # 1. Post 要把 Status 交出去,不是 void。
+    if not re.search(r'WorkQueue::Status Post\(const char\* label', eh):
+        print('POST_VOID=1')
+    else:
+        n_scope += 1
+    # 2. 兩支方案清單都要帶 out 參數、回 Status,而且不准被無聲丟掉。
+    for fn in ('SchemaList', 'SchemaListCached'):
+        m = re.search(r'\[\[nodiscard\]\] WorkQueue::Status %s\(\s*\n?\s*'
+                      r'std::vector<std::pair<std::string, std::string>>\* out\);'
+                      % fn, eh)
+        if not m:
+            print('SIG=%s' % fn)
+        else:
+            n_scope += 1
+
+if ec:
+    # 3. 沒跑完就不可以動 out —— 呼叫端讀到的必須是它自己的初始值。
+    b = body_of(ec, 'WorkQueue::Status Engine::SchemaList(')
+    if b is None:
+        print('NOBODY=SchemaList')
+    else:
+        n_scope += 1
+        if 'st == WorkQueue::Status::kDone && out' not in b:
+            print('WRITES_ON_FAILURE=1')
+    # 4. 「問過了」與「答案不是空的」要分開。
+    b = body_of(ec, 'bool Engine::SchemaListFromCache(')
+    if b is None:
+        print('NOBODY=SchemaListFromCache')
+    else:
+        n_scope += 1
+        if 'schema_cache_valid_' not in b:
+            print('CACHE_EMPTY_MEANS_COLD=1')
+        if re.search(r'schema_cache_\.empty\(\)', b):
+            print('CACHE_STILL_USES_EMPTY=1')
+    b = body_of(ec, 'void Engine::InvalidateSchemaCache(')
+    if b is None:
+        print('NOBODY=InvalidateSchemaCache')
+    else:
+        n_scope += 1
+        if 'schema_cache_valid_ = false;' not in b:
+            print('INVALIDATE_LEAVES_VALID=1')
+
+if sw:
+    b = body_of(sw, 'void SettingsWindow::ReloadSchemaList(')
+    if b is None:
+        print('NOBODY=ReloadSchemaList')
+    else:
+        n_scope += 1
+        # 5. 三種說法都要被指派過。少一種 = 那一種在畫面上不存在。
+        for note in ('kSchemaNoteEmpty', 'kSchemaNoteLoading',
+                     'kSchemaNoteUnavailable'):
+            if note not in b:
+                print('NOTE_MISSING=%s' % note)
+        # 6. 排不進去要看得出來:RefreshSchemaListAsync 的回傳值一定要用。
+        if not re.search(r'schema_note_\s*=\s*engine_->RefreshSchemaListAsync', b):
+            print('ASYNC_RESULT_DROPPED=1')
+        # 7. 那三句話只能從 SchemaNoteLines 來。
+        if 'SchemaNoteLines(schema_note_)' not in b:
+            print('NOTE_TEXT_HARDCODED=1')
+        if re.search(r'UiString::kSchemasEmpty', b):
+            print('NOTE_TEXT_PINNED_TO_EMPTY=1')
+    b = body_of(sw, 'PageState SettingsWindow::PageStateNow()')
+    if b is None:
+        print('NOBODY=PageStateNow')
+    else:
+        n_scope += 1
+        if 's.schema_note = schema_note_;' not in b:
+            print('NOTE_BRANCH_HARDCODED=1')
+
+if ul:
+    # 8. 那一格的高度要從它自己的字算,不是寫死行數(#76 的形狀)。
+    i = ul.find('emit(IDC_SCHEMAS_EMPTY')
+    if i < 0:
+        print('NOEMIT=1')
+    else:
+        n_scope += 1
+        seg = ul[max(0, i - 900):i + 200]
+        if 'SchemaNoteLines(state.schema_note)' not in seg:
+            print('LAYOUT_IGNORES_NOTE=1')
+        if re.search(r'emit\(IDC_SCHEMAS_EMPTY,\s*st\.Push\(\s*t5h\s*\*', ul):
+            print('LAYOUT_HARDCODED_LINES=1')
+print('NSCOPE=%d' % n_scope)
+PYSCRIPT
+)"
+  local w33n; w33n="$(num "$(printf '%s\n' "${w33out}" | grep '^NSCOPE=' | cut -d= -f2)")"
+  # ⚠ 範圍非空:上面每一格都要真的找到那個函式才算數。找到零個而報乾淨,
+  #   就是「檔案被改名了而我沒發現」。
+  # 9 = engine.h 3(Post + 兩支簽名)+ engine.cc 3 + settings_window.cc 2
+  #     + ui_layout.cc 1。少一個就是某個函式被改名/搬走了。
+  need_scope "W33 掃到的函式" "${w33n}" 9 || w33bad=1
+  local w33line
+  while IFS= read -r w33line; do
+    case "${w33line}" in
+      POST_VOID=*)
+        red "W33:Engine::Post 又把 WorkQueue::Status 丟掉了(預期 WorkQueue::Status Post(...))—— 「引擎沒有回應」會再度變成「答案是空的」"
+        w33bad=1 ;;
+      SIG=*)
+        red "W33:Engine::${w33line#SIG=} 的簽名不對 —— 要帶 out 參數、回 WorkQueue::Status,而且 [[nodiscard]](回一個空 vector 就是那個缺陷本身)"
+        w33bad=1 ;;
+      WRITES_ON_FAILURE=*)
+        red "W33:Engine::SchemaList 在工作沒跑完時就動了 *out —— 呼叫端會把自己的初始值當成答案"
+        w33bad=1 ;;
+      CACHE_EMPTY_MEANS_COLD=*|CACHE_STILL_USES_EMPTY=*)
+        red "W33:方案快取又用「是不是空的」當「問過了沒有」—— 真的一種都沒有的使用者會永遠看到「正在讀取」,而每次打開設定都再排一件查詢"
+        w33bad=1 ;;
+      INVALIDATE_LEAVES_VALID=*)
+        red "W33:InvalidateSchemaCache 沒有把 schema_cache_valid_ 收掉 —— 部署完的清空是假的"
+        w33bad=1 ;;
+      NOTE_MISSING=*)
+        red "W33:ReloadSchemaList 裡沒有 ${w33line#NOTE_MISSING=} —— 那一種情況在畫面上不存在,使用者看到的是另外兩種的其中一句"
+        w33bad=1 ;;
+      ASYNC_RESULT_DROPPED=*)
+        red "W33:ReloadSchemaList 丟掉了 RefreshSchemaListAsync 的回傳值 —— 查詢排不進去時沒有人會回來,而畫面上那句話會永遠停在那裡"
+        w33bad=1 ;;
+      NOTE_TEXT_HARDCODED=*|NOTE_TEXT_PINNED_TO_EMPTY=*)
+        red "W33:那一格的三句話不是從 common/ui_layout.h 的 SchemaNoteLines() 來 —— 版面用那一支算高度,兩邊各挑各的就會把字切掉"
+        w33bad=1 ;;
+      NOTE_BRANCH_HARDCODED=*)
+        red "W33:PageStateNow 沒有把 schema_note_ 交給版面(預期 s.schema_note = schema_note_;)—— 三種說法會被照同一種的高度裁"
+        w33bad=1 ;;
+      LAYOUT_IGNORES_NOTE=*|LAYOUT_HARDCODED_LINES=*)
+        red "W33:IDC_SCHEMAS_EMPTY 的高度又寫死行數了 —— #76 的根因就是各段各自寫死,而英文一律比較長"
+        w33bad=1 ;;
+      NOEMIT=*|NOBODY=*|NOFILE=*)
+        red "W33:掃描範圍錯了(${w33line})"
+        w33bad=1 ;;
+    esac
+  done <<< "${w33out}"
+  [ "${w33bad}" -eq 0 ] && ok "W33 三種情況(真的沒有 / 還在讀 / 讀不到)在畫面上是三句不同的話,而且那一格的高度跟著它自己的字走"
 
   # ── W29:連網那一頁,三件事的決定權都不在繪製碼裡 ─────────────
   #

@@ -355,6 +355,10 @@ class SettingsWindow {
   Settings settings_;
   std::vector<std::pair<std::string, std::string>> schemas_;  // id, name
   std::vector<std::string> order_;   // 目前清單上的順序(id)
+  // 清單是空的時候,那一格說明說的是**哪一件事**(見 common/ui_layout.h
+  // 的 SchemaListNote)。三種:真的一種都沒有 / 還在問引擎 / 問不到。
+  // ⚠ 三種以前在畫面上是同一句話(#62),而下一步完全不同。
+  int schema_note_ = kSchemaNoteEmpty;
 
   // ── 連網那一頁的狀態 ──────────────────────────────────────
   //

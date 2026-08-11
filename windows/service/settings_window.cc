@@ -1273,6 +1273,10 @@ PageState SettingsWindow::PageStateNow() const {
   //   看到的是一個空表格加一顆清除鍵 —— 而「開關從沒開過所以紀錄是空的」
   //   正是使用者驗證我們的方式,那句話必須在畫面上說得出來。
   s.net_log_empty = net_log_empty_;
+  // ⚠ 同一條理由:那一格說明的高度是從它自己的字算出來的,而「它自己的
+  //   字」由 schema_note_ 決定。寫死一個 note 的話,另外兩種說法會被
+  //   照第一種的高度裁掉 —— 而那正是 #76 的形狀。
+  s.schema_note = schema_note_;
   return s;
 }
 
@@ -1542,14 +1546,34 @@ void SettingsWindow::ReloadSchemaList(bool may_query) {
   //   現在:快取命中就直接畫(純記憶體);冷的話**非同步**問一次,
   //   回來用 WM_RIME_SCHEMAS_READY 叫自己重畫。冷快取那一瞬間畫面上
   //   是「輸入方案」頁的空狀態,而那句話說的正好是實話。
-  if (!engine_->SchemaListFromCache(&schemas_) && may_query) {
+  //
+  // ── ⚠ 清單是空的時候,**空的理由有三種**(#62)────────────────
+  //
+  //   快取有效        → 那就是答案(空也是答案):kSchemaNoteEmpty
+  //   快取是冷的,查詢排進去了 → kSchemaNoteLoading(等一下就出來)
+  //   查詢**排不進去**(引擎在停/沒有工作者)→ kSchemaNoteUnavailable
+  //     ⚠ 這一種沒有人會回來。以前這裡把 RefreshSchemaListAsync 的
+  //       回傳值丟掉,於是畫面上說的是「目前一種都沒有,到進階按重新
+  //       整理字詞」—— 一句對這個情況完全沒有用的話,而且它永遠不會變。
+  if (engine_->SchemaListFromCache(&schemas_)) {
+    schema_note_ = kSchemaNoteEmpty;  // 有答案了(空的話就是真的空)
+  } else if (may_query) {
     schemas_.clear();
     HWND h = hwnd_;
-    engine_->RefreshSchemaListAsync([h] {
-      // ⚠ 這個 lambda 跑在**引擎執行緒**上。它只能做跨執行緒安全的事,
-      //   所以裡面只有 PostMessageW —— 不碰任何成員,那些屬於 UI 執行緒。
-      if (h) ::PostMessageW(h, WM_RIME_SCHEMAS_READY, 0, 0);
-    });
+    // ⚠ 回傳 false = **沒有入列**,那個 lambda 永遠不會被呼叫。
+    schema_note_ = engine_->RefreshSchemaListAsync([h] {
+                     // ⚠ 這個 lambda 跑在**引擎執行緒**上。它只能做跨
+                     //   執行緒安全的事,所以裡面只有 PostMessageW ——
+                     //   不碰任何成員,那些屬於 UI 執行緒。
+                     if (h) ::PostMessageW(h, WM_RIME_SCHEMAS_READY, 0, 0);
+                   })
+                       ? kSchemaNoteLoading
+                       : kSchemaNoteUnavailable;
+  } else {
+    // 不准查(這一次只是重畫),而快取還是冷的 —— 上一次排的那件
+    // 查詢還在飛。
+    schemas_.clear();
+    schema_note_ = kSchemaNoteLoading;
   }
   order_.clear();
   for (const auto& kv : schemas_) order_.push_back(kv.first);
@@ -1574,11 +1598,15 @@ void SettingsWindow::ReloadSchemaList(bool may_query) {
     SetText(hwnd_, IDC_SCHEMAS_DEFAULT_LINE, line.c_str());
   } else {
     // §4.7 的空狀態要說三件事:為什麼是空的、這是不是正常、下一步按哪裡。
-    std::wstring empty = UiText(UiString::kSchemasEmptyTitle);
+    // ⚠ 那三句話從 **common/ui_layout.h 的 SchemaNoteLines()** 來,不在
+    //   這裡挑。版面用同一支算那一格的高度 —— 兩邊各挑各的,高度就會
+    //   與內容分家,而分家的方向是文字被切掉(#76 的形狀)。
+    const SchemaNoteText note = SchemaNoteLines(schema_note_);
+    std::wstring empty = UiText(note.title);
     empty += L"\r\n";
-    empty += UiText(UiString::kSchemasEmptyWhy);
+    empty += UiText(note.why);
     empty += L"\r\n";
-    empty += UiText(UiString::kSchemasEmptyNext);
+    empty += UiText(note.next);
     SetText(hwnd_, IDC_SCHEMAS_EMPTY, empty.c_str());
   }
   LayoutUi();

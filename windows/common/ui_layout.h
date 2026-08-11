@@ -431,6 +431,42 @@ struct PageLayout {
 //   文字變了(例如「現在預設是○○」)不算 —— 那不影響任何一個矩形,
 //   所以它不該讓版面多一個分支。多一個 bool 就多一種只有那個狀態下
 //   才走得到的版面,而走不到的版面就是沒有人看過的版面。
+// ── 「輸入方案」頁那一格說明,現在說的是哪一件事(#62)───────────
+//
+// ⚠ 走到那一格的路有三條,而它們在畫面上以前是**同一句話**
+//   (「目前一種都沒有」)。三條的下一步完全不同:
+//
+//     kSchemaNoteEmpty       真的一種都沒有
+//                            → 去「進階」按「重新整理字詞」
+//     kSchemaNoteLoading     快取是冷的,一件查詢正在飛
+//                            → 什麼都不用做,讀完會自己出現
+//     kSchemaNoteUnavailable 那件查詢**根本沒有入列**(引擎在停 /
+//                            沒有工作者)→ **沒有人會回來**,
+//                            那句話會永遠停在那裡
+//
+//   第三條以前不可能被說出來:`Engine::Post` 把 `WorkQueue::Status`
+//   整個丟掉,呼叫端只拿到一個空 vector —— 而「引擎沒有回應」與
+//   「一個方案都沒有」是同一個空 vector。
+enum SchemaListNote : int {
+  kSchemaNoteEmpty = 0,
+  kSchemaNoteLoading,
+  kSchemaNoteUnavailable,
+  kSchemaNoteCount,
+};
+
+// 那一格要說的三行。
+//
+// ⚠ **唯一的來源。** service/settings_window.cc 組字串、ui_layout.cc 算
+//   高度,兩邊都走這一支 —— 各拿各的話,那一格的高度就會與它的內容
+//   分家,而分家的方向是文字被切掉(#76 的形狀)。
+// ⚠ note 越界回 kSchemaNoteEmpty 那一組:這一支在 WM_PAINT 路徑上。
+struct SchemaNoteText {
+  UiString title;
+  UiString why;
+  UiString next;
+};
+SchemaNoteText SchemaNoteLines(int note);
+
 struct PageState {
   // 「輸入方案」頁:一種都沒有的時候,清單與三顆按鈕換成一段說明。
   bool schema_list_empty = false;
@@ -442,6 +478,9 @@ struct PageState {
   //   清除鍵。空表格讓人分不出「沒連過」與「壞掉了」,而「開關從沒
   //   開過所以紀錄是空的」正是使用者驗證我們的方式。
   bool net_log_empty = true;
+  // 上面那一格說明說的是哪一件事。見 SchemaListNote。
+  // ⚠ schema_list_empty 為 false 時它沒有意義(那一格不出現)。
+  int schema_note = kSchemaNoteEmpty;
 };
 
 // 一頁的完整版面。

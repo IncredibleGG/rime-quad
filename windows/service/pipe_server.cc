@@ -480,8 +480,15 @@ void PipeServer::ServeClient(HANDLE pipe) {
         // 兩件事都要用到它:比對備用 session 的計畫合不合,以及(沒有
         // 備用時)當場套上去。方案清單走快取,所以這一段不進引擎佇列。
         std::vector<std::string> ids;
-        for (const auto& kv : engine_->SchemaListCached())
-          ids.push_back(kv.first);
+        // ⚠ 拿不到清單(引擎在停)與「一個方案都沒有」不可以混成同一件事:
+        //   兩者都會讓 ChooseSchema 挑不到東西,而前者是暫時的。
+        //   這裡不能擋著不放行(宿主那一側只有 50 毫秒的預算),但要
+        //   在記錄裡分得出來 —— 出事時那一行是唯一的線索。
+        std::vector<std::pair<std::string, std::string>> schemas;
+        const WorkQueue::Status schema_st = engine_->SchemaListCached(&schemas);
+        if (schema_st != WorkQueue::Status::kDone)
+          Log("[pipe] 方案清單拿不到(引擎沒有回應)—— 這一個 session 不套方案\n");
+        for (const auto& kv : schemas) ids.push_back(kv.first);
         const Settings st = settings_ ? settings_->Load() : Settings();
         const SchemaChoice choice = ChooseSchema(langid, ids, st.SchemaPref());
         std::vector<OptionAssign> opts;

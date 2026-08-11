@@ -85,6 +85,26 @@ namespace {
   X(kSchemasEmptyNext, L"Go to Advanced and press Rebuild words.",             \
     L"到「進階」按一下「重新整理字詞」。",                                     \
     L"到“高级”按一下“重新整理字词”。")                                         \
+  X(kSchemasLoadingTitle, L"Reading the list of typing methods",               \
+    L"正在讀取輸入方案", L"正在读取输入方案")                                  \
+  X(kSchemasLoadingWhy,                                                        \
+    L"The engine is busy right now, so this list is still on its way.",        \
+    L"引擎現在正忙,這份清單還在路上。",                                       \
+    L"引擎现在正忙,这份清单还在路上。")                                       \
+  X(kSchemasLoadingNext, L"Nothing to do - it will appear on its own.",        \
+    L"什麼都不用做,讀完會自己出現。",                                         \
+    L"什么都不用做,读完会自己出现。")                                         \
+  X(kSchemasUnavailableTitle, L"Cannot read the list of typing methods",       \
+    L"讀不到輸入方案清單", L"读不到输入方案清单")                              \
+  X(kSchemasUnavailableWhy,                                                    \
+    L"The engine is not answering, so nobody is going to bring this list.",    \
+    L"引擎沒有回應,所以這份清單不會有人送來。",                               \
+    L"引擎没有回应,所以这份清单不会有人送来。")                               \
+  X(kSchemasUnavailableNext,                                                   \
+    L"Close this window and open it again; if it stays this way, restart the " \
+    L"computer.",                                                              \
+    L"把這個視窗關掉再打開一次;還是這樣的話,重新開機。",                     \
+    L"把这个窗口关掉再打开一次;还是这样的话,重新开机。")                     \
   X(kSchemasOrderChangedHint,                                                  \
     L"Order changed but not in use yet - press Use this order.",               \
     L"順序改了,還沒生效 —— 按「套用這個順序」。",                             \

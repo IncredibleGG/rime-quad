@@ -179,6 +179,24 @@ int EstimateTextBoxHeightDip(const wchar_t* text, int size_dip, int w_dip) {
   return EstimateTextLinesDip(text, size, w_dip) * TextLineBoxDip(size);
 }
 
+SchemaNoteText SchemaNoteLines(int note) {
+  switch (note) {
+    case kSchemaNoteLoading:
+      return SchemaNoteText{UiString::kSchemasLoadingTitle,
+                            UiString::kSchemasLoadingWhy,
+                            UiString::kSchemasLoadingNext};
+    case kSchemaNoteUnavailable:
+      return SchemaNoteText{UiString::kSchemasUnavailableTitle,
+                            UiString::kSchemasUnavailableWhy,
+                            UiString::kSchemasUnavailableNext};
+    case kSchemaNoteEmpty:
+    default:
+      return SchemaNoteText{UiString::kSchemasEmptyTitle,
+                            UiString::kSchemasEmptyWhy,
+                            UiString::kSchemasEmptyNext};
+  }
+}
+
 UiString SettingsPageName(int page) {
   switch (page) {
     case kPageAppearance:
@@ -323,9 +341,20 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
         hide(IDC_DOWN);
         hide(IDC_APPLY_ORDER);
         hide(IDC_SCHEMAS_DEFAULT_LINE);
-        // ⚠ 文字執行期才組(§4.7 的空狀態要說「為什麼是空的」),
-        //   所以這一格仍然是固定行數。抓 4 行是刻意寬鬆的一邊。
-        emit(IDC_SCHEMAS_EMPTY, st.Push(t5h * 4, space::s7), false,
+        // ── ⚠ 高度從**這一格自己的字**算,不是寫死 4 行 ────────
+        //
+        //   舊版是 `st.Push(t5h * 4, ...)`,而寫死行數正是 #76 的根因。
+        //   這一格現在有三種說法(見 SchemaListNote),三種長度不一樣,
+        //   而**英文一律比較長** —— 寫死的那個數字一旦不夠,使用者
+        //   看到的是半句話,而且沒有任何錯誤。
+        //   三行分開算 = 那三行之間有明寫的換行(settings_window.cc
+        //   用 \r\n 接起來),與 EstimateTextLinesDip 對 0x0A 的處理一致。
+        const SchemaNoteText note = SchemaNoteLines(state.schema_note);
+        const int note_h =
+            EstimateTextBoxHeightDip(UiText(note.title), text_size::t5, cw) +
+            EstimateTextBoxHeightDip(UiText(note.why), text_size::t5, cw) +
+            EstimateTextBoxHeightDip(UiText(note.next), text_size::t5, cw);
+        emit(IDC_SCHEMAS_EMPTY, st.Push(note_h, space::s7), false,
              "empty_state");
       } else {
         hide(IDC_SCHEMAS_EMPTY);

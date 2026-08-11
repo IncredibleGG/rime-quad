@@ -207,7 +207,11 @@ struct Variant {
 //    「少一頁」,擋不住「一頁少一種狀態」,所以下面兩對要一起讀。)
 const Variant kVariants[] = {
     {kPageSchemas, PageState{false, true}},
-    {kPageSchemas, PageState{true, true}},
+    // 清單為空的三種:真的一種都沒有、還在問引擎、問不到。
+    // ⚠ 三種說的是三件事,長度也不一樣 —— 只走一種等於少測兩種畫面。
+    {kPageSchemas, PageState{true, true, kSchemaNoteEmpty}},
+    {kPageSchemas, PageState{true, true, kSchemaNoteLoading}},
+    {kPageSchemas, PageState{true, true, kSchemaNoteUnavailable}},
     {kPageAppearance, PageState{false, true}},
     {kPageText, PageState{false, true}},
     // 連網頁的兩種:一次都沒有連過(空狀態)、以及有紀錄。
@@ -1105,4 +1109,86 @@ TEST(ui_layout_wide_punctuation_is_measured_as_wide) {
               EstimateTextLinesDip(std::wstring(60, han).c_str(),
                                    text_size::t5, 440));
   }
+}
+
+// ── #62:三種不同的情況,畫面上不可以是同一句話 ────────────────────
+//
+// 「輸入方案」頁上那一格說明以前只有一種內容:「目前一種都沒有」。
+// 而走到那一格的路有三條,下一步完全不同:
+//
+//   · 真的一種都沒有            → 去「進階」按「重新整理字詞」
+//   · 還在問引擎(快取是冷的)  → 什麼都不用做,等一下就出來
+//   · 問不到(引擎在停/沒有工作者,那件工作**根本沒有入列**)
+//                               → 沒有人會回來,那句話會永遠停在那裡
+//
+// 第三條是這一輪 `Engine::Post` 把 `Status` 丟掉的直接後果:呼叫端拿到
+// 一個空 vector,而「引擎沒有回應」與「一個方案都沒有」長得一模一樣。
+TEST(ui_layout_schema_note_says_three_different_things) {
+  CHECK_INT(static_cast<int>(kSchemaNoteCount), 3);
+
+  // 每一種、每一個語系都要有字,而且三種之間**一個字串都不可以共用**。
+  for (UiLang lang : {UiLang::kEnUs, UiLang::kZhHant, UiLang::kZhHans}) {
+    SetUiLang(lang);
+    std::set<std::wstring> seen;
+    for (int n = 0; n < kSchemaNoteCount; ++n) {
+      const SchemaNoteText t = SchemaNoteLines(n);
+      const std::wstring joined = std::wstring(UiTextIn(lang, t.title)) + L"\n" +
+                                  UiTextIn(lang, t.why) + L"\n" +
+                                  UiTextIn(lang, t.next);
+      CHECK(UiTextIn(lang, t.title)[0] != L'\0');
+      CHECK(UiTextIn(lang, t.why)[0] != L'\0');
+      CHECK(UiTextIn(lang, t.next)[0] != L'\0');
+      // 三種說的必須是三件事。共用一句 = 使用者分不出他在哪一種情況。
+      CHECK(seen.count(joined) == 0);
+      seen.insert(joined);
+    }
+    CHECK_INT(static_cast<int>(seen.size()), kSchemaNoteCount);
+  }
+  // 越界不崩潰(它在 WM_PAINT 路徑上),而且回一個真的存在的說法。
+  for (int bad : {-1, 3, 999}) {
+    const SchemaNoteText t = SchemaNoteLines(bad);
+    CHECK(UiTextIn(UiLang::kZhHant, t.title)[0] != L'\0');
+  }
+  SetUiLang(UiLang::kZhHant);
+}
+
+// ── 那一格的高度要跟著它自己的字走,不是寫死 4 行 ──────────────────
+//
+// 舊版是 `st.Push(t5h * 4, ...)` —— 一個寫死的行數,而 #76 的根因就是
+// 寫死行數。三種說法長度不一樣,而**英文一律比較長**:寫死的那一個
+// 一旦不夠,使用者看到的是半句話,而且沒有任何錯誤。
+TEST(ui_layout_schema_note_box_follows_its_own_text) {
+  bool differs_somewhere = false;
+  for (UiLang lang : {UiLang::kEnUs, UiLang::kZhHant, UiLang::kZhHans}) {
+    SetUiLang(lang);
+    for (int w : {kWindowMinW, kWindowDefaultW, 1000, 1600}) {
+      const int cw = ContentWidthDip(w);
+      std::set<int> heights;
+      for (int n = 0; n < kSchemaNoteCount; ++n) {
+        PageState st;
+        st.schema_list_empty = true;
+        st.schema_note = n;
+        const PageLayout pl = LayoutSettingsPageDip(kPageSchemas, w, st);
+        int h = 0;
+        for (const PlacedControl& p : pl.items)
+          if (p.id == IDC_SCHEMAS_EMPTY) h = p.rect.h;
+        // 這一格一定要在(空狀態的頁上),而且高度**剛好**是它自己那
+        // 三行字要的高度 —— 不是一個寫死的行數,也不是「寫死 + 餘裕」。
+        const SchemaNoteText t = SchemaNoteLines(n);
+        const int want =
+            EstimateTextBoxHeightDip(UiText(t.title), text_size::t5, cw) +
+            EstimateTextBoxHeightDip(UiText(t.why), text_size::t5, cw) +
+            EstimateTextBoxHeightDip(UiText(t.next), text_size::t5, cw);
+        CHECK_INT(h, want);
+        heights.insert(h);
+      }
+      if (heights.size() >= 2) differs_somewhere = true;
+    }
+  }
+  // ⚠ 「高度跟著字走」不可以只是巧合地與寫死的那個數字相等:至少要有
+  //   一個語系 × 一個視窗寬度上,三種說法給出**不同**的高度。
+  //   (窄欄的英文就是那一格 —— 英文一律比較長,而窄欄正是寫死行數
+  //    會把字切掉的地方。不逐一指定哪一格,是因為那會隨文案改動而假紅。)
+  CHECK(differs_somewhere);
+  SetUiLang(UiLang::kZhHant);
 }

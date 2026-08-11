@@ -191,10 +191,15 @@ void Engine::Stop() {
   rs_finalize();
 }
 
-void Engine::Post(const char* label, std::function<void()> fn) {
+WorkQueue::Status Engine::Post(const char* label, std::function<void()> fn) {
   // timeout <= 0 = 永遠等(舊行為)。這一支的呼叫端沒有訊息迴圈掛在
   // 上面 —— 有的那些走 PostAsync / SchemaListForUi。
-  queue_.Call(label, std::move(fn), 0);
+  //
+  // ⚠ **回傳值要交出去。** 舊版在這裡把 Status 丟掉,而那個 Status 是
+  //   「有沒有人會做這件事」唯一的答案:引擎在停的時候工作根本沒有入列,
+  //   呼叫端的 out 從頭到尾沒有被寫過,而它讀到的是自己的初始值。
+  //   `SchemaList()` 因此回一個與「一個方案都沒有」分不出來的空 vector。
+  return queue_.Call(label, std::move(fn), 0);
 }
 
 bool Engine::PostAsync(const char* label, std::function<void()> fn) {
@@ -506,20 +511,30 @@ std::vector<std::pair<std::string, std::string>> Engine::ListSchemasOnWorker() {
   {
     std::lock_guard<std::mutex> lock(cache_mu_);
     schema_cache_ = out;
+    schema_cache_valid_ = true;
   }
   return out;
 }
 
-std::vector<std::pair<std::string, std::string>> Engine::SchemaList() {
-  std::vector<std::pair<std::string, std::string>> out;
-  Post("列方案", [&] { out = ListSchemasOnWorker(); });
-  return out;
+WorkQueue::Status Engine::SchemaList(
+    std::vector<std::pair<std::string, std::string>>* out) {
+  // ⚠ 這一支永遠等(timeout 0),所以 `[&]` 是安全的 —— 呼叫端的框在
+  //   工作跑完之前不會消失(理由見 common/work_queue.h 的檔頭)。
+  //   有上限的那一條走 SchemaListForUi,而它用 CallFor 的共享盒子。
+  std::vector<std::pair<std::string, std::string>> got;
+  const WorkQueue::Status st =
+      Post("列方案", [&] { got = ListSchemasOnWorker(); });
+  // ⚠ 沒跑就**不要動 out**:呼叫端拿到的必須是它自己的初始值,而不是
+  //   一個看起來像答案的空清單。
+  if (st == WorkQueue::Status::kDone && out) *out = std::move(got);
+  return st;
 }
 
 bool Engine::SchemaListFromCache(
     std::vector<std::pair<std::string, std::string>>* out) const {
   std::lock_guard<std::mutex> lock(cache_mu_);
-  if (schema_cache_.empty()) return false;
+  // ⚠ 判準是「問過了沒有」,不是「是不是空的」。見標頭。
+  if (!schema_cache_valid_) return false;
   if (out) *out = schema_cache_;
   return true;
 }
@@ -537,7 +552,7 @@ bool Engine::SchemaListForUi(
     int timeout_ms, std::vector<std::pair<std::string, std::string>>* out) {
   {
     std::lock_guard<std::mutex> lock(cache_mu_);
-    if (!schema_cache_.empty()) {
+    if (schema_cache_valid_) {
       if (out) *out = schema_cache_;
       return true;
     }
@@ -556,19 +571,24 @@ bool Engine::SchemaListForUi(
   return true;
 }
 
-std::vector<std::pair<std::string, std::string>> Engine::SchemaListCached() {
+WorkQueue::Status Engine::SchemaListCached(
+    std::vector<std::pair<std::string, std::string>>* out) {
   {
     std::lock_guard<std::mutex> lock(cache_mu_);
-    if (!schema_cache_.empty()) return schema_cache_;
+    if (schema_cache_valid_) {
+      if (out) *out = schema_cache_;
+      return WorkQueue::Status::kDone;
+    }
   }
-  // 快取是空的(還沒問過,或剛部署完被清掉)—— 真的問一次,
+  // 快取無效(還沒問過,或剛部署完被清掉)—— 真的問一次,
   // 上面那一支會順手把快取填好。
-  return SchemaList();
+  return SchemaList(out);
 }
 
 void Engine::InvalidateSchemaCache() {
   std::lock_guard<std::mutex> lock(cache_mu_);
   schema_cache_.clear();
+  schema_cache_valid_ = false;
 }
 
 bool Engine::SetOption(uint64_t id, const char* option, bool value) {

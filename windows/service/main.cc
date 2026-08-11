@@ -313,7 +313,13 @@ void WarmUpEngine(rimewin::Engine* engine, rimewin::SettingsStore* store,
                   rimewin::StatusBar* bar) {
   const ULONGLONG t0 = ::GetTickCount64();
   std::vector<std::string> ids;
-  for (const auto& kv : engine->SchemaList()) ids.push_back(kv.first);
+  // ⚠ 「引擎沒有回應」與「一個方案都沒有」不是同一件事。分不出來的話,
+  //   ChooseSchema 會在**空清單**上挑,挑不到就什麼都不套 —— 使用者
+  //   拿到的是一個沒有方案的 session,而記錄裡看起來像正常暖機。
+  std::vector<std::pair<std::string, std::string>> schemas;
+  if (engine->SchemaList(&schemas) != rimewin::WorkQueue::Status::kDone)
+    Say("[service] 預熱:引擎沒有回應,這一輪拿不到方案清單\n");
+  for (const auto& kv : schemas) ids.push_back(kv.first);
   const rimewin::Settings st = store ? store->Load() : rimewin::Settings();
   const rimewin::SchemaPreference pref = st.SchemaPref();
   const rimewin::Tri punct = st.Punctuation();
@@ -348,8 +354,13 @@ void WarmUpEngine(rimewin::Engine* engine, rimewin::SettingsStore* store,
     //   —— 中間那段空窗期它會少畫一格(使用者實機回報過「方案名不見了」)。
     //   種子不是權威:第一份快照一到就覆蓋。只種一次,用第一個 langid 的結果。
     if (bar && warmed == 0 && !choice.schema_id.empty()) {
-      for (const auto& kv : engine->SchemaList()) {
-        if (kv.first == choice.schema_id) { bar->SeedSchemaName(kv.second); break; }
+      // 這一次一定是快取命中(上面剛問過),所以走 Cached 那一支;
+      // 真的拿不到就不種 —— 種一個空名字比不種更糟。
+      std::vector<std::pair<std::string, std::string>> named;
+      if (engine->SchemaListCached(&named) == rimewin::WorkQueue::Status::kDone) {
+        for (const auto& kv : named) {
+          if (kv.first == choice.schema_id) { bar->SeedSchemaName(kv.second); break; }
+        }
       }
     }
     ++warmed;
