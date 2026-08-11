@@ -257,15 +257,53 @@ typedef struct {
   bool is_last_page;
 } rs_menu;
 
+/* 引擎目前**實際套用**的字形轉換。
+ *
+ * ⚠ 為什麼不用 is_simplified：那個欄位是 librime 的 RimeStatus 原樣轉過來
+ *   的，而它只反映 `simplification` 這一個開關。**本專案打包的方案通通
+ *   沒有那個開關** —— luna_pinyin 家族與 bopomofo 家族用的是一組互斥的
+ *   radio（zh_hant / zh_hans / zh_hant_hk / zh_hant_tw）。
+ *
+ *   而 rs_set_option 對一個不存在的選項**不會失敗**：librime 只是記下一個
+ *   沒有人讀的選項，然後原樣回讀。於是前端從 is_simplified 讀到的一直是
+ *   它自己剛寫進去的偏好，不是引擎的狀態 —— 畫面在替一件沒有發生的事
+ *   作證。Windows 端實機回報過：設定裡選簡體，狀態列畫「简」，打出來是
+ *   繁體。
+ *
+ * RS_VARIANT_UNKNOWN 是一個真實而且正確的狀態，不是錯誤：純 luna_pinyin
+ * 的那組 radio **沒有 `reset:`**，而 ConcreteEngine::InitializeOptions()
+ * 只在 reset_value >= 0 時才設值 —— 所以剛載入時四個全是 false，而輸出是
+ * 繁體（詞典本身就是繁體字集，沒有任何 simplifier 生效）。此時我們確實
+ * 不知道引擎在做哪一種轉換，前端該做的是**整格不顯示**，不是猜一個。
+ *
+ * ⚠ 殘留：一個既沒有那組 radio、也沒有 simplification 的第三方方案，
+ *   rs_set_option(zh_hans, true) 仍然會被記下並回讀，這裡仍然會回
+ *   RS_VARIANT_HANS 而輸出沒變。用今天的 rs_ API 問不出「這個方案有沒有
+ *   宣告這個選項」（本標頭只有 rs_set_option / rs_get_option，沒有任何
+ *   config API）。真解是新增 rs_schema_declares_option()，已開工單。 */
+typedef enum {
+  RS_VARIANT_UNKNOWN = 0,  /* 四個 radio 都為假 —— 前端應整格不顯示 */
+  RS_VARIANT_HANT = 1,     /* zh_hant / zh_hant_hk / zh_hant_tw 任一為真 */
+  RS_VARIANT_HANS = 2      /* zh_hans 為真（優先於上面那一條） */
+} rs_variant;
+
 typedef struct {
   const char* schema_id;
   const char* schema_name;
   bool is_composing;
   bool is_ascii_mode;    /* 中／英 */
   bool is_full_shape;    /* 全／半形 */
-  bool is_simplified;    /* 簡／繁 */
+  /* ⚠ **只反映 `simplification` 這一個開關。**
+   *   本專案打包的方案都沒有它，讀它等於讀自己寫進去的回音。
+   *   要判斷簡繁請用下面的 variant。保留這個欄位是因為它是 librime 的
+   *   原欄位，第三方「簡入繁出」之類的方案真的靠它。 */
+  bool is_simplified;
   bool is_ascii_punct;
   bool is_disabled;      /* 部署中等不可用狀態 */
+  /* 引擎實際套用的字形轉換。見上面 rs_variant 的說明。
+   * ⚠ 這是新增欄位（ABI 純加法）。macOS / Android 兩端可以各自挑時間
+   *   接上，接上之前行為不變。 */
+  rs_variant variant;
 } rs_status;
 
 typedef struct {

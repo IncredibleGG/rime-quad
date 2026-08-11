@@ -242,6 +242,30 @@ void rebuild_snapshot(Session* sess) {
     g_api->free_status(&status);
   }
 
+  // ── variant：引擎**實際套用**的字形轉換 ──
+  //
+  // ⚠ 刻意不看 is_simplified／`simplification`。理由寫在 rime_shell.h 的
+  //   rs_variant 上：那個開關本專案打包的方案通通沒有，而 set_option 對
+  //   不存在的選項不會失敗、會原樣記下並回讀 —— 讀它等於把前端自己
+  //   寫進去的偏好當成引擎的狀態回報。
+  //
+  // 讀的是 luna_pinyin 家族那組互斥的 radio。四個都為假是一個真實而且
+  // 正確的狀態（radio group 沒有 reset:，剛載入時就是這樣），回
+  // RS_VARIANT_UNKNOWN，由前端決定怎麼呈現（Windows 端是整格不顯示）。
+  //
+  // ⚠ 順序是規範性的：zh_hans 優先。set_option 不維持 radio 的互斥，
+  //   而前端套用時是「先關再開」—— 中間真的存在兩個都為真的一瞬。
+  {
+    const bool zh_hans = g_api->get_option(sess->id, "zh_hans") != False;
+    const bool zh_hant = g_api->get_option(sess->id, "zh_hant") != False;
+    const bool zh_hant_hk = g_api->get_option(sess->id, "zh_hant_hk") != False;
+    const bool zh_hant_tw = g_api->get_option(sess->id, "zh_hant_tw") != False;
+    sess->snapshot.status.variant =
+        zh_hans ? RS_VARIANT_HANS
+                : ((zh_hant || zh_hant_hk || zh_hant_tw) ? RS_VARIANT_HANT
+                                                         : RS_VARIANT_UNKNOWN);
+  }
+
   // ── 所有 string 都定案了，現在才計算指標 ──
   st.cands.reserve(st.cand_text.size());
   for (size_t i = 0; i < st.cand_text.size(); ++i) {
