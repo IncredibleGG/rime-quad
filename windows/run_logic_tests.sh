@@ -23,7 +23,9 @@ SAN=0
 [ "${1:-}" = "--asan" ] && SAN=1
 
 CXX="${CXX:-g++}"
-FLAGS=(-std=c++17 -O1 -g -Wall -Wextra -Wno-unused-parameter
+# ⚠ -pthread:common/work_queue.cc 起一條真的執行緒。少了它,g++ 連得起來
+#   但 std::thread 在執行期直接丟 system_error —— 而那看起來像「測試壞了」。
+FLAGS=(-std=c++17 -O1 -g -pthread -Wall -Wextra -Wno-unused-parameter
        -I"${SCRIPT_DIR}/common" -I"${ROOT}/core/include")
 if [ "${SAN}" -eq 1 ]; then
   FLAGS+=(-fsanitize=address,undefined -fno-omit-frame-pointer)
@@ -59,6 +61,7 @@ SRCS=(
   "${SCRIPT_DIR}/common/service_state.cc"
   "${SCRIPT_DIR}/common/status_cells.cc"
   "${SCRIPT_DIR}/common/hotkey_policy.cc"
+  "${SCRIPT_DIR}/common/work_queue.cc"
   "${SCRIPT_DIR}/tests/test_main.cc"
   "${SCRIPT_DIR}/tests/test_protocol.cc"
   "${SCRIPT_DIR}/tests/test_keymap.cc"
@@ -91,6 +94,7 @@ SRCS=(
   "${SCRIPT_DIR}/tests/test_service_state.cc"
   "${SCRIPT_DIR}/tests/test_status_cells.cc"
   "${SCRIPT_DIR}/tests/test_hotkey_policy.cc"
+  "${SCRIPT_DIR}/tests/test_work_queue.cc"
 )
 
 mkdir -p "${OUT}"

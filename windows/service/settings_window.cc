@@ -28,6 +28,12 @@ constexpr UINT WM_RIME_SET_VARIANT = WM_APP + 3;
 // 更新的工作執行緒做完了。⚠ 它只是「回來了」的訊號 ——
 //   結果放在成員變數裡,而且只有 UI 執行緒讀得到。
 constexpr UINT WM_RIME_UPDATE_DONE = WM_APP + 4;
+// 引擎那一頭把方案清單問回來了(ReloadSchemaList 的非同步那一半)。
+//
+// ⚠ 它是從**引擎執行緒**用 PostMessageW 送過來的。PostMessageW 是
+//   Win32 少數保證跨執行緒安全的呼叫,而且它不等 —— 這正是重點:
+//   引擎那一頭不可以為了通知我們而卡住,而我們也不可以為了等它而卡住。
+constexpr UINT WM_RIME_SCHEMAS_READY = WM_APP + 5;
 constexpr UINT kTrayId = 1;
 constexpr UINT_PTR kDeployTimer = 1;
 constexpr UINT_PTR kStatusTimer = 2;
@@ -35,6 +41,13 @@ constexpr UINT_PTR kStatusTimer = 2;
 //   半秒問一次,問的是兩個 atomic,而且只有狀態真的變了才重畫。
 constexpr UINT_PTR kServiceStateTimer = 3;
 constexpr UINT kServiceStatePollMs = 500;
+// 引擎的同一件工作跑超過這麼久,就在底下那一行說出來。
+//
+// ⚠ 2000 毫秒不是保險起見挑的:量到的最慢的一件工作是「建 session」
+//   442~753 毫秒(見 engine.h),所以低於一秒會在正常情況下亂叫。
+//   而使用者按下一顆單選鈕之後願意等的上限遠低於此 —— 兩秒還沒動靜,
+//   他要的已經不是「再等等」,是「到底有沒有生效」。
+constexpr int64_t kEngineStallWarnMs = 2000;
 
 enum : int {
   IDM_TRAY_SETTINGS = 900,
@@ -568,6 +581,11 @@ LRESULT CALLBACK SettingsWindow::WndProc(HWND hwnd, UINT msg, WPARAM w,
       return 0;
     case WM_RIME_UPDATE_DONE:
       if (self) self->OnUpdateWorkerDone();
+      return 0;
+    // ⚠ may_query = false:這一則**就是**那次查詢的結果。再排一次的話,
+    //   引擎回空清單(暖機還沒完)時會變成無限的訊息迴圈。
+    case WM_RIME_SCHEMAS_READY:
+      if (self) self->ReloadSchemaList(false);
       return 0;
     case WM_RIME_SET_VARIANT: {
       const int i = static_cast<int>(w);
@@ -1422,8 +1440,30 @@ int SettingsWindow::SelectedSchemaRow() const {
                                          LVNI_SELECTED));
 }
 
-void SettingsWindow::ReloadSchemaList() {
-  schemas_ = engine_->SchemaList();
+void SettingsWindow::ReloadSchemaList(bool may_query) {
+  // ── ⚠ 這條路上不可以有任何**同步**的引擎呼叫 ────────────────
+  //
+  //   它掛在 WM_RIME_OPEN 上(→ ReloadFromSettings → 這裡),也就是
+  //   「打開設定視窗」這條路。舊版是 `schemas_ = engine_->SchemaList();`,
+  //   而那一支會同步等引擎執行緒 —— 引擎在忙(首次部署、一次慢的
+  //   建 session)的時候,設定視窗的訊息迴圈就停在那裡。
+  //
+  //   那條執行緒同時是**系統匣圖示的擁有者**(AddTray 在 WM_CREATE 裡),
+  //   所以它一停,連「重開設定」這條退路也一起沒了 —— 這與使用者說的
+  //   「就卡死了」是同一個形狀(#79)。
+  //
+  //   現在:快取命中就直接畫(純記憶體);冷的話**非同步**問一次,
+  //   回來用 WM_RIME_SCHEMAS_READY 叫自己重畫。冷快取那一瞬間畫面上
+  //   是「輸入方案」頁的空狀態,而那句話說的正好是實話。
+  if (!engine_->SchemaListFromCache(&schemas_) && may_query) {
+    schemas_.clear();
+    HWND h = hwnd_;
+    engine_->RefreshSchemaListAsync([h] {
+      // ⚠ 這個 lambda 跑在**引擎執行緒**上。它只能做跨執行緒安全的事,
+      //   所以裡面只有 PostMessageW —— 不碰任何成員,那些屬於 UI 執行緒。
+      if (h) ::PostMessageW(h, WM_RIME_SCHEMAS_READY, 0, 0);
+    });
+  }
   order_.clear();
   for (const auto& kv : schemas_) order_.push_back(kv.first);
 
@@ -1784,6 +1824,37 @@ ServiceState SettingsWindow::SidebarServiceState() const {
 }
 
 void SettingsWindow::OnServiceStateTick() {
+  // ── 引擎心跳 ──────────────────────────────────────────────
+  //
+  // ⚠ 這一段**不碰引擎的工作佇列** —— StalledMs() / CurrentJobLabel()
+  //   讀的是一個小鎖底下的兩個純資料。掛在這個 500 毫秒的計時器上是
+  //   刻意的:它本來就只讀 atomic,是這個視窗唯一保證不會被引擎拖住的
+  //   週期性路徑。
+  //
+  // 為什麼要有這一格:改成非同步之後,引擎真的卡住時使用者看到的是
+  // 「按了沒反應,但視窗還會動」。那比死掉的視窗好,但它仍然沒有回答
+  // 他心裡的那個問題 —— **到底生效了沒有**。這一行回答它。
+  //
+  // ⚠ **不把工作的名字寫進畫面。** 那些標籤(「建 session」「套用方案與
+  //   選項」)是給日誌看的內部字眼,而 §6.7 第一層硬禁引擎詞彙出現在
+  //   使用者看得到的地方。名字寫 stderr,那裡才是查問題的人在看的。
+  {
+    const bool stalled =
+        engine_ != nullptr && engine_->StalledMs() > kEngineStallWarnMs;
+    if (stalled != engine_stalled_) {
+      engine_stalled_ = stalled;
+      if (stalled) {
+        std::fprintf(stderr, "[settings] 引擎沒有回應,卡在:%s(%lld ms)\n",
+                     engine_->CurrentJobLabel().c_str(),
+                     static_cast<long long>(engine_->StalledMs()));
+        std::fflush(stderr);
+        SetStatus(UiString::kStatusEngineBusy);
+      } else {
+        SetStatus(std::wstring());
+      }
+    }
+  }
+
   const ServiceState now = SidebarServiceState();
   if (now == sidebar_state_) return;
   sidebar_state_ = now;

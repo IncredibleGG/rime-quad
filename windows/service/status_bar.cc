@@ -582,7 +582,18 @@ void StatusBar::ClickCell(int cell) {
 void StatusBar::OpenSchemaPopup() {
   ClosePopup();
   if (!engine_) return;
-  popup_items_ = engine_->SchemaListCached();
+  // ⚠ **有上限的等待。** 這一支跑在懸浮狀態列自己的 UI 執行緒上,
+  //   而那條執行緒停住的樣子是「那一橫還在畫面上,但點不動也拖不動」
+  //   —— 與設定視窗那個卡死(#79)是同一個根因的另一個入口。
+  //
+  //   快取命中(正常情況,暖機時就填好了)是純記憶體。冷快取時量到的
+  //   成本是 46~99 毫秒,所以 1500 毫秒這個上限平常一次都用不到。
+  //
+  //   逾時 = 不開這個選單。⚠ 這**不理想**(使用者按了一下沒事發生),
+  //   但它比「整條狀態列從此不回應」好,而且下一次按就會有了。
+  //   真正該做的是在這裡放一句話,而那要等狀態列有地方放字。
+  popup_items_.clear();
+  if (!engine_->SchemaListForUi(1500, &popup_items_)) return;
   if (popup_items_.empty()) return;
 
   const int row_h = Dip(metric::kSidebarItemH, dpi_);

@@ -149,7 +149,11 @@ add_library(rime_common STATIC
   common/status_cells.cc
   # ⚠ Ctrl+空白鍵。判斷只有這一份:瘦 DLL 與服務各要問一次,
   #   兩邊各寫一份就是兩份真相。走 PreserveKey,**不動 key_eat_policy**。
-  common/hotkey_policy.cc)
+  common/hotkey_policy.cc
+  # ⚠ 一條工作者執行緒 + 有界等待。它在 common/ 而不是 service/,理由與
+  #   ui_layout.cc 一樣:那一格(逾時之後遲到的工作寫進誰的記憶體)
+  #   在 service/ 裡沒有任何自動化碰得到,而它正是 #79 最難的那一格。
+  common/work_queue.cc)
 target_include_directories(rime_common PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/common"
   "${RIME_ROOT}/core/include")
@@ -195,6 +199,7 @@ add_executable(rime_tests
   tests/test_service_state.cc
   tests/test_status_cells.cc
   tests/test_hotkey_policy.cc
+  tests/test_work_queue.cc
   # 這一支用**真的**鍵盤佈局(LoadKeyboardLayout + ToUnicodeEx),
   # 是 CI 上唯一驗得到「有沒有真的問佈局」的地方。
   tests/test_win32_layouts.cc

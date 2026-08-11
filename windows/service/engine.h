@@ -33,6 +33,7 @@
 
 #include "../common/protocol.h"
 #include "../common/schema_choice.h"
+#include "../common/work_queue.h"
 
 namespace rimewin {
 
@@ -143,6 +144,40 @@ class Engine {
   std::vector<std::pair<std::string, std::string>> SchemaListCached();
   void InvalidateSchemaCache();
 
+  // ── ⚠ 有介面掛在上面的那三支 ────────────────────────────────
+  //
+  // #79 的根因是「UI 執行緒把自己的存活押在引擎的工作何時回來」。
+  // 設定視窗與懸浮狀態列各有自己的訊息迴圈,而它們一停,
+  // GetMessageW 就再也不會被呼叫 —— 畫面停在最後一格合成的樣子,
+  // 任何點擊都沒有人處理。**系統匣圖示也掛在設定視窗那條執行緒上**,
+  // 所以連「重開設定」這條退路都會一起沒了。
+  //
+  // 所以介面走的是下面這三支,而不是上面那兩支:
+
+  // 快取命中就填 out 並回 true。**純記憶體,不碰工作者。**
+  bool SchemaListFromCache(
+      std::vector<std::pair<std::string, std::string>>* out) const;
+
+  // 非同步問一次方案清單,填好快取之後呼叫 on_ready。
+  //
+  // ⚠ on_ready 跑在**工作者執行緒**上,不是 UI 執行緒。它裡面只能做
+  //   跨執行緒安全的事 —— 設定視窗傳進來的那一份只做一件:PostMessageW。
+  // ⚠ on_ready 捕捉的每一樣東西都必須傳值(見 common/work_queue.h)。
+  void RefreshSchemaListAsync(std::function<void()> on_ready);
+
+  // 有上限的一次方案清單查詢。逾時回 false,而 out 保持不動 ——
+  // 呼叫端**必須**據此收手,不可以把一份沒被填過的清單當成
+  // 「一個方案都沒有」。
+  bool SchemaListForUi(int timeout_ms,
+                       std::vector<std::pair<std::string, std::string>>* out);
+
+  // 工作者現在卡在哪一件、卡了多久(毫秒;沒有工作在跑 = 0 / 空字串)。
+  //
+  // ⚠ 給介面判斷用,**不要把 label 寫進畫面**:那些是內部字眼,
+  //   §6.7 第一層硬禁它們出現在使用者看得到的地方。寫進日誌。
+  int64_t StalledMs() const { return queue_.StalledMs(); }
+  std::string CurrentJobLabel() const { return queue_.CurrentLabel(); }
+
   // 對**目前存在的每一個 session** 套用。設定介面改了字形之後,
   // 使用者不該還要換一個程式才看得到效果。
   void SetOptionAll(const char* option, bool value);
@@ -230,19 +265,29 @@ class Engine {
   std::string last_error() const;
 
  private:
-  void ThreadMain();
-  // 丟工作並**等它做完**。
+  // 丟工作並**等它做完,沒有上限**。
+  //
+  // ⚠ 這一支只留給**沒有訊息迴圈掛在上面**的路徑:管道執行緒(宿主那一側
+  //   自己有 50 毫秒的預算,逾時就 fail-open)、暖機、--selftest。
+  //   設定視窗與懸浮狀態列**不可以**用它 —— 那就是 #79。
   //
   // ⚠ label 不是裝飾。引擎只有一條執行緒,所以「我的請求為什麼慢」的答案
   //   幾乎一定是「**別人**擋在前面」,而以前記錄裡完全看不出那個別人是誰:
   //   2026-08-09 CI 上有一次 SESSION_NEW 花了 1328 ms(建 session 1234 ms),
   //   旁邊那幾次是 15~47 ms,而沒有任何線索指出那 1.2 秒引擎在做什麼。
   //   現在每一件慢工作都會自己report:等了多久、跑了多久、叫什麼名字。
+  //
+  // ⚠ 沒有標籤的那個多載**故意拿掉了**。它讓「哪一件工作卡住」在記錄裡
+  //   變成「(沒有標籤)」,而那正是出事時唯一有用的一格。
   void Post(const char* label, std::function<void()> fn);
-  void Post(std::function<void()> fn) { Post("(沒有標籤)", std::move(fn)); }
+  // 丟了就走,**不等**。⚠ fn 捕捉的東西一律傳值(見 common/work_queue.h):
+  //   這一支返回時工作通常還沒開始跑,呼叫端的框隨時會消失。
+  void PostAsync(const char* label, std::function<void()> fn);
   // 丟一件「有空再做」的工作:不等它,而且**優先權比一般工作低**
-  // (要等引擎閒下來 kLowPriorityIdleMs 才會被撿走)。見 ThreadMain。
+  // (要等引擎閒下來 kLowPriorityIdleMs 才會被撿走)。
   void PostLow(const char* label, std::function<void()> fn);
+  // ⚠ 只能在工作者執行緒上呼叫:真的問一次 rs_schema_list 並填快取。
+  std::vector<std::pair<std::string, std::string>> ListSchemasOnWorker();
 
   // ⚠ 只能在引擎執行緒上呼叫(直接碰 sessions_ / next_id_ 與 rs_*)。
   void MakeSpareOnEngineThread(uint32_t langid, const std::string& schema_id,
@@ -253,25 +298,7 @@ class Engine {
   Snapshot TakeSnapshotLocked(uintptr_t sess);
   uintptr_t Find(uint64_t id) const;
 
-  std::thread thread_;
-  std::mutex mu_;
-  std::condition_variable cv_;
-  // 一件排隊中的工作。帶著標籤與入列時間,好把「等了多久」與「跑了多久」
-  // 分開 —— 那兩個數字要修的地方完全不同(前者是別人擋著,後者是自己慢)。
-  struct Job {
-    std::function<void()> fn;
-    const char* label = "(沒有標籤)";  // 一律是字面值,不必管生命週期
-    int64_t enqueued_ms = 0;
-  };
-  std::deque<Job> queue_;
-  // 「有空再做」的工作:收掉走掉的 session、補充備用 session。
-  // 與 queue_ 分開,而且**優先權比它低** —— 這兩件事都沒有人在等,
-  // 而「建立一個新 session」與「處理一顆按鍵」有人在等。
-  // 完整的理由見 ThreadMain。
-  std::deque<Job> low_queue_;
-  // 引擎最後一次跑「有人在等的」工作是什麼時候(steady clock,毫秒)。
-  int64_t last_normal_ms_ = 0;
-  bool stop_ = false;
+  // 只由 Start() / Stop() 寫,而那兩支都在呼叫端(main)那一條執行緒上。
   bool started_ = false;
 
   std::map<uint64_t, uintptr_t> sessions_;
@@ -309,6 +336,19 @@ class Engine {
   std::string init_error_;
   mutable std::mutex err_mu_;
   std::string last_error_;
+
+  // ── 工作佇列 ────────────────────────────────────────────────
+  //
+  // ⚠ **宣告在最後一個是刻意的。** 成員的解構順序與宣告順序相反,
+  //   所以它會**最先**被銷毀 —— 而它的解構子會把工作者 join 掉。
+  //   反過來的話,工作者還在跑的時候 sessions_ / spare_ 已經死了。
+  //   (~Engine() 也會先呼叫 Stop(),這裡是第二道。)
+  //
+  // 佇列本身 —— 含有界等待,以及「逾時之後遲到的工作寫進誰的記憶體」
+  // 那一格 —— 在 common/work_queue.h,由 tests/test_work_queue.cc 在
+  // Ubuntu 上直接測(含 --asan)。那一格以前住在這個檔案裡,
+  // 而這個檔案在開發機上編不起來 = 沒有人驗得到。
+  WorkQueue queue_;
 };
 
 }  // namespace rimewin

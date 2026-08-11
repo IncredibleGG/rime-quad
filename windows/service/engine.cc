@@ -42,12 +42,6 @@ void ReportSlowJob(const char* label, int64_t waited_ms, int64_t ran_ms) {
   std::fflush(stderr);
 }
 
-int64_t NowSteadyMs() {
-  return std::chrono::duration_cast<std::chrono::milliseconds>(
-             std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-}
-
 std::atomic<int>* g_deploy_slot = nullptr;
 std::atomic<uint32_t>* g_deploy_seq = nullptr;
 
@@ -162,22 +156,34 @@ bool Engine::Start(const std::string& shared_dir, const std::string& user_dir,
 
   // 引擎執行緒:從這裡開始,**所有** session 相關的呼叫都在它身上,
   // 那條執行緒約定因此變成結構上不可能違反,不必靠人記得。
-  thread_ = std::thread(&Engine::ThreadMain, this);
-  {
-    std::unique_lock<std::mutex> lock(mu_);
-    started_ = true;
-  }
+  //
+  // ⚠ 佇列本身搬到 common/work_queue.{h,cc} 了。搬家的理由不是整理:
+  //   舊版的「丟工作並等它做完」沒有逾時,而**那個沒有逾時同時是
+  //   #79 的根因、也是唯一擋住 use-after-free 的東西**(工作捕捉的是
+  //   呼叫端堆疊上的 done / out / ok)。要拆掉前者就一定會引爆後者,
+  //   所以那一格必須是一個能在 Ubuntu 上單獨測的類別。
+  //   見 windows/tests/test_work_queue.cc。
+  //
+  // 慢工作的門檻由這裡決定:佇列每一件都回報,要不要記是引擎的事。
+  queue_.SetSlowReporter(&ReportSlowJob);
+  queue_.SetLowPriorityIdleMs(kLowPriorityIdleMs);
+  // session 的銷毀必須在**建立它的那條執行緒**上 —— 也就是工作者自己,
+  // 而且要在它把佇列排乾之後、離開之前。
+  queue_.SetOnWorkerExit([this] {
+    for (auto& kv : sessions_) rs_session_destroy(kv.second);
+    sessions_.clear();
+  });
+  queue_.Start();
+  started_ = true;
   return true;
 }
 
 void Engine::Stop() {
-  {
-    std::unique_lock<std::mutex> lock(mu_);
-    if (!started_) return;
-    stop_ = true;
-  }
-  cv_.notify_all();
-  if (thread_.joinable()) thread_.join();
+  if (!started_) return;
+  // ⚠ Stop() 會把佇列**排乾**再 join:每一件已經入列的工作都保證跑到。
+  //   收 session(把使用者詞典寫回去)是用 PostLow 排的,而服務結束時
+  //   那些工作還在低優先佇列裡 —— 排不乾就是「關掉輸入法會掉字」。
+  queue_.Stop();
   started_ = false;
   g_deploy_slot = nullptr;
   // rs_finalize 與 rs_init 在同一條執行緒上。引擎執行緒已經 join,
@@ -185,101 +191,19 @@ void Engine::Stop() {
   rs_finalize();
 }
 
-void Engine::ThreadMain() {
-  for (;;) {
-    Job job;
-    bool have_job = false;
-    bool is_low = false;
-    bool done_all = false;
-    {
-      std::unique_lock<std::mutex> lock(mu_);
-      for (;;) {
-        if (stop_ && queue_.empty() && low_queue_.empty()) {
-          done_all = true;
-          break;
-        }
-        if (!queue_.empty()) break;
-        if (!low_queue_.empty()) {
-          // ── ⚠ 低優先的工作還要「等引擎閒下來一段時間」才做 ──────────
-          //
-          // 只把它排到後面是不夠的:排序只在工作**還沒開始**時有用。
-          // 低優先的兩件事都很貴 —— 收 session 要把使用者詞典寫回去,
-          // 補一個備用 session 要 442~753 毫秒(量到的)—— 而它們一旦
-          // 開始就停不下來。在引擎還忙的時候動它們,等於用一顆打不出來
-          // 的字(按鍵預算只有 50 毫秒)去換別的東西。
-          //
-          // 使用者連續打字時引擎一直是忙的,所以這條路自然不會被走到;
-          // 他停下來想事情的時候才會。而這兩件事晚幾秒**沒有任何人在等**。
-          const int64_t idle_ms = NowSteadyMs() - last_normal_ms_;
-          if (stop_ || idle_ms >= kLowPriorityIdleMs) break;
-          cv_.wait_for(lock,
-                       std::chrono::milliseconds(kLowPriorityIdleMs - idle_ms));
-          continue;
-        }
-        cv_.wait(lock);
-      }
-      if (done_all) break;
-      if (!queue_.empty()) {
-        job = std::move(queue_.front());
-        queue_.pop_front();
-      } else {
-        job = std::move(low_queue_.front());
-        low_queue_.pop_front();
-        is_low = true;
-      }
-      have_job = true;
-    }
-    if (!have_job) continue;
-    const int64_t t_start = NowSteadyMs();
-    job.fn();
-    const int64_t t_end = NowSteadyMs();
-    // ⚠ 「等了多久」與「跑了多久」一定要分開報。
-    //   等很久 = **別人擋在前面**(去看上一行是誰);
-    //   跑很久 = 這件事本身就慢(去看它做了什麼)。
-    //   併成一個數字的話,兩種完全不同的問題長得一模一樣 ——
-    //   而引擎只有一條執行緒,所以前者才是常態。
-    //
-    //   低優先的工作不報「等待」:它是**刻意**被押後的,那個數字沒有意義。
-    ReportSlowJob(job.label, is_low ? 0 : t_start - job.enqueued_ms,
-                  t_end - t_start);
-    if (!is_low) {
-      // 「引擎最後一次忙於**有人在等的**工作」是什麼時候。低優先的工作
-      // 靠它決定要不要再等一下(見上面)。低優先的自己不算忙 ——
-      // 不然一串連續的收尾會讓自己一直看起來很忙,永遠等不到安靜期。
-      std::lock_guard<std::mutex> lock(mu_);
-      last_normal_ms_ = t_end;
-    }
-    cv_.notify_all();
-  }
-  // session 的銷毀必須在建立它的那條執行緒上 —— 也就是這裡。
-  // rs_finalize 則留給 Stop()(與 rs_init 同一條執行緒)。
-  for (auto& kv : sessions_) rs_session_destroy(kv.second);
-  sessions_.clear();
-}
-
 void Engine::Post(const char* label, std::function<void()> fn) {
-  bool done = false;
-  {
-    std::unique_lock<std::mutex> lock(mu_);
-    if (stop_) return;
-    Job j;
-    j.label = label;
-    j.enqueued_ms = NowSteadyMs();
-    j.fn = [&fn, &done, this] {
-      fn();
-      std::unique_lock<std::mutex> l2(mu_);
-      done = true;
-    };
-    queue_.push_back(std::move(j));
-  }
-  cv_.notify_all();
-  std::unique_lock<std::mutex> lock(mu_);
-  // 只等 done,不等 stop_。ThreadMain 在收到 stop 之後仍會把佇列排乾,
-  // 所以每一個**已經入列**的工作都保證會被執行。若這裡順便等 stop_,
-  // Post 會在工作還沒跑之前就返回,而那個工作捕捉的是這個堆疊上的變數。
-  cv_.wait(lock, [&] { return done; });
+  // timeout <= 0 = 永遠等(舊行為)。這一支的呼叫端沒有訊息迴圈掛在
+  // 上面 —— 有的那些走 PostAsync / SchemaListForUi。
+  queue_.Call(label, std::move(fn), 0);
 }
 
+void Engine::PostAsync(const char* label, std::function<void()> fn) {
+  queue_.Post(label, std::move(fn));
+}
+
+void Engine::PostLow(const char* label, std::function<void()> fn) {
+  queue_.PostLow(label, std::move(fn));
+}
 
 bool Engine::WaitDeploy(int seconds) {
   for (int i = 0; i < seconds * 10 && deploy_state_.load() == 0; ++i)
@@ -326,22 +250,6 @@ bool SameOptions(const std::vector<OptionAssign>& a,
   return true;
 }
 }  // namespace
-
-// 丟一件「有空再做」的工作。與 Post 不同:不等它、而且優先權比一般工作低。
-void Engine::PostLow(const char* label, std::function<void()> fn) {
-  {
-    std::unique_lock<std::mutex> lock(mu_);
-    if (stop_) return;
-    Job j;
-    j.label = label;
-    j.enqueued_ms = NowSteadyMs();
-    // ⚠ 按值移動進佇列。這一支丟了就走,呼叫端的堆疊在工作真正執行之前
-    //   就已經不存在了 —— 捕捉參考等於一個懸空參考。
-    j.fn = std::move(fn);
-    low_queue_.push_back(std::move(j));
-  }
-  cv_.notify_all();
-}
 
 uint64_t Engine::TakeSpareSession(uint32_t langid, const std::string& schema_id,
                                   const std::vector<OptionAssign>& options) {
@@ -427,7 +335,7 @@ void Engine::PrimeSpareSession(uint32_t langid, const std::string& schema_id,
 
 void Engine::EndSessionAsync(uint64_t id) {
   // ⚠ **不進一般佇列。** 進去的話它就排在下一個宿主的 SESSION_NEW 前面,
-  //   而那正是要修的東西(理由寫在 ThreadMain 裡)。
+  //   而那正是要修的東西(理由寫在 common/work_queue.h 的 PostLow)。
   PostLow("收 session", [this, id] {
     auto it = sessions_.find(id);
     if (it == sessions_.end()) return;
@@ -583,23 +491,69 @@ Result Engine::SelectSchema(uint64_t id, const std::string& schema_id) {
   return r;
 }
 
-std::vector<std::pair<std::string, std::string>> Engine::SchemaList() {
+std::vector<std::pair<std::string, std::string>> Engine::ListSchemasOnWorker() {
   std::vector<std::pair<std::string, std::string>> out;
-  Post("列方案", [&] {
-    const int32_t n = rs_schema_list(nullptr, nullptr, 0);
-    if (n <= 0) return;
+  const int32_t n = rs_schema_list(nullptr, nullptr, 0);
+  if (n > 0) {
     std::vector<const char*> ids(static_cast<size_t>(n), nullptr);
     std::vector<const char*> names(static_cast<size_t>(n), nullptr);
     const int32_t got = rs_schema_list(ids.data(), names.data(), n);
-    for (int32_t i = 0; i < got && i < n; ++i) {
+    for (int32_t i = 0; i < got && i < n; ++i)
       out.emplace_back(ids[i] ? ids[i] : "", names[i] ? names[i] : "");
-    }
-  });
+  }
+  // ⚠ 快取由**工作者自己**填。三個入口(同步、有界、非同步)共用這一份,
+  //   所以「問過了但沒填快取」在結構上不可能發生。
   {
     std::lock_guard<std::mutex> lock(cache_mu_);
     schema_cache_ = out;
   }
   return out;
+}
+
+std::vector<std::pair<std::string, std::string>> Engine::SchemaList() {
+  std::vector<std::pair<std::string, std::string>> out;
+  Post("列方案", [&] { out = ListSchemasOnWorker(); });
+  return out;
+}
+
+bool Engine::SchemaListFromCache(
+    std::vector<std::pair<std::string, std::string>>* out) const {
+  std::lock_guard<std::mutex> lock(cache_mu_);
+  if (schema_cache_.empty()) return false;
+  if (out) *out = schema_cache_;
+  return true;
+}
+
+void Engine::RefreshSchemaListAsync(std::function<void()> on_ready) {
+  // ⚠ on_ready **傳值**捕捉進工作。這一支返回時工作通常還沒開始跑,
+  //   呼叫端的框隨時會消失(見 common/work_queue.h 的檔頭)。
+  queue_.Post("列方案(介面,非同步)", [this, on_ready] {
+    ListSchemasOnWorker();
+    if (on_ready) on_ready();
+  });
+}
+
+bool Engine::SchemaListForUi(
+    int timeout_ms, std::vector<std::pair<std::string, std::string>>* out) {
+  {
+    std::lock_guard<std::mutex> lock(cache_mu_);
+    if (!schema_cache_.empty()) {
+      if (out) *out = schema_cache_;
+      return true;
+    }
+  }
+  // 快取是冷的(還沒暖機完,或剛部署完被清掉)。量到的成本是 46~99 ms,
+  // 所以 1500 ms 這個上限**平常一次都不會被用到** —— 它是為了「引擎
+  // 真的卡住了」那一次而存在的,而那一次現在只會慢一秒半,
+  // 不會讓整個視窗死掉。
+  using Pairs = std::vector<std::pair<std::string, std::string>>;
+  Pairs got;
+  const WorkQueue::Status st = queue_.CallFor<Pairs>(
+      "列方案(介面,有界)", &got, [this] { return ListSchemasOnWorker(); },
+      timeout_ms);
+  if (st != WorkQueue::Status::kDone) return false;
+  if (out) *out = std::move(got);
+  return true;
 }
 
 std::vector<std::pair<std::string, std::string>> Engine::SchemaListCached() {
@@ -628,8 +582,15 @@ bool Engine::SetOption(uint64_t id, const char* option, bool value) {
 }
 
 void Engine::SetOptionAll(const char* option, bool value) {
-  Post("對所有 session 設選項", [&] {
-    for (const auto& kv : sessions_) rs_set_option(kv.second, option, value);
+  // ⚠ **非同步。** 這一支的呼叫端是設定視窗的 UI 執行緒,而它沒有回傳值
+  //   —— UI 只是要引擎「去做」。同步等的話,引擎慢一次就是視窗死一次
+  //   (#79)。
+  // ⚠ option 複製成 std::string:工作跑起來的時候呼叫端的框可能已經
+  //   不在了。今天的呼叫端都傳字面值,但這個保證不該靠呼叫端記得。
+  const std::string opt = option ? option : "";
+  PostAsync("對所有 session 設選項", [this, opt, value] {
+    if (opt.empty()) return;
+    for (const auto& kv : sessions_) rs_set_option(kv.second, opt.c_str(), value);
   });
 }
 
@@ -637,7 +598,9 @@ void Engine::SetAsciiModeAll(bool on) {
   // 先記下來:新的 session 由 pipe_server 從這裡讀(它在 options 裡),
   // 而備用 session 的計畫比對也吃同一個值。
   ascii_mode_.store(on);
-  Post("對所有 session 設中英", [&] {
+  // ⚠ 非同步。呼叫端是懸浮狀態列的 UI 執行緒(Ctrl+空白鍵那一顆),
+  //   而那條執行緒停住的樣子是「那一橫還在畫面上,但點不動也拖不動」。
+  PostAsync("對所有 session 設中英", [this, on] {
     for (const auto& kv : sessions_) rs_set_option(kv.second, "ascii_mode", on);
   });
   // ⚠ 預先建好的備用 session 是照**舊**狀態配的,現在不合了。
@@ -657,7 +620,7 @@ void Engine::SetAsciiModeAll(bool on) {
       if (!found) kv.second.options.push_back({"ascii_mode", on});
     }
   }
-  Post("對備用 session 設中英", [&] {
+  PostAsync("對備用 session 設中英", [this, on] {
     std::lock_guard<std::mutex> lock(spare_mu_);
     for (const auto& kv : spare_) {
       const uintptr_t sess = Find(kv.second.session);
@@ -671,7 +634,17 @@ void Engine::SetSessionLangId(uint64_t id, uint32_t langid) {
 }
 
 void Engine::ApplyVariantAll(const SchemaPreference& pref) {
-  Post("對所有 session 套簡繁", [&] {
+  // ⚠ **非同步,而且 pref 要傳值。**
+  //
+  //   這一支就是 #79 使用者按下去的那一顆:設定視窗的「簡體字」單選鈕
+  //   → OnCommand → ApplyVariantNow → CommitVariantPref → 這裡。
+  //   BS_AUTORADIOBUTTON 的那一顆勾是 BUTTON 控制項在送出 BN_CLICKED
+  //   **之前**自己畫上去的,所以症狀正好是「勾畫上去了,然後一切靜止」。
+  //
+  //   改非同步之後,原本的 `[&]` 就變成一個 use-after-free:pref 是
+  //   呼叫端 CommitVariantPref 框上的一個暫時值。傳值捕捉不是保險,
+  //   是必須(見 tests/test_work_queue.cc 的 async_job_owns_its_arguments)。
+  PostAsync("對所有 session 套簡繁", [this, pref] {
     for (const auto& kv : sessions_) {
       auto it = session_lang_.find(kv.first);
       const uint32_t lang = (it == session_lang_.end()) ? 0u : it->second;
@@ -686,7 +659,10 @@ void Engine::ApplyVariantAll(const SchemaPreference& pref) {
 }
 
 void Engine::SelectSchemaAll(const std::string& schema_id) {
-  Post("對所有 session 換方案", [&] {
+  // ⚠ 非同步 + 傳值。呼叫端是懸浮狀態列的方案選單(UI 執行緒),
+  //   而 schema_id 是那個選單的一個成員的複本 —— 選單在這一支返回之後
+  //   就關掉了。
+  PostAsync("對所有 session 換方案", [this, schema_id] {
     for (const auto& kv : sessions_) rs_select_schema(kv.second, schema_id.c_str());
   });
 }

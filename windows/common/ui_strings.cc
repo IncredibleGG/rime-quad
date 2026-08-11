@@ -258,6 +258,14 @@ namespace {
     L"Could not save - the change works now but will not survive a restart.",  \
     L"設定存不起來 —— 現在有效,但不會留到下次開機。",                         \
     L"设置存不起来 —— 现在有效,但不会留到下次开机。")                         \
+  /* ⚠ 引擎沒有在時限內回來時的那一句。**不寫工作的名字** ——            */ \
+  /* 那些標籤(「建 session」「套用方案與選項」)是給日誌看的內部字眼,  */ \
+  /* 而 §6.7 第一層硬禁引擎詞彙出現在使用者看得到的地方。名字進 stderr。 */ \
+  /* 這一句要回答的只有一件事:**剛才那一下到底生效了沒有**。           */ \
+  X(kStatusEngineBusy,                                                         \
+    L"Still working on that - it has not taken effect yet.",                   \
+    L"還在處理剛才那一下,現在還沒生效。",                                     \
+    L"还在处理刚才那一下,现在还没生效。")                                     \
   X(kStatusOrderNotApplied, L"The order was not applied.",                     \
     L"順序沒有套用。", L"顺序没有套用。")                                      \
   X(kStatusRedeployRunning, L"Rebuilding words... %u seconds so far",          \

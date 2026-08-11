@@ -167,6 +167,7 @@ enum class UiString : int {
   // ── 狀態列(視窗底部那一行)──────────────────────────────────
   kStatusApplied,
   kStatusSaveFailed,
+  kStatusEngineBusy,
   kStatusOrderNotApplied,
   kStatusRedeployRunning,   // 帶一個 %u 秒數
   kStatusRedeployDone,      // 帶 %s 原因 + %.1f 秒

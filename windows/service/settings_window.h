@@ -119,7 +119,10 @@ class SettingsWindow {
   void LayoutUi();
   void ShowPage(int page);
   void ReloadFromSettings();
-  void ReloadSchemaList();
+  // may_query = false:只讀快取,**不准**再排一次非同步查詢。
+  // WM_RIME_SCHEMAS_READY 的處理常式用它 —— 不然引擎回一份空清單時
+  // 「查完 → 還是空的 → 再查一次」會變成一個永遠打不完的訊息迴圈。
+  void ReloadSchemaList(bool may_query = true);
   void OnCommand(int id, int code);
   void OnNotify(NMHDR* nm, LRESULT* result);
   void OnDeployTick();
@@ -247,6 +250,10 @@ class SettingsWindow {
   // 鍵盤使用時才畫焦點環(§12.6.4 第 1 條)。滑鼠使用者身上到處是框,
   // 是 Win32 自繪最常見的破綻。WM_UPDATEUISTATE 維護它。
   bool show_focus_ = false;
+
+  // 上一次心跳看到的引擎狀態(見 OnServiceStateTick)。只有它**變了**
+  // 才寫底下那一行 —— 每半秒無條件寫一次會把使用者剛看到的訊息蓋掉。
+  bool engine_stalled_ = false;
 
   // 內容區的捲動量與上限,單位 DIP(不是像素 —— 換螢幕時 DPI 會變)。
   int scroll_ = 0;
