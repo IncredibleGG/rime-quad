@@ -67,9 +67,15 @@ namespace {
 // 這個碼點畫出來大約是一個字級寬(全形)嗎。
 //
 // ⚠ 只求「夠不夠寬」,不求精確:分錯一個字的代價是那一行多算/少算
-//   0.4 個字級,而可用寬度已經先扣掉 1/7 了。
+//   0.4 個字級。分錯的方向要往**寬**的一邊 —— 多算一行是多一點空白,
+//   少算一行是文字被無聲切掉。
 bool IsWideCodePoint(unsigned int c) {
   return (c >= 0x1100u && c <= 0x115Fu) ||   // 韓文字母
+         // ⚠ U+2010–U+2027:連字號、破折號、引號、刪節號、間隔號。
+         //   舊表從 U+2E80 才開始,所以「——」與「…」被當成 0.6 個字級
+         //   —— 而中文文案裡這兩個很常見,一段最多低估約 17.6 DIP,
+         //   也就是整整一行。它們在中文字體裡是全形。
+         (c >= 0x2010u && c <= 0x2027u) ||
          (c >= 0x2E80u && c <= 0x303Eu) ||   // 部首、注音、CJK 標點
          (c >= 0x3041u && c <= 0x33FFu) ||   // 假名、諺文、相容字
          (c >= 0x3400u && c <= 0x4DBFu) ||   // 擴充 A
@@ -82,37 +88,95 @@ bool IsWideCodePoint(unsigned int c) {
          (c >= 0xFFE0u && c <= 0xFFE6u);
 }
 
+// 這個字**之後**可以斷行嗎(它本身仍然屬於前面那一段)。
+//
+// DrawTextW 的 DT_WORDBREAK:拉丁文字斷在空白與連字號,中日韓字每一個
+// 字之後都可以斷。中間那些黏在一起的字母是一個**不可斷開的詞**,而
+// 「一個詞放不下就整個推到下一行」正是舊估算漏掉的那件事。
+bool BreaksAfterCodePoint(unsigned int c) {
+  return c == 0x20u ||   // 空白
+         c == 0x09u ||   // tab
+         c == 0x2Du ||   // ASCII 連字號
+         IsWideCodePoint(c);
+}
+
+// 字寬表本身的誤差餘裕。
+//
+// ⚠ **這個分數不再負責「一個詞被推到下一行留下的空白」** ——
+//   那件事現在是算出來的(見下面)。舊版用 6/7 當它的替代品,而
+//   1/7 的欄寬在 440 DIP 的內容欄上只有 62 DIP = t5 底下 9.5 個拉丁
+//   字母:比它長的詞一出現,留的空白就不夠,估算低於實際,而低估的
+//   方向是文字被切掉。使用者看得到的英文文案裡就有 `administrator`
+//   (13)與 `mid-sentence`(12)。
+//
+//   剩下要留的只有一件事:0.6 個字級是拉丁字母的**平均**寬度,不是
+//   上界(大寫 W、M 接近 0.9)。這 1/16 是給那個誤差的。
+constexpr int kWidthSlackNum = 15;
+constexpr int kWidthSlackDen = 16;
+
 }  // namespace
 
 int EstimateTextLinesDip(const wchar_t* text, int size_dip, int w_dip) {
   if (!text || !*text || size_dip <= 0 || w_dip <= 0) return 1;
-  // ⚠ 只用欄寬的 6/7。見標頭:那 1/7 是留給拉丁逐詞斷行的鋸齒邊。
-  const int usable = w_dip * 6 / 7;
-  if (usable <= size_dip) return 1;
   // 單位是 1/100 DIP,免得整數除法把每一個字都抹掉一點。
-  const long usable100 = static_cast<long>(usable) * 100;
-  long x = 0;
+  const long usable100 =
+      static_cast<long>(w_dip) * 100 * kWidthSlackNum / kWidthSlackDen;
+  if (usable100 <= 0) return 1;
+
+  long x = 0;     // 這一行已經放了多寬
+  long atom = 0;  // 還沒放上去的那一段不可斷開的字
   int lines = 1;
+
+  // 把手上那個詞放到某一行上。
+  //
+  // ⚠ **不可以有「放不下就回 1 行」這種捷徑。** 舊版有一條
+  //   `if (usable <= size_dip) return 1;`,於是 size=11 時欄寬 <= 13 的
+  //   每一格都回 1 行,而 14 回 200 行 —— 欄越窄行數反而變少,
+  //   而變少的方向是文字被無聲切掉。這裡的規則只有一條:
+  //   **一行至少放一個東西**(x > 0 才換行),所以行數對欄寬一定單調。
+  auto flush = [&] {
+    if (atom <= 0) return;
+    if (x > 0 && x + atom > usable100) {
+      ++lines;
+      x = 0;
+    }
+    x += atom;
+    atom = 0;
+    // 一個比整行還寬的詞(窄欄、或者根本沒有空白的長字串):
+    // GDI 會把它硬切開,行數要跟著算。
+    while (x > usable100) {
+      ++lines;
+      x -= usable100;
+    }
+  };
+
   for (const wchar_t* p = text; *p; ++p) {
     const unsigned int c = static_cast<unsigned int>(*p);
+    if (c == 0x0Du) continue;
     if (c == 0x0Au) {  // 明寫的換行
+      flush();
       ++lines;
       x = 0;
       continue;
     }
-    if (c == 0x0Du) continue;
-    const long w = static_cast<long>(size_dip) * (IsWideCodePoint(c) ? 100 : 60);
-    if (x + w > usable100) {
-      ++lines;
-      x = 0;
-    }
-    x += w;
+    atom += static_cast<long>(size_dip) * (IsWideCodePoint(c) ? 100 : 60);
+    if (BreaksAfterCodePoint(c)) flush();
   }
+  flush();
   return lines;
 }
 
 int EstimateTextBoxHeightDip(const wchar_t* text, int size_dip, int w_dip) {
-  return EstimateTextLinesDip(text, size_dip, w_dip) * TextLineBoxDip(size_dip);
+  // ⚠ 內層擋了 size_dip <= 0(回 1 行),而這裡以前**沒擋** —— 它把那
+  //   1 行直接乘上 TextLineBoxDip(size_dip):
+  //     size = -11 → -12 DIP:高度是負的,Stack 往回縮,下一段疊上來;
+  //     size = 0   →   2 DIP:那一段從畫面上消失,而且沒有任何錯誤。
+  //   兩種都是「畫面壞掉,程式不吭聲」,而這一支在 WM_PAINT 路徑上。
+  //
+  // ⚠ 回 0 也不行 —— 那就是上面第二種。不合法的字級一律當成 t5:
+  //   壞掉的那一段仍然佔一個看得見的位置,而不是把整頁的版面帶壞。
+  const int size = size_dip > 0 ? size_dip : text_size::t5;
+  return EstimateTextLinesDip(text, size, w_dip) * TextLineBoxDip(size);
 }
 
 UiString SettingsPageName(int page) {

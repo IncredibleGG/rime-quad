@@ -906,3 +906,203 @@ TEST(ui_layout_every_page_has_its_own_name) {
   CHECK(UiTextIn(UiLang::kZhHant, SettingsPageName(-1))[0] != L'\0');
   CHECK(UiTextIn(UiLang::kZhHant, SettingsPageName(999))[0] != L'\0');
 }
+
+// ── #76 的三個沒被守住的角:估算本身 ─────────────────────────────
+//
+// 上面那條 ui_layout_text_height_follows_the_text 只探
+// {640,540,440,340,240} 五個寬度,而它要驗的「單調」在那五格之間是真的、
+// 在格與格之間是假的。下面三條把它補起來。
+//
+// ⚠ 這裡的字串一律用**碼點**組(W7:使用者可見的中日韓字只能住在
+//   common/ui_strings.cc,對測試檔一視同仁)。
+
+namespace {
+
+// 一段參考用的字:全形 + 拉丁 + 數字 + 一個誰都斷不開的長詞。
+std::wstring MixedBody() {
+  const wchar_t han = static_cast<wchar_t>(0x5B57);  // 「字」
+  return std::wstring(18, han) + L" the administrator account is " +
+         std::wstring(9, han) + L" mid-sentence 0123456789 " +
+         std::wstring(18, han);
+}
+
+// ── 參考實作:GDI 的 DT_WORDBREAK 在做的事 ─────────────────────
+//
+// **刻意寫得笨**:空白/連字號之後可以斷,全形字之後可以斷,其餘的字
+// 黏成一個不可斷開的詞;寬度用與產品端同一組字寬(全形 1 個字級、
+// 其餘 0.6),而且**一分餘裕都不留**(整個欄寬都能用)。
+//
+// 它算出來的是「連字寬表都完全正確時,這段字最少要幾行」。產品端的
+// 估算只要低於它,畫面上就是**文字被無聲切掉** —— 那正是要擋的事。
+int RefWordWrapLines(const std::wstring& s, int size_dip, int w_dip) {
+  if (s.empty() || size_dip <= 0 || w_dip <= 0) return 1;
+  const long full = static_cast<long>(w_dip) * 100;
+  long x = 0, atom = 0;
+  int lines = 1;
+  auto flush = [&] {
+    if (atom <= 0) return;
+    if (x > 0 && x + atom > full) {
+      ++lines;
+      x = 0;
+    }
+    x += atom;
+    atom = 0;
+    while (x > full) {  // 比整行還寬的詞,GDI 會硬切
+      ++lines;
+      x -= full;
+    }
+  };
+  for (wchar_t ch : s) {
+    const unsigned int c = static_cast<unsigned int>(ch);
+    if (c == 0x0Du) continue;
+    if (c == 0x0Au) {
+      flush();
+      ++lines;
+      x = 0;
+      continue;
+    }
+    const bool wide = (c >= 0x2E80u && c <= 0x9FFFu) ||
+                      (c >= 0x2010u && c <= 0x2027u) ||
+                      (c >= 0xFF00u && c <= 0xFF60u);
+    atom += static_cast<long>(size_dip) * (wide ? 100 : 60);
+    if (wide || c == 0x20u || c == 0x09u || c == 0x2Du) flush();
+  }
+  flush();
+  return lines;
+}
+
+}  // namespace
+
+// ── 戊-2:「欄越窄行數只會多」必須在**每一格**都成立 ──────────────
+//
+// 出事時的形狀:size=11 時 `usable = w*6/7`,而 w<=13 → usable<=11
+// → `if (usable <= size_dip) return 1` → **不管那段字有多長一律 1 行**。
+// w=14 時同一段 200 字回 200 行。也就是欄從 14 縮到 13,行數從 200
+// 掉到 1,而少算行數的方向是**文字被切掉**。
+//
+// 舊的那條測試探 {640,540,440,340,240},一格都沒踩到 8..13 —— 它被
+// 校準成看不到這件事。所以這裡改成掃過一個連續區間,每一格都比。
+TEST(ui_layout_text_lines_is_monotone_at_every_column_width) {
+  const std::wstring body = MixedBody();
+  for (int size : {text_size::t5, text_size::t4, text_size::t2, text_size::t1}) {
+    int prev = -1;
+    for (int w = 800; w >= 8; --w) {
+      const int n = EstimateTextLinesDip(body.c_str(), size, w);
+      CHECK(n >= 1);
+      // 欄變窄,行數只能持平或變多。
+      CHECK(n >= prev);
+      prev = n;
+    }
+  }
+
+  // 使用者真的會看到的每一句話都要成立,三個語系都要。
+  for (UiLang lang : {UiLang::kEnUs, UiLang::kZhHant, UiLang::kZhHans}) {
+    for (int i = 0; i < UiStringCount(); ++i) {
+      const wchar_t* t = UiTextIn(lang, static_cast<UiString>(i));
+      int prev = -1;
+      for (int w = 800; w >= 8; --w) {
+        const int n = EstimateTextLinesDip(t, text_size::t5, w);
+        CHECK(n >= prev);
+        prev = n;
+      }
+    }
+  }
+}
+
+// ── 戊-4:估算不可以低於「逐詞斷行最少要幾行」 ────────────────────
+//
+// 舊版靠一個 6/7 的折扣當作「拉丁逐詞斷行的鋸齒邊」的替代品,而那個
+// 折扣是 1/7 的欄寬:640 DIP 的欄 = 91 DIP,440 DIP 的欄 = 62 DIP
+// —— t5 底下分別是 13.8 與 9.5 個拉丁字母。一個比它長的詞被推到下一行,
+// 那一行右邊空掉的比預留的多,估算就低於實際,而低估的方向是切字。
+// (`administrator` 13 個、`mid-sentence` 12 個,兩個都在使用者看得到的
+//  英文文案裡。)
+//
+// 所以不再賭那個折扣夠不夠:把逐詞斷行**算出來**,並要求估算不低於它。
+TEST(ui_layout_text_lines_never_undercounts_word_wrapping) {
+  // 先用一個誰都能手算的例子:10 個 20 字母的詞,欄寬 200 DIP。
+  // t5 底下一個詞 = 20 × 0.6 × 11 = 132 DIP,兩個詞放不進 200 →
+  // 逐詞斷行**至少** 10 行。舊版逐字塞 6/7 × 200 = 171 DIP ≈ 25 個字母,
+  // 210 個字母 → 9 行 —— 少一行,而那一行的字在畫面上不存在。
+  std::wstring words;
+  for (int i = 0; i < 10; ++i) {
+    if (i) words += L" ";
+    words += std::wstring(20, L'a');
+  }
+  CHECK(EstimateTextLinesDip(words.c_str(), text_size::t5, 200) >=
+        RefWordWrapLines(words, text_size::t5, 200));
+  CHECK(EstimateTextLinesDip(words.c_str(), text_size::t5, 200) >= 10);
+
+  // 然後是真的文案:每一句 × 每一個內容欄寬。
+  for (UiLang lang : {UiLang::kEnUs, UiLang::kZhHant, UiLang::kZhHans}) {
+    for (int i = 0; i < UiStringCount(); ++i) {
+      const std::wstring t = UiTextIn(lang, static_cast<UiString>(i));
+      for (int w = kContentMinW; w <= kContentMaxW; w += 4) {
+        CHECK(EstimateTextLinesDip(t.c_str(), text_size::t5, w) >=
+              RefWordWrapLines(t, text_size::t5, w));
+      }
+    }
+  }
+
+  // 混合字串也一樣,而且窄欄尤其要成立(窄欄的 1/7 最小)。
+  const std::wstring body = MixedBody();
+  for (int w = 120; w <= 800; w += 1) {
+    CHECK(EstimateTextLinesDip(body.c_str(), text_size::t5, w) >=
+          RefWordWrapLines(body, text_size::t5, w));
+  }
+}
+
+// ── 戊-1:包裝也要擋 size_dip <= 0 ───────────────────────────────
+//
+// 內層 EstimateTextLinesDip 擋了(size_dip <= 0 → 1 行),而包裝
+// **直接把那 1 行乘上 TextLineBoxDip(size_dip)**:
+//   size = -11 → TextLineBoxDip = -12 → 那一段的高度是**負的**,
+//     Stack 往回縮,下一段疊在它上面;
+//   size = 0  → 2 DIP → 那一段從畫面上消失,而且沒有任何錯誤。
+// 兩種都是「畫面壞掉,程式不吭聲」,而這一支在 WM_PAINT 路徑上。
+TEST(ui_layout_text_box_height_never_goes_negative_or_vanishes) {
+  const wchar_t han = static_cast<wchar_t>(0x5B57);
+  const std::wstring body = std::wstring(60, han);
+  for (int bad : {0, -1, -11, -1000}) {
+    const int h = EstimateTextBoxHeightDip(body.c_str(), bad, 540);
+    // 至少要放得下一行 t5 —— 不可以是負的,也不可以是「看不見」。
+    CHECK(h >= TextLineBoxDip(text_size::t5));
+  }
+  // 正常的字級一個位元都不能變。
+  CHECK_INT(EstimateTextBoxHeightDip(L"", text_size::t5, 540),
+            TextLineBoxDip(text_size::t5));
+  // 寬度壞掉也一樣:回一行的高度,不是 0、不是負的。
+  for (int bad_w : {0, -1, -540})
+    CHECK(EstimateTextBoxHeightDip(body.c_str(), text_size::t5, bad_w) >=
+          TextLineBoxDip(text_size::t5));
+}
+
+// ── 戊-3:U+2010–U+2027 在中文字體裡是全形 ───────────────────────
+//
+// 破折號(U+2014)與刪節號(U+2026)在中文文案裡很常見,而舊表從
+// U+2E80 才開始 —— 它們被當成 0.6 個字級,一段中文最多低估約 17.6 DIP,
+// 也就是一行。低估的方向一樣是切字。
+TEST(ui_layout_wide_punctuation_is_measured_as_wide) {
+  const wchar_t emdash = static_cast<wchar_t>(0x2014);
+  const wchar_t ellip = static_cast<wchar_t>(0x2026);
+  const wchar_t han = static_cast<wchar_t>(0x5B57);
+  // 60 個破折號要佔的寬度與 60 個漢字一樣 → 行數一樣。
+  for (int w : {200, 320, 440, 540, 640}) {
+    CHECK_INT(EstimateTextLinesDip(std::wstring(60, emdash).c_str(),
+                                   text_size::t5, w),
+              EstimateTextLinesDip(std::wstring(60, han).c_str(),
+                                   text_size::t5, w));
+    CHECK_INT(EstimateTextLinesDip(std::wstring(60, ellip).c_str(),
+                                   text_size::t5, w),
+              EstimateTextLinesDip(std::wstring(60, han).c_str(),
+                                   text_size::t5, w));
+  }
+  // 區間的兩端都要進去(U+2010 連字號、U+2027 間隔號)。
+  for (unsigned int c : {0x2010u, 0x2027u}) {
+    CHECK_INT(EstimateTextLinesDip(
+                  std::wstring(60, static_cast<wchar_t>(c)).c_str(),
+                  text_size::t5, 440),
+              EstimateTextLinesDip(std::wstring(60, han).c_str(),
+                                   text_size::t5, 440));
+  }
+}
