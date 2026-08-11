@@ -25,7 +25,7 @@ void SetRowListExtendedStyle(HWND list) {
   ::SendMessageW(list, LVM_SETEXTENDEDLISTVIEWSTYLE, mask, mask);
 }
 
-void SelectSidebarRow(HWND list, int row) {
+void SelectOnlyRow(HWND list, int row) {
   if (!list) return;
   // ⚠ 先全清。見標頭:LVS_SINGLESEL 管的是使用者,不是我們。
   LVITEMW clear{};

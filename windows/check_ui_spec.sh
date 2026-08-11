@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# windows/check_ui_spec.sh — docs/ui-design.md §12.12 的 23 條檢核項
+# windows/check_ui_spec.sh — docs/ui-design.md §12.12 的檢核項
 #
 # ⚠ **這支腳本的每一條都必須有反向測試**(§2-G1)。`--self-check` 會把
 #   每一條的違規**真的植入**一棵複製出來的樹,然後要求那一條變紅。
@@ -1172,6 +1172,142 @@ PYSCRIPT
   need_scope "W30" "${n30}" 3 || w30bad=1
   [ "${w30bad}" -eq 0 ] && ok "W30 OpenAt() 的每一處都用列舉說是哪一頁(${n30} 處)"
 
+  # ── W31:清單的「哪一列被選」只准有一份 ──────────────────────
+  #
+  # #80 的形狀:側欄有兩份「現在是哪一列」—— page_ 驅動內容,comctl32 的
+  # LVIS_SELECTED 驅動反白 —— 兩份沒有地方對帳,分岔之後畫面上是**兩列
+  # 同時反白**,而 WM_CLOSE 只 SW_HIDE,髒狀態跟著進程活著。
+  #
+  # ⚠ 這一條之所以存在,是因為上一輪**修好了側欄卻沒有守住它**:
+  #   覆核者實跑了兩個植入,兩個都全綠 ——
+  #     J:側欄反白改回從 CDIS_SELECTED 畫
+  #     K:SelectOnlyRow 拿掉「先全清」
+  #   連專門為它寫的 tests/test_win32_sidebar.cc 都抓不到 J(那一支走
+  #   自己的 ProbeProc,不是 settings_window.cc 的 DrawSidebar)。
+  #   而同一個缺陷在**方案清單**上原封不動地留著。
+  #
+  # 判準有三條,而且第二條是**跟著程式碼長**的:哪一個清單受管,由
+  # SelectOnlyRow() 的呼叫點決定,所以下一個清單一接上去就自動被守住。
+  #
+  #   1. LVM_SETITEMSTATE 只准出現在 service/ui_listview.cc(單一寫入點)
+  #   2. 受管清單的自繪**不可以**從 CDIS_SELECTED 決定反白
+  #      (⚠ 沒有人程式化寫它選取的清單不在此限 —— 那種清單只有一份
+  #        真相,不可能分岔。連網紀錄那一個就是。)
+  #   3. SelectOnlyRow 裡「全清」必須在「設定」**之前**
+  check
+  local w31bad=0
+  local w31out; w31out="$("${PY}" - "${CODE_DIR}" <<'PYSCRIPT'
+import os, re, sys
+root = sys.argv[1]
+
+def read(rel):
+    p = os.path.join(root, rel)
+    try:
+        return open(p, encoding='utf-8', errors='replace').read()
+    except OSError:
+        return None
+
+def body_after(src, start):
+    # 從 start 之後第一個 '{' 起做大括號配對,回傳函式本體。
+    i = src.find('{', start)
+    if i < 0:
+        return ''
+    depth = 0
+    for j in range(i, len(src)):
+        if src[j] == '{':
+            depth += 1
+        elif src[j] == '}':
+            depth -= 1
+            if depth == 0:
+                return src[i:j + 1]
+    return src[i:]
+
+# ── 1. 單一寫入點 ────────────────────────────────────────────
+setstate = 0
+for dirpath, _, files in os.walk(root):
+    for fn in files:
+        if not (fn.endswith('.cc') or fn.endswith('.h')):
+            continue
+        full = os.path.join(dirpath, fn)
+        rel = os.path.relpath(full, root)
+        txt = open(full, encoding='utf-8', errors='replace').read()
+        n = txt.count('LVM_SETITEMSTATE')
+        if not n:
+            continue
+        setstate += n
+        if rel.replace(os.sep, '/') != 'service/ui_listview.cc':
+            print('BADSET=%s(%d 處)' % (rel.replace(os.sep, '/'), n))
+print('NSET=%d' % setstate)
+
+# ── 2. 受管清單 = SelectOnlyRow() 的第一個引數 ────────────────
+lv = read('service/ui_listview.cc') or ''
+sw = read('service/settings_window.cc') or ''
+managed = []
+for m in re.finditer(r'SelectOnlyRow\(\s*([A-Za-z_][A-Za-z_0-9]*)\s*,', sw):
+    if m.group(1) not in managed:
+        managed.append(m.group(1))
+print('NMANAGED=%d' % len(managed))
+for name in managed:
+    print('MANAGED=%s' % name)
+
+# 每一個受管清單,找出「畫它」的那個函式(本體裡有 RowRect(<名字>, cd)。
+for name in managed:
+    found = False
+    for m in re.finditer(r'LRESULT\s+SettingsWindow::(\w+)\s*\(', sw):
+        b = body_after(sw, m.end())
+        if re.search(r'RowRect\(\s*%s\s*,' % re.escape(name), b):
+            found = True
+            if 'CDIS_SELECTED' in b:
+                print('BADDRAW=%s 在 %s() 裡從 CDIS_SELECTED 畫反白' %
+                      (name, m.group(1)))
+    if not found:
+        print('NODRAW=%s' % name)
+
+# ── 3. 全清必須在設定之前 ────────────────────────────────────
+i = lv.find('void SelectOnlyRow(')
+if i < 0:
+    print('NOFUNC=SelectOnlyRow')
+else:
+    b = body_after(lv, i)
+    clear = b.find('static_cast<WPARAM>(-1)')
+    setrow = b.find('static_cast<WPARAM>(row)')
+    if clear < 0:
+        print('NOCLEAR=1')
+    elif setrow >= 0 and clear > setrow:
+        print('ORDER=1')
+PYSCRIPT
+)"
+  local nset; nset="$(num "$(printf '%s\n' "${w31out}" | grep '^NSET=' | cut -d= -f2)")"
+  local nman; nman="$(num "$(printf '%s\n' "${w31out}" | grep '^NMANAGED=' | cut -d= -f2)")"
+  # ⚠ 範圍非空:兩個都是零的話不是「很乾淨」,是掃錯地方了 ——
+  #   ui_listview.cc 自己一定用得到 LVM_SETITEMSTATE,而側欄一定受管。
+  need_scope "W31 LVM_SETITEMSTATE" "${nset}" 2 || w31bad=1
+  need_scope "W31 受管清單" "${nman}" 2 || w31bad=1
+  local w31line
+  while IFS= read -r w31line; do
+    case "${w31line}" in
+      BADSET=*)
+        red "W31:${w31line#BADSET=} 自己下 LVM_SETITEMSTATE —— 選取的寫入點只能有一個(service/ui_listview.cc 的 SelectOnlyRow),不然「先全清」保證不了"
+        w31bad=1 ;;
+      BADDRAW=*)
+        red "W31:${w31line#BADDRAW=} —— 那是 comctl32 的那一份,不是我們的。兩份會分岔,而分岔的樣子是兩列同時反白(#80)"
+        w31bad=1 ;;
+      NODRAW=*)
+        red "W31:找不到畫 ${w31line#NODRAW=} 的那個函式(預期它的本體裡有 RowRect(${w31line#NODRAW=}, cd))—— 掃描範圍錯了"
+        w31bad=1 ;;
+      NOFUNC=*)
+        red "W31:找不到 SelectOnlyRow 的定義 —— 掃描範圍錯了"
+        w31bad=1 ;;
+      NOCLEAR=*)
+        red "W31:SelectOnlyRow 沒有「先全清」(WPARAM = -1)—— LVS_SINGLESEL 管的是使用者點不出第二個,**不管**程式化的 LVM_SETITEMSTATE"
+        w31bad=1 ;;
+      ORDER=*)
+        red "W31:SelectOnlyRow 的全清跑在設定**之後** —— 等於把剛設好的那一列也清掉"
+        w31bad=1 ;;
+    esac
+  done <<< "${w31out}"
+  [ "${w31bad}" -eq 0 ] && ok "W31 清單的選取只有一個寫入點(${nset} 處 LVM_SETITEMSTATE 全在 ui_listview.cc),${nman} 個受管清單的反白都從自己的狀態畫"
+
   # ── W29:連網那一頁,三件事的決定權都不在繪製碼裡 ─────────────
   #
   # 這一頁上有三件事,寫壞了**畫面看起來完全正常**:
@@ -1423,6 +1559,10 @@ self_check() {
 "W27c 不讀線路上的旗標|service/status_bar.cc|s=s.replace('SnapshotSaysNotReady(snap.status_flags)','false',1)"
 "W27d 事實少餵一格|service/status_bar.cc|s=s.replace('  facts.engine_says_not_ready = engine_not_ready_.load();','  facts.engine_says_not_ready = false;',1)"
 "W28 自繪直接用 nmcd.rc|service/settings_window.cc|s=s.replace('LRESULT SettingsWindow::DrawSchemaList(NMLVCUSTOMDRAW* cd) {','LRESULT SettingsWindow::DrawSchemaList(NMLVCUSTOMDRAW* cd) { RECT sneaky = cd->nmcd.rc; (void)sneaky;',1)"
+"W31j 側欄反白改回從 CDIS_SELECTED 畫(覆核者實測的拆法 J)|service/settings_window.cc|s=s.replace('      const bool selected = (i == page_);','      const bool selected = (cd->nmcd.uItemState & CDIS_SELECTED) != 0;',1)"
+"W31k SelectOnlyRow 拿掉先全清(覆核者實測的拆法 K)|service/ui_listview.cc|s=s.replace('  ::SendMessageW(list, LVM_SETITEMSTATE, static_cast<WPARAM>(-1),' + chr(10) + '                 reinterpret_cast<LPARAM>(&clear));','',1)"
+"W31s 方案清單又自己下 LVM_SETITEMSTATE|service/settings_window.cc|s=s.replace('void SettingsWindow::SelectSchemaRow(int row) {','void SettingsWindow::SelectSchemaRow(int row) { LVITEMW sneaky{}; ::SendMessageW(schema_list_, LVM_SETITEMSTATE, 0, reinterpret_cast<LPARAM>(&sneaky));',1)"
+"W31d 方案清單的反白改回從 CDIS_SELECTED 畫|service/settings_window.cc|s=s.replace('      const bool selected = (i == schema_sel_);','      const bool selected = (cd->nmcd.uItemState & CDIS_SELECTED) != 0;',1)"
 "W30 頁碼又寫死成數字|service/status_bar.cc|s=s.replace('settings_->OpenAt(StateIsFailure(service_state_) ? kPageAdvanced','settings_->OpenAt(StateIsFailure(service_state_) ? 3',1).replace(': kPageSchemas);',': 0);',1)"
 "W9 少一條單元測試|tests/test_status_cells.cc|s=s.replace('TEST(status_cells_input_mode_shows_exactly_one_label)','TEST(status_cells_renamed_away)',1)"
 "W27e 拿掉那一橫自己更新的計時器|service/status_bar.cc|s=s.replace('  ::SetTimer(hwnd_, kStateTimer, kStatePollMs, nullptr);','',1)"

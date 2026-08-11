@@ -14,7 +14,7 @@
 //
 // 以前這兩格在 CI 上完全不存在:windows/ 底下的 UI 單元測試都刻意不
 // include windows.h。這一支開真的控制項、走真的 comctl32,而且驅動的是
-// **產品碼本身**(service/ui_listview.cc 的 SelectSidebarRow /
+// **產品碼本身**(service/ui_listview.cc 的 SelectOnlyRow /
 // SetRowListExtendedStyle / SetRowListRowHeight),不是一份長得很像的複本。
 //
 // ⚠ 沒有 SKIP。harness 自己壞掉(控制項建不起來、一次 CDDS_ITEMPREPAINT
@@ -234,7 +234,7 @@ int HitRow(HWND list, int x, int y) {
 // 這一條把「LVS_SINGLESEL 管不管程式化設定」這個爭議交給 CI 回答,
 // 而不是繼續在報告裡互相引用記憶。
 //
-// ⚠ 它驗的是 service/ui_listview.cc 的 SelectSidebarRow 本人。把那一支
+// ⚠ 它驗的是 service/ui_listview.cc 的 SelectOnlyRow 本人。把那一支
 //   裡的「先全清」拿掉,這一條就是它會不會紅的唯一裁判。
 TEST(sidebar_select_leaves_exactly_one_row_selected) {
   Harness hn = Build(true);
@@ -242,18 +242,18 @@ TEST(sidebar_select_leaves_exactly_one_row_selected) {
   CHECK(hn.list != nullptr);
   if (!hn.list) return;
 
-  SelectSidebarRow(hn.list, 0);
+  SelectOnlyRow(hn.list, 0);
   CHECK_INT(SelectedCount(hn.list), 1);
   CHECK_INT(FirstSelected(hn.list), 0);
 
   // 換到第 2 頁(「文字」)—— 使用者截圖上內容顯示的正是這一頁。
-  SelectSidebarRow(hn.list, 2);
+  SelectOnlyRow(hn.list, 2);
   CHECK_INT(SelectedCount(hn.list), 1);
   CHECK_INT(FirstSelected(hn.list), 2);
 
   // 再換幾次,確認它不會慢慢累積。
   for (int i = 0; i < kPageRows; ++i) {
-    SelectSidebarRow(hn.list, i);
+    SelectOnlyRow(hn.list, i);
     CHECK_INT(SelectedCount(hn.list), 1);
     CHECK_INT(FirstSelected(hn.list), i);
   }
@@ -269,8 +269,8 @@ TEST(sidebar_custom_draw_reports_exactly_one_selected_row) {
   CHECK(hn.list != nullptr);
   if (!hn.list) return;
 
-  SelectSidebarRow(hn.list, 0);
-  SelectSidebarRow(hn.list, 2);
+  SelectOnlyRow(hn.list, 0);
+  SelectOnlyRow(hn.list, 2);
   CHECK(Paint(hn.list));
   // harness 自己壞掉(一次 ITEMPREPAINT 都沒收到)算失敗,不算通過。
   CHECK_INT(g_log.itemprepaint, kPageRows);

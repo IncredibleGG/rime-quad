@@ -63,6 +63,11 @@ void SetRowListExtendedStyle(HWND list);
 
 // 把第 row 列設成**唯一**被選取的那一列。row < 0 = 只清不選。
 //
+// ⚠ **這是整個 windows/ 底下唯一准下 LVM_SETITEMSTATE 的地方**
+//   (check_ui_spec.sh 的 W31 守著)。側欄與方案清單都走這一支 ——
+//   舊名字叫 SelectSidebarRow,而那個名字讓方案清單那一份複本看起來
+//   像是「另一件事」,於是 #80 修好了側欄、方案清單原封不動留著。
+//
 // ⚠ **先全清再設。** LVS_SINGLESEL 保證的是「使用者點不出第二個選取」;
 //   它**不保證**程式化的 LVM_SETITEMSTATE 會先取消舊的那一列,而那正是
 //   #80 使用者截圖上兩列同時反白的其中一個可能來源。全清用
@@ -72,7 +77,7 @@ void SetRowListExtendedStyle(HWND list);
 //   走真的 comctl32,驗的是這一份產品碼本身,不是一份長得很像的複本。
 //   「LVS_SINGLESEL 到底管不管程式化設定」這個爭議因此交給 CI 回答,
 //   而不是繼續在報告裡互相引用記憶。
-void SelectSidebarRow(HWND list, int row);
+void SelectOnlyRow(HWND list, int row);
 
 // 換掉全部的列。文字仍然要寫進 item(自繪畫的是同一份文字,但
 // 螢幕閱讀器讀的是 item 上的那一份)。

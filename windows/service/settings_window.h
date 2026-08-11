@@ -239,7 +239,18 @@ class SettingsWindow {
   std::function<void(bool)> ApplyDoneNotifier(unsigned seq);
   void OnApplyDone(unsigned seq, bool ok);
 
-  int SelectedSchemaRow() const;
+  // ── ⚠ 方案清單的「哪一列被選」只有一份 ──────────────────────
+  //
+  //   這是 #80 的孿生兄弟。側欄那一半上一輪修好了(單一寫入點 +
+  //   先全清 + 反白從 page_ 畫),而方案清單原封不動:兩處裸的
+  //   LVM_SETITEMSTATE、反白從 comctl32 的 CDIS_SELECTED 畫。
+  //   同樣是兩份真相、同樣沒有地方對帳,而分岔的樣子一樣是
+  //   **兩列同時反白**。
+  //
+  //   真相現在是 `schema_sel_`(對應側欄的 `page_`),
+  //   而 SelectSchemaRow() 是**唯一**的寫入點。
+  void SelectSchemaRow(int row);
+  int SelectedSchemaRow() const { return schema_sel_; }
   std::wstring SchemaDisplayName(size_t index) const;
   Script script() const;
 
@@ -306,6 +317,13 @@ class SettingsWindow {
   // 在 comctl32 更新自己選取範圍的中途對同一顆控制項下 SetWindowPos +
   // LVM_SETCOLUMNWIDTH,是在重入它。
   bool in_sidebar_notify_ = false;
+  // 方案清單目前選中的是第幾列(-1 = 一列都沒有,清單是空的)。
+  // ⚠ **這是那個問題唯一的答案。** 自繪從它畫,IDC_UP/IDC_DOWN 從它讀,
+  //   使用者的點選由 LVN_ITEMCHANGED / NM_CLICK 寫進它。
+  int schema_sel_ = -1;
+  // 與 in_show_page_ 同一個形狀:SelectSchemaRow 對清單下 LVM_SETITEMSTATE,
+  // comctl32 **同步**送 LVN_ITEMCHANGED 回來,而那則通知又叫 SelectSchemaRow。
+  bool in_schema_select_ = false;
   // 每一顆控制項目前被裁掉之後剩下的高度(DIP)。-1 = 沒有裁。
   // ⚠ 存著是為了**只在變動時**才呼叫 SetWindowRgn:那一支會重畫,
   //   每次 LayoutUi 都無條件呼叫的話,捲動時整頁會閃。

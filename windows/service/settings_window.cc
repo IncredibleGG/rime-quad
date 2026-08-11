@@ -1026,11 +1026,11 @@ void SettingsWindow::ShowPage(int page) {
   page_ = page;
   // 換頁一律回到頂端。留著上一頁的捲動量,新的一頁會從半空中開始。
   scroll_ = 0;
-  // ⚠ 先全清再設(見 ui_listview.h 的 SelectSidebarRow),而且用重入旗標
+  // ⚠ 先全清再設(見 ui_listview.h 的 SelectOnlyRow),而且用重入旗標
   //   擋住自己寫出來的 LVN_ITEMCHANGED —— 那一次全清會產生好幾則。
   if (sidebar_ && !in_show_page_) {
     in_show_page_ = true;
-    SelectSidebarRow(sidebar_, page);
+    SelectOnlyRow(sidebar_, page);
     in_show_page_ = false;
   }
   // 反白現在從 page_ 畫(見 DrawSidebar),所以換頁一定要重畫側欄。
@@ -1139,7 +1139,18 @@ LRESULT SettingsWindow::DrawSchemaList(NMLVCUSTOMDRAW* cd) {
       return CDRF_NOTIFYITEMDRAW;
     case CDDS_ITEMPREPAINT: {
       const int i = static_cast<int>(cd->nmcd.dwItemSpec);
-      const bool selected = (cd->nmcd.uItemState & CDIS_SELECTED) != 0;
+      // ── #80 的孿生兄弟:反白從 schema_sel_ 畫,**不從控制項的狀態畫**
+      //
+      //   理由與 DrawSidebar 那一段逐字相同,只是換一顆控制項:
+      //   這一行**不去賭** NMCUSTOMDRAW::uItemState 對 ListView 的
+      //   CDIS_SELECTED 準不準 —— 畫面只要從我們自己的那一份畫,
+      //   分岔就不可能存在。這是把賭注拿掉,不是賭贏。
+      //
+      //   ⚠ 上一輪只修了側欄。方案清單用的是同一組樣式
+      //     (LVS_REPORT|LVS_SINGLESEL|LVS_SHOWSELALWAYS)、同一個
+      //     兩處裸 LVM_SETITEMSTATE 的形狀,所以「兩列同時反白」
+      //     在這裡照樣會發生 —— 而使用者截圖指的正好是清單。
+      const bool selected = (i == schema_sel_);
       const bool hot = (cd->nmcd.uItemState & CDIS_HOT) != 0;
       const bool focused =
           show_focus_ && (cd->nmcd.uItemState & CDIS_FOCUS) != 0;
@@ -1488,11 +1499,32 @@ std::wstring SettingsWindow::SchemaDisplayName(size_t index) const {
   return Utf8ToWide(kv.second.empty() ? kv.first : kv.second);
 }
 
-int SettingsWindow::SelectedSchemaRow() const {
-  if (!schema_list_) return -1;
-  return static_cast<int>(::SendMessageW(schema_list_, LVM_GETNEXTITEM,
-                                         static_cast<WPARAM>(-1),
-                                         LVNI_SELECTED));
+// ── 方案清單的選取:**唯一**的寫入點 ────────────────────────────
+//
+// 與 ShowPage 對側欄做的事逐字相同(見那裡的說明):
+//   ① 先寫我們自己的那一份(schema_sel_ / page_)
+//   ② 再走 SelectOnlyRow —— 先全清再設,而且用重入旗標擋住自己寫出來的
+//      LVN_ITEMCHANGED(那一次全清會同步產生好幾則)
+//   ③ 最後重畫,因為反白是從我們自己的那一份畫的
+//
+// ⚠ 舊版**沒有這一支**:ReloadSchemaList 與 IDC_UP/IDC_DOWN 各自裸下一次
+//   LVM_SETITEMSTATE,兩處都沒有先全清,而「哪一列被選」的答案要去問
+//   comctl32(LVM_GETNEXTITEM)。也就是兩份真相 + 兩個寫入點 —— #80。
+void SettingsWindow::SelectSchemaRow(int row) {
+  const int n = static_cast<int>(schemas_.size());
+  if (n <= 0)
+    row = -1;  // 清單是空的:一列都不選,而不是「選第 0 列」
+  else if (row < 0 || row >= n)
+    row = 0;
+  schema_sel_ = row;
+  if (!schema_list_) return;
+  if (!in_schema_select_) {
+    in_schema_select_ = true;
+    SelectOnlyRow(schema_list_, row);
+    in_schema_select_ = false;
+  }
+  // FALSE = 不擦背景:每一列的自繪自己會先 FillRect,擦了只是多閃一次。
+  ::InvalidateRect(schema_list_, nullptr, FALSE);
 }
 
 void SettingsWindow::ReloadSchemaList(bool may_query) {
@@ -1527,15 +1559,11 @@ void SettingsWindow::ReloadSchemaList(bool may_query) {
     for (size_t i = 0; i < schemas_.size(); ++i)
       rows.push_back(SchemaDisplayName(i));
     SetRowListItems(schema_list_, rows);
-    if (!schemas_.empty()) {
-      LVITEMW it{};
-      it.mask = LVIF_STATE;
-      it.stateMask = LVIS_SELECTED | LVIS_FOCUSED;
-      it.state = LVIS_SELECTED | LVIS_FOCUSED;
-      ::SendMessageW(schema_list_, LVM_SETITEMSTATE, 0,
-                     reinterpret_cast<LPARAM>(&it));
-    }
   }
+  // ⚠ 換過內容之後一定要重設選取,而且要走那個唯一的寫入點:
+  //   舊的 schema_sel_ 可能指到一列已經不存在的東西(重新整理字詞之後
+  //   方案會少)。空清單 = -1,不是 0。
+  SelectSchemaRow(schemas_.empty() ? -1 : 0);
 
   // ② 「現在預設是『注音 · 臺灣正體』」(§12.4.3)。
   if (!schemas_.empty()) {
@@ -2075,8 +2103,29 @@ void SettingsWindow::OnNotify(NMHDR* nm, LRESULT* result) {
       return;
     }
   }
-  if (nm->idFrom == IDC_SCHEMA_LIST && nm->code == NM_CUSTOMDRAW) {
-    *result = DrawSchemaList(reinterpret_cast<NMLVCUSTOMDRAW*>(nm));
+  if (nm->idFrom == IDC_SCHEMA_LIST) {
+    if (nm->code == NM_CUSTOMDRAW) {
+      *result = DrawSchemaList(reinterpret_cast<NMLVCUSTOMDRAW*>(nm));
+      return;
+    }
+    // ⚠ 反白現在從 schema_sel_ 畫,所以**使用者自己的點選也要寫進它**。
+    //   少了這兩則,滑鼠與方向鍵選出來的那一列不會反白,而 IDC_UP /
+    //   IDC_DOWN 會去搬另一列 —— 那比兩列反白更糟。
+    if (nm->code == LVN_ITEMCHANGED) {
+      // 自己寫出來的選取不要繞回來(比照側欄的 in_show_page_)。
+      if (in_schema_select_) return;
+      NMLISTVIEW* lv = reinterpret_cast<NMLISTVIEW*>(nm);
+      if ((lv->uNewState & LVIS_SELECTED) && !(lv->uOldState & LVIS_SELECTED))
+        SelectSchemaRow(lv->iItem);
+      return;
+    }
+    // 已經被選取的那一列再按一次不會產生「沒有選取 → 有選取」的變化,
+    // 所以 LVN_ITEMCHANGED 不會來。SelectSchemaRow 是冪等的,直接叫它。
+    if (nm->code == NM_CLICK) {
+      const NMITEMACTIVATE* ia = reinterpret_cast<const NMITEMACTIVATE*>(nm);
+      if (ia && ia->iItem >= 0) SelectSchemaRow(ia->iItem);
+      return;
+    }
     return;
   }
   if (nm->idFrom == IDC_NETLOG_LIST && nm->code == NM_CUSTOMDRAW) {
@@ -2162,14 +2211,9 @@ void SettingsWindow::OnCommand(int id, int code) {
           ::SendMessageW(schema_list_, LVM_SETITEMW, 0,
                          reinterpret_cast<LPARAM>(&it));
         }
-        LVITEMW st{};
-        st.mask = LVIF_STATE;
-        st.stateMask = LVIS_SELECTED | LVIS_FOCUSED;
-        st.state = LVIS_SELECTED | LVIS_FOCUSED;
-        ::SendMessageW(schema_list_, LVM_SETITEMSTATE, static_cast<WPARAM>(to),
-                       reinterpret_cast<LPARAM>(&st));
-        ::InvalidateRect(schema_list_, nullptr, TRUE);
       }
+      // 選取跟著那一列一起走 —— 走唯一的寫入點,它自己會重畫。
+      SelectSchemaRow(to);
       SetStatus(UiString::kSchemasOrderChangedHint);
       return;
     }
