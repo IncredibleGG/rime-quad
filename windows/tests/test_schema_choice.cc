@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "../common/schema_choice.h"
+#include "../common/settings.h"  // Tri
 #include "check.h"
 
 using namespace rimewin;
@@ -330,4 +331,184 @@ TEST(warm_up_langids_cover_every_real_users_option_plan) {
     }
     CHECK(covered);
   }
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// BuildOptionPlan:暖機與 SESSION_NEW 只能有**一份**選項計畫
+// ─────────────────────────────────────────────────────────────
+//
+// service/main.cc 的暖機那一段有一句註解寫著「這一段必須與 pipe_server 的
+// kSessionNew 逐字相同」。它已經漂了:pipe_server 後來補上了
+// `ascii_mode`(使用者在那一橫上切成英文之後,新開的程式也要是英文的),
+// 而暖機那一份沒有跟著補。
+//
+// 後果不是「暖機少設一個選項」,是**整個預熱失效**:Engine::TakeSpareSession
+// 用 SameOptions 比對計畫,而 SameOptions 第一件事就是比長度。長度不同 →
+// 每一個預熱好的備用 session 都被判成過期、當場丟掉、當場重建,而
+// rs_session_create 量到過 442~753 毫秒,SESSION_NEW 的預算是 300 毫秒。
+//
+// 「一句註解要求兩段程式碼逐字相同」本來就不是一個守得住的約定。
+// 現在只有一份,而下面這幾條把它的形狀釘住。
+
+namespace {
+
+bool SamePlan(const std::vector<OptionAssign>& a,
+              const std::vector<OptionAssign>& b) {
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); ++i) {
+    if (a[i].value != b[i].value) return false;
+    if (std::string(a[i].option ? a[i].option : "") !=
+        std::string(b[i].option ? b[i].option : ""))
+      return false;
+  }
+  return true;
+}
+
+int CountOption(const std::vector<OptionAssign>& v, const char* name) {
+  int n = 0;
+  for (const OptionAssign& a : v)
+    if (std::string(a.option ? a.option : "") == std::string(name)) ++n;
+  return n;
+}
+
+}  // namespace
+
+// ⚠ 這一條就是那個漂移。ascii_mode 必須**永遠**在計畫裡,而且只有一次 ——
+//   不是「切成英文的時候才加」。少了它,計畫長度就會與另一條路徑不同。
+TEST(build_option_plan_always_carries_ascii_mode) {
+  SchemaPreference pref;
+  const std::vector<std::string> shipped = {"luna_pinyin", "luna_pinyin_tw",
+                                            "bopomofo"};
+  int seen = 0;
+  for (int i = 0; i < kWarmUpLangIdCount; ++i) {
+    const uint32_t langid = kWarmUpLangIds[i];
+    const SchemaChoice c = ChooseSchema(langid, shipped, pref);
+    for (int punct = 0; punct < 3; ++punct) {
+      for (int ascii = 0; ascii < 2; ++ascii) {
+        const std::vector<OptionAssign> plan = BuildOptionPlan(
+            c, langid, static_cast<Tri>(punct), ascii != 0);
+        CHECK_INT(CountOption(plan, "ascii_mode"), 1);
+        // 而且值要是傳進去的那一個。
+        bool found = false;
+        for (const OptionAssign& a : plan)
+          if (std::string(a.option) == "ascii_mode") {
+            CHECK(a.value == (ascii != 0));
+            found = true;
+          }
+        CHECK(found);
+        ++seen;
+      }
+    }
+  }
+  CHECK_INT(seen, kWarmUpLangIdCount * 3 * 2);  // 掃描範圍非空(§2-G2)
+}
+
+// 標點的三態:kUnset = followSchema = **完全不出現在計畫裡**。
+// 設成 false 不是同一件事 —— 很多方案根本沒有那個開關,有些預設是 true。
+TEST(build_option_plan_unset_punctuation_is_absent_not_false) {
+  SchemaPreference pref;
+  const std::vector<std::string> shipped = {"luna_pinyin"};
+  const SchemaChoice c = ChooseSchema(0x0804u, shipped, pref);
+
+  const std::vector<OptionAssign> unset =
+      BuildOptionPlan(c, 0x0804u, Tri::kUnset, false);
+  CHECK_INT(CountOption(unset, "ascii_punct"), 0);
+
+  const std::vector<OptionAssign> off =
+      BuildOptionPlan(c, 0x0804u, Tri::kFalse, false);
+  CHECK_INT(CountOption(off, "ascii_punct"), 1);
+  const std::vector<OptionAssign> on =
+      BuildOptionPlan(c, 0x0804u, Tri::kTrue, false);
+  CHECK_INT(CountOption(on, "ascii_punct"), 1);
+
+  // 三態真的分岔:長度不同、值不同。
+  CHECK(unset.size() + 1 == off.size());
+  CHECK(!SamePlan(off, on));
+}
+
+// followInputMode 關掉時**連簡繁都不碰**,但 ascii_mode 仍然要在 ——
+// 它不屬於簡繁那一組,它是一個模式。
+TEST(build_option_plan_variant_untouched_still_carries_mode) {
+  SchemaPreference pref;
+  pref.follow_input_mode = false;
+  const std::vector<std::string> shipped = {"luna_pinyin"};
+  const SchemaChoice c = ChooseSchema(0x0804u, shipped, pref);
+  CHECK(!c.set_variant);
+
+  const std::vector<OptionAssign> plan =
+      BuildOptionPlan(c, 0x0804u, Tri::kUnset, true);
+  CHECK_INT(static_cast<int>(plan.size()), 1);
+  CHECK_STR(std::string(plan[0].option), "ascii_mode");
+  CHECK(plan[0].value);
+  // 一個 radio 都不能出現。
+  for (int i = 0; i < kVariantOptionCount; ++i)
+    CHECK_INT(CountOption(plan, kVariantOptions[i]), 0);
+  CHECK_INT(CountOption(plan, "simplification"), 0);
+}
+
+// 順序也是契約的一部分:SameOptions 是**逐項**比對,不是集合比對。
+// 兩條路徑產出同一組選項但順序不同,備用池照樣全滅。
+TEST(build_option_plan_is_order_stable_and_matches_plan_variant_prefix) {
+  SchemaPreference pref;
+  const std::vector<std::string> shipped = {"luna_pinyin", "luna_pinyin_tw"};
+  int seen = 0;
+  for (int i = 0; i < kWarmUpLangIdCount; ++i) {
+    const uint32_t langid = kWarmUpLangIds[i];
+    const SchemaChoice c = ChooseSchema(langid, shipped, pref);
+    const std::vector<OptionAssign> plan =
+        BuildOptionPlan(c, langid, Tri::kTrue, false);
+
+    size_t k = 0;
+    if (c.set_variant) {
+      const std::vector<OptionAssign> v = PlanVariant(c.simplified, langid);
+      CHECK(plan.size() > v.size());
+      for (size_t j = 0; j < v.size(); ++j) {
+        CHECK_STR(std::string(plan[j].option), std::string(v[j].option));
+        CHECK(plan[j].value == v[j].value);
+      }
+      k = v.size();
+    }
+    CHECK_STR(std::string(plan[k].option), "ascii_punct");
+    CHECK_STR(std::string(plan[k + 1].option), "ascii_mode");
+    CHECK_INT(static_cast<int>(plan.size()), static_cast<int>(k + 2));
+
+    // 同樣的輸入呼叫兩次要一模一樣(沒有隱藏狀態)。
+    CHECK(SamePlan(plan, BuildOptionPlan(c, langid, Tri::kTrue, false)));
+    ++seen;
+  }
+  CHECK_INT(seen, kWarmUpLangIdCount);
+}
+
+// ── 暖的那一組與真的用的那一組是同一組 ─────────────────────────
+//
+// 上面那一支 warmup 的測試比的是 ChooseSchema + PlanVariant;現在兩條
+// 路徑走的是 BuildOptionPlan,所以這裡比的是**完整的計畫**,也就是
+// SameOptions 真的會拿去比對的那一份。
+TEST(build_option_plan_warmup_covers_every_real_langid) {
+  const std::vector<std::string> shipped = {"luna_pinyin", "luna_pinyin_tw",
+                                            "bopomofo"};
+  SchemaPreference pref;
+  const uint32_t kReal[] = {0u, 0x0404u, 0x0804u, 0x0C04u};
+  int seen = 0;
+  for (uint32_t langid : kReal) {
+    const SchemaChoice want = ChooseSchema(langid, shipped, pref);
+    // SESSION_NEW 那一趟:標點沿用方案、中英是行程層級的目前值。
+    const std::vector<OptionAssign> want_plan =
+        BuildOptionPlan(want, langid, Tri::kUnset, false);
+
+    bool covered = false;
+    for (int i = 0; i < kWarmUpLangIdCount; ++i) {
+      const uint32_t w = kWarmUpLangIds[i];
+      const SchemaChoice got = ChooseSchema(w, shipped, pref);
+      if (got.schema_id != want.schema_id) continue;
+      if (SamePlan(BuildOptionPlan(got, w, Tri::kUnset, false), want_plan)) {
+        covered = true;
+        break;
+      }
+    }
+    CHECK(covered);
+    ++seen;
+  }
+  CHECK_INT(seen, 4);
 }

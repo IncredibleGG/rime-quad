@@ -3,6 +3,8 @@
 
 #include "schema_choice.h"
 
+#include "settings.h"  // Tri 的列舉值(標頭裡只有不透明宣告)
+
 #include <algorithm>
 
 namespace rimewin {
@@ -200,6 +202,22 @@ std::vector<OptionAssign> PlanVariant(bool simplified, uint32_t langid_hint) {
     out.push_back({kVariantOptions[i], false});
   }
   out.push_back({on, true});
+  return out;
+}
+
+std::vector<OptionAssign> BuildOptionPlan(const SchemaChoice& choice,
+                                          uint32_t langid,
+                                          Tri punctuation,
+                                          bool ascii_mode) {
+  std::vector<OptionAssign> out;
+  // 1. 簡繁。set_variant 為假 = 使用者說「我自己管」,一個都不碰。
+  if (choice.set_variant) out = PlanVariant(choice.simplified, langid);
+  // 2. 標點。kUnset = followSchema = 整項不出現。
+  if (punctuation != Tri::kUnset)
+    out.push_back({"ascii_punct", punctuation == Tri::kTrue});
+  // 3. 中英。**永遠**在計畫裡 —— 少了它,兩條路徑的計畫長度就會不同,
+  //    而 SameOptions 第一件事就是比長度。那正是這一支要修的東西。
+  out.push_back({"ascii_mode", ascii_mode});
   return out;
 }
 

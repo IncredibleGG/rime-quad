@@ -132,6 +132,47 @@ struct OptionAssign {
 };
 std::vector<OptionAssign> PlanVariant(bool simplified, uint32_t langid_hint);
 
+// ── 一整份選項計畫:建 session 的兩條路徑只能有這一份 ──────────
+//
+// ⚠ 這一支存在的理由是一個真的缺陷,不是整理。
+//
+//   service/main.cc 暖機那一段有一句註解寫著「這一段必須與 pipe_server 的
+//   kSessionNew 逐字相同」。它已經漂了:pipe_server 後來補上了
+//   `ascii_mode`(使用者在那一橫上切成英文之後,新開的程式也要是英文的),
+//   而暖機那一份沒有跟著補。
+//
+//   後果不是「暖機少設一個選項」,是**整個預熱失效**:
+//   Engine::TakeSpareSession 用 SameOptions 比對計畫,而 SameOptions 第一件事
+//   就是比長度。長度不同 → 每一個預熱好的備用 session 都被判成過期、
+//   當場丟掉、當場重建,而 rs_session_create 量到過 442~753 毫秒,
+//   SESSION_NEW 的預算是 300 毫秒。也就是說:那筆錢又回到使用者
+//   等待的那一趟裡,而畫面上什麼異狀都沒有。
+//
+//   「一句註解要求兩段程式碼逐字相同」本來就不是一個守得住的約定。
+//
+// 順序是契約的一部分(SameOptions 是**逐項**比對,不是集合比對):
+//
+//     1. 簡繁那一組(choice.set_variant 為真時才有,見 PlanVariant)
+//     2. ascii_punct(punctuation != kUnset 時才有)
+//     3. ascii_mode(**永遠有**)
+//
+// ⚠ punctuation 的 kUnset = followSchema = **完全不出現在計畫裡**。
+//   設成 false 不是同一件事:很多方案根本沒有那個開關,而有些方案的
+//   預設是 true。
+//
+// ⚠ ascii_mode 沒有「不干預」那一態 —— 它是一個模式,不是三態偏好,
+//   而它的預設(false = 中文)就是 librime 的預設。
+//
+// ⚠ Tri 定義在 settings.h,而 settings.h 反過來 include 本檔 ——
+//   所以這裡用不透明宣告,不能 include 它。scoped enum 的底層型別
+//   預設就是 int,兩處宣告一致。
+enum class Tri : int;
+
+std::vector<OptionAssign> BuildOptionPlan(const SchemaChoice& choice,
+                                          uint32_t langid,
+                                          Tri punctuation,
+                                          bool ascii_mode);
+
 // radio group 的四個成員(luna_pinyin.schema.yaml 的 `options:`)。
 extern const char* const kVariantOptions[4];
 constexpr int kVariantOptionCount = 4;

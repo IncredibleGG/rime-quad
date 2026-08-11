@@ -129,6 +129,14 @@ fi
 echo "==> 反向測試通過(離線稽核會紅)"
 
 echo
+echo "==> 單一來源稽核(同一件事不得在兩個地方各寫一份)"
+"${SCRIPT_DIR}/audit_single_source.sh"
+
+echo
+echo "==> 反向測試(單一來源稽核必須抓得到植入的違規)"
+"${SCRIPT_DIR}/audit_single_source.sh" --self-check
+
+echo
 echo "==> check_binaries.sh 的網路允許矩陣"
 "${SCRIPT_DIR}/verify_check_binaries.sh"
 

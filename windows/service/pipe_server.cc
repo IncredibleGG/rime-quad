@@ -484,30 +484,19 @@ void PipeServer::ServeClient(HANDLE pipe) {
           ids.push_back(kv.first);
         const Settings st = settings_ ? settings_->Load() : Settings();
         const SchemaChoice choice = ChooseSchema(langid, ids, st.SchemaPref());
-        std::vector<OptionAssign> opts;
-        if (choice.set_variant) opts = PlanVariant(choice.simplified, langid);
-        // 標點是獨立的一項(不屬於簡繁那一組)。
-        // ⚠ kUnset = followSchema = **完全不呼叫 rs_set_option**。
-        //   設成 false 不是同一件事:很多方案根本沒有那個開關,
-        //   而有些方案的預設是 true。
-        const Tri punct = st.Punctuation();
-        if (punct != Tri::kUnset)
-          opts.push_back({"ascii_punct", punct == Tri::kTrue});
-        // ── 中英模式 ────────────────────────────────────────────
+        // ⚠ 這一行以前是三段手拉的碼,而服務暖機那一份是另一份。
+        //   現在只有一份。順序也是契約的一部分 —— SameOptions
+        //   是**逐項**比對,不是集合比對。見 BuildOptionPlan 的註解。
         //
-        // ⚠ 這一行是這一輪補上的功能的另一半。使用者用懸浮狀態列切成
-        //   英文之後開一個新程式,那個程式**也**要是英文的 ——
-        //   少了它,症狀是「這個開關會自己跳回去」,而使用者不會把
-        //   「我開了一個新視窗」與那件事聯想在一起。
-        //
-        // ⚠ 放進 opts(而不是建完 session 再設一次)是刻意的:
-        //   opts 同時是備用 session 的**計畫**,而 TakeSpareSession 會比對
-        //   計畫合不合。不放進來的話,備用池裡那個照舊狀態配好的 session
-        //   會被判成「計畫相同」而直接交出去。
-        //
-        // ⚠ 與標點不同,這裡**沒有**「不干預」那一態:中英是一個模式,
-        //   不是一個三態偏好,而它的預設(false = 中文)就是 librime 的預設。
-        opts.push_back({"ascii_mode", engine_->AsciiMode()});
+        // 這份計畫裡的三件事:
+        //   1. 簡繁(set_variant 為假 = 使用者說「我自己管」,一個都不碰)
+        //   2. 標點(kUnset = followSchema = 整項不出現;設成 false 不是同一件事)
+        //   3. 中英(**永遠在**)—— 使用者在那一橫上切成英文之後
+        //      開的新程式也要是英文的;而它同時是備用 session 的
+        //      **計畫**,不放進來的話備用池裡那個照舊狀態配好的
+        //      session 會被判成「計畫相同」而直接交出去。
+        const std::vector<OptionAssign> opts = BuildOptionPlan(
+            choice, langid, st.Punctuation(), engine_->AsciiMode());
 
         // ── 有沒有預先建好的可以直接拿 ────────────────────────
         //

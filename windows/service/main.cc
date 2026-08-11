@@ -321,15 +321,18 @@ void WarmUpEngine(rimewin::Engine* engine, rimewin::SettingsStore* store,
   int warmed = 0;
   for (int wi = 0; wi < rimewin::kWarmUpLangIdCount; ++wi) {
     const uint32_t langid = rimewin::kWarmUpLangIds[wi];
-    // ⚠ 這一段必須與 pipe_server.cc 的 kSessionNew 逐字相同 ——
-    //   暖的與真的用的不是同一組,等於沒暖。
+    // ⚠ 暖的與真的用的必須是**同一組**選項,否則等於沒暖。
+    //
+    //   這裡以前是手拉的一段,上面寫著一句「必須與 pipe_server 逐字
+    //   相同」—— 而它已經漂了一個 ascii_mode。後果不是「少設一個
+    //   選項」,是 TakeSpareSession 的 SameOptions 連長度都不符 →
+    //   **每一個預熱好的備用 session 必定被丟掉**。現在兩條路徑
+    //   只有一份計畫(common/schema_choice.cc 的 BuildOptionPlan),
+    //   而 tests/test_schema_choice.cc 把它的形狀釘住了。
     const rimewin::SchemaChoice choice =
         rimewin::ChooseSchema(langid, ids, pref);
-    std::vector<rimewin::OptionAssign> opts;
-    if (choice.set_variant)
-      opts = rimewin::PlanVariant(choice.simplified, langid);
-    if (punct != rimewin::Tri::kUnset)
-      opts.push_back({"ascii_punct", punct == rimewin::Tri::kTrue});
+    const std::vector<rimewin::OptionAssign> opts = rimewin::BuildOptionPlan(
+        choice, langid, punct, engine ? engine->AsciiMode() : false);
 
     const ULONGLONG t1 = ::GetTickCount64();
     // ⚠ 建好之後**留著**,不要用完就丟。
@@ -502,11 +505,17 @@ static int RunService(int argc, wchar_t** argv) {
                                        : "(不干預)");
     // 實際會送出去的那一組 option,一字不差 —— 斷言的是真的會發生的事,
     // 不是一個中間表示。
-    if (c.set_variant) {
-      for (const rimewin::OptionAssign& a :
-           rimewin::PlanVariant(c.simplified, lang))
-        Say("option=%s=%s\n", a.option, a.value ? "true" : "false");
-    }
+    //
+    // ⚠ 這裡以前只印簡繁那一組,而真的送出去的計畫還含 ascii_punct 與
+    //   ascii_mode。一份「少印兩項」的診斷輸出比沒有診斷更糟:CI 拿它
+    //   當判準,而它與現場不是同一份。現在走的是與暖機、SESSION_NEW
+    //   同一支 BuildOptionPlan。
+    //
+    // ⚠ ascii_mode 在這條路徑上只能是預設值(false = 中文):
+    //   --print-choice 不啟動引擎,行程層級的那個狀態還不存在。
+    for (const rimewin::OptionAssign& a : rimewin::BuildOptionPlan(
+             c, lang, st.Punctuation(), /*ascii_mode=*/false))
+      Say("option=%s=%s\n", a.option, a.value ? "true" : "false");
     Say("source=%s\n", c.source);
     return 0;
   }
