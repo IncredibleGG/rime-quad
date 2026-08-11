@@ -1958,6 +1958,226 @@ ${w29out}" ;;
     esac
   done <<< "${w29out}"
   [ "${w29bad}" -eq 0 ] && ok "W29 連網那一頁:開關讀寫都走 NetGate、那幾句話與空狀態分支都從純函式來、${w29calls} 個版面呼叫點全部走 PageStateNow(),通往網路的兩道門都在 CreateThread **之前**問過開關並收手,而工作執行緒把結果 Post 回 UI 執行緒"
+
+  # ── W34:「已送出」→「已套用 / 套用失敗」那一條線 ──────────────
+  #
+  # #79 的後半段:引擎的套用是**非同步**的,按下去的當下沒有人知道
+  # 結果。舊版在呼叫點就直接寫「已套用」—— 那是在替一件還躺在佇列裡
+  # 的工作背書,而工作真的失敗時畫面上仍然是那句成功。
+  #
+  # ⚠ 這一條之所以存在,是因為上一輪**修好了卻沒有守住**。覆核者實跑
+  #   五個植入,把最關鍵的修正一個一個還原回去 ——
+  #     A1 呼叫點改回無條件 SetTransientStatus(kStatusApplied)
+  #     A2 Engine::ApplyVariantAll 拿掉「沒排進去也要說」
+  #     A3 4 秒計時器改回無條件清空
+  #     A4 心跳解除改回無條件清空
+  #     A5 拿掉序號守衛
+  #   ——三支守門**五個全綠**,因為整張檢核表裡連 BeginApply 這個字都
+  #   沒有出現過。
+  #
+  # 四條判準,分母全部從程式碼數出來(下一個非同步套用點一接上去就
+  # 自動被守住):
+  #
+  #   1. 每一個 engine_->ApplyVariantAll / SetOptionAll 呼叫點,都要先
+  #      BeginApply() 拿序號、把 ApplyDoneNotifier(**那個**序號)傳進去,
+  #      而且那一段之後**不准再說一次成功**(SetTransientStatus)。
+  #   2. Engine 那兩支:PostAsync 沒排進去(!queued)也要 on_done(false)。
+  #      工作根本不會發生,而畫面上那句「正在套用…」會永遠停在那裡。
+  #   3. 每一張票(StatusLine::Ticket)都要有人讀;而「收回訊息」那兩處
+  #      不得無條件清空 —— 4 秒的計時器會把使用者剛拿到的紅字一起收走,
+  #      而且不留任何痕跡。
+  #   4. 序號守衛:連按三下時,前兩次的結果不可以寫進那一行。
+  check
+  local w34bad=0
+  local w34out; w34out="$("${PY}" - "${CODE_DIR}" <<'PYSCRIPT'
+import os, re, sys
+root = sys.argv[1]
+
+def read(rel):
+    try:
+        return open(os.path.join(root, rel), encoding='utf-8',
+                    errors='replace').read()
+    except OSError:
+        return None
+
+sw = read('service/settings_window.cc')
+hh = read('service/settings_window.h')
+en = read('service/engine.cc')
+if sw is None or hh is None or en is None:
+    print('NOSRC=1')
+    raise SystemExit(0)
+
+def match_from(src, i):
+    # 從 src[i] 這個 '{' 起做配對,回傳 (開, 閉+1)。
+    depth = 0
+    for j in range(i, len(src)):
+        if src[j] == '{':
+            depth += 1
+        elif src[j] == '}':
+            depth -= 1
+            if depth == 0:
+                return (i, j + 1)
+    return (i, len(src))
+
+def body_after(src, start):
+    i = src.find('{', start)
+    return match_from(src, i) if i >= 0 else (0, 0)
+
+def enclosing_block(src, pos):
+    # 往回找最內層還沒閉合的 '{'。
+    depth = 0
+    i = pos
+    while i > 0:
+        i -= 1
+        c = src[i]
+        if c == '}':
+            depth += 1
+        elif c == '{':
+            if depth == 0:
+                return match_from(src, i)
+            depth -= 1
+    return (0, len(src))
+
+def args_at(src, lparen):
+    depth = 0
+    for j in range(lparen, len(src)):
+        if src[j] == '(':
+            depth += 1
+        elif src[j] == ')':
+            depth -= 1
+            if depth == 0:
+                return src[lparen + 1:j], j + 1
+    return src[lparen + 1:], len(src)
+
+def where(src, pos):
+    # 最近的一個 SettingsWindow::xxx( —— 行號在去註解後的樹上沒有意義。
+    last = 'settings_window.cc'
+    for m in re.finditer(r'SettingsWindow::(\w+)\s*\(', src[:pos]):
+        last = m.group(1) + '()'
+    return last
+
+# ── 1. 非同步套用的每一個呼叫點 ────────────────────────────────
+sites = list(re.finditer(r'engine_->(ApplyVariantAll|SetOptionAll)\s*\(', sw))
+print('NAPPLY=%d' % len(sites))
+for m in sites:
+    args, end = args_at(sw, m.end() - 1)
+    w = where(sw, m.start())
+    ob, cb = enclosing_block(sw, m.start())
+    lead = sw[ob:m.start()]
+    seqs = re.findall(r'(\w+)\s*=\s*BeginApply\s*\(', lead)
+    if 'ApplyDoneNotifier(' not in args:
+        print('NONOTIFY=%s' % w)
+        continue
+    if not seqs:
+        print('NOBEGIN=%s' % w)
+    elif not re.search(r'ApplyDoneNotifier\(\s*%s\s*\)' % re.escape(seqs[-1]),
+                       args):
+        print('WRONGSEQ=%s' % w)
+    if 'SetTransientStatus(' in sw[end:cb]:
+        print('SAYSOK=%s' % w)
+
+# ── 2. Engine:沒排進去也要說 ──────────────────────────────────
+for fn in ('SetOptionAll', 'ApplyVariantAll'):
+    i = en.find('void Engine::%s(' % fn)
+    if i < 0:
+        print('NOENGFN=%s' % fn)
+        continue
+    ob, cb = body_after(en, i)
+    b = en[ob:cb]
+    if not re.search(r'bool\s+queued\s*=\s*PostAsync\s*\(', b):
+        print('NOQUEUED=%s' % fn)
+    if not re.search(r'if\s*\(\s*!\s*queued[^)]*\)\s*\{?\s*(?:if[^;]*\)\s*)?'
+                     r'on_done\(false\)', b):
+        print('NOTELL=%s' % fn)
+
+# ── 3. 票要有人讀,收回訊息不得無條件 ──────────────────────────
+tickets = re.findall(r'StatusLine::Ticket\s+(\w+)\s*=', hh)
+print('NTICKET=%d' % len(tickets))
+for t in tickets:
+    if not re.search(r'StillShowing\(\s*(?:self->)?%s\s*\)' % re.escape(t), sw):
+        print('UNREAD=%s' % t)
+wipes = list(re.finditer(r'SetStatus\(\s*std::wstring\(\)\s*\)', sw))
+print('NWIPE=%d' % len(wipes))
+for m in wipes:
+    lead = sw[max(0, m.start() - 400):m.start()]
+    if '_ticket_' in lead and 'StillShowing(' not in lead:
+        print('BAREWIPE=%s' % where(sw, m.start()))
+
+# ── 4. 序號守衛 ───────────────────────────────────────────────
+i = sw.find('void SettingsWindow::OnApplyDone(')
+if i < 0:
+    print('NOAPPLYDONE=1')
+else:
+    ob, cb = body_after(sw, i)
+    b = sw[ob:cb]
+    if not (re.search(r'if\s*\(\s*seq\s*!=\s*apply_seq_\s*\)\s*return\s*;', b) or
+            re.search(r'if\s*\(\s*apply_seq_\s*!=\s*seq\s*\)\s*return\s*;', b)):
+        print('NOSEQGUARD=1')
+j = sw.find('unsigned SettingsWindow::BeginApply(')
+if j < 0:
+    print('NOBEGINDEF=1')
+else:
+    ob, cb = body_after(sw, j)
+    if '++apply_seq_' not in sw[ob:cb]:
+        print('NOBUMP=1')
+PYSCRIPT
+)"
+  local napply; napply="$(num "$(printf '%s\n' "${w34out}" | grep '^NAPPLY=' | cut -d= -f2)")"
+  local ntkt;   ntkt="$(num "$(printf '%s\n' "${w34out}" | grep '^NTICKET=' | cut -d= -f2)")"
+  local nwipe;  nwipe="$(num "$(printf '%s\n' "${w34out}" | grep '^NWIPE=' | cut -d= -f2)")"
+  # ⚠ 分母:四個套用點(變體、標點、跟著輸入法語言、重設)、兩張票、
+  #   兩處收回。掃不到就是範圍寫錯了,而那必須是紅的。
+  need_scope "W34 非同步套用呼叫點" "${napply}" 4 || w34bad=1
+  need_scope "W34 狀態列的票" "${ntkt}" 2 || w34bad=1
+  need_scope "W34 收回訊息的地方" "${nwipe}" 2 || w34bad=1
+  local w34line
+  while IFS= read -r w34line; do
+    case "${w34line}" in
+      NOSRC=*)
+        red "W34:找不到 service/settings_window.{cc,h} 或 service/engine.cc —— 掃描範圍錯了"
+        w34bad=1 ;;
+      NONOTIFY=*)
+        red "W34:${w34line#NONOTIFY=} 的非同步套用沒有把 ApplyDoneNotifier() 傳進去 —— 沒有人會回來換掉「正在套用…」,而呼叫點當下說的任何一句成功都是在替佇列裡的工作背書(#79)"
+        w34bad=1 ;;
+      NOBEGIN=*)
+        red "W34:${w34line#NOBEGIN=} 沒有先 BeginApply() —— 那一句「已送出,正在套用…」是使用者唯一看得到的「我收到了」"
+        w34bad=1 ;;
+      WRONGSEQ=*)
+        red "W34:${w34line#WRONGSEQ=} 傳給 ApplyDoneNotifier() 的不是這一次 BeginApply() 拿到的序號 —— 序號守衛會把它整個丟掉,結果是那一行永遠停在「正在套用…」"
+        w34bad=1 ;;
+      SAYSOK=*)
+        red "W34:${w34line#SAYSOK=} 在送出之後又自己說了一次成功(SetTransientStatus)—— 工作還躺在佇列裡,那句話沒有根據"
+        w34bad=1 ;;
+      NOENGFN=*)
+        red "W34:engine.cc 裡找不到 Engine::${w34line#NOENGFN=} —— 掃描範圍錯了"
+        w34bad=1 ;;
+      NOQUEUED=*)
+        red "W34:Engine::${w34line#NOQUEUED=} 沒有接住 PostAsync 的回傳值 —— 「排不進去」與「排進去了」在呼叫端看起來會一模一樣"
+        w34bad=1 ;;
+      NOTELL=*)
+        red "W34:Engine::${w34line#NOTELL=} 在工作沒排進佇列時不通知 on_done(false) —— 那件事永遠不會發生,而畫面上那句「正在套用…」會永遠停在那裡"
+        w34bad=1 ;;
+      UNREAD=*)
+        red "W34:${w34line#UNREAD=} 寫了卻沒有任何人用 StillShowing() 讀它 —— 收回訊息就變成無條件清空,使用者剛拿到的紅字會被上一則的計時器一起收走"
+        w34bad=1 ;;
+      BAREWIPE=*)
+        red "W34:${w34line#BAREWIPE=} 拿著一張票卻無條件把狀態列清空 —— 要先問過 StillShowing():畫面上那一則已經不是自己寫的了就不准動它"
+        w34bad=1 ;;
+      NOAPPLYDONE=*)
+        red "W34:找不到 SettingsWindow::OnApplyDone —— 掃描範圍錯了"
+        w34bad=1 ;;
+      NOSEQGUARD=*)
+        red "W34:OnApplyDone 少了序號守衛(seq != apply_seq_ 就 return)—— 連按三下時前兩次的結果會蓋掉最後那一下,而使用者關心的正好是最後那一下"
+        w34bad=1 ;;
+      NOBEGINDEF=*)
+        red "W34:找不到 SettingsWindow::BeginApply —— 掃描範圍錯了"
+        w34bad=1 ;;
+      NOBUMP=*)
+        red "W34:BeginApply 沒有把 apply_seq_ 往前推 —— 序號守衛擋不掉任何東西"
+        w34bad=1 ;;
+    esac
+  done <<< "${w34out}"
+  [ "${w34bad}" -eq 0 ] && ok "W34 ${napply} 個非同步套用點全部走 BeginApply() + ApplyDoneNotifier(同一個序號),Engine 那兩支排不進佇列時也會說,${ntkt} 張票都有人讀、${nwipe} 處收回訊息都先問過 StillShowing(),而 OnApplyDone 擋得掉過期的回覆"
 }
 
 # ────────────────────────────────────────────────────────────────
@@ -2067,6 +2287,13 @@ self_check() {
 "W29k2 那一句失敗文案的純函式從 common/ 消失|common/update_flow.cc|s=s.replace('UiString UpdateFailureText(','UiString UpdateFailureTextGone(',1)"
 "W29k3 「要不要提開關」的純函式從 common/ 消失|common/update_flow.cc|s=s.replace('bool UpdateFailureNeedsSwitch(','bool UpdateFailureNeedsSwitchGone(',1)"
 "W29l 版面呼叫點繞過真實狀態|service/settings_window.cc|s=s.replace('  const PageLayout pl = LayoutSettingsPageDip(page_, W, PageStateNow());','  const PageLayout pl = LayoutSettingsPageDip(page_, W, PageState{});',1)"
+"W34a 套用的呼叫點改回無條件說「已套用」(覆核者實測的拆法 A1)|service/settings_window.cc|old='  const unsigned seq = BeginApply(UiString::kStatusApplied);' + chr(10) + '  engine_->ApplyVariantAll(settings_.SchemaPref(), ApplyDoneNotifier(seq));' + chr(10) + '  int vsel = 0;'; new='  engine_->ApplyVariantAll(settings_.SchemaPref(), [](bool) {});' + chr(10) + '  SetTransientStatus(UiString::kStatusApplied);' + chr(10) + '  int vsel = 0;'; s=s.replace(old,new,1)"
+"W34b Engine::ApplyVariantAll 不再說「根本沒排進去」(覆核者實測的拆法 A2)|service/engine.cc|k='  if (!queued && on_done) on_done(false);' + chr(10); i=s.index('void Engine::ApplyVariantAll'); j=s.index(k,i); s=s[:j]+s[j+len(k):]"
+"W34c 4 秒的計時器改回無條件清空(覆核者實測的拆法 A3)|service/settings_window.cc|old='        if (self->status_line_.StillShowing(self->transient_ticket_)) {' + chr(10) + '          self->transient_ticket_ = StatusLine::kNone;' + chr(10) + '          self->SetStatus(std::wstring());' + chr(10) + '        }'; new='        self->transient_ticket_ = StatusLine::kNone;' + chr(10) + '        self->SetStatus(std::wstring());'; s=s.replace(old,new,1)"
+"W34d 心跳解除改回無條件清空(覆核者實測的拆法 A4)|service/settings_window.cc|s=s.replace('      } else if (status_line_.StillShowing(engine_busy_ticket_)) {','      } else if (true) {',1)"
+"W34e 拿掉序號守衛(覆核者實測的拆法 A5)|service/settings_window.cc|s=s.replace('  if (seq != apply_seq_) return;' + chr(10),'',1)"
+"W34f 送出之後呼叫點又自己說了一次成功|service/settings_window.cc|s=s.replace('  engine_->ApplyVariantAll(settings_.SchemaPref(), ApplyDoneNotifier(seq));' + chr(10) + '  int vsel = 0;','  engine_->ApplyVariantAll(settings_.SchemaPref(), ApplyDoneNotifier(seq));' + chr(10) + '  SetTransientStatus(UiString::kStatusApplied);' + chr(10) + '  int vsel = 0;',1)"
+"W34g 傳給完成通知的不是這一次拿到的序號|service/settings_window.cc|s=s.replace('  engine_->ApplyVariantAll(settings_.SchemaPref(), ApplyDoneNotifier(seq));' + chr(10) + '  int vsel = 0;','  engine_->ApplyVariantAll(settings_.SchemaPref(), ApplyDoneNotifier(seq - 1));' + chr(10) + '  int vsel = 0;',1)"
 "範圍|__SCOPE__|"
   )
 
