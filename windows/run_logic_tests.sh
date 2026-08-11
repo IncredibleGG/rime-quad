@@ -59,6 +59,7 @@ SRCS=(
   "${SCRIPT_DIR}/common/service_state.cc"
   "${SCRIPT_DIR}/common/status_cells.cc"
   "${SCRIPT_DIR}/common/hotkey_policy.cc"
+  "${SCRIPT_DIR}/common/bar_visibility.cc"
   "${SCRIPT_DIR}/tests/test_main.cc"
   "${SCRIPT_DIR}/tests/test_protocol.cc"
   "${SCRIPT_DIR}/tests/test_keymap.cc"
@@ -91,6 +92,7 @@ SRCS=(
   "${SCRIPT_DIR}/tests/test_service_state.cc"
   "${SCRIPT_DIR}/tests/test_status_cells.cc"
   "${SCRIPT_DIR}/tests/test_hotkey_policy.cc"
+  "${SCRIPT_DIR}/tests/test_bar_visibility.cc"
 )
 
 mkdir -p "${OUT}"
