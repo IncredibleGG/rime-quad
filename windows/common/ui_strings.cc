@@ -322,6 +322,8 @@ namespace {
   X(kTrayRedeploy, L"Rebuild words", L"重新整理字詞(&R)", L"重新整理字词(&R)") \
   X(kTrayQuit, L"Stop the input method", L"結束輸入法服務(&X)",                \
     L"结束输入法服务(&X)")                                                     \
+  X(kTrayModeChinese, L"Chinese", L"中文", L"中文")                            \
+  X(kTrayModeEnglish, L"English", L"英文", L"英文")                            \
   X(kTrayTip, L"LuminaKey Input Method", L"LuminaKey 輸入法",                  \
     L"LuminaKey 输入法")                                                       \
   /* ── 語言列 ────────────────────────────────────────────────── */          \

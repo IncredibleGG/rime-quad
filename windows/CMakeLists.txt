@@ -147,6 +147,10 @@ add_library(rime_common STATIC
   #   而那個檔案在 Ubuntu 上編不起來 —— 「第一格畫了兩個字面」這種
   #   只有人看得出來的缺陷,沒有任何自動化碰得到。
   common/status_cells.cc
+  # ⚠ 那一橫什麼時候該在(§12.10.6)。判準放這裡而不是 service/ 的理由與
+  #   status_cells.cc 同一條:顯示時機的缺陷全部長成時序問題,而時序問題
+  #   沒有測試就只能靠人肉試 —— 而 service/ 在開發機上編不起來。
+  common/bar_visibility.cc
   # ⚠ Ctrl+空白鍵。判斷只有這一份:瘦 DLL 與服務各要問一次,
   #   兩邊各寫一份就是兩份真相。走 PreserveKey,**不動 key_eat_policy**。
   common/hotkey_policy.cc)
@@ -384,6 +388,9 @@ add_executable(rime_service
   #   service/net_gate.cc,那是唯一的出口(audit_offline_win.sh 守著)。
   service/update_check.cc
   service/status_bar.cc
+  # 自繪的托盤圖示(中 / En)。獨立成一個檔案是為了讓 settings_window.cc
+  # 只改兩行 —— 那個檔案同時有另一條線在改。
+  service/tray_icon.cc
   service/ui_listview.cc
   service/ui_font.cc
   service/ui_theme.cc

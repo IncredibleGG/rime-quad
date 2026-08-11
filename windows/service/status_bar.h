@@ -63,6 +63,15 @@ class Engine;
 class SettingsWindow;
 class SettingsStore;
 
+// §8.12 的中英字面(中 / En)。
+//
+// ⚠ 這四個規範性字面全 repo 只住在 service/status_bar.cc 一個地方
+//   (§12.9.3 第 1 條:它們是狀態指示,不是介面文字,不進 catalog),
+//   而 W7 / W10 兩個方向守著那件事。托盤圖示要畫同一個字,所以走這一支
+//   拿 —— 在別的檔案裡再寫一份會多出第二份真相,而「改名改一半」正是
+//   這個專案吃過虧的形狀。
+const wchar_t* BarModeGlyph(bool ascii_mode);
+
 class StatusBar {
  public:
   StatusBar(Engine* engine, SettingsStore* store);

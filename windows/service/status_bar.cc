@@ -101,6 +101,11 @@ void StatusBar::Stop() {
   }
 }
 
+// 見標頭:那四個字面的唯一出口。
+const wchar_t* BarModeGlyph(bool ascii_mode) {
+  return ascii_mode ? kGlyphAscii : kGlyphChinese;
+}
+
 void StatusBar::SetVisible(bool on) {
   if (thread_id_)
     ::PostThreadMessageW(thread_id_, WM_RIME_SHOW, on ? 1 : 0, 0);
@@ -157,6 +162,9 @@ void StatusBar::RefreshFromEngine() {
   if (changed) {
     Relayout();
     ::InvalidateRect(hwnd_, nullptr, TRUE);
+    // 托盤那一格畫的也是中英模式 —— 兩個指示器講的是同一件事,
+    // 不能只更新一個。⚠ 只是 Post,真正的重畫在設定視窗那條執行緒上。
+    if (settings_) settings_->NotifyModeChanged();
   }
 }
 

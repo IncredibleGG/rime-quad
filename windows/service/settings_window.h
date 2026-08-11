@@ -176,8 +176,16 @@ class SettingsWindow {
   LRESULT DrawNetLogList(NMLVCUSTOMDRAW* cd);
   void DrawDangerButton(DRAWITEMSTRUCT* di);
 
+ public:
+  // 中英模式變了。可從任何執行緒呼叫。
+  void NotifyModeChanged();
+
+ private:
   void AddTray();
   void RemoveTray();
+  // 依目前的中英模式重畫托盤圖示(NIM_ADD / NIM_MODIFY 共用)。
+  void RefreshTrayIcon(bool modify);
+  UINT TrayDpi() const;
   void OnTray(WPARAM w, LPARAM l);
 
   void ApplyVariantNow();
@@ -281,6 +289,12 @@ class SettingsWindow {
   std::string rollback_yaml_;
 
   bool tray_added_ = false;
+  // 目前托盤上畫的是哪一邊。避免每半秒重畫一次 —— 托盤重畫會在某些
+  // 佈景主題下閃一下,而那比圖示不更新更礙眼。
+  bool tray_ascii_ = false;
+  // ⚠ 自繪的圖示要自己銷毀。Shell_NotifyIcon 只是**引用**它,
+  //   不會複製 —— 換掉之後才可以放,順序反了會畫出一顆空的。
+  HICON tray_icon_ = nullptr;
   UINT taskbar_created_ = 0;
 
   Settings settings_;

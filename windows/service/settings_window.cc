@@ -1,5 +1,8 @@
 #include "settings_window.h"
 
+#include "status_bar.h"  // BarModeGlyph:§8.12 那四個字面的唯一出口
+#include "tray_icon.h"
+
 #include <commctrl.h>
 #include <shellapi.h>
 
@@ -29,6 +32,11 @@ constexpr UINT WM_RIME_SET_VARIANT = WM_APP + 3;
 // 更新的工作執行緒做完了。⚠ 它只是「回來了」的訊號 ——
 //   結果放在成員變數裡,而且只有 UI 執行緒讀得到。
 constexpr UINT WM_RIME_UPDATE_DONE = WM_APP + 4;
+// 中英模式變了 —— 托盤那一格要重畫。
+// ⚠ 一定要 Post 而不是直接呼叫:通知來源是那一橫的 UI 執行緒
+//   (StatusBar::RefreshFromEngine),而 Shell_NotifyIcon 要在擁有那個
+//   HWND 的執行緒上做。
+constexpr UINT WM_RIME_TRAY_ICON = WM_APP + 5;
 constexpr UINT kTrayId = 1;
 constexpr UINT_PTR kDeployTimer = 1;
 constexpr UINT_PTR kStatusTimer = 2;
@@ -44,6 +52,10 @@ enum : int {
   IDM_TRAY_VAR_FOLLOW,
   IDM_TRAY_VAR_HANT,
   IDM_TRAY_VAR_HANS,
+  // 中英兩項。⚠ 它們與簡繁那三項**沒有關係**,走的是
+  //   Engine::SetAsciiModeAll(),不碰 CommitVariantPref。
+  IDM_TRAY_MODE_CN,
+  IDM_TRAY_MODE_EN,
 };
 
 // ── 控制項 id ───────────────────────────────────────────────────
@@ -538,6 +550,9 @@ LRESULT CALLBACK SettingsWindow::WndProc(HWND hwnd, UINT msg, WPARAM w,
       return 0;
     case WM_MOUSEWHEEL:
       if (self) self->OnMouseWheel(GET_WHEEL_DELTA_WPARAM(w));
+      return 0;
+    case WM_RIME_TRAY_ICON:
+      if (self) self->RefreshTrayIcon(/*modify=*/true);
       return 0;
     case WM_RIME_TRAY:
       if (self) self->OnTray(w, l);
@@ -2229,6 +2244,30 @@ void SettingsWindow::RefreshNetworkAndUpdateCard() {
 
 // ─────────────────────────── 系統匣 ───────────────────────────
 
+namespace {
+// 托盤圖示要用**主視窗**的 DPI。托盤自己的 DPI 拿不到(它屬於 explorer),
+// 而同一台機器上兩者幾乎總是一致 —— 不一致時大一階好過小一階,
+// 縮小比放大清楚。
+UINT TrayDpiOf(HWND hwnd) {
+  UINT dpi = 96;
+  using GetDpiFn = UINT(WINAPI*)(HWND);
+  HMODULE u32 = ::GetModuleHandleW(L"user32.dll");
+  GetDpiFn fn = u32 ? reinterpret_cast<GetDpiFn>(reinterpret_cast<void*>(
+                          ::GetProcAddress(u32, "GetDpiForWindow")))
+                    : nullptr;
+  if (fn && hwnd) dpi = fn(hwnd);
+  return dpi ? dpi : 96;
+}
+}  // namespace
+
+UINT SettingsWindow::TrayDpi() const { return TrayDpiOf(hwnd_); }
+
+// 可從任何執行緒呼叫。只是 Post 一則訊息 —— 真正的重畫在擁有 hwnd_
+// 的那條執行緒上做(Shell_NotifyIcon 的要求)。
+void SettingsWindow::NotifyModeChanged() {
+  if (hwnd_) ::PostMessageW(hwnd_, WM_RIME_TRAY_ICON, 0, 0);
+}
+
 void SettingsWindow::AddTray() {
   if (tray_added_ || !hwnd_) return;
   if (taskbar_created_ == 0)
@@ -2239,11 +2278,46 @@ void SettingsWindow::AddTray() {
   nid.uID = kTrayId;
   nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
   nid.uCallbackMessage = WM_RIME_TRAY;
-  // ⚠ 沒有自己的圖示檔。用系統的應用程式圖示 —— 醜,但**看得到**,
-  //   而看不到的圖示等於沒有這個入口。
-  nid.hIcon = ::LoadIconW(nullptr, IDI_APPLICATION);
+  // ⚠ 圖示由 tray_icon.cc 自繪(中 / En),而不是
+  //   LoadIconW(nullptr, IDI_APPLICATION)。
+  //
+  //   那一橫本來是常駐的,所以托盤只是備援入口,醜一點沒關係。現在
+  //   那一橫會**自己消失**(§12.10.6),托盤就升格成「服務活著時唯一
+  //   必然存在的入口」—— 而一顆與別的東西一模一樣的通用圖示等於
+  //   沒有入口:使用者找不出哪一顆是輸入法。
+  //
+  //   順便解掉第二件事:中/英在系統托盤有了一個「那一橫以外」的家。
+  //   三家競品(微軟、搜狗、小狼毫)的交集正是「中/英屬於托盤那一格」。
+  tray_ascii_ = engine_ && engine_->AsciiMode();
+  tray_icon_ = MakeModeTrayIcon(BarModeGlyph(tray_ascii_), TrayDpi());
+  // ⚠ 自繪失敗就退回系統圖示 —— 一顆醜圖示仍然比沒有圖示好。
+  nid.hIcon = tray_icon_ ? tray_icon_ : ::LoadIconW(nullptr, IDI_APPLICATION);
   ::lstrcpynW(nid.szTip, UiText(UiString::kTrayTip), 128);
   tray_added_ = ::Shell_NotifyIconW(NIM_ADD, &nid) != FALSE;
+}
+
+// 中英模式變了就重畫托盤那一格。
+//
+// ⚠ 只在真的變了的時候動(tray_ascii_ 擋住)。托盤重畫在某些佈景主題下
+//   會閃一下,而每半秒閃一次比圖示不更新更礙眼。
+void SettingsWindow::RefreshTrayIcon(bool modify) {
+  if (!tray_added_ || !hwnd_ || !engine_) return;
+  const bool now = engine_->AsciiMode();
+  if (modify && now == tray_ascii_) return;
+  HICON fresh = MakeModeTrayIcon(BarModeGlyph(now), TrayDpi());
+  if (!fresh) return;  // 畫不出來就留著舊的,不要換成空的
+  NOTIFYICONDATAW nid{};
+  nid.cbSize = sizeof(nid);
+  nid.hWnd = hwnd_;
+  nid.uID = kTrayId;
+  nid.uFlags = NIF_ICON;
+  nid.hIcon = fresh;
+  ::Shell_NotifyIconW(NIM_MODIFY, &nid);
+  // ⚠ 先換再放。Shell_NotifyIcon 只是**引用**那個 HICON,不會複製 ——
+  //   反過來的話托盤上會出現一顆空的。
+  if (tray_icon_) ::DestroyIcon(tray_icon_);
+  tray_icon_ = fresh;
+  tray_ascii_ = now;
 }
 
 void SettingsWindow::RemoveTray() {
@@ -2254,6 +2328,12 @@ void SettingsWindow::RemoveTray() {
   nid.uID = kTrayId;
   ::Shell_NotifyIconW(NIM_DELETE, &nid);
   tray_added_ = false;
+  // 自繪的圖示要自己銷毀。刪掉那一格之後才放,順序反了會是
+  // use-after-free(托盤還引用著它)。
+  if (tray_icon_) {
+    ::DestroyIcon(tray_icon_);
+    tray_icon_ = nullptr;
+  }
 }
 
 void SettingsWindow::OnTray(WPARAM /*w*/, LPARAM l) {
@@ -2268,6 +2348,26 @@ void SettingsWindow::OnTray(WPARAM /*w*/, LPARAM l) {
   if (!menu) return;
   ::AppendMenuW(menu, MF_STRING, IDM_TRAY_SETTINGS,
                 UiText(UiString::kTraySettings));
+  ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  {
+    // ── 中 / 英 ────────────────────────────────────────────────
+    //
+    // ⚠ 為什麼要在托盤上再放一次:那一橫現在會**自己消失**
+    //   (§12.10.6),而 ui-design.md §12.10.2 整節的論證是
+    //   「這一橫是中英切換唯一的家」。那個前提要被徹底拆掉才敢讓它消失。
+    //
+    //   現在中英有三個家:Ctrl + 空白鍵(tsf 的 PreserveKey)、
+    //   那一橫的第一格、以及這裡。這一個的成本是零 TSF ——
+    //   它在服務活著時**必然存在**,與有沒有宿主在用無關。
+    //
+    // ⚠ 這兩項**不碰** CommitVariantPref(那是簡繁那三項的路,
+    //   而且另一條線正在改那一段)。它們走 Engine::SetAsciiModeAll()。
+    const bool ascii = engine_ && engine_->AsciiMode();
+    ::AppendMenuW(menu, MF_STRING | (ascii ? MF_UNCHECKED : MF_CHECKED),
+                  IDM_TRAY_MODE_CN, UiText(UiString::kTrayModeChinese));
+    ::AppendMenuW(menu, MF_STRING | (ascii ? MF_CHECKED : MF_UNCHECKED),
+                  IDM_TRAY_MODE_EN, UiText(UiString::kTrayModeEnglish));
+  }
   ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   {
     // ⚠ 打勾用 MF_CHECKED 而不是自己畫。使用者要看得出**現在是哪一個**,
@@ -2297,6 +2397,13 @@ void SettingsWindow::OnTray(WPARAM /*w*/, LPARAM l) {
 
   if (cmd == IDM_TRAY_SETTINGS) {
     Open();
+  } else if (cmd == IDM_TRAY_MODE_CN || cmd == IDM_TRAY_MODE_EN) {
+    // 已經在 UI 執行緒上,直接做 —— 與簡繁那三項同一個理由:
+    // 「按下去」與「生效」中間隔一次訊息迴圈的話,使用者立刻去打字
+    // 會發現還沒切。
+    if (engine_) engine_->SetAsciiModeAll(cmd == IDM_TRAY_MODE_EN);
+    // 托盤那一格自己就是指示器,要跟著變。
+    RefreshTrayIcon(/*modify=*/true);
   } else if (cmd == IDM_TRAY_VAR_FOLLOW || cmd == IDM_TRAY_VAR_HANT ||
              cmd == IDM_TRAY_VAR_HANS) {
     // 已經在 UI 執行緒上,直接做。**不要**經過 PostMessage ——
