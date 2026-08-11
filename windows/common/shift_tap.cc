@@ -34,6 +34,15 @@ void ShiftTapState::Reset() {
   armed_time_ms_ = 0;
 }
 
+// 滑鼠 / 觸控 / 手寫筆動了宿主的文件。與「Shift 按住期間出現任何其他
+// 按鍵事件」走同一格 —— 那一段就是不再是「什麼都沒發生」了。
+//
+// ⚠ 與下面 OnKey 裡「不是 Shift 的鍵」那一段**逐字相同**,而且必須相同。
+//   兩者是同一條產品判準的兩半:一半看得到(按鍵),一半看不到(滑鼠)。
+void ShiftTapState::OnOtherInput() {
+  if (phase_ == ShiftTapPhase::kArmed) phase_ = ShiftTapPhase::kPoisoned;
+}
+
 ShiftTap ShiftTapState::OnKey(const KeyEvent& e, uint32_t time_ms) {
   // ── 不是 Shift 的鍵 ──────────────────────────────────────────
   //
