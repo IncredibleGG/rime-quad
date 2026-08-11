@@ -48,8 +48,22 @@ while [ $# -gt 0 ]; do
 done
 
 scan() {
-  REGISTRY="${REGISTRY}" SCAN_ROOT="$1" python3 - <<'PY'
+  REGISTRY="${REGISTRY}" SCAN_ROOT="$1" PYTHONIOENCODING=utf-8 python3 - <<'PY'
 import io, os, re, sys
+
+# ⚠ Windows runner 上 python 的 stdout 預設是 **cp1252**,而這支印的每一行
+#   都有中文 —— 第一個命中就會在 print 那裡 UnicodeEncodeError 炸掉。
+#   炸掉的樣子很難看:整支非零結束,所以 --self-check 看到「紅了」,
+#   但 out1.txt 裡一個字都沒有,於是它報「紅了,但沒有指名 RC-001」。
+#   也就是**守門紅得對不對本身驗不到**。實測 CI run 31539475582 的
+#   logic-x64 第 10 步(這支腳本第一次上 CI 就是這樣紅的)。
+#   外面已經給了 PYTHONIOENCODING,這裡再補一層:兩者任一生效即可,
+#   而 reconfigure 對「已經被別的東西設過 encoding」的情況也有效。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
 REGISTRY = os.environ["REGISTRY"]
 ROOT = os.environ["SCAN_ROOT"]
