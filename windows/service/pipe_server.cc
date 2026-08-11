@@ -745,10 +745,19 @@ void PipeServer::ServeClient(HANDLE pipe) {
         //   唯一的守門(verify_installer.sh §6g 案例二)正是那種東西。
         //   抽出去之後 tests/test_schema_choice.cc 驗得到它。
         //   而「這裡真的呼叫了它」由 audit_single_source.sh 規則 3 守。
+        //
+        // ⚠ 兩個參數的型別**刻意不同**(OnDiskPref / EngineCopyPref)。
+        //   同型別的舊簽章對調之後就是 648c02c 的原缺陷,而編譯器、純函式
+        //   測試、規則 3 全都看不見 —— 理由整段在 schema_choice.h 的
+        //   OnDiskPref 檔頭。這裡**不要**把它們拆成區域變數再傳:
+        //   規則 5 驗的是這一行實際的引數(設定檔那一格必須真的走
+        //   settings_->Load(),引擎那一格必須真的是 VariantPrefCopy()),
+        //   而它只看得到寫在呼叫裡的東西。
         const VariantPrefPick pick = PickVariantPrefForSchemaSwitch(
-            settings_ != nullptr,
-            settings_ ? settings_->Load().SchemaPref() : SchemaPreference(),
-            engine_->VariantPrefCopy());
+            settings_ ? OnDiskPref::FromSettingsFile(
+                            settings_->Load().SchemaPref())
+                      : OnDiskPref::Unreadable(),
+            EngineCopyPref(engine_->VariantPrefCopy()));
         engine_->SetVariantPref(pick.use);
         if (pick.engine_copy_was_stale) {
           // 只在真的過期時說話。這一行是「設定檔在服務跑著的時候被改掉」

@@ -265,6 +265,9 @@ const char* LangIdName(uint32_t langid);
 //   windows/audit_single_source.sh 的規則 3 在原始碼層面守
 //   (windows/service/ 在 Ubuntu 上編不起來,所以只能這樣守)。
 //   兩件事缺一不可:這裡守判斷、那裡守接線。
+//
+// ⚠ 而規則 3 **驗不到參數**(它數的是三個 token 在不在、誰先誰後)。
+//   那個縫隙很寬,見下面 OnDiskPref / EngineCopyPref 檔頭那一整段。
 struct VariantPrefPick {
   // 要交給 Engine::SetVariantPref 的那一份。
   SchemaPreference use;
@@ -281,9 +284,76 @@ struct VariantPrefPick {
 // 逐欄位比對。給 engine_copy_was_stale 用,順便讓「漏了哪一欄」測得到。
 bool SameSchemaPreference(const SchemaPreference& a, const SchemaPreference& b);
 
-VariantPrefPick PickVariantPrefForSchemaSwitch(
-    bool settings_readable, const SchemaPreference& on_disk,
-    const SchemaPreference& engine_copy);
+// ── 兩份偏好長得一模一樣 —— 所以用**型別**把它們分開 ──────────────
+//
+// ⚠ 這兩個包裝存在的唯一理由是「參數放錯位置要編不過」,不是封裝。
+//
+//   本函式的舊簽章是 `(bool, const SchemaPreference&, const SchemaPreference&)`。
+//   把後兩個**對調**,語意正好翻回 648c02c 的原缺陷 —— 拿引擎手上那份
+//   過期的複本去洗掉使用者剛在設定檔裡選的簡繁 —— 而:
+//
+//     · 編譯器一聲都不吭(兩個參數同型別、同 const 參考);
+//     · 本檔下面那一組純函式測試也全綠(它們自己傳的參數是對的);
+//     · audit_single_source.sh 規則 3 也全綠(它驗的是三個 token 在不在、
+//       誰先誰後,**不驗參數**);
+//     · 只有 verify_installer.sh §6g 案例二抓得到,而那支只有 Windows
+//       跑得動 —— 也就是開發機上等於沒有守門。實跑覆核過。
+//
+//   包一層之後,對調是**型別錯誤**,而型別錯誤在 run_logic_tests.sh
+//   (g++ 編 tests/)與 syntax_check_mingw.sh(mingw 編 service/)兩支上
+//   各紅一次。那比任何 grep 都硬:它不必猜參數長什麼樣,也繞不開。
+//   tests/test_schema_choice.cc 裡有兩條 static_assert 把「對調編不過」
+//   這件事本身釘住 —— 不然哪天有人加了隱式轉換,保護會安靜地消失。
+//
+// ⚠ 建構子一律 explicit / 具名工廠。留一個隱式轉換,SchemaPreference 就
+//   會自己變成任何一邊,上面整段就白寫了。
+
+// 設定檔那一份。
+//
+// ⚠ 「設定檔讀不到」折進**這個型別**是刻意的:舊簽章把它放在一個裸的
+//   `bool settings_readable`,而**永遠傳 false** 是同一個缺陷的另一個入口
+//   (永遠不讀設定檔 = 永遠拿引擎手上那份過期的),偏偏那個植入在原始碼上
+//   跟正常的長得一模一樣 —— 一個 `false` 而已。折進來之後,「不讀設定檔」
+//   只寫得成 `OnDiskPref::Unreadable()`,一個叫得出名字、找得到的東西,
+//   audit_single_source.sh 規則 5 就驗得到呼叫端有沒有真的走設定檔那條路。
+//
+// ⚠ 「讀不到」與「讀到一份預設值」不是同一件事:後者會把使用者存過的
+//   偏好換成「跟隨輸入模式」。所以 Unreadable() **沒有值**,不是預設值。
+class OnDiskPref {
+ public:
+  // 設定檔讀得到,這是它的內容。
+  static OnDiskPref FromSettingsFile(const SchemaPreference& v) {
+    OnDiskPref p;
+    p.readable_ = true;
+    p.value_ = v;
+    return p;
+  }
+  // 沒有 SettingsStore = 讀不到。**沒有內容**,呼叫端會 fail-open 沿用複本。
+  static OnDiskPref Unreadable() { return OnDiskPref(); }
+
+  bool readable() const { return readable_; }
+  // ⚠ readable() 為 false 時這一份沒有意義,不要用它。
+  const SchemaPreference& value() const { return value_; }
+
+ private:
+  OnDiskPref() = default;
+  bool readable_ = false;
+  SchemaPreference value_;
+};
+
+// 引擎手上那一份複本(Engine::VariantPrefCopy())。
+// engine.h 自己寫著「不是真相的來源」—— 它只在設定檔讀不到時才派得上用場。
+class EngineCopyPref {
+ public:
+  explicit EngineCopyPref(const SchemaPreference& v) : value_(v) {}
+  const SchemaPreference& value() const { return value_; }
+
+ private:
+  SchemaPreference value_;
+};
+
+VariantPrefPick PickVariantPrefForSchemaSwitch(const OnDiskPref& on_disk,
+                                               const EngineCopyPref& engine_copy);
 
 }  // namespace rimewin
 

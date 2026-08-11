@@ -249,22 +249,25 @@ bool SameSchemaPreference(const SchemaPreference& a, const SchemaPreference& b) 
          a.pinned_hans == b.pinned_hans && a.variant == b.variant;
 }
 
+// ⚠ 兩個參數的型別不同,而那是這一支唯一的防呆:對調就編不過。
+//   理由整段寫在 schema_choice.h 的 OnDiskPref 檔頭,不要「順手」把它們
+//   合回同一個型別 —— 合回去的那一刻,648c02c 的原缺陷就能無聲地復活。
 VariantPrefPick PickVariantPrefForSchemaSwitch(
-    bool settings_readable, const SchemaPreference& on_disk,
-    const SchemaPreference& engine_copy) {
+    const OnDiskPref& on_disk, const EngineCopyPref& engine_copy) {
   VariantPrefPick out;
-  if (!settings_readable) {
+  if (!on_disk.readable()) {
     // 讀不到設定 = 沒有比引擎手上那一份更好的來源。**不要**退回預設值:
     // 那會把使用者存過的偏好換成「跟隨輸入模式」,也就是同一個缺陷,
     // 只是換一個入口。
-    out.use = engine_copy;
+    out.use = engine_copy.value();
     out.from_settings_file = false;
     out.engine_copy_was_stale = false;  // 沒有東西可以比,不謊報
     return out;
   }
-  out.use = on_disk;              // 真相在設定檔,無條件
+  out.use = on_disk.value();      // 真相在設定檔,無條件
   out.from_settings_file = true;
-  out.engine_copy_was_stale = !SameSchemaPreference(on_disk, engine_copy);
+  out.engine_copy_was_stale =
+      !SameSchemaPreference(on_disk.value(), engine_copy.value());
   return out;
 }
 

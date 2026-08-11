@@ -7,6 +7,7 @@
 // Windows 端的版本是使用者實際回報過的:選了簡體輸入法,打出來全是繁體字。
 
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "../common/schema_choice.h"
@@ -706,6 +707,27 @@ TEST(updated_spare_plan_is_identical_to_a_freshly_built_one) {
 // ⚠ 這一組驗的是**判斷**。「pipe_server.cc 真的呼叫了它」是另一件事,
 //   由 windows/audit_single_source.sh 規則 3 在原始碼層面守。
 
+// ══ 參數放錯位置必須**編不過** ═══════════════════════════════════
+//
+// 這一格守的不是行為,是簽章。舊簽章的兩個 SchemaPreference 對調之後
+// 語意正好是 648c02c 的原缺陷(拿引擎手上那份過期的複本洗掉設定檔),
+// 而編譯器、下面那一整組測試、audit_single_source.sh 規則 3 **全部都是綠的**
+// —— 只有 verify_installer.sh §6g 案例二抓得到,而那支只有 Windows 跑得動。
+// 所以兩份偏好現在是兩個型別(schema_choice.h 的 OnDiskPref / EngineCopyPref)。
+//
+// ⚠ 為什麼要在測試檔裡再釘一次:型別保護會被一個「順手」加上的隱式轉換
+//   安靜地拆掉,而拆掉之後一支測試都不會紅。下面四條就是那個警報器。
+static_assert(std::is_invocable_v<decltype(&PickVariantPrefForSchemaSwitch),
+                                  OnDiskPref, EngineCopyPref>,
+              "正著傳必須編得過 —— 不然下面那一條反向斷言證明不了任何事");
+static_assert(!std::is_invocable_v<decltype(&PickVariantPrefForSchemaSwitch),
+                                   EngineCopyPref, OnDiskPref>,
+              "兩個偏好參數對調必須編不過(648c02c 的原缺陷)");
+static_assert(!std::is_constructible_v<OnDiskPref, SchemaPreference>,
+              "OnDiskPref 只能走具名工廠 —— 隱式轉換會讓上面那條失效");
+static_assert(!std::is_convertible_v<SchemaPreference, EngineCopyPref>,
+              "EngineCopyPref 的建構子必須是 explicit,理由同上");
+
 namespace {
 
 // 走真的檔案格式來回一趟:SetRaw → Serialize → Parse → SchemaPref()。
@@ -730,8 +752,8 @@ TEST(VariantPick_settings_file_beats_the_engines_stale_copy) {
   SchemaPreference engine_copy;
   engine_copy.variant = VariantPref::kTraditional;
 
-  const VariantPrefPick pick =
-      PickVariantPrefForSchemaSwitch(true, on_disk, engine_copy);
+  const VariantPrefPick pick = PickVariantPrefForSchemaSwitch(
+      OnDiskPref::FromSettingsFile(on_disk), EngineCopyPref(engine_copy));
   CHECK(pick.from_settings_file);
   CHECK(pick.engine_copy_was_stale);
   CHECK(pick.use.variant == VariantPref::kSimplified);
@@ -752,8 +774,8 @@ TEST(VariantPick_takes_the_file_even_when_the_copy_agrees) {
   // 「一樣的時候不用更新」是一個很容易寫進去的最佳化,而它把正確性
   // 押在 SameSchemaPreference 永遠不漏欄位上。這裡釘住:一律用設定檔那一份。
   const SchemaPreference on_disk = PrefFromSettingsText("traditional");
-  const VariantPrefPick pick =
-      PickVariantPrefForSchemaSwitch(true, on_disk, on_disk);
+  const VariantPrefPick pick = PickVariantPrefForSchemaSwitch(
+      OnDiskPref::FromSettingsFile(on_disk), EngineCopyPref(on_disk));
   CHECK(pick.from_settings_file);
   CHECK(!pick.engine_copy_was_stale);
   CHECK(pick.use.variant == VariantPref::kTraditional);
@@ -766,8 +788,10 @@ TEST(VariantPick_unreadable_settings_keeps_the_copy_not_the_default) {
   engine_copy.variant = VariantPref::kSimplified;
   engine_copy.pinned_global = "luna_pinyin";
 
-  const VariantPrefPick pick =
-      PickVariantPrefForSchemaSwitch(false, SchemaPreference(), engine_copy);
+  // ⚠ 「讀不到」現在是 OnDiskPref::Unreadable(),不是「傳一份預設值進去」——
+  //    後者長得跟「設定檔裡真的寫著預設值」一模一樣,而兩者的正確答案不同。
+  const VariantPrefPick pick = PickVariantPrefForSchemaSwitch(
+      OnDiskPref::Unreadable(), EngineCopyPref(engine_copy));
   CHECK(!pick.from_settings_file);
   CHECK(!pick.engine_copy_was_stale);  // 沒有東西可以比,不謊報
   CHECK(pick.use.variant == VariantPref::kSimplified);
@@ -798,7 +822,9 @@ TEST(VariantPick_the_select_schema_path_now_matches_session_new) {
                           ? VariantPref::kTraditional
                           : VariantPref::kSimplified;
       const SchemaPreference use =
-          PickVariantPrefForSchemaSwitch(true, on_disk, stale).use;
+          PickVariantPrefForSchemaSwitch(OnDiskPref::FromSettingsFile(on_disk),
+                                         EngineCopyPref(stale))
+              .use;
       bool got_simplified = false;
       const bool got_set = DecideVariant(langid, use, &got_simplified);
       CHECK(got_set == want_set);
