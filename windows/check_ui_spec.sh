@@ -2044,6 +2044,46 @@ ${w29out}" ;;
   #      不得無條件清空 —— 4 秒的計時器會把使用者剛拿到的紅字一起收走,
   #      而且不留任何痕跡。
   #   4. 序號守衛:連按三下時,前兩次的結果不可以寫進那一行。
+#
+# ⚠ **以上四條只守了去程。** 覆核者第二輪實跑三個單行還原,三個全綠:
+#     B1 ApplyDoneNotifier 的本體換成空的(名字還在,PostMessageW 沒了)
+#     B4 WndProc 的 case WM_RIME_APPLY_DONE 不再呼叫 OnApplyDone
+#     B5 OnApplyDone 成功那一支換成 (void)apply_ok_status_;
+#   而 BeginApply() 是**故意** KillTimer 的,所以少了回程,那一行會
+#   **永遠**停在「已送出,正在套用…」—— 不是 4 秒後消失,是不會消失。
+#   B1/B4 連失敗那一句紅字也一起沒了。
+#   更糟的是那一輪的守門把「4 個非同步套用點全部走 BeginApply() +
+#   ApplyDoneNotifier(同一個序號)」原樣印出來 —— **綠燈斷言的正好是
+#   當下已經壞掉的那個性質**。這與本條檔頭自己寫的存在理由(「上一輪
+#   修好了卻沒有守住」)是同一個形狀,只是往下游移了一格。
+#
+# 所以下面第 5、6 條**不針對 WM_RIME_APPLY_DONE 寫**,而是讓判準跟著
+# 「訊息從送出到畫面」這條鏈自己長:
+#
+#   5. settings_window.cc 裡**每一則** WM_RIME_xxx 都是一條鏈 ——
+#        有人送出(PostMessageW / SendMessageW,或交給 OS 當回呼)
+#      → WndProc 的 case 真的把它交出去(而不是一個空的 case)
+#      → 收下的那支處理常式**走得到**一次真正的視窗寫入
+#        (::SetWindowTextW / ::InvalidateRect / …,深度 5 以內)。
+#      呼叫圖是從檔案本身建出來的,所以 SetStatus() 被掏空成
+#      「記一筆 ticket 但不動控制項」也會紅 —— 那正是下游的下一格。
+#      新增一則 WM_RIME_xxx,這三格自動跟著長出來。
+#   6. **每一支回傳 std::function 的成員(通知工廠)**,回傳的那個
+#      lambda 本體裡都要有 PostMessageW/SendMessageW —— 它存在的唯一
+#      理由就是把結果搬回 UI 執行緒。B1 溜過去的方式是「名字在、本體
+#      空」,而只 grep 一個函式名字的判準對這個形狀是瞎的。
+#   7. OnApplyDone **兩支各自**都要寫畫面:失敗那一支要寫一句話,
+#      成功那一支要寫的是 BeginApply() 當初挑好的 apply_ok_status_
+#      (寫死成 kStatusApplied 的話,重設與「跟著輸入法語言」那兩個
+#      呼叫點的措辭就丟了)。
+#
+# ⚠ **這一條守到哪一格為止**:靜態掃描能走到「處理常式 → … →
+#   ::SetWindowTextW(控制項)」。**下一格**是「那個控制項在版面上看不
+#   看得見」—— IDC_STATUS 有沒有被捲出可視範圍、有沒有被 ShowWindow
+#   藏起來、字有沒有被截掉。那要版面計算或實跑才知道,不是這裡做得到
+#   的;W25(捲動)與 W11/W24(版面)守的是它,但沒有人把兩邊接起來。
+#   再下一格是「使用者看到的那句話是不是對的那句」—— UiText() 的內容
+#   由 W7/W8/W23 守。
   check
   local w34bad=0
   local w34out; w34out="$("${PY}" - "${CODE_DIR}" <<'PYSCRIPT'
@@ -2177,6 +2217,119 @@ else:
     ob, cb = body_after(sw, j)
     if '++apply_seq_' not in sw[ob:cb]:
         print('NOBUMP=1')
+
+# ── 5/6/7. 回程:訊息送出 → WndProc → 處理常式 → 畫面 ──────────
+
+UIWRITE = re.compile(
+    r'::(?:SetWindowTextW|SetDlgItemTextW|InvalidateRect|RedrawWindow|'
+    r'ShowWindow|SetWindowPos|MoveWindow|DrawTextW|SendMessageW|'
+    r'EnableWindow|TrackPopupMenu|SetForegroundWindow|SetActiveWindow|'
+    r'DestroyWindow|Shell_NotifyIconW|SetFocus)\s*\(')
+
+KEYWORDS = frozenset(('if', 'for', 'while', 'switch', 'catch', 'return',
+                      'sizeof', 'do', 'else', 'case', 'and', 'or', 'not'))
+
+def args_end(src, lparen, limit=4000):
+    # 有界的配對:字串裡的孤兒括號不會讓它掃到檔尾。
+    depth = 0
+    stop = min(len(src), lparen + limit)
+    for j in range(lparen, stop):
+        c = src[j]
+        if c == '(':
+            depth += 1
+        elif c == ')':
+            depth -= 1
+            if depth == 0:
+                return j + 1
+    return -1
+
+def index_functions(src):
+    # 「名字( 引數 ) {」而且不是關鍵字 —— 自由函式與成員定義都收。
+    # 呼叫點後面是 ';' 不是 '{',所以不會混進來;lambda 的 '(' 前面
+    # 是 ']',連名字都取不到。
+    idx = {}
+    for m in re.finditer(r'\b(\w+)\s*\(', src):
+        name = m.group(1)
+        if name in KEYWORDS:
+            continue
+        after = args_end(src, m.end() - 1)
+        if after < 0:
+            continue
+        mm = re.match(r'\s*(?:const\s*)?(?:noexcept\s*)?\{', src[after:after + 40])
+        if not mm:
+            continue
+        b0, b1 = match_from(src, after + mm.end() - 1)
+        idx.setdefault(name, []).append(src[b0:b1])
+    return idx
+
+FNS = index_functions(sw)
+
+def reaches_screen(name, depth=0, seen=None):
+    if seen is None:
+        seen = set()
+    if depth > 5 or name in seen or name not in FNS:
+        return False
+    seen.add(name)
+    for b in FNS[name]:
+        if UIWRITE.search(b):
+            return True
+        for c in re.findall(r'\b(\w+)\s*\(', b):
+            if c not in KEYWORDS and reaches_screen(c, depth + 1, seen):
+                return True
+    return False
+
+msgs = re.findall(r'constexpr UINT (WM_RIME_\w+)\s*=\s*WM_APP', sw)
+print('NMSG=%d' % len(msgs))
+wpb = max(FNS.get('WndProc', ['']), key=len)
+for msg in msgs:
+    posted = re.search(
+        r'::(?:Post|Send)(?:Thread)?MessageW\s*\([^;]{0,240}\b%s\b' % msg, sw)
+    handed = re.search(r'uCallbackMessage\s*=\s*%s\b' % msg, sw)
+    if not posted and not handed:
+        print('NOPOST=%s' % msg)
+    cm = re.search(r'case\s+%s\s*:' % msg, wpb)
+    if not cm:
+        print('NOCASE=%s' % msg)
+        continue
+    nxt = re.search(r'(?m)^\s*(?:case\s|default\s*:)', wpb[cm.end():])
+    arm = wpb[cm.end():cm.end() + (nxt.start() if nxt else len(wpb))]
+    handlers = re.findall(r'self->(\w+)\s*\(', arm)
+    if UIWRITE.search(arm):
+        continue
+    if not handlers:
+        print('NODISPATCH=%s' % msg)
+        continue
+    if not any(reaches_screen(h) for h in handlers):
+        print('NOSCREEN=%s|%s' % (msg, ','.join(handlers)))
+
+notifiers = list(re.finditer(r'std::function<[^>]*>\s+SettingsWindow::(\w+)\s*\(',
+                             sw))
+print('NNOTIF=%d' % len(notifiers))
+for m in notifiers:
+    ob, cb = body_after(sw, m.start())
+    b = sw[ob:cb]
+    lam = re.search(r'return\s*\[[^\]]*\]\s*\([^)]*\)\s*(?:mutable\s*)?\{', b)
+    if not lam:
+        print('NOLAMBDA=%s' % m.group(1))
+        continue
+    lb0, lb1 = match_from(b, lam.end() - 1)
+    if not re.search(r'::(?:Post|Send)(?:Thread)?MessageW\s*\(', b[lb0:lb1]):
+        print('EMPTYNOTIFIER=%s' % m.group(1))
+
+i = sw.find('void SettingsWindow::OnApplyDone(')
+if i >= 0:
+    ob, cb = body_after(sw, i)
+    b = sw[ob:cb]
+    fm = re.search(r'if\s*\(\s*!\s*ok\s*\)\s*\{', b)
+    if not fm:
+        print('NOFAILBRANCH=1')
+    else:
+        f0, f1 = match_from(b, fm.end() - 1)
+        if not re.search(r'Set(?:Transient)?Status\s*\(', b[f0:f1]):
+            print('FAILNOWRITE=1')
+        if not re.search(r'Set(?:Transient)?Status\s*\(\s*apply_ok_status_\s*\)',
+                         b[f1:]):
+            print('OKNOWRITE=1')
 PYSCRIPT
 )"
   local napply; napply="$(num "$(printf '%s\n' "${w34out}" | grep '^NAPPLY=' | cut -d= -f2)")"
@@ -2187,6 +2340,12 @@ PYSCRIPT
   need_scope "W34 非同步套用呼叫點" "${napply}" 4 || w34bad=1
   need_scope "W34 狀態列的票" "${ntkt}" 2 || w34bad=1
   need_scope "W34 收回訊息的地方" "${nwipe}" 2 || w34bad=1
+  local nmsg;   nmsg="$(num "$(printf '%s\n' "${w34out}" | grep '^NMSG=' | cut -d= -f2)")"
+  local nnotif; nnotif="$(num "$(printf '%s\n' "${w34out}" | grep '^NNOTIF=' | cut -d= -f2)")"
+  # ⚠ 分母:settings_window.cc 目前有 7 則自訂訊息、1 支通知工廠。
+  #   掃不到就是**判準跟著程式碼一起被拆了**,而那必須是紅的。
+  need_scope "W34 自訂訊息" "${nmsg}" 7 || w34bad=1
+  need_scope "W34 通知工廠" "${nnotif}" 1 || w34bad=1
   local w34line
   while IFS= read -r w34line; do
     case "${w34line}" in
@@ -2232,9 +2391,36 @@ PYSCRIPT
       NOBUMP=*)
         red "W34:BeginApply 沒有把 apply_seq_ 往前推 —— 序號守衛擋不掉任何東西"
         w34bad=1 ;;
+      NOPOST=*)
+        red "W34:${w34line#NOPOST=} 沒有任何人送出它(PostMessageW/SendMessageW,或交給 OS 當回呼)—— 收訊那一端的 case 會**永遠不會被叫到**,而發訊那一支的名字還在,grep 一個函式名字看不出來"
+        w34bad=1 ;;
+      NOCASE=*)
+        red "W34:WndProc 裡沒有 case ${w34line#NOCASE=} —— 送出去的那一則沒有人接,DefWindowProc 會安靜地吃掉它"
+        w34bad=1 ;;
+      NODISPATCH=*)
+        red "W34:WndProc 的 case ${w34line#NODISPATCH=} 是空的 —— 沒有交給任何處理常式、也沒有自己動畫面。訊息照送、case 照在,而畫面上那一行永遠停在送出當下那句話(BeginApply() 是故意 KillTimer 的,所以它不會自己消失)"
+        w34bad=1 ;;
+      NOSCREEN=*)
+        red "W34:${w34line%%|*} 交給了 ${w34line#*|},而那一支(往下 5 層)走不到任何一次真正的視窗寫入 —— 結果換回來了卻沒有換到畫面上"
+        w34bad=1 ;;
+      NOLAMBDA=*)
+        red "W34:SettingsWindow::${w34line#NOLAMBDA=} 回傳 std::function 卻不是 return [捕捉](…){…} 的形狀 —— 掃描範圍錯了"
+        w34bad=1 ;;
+      EMPTYNOTIFIER=*)
+        red "W34:SettingsWindow::${w34line#EMPTYNOTIFIER=} 回傳的 lambda 本體裡沒有 PostMessageW/SendMessageW —— **名字在、本體空**。引擎會乖乖呼叫它,而那一下什麼都不會發生"
+        w34bad=1 ;;
+      NOFAILBRANCH=*)
+        red "W34:OnApplyDone 裡找不到 if (!ok) 那一支 —— 失敗與成功走同一條路,而使用者只會看到成功"
+        w34bad=1 ;;
+      FAILNOWRITE=*)
+        red "W34:OnApplyDone 的失敗那一支沒有把任何一句話寫上去 —— 那一行會停在「已送出,正在套用…」,而工作其實已經失敗了"
+        w34bad=1 ;;
+      OKNOWRITE=*)
+        red "W34:OnApplyDone 的成功那一支沒有 Set(Transient)Status(apply_ok_status_) —— 要嘛沒把「正在套用…」換掉(它不會自己消失),要嘛把 BeginApply() 當初挑好的措辭丟了(重設是「已重設」、跟著輸入法語言是另一句)"
+        w34bad=1 ;;
     esac
   done <<< "${w34out}"
-  [ "${w34bad}" -eq 0 ] && ok "W34 ${napply} 個非同步套用點全部走 BeginApply() + ApplyDoneNotifier(同一個序號),Engine 那兩支排不進佇列時也會說,${ntkt} 張票都有人讀、${nwipe} 處收回訊息都先問過 StillShowing(),而 OnApplyDone 擋得掉過期的回覆"
+  [ "${w34bad}" -eq 0 ] && ok "W34 去程:${napply} 個非同步套用點全部走 BeginApply() + ApplyDoneNotifier(同一個序號),Engine 那兩支排不進佇列時也會說;回程:${nmsg} 則自訂訊息每一則都有人送出、WndProc 的 case 都真的交出去、收下的那支都走得到一次視窗寫入,${nnotif} 支通知工廠回傳的 lambda 本體裡都真的有 PostMessageW,OnApplyDone 擋得掉過期的回覆而且成功/失敗兩支各自都寫了畫面;${ntkt} 張票都有人讀、${nwipe} 處收回訊息都先問過 StillShowing()"
 
   # ── W35:失敗訊息不會自己消失 ──────────────────────────────────
   #
@@ -2676,6 +2862,11 @@ self_check() {
 "W34d 心跳解除改回無條件清空(覆核者實測的拆法 A4)|service/settings_window.cc|s=s.replace('      } else if (status_line_.StillShowing(engine_busy_ticket_)) {','      } else if (true) {',1)"
 "W34e 拿掉序號守衛(覆核者實測的拆法 A5)|service/settings_window.cc|s=s.replace('  if (seq != apply_seq_) return;' + chr(10),'',1)"
 "W34f 送出之後呼叫點又自己說了一次成功|service/settings_window.cc|s=s.replace('  engine_->ApplyVariantAll(settings_.SchemaPref(), ApplyDoneNotifier(seq));' + chr(10) + '  int vsel = 0;','  engine_->ApplyVariantAll(settings_.SchemaPref(), ApplyDoneNotifier(seq));' + chr(10) + '  SetTransientStatus(UiString::kStatusApplied);' + chr(10) + '  int vsel = 0;',1)"
+"W34h ApplyDoneNotifier 的本體被掏空,名字還在(覆核者實測的拆法 B1)|service/settings_window.cc|old='    if (h) ::PostMessageW(h, WM_RIME_APPLY_DONE, static_cast<WPARAM>(seq),' + chr(10) + '                          ok ? 1 : 0);'; new='    (void)h; (void)seq; (void)ok;'; s=s.replace(old,new,1)"
+"W34i WndProc 不再把 WM_RIME_APPLY_DONE 交給 OnApplyDone(覆核者實測的拆法 B4)|service/settings_window.cc|s=s.replace('      if (self) self->OnApplyDone(static_cast<unsigned>(w), l != 0);' + chr(10),'',1)"
+"W34j OnApplyDone 成功那一支什麼都不寫(覆核者實測的拆法 B5)|service/settings_window.cc|s=s.replace('  SetTransientStatus(apply_ok_status_);','  (void)apply_ok_status_;',1)"
+"W34k 成功那一句改回寫死,BeginApply 挑的措辭丟掉|service/settings_window.cc|s=s.replace('  SetTransientStatus(apply_ok_status_);','  SetTransientStatus(UiString::kStatusApplied);',1)"
+"W34l SetStatus 記了 ticket 卻不動控制項(回程的下一格)|service/settings_window.cc|s=s.replace('  SetText(hwnd_, IDC_STATUS, text.c_str());','  (void)text;',1)"
 "W34g 傳給完成通知的不是這一次拿到的序號|service/settings_window.cc|s=s.replace('  engine_->ApplyVariantAll(settings_.SchemaPref(), ApplyDoneNotifier(seq));' + chr(10) + '  int vsel = 0;','  engine_->ApplyVariantAll(settings_.SchemaPref(), ApplyDoneNotifier(seq - 1));' + chr(10) + '  int vsel = 0;',1)"
 "W31n5 全清那一發改成一個位元都不動(覆核者實測的拆法 N5)|service/ui_listview.cc|s=s.replace('  clear.stateMask = LVIS_SELECTED ' + chr(124) + ' LVIS_FOCUSED;','  clear.stateMask = 0;',1)"
 "W31n1 SelectOnlyRow 只清不設(覆核者實測的拆法 N1)|service/ui_listview.cc|k='  ::SendMessageW(list, LVM_SETITEMSTATE, static_cast<WPARAM>(row),' + chr(10) + '                 reinterpret_cast<LPARAM>(&set));' + chr(10); s=s.replace(k,'',1)"
