@@ -34,11 +34,7 @@ name: Windows (核心驗證 + TSF)
 
 on:
   push:
-<<<<<<< HEAD
-    branches: [main, windows, fix-win, fix2-winmsg, fix2-gates, fix3-win, fix4-winkey, win-next]
-=======
-    branches: [main, windows, fix-win, fix2-winmsg, fix2-gates, fix3-win, fix4-winkey, win-netgate, win-update]
->>>>>>> win-update
+    branches: [main, windows, fix-win, fix2-winmsg, fix2-gates, fix3-win, fix4-winkey, win-next, win-netgate, win-update, winbar]
   pull_request:
     branches: [main]
   workflow_dispatch:
