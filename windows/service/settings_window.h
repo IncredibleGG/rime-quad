@@ -73,7 +73,6 @@
 #include "update_service.h"
 #include "ui_font.h"
 #include "ui_theme.h"
-#include "update_check.h"
 
 namespace rimewin {
 

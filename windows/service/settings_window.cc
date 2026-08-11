@@ -17,7 +17,6 @@
 #include "status_bar.h"
 #include "ui_confirm.h"
 #include "ui_listview.h"
-#include "update_check.h"
 
 namespace rimewin {
 namespace {

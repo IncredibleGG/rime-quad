@@ -378,11 +378,6 @@ add_executable(rime_service
   service/settings_store.cc
   service/schema_store.cc
   service/settings_window.cc
-  # ⚠ 「檢查更新」的接縫。**這個檔案是 win-update 那條線要換掉的那一份**:
-  #   本輪只交出介面與呼叫點(背景執行緒、完成訊息、失敗分類),
-  #   真的去問版本的那一段還沒有。它不碰網路 API —— 連出去只能走
-  #   service/net_gate.cc,那是唯一的出口(audit_offline_win.sh 守著)。
-  service/update_check.cc
   service/status_bar.cc
   service/ui_listview.cc
   service/ui_font.cc
