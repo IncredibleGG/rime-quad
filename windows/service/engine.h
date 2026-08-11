@@ -248,6 +248,50 @@ class Engine {
   void MakeSpareOnEngineThread(uint32_t langid, const std::string& schema_id,
                                const std::vector<OptionAssign>& options);
 
+  // ── 選方案 + 套簡繁,一個不可分割的動作 ──────────────────────
+  //
+  // ⚠ **engine.cc 裡唯一允許出現 rs_select_schema 的地方。**
+  //   windows/audit_single_source.sh 在原始碼層面守這一條。
+  //
+  // 為什麼必須綁在一起:librime 的 ConcreteEngine::InitializeOptions()
+  // 在每一次載入方案時都會把 switches 重設回方案宣告的值(有 `reset:`
+  // 的那些)。luna_pinyin_tw 的 __patch 把 switches/@2/reset 設成 3,
+  // 所以換一次方案,zh_hant_tw 就被設回真、zh_hans 被設回假 ——
+  // 使用者剛選的簡體被悄悄洗掉。
+  //
+  // 這條路徑產品裡真的會走到:懸浮狀態列第三格的方案選單 →
+  // SelectSchemaAll → 之後沒有任何人重套簡繁。而使用者回報的「狀態列
+  // 說简、打出來是繁」與「那一橫」是同一個畫面上的兩件事。
+  //
+  // (emulator-5558 上實測過,scripts/verify_variant_persistence.sh 的
+  //  情境 B 與 C:裸選一次 → 候選變回「逆號 擬好」;選完立刻重套 →
+  //  仍然是「逆号 拟好」。)
+  //
+  // 回傳「真的換了方案」(schema_id 非空而且 rs_select_schema 成功)。
+  // schema_id 為空時不換方案,但**仍然重套一次簡繁** —— 保底不花錢。
+  //
+  // ⚠ 只能在引擎執行緒上呼叫。sess 是已經解出來的 rs_session。
+  bool SelectAndApply(uint64_t id, uintptr_t sess,
+                      const std::string& schema_id);
+
+  // 目前的簡繁偏好。SelectAndApply 要用它替換方案之後重算一次,
+  // 而 langid 由 session_lang_ 提供。
+  //
+  // ⚠ 它是**設定的複本**,不是真相的來源 —— 真相在設定檔。存一份是
+  //   因為 SelectAndApply 跑在引擎執行緒上,而讀設定檔要碰磁碟。
+  //   ApplyVariantAll 與設定存檔時更新它。
+  SchemaPreference variant_pref_;
+
+ public:
+  // 啟動時把設定檔裡那一份種進來。少了它,服務剛起來到使用者第一次改
+  // 設定之間,SelectAndApply 用的是**預設值**而不是他存過的偏好 ——
+  // 症狀是「換一次方案,簡繁跳回預設」,而他沒有碰過簡繁。
+  void SetVariantPref(const SchemaPreference& pref) {
+    Post("記下簡繁偏好", [&] { variant_pref_ = pref; });
+  }
+
+ private:
+
   // 以下三個只在引擎執行緒上呼叫。
   Snapshot TakeSnapshot(uint64_t id);
   Snapshot TakeSnapshotLocked(uintptr_t sess);

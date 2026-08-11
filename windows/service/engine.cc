@@ -394,6 +394,33 @@ void Engine::RequestSpareSession(uint32_t langid, const std::string& schema_id,
   });
 }
 
+// ⚠ **engine.cc 裡唯一允許出現 rs_select_schema 的地方**(見 engine.h)。
+//   windows/audit_single_source.sh 在原始碼層面守這一條。
+bool Engine::SelectAndApply(uint64_t id, uintptr_t sess,
+                            const std::string& schema_id) {
+  if (!sess) return false;
+  bool selected = false;
+  if (!schema_id.empty()) {
+    selected = rs_select_schema(sess, schema_id.c_str());
+    // 換方案失敗就不要再套簡繁 —— 那個 session 現在是什麼方案我們不知道,
+    // 而對一個沒選成功的方案套字形只會讓狀態更難解釋。
+    if (!selected) return false;
+  }
+  // 換方案會重建 context 並把 switches 重設回方案宣告的值,所以簡繁
+  // 一定要在**選完之後**才套。順序反過來的話,設的那一份會被洗掉,
+  // 而那是**靜默**的:畫面照舊、打出來的字變了。
+  auto it = session_lang_.find(id);
+  const uint32_t lang = (it == session_lang_.end()) ? 0u : it->second;
+  bool simplified = false;
+  // ⚠ 與建 session 時走的是**同一支** DecideVariant / PlanVariant。
+  //   兩份會漂移,而漂移的症狀是「改設定當下沒變、換個程式就變了」。
+  if (DecideVariant(lang, variant_pref_, &simplified)) {
+    for (const OptionAssign& a : PlanVariant(simplified, lang))
+      rs_set_option(sess, a.option, a.value);
+  }
+  return selected;
+}
+
 // ⚠ **只能在引擎執行緒上呼叫**(它直接碰 sessions_ / next_id_ 與 rs_*)。
 void Engine::MakeSpareOnEngineThread(uint32_t langid,
                                      const std::string& schema_id,
@@ -403,8 +430,14 @@ void Engine::MakeSpareOnEngineThread(uint32_t langid,
   const uint64_t id = next_id_++;
   sessions_[id] = s;
   session_lang_[id] = langid;
-  if (!schema_id.empty()) rs_select_schema(s, schema_id.c_str());
-  // 字形要在選方案**之後**才設(換方案會重建 context)。
+  // ⚠ 這裡走 SelectAndApply,而不是裸的 rs_select_schema —— 備用 session
+  //   也是 session,它一樣會被換方案洗掉簡繁。
+  //
+  //   接著才套 options:它是**呼叫端算好的完整計畫**(BuildOptionPlan),
+  //   含簡繁、標點、中英,而且 TakeSpareSession 會拿它比對。所以順序是
+  //   「選方案 → SelectAndApply 保底 → options 覆蓋」,最後生效的一定是
+  //   計畫裡那一份。
+  SelectAndApply(id, s, schema_id);
   for (const OptionAssign& a : options) rs_set_option(s, a.option, a.value);
   std::lock_guard<std::mutex> lock(spare_mu_);
   SparePlan p;
@@ -583,7 +616,9 @@ Result Engine::SelectSchema(uint64_t id, const std::string& schema_id) {
   Post("換方案", [&] {
     const uintptr_t sess = Find(id);
     if (!sess) return;
-    r.handled = rs_select_schema(sess, schema_id.c_str());
+    // ⚠ 換完一定要重套簡繁 —— 這條路徑是 SendSelectSchema 進來的,
+    //   而它以前是裸呼叫:使用者從設定裡換一次方案,他選的簡體就沒了。
+    r.handled = SelectAndApply(id, sess, schema_id);
     r.snap = TakeSnapshotLocked(sess);
   });
   return r;
@@ -678,6 +713,9 @@ void Engine::SetSessionLangId(uint64_t id, uint32_t langid) {
 
 void Engine::ApplyVariantAll(const SchemaPreference& pref) {
   Post("對所有 session 套簡繁", [&] {
+    // SelectAndApply 之後要用它重算 —— 少了這一行,使用者改完設定再
+    // 換一次方案,換回去的是**改設定之前**那一份簡繁。
+    variant_pref_ = pref;
     for (const auto& kv : sessions_) {
       auto it = session_lang_.find(kv.first);
       const uint32_t lang = (it == session_lang_.end()) ? 0u : it->second;
@@ -693,7 +731,12 @@ void Engine::ApplyVariantAll(const SchemaPreference& pref) {
 
 void Engine::SelectSchemaAll(const std::string& schema_id) {
   Post("對所有 session 換方案", [&] {
-    for (const auto& kv : sessions_) rs_select_schema(kv.second, schema_id.c_str());
+    // ⚠ 這是懸浮狀態列第三格那個方案選單走的路。它以前是裸呼叫,
+    //   於是「換一次方案」就把使用者選的簡繁洗掉,而畫面上那一格
+    //   還畫著舊的 —— 使用者回報的兩件事(那一橫、簡繁說謊)在這裡
+    //   是同一個缺陷。
+    for (const auto& kv : sessions_)
+      SelectAndApply(kv.first, kv.second, schema_id);
   });
 }
 
@@ -718,8 +761,11 @@ std::string Engine::ApplyChoice(uint64_t id, const std::string& schema_id,
   Post("套用方案與選項", [&] {
     const uintptr_t sess = Find(id);
     if (!sess) return;
-    if (!schema_id.empty() && rs_select_schema(sess, schema_id.c_str()))
-      chosen = schema_id;
+    // ⚠ 走 SelectAndApply(而不是裸的 rs_select_schema)。
+    //   它保底把簡繁套一次;接著 options 是呼叫端算好的完整計畫
+    //   (BuildOptionPlan:簡繁 + 標點 + 中英),覆蓋在上面。
+    //   兩者的簡繁部分一致 —— 都走 DecideVariant / PlanVariant。
+    if (SelectAndApply(id, sess, schema_id)) chosen = schema_id;
     // 字形要在選方案**之後**才設:換方案會重建 context,
     // 先設的話會被換方案那一步洗掉。
     for (const OptionAssign& a : options) rs_set_option(sess, a.option, a.value);

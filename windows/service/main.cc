@@ -317,6 +317,10 @@ void WarmUpEngine(rimewin::Engine* engine, rimewin::SettingsStore* store,
   const rimewin::Settings st = store ? store->Load() : rimewin::Settings();
   const rimewin::SchemaPreference pref = st.SchemaPref();
   const rimewin::Tri punct = st.Punctuation();
+  // ⚠ 把簡繁偏好種進引擎。Engine::SelectAndApply 每次換方案之後要用它
+  //   重算一次,而它在使用者第一次改設定之前都是**預設值** ——
+  //   少了這一行,症狀是「換一次方案,簡繁跳回預設」,而他沒有碰過簡繁。
+  if (engine) engine->SetVariantPref(pref);
 
   int warmed = 0;
   for (int wi = 0; wi < rimewin::kWarmUpLangIdCount; ++wi) {
