@@ -712,6 +712,35 @@ void Engine::SetSessionLangId(uint64_t id, uint32_t langid) {
 }
 
 void Engine::ApplyVariantAll(const SchemaPreference& pref) {
+  // ⚠ 先把備用池的**計畫**改掉,再去改真的 session。
+  //
+  //   TakeSpareSession 用 SameOptions 比對計畫,計畫不合就把那個備用
+  //   session 當場丟掉、當場重建。所以改完簡繁設定之後,如果不同步
+  //   更新備用池的計畫,**池子裡每一個 session 都會被判成過期** ——
+  //   正確性沒事,但 442~753 毫秒的 session 建立成本又回到使用者
+  //   等待的那一趟裡(SESSION_NEW 的預算是 300 毫秒)。
+  //
+  //   症狀:改完簡繁設定之後開的第一個程式,第一顆按鍵明顯變慢,
+  //   而使用者不會把「我剛改了設定」與那件事聯想在一起。
+  //
+  //   這與 SetAsciiModeAll 是同一個形狀,做法照抄它。
+  {
+    std::lock_guard<std::mutex> lock(spare_mu_);
+    for (auto& kv : spare_) {
+      bool simplified = false;
+      if (!DecideVariant(kv.first, pref, &simplified)) continue;
+      const std::vector<OptionAssign> plan = PlanVariant(simplified, kv.first);
+      // ⚠ 逐項就地覆蓋,不是 push_back。計畫的**順序**是契約的一部分
+      //   (SameOptions 是逐項比對),而 BuildOptionPlan 把簡繁那一組
+      //   放在最前面 —— 附加在尾巴會讓長度與順序都對不上,等於白做。
+      for (const OptionAssign& a : plan) {
+        for (OptionAssign& have : kv.second.options) {
+          if (std::string(have.option) == std::string(a.option))
+            have.value = a.value;
+        }
+      }
+    }
+  }
   Post("對所有 session 套簡繁", [&] {
     // SelectAndApply 之後要用它重算 —— 少了這一行,使用者改完設定再
     // 換一次方案,換回去的是**改設定之前**那一份簡繁。
@@ -725,6 +754,20 @@ void Engine::ApplyVariantAll(const SchemaPreference& pref) {
       if (!DecideVariant(lang, pref, &simplified)) continue;
       for (const OptionAssign& a : PlanVariant(simplified, lang))
         rs_set_option(kv.second, a.option, a.value);
+    }
+  });
+  // 備用 session 不在 sessions_ 的迴圈裡(它們在 spare_ 底下),
+  // 所以真的那一份也要另外設一次 —— 只改計畫不改 session,交出去的
+  // 會是一個計畫說簡體、實際還是繁體的 session,而那種錯誤是靜默的。
+  Post("對備用 session 套簡繁", [&] {
+    std::lock_guard<std::mutex> lock(spare_mu_);
+    for (const auto& kv : spare_) {
+      const uintptr_t sess = Find(kv.second.session);
+      if (!sess) continue;
+      bool simplified = false;
+      if (!DecideVariant(kv.first, pref, &simplified)) continue;
+      for (const OptionAssign& a : PlanVariant(simplified, kv.first))
+        rs_set_option(sess, a.option, a.value);
     }
   });
 }
