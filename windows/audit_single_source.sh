@@ -396,6 +396,38 @@ if not re.search(r'AdviseSink\(\s*IID_ITfTextEditSink', src):
     bad.append('text_service.cc 裡沒有 AdviseSink(IID_ITfTextEditSink —— '
                '介面實作了卻沒有掛到任何 context 上,一則通知都不會來')
 
+# ⚠ 上面那一條只驗「AdviseSink 那一行還在檔案裡」,而它住在 WatchContext
+#   的本體裡 —— Deactivate 的 WatchContext(nullptr) 讓那一行**永遠**留著。
+#   於是把**掛接的呼叫端**全部註解掉(5 處 WatchFocusedContext() /
+#   WatchContextOf()),AdviseSink 一次都執行不到,而三支守門仍然全綠:
+#   這是實跑出來的,不是推的。症狀與上面那三格一模一樣 —— 編得過、
+#   一個測試都不紅、S4 在**每一個**宿主裡都不生效。所以這裡再分函式驗
+#   一次「有沒有人真的去掛」,從入口一路到 AdviseSink 那一行。
+ATTACH_SITES = [
+    ('ActivateEx', None, 'WatchFocusedContext',
+     'ActivateEx(切過來的當下焦點可能已經在某個輸入框上了,'
+     '不主動掛一次的話那個輸入框裡一則 OnEndEdit 都不會有)'),
+    ('OnSetFocus', 'ITfDocumentMgr', 'WatchContextOf',
+     'ITfThreadMgrEventSink::OnSetFocus(換了輸入框就要換掛的 context)'),
+    ('OnPushContext', None, 'WatchFocusedContext',
+     'OnPushContext(context 堆疊動了,最上層那一個可能換人)'),
+    ('OnPopContext', None, 'WatchFocusedContext', 'OnPopContext(同上)'),
+    ('WatchFocusedContext', None, 'WatchContextOf',
+     'WatchFocusedContext(問焦點 → 掛)'),
+    ('WatchContextOf', None, 'WatchContext',
+     'WatchContextOf(取最上層 context → 掛)'),
+]
+for _name, _needle, _callee, _what in ATTACH_SITES:
+    _body = body_of(_name, _needle, _what)
+    if _body is None:
+        continue
+    if not re.search(r'\b%s\s*\(' % _callee, _body):
+        bad.append('%s 裡沒有呼叫 %s( —— ITfTextEditSink 掛不到任何 context '
+                   '上。AdviseSink 那一行還在(Deactivate 的 '
+                   'WatchContext(nullptr) 讓它永遠留著),所以上面那一條'
+                   '看不出來:編得過、一個測試都不紅,而 S4 在每一個宿主裡'
+                   '都不生效。' % (_what, _callee))
+
 # ── 餵了但把答案丟掉 = 沒餵 ──────────────────────────────────────
 #
 # 只數呼叫點的話,「保留 OnKey、把回傳值扔掉」會是綠的,而那與整個
@@ -423,7 +455,8 @@ if bad:
           '接線只有這一條守得到。' % len(bad), file=sys.stderr)
     raise SystemExit(1)
 print('   輕點 Shift 接線:%d 個餵入點 / %d 個重置點 / %d 個「看不到的輸入」'
-      '入口,都在該在的函式裡' % (total_feed, total_reset, total_other))
+      '入口 / %d 個掛接呼叫點,都在該在的函式裡'
+      % (total_feed, total_reset, total_other, len(ATTACH_SITES)))
 PY_SHIFT_TAP_WIRING
 
   # ── 規則 5:換方案那一趟,傳進去的**是哪兩份偏好** ────────────────
@@ -588,6 +621,7 @@ if [ "${1:-}" = "--self-check" ]; then
                shift_tap_no_other_input_on_end_edit \
                shift_tap_no_edit_sink_base shift_tap_no_edit_sink_qi \
                shift_tap_no_edit_sink_advise \
+               shift_tap_edit_sink_never_attached \
                variant_pick_swapped_sources \
                variant_pick_settings_always_unreadable; do
     tmp="$(mktemp -d)"
@@ -660,6 +694,13 @@ if [ "${1:-}" = "--self-check" ]; then
           "${tmp}/windows/tsf/text_service.cc" ;;
       shift_tap_no_edit_sink_advise)
         sed -i '/AdviseSink(IID_ITfTextEditSink/d' \
+          "${tmp}/windows/tsf/text_service.cc" ;;
+      # ⚠ 這一個是覆核時實跑出來的**漏網**:介面繼承、QueryInterface、
+      #   AdviseSink 那一行三格都在,只是**沒有人去呼叫掛接**。
+      #   (定義留著,只註解掉有縮排的呼叫行。)補這一條之前:三支全綠。
+      shift_tap_edit_sink_never_attached)
+        sed -i -e 's|^\([[:space:]]\+\)WatchFocusedContext();|\1// WatchFocusedContext();|' \
+               -e 's|^\([[:space:]]\+\)WatchContextOf(|\1// WatchContextOf(|' \
           "${tmp}/windows/tsf/text_service.cc" ;;
 
       # ── 規則 5 的兩個 ──────────────────────────────────────────
