@@ -1389,3 +1389,78 @@ bash 端再剝一次 `\r`。(同一個檔案早就為了 cp1252 的 stdout 編�
 
   前兩個里程碑(核心層、TSF)的細節保留在下面。
 - **iOS** — 未開始。
+
+
+---
+
+## Windows → macOS / Android：`rs_status.variant`、以及那一橫的可見性
+
+**2026-08-11，winbar 這條線。** 三件事，前兩件會影響你們的程式碼。
+
+### 1. `rs_status` 新增 `rs_variant variant`（ABI 純加法）
+
+```c
+typedef enum {
+  RS_VARIANT_UNKNOWN = 0,  /* 四個 radio 都為假 —— 前端應整格不顯示 */
+  RS_VARIANT_HANT = 1,
+  RS_VARIANT_HANS = 2
+} rs_variant;
+```
+
+由 `zh_hans` / `zh_hant` / `zh_hant_hk` / `zh_hant_tw` 四個選項算出來
+（`zh_hans` 優先;三種繁體任一為真 → HANT;四個都假 → UNKNOWN）。
+
+**⚠ `rs_status.is_simplified` 從今天起在本專案打包的方案上是沒有意義的。**
+
+它只反映 `simplification`，而 luna_pinyin 家族與 bopomofo 家族**沒有那個
+開關** —— 它們用的是上面那組互斥的 radio。而 `rs_set_option` 對一個不存在
+的選項**不會失敗**：librime 只是記下一個沒有人讀的選項，然後原樣回讀。
+所以任何前端從 `is_simplified` 讀到的，一直都是它自己剛寫進去的偏好。
+
+Windows 端使用者實機回報的形狀：設定裡選了簡體 → 狀態列畫「简」→
+打出來是繁體。**如果你們的簡繁指示器也讀 `is_simplified`，它有同一條
+缺陷。** 欄位是新增的，舊程式碼不受影響，兩端可以各自挑時間接上。
+
+⚠ 殘留（沒有解決，已開工單）：一個既沒有那組 radio、也沒有
+`simplification` 的第三方方案，`rs_set_option(zh_hans, true)` 仍然會被記下
+並回讀，`variant` 仍然會回 HANS 而輸出沒變。今天的 `rs_` API 問不出
+「這個方案有沒有宣告這個選項」（`core/include/rime_shell.h` 只有
+`rs_set_option` / `rs_get_option`，沒有任何 config API）。真解是
+`rs_schema_declares_option(schema_id, option)`。
+
+### 2. 「換方案」與「套簡繁」必須是一個不可分割的動作
+
+librime 的 `ConcreteEngine::InitializeOptions()` 在**每一次**載入方案時都會
+把 switches 重設回方案宣告的值（有 `reset:` 的那些）。`luna_pinyin_tw` 的
+`__patch` 把 `switches/@2/reset` 設成 3，所以換一次方案，`zh_hant_tw` 就
+被設回真、`zh_hans` 被設回假 —— 使用者剛選的簡體被悄悄洗掉。
+
+Windows 端本來有四個裸的 `rs_select_schema`，其中三個之後沒有重套簡繁。
+**如果你們也有多個換方案的呼叫點，值得查一次。**
+
+在 emulator-5558 上實測過（`scripts/verify_variant_persistence.sh`，四端
+都跑得動，純 librime + rime_shell）：裸選一次同一個方案 → 候選從
+「逆号 拟好」變回「逆號 擬好」;選完立刻重套 → 留得住。
+
+⚠ 順帶一個會影響判讀的實測：`shared/default.yaml` 的
+`switcher/save_options` 列著 `zh_hant` / `zh_hans` / `zh_hant_tw`
+（**沒有** `zh_hant_hk`），librime 會記住它們並在後來建的 session 上還原。
+所以「四個 radio 全假」在出貨設定下幾乎看不到 —— 驗證腳本要用
+**全新的 user 目錄**，否則量到的是上一次跑剩下的狀態。
+
+### 3. `ui-design.md` §12.10.6：懸浮狀態列的可見性（四端一致）
+
+新增一節，規範文字在那裡。摘要：跟著「這個輸入法目前有沒有被宿主使用」
+走（macOS = 至少一個 input client;Android = IME 被系統選中且輸入視窗
+存在），條件消失後 3000 毫秒才隱藏，恢復時**取消**待隱藏，重新出現時回到
+使用者拖過的同一個位置。焦點只是加強條件，**拿不到時一律視為「有」**。
+
+⚠ 自動隱藏**不是**關閉：它不改變使用者的總開關，條件恢復時自己回來。
+⚠ 每一端都必須有一個與那一橫無關、而且在這個輸入法沒被使用時仍然存在的
+入口通往設定。macOS 的 `NSStatusItem` 天生就有「只在該輸入法啟用時出現」
+的行為，兩端在這裡會對齊。
+
+Windows 端的實作：判準是純函式（`windows/common/bar_visibility.{h,cc}`，
+九支測試），service 只負責接線。§12.10.2 那一節也整節重寫了 —— 它原本的
+論證是「這一橫是中英切換唯一的家」，而那個前提在 fix4-winkey 註冊
+`PreserveKey{VK_SPACE, TF_MOD_CONTROL}` 之後就已經過期。
