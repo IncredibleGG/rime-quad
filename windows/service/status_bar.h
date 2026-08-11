@@ -130,6 +130,11 @@ class StatusBar {
   void SavePlacement();
   // 把三個輸入餵給狀態機,並把結果變成 ShowWindow。只在 UI 執行緒上跑。
   void EvaluateVisibility();
+  // 向引擎回讀一次,把結果貼進 ascii_mode_ / variant_ 並重畫。
+  //
+  // ⚠ 這一支取代了那三格的**樂觀寫入**。點下去之後畫面要不要變、變成
+  //   什麼,由引擎說了算 —— 而不是由「我們剛剛送出去了什麼」說了算。
+  void RefreshFromEngine();
 
   struct Cell {
     RECT rc{};

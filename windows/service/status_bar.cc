@@ -133,6 +133,33 @@ void StatusBar::OnHostFocus(bool focused) {
   if (thread_id_) ::PostThreadMessageW(thread_id_, WM_RIME_REFRESH, 0, 0);
 }
 
+// ⚠ 只在那一橫自己的 UI 執行緒上呼叫(它會阻塞在 Post 上等引擎回話,
+//   與既有的 SetAsciiModeAll 同一個風險類別,不引入新的)。
+void StatusBar::RefreshFromEngine() {
+  if (!engine_) return;
+  const Engine::StatusReadback rb = engine_->ReadBackStatus();
+  // ⚠ 一個活著的 session 都沒有 → **什麼都不改**。在這裡塞一份預設值
+  //   等於宣稱「現在是中文、繁體」,而那又是一次沒有證據的宣稱。
+  if (!rb.ok) return;
+  bool changed = false;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    const bool a = (rb.status_flags & kStAsciiMode) != 0;
+    const VariantCell v =
+        VariantCellFrom((rb.status_flags & kStVariantKnown) != 0,
+                        (rb.status_flags & kStSimplified) != 0);
+    if (a != ascii_mode_ || v != variant_) {
+      ascii_mode_ = a;
+      variant_ = v;
+      changed = true;
+    }
+  }
+  if (changed) {
+    Relayout();
+    ::InvalidateRect(hwnd_, nullptr, TRUE);
+  }
+}
+
 void StatusBar::EvaluateVisibility() {
   if (!hwnd_) return;
   BarVisibilityInputs in;
@@ -589,41 +616,40 @@ void StatusBar::ClickCell(int cell) {
     case kCellMode: {
       // ⚠ 這一格是這一輪最重要的一顆鍵。在它之前,Windows 使用者
       //   **完全沒有**中英切換 —— ascii_mode 從來沒有被設定過。
-      bool now;
-      {
-        std::lock_guard<std::mutex> lock(mu_);
-        now = ascii_mode_;
-        ascii_mode_ = !now;
-      }
-      if (engine_) engine_->SetAsciiModeAll(!now);
-      Relayout();
-      ::InvalidateRect(hwnd_, nullptr, TRUE);
+      //
+      // ⚠ 方向從**引擎**的行程層級狀態算,不是從畫面上那個字算。
+      //   拿畫面反推的話,只要畫面曾經與引擎不一致(而那正是這一輪在修
+      //   的東西),再按一次送的就是同一個值 —— 使用者會覺得這一格
+      //   只能往一個方向切。
+      if (!engine_) return;
+      engine_->SetAsciiModeAll(!engine_->AsciiMode());
+      // ⚠ **不樂觀寫入。** 立刻回讀,由引擎說現在是什麼。
+      RefreshFromEngine();
       return;
     }
     case kCellVariant: {
-      // ⚠ 這裡以前**只讀不寫** simplified_。而 simplified_ 全 windows/
-      //   只有一個寫入點(OnSnapshot),OnSnapshot 只在使用者真的打一個字
-      //   時才會來。後果有兩層:
-      //     · 按下去畫面完全不變(指示器在說謊);
-      //     · ClickCell 是拿 simplified_ 反推要送哪一個值,所以在打字之前
-      //       **再按一次送的是同一個值** —— 使用者會覺得這一格只能往
-      //       一個方向切。
-      //   第一格(中/En)在上面就是樂觀寫入的,兩格的行為必須一致。
-      bool now;
+      // ⚠ 這一格以前是**樂觀寫入**:點下去就自己翻,不等任何引擎的
+      //   證據。當時的理由很實際 —— variant_ 唯一的更新路徑是
+      //   OnSnapshot,而 OnSnapshot 要等使用者真的打一個字。但代價是
+      //   那一橫可以顯示一個從來沒有發生過的狀態,而使用者回報的
+      //   「畫面說简、打出來是繁」就是那個形狀的一種。
+      //
+      //   現在改成「送出去 → 立刻向引擎回讀」。回讀是證據,而且一樣
+      //   不需要使用者先打一個字。
+      bool now_simplified;
       {
         std::lock_guard<std::mutex> lock(mu_);
-        // ⚠ 樂觀寫入,而且 kHidden 被當成「現在是繁體」。兩件事都是
-        //   暫時的 —— 下一個 commit 換成點完立刻向引擎回讀,那才是證據。
-        now = variant_ == VariantCell::kSimplified;
-        variant_ = now ? VariantCell::kTraditional : VariantCell::kSimplified;
+        // ⚠ kHidden(引擎沒有回報字形)當成「現在不是簡體」,所以點下去
+        //   會切到簡體。那不是猜 —— 那是把使用者的意圖送出去,而畫面
+        //   仍然等引擎回話才改。
+        now_simplified = variant_ == VariantCell::kSimplified;
       }
       // 走設定視窗那一支,三條路(狀態列、系統匣、設定)共用同一份寫入 ——
       // 各寫一份會漂移,而漂移的症狀是「從這裡切有效、從那裡切無效」。
       if (settings_)
-        settings_->SetVariantPref(now ? VariantPref::kTraditional
-                                      : VariantPref::kSimplified);
-      Relayout();
-      ::InvalidateRect(hwnd_, nullptr, TRUE);
+        settings_->SetVariantPref(now_simplified ? VariantPref::kTraditional
+                                                 : VariantPref::kSimplified);
+      RefreshFromEngine();
       return;
     }
     case kCellSchema:
@@ -775,9 +801,16 @@ LRESULT CALLBACK StatusBar::PopupProc(HWND hwnd, UINT msg, WPARAM w,
            pick < static_cast<int>(self->popup_items_.size()))
               ? self->popup_items_[pick].first
               : std::string();
-      // ⚠ 與 简/繁 那一格同一個形狀:schema_name_ 只有 OnSnapshot 寫,
-      //   而 OnSnapshot 要等使用者真的打一個字。不樂觀寫入的話,選完方案
-      //   那一格上還印著舊方案的名字 —— 使用者會以為沒選到、再選一次。
+      // ⚠ 這裡以前也是樂觀寫入(直接把 schema_name_ 寫成選單上的名字)。
+      //   當時的理由是「不寫的話,選完方案那一格上還印著舊名字,使用者
+      //   會以為沒選到、再選一次」。
+      //
+      //   但方案名與簡繁不一樣:它是**選單上那一項自己的字面**,不是
+      //   一個我們推測出來的引擎狀態 —— 使用者點的就是這一項。真正
+      //   不誠實的是「選了但其實沒選成功」,而那件事現在由
+      //   SelectSchemaAll 之後的回讀來收:方案名照舊先寫上去(它是使用者
+      //   剛剛點的東西),中英與簡繁則等引擎回話 ——
+      //   換方案會把 switches 重設,那一格必須跟著動。
       const std::string picked_name =
           (inside && pick >= 0 &&
            pick < static_cast<int>(self->popup_items_.size()))
@@ -790,6 +823,10 @@ LRESULT CALLBACK StatusBar::PopupProc(HWND hwnd, UINT msg, WPARAM w,
           self->schema_name_ = picked_name;
         }
         self->engine_->SelectSchemaAll(id);
+        // ⚠ 換方案之後那一格**一定會變**(SelectAndApply 會重套簡繁,
+        //   而新方案宣告的字形也可能不同)。不回讀的話,那一格會停在
+        //   換方案之前的字面,直到使用者打一個字。
+        self->RefreshFromEngine();
         self->Relayout();
         ::InvalidateRect(self->hwnd_, nullptr, TRUE);
       }
@@ -914,6 +951,10 @@ LRESULT CALLBACK StatusBar::WndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
       //   半秒一次,而 3000 毫秒的遲滯用半秒的解析度綽綽有餘。
       //   多一顆計時器就多一條要對齊的時序。
       self->EvaluateVisibility();
+      // ⚠ 順便保鮮:引擎那一側可能被別的路徑改了(設定視窗、系統匣、
+      //   方案自己的按鍵),而那些路徑不會通知這一橫。半秒問一次,
+      //   沒變就什麼都不做(RefreshFromEngine 自己會比對)。
+      self->RefreshFromEngine();
       return 0;
     }
     case WM_DPICHANGED: {

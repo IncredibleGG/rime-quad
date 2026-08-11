@@ -798,6 +798,41 @@ std::string Engine::SchemaOfSession(uint64_t id) {
   return out;
 }
 
+Engine::StatusReadback Engine::ReadBackStatus() {
+  StatusReadback out;
+  Post("回讀狀態", [&] {
+    // 挑一個活著的 session。沒有就退而求其次用備用池裡的 ——
+    // 它們的選項是照同一份計畫配的,回讀出來的是同一件事。
+    uintptr_t sess = 0;
+    if (!sessions_.empty()) sess = sessions_.begin()->second;
+    if (!sess) {
+      std::lock_guard<std::mutex> lock(spare_mu_);
+      if (!spare_.empty()) sess = Find(spare_.begin()->second.session);
+    }
+    // ⚠ 一個都沒有 → ok 維持 false,呼叫端**什麼都不要改**。
+    //   在這裡回一份預設值等於宣稱「現在是中文、繁體」,而那又是
+    //   一次沒有證據的宣稱。
+    if (!sess) return;
+    out.ok = true;
+    if (rs_get_option(sess, "ascii_mode")) out.status_flags |= kStAsciiMode;
+    // ⚠ 簡繁**不讀 `simplification`**。理由見 common/status_cells.h:
+    //   本專案打包的方案通通沒有那個開關,而 rs_set_option 對不存在的
+    //   選項不會失敗、會原樣記下並回讀 —— 讀它等於讀自己寫進去的回音。
+    // ⚠ 用字面名字而不是 kVariantOptions[i]:那個陣列的順序是
+    //   PlanVariant 的「先關再開」用的,拿索引對應欄位等於把兩件無關的
+    //   東西綁在一起 —— 哪天順序調了,這裡會靜默地讀錯欄位。
+    VariantOptions vo;
+    vo.zh_hans = rs_get_option(sess, "zh_hans");
+    vo.zh_hant = rs_get_option(sess, "zh_hant");
+    vo.zh_hant_hk = rs_get_option(sess, "zh_hant_hk");
+    vo.zh_hant_tw = rs_get_option(sess, "zh_hant_tw");
+    const VariantCell v = VariantCellFromOptions(vo);
+    if (v != VariantCell::kHidden) out.status_flags |= kStVariantKnown;
+    if (v == VariantCell::kSimplified) out.status_flags |= kStSimplified;
+  });
+  return out;
+}
+
 std::string Engine::ApplyChoice(uint64_t id, const std::string& schema_id,
                                 const std::vector<OptionAssign>& options) {
   std::string chosen;

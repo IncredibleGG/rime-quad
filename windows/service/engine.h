@@ -203,6 +203,29 @@ class Engine {
   bool SetOption(uint64_t id, const char* option, bool value);
   std::string SchemaOfSession(uint64_t id);
 
+  // ── 向引擎回讀「現在到底是什麼狀態」──────────────────────────
+  //
+  // ⚠ 這一支存在的理由是一個真的缺陷:懸浮狀態列那三格以前是**樂觀
+  //   寫入** —— 點下去就自己翻,不等任何引擎的證據。理由當時很實際
+  //   (那三格唯一的更新路徑是 OnSnapshot,而 OnSnapshot 要等使用者
+  //   真的打一個字),但代價是那一橫可以顯示一個從來沒有發生過的狀態。
+  //   使用者回報的「畫面說简、打出來是繁」就是那個形狀的一種。
+  //
+  //   回讀是**證據**,而且一樣不需要使用者先打一個字。
+  //
+  // ⚠ 刻意用 rs_get_option 而不是 rs_snapshot_acquire:acquire 會在當下
+  //   消費掉待取的 commit(rime_shell.h 檔頭),而這一支是使用者點那一橫
+  //   時呼叫的 —— 那時完全可能有一個還沒送到宿主的 commit。
+  //   吃掉它的症狀是「打到一半的字消失了」,而且查不出來。
+  //
+  // 回傳 protocol.h 的 status_flags 形式,與 OnSnapshot 吃的是同一種
+  // 東西 —— 兩條路徑產生兩種格式的話,那一橫就會有兩套解讀。
+  struct StatusReadback {
+    bool ok = false;  // 一個活著的 session 都沒有 → 什麼都不要改
+    uint32_t status_flags = 0;
+  };
+  StatusReadback ReadBackStatus();
+
   // 把「這個語言該用什麼」套到一個 session 上。回傳實際選中的方案 id
   // (沒有選就回空字串)。
   std::string ApplyChoice(uint64_t id, const std::string& schema_id,
