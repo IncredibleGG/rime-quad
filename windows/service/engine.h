@@ -163,7 +163,9 @@ class Engine {
   // ⚠ on_ready 跑在**工作者執行緒**上,不是 UI 執行緒。它裡面只能做
   //   跨執行緒安全的事 —— 設定視窗傳進來的那一份只做一件:PostMessageW。
   // ⚠ on_ready 捕捉的每一樣東西都必須傳值(見 common/work_queue.h)。
-  void RefreshSchemaListAsync(std::function<void()> on_ready);
+  // ⚠ 回傳 false = 沒有入列,on_ready **不會**被呼叫。呼叫端如果用一個
+  //   「已經有一件在飛」的旗標擋重複排隊,那個旗標就會永遠卡在 true。
+  bool RefreshSchemaListAsync(std::function<void()> on_ready);
 
   // 有上限的一次方案清單查詢。逾時回 false,而 out 保持不動 ——
   // 呼叫端**必須**據此收手,不可以把一份沒被填過的清單當成

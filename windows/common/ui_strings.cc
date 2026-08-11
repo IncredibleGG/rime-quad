@@ -114,6 +114,11 @@ namespace {
   X(kThemeFollowSystem, L"Follow system", L"跟著系統", L"跟着系统")            \
   X(kThemeLight, L"Light", L"淺色", L"浅色")                                   \
   X(kThemeDark, L"Dark", L"深色", L"深色")                                     \
+  /* ⚠ 懸浮那一橫的方案選單:快取冷的時候先開一個**說得出話**的選單。 */ \
+  /* 舊版是擋 UI 執行緒 1.5 秒、逾時就什麼都不做 —— 使用者按了一下   */ \
+  /* 沒事發生,而那一橫在那 1.5 秒裡點不動也拖不動。                  */ \
+  X(kStatusBarSchemaLoading, L"Getting the list...",                          \
+    L"正在讀方案…", L"正在读方案…")                                          \
   X(kStatusBarHeading, L"The little bar", L"那一小橫", L"那一小横")            \
   X(kStatusBarBlurb,                                                           \
     L"A small bar you can drag anywhere. It is the only place to switch "      \

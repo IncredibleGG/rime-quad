@@ -96,6 +96,7 @@ enum class UiString : int {
   kThemeFollowSystem,
   kThemeLight,
   kThemeDark,
+  kStatusBarSchemaLoading,
   kStatusBarHeading,
   kStatusBarBlurb,
   kStatusBarShow,

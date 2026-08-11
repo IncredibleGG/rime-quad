@@ -1308,6 +1308,109 @@ PYSCRIPT
   done <<< "${w31out}"
   [ "${w31bad}" -eq 0 ] && ok "W31 清單的選取只有一個寫入點(${nset} 處 LVM_SETITEMSTATE 全在 ui_listview.cc),${nman} 個受管清單的反白都從自己的狀態畫"
 
+  # ── W32:介面執行緒上不准出現「會等引擎」的呼叫 ────────────────
+  #
+  # #79 的根因只有一句話:**UI 執行緒把自己的存活押在引擎的工作何時
+  # 回來。** 設定視窗與懸浮那一橫各有自己的訊息迴圈,它們一停,
+  # GetMessageW 就再也不會被呼叫 —— 畫面停在最後一格合成的樣子,
+  # 任何點擊都沒有人處理,而系統匣圖示也掛在設定視窗那條執行緒上。
+  #
+  # ⚠ 「有上限的等待」**不算修好**。status_bar.cc 上一輪就是這樣寫的:
+  #   `SchemaListForUi(1500, &popup_items_)` —— 那一橫凍結 1.5 秒
+  #   (點不動也拖不動),逾時就什麼都不做(按了一下沒事發生),
+  #   而且**每按一次就再排一件**進佇列。BeginDeploy 會清方案快取,
+  #   所以整個部署期間每一次按都走這條路,可以無限累積。
+  #
+  # 判準:那兩個檔案裡只准出現不等的那幾支(SchemaListFromCache /
+  # RefreshSchemaListAsync / PostAsync),會等的那幾支一律紅。
+  # 另外:排非同步查詢之前必須先問過「已經有一件在飛了嗎」。
+  check
+  local w32bad=0
+  local w32out; w32out="$("${PY}" - "${CODE_DIR}" <<'PYSCRIPT'
+import os, re, sys
+root = sys.argv[1]
+
+UI = ['service/status_bar.cc', 'service/settings_window.cc']
+# 會等引擎回來的那幾支。⚠ SchemaListCached() 名字裡有 Cached,但快取冷的
+#   時候它會退回同步的 SchemaList() —— 正是最容易被誤放進 UI 的一支。
+# ⚠ 一律用 \b 前綴比對。`ReloadSchemaList()` 這個**產品端自己的**函式名
+#   裡就含有 `SchemaList()` —— 純子字串比對會把它報成違規,而一條永遠
+#   紅的檢查最後一定會被關掉(§3.1 的教訓)。
+BLOCKING = [r'\bSchemaListForUi\(', r'\bSchemaListCached\(',
+            r'\bSchemaList\(\)', r'\bWaitDeploy\(']
+ASYNC = [r'\bSchemaListFromCache\(', r'\bRefreshSchemaListAsync\(',
+         r'\bPostAsync\(']
+
+def read(rel):
+    try:
+        return open(os.path.join(root, rel), encoding='utf-8',
+                    errors='replace').read()
+    except OSError:
+        return None
+
+nasync = 0
+for rel in UI:
+    txt = read(rel)
+    if txt is None:
+        print('NOFILE=%s' % rel)
+        continue
+    for b in BLOCKING:
+        if re.search(b, txt):
+            pretty = b.replace('\\b', '').replace('\\(', '(')
+            pretty = pretty.replace('\\)', ')')
+            print('BLOCKING=%s 裡有 %s' % (rel, pretty))
+    for a in ASYNC:
+        nasync += len(re.findall(a, txt))
+print('NASYNC=%d' % nasync)
+
+# 排隊之前要先問「已經有一件在飛了嗎」。
+bar = read('service/status_bar.cc') or ''
+i = bar.find('void StatusBar::OpenSchemaPopup(')
+if i < 0:
+    print('NOOPEN=1')
+else:
+    j = bar.find('{', i)
+    depth = 0
+    body = ''
+    for k in range(j, len(bar)):
+        if bar[k] == '{':
+            depth += 1
+        elif bar[k] == '}':
+            depth -= 1
+            if depth == 0:
+                body = bar[j:k + 1]
+                break
+    post = body.find('RefreshSchemaListAsync(')
+    gate = body.find('schema_query_inflight_')
+    if post < 0:
+        print('NOPOST=1')
+    elif gate < 0 or gate > post:
+        print('NOGATE=1')
+PYSCRIPT
+)"
+  local nasync; nasync="$(num "$(printf '%s\n' "${w32out}" | grep '^NASYNC=' | cut -d= -f2)")"
+  # ⚠ 範圍非空:那兩個檔案本來就靠這幾支拿方案清單。掃到零個而報「乾淨」
+  #   等於「兩個檔案都被改名了而我沒發現」。
+  need_scope "W32 非同步呼叫" "${nasync}" 3 || w32bad=1
+  local w32line
+  while IFS= read -r w32line; do
+    case "${w32line}" in
+      BLOCKING=*)
+        red "W32:${w32line#BLOCKING=} —— 那一支會等引擎回來,而這個檔案跑在介面執行緒上(#79)。有上限的等待也不行:1.5 秒的凍結仍然是凍結"
+        w32bad=1 ;;
+      NOFILE=*)
+        red "W32:找不到 ${w32line#NOFILE=} —— 掃描範圍錯了"
+        w32bad=1 ;;
+      NOOPEN=*|NOPOST=*)
+        red "W32:找不到 OpenSchemaPopup 裡那次非同步查詢 —— 掃描範圍錯了"
+        w32bad=1 ;;
+      NOGATE=*)
+        red "W32:OpenSchemaPopup 排非同步查詢之前沒有先問 schema_query_inflight_ —— 部署期間快取一直是冷的,每按一次就多排一件沒有人讀的工作"
+        w32bad=1 ;;
+    esac
+  done <<< "${w32out}"
+  [ "${w32bad}" -eq 0 ] && ok "W32 介面執行緒上沒有會等引擎的呼叫(${nasync} 處走不等的那幾支),而且方案查詢不會每按一次就多排一件"
+
   # ── W29:連網那一頁,三件事的決定權都不在繪製碼裡 ─────────────
   #
   # 這一頁上有三件事,寫壞了**畫面看起來完全正常**:
@@ -1559,6 +1662,8 @@ self_check() {
 "W27c 不讀線路上的旗標|service/status_bar.cc|s=s.replace('SnapshotSaysNotReady(snap.status_flags)','false',1)"
 "W27d 事實少餵一格|service/status_bar.cc|s=s.replace('  facts.engine_says_not_ready = engine_not_ready_.load();','  facts.engine_says_not_ready = false;',1)"
 "W28 自繪直接用 nmcd.rc|service/settings_window.cc|s=s.replace('LRESULT SettingsWindow::DrawSchemaList(NMLVCUSTOMDRAW* cd) {','LRESULT SettingsWindow::DrawSchemaList(NMLVCUSTOMDRAW* cd) { RECT sneaky = cd->nmcd.rc; (void)sneaky;',1)"
+"W32 那一橫又擋 UI 執行緒 1.5 秒|service/status_bar.cc|s=s.replace('  popup_loading_ = !engine_->SchemaListFromCache(&popup_items_);','  popup_loading_ = !engine_->SchemaListForUi(1500, &popup_items_);',1)"
+"W32b 每按一次就多排一件|service/status_bar.cc|s=s.replace('if (popup_loading_ && !schema_query_inflight_) {','if (popup_loading_) {',1)"
 "W31j 側欄反白改回從 CDIS_SELECTED 畫(覆核者實測的拆法 J)|service/settings_window.cc|s=s.replace('      const bool selected = (i == page_);','      const bool selected = (cd->nmcd.uItemState & CDIS_SELECTED) != 0;',1)"
 "W31k SelectOnlyRow 拿掉先全清(覆核者實測的拆法 K)|service/ui_listview.cc|s=s.replace('  ::SendMessageW(list, LVM_SETITEMSTATE, static_cast<WPARAM>(-1),' + chr(10) + '                 reinterpret_cast<LPARAM>(&clear));','',1)"
 "W31s 方案清單又自己下 LVM_SETITEMSTATE|service/settings_window.cc|s=s.replace('void SettingsWindow::SelectSchemaRow(int row) {','void SettingsWindow::SelectSchemaRow(int row) { LVITEMW sneaky{}; ::SendMessageW(schema_list_, LVM_SETITEMSTATE, 0, reinterpret_cast<LPARAM>(&sneaky));',1)"

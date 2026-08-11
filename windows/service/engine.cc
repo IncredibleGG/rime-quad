@@ -524,10 +524,10 @@ bool Engine::SchemaListFromCache(
   return true;
 }
 
-void Engine::RefreshSchemaListAsync(std::function<void()> on_ready) {
+bool Engine::RefreshSchemaListAsync(std::function<void()> on_ready) {
   // ⚠ on_ready **傳值**捕捉進工作。這一支返回時工作通常還沒開始跑,
   //   呼叫端的框隨時會消失(見 common/work_queue.h 的檔頭)。
-  queue_.Post("列方案(介面,非同步)", [this, on_ready] {
+  return queue_.Post("列方案(介面,非同步)", [this, on_ready] {
     ListSchemasOnWorker();
     if (on_ready) on_ready();
   });

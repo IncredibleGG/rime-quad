@@ -107,6 +107,11 @@ class StatusBar {
   void ClickCell(int cell);
   void OpenSchemaPopup();
   void ClosePopup();
+  // 選單現在有幾列(還在讀的時候是 1 —— 那一列是一句話,不是一個方案)。
+  int PopupRowCount() const;
+  // 依目前的列數把選單擺好。⚠ 開的時候與**讀完之後換內容**都要走它:
+  //   列數變了而視窗大小沒變,結果是一個切一半的選單。
+  void PlacePopup();
   // ⚠ 寬度由呼叫端給(0 = 用視窗現在的寬度)。Relayout 改了寬度之後
   //   一定要重走這一支 —— 只長寬度不重擺,右端會被推出螢幕。
   void ApplyPlacement(int w_dip);
@@ -177,6 +182,24 @@ class StatusBar {
 
   std::vector<std::pair<std::string, std::string>> popup_items_;
   int popup_hot_ = -1;
+  // ── ⚠ 這一格以前是「擋 UI 執行緒 1.5 秒」 ──────────────────────
+  //
+  //   舊版:`if (!engine_->SchemaListForUi(1500, &popup_items_)) return;`
+  //   跑在懸浮那一橫自己的 UI 執行緒上,而那條執行緒停住的樣子是
+  //   「那一橫還在畫面上,但點不動也拖不動」。逾時之後什麼都不做 ——
+  //   使用者按了一下沒事發生。
+  //
+  //   而 BeginDeploy 會 InvalidateSchemaCache(),所以**整個部署期間**
+  //   每一次按都走冷快取:1.5 秒凍結 + 選單不開 + 佇列多一件沒有人讀的
+  //   工作,可以無限累積。
+  //
+  //   現在:快取有就直接開;沒有就**立刻**開一個說得出話的選單
+  //   (kStatusBarSchemaLoading),背景查完再換成真的清單。
+  bool popup_loading_ = false;
+  // 已經有一件查詢在飛。⚠ 沒有這個閘就是「按 20 下 = 佇列裡 20 件」。
+  //   只在那一橫自己的執行緒上讀寫(開選單、收 WM_RIME_SCHEMAS_READY),
+  //   所以不需要 atomic。
+  bool schema_query_inflight_ = false;
 };
 
 }  // namespace rimewin

@@ -26,6 +26,10 @@ constexpr UINT WM_RIME_REFRESH = WM_APP + 1;
 constexpr UINT WM_RIME_SHOW = WM_APP + 2;
 constexpr UINT WM_RIME_QUIT = WM_APP + 3;
 constexpr UINT WM_RIME_THEME = WM_APP + 4;
+// 引擎那一頭把方案清單查回來了(快取已經填好)。
+// ⚠ 由**引擎執行緒** PostThreadMessage 過來,所以它不帶任何指標;
+//   要用的東西這一頭自己去快取拿。見 OpenSchemaPopup。
+constexpr UINT WM_RIME_SCHEMAS_READY = WM_APP + 5;
 
 // ── ⚠ 為什麼要一顆計時器 ────────────────────────────────────────
 //
@@ -222,6 +226,22 @@ void StatusBar::ThreadMain() {
           ::InvalidateRect(hwnd_, nullptr, TRUE);
           continue;
         }
+        case WM_RIME_SCHEMAS_READY:
+          schema_query_inflight_ = false;
+          // 選單還開著而且還在等 —— 換成真的清單。
+          if (popup_ && popup_loading_) {
+            popup_items_.clear();
+            if (engine_ && engine_->SchemaListFromCache(&popup_items_) &&
+                !popup_items_.empty()) {
+              popup_loading_ = false;
+              popup_hot_ = -1;
+              PlacePopup();  // 列數變了,視窗要跟著長
+              ::InvalidateRect(popup_, nullptr, TRUE);
+            }
+            // ⚠ 還是拿不到的話**不要把選單關掉**:使用者會以為自己
+            //   點錯了。那句「正在讀方案…」留著,下一次按會再問一次。
+          }
+          continue;
         case WM_RIME_QUIT:
           ClosePopup();
           ::KillTimer(hwnd_, kStateTimer);
@@ -587,39 +607,64 @@ void StatusBar::ClickCell(int cell) {
 //   正常關閉,而那就是搶焦點 —— 使用者正在打字的輸入框會失去插入點,
 //   而「在句子中間改東西」正是這一橫存在的理由。用自己的小窗 + 滑鼠捕捉。
 
+int StatusBar::PopupRowCount() const {
+  // 還在讀的時候是一列 —— 那一列是**一句話**,不是一個方案。
+  return popup_loading_ ? 1 : static_cast<int>(popup_items_.size());
+}
+
+void StatusBar::PlacePopup() {
+  if (!popup_ || !hwnd_) return;
+  const int row_h = Dip(metric::kSidebarItemH, dpi_);
+  const int w = Dip(200, dpi_);
+  const int h = row_h * PopupRowCount() + 2 * Dip(space::s2, dpi_);
+  RECT bar{};
+  ::GetWindowRect(hwnd_, &bar);
+  const int x = bar.left + cells_[kCellSchema].rc.left;
+  // 往上開;上面放不下就往下。⚠ 讀完之後列數會變,所以這一段要**重算**,
+  //   不能只改高度 —— 往上開的選單長高之後,y 也要跟著往上移。
+  int y = bar.top - h - Dip(space::s2, dpi_);
+  if (y < 0) y = bar.bottom + Dip(space::s2, dpi_);
+  ::SetWindowPos(popup_, HWND_TOPMOST, x, y, w, h,
+                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
+}
+
 void StatusBar::OpenSchemaPopup() {
   ClosePopup();
   if (!engine_) return;
-  // ⚠ **有上限的等待。** 這一支跑在懸浮狀態列自己的 UI 執行緒上,
-  //   而那條執行緒停住的樣子是「那一橫還在畫面上,但點不動也拖不動」
-  //   —— 與設定視窗那個卡死(#79)是同一個根因的另一個入口。
-  //
-  //   快取命中(正常情況,暖機時就填好了)是純記憶體。冷快取時量到的
-  //   成本是 46~99 毫秒,所以 1500 毫秒這個上限平常一次都用不到。
-  //
-  //   逾時 = 不開這個選單。⚠ 這**不理想**(使用者按了一下沒事發生),
-  //   但它比「整條狀態列從此不回應」好,而且下一次按就會有了。
-  //   真正該做的是在這裡放一句話,而那要等狀態列有地方放字。
-  popup_items_.clear();
-  if (!engine_->SchemaListForUi(1500, &popup_items_)) return;
-  if (popup_items_.empty()) return;
 
-  const int row_h = Dip(metric::kSidebarItemH, dpi_);
-  const int w = Dip(200, dpi_);
-  const int h = row_h * static_cast<int>(popup_items_.size()) +
-                2 * Dip(space::s2, dpi_);
-  RECT bar{};
-  ::GetWindowRect(hwnd_, &bar);
-  int x = bar.left + cells_[kCellSchema].rc.left;
-  int y = bar.top - h - Dip(space::s2, dpi_);
-  if (y < 0) y = bar.bottom + Dip(space::s2, dpi_);
+  // ── ⚠ 這一支跑在懸浮那一橫自己的 UI 執行緒上 ────────────────────
+  //
+  //   舊版是 `SchemaListForUi(1500, ...)`:引擎慢的時候整條狀態列凍結
+  //   1.5 秒(點不動也拖不動),逾時就**什麼都不做** —— 使用者按了
+  //   一下沒事發生。而 BeginDeploy 會清快取,所以整個部署期間每一次按
+  //   都走冷快取,而且每按一次就多排一件沒有人讀的工作。
+  //
+  //   現在這一支**完全不等**:快取有就直接開;沒有就立刻開一個
+  //   說得出話的選單,背景查完由 WM_RIME_SCHEMAS_READY 換掉。
+  popup_items_.clear();
+  popup_loading_ = !engine_->SchemaListFromCache(&popup_items_);
+
+  if (popup_loading_ && !schema_query_inflight_) {
+    // ⚠ **已經有一件在飛就不要再排。** 這一格就是「無限累積」那一半:
+    //   部署期間快取一直是冷的,而使用者會一直按。
+    const DWORD tid = thread_id_;
+    // ⚠ 這個 lambda 跑在**引擎執行緒**上。它只捕捉一個 DWORD(傳值),
+    //   而且只做一件事 —— 送一則訊息回這一條執行緒。不碰任何成員。
+    if (engine_->RefreshSchemaListAsync([tid] {
+          if (tid) ::PostThreadMessageW(tid, WM_RIME_SCHEMAS_READY, 0, 0);
+        }))
+      schema_query_inflight_ = true;
+    // 排不進去(引擎在停)= 沒有人會回來。旗標不設,所以下一次按會再試
+    // 一次;選單上那句「正在讀方案…」仍然是實話。
+  }
 
   popup_ = ::CreateWindowExW(
       WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE, kPopupClass, L"",
-      WS_POPUP, x, y, w, h, hwnd_, nullptr, ::GetModuleHandleW(nullptr), this);
+      WS_POPUP, 0, 0, 10, 10, hwnd_, nullptr, ::GetModuleHandleW(nullptr),
+      this);
   if (!popup_) return;
   popup_hot_ = -1;
-  ::ShowWindow(popup_, SW_SHOWNOACTIVATE);
+  PlacePopup();
   // 滑鼠捕捉:點到外面就關。SetForegroundWindow 那條路會搶焦點,不能用。
   ::SetCapture(popup_);
 }
@@ -630,6 +675,9 @@ void StatusBar::ClosePopup() {
   ::DestroyWindow(popup_);
   popup_ = nullptr;
   popup_hot_ = -1;
+  popup_loading_ = false;
+  // ⚠ schema_query_inflight_ **不在這裡清**:那件工作還在飛,而清掉
+  //   等於下一次按又排一件。它只由 WM_RIME_SCHEMAS_READY 清。
 }
 
 void StatusBar::PaintPopup(HDC hdc) {
@@ -653,6 +701,25 @@ void StatusBar::PaintPopup(HDC hdc) {
 
   const int row_h = Dip(metric::kSidebarItemH, dpi_);
   const int top = Dip(space::s2, dpi_);
+  if (popup_loading_) {
+    // ⚠ 覆核指出「狀態列現在沒有地方放字」,所以那句話放在**選單裡**。
+    //   它是一句話不是一個方案:不畫 hover 底色,點下去也不會選到東西。
+    RECT r{Dip(space::s2, dpi_), top, client.right - Dip(space::s2, dpi_),
+           top + row_h};
+    ::SetTextColor(mem, theme_.Color(kOnSurfaceVariant));
+    RECT tr = r;
+    tr.left += Dip(space::s4, dpi_);
+    const wchar_t* msg = UiText(UiString::kStatusBarSchemaLoading);
+    ::DrawTextW(mem, msg, -1, &tr,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                    DT_NOPREFIX);
+    ::SelectObject(mem, oldf);
+    ::BitBlt(hdc, 0, 0, client.right, client.bottom, mem, 0, 0, SRCCOPY);
+    ::SelectObject(mem, old_bmp);
+    ::DeleteObject(bmp);
+    ::DeleteDC(mem);
+    return;
+  }
   for (size_t i = 0; i < popup_items_.size(); ++i) {
     RECT r{Dip(space::s2, dpi_), top + static_cast<int>(i) * row_h,
            client.right - Dip(space::s2, dpi_),
@@ -724,6 +791,10 @@ LRESULT CALLBACK StatusBar::PopupProc(HWND hwnd, UINT msg, WPARAM w,
       ::GetClientRect(hwnd, &c);
       const bool inside = pt.x >= 0 && pt.x < c.right && pt.y >= 0 &&
                           pt.y < c.bottom;
+      // ⚠ 還在讀的時候,選單裡那一列是一句話 —— 點它**不關選單**。
+      //   關掉的話使用者會以為自己點錯了,然後再按一次(而那一次
+      //   仍然是冷快取)。讓他等在原地,清單一回來就換上去。
+      if (inside && self->popup_loading_) return 0;
       const int pick = self->popup_hot_;
       const std::string id =
           (inside && pick >= 0 &&
