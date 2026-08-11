@@ -1307,6 +1307,21 @@ for name in managed:
     if not found:
         print('NODRAW=%s' % name)
 
+# ⚠ 反過來也要成立:一個清單的自繪如果從**我們自己的**狀態決定反白
+#   (const bool selected = (i == xxx_)),那它就一定要走 SelectOnlyRow ——
+#   不然 comctl32 那一份沒有人同步,兩份照樣分岔。而受管名單是從
+#   SelectOnlyRow() 的呼叫點數出來的,所以呼叫點一被拿掉,那個清單就
+#   **悄悄退出受管**,上面那一圈再也掃不到它(覆核者實測的拆法 N2)。
+#   ⚠ 沒有程式化選取的清單不在此限:它的反白從 CDIS_SELECTED 來,
+#     只有一份真相,不可能分岔。連網紀錄那一個就是。
+for m in re.finditer(r'LRESULT\s+SettingsWindow::(\w+)\s*\(', sw):
+    b = body_after(sw, m.end())
+    if not re.search(r'const bool selected\s*=\s*\(\s*\w+\s*==\s*\w+_\s*\)', b):
+        continue
+    for name in re.findall(r'RowRect\(\s*(\w+)\s*,\s*cd', b):
+        if name not in managed:
+            print('UNMANAGED=%s@%s' % (name, m.group(1)))
+
 # ── 3. 全清必須在設定之前 ────────────────────────────────────
 i = lv.find('void SelectOnlyRow(')
 if i < 0:
@@ -1317,8 +1332,30 @@ else:
     setrow = b.find('static_cast<WPARAM>(row)')
     if clear < 0:
         print('NOCLEAR=1')
-    elif setrow >= 0 and clear > setrow:
-        print('ORDER=1')
+    else:
+        if setrow < 0:
+            print('NOSET=1')
+        elif clear > setrow:
+            print('ORDER=1')
+    # ⚠ 形狀在、順序對,**不等於那一發有作用**。LVM_SETITEMSTATE 只動
+    #   stateMask 點名的那幾個位元:stateMask 少了 LVIS_SELECTED,這一發
+    #   一個位元都不會改 —— 舊那一列的 LVIS_SELECTED 原封不動留著,
+    #   也就是 #80 本人。覆核者實測的拆法 N5 就是只把 clear.stateMask
+    #   改成 0,而這一條與 syntax_check_mingw.sh **雙雙 exit 0**。
+    for tag, wp in (('CLEAR', '-1'), ('SET', 'row')):
+        mm = re.search(r'static_cast<WPARAM>\(' + wp +
+                       r'\)[^;]*reinterpret_cast<LPARAM>\(&(\w+)\)', b)
+        if not mm:
+            continue
+        v = re.escape(mm.group(1))
+        msk = re.search(r'\b' + v + r'\s*\.\s*stateMask\s*=([^;]*);', b)
+        stv = re.search(r'\b' + v + r'\s*\.\s*state\s*=([^;]*);', b)
+        if not msk or 'LVIS_SELECTED' not in msk.group(1):
+            print('NOMASK=%s' % tag)
+        if tag == 'CLEAR' and stv and 'LVIS_SELECTED' in stv.group(1):
+            print('CLEARSELECTS=1')
+        if tag == 'SET' and (not stv or 'LVIS_SELECTED' not in stv.group(1)):
+            print('SETNOSEL=1')
 PYSCRIPT
 )"
   local nset; nset="$(num "$(printf '%s\n' "${w31out}" | grep '^NSET=' | cut -d= -f2)")"
@@ -1347,6 +1384,24 @@ PYSCRIPT
         w31bad=1 ;;
       ORDER=*)
         red "W31:SelectOnlyRow 的全清跑在設定**之後** —— 等於把剛設好的那一列也清掉"
+        w31bad=1 ;;
+      NOSET=*)
+        red "W31:SelectOnlyRow 只清不設(找不到 static_cast<WPARAM>(row) 那一發)—— 選取被清光之後沒有人補上,那一列永遠不會反白"
+        w31bad=1 ;;
+      NOMASK=CLEAR*)
+        red "W31:SelectOnlyRow 的全清沒有把 LVIS_SELECTED 放進 stateMask —— LVM_SETITEMSTATE 只動 stateMask 點名的位元,這一發一個位元都不會改,舊那一列的反白原封不動留著(#80)"
+        w31bad=1 ;;
+      NOMASK=SET*)
+        red "W31:SelectOnlyRow 設定那一發沒有把 LVIS_SELECTED 放進 stateMask —— 那一發不會碰到選取位元,等於只清不設"
+        w31bad=1 ;;
+      CLEARSELECTS=*)
+        red "W31:SelectOnlyRow 的「全清」把 LVIS_SELECTED 設成 1 了 —— 那是把每一列都選起來,不是清"
+        w31bad=1 ;;
+      SETNOSEL=*)
+        red "W31:SelectOnlyRow 設定那一發的 state 裡沒有 LVIS_SELECTED —— 它只是把那一列的選取關掉,而不是選起來"
+        w31bad=1 ;;
+      UNMANAGED=*)
+        red "W31:${w31line#UNMANAGED=} 的反白從自己的狀態畫,卻沒有走 SelectOnlyRow —— comctl32 那一份沒有人同步,兩份會分岔(#80),而它同時也退出了上面那一圈的掃描範圍"
         w31bad=1 ;;
     esac
   done <<< "${w31out}"
@@ -2294,6 +2349,10 @@ self_check() {
 "W34e 拿掉序號守衛(覆核者實測的拆法 A5)|service/settings_window.cc|s=s.replace('  if (seq != apply_seq_) return;' + chr(10),'',1)"
 "W34f 送出之後呼叫點又自己說了一次成功|service/settings_window.cc|s=s.replace('  engine_->ApplyVariantAll(settings_.SchemaPref(), ApplyDoneNotifier(seq));' + chr(10) + '  int vsel = 0;','  engine_->ApplyVariantAll(settings_.SchemaPref(), ApplyDoneNotifier(seq));' + chr(10) + '  SetTransientStatus(UiString::kStatusApplied);' + chr(10) + '  int vsel = 0;',1)"
 "W34g 傳給完成通知的不是這一次拿到的序號|service/settings_window.cc|s=s.replace('  engine_->ApplyVariantAll(settings_.SchemaPref(), ApplyDoneNotifier(seq));' + chr(10) + '  int vsel = 0;','  engine_->ApplyVariantAll(settings_.SchemaPref(), ApplyDoneNotifier(seq - 1));' + chr(10) + '  int vsel = 0;',1)"
+"W31n5 全清那一發改成一個位元都不動(覆核者實測的拆法 N5)|service/ui_listview.cc|s=s.replace('  clear.stateMask = LVIS_SELECTED ' + chr(124) + ' LVIS_FOCUSED;','  clear.stateMask = 0;',1)"
+"W31n1 SelectOnlyRow 只清不設(覆核者實測的拆法 N1)|service/ui_listview.cc|k='  ::SendMessageW(list, LVM_SETITEMSTATE, static_cast<WPARAM>(row),' + chr(10) + '                 reinterpret_cast<LPARAM>(&set));' + chr(10); s=s.replace(k,'',1)"
+"W31n2 方案清單悄悄退出受管(覆核者實測的拆法 N2)|service/settings_window.cc|s=s.replace('    SelectOnlyRow(schema_list_, row);' + chr(10),'',1)"
+"W31n6 全清那一發改成把每一列都選起來|service/ui_listview.cc|s=s.replace('  clear.state = 0;','  clear.state = LVIS_SELECTED;',1)"
 "範圍|__SCOPE__|"
   )
 
