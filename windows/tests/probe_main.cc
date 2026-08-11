@@ -412,7 +412,7 @@ int main(int /*narrow_argc*/, char** /*narrow_argv*/) {
       return 2;
     }
     const std::wstring path =
-        dir + L"\\" + Utf8ToWide(std::string(keys::kSettingsFileName));
+        dir + L"\\" + Utf8ToWide(std::string(kSettingsFileName));
     std::string text;
     {
       HANDLE h = ::CreateFileW(path.c_str(), GENERIC_READ,
