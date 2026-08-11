@@ -173,6 +173,47 @@ std::vector<OptionAssign> BuildOptionPlan(const SchemaChoice& choice,
                                           Tri punctuation,
                                           bool ascii_mode);
 
+// ── 改完簡繁設定之後,備用池的那一份計畫要怎麼更新 ────────────────
+//
+// ⚠ 這一支存在的理由是 ac4a721(「改完簡繁設定之後,備用 session 池不再
+//   整池報廢」)在**它唯一針對的情境下恆定失效**,而那個失效一支自動化
+//   測試都看不到 —— 那段程式碼在 service/engine.cc 裡,Ubuntu 上編不動。
+//   抽成純函式之後,run_logic_tests.sh 就驗得到。
+//
+//   舊做法是「逐項就地覆蓋 value、保留舊順序」。但 PlanVariant 的**名字
+//   順序**隨 simplified / langid 而變(「先關再開」把被跳過的那一個排到
+//   最後),而 SameOptions 是**逐項**比對:
+//
+//     備用池的計畫(繁,0x0404)
+//       simplification=0 zh_hant=0 zh_hans=0 zh_hant_hk=0 zh_hant_tw=1
+//     就地覆蓋成簡體之後
+//       simplification=1 zh_hant=0 zh_hans=1 zh_hant_hk=0 zh_hant_tw=0
+//     SESSION_NEW 重算的計畫
+//       simplification=1 zh_hant=0 zh_hant_hk=0 zh_hant_tw=0 zh_hans=1
+//
+//   值全對、順序不同 → SameOptions 回 false → 備用池仍然整池報廢。
+//   簡繁只要**真的變了**,順序就一定變,所以那一段從來沒有生效過。
+//
+// 正確的做法是把簡繁那一組**整組換掉**,而且擺回它在 BuildOptionPlan
+// 裡的位置(整份計畫的最前面),其餘照原順序保留。這樣算出來的計畫與
+// SESSION_NEW 那一趟重算的**逐項相同**。
+//
+// ⚠ set_variant 為 false(使用者把 followInputMode 關掉 = 「我自己管」)
+//   時要把那一組**整組拿掉**,不是留著舊值 —— BuildOptionPlan 在那個
+//   情境下產出的計畫裡一個 variant 選項都沒有,留著長度就對不上,
+//   一樣整池報廢。這是同一個缺陷的第二個入口,舊做法連碰都沒碰到
+//   (它在 !set_variant 時直接 continue)。
+//
+// ⚠ 為什麼不改成「讓 SameOptions 與順序無關」:那一份計畫不只是比對用的
+//   鍵,它同時是**重放腳本** —— Engine::MakeSpareOnEngineThread 會照它
+//   逐項 rs_set_option。而順序在那裡是有作用的(rs_set_option 不維持
+//   radio 的互斥,「先關再開」是刻意的)。把比對改成集合比對,等於接受
+//   一份**套用順序是錯的**計畫,把缺陷藏起來而不是修掉。所以留著嚴格的
+//   逐項比對,修產出那一端。
+std::vector<OptionAssign> UpdateVariantInPlan(
+    const std::vector<OptionAssign>& plan, bool set_variant, bool simplified,
+    uint32_t langid);
+
 // radio group 的四個成員(luna_pinyin.schema.yaml 的 `options:`)。
 extern const char* const kVariantOptions[4];
 constexpr int kVariantOptionCount = 4;

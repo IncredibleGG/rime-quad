@@ -728,17 +728,21 @@ void Engine::ApplyVariantAll(const SchemaPreference& pref) {
     std::lock_guard<std::mutex> lock(spare_mu_);
     for (auto& kv : spare_) {
       bool simplified = false;
-      if (!DecideVariant(kv.first, pref, &simplified)) continue;
-      const std::vector<OptionAssign> plan = PlanVariant(simplified, kv.first);
-      // ⚠ 逐項就地覆蓋,不是 push_back。計畫的**順序**是契約的一部分
-      //   (SameOptions 是逐項比對),而 BuildOptionPlan 把簡繁那一組
-      //   放在最前面 —— 附加在尾巴會讓長度與順序都對不上,等於白做。
-      for (const OptionAssign& a : plan) {
-        for (OptionAssign& have : kv.second.options) {
-          if (std::string(have.option) == std::string(a.option))
-            have.value = a.value;
-        }
-      }
+      const bool set_variant = DecideVariant(kv.first, pref, &simplified);
+      // ⚠ **整組換掉,不是逐項覆蓋 value。**
+      //
+      //   這裡原本是「逐項就地覆蓋 value、保留舊順序」,而那在它唯一
+      //   針對的情境下**恆定失效**:PlanVariant 的名字順序隨 simplified
+      //   而變(先關再開會把被跳過的那一個排到最後),SameOptions 是
+      //   逐項比對 —— 簡繁只要真的變了,順序就一定變,備用池照樣整池
+      //   報廢。而且 !set_variant 那一條路以前直接 continue,計畫裡會
+      //   留著一組 SESSION_NEW 根本不會送的選項,長度就對不上。
+      //
+      //   兩件事現在都由 common/schema_choice.cc 的 UpdateVariantInPlan
+      //   處理,而它是純函式 —— tests/test_schema_choice.cc 驗得到,
+      //   不必等一輪 CI,也不必有一台 Windows。
+      kv.second.options = UpdateVariantInPlan(kv.second.options, set_variant,
+                                              simplified, kv.first);
     }
   }
   Post("對所有 session 套簡繁", [&] {

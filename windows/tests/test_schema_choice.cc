@@ -583,3 +583,113 @@ TEST(build_option_plan_warmup_covers_every_real_langid) {
   }
   CHECK_INT(seen, 4);
 }
+
+// ══════════════════════════════════════════════════════════════════
+//  改完簡繁設定之後,備用 session 池還用不用得上
+// ══════════════════════════════════════════════════════════════════
+//
+// ⚠ 這一組守的是 ac4a721 宣稱修好、但實際上**恆定失效**的那件事。
+//
+//   Engine::TakeSpareSession 用 SameOptions 比對計畫,計畫不合就把那個
+//   備用 session 當場丟掉、當場重建 —— 而 rs_session_create 量到過
+//   442~753 毫秒,SESSION_NEW 的預算是 300 毫秒。症狀:改完簡繁設定
+//   之後開的第一個程式,第一顆按鍵明顯變慢,而使用者不會把兩件事
+//   聯想在一起。
+//
+//   ac4a721 的做法是「逐項就地覆蓋 value、保留舊順序」。但 PlanVariant
+//   的名字順序隨 simplified / langid 而變(「先關再開」把被跳過的那一個
+//   排到最後),而 SameOptions 是**逐項**比對 —— 簡繁只要真的變了,
+//   順序就一定變。也就是說:它在唯一針對的情境下從來沒有生效過。
+//
+//   那段程式碼在 service/engine.cc 裡,Ubuntu 上編不動,所以一支自動化
+//   測試都看不到它。現在那一段是 common/schema_choice.cc 的
+//   UpdateVariantInPlan(純函式),下面這兩支盯著它。
+
+// 覆核者在建置機上手寫重演程式跑過的那一次,原封不動寫成測試。
+TEST(spare_plan_survives_a_traditional_to_simplified_switch) {
+  const uint32_t langid = 0x0404u;  // zh-Hant-TW
+
+  // 備用池是照「跟著輸入模式走」暖起來的 → 繁體(臺灣字形)。
+  SchemaPreference before;
+  const SchemaChoice hant = ChooseSchema(langid, kShipped, before);
+  CHECK(hant.set_variant);
+  CHECK(!hant.simplified);
+  const std::vector<OptionAssign> spare =
+      BuildOptionPlan(hant, langid, Tri::kUnset, false);
+
+  // 使用者在設定裡把「文字」改成簡體。
+  SchemaPreference now;
+  now.variant = VariantPref::kSimplified;
+  bool simplified = false;
+  const bool set_variant = DecideVariant(langid, now, &simplified);
+  CHECK(set_variant);
+  CHECK(simplified);
+
+  // 更新之後的計畫,必須與 SESSION_NEW 那一趟重算的**逐項相同** ——
+  // 那正是 SameOptions 會拿去比的兩份。
+  const std::vector<OptionAssign> updated =
+      UpdateVariantInPlan(spare, set_variant, simplified, langid);
+  const std::vector<OptionAssign> fresh = BuildOptionPlan(
+      ChooseSchema(langid, kShipped, now), langid, Tri::kUnset, false);
+  CHECK(SamePlan(updated, fresh));
+
+  // 而且被開起來的那一個仍然排在最後(「先關再開」沒有被更新弄丟)——
+  // 這一份不只是比對用的鍵,MakeSpareOnEngineThread 會照它逐項重放。
+  CHECK_STR(std::string(updated[0].option), "simplification");
+  CHECK(updated[0].value);
+  CHECK_STR(std::string(updated[updated.size() - 2].option), "zh_hans");
+  CHECK(updated[updated.size() - 2].value);
+  CHECK_STR(std::string(updated[updated.size() - 1].option), "ascii_mode");
+}
+
+// 全面版:每一種「暖起來時的偏好 × 改成什麼 × 標點 × 中英 × langid」,
+// 更新之後都要與重算的那一份逐項相同。
+//
+// ⚠ 第四種偏好(followInputMode 關掉 = 「我自己管」)是同一個缺陷的
+//   **第二個入口**,而舊做法連碰都沒碰到 —— 它在 !set_variant 時直接
+//   continue,計畫裡於是留著一組 SESSION_NEW 根本不會送的選項,
+//   長度就對不上,備用池一樣整池報廢。
+TEST(updated_spare_plan_is_identical_to_a_freshly_built_one) {
+  struct Pref {
+    bool follow;
+    VariantPref variant;
+  };
+  const Pref kPrefs[] = {
+      {true, VariantPref::kFollowInputMode},
+      {true, VariantPref::kTraditional},
+      {true, VariantPref::kSimplified},
+      {false, VariantPref::kFollowInputMode},
+  };
+  const uint32_t kLangs[] = {0u, 0x0404u, 0x0804u, 0x0C04u};
+
+  int seen = 0;
+  for (uint32_t langid : kLangs) {
+    for (const Pref& warm : kPrefs) {
+      SchemaPreference before;
+      before.follow_input_mode = warm.follow;
+      before.variant = warm.variant;
+      for (int punct = 0; punct < 3; ++punct) {
+        for (int ascii = 0; ascii < 2; ++ascii) {
+          const std::vector<OptionAssign> spare = BuildOptionPlan(
+              ChooseSchema(langid, kShipped, before), langid,
+              static_cast<Tri>(punct), ascii != 0);
+          for (const Pref& after : kPrefs) {
+            SchemaPreference now;
+            now.follow_input_mode = after.follow;
+            now.variant = after.variant;
+            bool simplified = false;
+            const bool set_variant = DecideVariant(langid, now, &simplified);
+            const std::vector<OptionAssign> updated =
+                UpdateVariantInPlan(spare, set_variant, simplified, langid);
+            const std::vector<OptionAssign> fresh = BuildOptionPlan(
+                ChooseSchema(langid, kShipped, now), langid,
+                static_cast<Tri>(punct), ascii != 0);
+            CHECK(SamePlan(updated, fresh));
+            ++seen;
+          }
+        }
+      }
+    }
+  }
+  CHECK_INT(seen, 4 * 4 * 3 * 2 * 4);  // 掃描範圍非空(§2-G2)
+}

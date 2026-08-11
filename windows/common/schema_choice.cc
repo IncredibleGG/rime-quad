@@ -221,4 +221,23 @@ std::vector<OptionAssign> BuildOptionPlan(const SchemaChoice& choice,
   return out;
 }
 
+std::vector<OptionAssign> UpdateVariantInPlan(
+    const std::vector<OptionAssign>& plan, bool set_variant, bool simplified,
+    uint32_t langid) {
+  // 說明見標頭。新的簡繁那一組整組擺在最前面(BuildOptionPlan 的位置),
+  // 舊計畫裡屬於那一組的通通丟掉,其餘照原順序接在後面。
+  std::vector<OptionAssign> out;
+  if (set_variant) out = PlanVariant(simplified, langid);
+  for (const OptionAssign& a : plan) {
+    const std::string name(a.option ? a.option : "");
+    if (name == kSimplification) continue;
+    bool is_radio = false;
+    for (int i = 0; i < kVariantOptionCount; ++i)
+      if (name == kVariantOptions[i]) is_radio = true;
+    if (is_radio) continue;
+    out.push_back(a);
+  }
+  return out;
+}
+
 }  // namespace rimewin
