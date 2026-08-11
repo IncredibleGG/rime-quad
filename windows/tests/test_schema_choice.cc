@@ -238,6 +238,77 @@ TEST(PlanVariant_picks_the_right_kind_of_traditional) {
     CHECK_INT(CountOn(PlanVariant(false, id)), 1);
 }
 
+// ── PlanVariant 的**順序**:契約要寫成不依賴 PlanVariant 自己的斷言 ──
+//
+// ⚠ 這一支存在的理由是一次真的失效,而失效的是**測試**本身。
+//
+//   順序原本唯一的守門是下面那支
+//   build_option_plan_is_order_stable_and_matches_plan_variant_prefix:
+//   它拿 BuildOptionPlan 的前綴去比 PlanVariant。但 BuildOptionPlan 的
+//   前綴**就是 PlanVariant 回傳的那一份**(schema_choice.cc:
+//   `if (choice.set_variant) out = PlanVariant(choice.simplified, langid);`)
+//   —— 同一支函式擺在等號兩邊,順序一起變,那個斷言對 PlanVariant
+//   自己的順序**恆真**。覆核者把「先關再開」改成「先開再關」植入一次,
+//   全樹仍然全綠。
+//
+//   所以這裡把契約寫成獨立的斷言,一條都不拿 PlanVariant 的輸出當基準:
+//
+//     1. 第一項是 simplification。它不屬於那組 radio,但位置要固定 ——
+//        SameOptions 是**逐項**比對,位置一浮動,備用池就整池報廢。
+//     2. 四個 radio 各出現恰好一次,而且恰好一個為 true。
+//     3. **為 true 的那一項是整份計畫的最後一項。**
+//     4. 因此被關掉的三個一定排在被開啟的那一項之前。
+//
+//   3 與 4 合起來就是「先關再開」的全部內容,而它不是風格問題:
+//   rs_set_option **不維持** radio 的互斥(見 schema_choice.h 檔頭),
+//   先開再關的話最後留下的是**四個都 false** —— 那一格於是整格消失
+//   (status_cells.cc 的 kHidden),而打出來的字一次轉換都沒有做。
+//
+// ⚠ 沒有在真的 Windows 上看過:這是純邏輯,Ubuntu 上跑得完。
+TEST(PlanVariant_switches_the_chosen_one_on_last) {
+  struct Case {
+    bool simplified;
+    uint32_t langid;
+    const char* on;
+  };
+  const Case kCases[] = {
+      {true, 0x0804u, "zh_hans"},      {true, 0u, "zh_hans"},
+      {true, 0x0404u, "zh_hans"},      {false, 0x0404u, "zh_hant_tw"},
+      {false, 0x0C04u, "zh_hant_hk"},  {false, 0x1404u, "zh_hant_hk"},
+      {false, 0u, "zh_hant"},          {false, 0x0409u, "zh_hant"},
+  };
+  int seen = 0;
+  for (const Case& k : kCases) {
+    const std::vector<OptionAssign> v = PlanVariant(k.simplified, k.langid);
+
+    // 1. simplification + 四個 radio,而 simplification 在最前面。
+    CHECK_INT(static_cast<int>(v.size()), kVariantOptionCount + 1);
+    CHECK_STR(std::string(v[0].option), "simplification");
+    CHECK(v[0].value == k.simplified);
+
+    // 2. 四個 radio 各恰好一次(沒有漏、也沒有重複設兩次)。
+    for (int i = 0; i < kVariantOptionCount; ++i) {
+      int n = 0;
+      for (const OptionAssign& a : v)
+        if (std::string(a.option) == std::string(kVariantOptions[i])) ++n;
+      CHECK_INT(n, 1);
+    }
+
+    // 3. 為 true 的那一項是**最後一項**,而且就是該開的那一個。
+    const OptionAssign& last = v[v.size() - 1];
+    CHECK_STR(std::string(last.option), std::string(k.on));
+    CHECK(last.value);
+
+    // 4. 夾在中間的三個 radio 全部是 false —— 「先關再開」。
+    for (size_t j = 1; j + 1 < v.size(); ++j) {
+      CHECK(!v[j].value);
+      CHECK(std::string(v[j].option) != std::string(k.on));
+    }
+    ++seen;
+  }
+  CHECK_INT(seen, 8);  // 掃描範圍非空(§2-G2)
+}
+
 TEST(VariantPref_token_roundtrip) {
   const VariantPref all[] = {VariantPref::kFollowInputMode,
                              VariantPref::kTraditional,
