@@ -62,6 +62,59 @@ RectI SidebarListDip(int window_h_dip) {
 
 int TextLineBoxDip(int size_dip) { return size_dip * 4 / 3 + 2; }
 
+namespace {
+
+// 這個碼點畫出來大約是一個字級寬(全形)嗎。
+//
+// ⚠ 只求「夠不夠寬」,不求精確:分錯一個字的代價是那一行多算/少算
+//   0.4 個字級,而可用寬度已經先扣掉 1/7 了。
+bool IsWideCodePoint(unsigned int c) {
+  return (c >= 0x1100u && c <= 0x115Fu) ||   // 韓文字母
+         (c >= 0x2E80u && c <= 0x303Eu) ||   // 部首、注音、CJK 標點
+         (c >= 0x3041u && c <= 0x33FFu) ||   // 假名、諺文、相容字
+         (c >= 0x3400u && c <= 0x4DBFu) ||   // 擴充 A
+         (c >= 0x4E00u && c <= 0x9FFFu) ||   // 基本區
+         (c >= 0xA000u && c <= 0xA4CFu) ||
+         (c >= 0xAC00u && c <= 0xD7A3u) ||   // 諺文音節
+         (c >= 0xF900u && c <= 0xFAFFu) ||   // 相容表意
+         (c >= 0xFE30u && c <= 0xFE6Fu) ||
+         (c >= 0xFF00u && c <= 0xFF60u) ||   // 全形 ASCII
+         (c >= 0xFFE0u && c <= 0xFFE6u);
+}
+
+}  // namespace
+
+int EstimateTextLinesDip(const wchar_t* text, int size_dip, int w_dip) {
+  if (!text || !*text || size_dip <= 0 || w_dip <= 0) return 1;
+  // ⚠ 只用欄寬的 6/7。見標頭:那 1/7 是留給拉丁逐詞斷行的鋸齒邊。
+  const int usable = w_dip * 6 / 7;
+  if (usable <= size_dip) return 1;
+  // 單位是 1/100 DIP,免得整數除法把每一個字都抹掉一點。
+  const long usable100 = static_cast<long>(usable) * 100;
+  long x = 0;
+  int lines = 1;
+  for (const wchar_t* p = text; *p; ++p) {
+    const unsigned int c = static_cast<unsigned int>(*p);
+    if (c == 0x0Au) {  // 明寫的換行
+      ++lines;
+      x = 0;
+      continue;
+    }
+    if (c == 0x0Du) continue;
+    const long w = static_cast<long>(size_dip) * (IsWideCodePoint(c) ? 100 : 60);
+    if (x + w > usable100) {
+      ++lines;
+      x = 0;
+    }
+    x += w;
+  }
+  return lines;
+}
+
+int EstimateTextBoxHeightDip(const wchar_t* text, int size_dip, int w_dip) {
+  return EstimateTextLinesDip(text, size_dip, w_dip) * TextLineBoxDip(size_dip);
+}
+
 UiString SettingsPageName(int page) {
   switch (page) {
     case kPageAppearance:
@@ -128,7 +181,15 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
   PageLayout out;
   const int cx = ContentXDip(window_w_dip);
   const int cw = ContentWidthDip(window_w_dip);
-  const int t5h = text_size::t5 + space::s2;
+  // ── ⚠ 一行說明文字的**盒高** ──────────────────────────────
+  //
+  // 舊版是 `text_size::t5 + space::s2` = 11 + 4 = **15**,而
+  // TextLineBoxDip(11) = 11×4/3 + 2 = **16**。也就是每一行少 1 DIP,
+  // 而 DrawTextW 沒有 DT_NOCLIP —— 中文字的下緣(那一橫、豎鉤的鉤)
+  // 會被切掉一點點。單看一行看不出來,整段看起來像字型沒調好。
+  //
+  // 行盒高度只有一個來源:TextLineBoxDip()。
+  const int t5h = TextLineBoxDip(text_size::t5);
   const int btn_h = metric::kMinTarget + space::s2;
 
   Stack st(cx, kContentTopDip, cw);
@@ -141,17 +202,33 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
   //  是**唯一**的來源。
   auto hide = [&](int id) { emit(id, RectI{}, false, "not_on_this_page"); };
 
-  auto title_block = [&](int title_id, int sub_id) {
+  // ── ⚠ 高度從**字**算出來,不是各自寫死 ──────────────────────
+  //
+  // #76 的根因就是「每一段各自寫死行數」。單看每一段都很寬鬆合理,
+  // 六段加起來多了 195 DIP,而使用者付的代價是一顆碰不到的按鈕。
+  //
+  // ⚠ 這是估算,真正的斷行是 GDI 做的(見 EstimateTextLinesDip 的檔頭)。
+  //   它刻意抓得偏高:少算一行 = 文字被切掉,多算一行 = 多一點空白。
+  auto text_h = [&](UiString s) {
+    return EstimateTextBoxHeightDip(UiText(s), text_size::t5, cw);
+  };
+  // 文字要到執行期才知道的那幾格,取候選裡最高的那一個。
+  auto text_h_max = [&](UiString a, UiString b) {
+    return std::max(text_h(a), text_h(b));
+  };
+
+  auto title_block = [&](int title_id, int sub_id, UiString sub) {
     emit(title_id, st.Push(text_size::t1 + space::s3, space::s1), false,
          "page_title");
-    emit(sub_id, st.Push(t5h, space::s7), false, "page_subtitle");
+    // ⚠ 副標以前固定一行,而每一頁的副標都是完整的一句話 ——
+    //   660 DIP 寬的視窗上它一定不只一行,於是後半句被切掉。
+    emit(sub_id, st.Push(text_h(sub), space::s7), false, "page_subtitle");
   };
-  auto heading = [&](int head_id, int blurb_id, int blurb_lines) {
+  auto heading = [&](int head_id, int blurb_id, UiString blurb) {
     emit(head_id, st.Push(text_size::t2 + space::s2, space::s1), false,
          "section_heading");
     if (blurb_id)
-      emit(blurb_id, st.Push(t5h * blurb_lines, space::s3), false,
-           "section_blurb");
+      emit(blurb_id, st.Push(text_h(blurb), space::s3), false, "section_blurb");
   };
   // 單選群組:一列一個(桌面欄的密度)。
   // ⚠ 每一顆的 id 都**寫出來**,不用 `first + i`。理由是守門:
@@ -171,8 +248,10 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
 
   switch (page) {
     case kPageSchemas: {
-      title_block(IDC_SCHEMAS_TITLE, IDC_SCHEMAS_SUB);
-      heading(IDC_SCHEMAS_LIST_HEAD, IDC_SCHEMAS_LIST_BLURB, 2);
+      title_block(IDC_SCHEMAS_TITLE, IDC_SCHEMAS_SUB,
+                  UiString::kSchemasSubtitle);
+      heading(IDC_SCHEMAS_LIST_HEAD, IDC_SCHEMAS_LIST_BLURB,
+              UiString::kSchemasListBlurb);
       const int list_h = 4 * metric::kSidebarItemH + space::s3;
       if (state.schema_list_empty) {
         hide(IDC_SCHEMA_LIST);
@@ -180,6 +259,8 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
         hide(IDC_DOWN);
         hide(IDC_APPLY_ORDER);
         hide(IDC_SCHEMAS_DEFAULT_LINE);
+        // ⚠ 文字執行期才組(§4.7 的空狀態要說「為什麼是空的」),
+        //   所以這一格仍然是固定行數。抓 4 行是刻意寬鬆的一邊。
         emit(IDC_SCHEMAS_EMPTY, st.Push(t5h * 4, space::s7), false,
              "empty_state");
       } else {
@@ -198,36 +279,40 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
       }
       emit(IDC_FOLLOW_MODE, st.Push(metric::kSidebarItemH, space::s1), true,
            "follow_input_mode_switch");
-      emit(IDC_FOLLOW_BLURB, st.Push(t5h * 3, space::s7), false,
+      emit(IDC_FOLLOW_BLURB,
+           st.Push(text_h(UiString::kSchemasFollowBlurb), space::s7), false,
            "follow_blurb");
       break;
     }
     case kPageAppearance: {
-      title_block(IDC_APPEAR_TITLE, IDC_APPEAR_SUB);
-      heading(IDC_COUNT_HEAD, IDC_COUNT_BLURB, 2);
+      title_block(IDC_APPEAR_TITLE, IDC_APPEAR_SUB,
+                  UiString::kAppearanceSubtitle);
+      heading(IDC_COUNT_HEAD, IDC_COUNT_BLURB, UiString::kCountBlurb);
       radios({IDC_COUNT_0, IDC_COUNT_1, IDC_COUNT_2, IDC_COUNT_3, IDC_COUNT_4},
              "cand_count_radio");
-      heading(IDC_SCALE_HEAD, IDC_SCALE_BLURB, 1);
+      heading(IDC_SCALE_HEAD, IDC_SCALE_BLURB, UiString::kScaleBlurb);
       radios({IDC_SCALE_0, IDC_SCALE_1, IDC_SCALE_2, IDC_SCALE_3, IDC_SCALE_4},
              "cand_scale_radio");
-      heading(IDC_THEME_HEAD, IDC_THEME_BLURB, 1);
+      heading(IDC_THEME_HEAD, IDC_THEME_BLURB, UiString::kThemeBlurb);
       radios({IDC_THEME_0, IDC_THEME_1, IDC_THEME_2}, "appearance_radio");
-      heading(IDC_BAR_HEAD, IDC_BAR_BLURB, 3);
+      heading(IDC_BAR_HEAD, IDC_BAR_BLURB, UiString::kStatusBarBlurb);
       emit(IDC_BAR_SHOW, st.Push(metric::kSidebarItemH, space::s7), true,
            "status_bar_switch");
-      emit(IDC_APPEAR_NOTE, st.Push(t5h * 4, 0), false, "honest_note");
+      emit(IDC_APPEAR_NOTE,
+           st.Push(text_h(UiString::kAppearanceHonestNote), 0), false,
+           "honest_note");
       break;
     }
     case kPageText: {
-      title_block(IDC_TEXT_TITLE, IDC_TEXT_SUB);
-      heading(IDC_VARIANT_HEAD, IDC_VARIANT_BLURB, 1);
+      title_block(IDC_TEXT_TITLE, IDC_TEXT_SUB, UiString::kTextSubtitle);
+      heading(IDC_VARIANT_HEAD, IDC_VARIANT_BLURB, UiString::kVariantBlurb);
       radios({IDC_VARIANT_0, IDC_VARIANT_1, IDC_VARIANT_2}, "variant_radio");
-      heading(IDC_PUNCT_HEAD, IDC_PUNCT_BLURB, 2);
+      heading(IDC_PUNCT_HEAD, IDC_PUNCT_BLURB, UiString::kPunctBlurb);
       radios({IDC_PUNCT_0, IDC_PUNCT_1, IDC_PUNCT_2}, "punct_radio");
       break;
     }
     case kPageNetwork: {
-      title_block(IDC_NET_TITLE, IDC_NET_SUB);
+      title_block(IDC_NET_TITLE, IDC_NET_SUB, UiString::kNetworkSubtitle);
       // ⚠ 開關**沒有**自己的區段標題。頁標題已經是「連網」,再寫一次
       //   只是把同一個詞說三遍 —— 而 §4.1 要的是「開關在右、標題說明
       //   在左」,那個標題就是開關自己的文字。
@@ -235,11 +320,18 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
            "network_switch");
       // 開著/關著各一句,由 common/net_ui.h 的 NetSwitchSummary() 決定
       // 哪一句 —— 那是純函式,而「兩種狀態說同一句話」有單元測試擋著。
-      emit(IDC_NET_STATE, st.Push(t5h * 3, space::s3), false, "network_state");
+      // 開著一句、關著一句,哪一句由 NetSwitchSummary() 決定 —— 兩句
+      // 都可能出現在同一個框裡,所以取**比較高的那一句**。
+      emit(IDC_NET_STATE,
+           st.Push(text_h_max(UiString::kNetworkOnSummary,
+                              UiString::kNetworkOffSummary),
+                   space::s3),
+           false, "network_state");
       // 誠實的代價(DNS/SNI 是明文)。⚠ 這一段**開著關著都在**:
       // 只在開著時才出現的話,使用者是在按下開關**之後**才讀到代價,
       // 而那等於沒說。
-      emit(IDC_NET_DETAIL, st.Push(t5h * 5, space::s7), false,
+      emit(IDC_NET_DETAIL,
+           st.Push(text_h(UiString::kNetworkOnDetail), space::s7), false,
            "network_cost_note");
 
       // ── 更新 ──────────────────────────────────────────────
@@ -247,11 +339,15 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
       // ⚠ IDC_UPDATE_TRUST(沒有數位簽章那一句)排在**按鈕之前**。
       //   排在後面的話,使用者按下去的時候還沒讀到它 —— 而那句話的
       //   全部價值就在於他按之前就知道。
-      heading(IDC_UPDATE_HEAD, IDC_UPDATE_BLURB, 3);
-      emit(IDC_UPDATE_TRUST, st.Push(t5h * 5, space::s3), false,
+      heading(IDC_UPDATE_HEAD, IDC_UPDATE_BLURB, UiString::kUpdateBlurb);
+      emit(IDC_UPDATE_TRUST,
+           st.Push(text_h(UiString::kUpdateTrustAnchor), space::s3), false,
            "update_trust_anchor");
-      emit(IDC_UPDATE_WHAT, st.Push(t5h * 4, space::s3), false,
+      emit(IDC_UPDATE_WHAT,
+           st.Push(text_h(UiString::kUpdateWhatHappens), space::s3), false,
            "update_what_happens");
+      // ⚠ 這一格的那句話是執行期依結果組出來的(五種狀態 + 幾種失敗),
+      //   所以仍然是固定行數,而且抓最長的那一種還要再寬一點。
       emit(IDC_UPDATE_STATUS, st.Push(t5h * 3, space::s3), false,
            "update_status");
       {
@@ -267,7 +363,7 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
              "update_page");
       }
 
-      heading(IDC_NETLOG_HEAD, IDC_NETLOG_BLURB, 4);
+      heading(IDC_NETLOG_HEAD, IDC_NETLOG_BLURB, UiString::kNetLogBlurb);
       if (state.net_log_empty) {
         hide(IDC_NETLOG_SUMMARY);
         hide(IDC_NETLOG_COLS);
@@ -293,16 +389,18 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
         //   (§4.9 / §2-C2)。清除紀錄是破壞性的:清掉之後,使用者拿來
         //   稽核我們的那份證據就找不回來了。
         st.PushDivider();
-        heading(IDC_NETLOG_CLEAR_HEAD, IDC_NETLOG_CLEAR_BLURB, 2);
+        heading(IDC_NETLOG_CLEAR_HEAD, IDC_NETLOG_CLEAR_BLURB,
+                UiString::kNetLogClearBlurb);
         button(IDC_NETLOG_CLEAR, 220, 0, "clear_log_button");
       }
       break;
     }
     case kPageAdvanced: {
-      title_block(IDC_ADV_TITLE, IDC_ADV_SUB);
-      heading(IDC_REDEPLOY_HEAD, IDC_REDEPLOY_BLURB, 2);
+      title_block(IDC_ADV_TITLE, IDC_ADV_SUB, UiString::kAdvancedSubtitle);
+      heading(IDC_REDEPLOY_HEAD, IDC_REDEPLOY_BLURB,
+              UiString::kRedeployBlurb);
       button(IDC_REDEPLOY, 180, space::s7, "redeploy_button");
-      heading(IDC_FILES_HEAD, IDC_FILES_BLURB, 2);
+      heading(IDC_FILES_HEAD, IDC_FILES_BLURB, UiString::kFilesBlurb);
       {
         const RectI row = st.Push(btn_h, space::s7);
         const int bw = (cw - space::s3) / 2;
@@ -312,16 +410,16 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
              RectI{row.x + bw + space::s3, row.y, bw, row.h}, true,
              "open_settings_file");
       }
-      heading(IDC_LANG_HEAD, IDC_LANG_BLURB, 1);
+      heading(IDC_LANG_HEAD, IDC_LANG_BLURB, UiString::kLanguageBlurb);
       radios({IDC_LANG_0, IDC_LANG_1, IDC_LANG_2, IDC_LANG_3},
              "ui_language_radio");
-      heading(IDC_DIAG_HEAD, IDC_DIAG_NOTE, 2);
+      heading(IDC_DIAG_HEAD, IDC_DIAG_NOTE, UiString::kDiagnosticsNote);
       emit(IDC_DIAG, st.Push(t5h * 6, space::s3), true, "diagnostics_edit");
       button(IDC_DIAG_COPY, 120, 0, "diagnostics_copy");
       // ⚠ 危險操作一律是該頁最後一個區塊,上面隔一條 hairline + s7
       //   (§4.9 / §2-C2)。PushDivider 就是那條線。
       st.PushDivider();
-      heading(IDC_RESET_HEAD, IDC_RESET_BLURB, 2);
+      heading(IDC_RESET_HEAD, IDC_RESET_BLURB, UiString::kResetBlurb);
       button(IDC_RESET, 220, 0, "reset_button");
       break;
     }

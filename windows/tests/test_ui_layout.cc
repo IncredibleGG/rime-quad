@@ -12,6 +12,7 @@
 
 #include "../common/ui_dip.h"
 #include "../common/ui_layout.h"
+#include "../common/ui_strings.h"
 
 #include <set>
 #include <vector>
@@ -319,6 +320,11 @@ TEST(ui_layout_scroll_range_actually_uses_the_window_height) {
 TEST(ui_layout_appearance_page_still_needs_scrolling_at_the_default_size) {
   // 這一頁是缺陷回報的原始現場,數字全部釘住 —— 有人「順手重排」
   // 而讓它剛好又掉出可視範圍時,這一條會指著同一個地方。
+  //
+  // ⚠ 2026-08-11 起版面**跟著介面語言變**:說明段的高度是從字數算出來的
+  //   (#76,見 EstimateTextLinesDip),而同一句話的繁中與英文長度不一樣。
+  //   所以釘數字之前要先把語言釘住,不然這一條會變成「看它前面跑了誰」。
+  SetUiLang(UiLang::kZhHant);
   const PageLayout pl =
       LayoutSettingsPageDip(kPageAppearance, 780, PageState{});
   auto find = [&](int id) {
@@ -326,12 +332,16 @@ TEST(ui_layout_appearance_page_still_needs_scrolling_at_the_default_size) {
       if (p.id == id) return p.rect;
     return RectI{};
   };
-  CHECK_INT(find(IDC_THEME_0).y, 574);
-  CHECK_INT(find(IDC_THEME_1).y, 604);
-  CHECK_INT(find(IDC_THEME_2).y, 634);
-  CHECK_INT(find(IDC_BAR_SHOW).y, 754);
-  CHECK_INT(find(IDC_APPEAR_NOTE).y, 810);
-  CHECK_INT(pl.content_h_dip, 890);
+  // ⚠ 2026-08-11:說明段的高度改成從字數算(#76),所以這一組整個往上
+  //   移了。舊值 574 / 604 / 634 / 754 / 810,content_h 890。
+  //   ⚠ **重點沒有變**:深淺三態仍然在可視高度(506)以下,這一頁仍然
+  //     非捲不可。修的是「多出來的空白」,不是「這頁其實放得下」。
+  CHECK_INT(find(IDC_THEME_0).y, 563);
+  CHECK_INT(find(IDC_THEME_1).y, 593);
+  CHECK_INT(find(IDC_THEME_2).y, 623);
+  CHECK_INT(find(IDC_BAR_SHOW).y, 714);
+  CHECK_INT(find(IDC_APPEAR_NOTE).y, 770);
+  CHECK_INT(pl.content_h_dip, 822);
 
   // 預設尺寸下的可視高度是 506 —— 深淺三態在 574 以下,**看不到**。
   CHECK_INT(ContentViewportHeightDip(kWindowDefaultH), 506);
@@ -347,6 +357,7 @@ TEST(ui_layout_advanced_page_counts_the_last_button_in_its_height) {
   // ⚠ 舊版:`place(IDC_RESET, RectI{cx, st.y(), 220, btn_h})` 之後
   //   **不推進堆疊**。那一顆的 32 DIP 不進內容高度 = 不進捲動範圍,
   //   於是捲到最底仍然差 32 DIP 碰不到那顆危險鍵。
+  SetUiLang(UiLang::kZhHant);
   const PageLayout pl = LayoutSettingsPageDip(kPageAdvanced, 780, PageState{});
   int max_bottom = 0;
   for (const PlacedControl& p : pl.items)
@@ -361,7 +372,9 @@ TEST(ui_layout_advanced_page_counts_the_last_button_in_its_height) {
   //   在畫面上有**兩個入口**(進階頁一個、連網頁一個),而它們讀的是
   //   同一個值。使用者在其中一邊改完,另一邊要等下一次重畫才會跟上,
   //   而中間那一段畫面上會有兩個互相矛盾的開關。
-  CHECK_INT(max_bottom, 810);
+  //
+  // ⚠ 2026-08-11:說明段的高度改成從字數算(#76),舊值 810。
+  CHECK_INT(max_bottom, 762);
   CHECK_INT(pl.content_h_dip, max_bottom + kContentPadBottomDip);
   // 三顆固定寬度的按鈕都要在內容高度以內。
   for (int id : {IDC_REDEPLOY, IDC_DIAG_COPY, IDC_RESET}) {
@@ -390,6 +403,140 @@ TEST(ui_layout_network_page_counts_the_update_card_in_its_height) {
           CHECK(p.rect.bottom() <= pl.content_h_dip);
     }
   }
+}
+
+// ── #76:說明段的高度必須跟著字走 ─────────────────────────────
+//
+// 缺陷本身:連網頁(紀錄不空)content_h_dip = 1138,而可視高度只有 506
+// —— 破壞性的「清除紀錄」落在摺線下 580 DIP。根因不是「視窗太小」,
+// 是六段說明**各自寫死行數**,每一段都寬鬆一點,合起來多了 195 DIP。
+//
+// ⚠ 這一條驗的是估算本身的性質,不是某一個數字:
+//   估算不準是必然的(真正的斷行是 GDI 做的),但它必須**單調**、
+//   必須**至少一行**、而且必須往**高**的一邊錯。
+TEST(ui_layout_text_height_follows_the_text) {
+  // 一行的盒高只有一個來源。舊版說明段用的是 t5 + s2 = 15,而
+  // TextLineBoxDip(11) = 16 —— 每一行少 1 DIP,中文字的下緣被切掉一點。
+  CHECK_INT(TextLineBoxDip(text_size::t5), 16);
+  CHECK_INT(text_size::t5 + space::s2, 15);  // 記下舊值錯在哪
+
+  // 空字串仍然佔一行(那一格還是要有位置)。
+  CHECK_INT(EstimateTextLinesDip(L"", 11, 540), 1);
+  CHECK_INT(EstimateTextLinesDip(nullptr, 11, 540), 1);
+
+  // 一個全形字放得下 → 一行。
+  CHECK_INT(EstimateTextLinesDip(L"字", 11, 540), 1);
+
+  // 單調:同一段字,欄越窄行數只會多不會少。
+  const wchar_t* body =
+      L"這是一段夠長的說明文字,長到在任何一種合理的欄寬底下都會斷行,"
+      L"而且它同時混了 latin words and digits 0123456789 —— 兩種字寬。";
+  int prev = 0;
+  for (int w : {640, 540, 440, 340, 240}) {
+    const int n = EstimateTextLinesDip(body, 11, w);
+    CHECK(n >= 1);
+    CHECK(n >= prev);
+    prev = n;
+  }
+  // 而且窄欄真的比寬欄多。
+  CHECK(EstimateTextLinesDip(body, 11, 240) >
+        EstimateTextLinesDip(body, 11, 640));
+
+  // 明寫的換行要算進去。
+  CHECK_INT(EstimateTextLinesDip(L"a\nb\nc", 11, 540), 3);
+
+  // 往高的一邊錯:估出來的高度 >= 逐字硬算的下界。
+  //   （全形字每個 1 個字級,540 寬一行最多 49 個 → 100 個字至少 3 行）
+  const wchar_t* cjk =
+      L"字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字"
+      L"字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字"
+      L"字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字"
+      L"字字字字字字字字字字";
+  CHECK(EstimateTextLinesDip(cjk, 11, 540) >= 3);
+}
+
+// ── #76:一頁不可以長到捲不完 ──────────────────────────────────
+//
+// 上面那一條守的是「每一段配到的高度對不對」,這一條守的是**合起來**。
+// 少了它,「每一段各自看起來都很合理,加起來是一頁 1138 DIP」還會再發生
+// 一次 —— 而那正是這個缺陷的形狀。
+//
+// N = 2.5 屏。這個數字的根據,以及**它守不住什麼**:
+//
+//   · 現況最高的一頁是英文介面下的「連網」頁(紀錄不空),2.19 屏。
+//     2.5 留了約一成餘裕,擋得住「又多加一段說明」那種漸進的長胖。
+//   · 上界不該再放寬:使用者要找的那顆鍵在第三屏以下時,捲動已經不是
+//     解法了 —— 那一頁該拆頁(§4.9 的危險區塊本來就要排在最後)。
+//     這一條紅掉的時候,對的動作是拆頁,不是把 N 調大。
+//
+// ⚠ **講清楚:這一條擋不住 #76 本身。** 出事時的 1138 DIP 是 2.25 屏,
+//   就在 2.5 底下 —— 也就是說,如果這條上界早就存在,它是綠的。
+//   要把它訂在 2.25 以下才攔得到,而英文介面現在是 2.19,那樣的餘裕
+//   (2.7%)只會讓下一次正常的文案修改變成假紅,然後它被調大或關掉。
+//
+//   真正擋住 #76 那一類的是**高度不再是一個可以隨手填的自由參數**
+//   (上面那條 text_height_follows_the_text,以及每一段的高度都從
+//   EstimateTextLinesDip 來)。這一條是天花板,不是那個守門。
+//
+// ⚠ 英文的「連網」頁 2.19 屏已經貼著天花板了。那不是排版問題 ——
+//   那一頁上有開關、代價說明、整張更新卡片、紀錄清單、清除紀錄五件事。
+//   它該拆,而這一行是那件事的紀錄。
+//
+// ⚠ 三種介面語言都要走。同一句話的長度不一樣,而**英文一律比較長**
+//   —— 只測繁中的話,英文使用者那一頁沒有人看得到。
+TEST(ui_layout_a_page_never_grows_past_two_and_a_half_screens) {
+  const int viewport = ContentViewportHeightDip(kWindowDefaultH);
+  CHECK_INT(viewport, 506);
+  int measured = 0;
+  for (UiLang lang : {UiLang::kZhHant, UiLang::kZhHans, UiLang::kEnUs}) {
+    SetUiLang(lang);
+    for (int v = 0; v < kVariantCount; ++v) {
+      const PageLayout pl = LayoutSettingsPageDip(
+          kVariants[v].page, kWindowDefaultW, kVariants[v].state);
+      // 2 × content <= 5 × viewport,也就是 content <= 2.5 屏。
+      CHECK(2 * pl.content_h_dip <= 5 * viewport);
+      // 下界:一頁不可能是空的。掃到零而報「全部合格」是這張表自己
+      // 最可能的失效方式。
+      CHECK(pl.content_h_dip > viewport / 4);
+      ++measured;
+    }
+  }
+  CHECK_INT(measured, 3 * kVariantCount);
+  SetUiLang(UiLang::kZhHant);  // ⚠ 一定要還原:別的測試釘著數字。
+}
+
+// ── #76 的使用者症狀本身:破壞性的那幾顆碰得到 ───────────────────
+//
+// 「捲到最底」= 可視高度 + 捲動上限。那顆鍵的底必須在裡面 ——
+// 它在摺線下多少 DIP 不重要,重要的是捲得到。
+TEST(ui_layout_destructive_buttons_are_reachable_at_the_default_size) {
+  int checked = 0;
+  for (UiLang lang : {UiLang::kZhHant, UiLang::kZhHans, UiLang::kEnUs}) {
+    SetUiLang(lang);
+    struct Want { int page; PageState state; int id; };
+    const Want wants[] = {
+        // 紀錄不空的時候才有「清除紀錄」(空的時候刻意不給那顆鍵)。
+        {kPageNetwork, PageState{false, false}, IDC_NETLOG_CLEAR},
+        {kPageAdvanced, PageState{false, true}, IDC_RESET},
+    };
+    for (const Want& w : wants) {
+      const int reach =
+          ContentViewportHeightDip(kWindowDefaultH) +
+          ScrollMaxDip(w.page, kWindowDefaultW, kWindowDefaultH, w.state);
+      const PageLayout pl =
+          LayoutSettingsPageDip(w.page, kWindowDefaultW, w.state);
+      bool found = false;
+      for (const PlacedControl& p : pl.items) {
+        if (p.id != w.id || p.rect.empty()) continue;
+        CHECK(p.rect.bottom() <= reach);
+        found = true;
+      }
+      CHECK(found);  // 那一頁上真的有那顆鍵,不是掃了個空
+      ++checked;
+    }
+  }
+  CHECK_INT(checked, 6);
+  SetUiLang(UiLang::kZhHant);
 }
 
 TEST(ui_layout_every_control_belongs_to_exactly_one_page) {
