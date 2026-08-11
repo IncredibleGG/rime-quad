@@ -95,6 +95,50 @@ SRCS=(
   "${SCRIPT_DIR}/tests/test_bar_visibility.cc"
 )
 
+# ── 這份清單與 windows/CMakeLists.txt 必須對得上 ──────────────────
+#
+# ⚠ 擋的是這個專案剛剛真的發生過的兩件事,而**兩件都是一路全綠**:
+#
+#   · tests/test_sha256.cc、test_update_manifest.cc、test_update_flow.cc、
+#     test_bar_visibility.cc 在下面這份 SRCS 裡跑,卻不在 CMakeLists 的
+#     rime_tests 上 —— Windows CI 那支 rime_tests.exe 一次都沒有執行過
+#     它們。線上更新的整個判斷層在 Windows 上等於沒有測試。
+#   · service/update_service.cc 根本不在任何目標上。語法檢查是綠的
+#     (它逐檔編),CMake 也不會抱怨一個沒人要的檔案 —— 要等到
+#     rime_service.exe 連結時才炸成 8 個 LNK2019。
+#
+# 兩件的共同形狀是「檔案存在 ≠ 有人編它」。這一段用兩個方向擋:
+# 這裡跑的每一支 CMakeLists 都要有,而且每一個 .cc 都要有人編。
+echo "==> 建置清單對帳(本檔 ↔ windows/CMakeLists.txt)"
+python3 - "${SCRIPT_DIR}" <<'PYPARITY'
+import os, re, sys
+d = sys.argv[1]
+sh = open(os.path.join(d, 'run_logic_tests.sh'), encoding='utf-8').read()
+cm = open(os.path.join(d, 'CMakeLists.txt'), encoding='utf-8').read()
+here = set(re.findall(r'\$\{SCRIPT_DIR\}/((?:tests|common)/[A-Za-z0-9_]+\.cc)', sh))
+if not here:
+    print('!! 一個原始檔都沒抓到 —— 這一段的比對規則壞了,不當成通過', file=sys.stderr)
+    raise SystemExit(2)
+bad = []
+for f in sorted(here):
+    if f not in cm:
+        bad.append('CMakeLists.txt 裡沒有 %s —— 它只在 Ubuntu 上跑過' % f)
+for sub in ('common', 'service', 'tsf', 'setup', 'winshared'):
+    p = os.path.join(d, sub)
+    if not os.path.isdir(p):
+        continue
+    for name in sorted(os.listdir(p)):
+        if name.endswith('.cc') and ('%s/%s' % (sub, name)) not in cm:
+            bad.append('CMakeLists.txt 裡沒有 %s/%s —— 沒有任何目標編它'
+                       % (sub, name))
+for b in bad:
+    print('!! ' + b, file=sys.stderr)
+if bad:
+    print('!! 建置清單對帳失敗:%d 項' % len(bad), file=sys.stderr)
+    raise SystemExit(1)
+print('   %d 個原始檔在兩份清單上都在' % len(here))
+PYPARITY
+
 mkdir -p "${OUT}"
 echo "==> 編譯 (${CXX})"
 "${CXX}" "${FLAGS[@]}" "${SRCS[@]}" -o "${OUT}/rime_tests"

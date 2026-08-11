@@ -181,6 +181,13 @@ add_executable(rime_tests
   tests/test_net_policy.cc
   tests/test_net_gate_core.cc
   tests/test_net_ui.cc
+  # ⚠ 這四支以前只在 windows/run_logic_tests.sh(Ubuntu)上跑,不在這裡 ——
+  #   也就是 CI 上那支 rime_tests.exe 一次都沒有執行過它們,而 CI 是綠的。
+  #   涵蓋的是線上更新的整個判斷層與那一橫的顯示時機。
+  tests/test_sha256.cc
+  tests/test_update_manifest.cc
+  tests/test_update_flow.cc
+  tests/test_bar_visibility.cc
   tests/test_proto_compat.cc
   tests/test_schema_list_patch.cc
   tests/test_store_basics.cc
@@ -382,6 +389,10 @@ add_executable(rime_service
   service/settings_store.cc
   service/schema_store.cc
   service/settings_window.cc
+  # ⚠ 線上更新的 Windows 那一半。它以前**不在這個清單上** —— 檔案在、
+  #   語法檢查是綠的、common/ 那一側的單元測試也全過,而 rime_service.exe
+  #   裡一行都沒有,症狀是 settings_window.cc.obj 的 8 個 LNK2019。
+  service/update_service.cc
   service/status_bar.cc
   # 自繪的托盤圖示(中 / En)。獨立成一個檔案是為了讓 settings_window.cc
   # 只改兩行 —— 那個檔案同時有另一條線在改。
