@@ -14,13 +14,15 @@
 #   ⚠ 裁切必須夠緊。候選列上的 comment 本來就印著「ni hao」——
 #   把候選列一起裁進來,OCR 會讀到 ni 而永遠是綠的。那是最容易做出來的假綠燈。
 #
-# ── 五道關 ──────────────────────────────────────────────────────────────
+# ── 六道關 ──────────────────────────────────────────────────────────────
 #   0  方案漂移:裝置上(APK 裡)的方案必須與 core/data/schemas/ 一致
 #   1  範圍非空:掃到的九宮格佈局數必須 >= RS_MIN_T9_LAYOUTS(§2-G)
 #   2  第一個音節:打 MG… 之後,消歧欄上讀得到 ni 與 mi
 #   3  第二個音節:點下 ni 之後,同一塊區域讀得到 hao / gan / gao 之一
 #   4  單音節收斂:打 PGM(= qin 也 = pin)、點 pin 之後,
 #      **候選列上不得再有 qin**
+#   5  沒被接管的那一格:打 PGM 之後左欄第三格畫的還是原本的標點,
+#      **而且點下去宿主輸入框真的多出那個標點**
 #
 #   每一份佈局開跑前還會再驗一次「裝置上跑的是不是同一份 APK」——
 #   見 check_apk_identity。那不是產品的關卡,是**這支腳本自己的**關卡。
@@ -54,12 +56,95 @@
 #       ⚠ 這不是 --plant:退出碼**不反轉**。植入的是環境,不是缺陷;
 #         要驗的是產品在壞環境裡仍然不做壞事。
 #
+# ── 第 5 關在守什麼(接線層裡掃原始碼看不到的那一半)───────────────────
+#
+#   第 2/3/4 關問的都是「**被接管**的那幾格」。而一格被消歧欄接管與否,同時
+#   決定四件事(鍵面、點下去做什麼、長按盤開不開、朗讀名念什麼)—— 也就是說
+#   消歧欄同時決定了**沒被接管的那一格**會怎樣,而那一格在畫面上完全正常。
+#
+#   本檔的 --plant tap-swallowed 就是那個形狀,而它在**這一輪之前**是全綠的:
+#     · `./gradlew test` 610 條沒有一條會紅 —— T9Syllables.renderSlot 一個字都
+#       沒改,純函式全部照舊。
+#     · T9SyllablesTest 那條掃原始碼的檢查也不會紅:它當時問的是
+#       `grid.contains("slot.tapCell")` 之類,而 KeyGrid 先把回傳值讀進區域變數,
+#       於是那幾個 needle **無條件成立**,不管下游拿它們做什麼。
+#       (這個植入寫成 `!slotCells.containsKey(key.id)` 的形式,`slotCells[`
+#       仍然只出現一次、needle 也仍然都在 —— 舊那一版的每一條斷言它都滿足。)
+#     · 第 2/3/4 關驗的每一件事在探針下也都還是好的:讀音畫得出來、點讀音會換
+#       一批、候選也收斂。壞掉的只有那一顆沒被接管的標點鍵。
+#   而使用者拿到的是:組字途中,左欄那顆「？」按下去什麼都不會發生。
+#   ——「畫得對、按下去什麼都不做」正是 task #78 的形狀,換一個判斷點。
+#
+#   ⚠ 這一輪順手把那條掃原始碼的檢查錨到**整條接線運算式**上了,所以
+#     tap-swallowed 現在在 `./gradlew test` 也會紅。**別因此以為這一關多餘。**
+#     那一條守的是「這一行長得對」;換一種寫法達成同一件壞事,它就又看不到了。
+#     第 5 關問的是「按下去會怎樣」—— 那才是使用者遇到的那一件事。
+#
+#   所以第 5 關斷言那一格的**行為**:
+#     · 畫面:左欄第三格在打字前後**逐像素相同**(它還是佈局畫的那顆標點鍵)。
+#       正向對照是前兩格**變了** —— 少了它,裁歪或底圖拍錯都會讓「沒變」
+#       無條件成立,又一個假綠燈。
+#     · 行為:點下去之後**宿主輸入框真的多出那個標點**。這一條不看 OCR,
+#       看的是 uiautomator 讀回來的 EditText 文字 —— 上屏了沒有,問輸入框最準。
+#       (實測 cn-t9-pinyin:點下去輸入框從「PGM」變成「親？」。)
+#
+#   ⚠ 第三格的座標是**從畫面上量出來的**,不是問幾何模型:模型在 cn-t9-pinyin
+#     上把 pu_question 放在比實際渲染低約 50px 的地方(numrow 上約 75px,
+#     見 ocr_region 的註解)。作法是拿前兩格**變了**的那兩條橫帶的中心外推
+#     一格 —— 三個格位在兩份佈局裡都坐在連續三列等高的列上,所以間距就是列距。
+#     外推前要求剛好兩條橫帶(PGM = qin/pin 兩個讀音);不是兩條就**指名說出來**,
+#     不可以默默少驗一格。
+#
+#   ⚠ 上方橫排風格的佈局(t9-pinyin)沒有「沒被接管的那一格」—— 用不到的格位
+#     根本不畫。那一份會跳過第 5 關,而**跳過與綠燈長得一模一樣**,所以收尾時
+#     會斷言第 5 關至少跑到過一次。
+#
+# ── 沒做:長按盤(而且不打算假裝做了)──────────────────────────────────
+#
+#   覆核的 P2 植入(KeyGrid 算對了 slot.popup 卻永不開盤)這一支**驗不到**,
+#   原因不是 OCR 認不出來,是**驅動不了**。在 emulator-5558 上量過 15 次:
+#     · input swipe 同點 700ms / 1200ms、input motionevent DOWN…UP 2s、
+#       中間補 MOVE 的、連按兩次的 —— 長按盤總共只開出來 1 次。
+#     · 同一台機器、同一次連線,對**宿主 app 的 EditText** 長按每次都叫得出
+#       選字工具列(23851 px 的畫面差異),所以不是 adb 注入壞掉。
+#     · 按住當中拍的截圖看得到那顆鍵是**按下狀態**,只是 Compose 的
+#       detectTapGestures onLongPress 沒有觸發 —— 差別在 IME 視窗這一側。
+#   一條 1/15 的關卡比沒有關卡更糟:它會在無關的改動上變紅,而大家會學會忽略它。
+#   所以這裡**不做**,並把缺口寫在這裡:
+#     · 現在守長按盤的只有 T9SyllablesTest 的「長按盤必須走 slot.popup」與
+#       「KeyGrid 不自己決定那一格的行為」—— 那是**掃原始碼**,守得住
+#       「有沒有接對線」,守不住「按下去會怎樣」。
+#     · 要補的是 Robolectric + compose-ui-test(本模組現在兩個都沒有):
+#       setContent { KeyGrid(...) } → performTouchInput { longClick() } →
+#       斷言彈出盤出現、而且點它會送出佈局宣告的那個 SubKey。同一層也才守得住
+#       覆核的 A2/A3(朗讀名被寫死成 null)—— 那兩個植入本支同樣驗不到,
+#       因為朗讀名不在畫面上,在無障礙樹裡,而 uiautomator 看不到 IME 的視窗。
+#
 # ── 植入違規(證明它會紅)─────────────────────────────────────────────
 #   --plant stale-schema   把裝置上的方案換成舊的單編碼版 → 第 0 關必須紅
 #   --plant narrow-scope   只掃一份佈局              → 第 1 關必須紅
 #   --plant bad-slot-ids   把佈局的 syllable_slots 指到不存在的 key id
 #                          → 格位替換不會發生,畫面照常顯示標點 → 第 2 關必須紅
 #                          (這正是「有人把 pu_comma 改名」的真實形狀)
+#   --plant tap-swallowed  把**沒被接管**的格位的點擊也導進 onSlot(而 onSlot 對
+#                          Cell.Original 是 Unit)→ 第 5 關必須紅。
+#                          鍵面、幾何、讀音、收斂全部正常,只有那一顆標點鍵按下去
+#                          什麼都不會發生。單元測試與掃原始碼的檢查都攔不住它。
+#   --plant tap-passthrough 一格的點擊一律走原鍵自己的 onEvent → **被接管**的
+#                          那幾格只剩 tap = ActionVerb.NOOP,點讀音沒有反應
+#                          → 第 4 關必須紅(點了 pin,候選列上還有 qin)。
+#                          ⚠ 覆核把這個植入描述成「鍵面寫著讀音,按下去打出標點」。
+#                            實測不是:T9Syllables.slotKey 把被接管那一格的 send
+#                            清成 null、tap 設成 NOOP,而 RimeInputMethodService
+#                            對 NOOP 是 Unit —— 所以症狀是**點下去什麼都不會發生**,
+#                            標點不會上屏。(植入後實跑:點讀音格,輸入框仍是
+#                            「PGM」,整個畫面只變了 117 個像素。)
+#
+#   ⚠ tap-swallowed 與 tap-passthrough 改的是**原始碼**,所以這兩個會自己
+#     patch KeyboardView.kt → ./gradlew :app:assembleDebug → 還原檔案 →
+#     拿建出來的那份 APK 去驗。還原是 trap 保證的,而且會用 cmp 確認;
+#     原本的 app-debug.apk 也會先備份再放回去,免得下一步驗到植入的那一份。
+#     它們只跑第一份佈局(驗的是接線,不是佈局),不可以和 --apk 一起用。
 #
 #   帶 --plant 時**退出碼是反的**:斷言紅了才算通過(exit 0),
 #   植入了卻還是綠的就是這支腳本壞了(exit 1)。而且不是「紅就算過」——
@@ -109,6 +194,8 @@ plant_expect_re() {
     stale-schema) echo '不一致|alphabet 不含小寫拼音' ;;
     narrow-scope) echo '少於下界' ;;
     bad-slot-ids) echo '消歧欄上讀不到 ni/mi' ;;
+    tap-swallowed) echo '按下去什麼都不做的標點鍵' ;;
+    tap-passthrough) echo '候選列上還有 qin' ;;
     *) echo '' ;;
   esac
 }
@@ -118,6 +205,88 @@ plant_is_host_only() {
     stale-schema|narrow-scope) return 0 ;;
     *) return 1 ;;
   esac
+}
+# 改**原始碼**的植入:要自己 patch → 建 APK → 還原。列在這裡的不可以帶 --apk。
+plant_is_source() {
+  case "$1" in
+    tap-swallowed|tap-passthrough) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+KEYBOARD_VIEW="$ROOT/android/app/src/main/java/org/luminakey/ime/keyboard/KeyboardView.kt"
+CLEAN_APK_PATH="$ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
+PLANT_SRC_BACKUP=""
+PLANT_APK_BACKUP=""
+# ⚠ 還原是 trap 保證的。植入的原始碼留在 worktree 裡,下一個人(或下一條線)
+#   會拿它當基準改東西,而 git diff 上看起來就是「有人動了接線」。
+restore_planted_tree() {
+  if [ -n "$PLANT_SRC_BACKUP" ] && [ -f "$PLANT_SRC_BACKUP" ]; then
+    cp "$PLANT_SRC_BACKUP" "$KEYBOARD_VIEW"
+    if ! cmp -s "$PLANT_SRC_BACKUP" "$KEYBOARD_VIEW"; then
+      echo "!! 還原不了 $KEYBOARD_VIEW —— 請手動 git checkout 它。" >&2
+    fi
+    PLANT_SRC_BACKUP=""
+  fi
+  # 建出來的那一份是**植入的** APK,而它就躺在大家慣用的路徑上。放回乾淨的。
+  if [ -n "$PLANT_APK_BACKUP" ] && [ -f "$PLANT_APK_BACKUP" ]; then
+    cp "$PLANT_APK_BACKUP" "$CLEAN_APK_PATH"
+    PLANT_APK_BACKUP=""
+  fi
+}
+trap restore_planted_tree EXIT INT TERM
+
+build_planted_apk() {
+  local name="$1"
+  [ -f "$KEYBOARD_VIEW" ] || { echo "找不到 $KEYBOARD_VIEW" >&2; exit 2; }
+  [ -x "$ROOT/android/gradlew" ] || { echo "找不到 $ROOT/android/gradlew" >&2; exit 2; }
+  PLANT_SRC_BACKUP="$OUT_DIR/KeyboardView.kt.orig"
+  cp "$KEYBOARD_VIEW" "$PLANT_SRC_BACKUP"
+  if [ -f "$CLEAN_APK_PATH" ]; then
+    PLANT_APK_BACKUP="$OUT_DIR/app-debug.clean.apk"
+    cp "$CLEAN_APK_PATH" "$PLANT_APK_BACKUP"
+  fi
+  # ⚠ 錨點找不到就**當場停**(exit 2)。默默沒植入的話,這一輪會跑完、全綠、
+  #   然後被反轉成「這一關沒有在守」—— 一句指著產品的紅字,而壞的是植入。
+  python3 - "$name" "$KEYBOARD_VIEW" <<'PLANTPY' || { restore_planted_tree; exit 2; }
+import sys
+
+WIRE = """                                onEvent =
+                                    if (tapCell == null) onEvent else ({ onSlot(tapCell) }),"""
+
+PLANTS = {
+    # 沒被接管的那一格(tapCell == null 而 key.id 在 slotCells 裡)點擊被導進
+    # onSlot。其餘的鍵一律不動 —— 這個植入要留下的症狀只有一顆死掉的標點鍵。
+    "tap-swallowed": (
+        WIRE,
+        """                                onEvent =
+                                    if (tapCell == null && !slotCells.containsKey(key.id)) onEvent
+                                    else ({ onSlot(tapCell ?: T9Syllables.Cell.Original) }),""",
+    ),
+    "tap-passthrough": (WIRE, "                                onEvent = onEvent,"),
+}
+
+name, path = sys.argv[1], sys.argv[2]
+old, new = PLANTS[name]
+src = open(path, encoding="utf-8").read()
+if src.count(old) != 1:
+    sys.stderr.write("植入 %s 的錨點在 %s 裡出現 %d 次(要剛好 1 次)——\n"
+                     "接線的排版動過了,植入的定義要跟著改。\n" % (name, path, src.count(old)))
+    sys.exit(2)
+open(path, "w", encoding="utf-8").write(src.replace(old, new))
+PLANTPY
+  info "已植入 $name,開始建 APK(這一步比較久)"
+  if ! ( cd "$ROOT/android" && ./gradlew :app:assembleDebug -q ) \
+        >"$OUT_DIR/plant-build.log" 2>&1; then
+    echo "植入 $name 之後建不起來,見 $OUT_DIR/plant-build.log" >&2
+    tail -20 "$OUT_DIR/plant-build.log" >&2
+    restore_planted_tree
+    exit 2
+  fi
+  [ -f "$CLEAN_APK_PATH" ] || { echo "建完了卻找不到 $CLEAN_APK_PATH" >&2; restore_planted_tree; exit 2; }
+  cp "$CLEAN_APK_PATH" "$OUT_DIR/planted-$name.apk"
+  APK="$OUT_DIR/planted-$name.apk"
+  restore_planted_tree
+  info "植入的 APK:$APK(原始碼與乾淨的 app-debug.apk 都已還原)"
 }
 # §2-G:掃描範圍必須非空。三份九宮格佈局(cn-t9-pinyin / -numrow / t9-pinyin)
 # 少一份就代表有人刪了佈局、或這裡的判準壞了 —— 兩種都必須紅,而不是靜靜地少驗一份。
@@ -148,7 +317,7 @@ mkdir -p "$OUT_DIR"
 # 打錯的 --plant 名字必須當場停。否則它會被當成「沒有植入」跑完一整輪、
 # 全綠、然後被反轉成 exit 1 或(更糟)被當成通過 —— 兩種都在說謊。
 if [ -n "$PLANT" ] && [ -z "$(plant_expect_re "$PLANT")" ]; then
-  echo "不認得的 --plant「$PLANT」。可用:stale-schema / narrow-scope / bad-slot-ids" >&2
+  echo "不認得的 --plant「$PLANT」。可用:stale-schema / narrow-scope / bad-slot-ids / tap-swallowed / tap-passthrough" >&2
   exit 2
 fi
 # 打錯的 --scenario 同理:它會被當成「沒有情境」跑完一整輪正向、全綠,
@@ -161,11 +330,20 @@ if [ -n "$SCENARIO" ] && [ -n "$PLANT" ]; then
   echo "--scenario 與 --plant 不能一起用(一個不反轉退出碼、一個反轉)。" >&2
   exit 2
 fi
+# 原始碼植入自己建 APK。同時給 --apk 的話,兩者一定有一個沒有被用到,
+# 而日誌上看起來與正常跑完一模一樣 —— 那正是「驗到別份東西卻照樣報結果」。
+if [ -n "$PLANT" ] && plant_is_source "$PLANT" && [ -n "$APK" ]; then
+  echo "--plant $PLANT 會自己 patch 原始碼再建一份 APK,不可以同時給 --apk。" >&2
+  exit 2
+fi
 adbs() { "$ADB" -s "$SERIAL" "$@"; }
 info() { echo "[syllables] $*" >&2; }
 pass() { echo "  [PASS] $*"; }
 FAILURES=0
 FAIL_LOG=""
+# 第 5 關真的跑到過幾次。**跳過的關卡與綠燈長得一模一樣**,而第 5 關只在
+# 左側直欄那種佈局上成立 —— 判準壞掉時它會一份都跑不到,而且不會有任何徵狀。
+GATE5_RAN=0
 # ⚠ 訊息要留下來。「紅了」不等於「該紅的那一條紅了」:模擬器抽風、APK 裝不上去
 #   同樣會讓退出碼變 1,而 --plant 的斷言若只看退出碼,就會把環境故障當成
 #   「反向測試通過」—— 那正是這一支要防的假綠燈的另一個形狀。
@@ -269,7 +447,7 @@ if [ "$CHECK_CI" -eq 1 ]; then
   # 宣告的植入種類直接從檔頭讀,不要在這裡再抄一份 —— 抄的那一份會漂移,
   # 而漂移時「檢查通過」的那一份說了算。
   mapfile -t DECLARED < <(sed -n 's/^#   --plant \([a-z-][a-z-]*\).*/\1/p' "$SELF" | sort -u)
-  if [ "${#DECLARED[@]}" -lt 3 ]; then
+  if [ "${#DECLARED[@]}" -lt 5 ]; then
     echo "!! 檔頭只解析出 ${#DECLARED[@]} 種 --plant —— 解析式壞了,這一關在空轉。" >&2
     exit 1
   fi
@@ -390,6 +568,13 @@ if [ -n "$SCENARIO" ]; then
   T9_LAYOUTS=("${T9_LAYOUTS[0]}")
 fi
 
+# 原始碼植入驗的是 KeyGrid 的接線,三份佈局共用同一段程式碼。跑一份就夠,
+# 而且它前面還多一次 Gradle 建置 —— 跑三份只是把慢車道再拉長三倍。
+if [ -n "$PLANT" ] && plant_is_source "$PLANT"; then
+  info "$PLANT 是原始碼植入:只跑第一份佈局(${T9_LAYOUTS[0]}) —— 驗的是接線,不是佈局"
+  T9_LAYOUTS=("${T9_LAYOUTS[0]}")
+fi
+
 # 主機端的植入到這裡就驗完了 —— 第 0/1 關只讀檔案。再往下開模擬器
 # 證明不了多一件事,卻會讓這兩個反向測試永遠上不了快車道。
 if [ -n "$PLANT" ] && plant_is_host_only "$PLANT"; then
@@ -398,6 +583,11 @@ if [ -n "$PLANT" ] && plant_is_host_only "$PLANT"; then
 fi
 
 # ═══════════════════════ 裝置準備 ═══════════════════════
+# 原始碼植入的 APK 在這裡才建:第 0/1 關只讀主機上的檔案,先跑完它們,
+# 參數打錯、佈局掃不到的時候就不必白等一次 Gradle。
+if [ -n "$PLANT" ] && plant_is_source "$PLANT"; then
+  build_planted_apk "$PLANT"
+fi
 require_device_tools
 if [ -n "$APK" ]; then
   info "安裝 $APK"
@@ -1154,6 +1344,182 @@ PY
   else
     pass "$LAYOUT:點了 pin 之後候選列上不再有 qin(\"$T4\")"
   fi
+  # ── 第 5 關:沒被接管的那一格 ────────────────────────────────────
+  #
+  # 為什麼要獨立一關,見檔頭「第 5 關在守什麼」。第 2/3/4 關問的都是**被接管**
+  # 的那幾格;而同一個判斷同時決定了**沒被接管的那一格**會怎樣,那一格在畫面上
+  # 完全正常 —— 只是按下去什麼都不會發生。
+  #
+  # ⚠ 上方橫排風格的佈局沒有這種格位(用不到的讀音根本不畫),所以跳過。
+  #   **跳過與綠燈長得一模一樣**,收尾時有 GATE5_RAN 的下界擋著。
+  if [ -z "$SLOT_LINE" ]; then
+    info "$LAYOUT:上方橫排風格,沒有「沒被接管的那一格」—— 第 5 關不適用"
+    continue
+  fi
+  step "5. $LAYOUT:沒被接管的那一格(標點鍵)按不按得動"
+  check_apk_identity "$LAYOUT(第 5 關)" || continue
+
+  # 第三個格位是誰、它鍵面上畫的是什麼 —— 兩個都從佈局讀,不寫死:
+  # 寫死的那一份會跟著佈局腐爛,而腐爛的樣子是「一直綠」。
+  SLOT3_ID="$(printf '%s' "$SLOT_LINE" | grep -oE '"[A-Za-z0-9_]+"' | tr -d '"' | sed -n 3p)"
+  SLOT3_LABEL="$(grep -A4 "id: \"$SLOT3_ID\"" "$SRC_LAYOUT" \
+                 | sed -n 's/^ *label: *"\(.*\)"$/\1/p' | head -1)"
+  if [ -z "$SLOT3_ID" ] || [ -z "$SLOT3_LABEL" ]; then
+    fail "$LAYOUT:第 5 關讀不出第三個格位(id=${SLOT3_ID:-<空>} label=${SLOT3_LABEL:-<空>})。"
+    fail "  syllable_slots 或那顆鍵的 label 改過了 —— 這一關沒有東西可以驗,不能靜靜跳過。"
+    continue
+  fi
+
+  # 宿主輸入框現在的文字。**問輸入框,不要問 OCR**:「有沒有上屏」這件事只有
+  # 輸入框知道,而候選列上印著什麼與上屏了什麼是兩回事(第 4 關吃過這個虧)。
+  field_text() {
+    adbs shell "uiautomator dump /sdcard/s5.xml >/dev/null 2>&1; cat /sdcard/s5.xml" 2>/dev/null \
+      | tr -d '\r' | python3 -c '
+import sys, xml.etree.ElementTree as ET
+try: root = ET.fromstring(sys.stdin.read())
+except Exception: sys.exit(0)
+for n in root.iter("node"):
+    if n.get("content-desc") == "rime_matrix_input":
+        sys.stdout.write(n.get("text", ""))
+        break
+'
+  }
+
+  # 「沒被接管的那一格」在畫面上的位置,以及它在打字前後變了幾個像素。
+  #
+  # ⚠ 位置是**量出來的**,不是問幾何模型:模型在 cn-t9-pinyin 上把 pu_question
+  #   放在比實際渲染低約 50px 的地方(numrow 上約 75px,見 ocr_region)。
+  #   作法是取前兩格**變了**的那兩條橫帶的中心,外推一格 —— 三個格位在兩份
+  #   佈局裡都坐在連續三列等高的列上,所以帶距就是列距。
+  #   外推前要求剛好兩條橫帶;不是兩條就指名說出來(讀音數變了 / 底圖拍壞了),
+  #   不可以默默拿一個猜的座標往下走。
+  untouched_cell() {
+    python3 - "$1" "$LOUT/0-idle.png" "$LOUT/keymap.json" "$GRID_TOP" "$SLOT_LINE" <<'PY'
+import json, re, sys
+from PIL import Image, ImageChops
+shot, idle, keymap, grid_top, slot_line = sys.argv[1:6]
+grid_top = int(grid_top)
+im = Image.open(shot).convert("L")
+base = Image.open(idle).convert("L")
+if base.size != im.size:
+    print("ERROR=底圖與截圖尺寸不同(旋轉了?)"); sys.exit(0)
+ids = re.findall(r'"([^"]+)"', slot_line)
+keys = {k["id"]: k for k in json.load(open(keymap))["keys"] if k.get("id")}
+rects = [keys[i] for i in ids if i in keys]
+if len(rects) < 3:
+    print("ERROR=宣告的格位在這一層找不到:%s" % ",".join(ids)); sys.exit(0)
+# x 用模型(欄的左右邊界是準的),y 一律靠像素 —— 錯的是模型的 y。
+x0 = min(r["x"] for r in rects); x1 = max(r["x"] + r["w"] for r in rects)
+lift = int(0.06 * max(0, im.height - grid_top))
+col = (max(0, x0), max(0, grid_top - lift), min(im.width, x1), im.height)
+strip, b = im.crop(col), base.crop(col)
+sp, bp = strip.load(), b.load()
+rowink = [sum(1 for x in range(strip.width) if abs(sp[x, y] - bp[x, y]) > 24)
+          for y in range(strip.height)]
+floor = max(2, strip.width // 20)
+rowink = [n if n >= floor else 0 for n in rowink]
+runs, cur = [], None
+for y, n in enumerate(rowink):
+    if n > 0 and cur is None:
+        cur = y
+    elif n == 0 and cur is not None:
+        runs.append((cur, y)); cur = None
+if cur is not None:
+    runs.append((cur, strip.height))
+merged = []
+for r in runs:
+    if merged:
+        gap = r[0] - merged[-1][1]
+        tall = max(r[1] - r[0], merged[-1][1] - merged[-1][0])
+        if gap <= max(6, int(tall * 0.6)):
+            merged[-1] = (merged[-1][0], r[1]); continue
+    merged.append(r)
+bands = [r for r in merged if r[1] - r[0] >= 8]
+if len(bands) != 2:
+    print("ERROR=打 PGM 之後左欄變了 %d 條橫帶,要的是 2 條(qin 與 pin)。"
+          "三條 = 三格都被接管、沒有留下沒被接管的那一格;0 條 = 消歧欄根本沒畫"
+          % len(bands))
+    sys.exit(0)
+c0 = col[1] + (bands[0][0] + bands[0][1]) // 2
+c1 = col[1] + (bands[1][0] + bands[1][1]) // 2
+pitch = c1 - c0
+if pitch <= 8 or c1 + pitch >= im.height:
+    print("ERROR=兩條橫帶外推不出第三格(帶距 %d px)" % pitch); sys.exit(0)
+cy = c1 + pitch
+half = int(pitch * 0.4)
+cell = (col[0], max(0, cy - half), col[2], min(im.height, cy + half))
+if cell[3] - cell[1] < 8:
+    print("ERROR=外推出來的第三格高度不合理(%d px)" % (cell[3] - cell[1])); sys.exit(0)
+d = ImageChops.difference(im.crop(cell), base.crop(cell)).point(lambda p: 255 if p > 24 else 0)
+changed = d.histogram()[255]
+area = (cell[2] - cell[0]) * (cell[3] - cell[1])
+print("CX=%d CY=%d PITCH=%d CELL=%s CHANGED=%d AREA=%d"
+      % ((col[0] + col[2]) // 2, cy, pitch, cell, changed, area))
+PY
+  }
+
+  # 前面幾關留下的組字與已上屏的字都先清掉。刪除鍵走 librime,多刪幾下沒有副作用。
+  for _ in $(seq 1 14); do adbs shell input keyevent 67 >/dev/null 2>&1; done
+  sleep 1
+  for k in "$KEY_P" "$KEY_G" "$KEY_M"; do
+    tap_key "$k" || { fail "$LAYOUT:第 5 關點不到鍵 $k"; continue 2; }
+  done
+  read_frame || { fail "$LAYOUT:第 5 關讀不到 IME 視窗 frame"; continue; }
+  shot "$LOUT/5-pgm.png"
+  U5="$(untouched_cell "$LOUT/5-pgm.png" 2>&1)"; RC5=$?
+  info "$U5"
+  if [ "$RC5" -ne 0 ]; then
+    fail "$LAYOUT:第 5 關的裁切這一步自己失敗了(exit $RC5),不是畫面的問題:$U5"
+    continue
+  fi
+  case "$U5" in
+    *ERROR=*)
+      fail "$LAYOUT:第 5 關量不出「沒被接管的那一格」在哪裡:${U5#*ERROR=}"
+      fail "  截圖 $LOUT/5-pgm.png,底圖 $LOUT/0-idle.png"
+      continue ;;
+  esac
+  GATE5_RAN=$((GATE5_RAN + 1))
+  CX5="$(printf '%s' "$U5" | sed -n 's/.*CX=\([0-9]*\).*/\1/p')"
+  CY5="$(printf '%s' "$U5" | sed -n 's/.*CY=\([0-9]*\).*/\1/p')"
+  CH5="$(printf '%s' "$U5" | sed -n 's/.*CHANGED=\([0-9]*\).*/\1/p')"
+  AR5="$(printf '%s' "$U5" | sed -n 's/.*AREA=\([0-9]*\).*/\1/p')"
+  if [ -z "$CX5" ] || [ -z "$CY5" ] || [ -z "$CH5" ] || [ -z "$AR5" ]; then
+    fail "$LAYOUT:第 5 關解析不了量出來的東西(「$U5」)"
+    continue
+  fi
+
+  # 5a 畫面:那一格在打字前後**逐像素相同**。
+  #    正向對照是「前兩格變了」—— untouched_cell 要求剛好兩條變化橫帶,
+  #    所以裁歪、底圖拍壞、消歧欄整條沒畫,都會在上面那一步就指名紅掉,
+  #    而不會變成這裡的「沒變 = 通過」。
+  #    門檻取面積的 1/400:實測乾淨的那一份是 0 個像素(screencap 是決定性的),
+  #    留一點給抗鋸齒就夠;鍵面被換成讀音是幾百到幾千個像素,差得很遠。
+  if [ "$CH5" -le $((AR5 / 400)) ]; then
+    pass "$LAYOUT:沒被接管的那一格($SLOT3_ID)畫的還是原本的「$SLOT3_LABEL」(變了 $CH5/$AR5 px)"
+  else
+    fail "$LAYOUT:第 5 關 —— 左欄第三格($SLOT3_ID)在組字之後被改動了($CH5/$AR5 個像素)。"
+    fail "  沒用到的格位應該**原封不動**照佈局畫。task #78 就是這裡:那一格變成了一個灰色的洞。"
+    fail "  截圖 $LOUT/5-pgm.png,底圖 $LOUT/0-idle.png"
+  fi
+
+  # 5b 行為:點下去,宿主輸入框真的多出那個標點。
+  FT0="$(field_text)"
+  adbs shell input tap "$CX5" "$CY5" >/dev/null 2>&1
+  sleep 2
+  FT1="$(field_text)"
+  if [ "$FT1" = "$FT0" ]; then
+    fail "$LAYOUT:第 5 關 —— 點下沒被接管的那一格($SLOT3_ID,鍵面「$SLOT3_LABEL」),"
+    fail "  宿主輸入框一個字都沒多出來(前後都是「$FT0」)。"
+    fail "  那是一顆畫得對、按下去什麼都不做的標點鍵:點擊被導進 onSlot,"
+    fail "  而 onSlot 對 Cell.Original 是 Unit(task #78 的形狀,鍵面與幾何完全正常)。"
+    fail "  截圖 $LOUT/5-pgm.png"
+  elif [ "${FT1%"$SLOT3_LABEL"}" = "$FT1" ]; then
+    fail "$LAYOUT:第 5 關 —— 點下 $SLOT3_ID 之後輸入框變成「$FT1」,結尾不是它鍵面上"
+    fail "  畫的「$SLOT3_LABEL」—— 鍵面寫的是一件事,送出去的是另一件事。"
+    fail "  (這一關假設的是全形標點;真的要開 ascii_punct 的話,這裡要跟著改。)"
+  else
+    pass "$LAYOUT:點下沒被接管的那一格,宿主輸入框收到了「$SLOT3_LABEL」(「$FT0」→「$FT1」)"
+  fi
 done
 
 # 收尾的保險:上面每一條 `continue` 都可能跳過迴圈裡那一次移除。
@@ -1161,8 +1527,15 @@ done
 if [ "$SCENARIO" = "stale-schema" ] && [ -x "$ADB" ]; then
   adbs shell "run-as $IME_PKG rm -f files/rime/user/$SCHEMA.custom.yaml" >/dev/null 2>&1 || true
 fi
+# 第 5 關一次都沒跑到,和它每次都通過,在日誌上長得一模一樣。
+# 情境那一條只驗服務層(消歧欄本來就不該出現),不適用這個下界。
+if [ -z "$SCENARIO" ] && [ "$GATE5_RAN" -eq 0 ]; then
+  fail "第 5 關一次都沒有跑到 —— 「沒被接管的那一格」在任何一份佈局上都沒驗過。"
+  fail "  多半是所有佈局都退化成上方橫排、或第 2/3/4 關先 continue 掉了。"
+fi
+
 if [ -n "$SCENARIO" ]; then
   finish "情境 $SCENARIO:方案改寫不了的時候,消歧欄整條沒有出現(斷言的是畫面像素)"
 else
-  finish "${#T9_LAYOUTS[@]} 份九宮格佈局上都畫出來了、選得下去,而且單音節也收斂(斷言的是畫面像素)"
+  finish "${#T9_LAYOUTS[@]} 份九宮格佈局上都畫出來了、選得下去、單音節也收斂,而且沒被接管的那一格($GATE5_RAN 份佈局上)按下去真的會出標點"
 fi

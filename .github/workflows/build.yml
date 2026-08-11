@@ -450,6 +450,19 @@ jobs:
             # 而且腳本會確認紅的是**指名的那一條**(踩紅別條照樣算失敗)。
             # ⚠ 一行寫完,理由同上面那一行(這個 action 逐行交給 sh -c)。
             bash ./scripts/verify_syllables.sh --plant bad-slot-ids --out build/verify-syllables-plant
+            # 反向測試:第 5 關(沒被接管的那一格)的兩個。這兩個改的是**原始碼**
+            # —— 腳本自己 patch KeyboardView.kt、跑一次 assembleDebug、還原檔案,
+            # 再拿建出來的那份 APK 去驗(所以不能帶 --apk),而且只跑第一份佈局。
+            # 為什麼非得走這條路:tap-swallowed 那個形狀在 `./gradlew test` 610 條
+            # 全綠、連掃原始碼那條檢查也全綠,而使用者按下左欄那顆標點鍵什麼都不會
+            # 發生。只有「在模擬器上點下去、再問宿主輸入框有沒有多出那個字」看得到。
+            # ⚠ 一行寫完,理由同上(這個 action 逐行交給 sh -c)。
+            bash ./scripts/verify_syllables.sh --plant tap-swallowed --out build/verify-syllables-tapswallowed
+            # tap-passthrough:點擊一律走原鍵的 onEvent → 被接管的那幾格只剩
+            # tap = NOOP,點讀音沒有反應 → 第 4 關必須紅(點了 pin 還有 qin)。
+            # 這一條證明的是既有的第 4 關真的有牙齒 —— 它從來沒有在植入下跑過。
+            # ⚠ 一行寫完,理由同上(這個 action 逐行交給 sh -c)。
+            bash ./scripts/verify_syllables.sh --plant tap-passthrough --out build/verify-syllables-tappass
             # 情境:裝置上放一份舊的單編碼方案(collect_data.sh 沒跑過的機器)。
             # 那種方案上 rs_set_input("niGAM") 照樣回 true,而使用者點下第一個
             # 候選就上屏「ni好」—— 真機回報過的那一條。斷言的是**消歧欄整條

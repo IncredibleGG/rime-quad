@@ -754,6 +754,12 @@ class T9SyllablesTest {
      * 所以這裡掃原始碼,守**一件事**:那四個決定不准在 KeyGrid 裡重新做一次。
      * 把 `slotCells` 直接拿去判斷（M3 的形狀）、自己合成鍵面、或從原鍵拿
      * 長按盤,三種都會在這裡紅。
+     *
+     * ⚠ **掃原始碼的天花板就在這裡,別把它當成答案。** 它問的是「這幾行長得
+     * 對不對」,而不是「按下去會怎樣」—— 一個把接線改壞、卻仍然長得像的植入
+     * 可以從它底下走過去(下面每一條斷言旁邊都寫了實測過的那一個)。
+     * 那一半由 `scripts/verify_syllables.sh` 的第 5 關在模擬器上守:
+     * 點下那一格,問宿主輸入框有沒有真的多出那個標點。
      */
     @Test
     fun `KeyGrid 不自己決定那一格的行為`() {
@@ -786,7 +792,53 @@ class T9SyllablesTest {
             0,
             Regex("""\bkey\.popup\b""").findAll(grid).count(),
         )
-        for (needle in listOf("slot.key", "slot.tapCell", "slot.speaks", "slot.pinned", "slot.popup")) {
+        // ⚠ **這是天花板,不是答案。**
+        //
+        // 下面三條把斷言錨在**整個接線運算式**上,而不是只錨在「有沒有把回傳值
+        // 讀出來」。原本那一版問的是 `grid.contains("slot.tapCell")` 之類 ——
+        // 而 KeyGrid 把五個決定先讀進區域變數(`val tapCell = slot.tapCell`),
+        // 於是那幾個 needle **無條件成立**,不管下游拿它們做什麼。實測過:把
+        //     onEvent = if (tapCell == null) onEvent else ({ onSlot(tapCell) })
+        // 換成「沒被接管的格位也導進 onSlot」的壞線之後,610 條測試連同這條檢查
+        // 全綠,而使用者組字途中按下左欄那顆「？」什麼都不會發生(task #78 的形狀)。
+        //
+        // 錨在整個運算式上會讓這條測試**更脆** —— 換個排版就會紅。那是刻意的
+        // 取捨,但要看清楚它換到了什麼:它守的仍然只是「這一行長得對」,不是
+        // 「按下去會怎樣」。掃原始碼的天花板就在這裡。
+        //
+        // **真正的守門在 scripts/verify_syllables.sh 的第 5 關** —— 它在模擬器上
+        // 點下那一格,然後問宿主輸入框有沒有真的多出那個標點。這幾條紅了的時候,
+        // 先去看那一支怎麼說:那一支綠而這裡紅,多半只是排版動了。
+        assertTrue(
+            "點擊的接線必須整條長成 `if (tapCell == null) onEvent else ({ onSlot(tapCell) })`:" +
+                "沒被接管的格位走原鍵自己的 onEvent,被接管的才交給消歧欄。" +
+                "把沒被接管的那一格也導進 onSlot,做出來的是一顆畫得對、" +
+                "按下去什麼都不做的標點鍵(onSlot 對 Cell.Original 是 Unit)",
+            Regex(
+                """onEvent\s*=\s*if\s*\(\s*tapCell\s*==\s*null\s*\)\s*onEvent\s*""" +
+                    """else\s*\(\{\s*onSlot\(\s*tapCell\s*\)\s*\}\)\s*,""",
+            ).containsMatchIn(grid),
+        )
+        assertTrue(
+            "朗讀名的接線必須整條長成 " +
+                "`if (speaks == null) null else syllableDescription(speaks)`:" +
+                "把它寫死成 null,做出來的是鍵面寫著讀音、TalkBack 念原鍵名字的一格",
+            Regex(
+                """descriptionOverride\s*=\s*if\s*\(\s*speaks\s*==\s*null\s*\)\s*""" +
+                    """null\s*else\s*syllableDescription\(\s*speaks\s*\)\s*,""",
+            ).containsMatchIn(grid),
+        )
+        assertTrue(
+            "長按盤必須整條走 `val p = slot.popup` → `if (p != null)` → `popupRequest = …`:" +
+                "算對了 slot.popup 卻不開盤,做出來的是一顆看得到卻摸不到的鍵",
+            Regex(
+                """val\s+p\s*=\s*slot\.popup\b[\s\S]{0,400}?""" +
+                    """if\s*\(\s*p\s*!=\s*null\s*\)\s*\{[\s\S]{0,800}?""" +
+                    """popupRequest\s*=\s*PopupRequest\(""",
+            ).containsMatchIn(grid),
+        )
+        // 鍵面與釘選狀態沒有「可以分岔的第二個判斷點」,問「有沒有用到」就夠。
+        for (needle in listOf("slot.key", "slot.pinned")) {
             assertTrue("KeyGrid 沒有用到 $needle —— 那個決定跑到別的地方去了", grid.contains(needle))
         }
     }
