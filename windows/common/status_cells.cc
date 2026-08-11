@@ -18,6 +18,11 @@ VariantCell VariantCellFromOptions(const VariantOptions& o) {
   return VariantCell::kHidden;
 }
 
+VariantCell VariantCellFrom(bool known, bool simplified) {
+  if (!known) return VariantCell::kHidden;
+  return simplified ? VariantCell::kSimplified : VariantCell::kTraditional;
+}
+
 std::wstring InputModeCellText(const StatusGlyphs& glyphs, bool ascii_mode) {
   // ⚠ 一個字面,不是兩個。見標頭。
   return ascii_mode ? Str(glyphs.ascii) : Str(glyphs.chinese);

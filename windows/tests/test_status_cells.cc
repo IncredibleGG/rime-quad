@@ -239,3 +239,29 @@ TEST(variant_cell_hidden_is_the_only_empty_state) {
   }
   CHECK_INT(seen, 3);
 }
+
+// ── 線路旗標 → 三態 ──────────────────────────────────────────────
+TEST(variant_cell_from_wire_flags) {
+  // known 為假 → kHidden,而且**不看** simplified。
+  // 舊版的服務不會送 kStVariantKnown,它送來的每一份快照都落在這裡。
+  CHECK(VariantCellFrom(false, false) == VariantCell::kHidden);
+  CHECK(VariantCellFrom(false, true) == VariantCell::kHidden);
+  // known 為真才看 simplified。
+  CHECK(VariantCellFrom(true, false) == VariantCell::kTraditional);
+  CHECK(VariantCellFrom(true, true) == VariantCell::kSimplified);
+
+  // 四種組合都掃過,而且三態都出現過(掃描範圍非空,§2-G2)。
+  int hidden = 0, trad = 0, simp = 0;
+  for (int k = 0; k < 2; ++k) {
+    for (int m = 0; m < 2; ++m) {
+      switch (VariantCellFrom(k != 0, m != 0)) {
+        case VariantCell::kHidden: ++hidden; break;
+        case VariantCell::kTraditional: ++trad; break;
+        case VariantCell::kSimplified: ++simp; break;
+      }
+    }
+  }
+  CHECK_INT(hidden, 2);
+  CHECK_INT(trad, 1);
+  CHECK_INT(simp, 1);
+}

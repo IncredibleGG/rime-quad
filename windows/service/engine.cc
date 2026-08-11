@@ -69,7 +69,13 @@ uint32_t FlagsOf(const rs_status& s) {
   if (s.is_composing) f |= kStComposing;
   if (s.is_ascii_mode) f |= kStAsciiMode;
   if (s.is_full_shape) f |= kStFullShape;
-  if (s.is_simplified) f |= kStSimplified;
+  // ⚠ **不是** s.is_simplified。那個欄位只反映 `simplification`,而本專案
+  //   打包的方案通通沒有那個開關 —— rs_set_option 對不存在的選項不會
+  //   失敗、會原樣記下並回讀,所以讀它等於把我們自己寫進去的偏好當成
+  //   引擎的狀態回報。使用者實機回報過:設定裡選簡體、狀態列畫「简」、
+  //   打出來是繁體。真相在 s.variant(core/include/rime_shell.h)。
+  if (s.variant != RS_VARIANT_UNKNOWN) f |= kStVariantKnown;
+  if (s.variant == RS_VARIANT_HANS) f |= kStSimplified;
   if (s.is_ascii_punct) f |= kStAsciiPunct;
   if (s.is_disabled) f |= kStDisabled;
   return f;

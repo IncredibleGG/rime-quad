@@ -129,11 +129,16 @@ void StatusBar::OnSnapshot(const Snapshot& snap) {
     //   那正是這個檔頭說的「說謊的指示器」。
     if (SnapshotFlagsAreUsable(snap.status_flags)) {
       const bool a = (snap.status_flags & kStAsciiMode) != 0;
-      const bool s = (snap.status_flags & kStSimplified) != 0;
-      if (a != ascii_mode_ || s != simplified_ ||
+      // ⚠ 三態,而且**known 為假時不看 simplified**。
+      //   舊版的服務不會送 kStVariantKnown → 這裡是 kHidden → 那一格
+      //   整格不顯示,而不是退回去畫繁體。判斷本身在 common/,測得到。
+      const VariantCell v =
+          VariantCellFrom((snap.status_flags & kStVariantKnown) != 0,
+                          (snap.status_flags & kStSimplified) != 0);
+      if (a != ascii_mode_ || v != variant_ ||
           snap.schema_name != schema_name_ || !have_snapshot_) {
         ascii_mode_ = a;
-        simplified_ = s;
+        variant_ = v;
         if (!snap.schema_name.empty()) schema_name_ = snap.schema_name;
         have_snapshot_ = true;
         changed = true;
@@ -253,12 +258,13 @@ void StatusBar::SeedSchemaName(const std::string& name) {
 }
 
 void StatusBar::Relayout() {
-  bool ascii, simp;
+  bool ascii;
+  VariantCell variant;
   std::string name;
   {
     std::lock_guard<std::mutex> lock(mu_);
     ascii = ascii_mode_;
-    simp = simplified_;
+    variant = variant_;
     name = schema_name_;
   }
   // ⚠ 這裡以前是一個布林:
@@ -289,10 +295,8 @@ void StatusBar::Relayout() {
     glyphs.traditional = kGlyphTraditional;
     StatusBarState st;
     st.ascii_mode = ascii;
-    // ⚠ 這一行是暫時的接法,simplified_ 本身就是回音
-    // (它來自 kStSimplified ← rs_status.is_simplified ← simplification)。
-    // 下一個 commit 把它換成引擎回報的真三態。
-    st.variant = simp ? VariantCell::kSimplified : VariantCell::kTraditional;
+    // 三態直接交給純函式;kHidden 那一格會拿到空字串 = 整項略過。
+    st.variant = variant;
     // 空狀態**整項略過**(§8.12 規範性):方案名還沒載入完成時,
     // 那一格完全不佔位置,不得畫成一塊看不出用途的空白。
     st.schema_name = name.empty() ? std::wstring() : Utf8ToWide(name);
@@ -553,8 +557,10 @@ void StatusBar::ClickCell(int cell) {
       bool now;
       {
         std::lock_guard<std::mutex> lock(mu_);
-        now = simplified_;
-        simplified_ = !now;
+        // ⚠ 樂觀寫入,而且 kHidden 被當成「現在是繁體」。兩件事都是
+        //   暫時的 —— 下一個 commit 換成點完立刻向引擎回讀,那才是證據。
+        now = variant_ == VariantCell::kSimplified;
+        variant_ = now ? VariantCell::kTraditional : VariantCell::kSimplified;
       }
       // 走設定視窗那一支,三條路(狀態列、系統匣、設定)共用同一份寫入 ——
       // 各寫一份會漂移,而漂移的症狀是「從這裡切有效、從那裡切無效」。

@@ -50,6 +50,7 @@
 #include <vector>
 
 #include "../common/protocol.h"
+#include "../common/status_cells.h"
 #include "../common/service_state.h"
 #include "../common/statusbar_place.h"
 #include "ui_font.h"
@@ -139,7 +140,11 @@ class StatusBar {
 
   std::mutex mu_;
   bool ascii_mode_ = false;
-  bool simplified_ = false;
+  // ⚠ 三態,不是布林。kHidden = 引擎沒有回報字形 → **那一格整格不顯示**。
+  //   舊版是 bool simplified_,而它的來源是 kStSimplified ←
+  //   rs_status.is_simplified ← `simplification` —— 一個本專案打包的方案
+  //   通通沒有的開關,讀到的一直是我們自己寫進去的回音。
+  VariantCell variant_ = VariantCell::kHidden;
   std::string schema_name_;
 
   // ⚠ 種子:引擎在管道打開之前就知道方案叫什麼了(WarmUpEngine 選好了),

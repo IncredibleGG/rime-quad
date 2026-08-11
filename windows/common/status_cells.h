@@ -119,6 +119,15 @@ struct VariantOptions {
 
 VariantCell VariantCellFromOptions(const VariantOptions& o);
 
+// 線路上那兩個旗標(protocol.h 的 kStVariantKnown / kStSimplified)翻成
+// 三態。刻意收在這裡而不是寫在繪製碼裡 —— 「不知道」與「繁體」是兩件事,
+// 而把它們混起來正是這條缺陷的形狀,那種判斷必須在測得到的地方。
+//
+// ⚠ known 為假時**不看** simplified。舊版的服務不會送 kStVariantKnown,
+//   於是它送來的每一份快照在這裡都是 kHidden —— 那正確:一個不會回報
+//   字形的服務,我們確實不知道它在做哪一種轉換。
+VariantCell VariantCellFrom(bool known, bool simplified);
+
 struct StatusBarState {
   bool ascii_mode = false;
   // ⚠ 三態。kHidden = **那一格整項略過**,見檔頭與 VariantCellFromOptions。
