@@ -30,9 +30,12 @@
 //   推翻。** CI run 31511075812(sha ca97498)logic-x64 的「真的經過 TSF」:
 //   送一次左 Shift,SHIFT_TRACE_LINES=1,而多出來的那一行是 OnTestKeyDown
 //   自己寫的(vk=0x10 scan=0x2A keysym=0xFFE1 族=host-only 吃掉=0)。
-//   **sink 收得到純修飾鍵,不需要低階鍵盤 hook。** Shift 至今仍然沒有實作
-//   (#89),所以對使用者而言那條路一樣是不通的 —— 只是理由從「做不到」
-//   變成「沒做」,而那兩件事在排優先序時完全不同。
+//   **sink 收得到純修飾鍵,不需要低階鍵盤 hook。**
+//   ⚠ **[2026-08-12] Shift 那一條已經做了**(#89):輕點偵測是
+//   `common/shift_tap.cc` 的純函數狀態機,接在 `OnTestKeyDown` /
+//   `OnTestKeyUp`,`*eaten` 一律 FALSE(不吃任何一顆修飾鍵)。
+//   也就是說這一橫不再是「那個功能唯一的家」—— 下面那句話已經過期。
+//   ⏳ 但真機驗收還沒做(#48),所以這一橫預設仍然是開的。
 //   ⚠ 下面那句「唯一的辦法是 Win+空白鍵」**也已經過期**:Ctrl+空白鍵與
 //   系統匣兩條後來通了。完整的更新在 docs/ui-design.md §12.10.2 的表格,
 //   量測本身見 docs/coordination.md 的 [2026-08-12] [winbar] 那一則。

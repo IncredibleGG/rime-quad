@@ -158,6 +158,21 @@ namespace {
   X(kPunctFollow, L"Leave it alone", L"不干預", L"不干预")                     \
   X(kPunctChinese, L"Chinese  ,  。", L"中文  ,  。", L"中文  ,  。")          \
   X(kPunctEnglish, L"English  ,  .", L"英文  ,  .", L"英文  ,  .")             \
+  X(kShiftTapHeading, L"Switching between Chinese and English",                \
+    L"切中英文的鍵", L"切中英文的键")                                          \
+  X(kShiftTapBlurb,                                                            \
+    L"Tap Shift on its own — press it and let go without touching anything "   \
+    L"else — and typing switches between Chinese and English. Using Shift to " \
+    L"type a capital letter does not switch. Ctrl + Space always switches, "   \
+    L"whether this is on or off.",                                            \
+    L"單獨按一下 Shift —— 按下去、什麼都不碰、放開 —— 就在中英文之間切換。"    \
+    L"拿 Shift 打大寫字母不會切。不管這裡開著還是關著,"                       \
+    L"Ctrl + 空白鍵一樣可以切。",                                              \
+    L"单独按一下 Shift —— 按下去、什么都不碰、放开 —— 就在中英文之间切换。"    \
+    L"拿 Shift 打大写字母不会切。不管这里开着还是关着,"                       \
+    L"Ctrl + 空白键一样可以切。")                                              \
+  X(kShiftTapSwitch, L"Tap Shift to switch", L"按一下 Shift 就切",             \
+    L"按一下 Shift 就切")                                                      \
   X(kTextHonestNote,                                                           \
     L"This typing method only produces Simplified characters. To type "        \
     L"Traditional, switch to a Traditional one.",                              \

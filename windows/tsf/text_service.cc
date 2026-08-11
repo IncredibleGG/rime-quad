@@ -438,6 +438,10 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* mgr, TfClientId id,
 
 STDMETHODIMP TextService::Deactivate() {
   Trace("Deactivate 被呼叫");
+  // ⚠ 輕點 Shift 的狀態機要歸零。使用者按著 Shift 切走(或關掉輸入法)
+  //   時,那顆 Shift 的放開我們**永遠不會看到** —— 不歸零的話,下一次
+  //   啟用之後的第一顆 Shift 放開會被算成那一次的結尾而誤切一次。
+  shift_tap_.Reset();
   if (lang_bar_) {
     RemoveLangBarButton(thread_mgr_, lang_bar_);
     ReleaseLangBarButton(lang_bar_);
@@ -505,6 +509,9 @@ STDMETHODIMP TextService::OnPopContext(ITfContext*) { return S_OK; }
 STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr* focus,
                                      ITfDocumentMgr* /*prev*/) {
   RIME_GUARD_BEGIN
+  // ⚠ 焦點換了 = 那一段輕點作廢。使用者按著 Shift 用滑鼠點到別的輸入框
+  //   再放開,不算一次輕點 —— 這是產品判準明列的一條。
+  shift_tap_.Reset();
   // 換到別的輸入框:一定要把上一段組字收掉,否則它會留在原本的文件裡,
   // 而使用者接下來打的字會接在一段看起來已經沒有主人的 preedit 後面。
   if (composition_ && composition_ctx_) {
@@ -527,20 +534,32 @@ STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr* focus,
 
 // ──────────────────── ITfKeyEventSink ────────────────────
 
-STDMETHODIMP TextService::OnSetFocus(BOOL /*foreground*/) { return S_OK; }
+STDMETHODIMP TextService::OnSetFocus(BOOL /*foreground*/) {
+  // ITfKeyEventSink 的那一個 —— 整個**視窗**的焦點進出。
+  //
+  // ⚠ 這一格與上面 ITfThreadMgrEventSink 的同名函式**不是**同一件事,
+  //   兩個都要接:Alt+Tab 走掉時只有這一個會被呼叫(文件管理員沒有換),
+  //   而那正是「按著 Shift 切走、在別的程式裡放開」的實際樣子。
+  shift_tap_.Reset();
+  return S_OK;
+}
 
-STDMETHODIMP TextService::OnPreservedKey(ITfContext* ctx, REFGUID guid,
-                                        BOOL* eaten) {
-  RIME_GUARD_BEGIN
-  if (eaten) *eaten = FALSE;
-  if (!IsEqualGUID(guid, GUID_RimePreservedKeyToggle)) return S_OK;
-
-  // ⚠ 連不上服務就**不要**宣稱吃掉這顆鍵。宿主的 Ctrl+空白鍵可能有
+// 送出一次「中英切換」並把回來的快照套進文件。回傳:服務有沒有處理它。
+//
+// ⚠ **兩個入口共用這一份**:Ctrl+空白鍵(OnPreservedKey)與輕點 Shift
+//   (OnTestKeyUp,工單 #89)。各寫一份的話,下面那一段「快照不可以丟掉」
+//   的收尾邏輯會漂移,而漂移的樣子是「使用者打到一半的字不見了」——
+//   這個專案已經在同一段程式碼上踩過一次(見下面那一整段 ⚠)。
+//
+// label 只進記錄檔,讓「按了沒反應」查得出是哪一顆鍵那一條路斷的。
+bool TextService::SendAsciiToggle(ITfContext* ctx, int32_t keysym,
+                                  uint32_t mods, const char* label) {
+  // ⚠ 連不上服務就**不要**宣稱處理了這顆鍵。宿主的 Ctrl+空白鍵可能有
   //   它自己的用途(有些編輯器是自動完成),吃掉又不做事就是一顆
   //   壞掉的鍵 —— 這正是 key_eat_policy.h 檔頭那一課。
   if (!ipc_.EnsureReady()) {
-    Trace("保留鍵 Ctrl+Space:連不上服務,放行給宿主");
-    return S_OK;
+    Trace("%s:連不上服務,放行給宿主", label);
+    return false;
   }
 
   // 送的是**一顆按鍵**,不是一個新的協議操作:服務端用同一份
@@ -548,18 +567,18 @@ STDMETHODIMP TextService::OnPreservedKey(ITfContext* ctx, REFGUID guid,
   // (舊的服務配新的 DLL 仍然連得起來,只是那顆鍵會被交給 librime,
   //  而 librime 不處理 Control+space —— 也就是「沒有作用」,不是壞掉)。
   Result r;
-  if (!ipc_.SendKey(AsciiToggleKeysym(), AsciiToggleModifiers(), &r)) {
-    Trace("保留鍵 Ctrl+Space:送不出去,放行給宿主");
-    return S_OK;
+  if (!ipc_.SendKey(keysym, mods, &r)) {
+    Trace("%s:送不出去,放行給宿主", label);
+    return false;
   }
-  if (eaten) *eaten = r.handled ? TRUE : FALSE;
   if (!r.handled) {
-    // 服務沒有處理它:舊版的服務(不認得這個熱鍵,交給了 librime),
-    // 或者首次部署還沒做完(engine.cc 的 ToggleAsciiMode 會這樣回)。
-    // 上面已經宣告**沒有**吃掉這顆鍵,所以這裡也不可以動文件 ——
+    // 服務沒有處理它:舊版的服務(不認得這個熱鍵,交給了 librime)、
+    // 首次部署還沒做完(engine.cc 的 ToggleAsciiMode 會這樣回),
+    // 或者使用者把輕點 Shift 關掉了(pipe_server.cc 的 KeyAction::kIgnore)。
+    // 呼叫端會據此宣告**沒有**吃掉這顆鍵,所以這裡也不可以動文件 ——
     // 動了就是「宿主與我們同時處理同一顆鍵」。
-    Trace("保留鍵 Ctrl+Space:服務沒有處理(部署中?舊服務?),放行給宿主");
-    return S_OK;
+    Trace("%s:服務沒有處理(部署中?舊服務?開關關著?),放行給宿主", label);
+    return false;
   }
 
   // ══ ⚠ 這一份快照**不可以**丟掉 ══════════════════════════════════
@@ -601,7 +620,7 @@ STDMETHODIMP TextService::OnPreservedKey(ITfContext* ctx, REFGUID guid,
       // 而引擎那一側的組字**已經**被切中英清掉了 —— 這裡至少要把
       // engine_composing_ 拉回來,否則退格從此掉進黑洞(見 Composing())。
       engine_composing_ = (r.snap.status_flags & kStComposing) != 0;
-      Trace("保留鍵 Ctrl+Space:edit session 失敗 hr=0x%08lX,上屏文字沒寫進文件",
+      Trace("%s:edit session 失敗 hr=0x%08lX,上屏文字沒寫進文件", label,
             static_cast<unsigned long>(shr));
     }
     // IPC 放在 edit session **之外**:session 期間持有文件鎖(同 HandleKey)。
@@ -615,13 +634,25 @@ STDMETHODIMP TextService::OnPreservedKey(ITfContext* ctx, REFGUID guid,
     // 至少讓 engine_composing_ 跟上引擎 —— 少了這一行,上面 (c) 那個
     // 黑洞照樣會發生,而且完全沒有跡象。
     engine_composing_ = (r.snap.status_flags & kStComposing) != 0;
-    Trace("保留鍵 Ctrl+Space:沒有 context 可以套用快照(has_commit=%d)",
+    Trace("%s:沒有 context 可以套用快照(has_commit=%d)", label,
           r.snap.has_commit ? 1 : 0);
   }
 
-  Trace("保留鍵 Ctrl+Space:已切換 handled=%d 英數=%d 組字中=%d has_commit=%d",
-        r.handled ? 1 : 0, (r.snap.status_flags & kStAsciiMode) ? 1 : 0,
+  Trace("%s:已切換 handled=1 英數=%d 組字中=%d has_commit=%d", label,
+        (r.snap.status_flags & kStAsciiMode) ? 1 : 0,
         (r.snap.status_flags & kStComposing) ? 1 : 0, r.snap.has_commit ? 1 : 0);
+  return true;
+}
+
+STDMETHODIMP TextService::OnPreservedKey(ITfContext* ctx, REFGUID guid,
+                                        BOOL* eaten) {
+  RIME_GUARD_BEGIN
+  if (eaten) *eaten = FALSE;
+  if (!IsEqualGUID(guid, GUID_RimePreservedKeyToggle)) return S_OK;
+  const bool handled = SendAsciiToggle(ctx, AsciiToggleKeysym(),
+                                       AsciiToggleModifiers(),
+                                       "保留鍵 Ctrl+Space");
+  if (eaten) *eaten = handled ? TRUE : FALSE;
   return S_OK;
   RIME_GUARD_END_HR
 }
@@ -648,10 +679,27 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* ctx, WPARAM w, LPARAM l,
   //   規則(以及為什麼字元鍵與功能鍵的規則不一樣)在
   //   common/key_eat_policy.h 的檔頭。
   //
+  // ── 輕點 Shift 的狀態機:**按下**這一半(工單 #89)────────────
+  //
+  // ⚠ 為什麼餵在 OnTestKeyDown 而不是 OnKeyDown:TSF 的協議是
+  //   「Test 說吃了才會叫 Key」,而修飾鍵我們**永遠不吃**(kHostOnly)——
+  //   也就是 OnKeyDown 對 Shift 根本不會被呼叫。Test 那一趟是我們唯一
+  //   看得到它的地方。
+  //
+  // ⚠ TSF 說 OnTestKeyDown「不可以有副作用」。那句話講的是**文件** ——
+  //   宿主還沒有答應讓我們動它。這裡只更新自己的私有狀態,一個位元都
+  //   不碰文件、不碰引擎、不送 IPC;而真的要做事的那一步在放開那一趟。
+  //
+  // ⚠ 事件只組**一次**再分給兩邊用:BuildKeyEvent 裡有一次
+  //   GetKeyboardState,而這裡是宿主的 UI 執行緒,每顆按鍵多問一次
+  //   鍵盤狀態是白付的。
+  const KeyEvent ev = BuildKeyEvent(w, l, /*key_up=*/false);
+  shift_tap_.OnKey(ev, ::GetTickCount());
+
   // 走到這裡就代表 key event sink 是好的 —— 它沒掛上的話這個函式
   // 根本不會被呼叫。所以「記錄裡完全沒有按鍵行」與「按鍵行的 keysym 是 0」
   // 是兩件完全不同的事,前者要查的是 ActivateEx 那一段。
-  const KeyPlan plan = PlanKey(w, l, /*key_up=*/false);
+  const KeyPlan plan = PlanKey(ev);
   const bool ready = plan.eat && ipc_.EnsureReady();
   if (key_trace_budget_ > 0) {
     --key_trace_budget_;
@@ -684,7 +732,8 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext* ctx, WPARAM w, LPARAM l,
   RIME_GUARD_END_HR
 }
 
-STDMETHODIMP TextService::OnTestKeyUp(ITfContext*, WPARAM, LPARAM, BOOL* eaten) {
+STDMETHODIMP TextService::OnTestKeyUp(ITfContext* ctx, WPARAM w, LPARAM l,
+                                      BOOL* eaten) {
   // key-up 一律不吃。
   //
   // ⚠ 這裡原本寫著「TSF 本來就不會把純修飾鍵(Shift / Ctrl)的事件交給
@@ -712,24 +761,60 @@ STDMETHODIMP TextService::OnTestKeyUp(ITfContext*, WPARAM, LPARAM, BOOL* eaten) 
   //     common/key_eat_policy.cc 的分類把它放行給宿主(kHostOnly)。
   //     **那一份(「不太會…但交過來時」)才是對的那一份。**
   //
-  // 所以「要掛低階鍵盤 hook」這個前提不成立:輕點 Shift 切中英可以完全在
-  // 這四支 sink 裡用純函式的狀態機做完(*eaten 一律 FALSE,偵測到輕點就送
-  // 既有的正規形式 Ctrl+空白鍵),WH_KEYBOARD_LL 那條紅線不必碰。
-  // **這一輪只改敘述,一行行為都沒有實作**(工單 #89)。
+  // 所以「要掛低階鍵盤 hook」這個前提不成立:輕點 Shift 切中英完全在
+  // 這幾支 sink 裡用純函式的狀態機做完,WH_KEYBOARD_LL 那條紅線不必碰。
+  // **這一輪把它做出來了**(工單 #89),就在下面。
   //
   // ⚠ 仍然沒有量到的:那支 harness 走的是 ITfKeystrokeMgr::KeyDown ——
   //   **那是宿主呼叫的入口**。它證明「sink 收得到」,證不到「真實宿主
   //   (記事本 / Chrome / Word)的訊息迴圈會不會把 VK_SHIFT 送進 TSF」。
-  //   後者只有人在真機上試得出來,已列進 #48。
+  //   後者只有人在真機上試得出來,已列進 #48。**這顆鍵的驗收必須包含
+  //   真機那一格** —— 這裡的一切在 CI 上都只驗得到「判斷對不對」。
   //
   // ⚠ 左右分不出來:送過來的 wParam 是**泛用的** VK_SHIFT(0x10),而
   //   keymap.cc:157 又把它一律折成 XK_Shift_L(0xFFE1)。要分左右只能看
-  //   scan code(左 0x2A、右 0x36)—— 上面量到 scan code 確實有正確帶進來。
+  //   scan code(左 0x2A、右 0x36)—— 上面量到 scan code 確實有正確帶進來,
+  //   而 common/shift_tap.cc 就是靠它認「放開的是不是同一顆」。
+  //
+  // ══ 輕點 Shift:**放開**這一半 ═════════════════════════════════
+  //
+  // ⚠ **`*eaten` 永遠是 FALSE,這一格不商量。**
+  //
+  //   宣告吃掉一顆修飾鍵的 key-up,代價是宿主收不到那則訊息 ——
+  //   而自己追蹤 Shift 狀態的程式會從此以為 Shift 按著不放。那是
+  //   「壞掉的鍵盤」,而這個專案的規矩是壞掉的鍵比缺功能嚴重
+  //   (common/key_eat_policy.h 檔頭)。所以偵測與動作都在不吃的前提下做。
+  //
+  // ⚠ 做事的地方是 Test 這一趟,而不是 OnKeyUp。理由同上面按下那一半:
+  //   不吃就不會有 OnKeyUp。這是一個**知情的取捨** —— TSF 說 Test 那一趟
+  //   不該動文件,而我們在這裡確實可能動它(切中英會把組字上屏)。
+  //   兩害相權:動文件失敗的話 SendAsciiToggle 裡那一段已經有處理
+  //   (edit session 被拒時把 engine_composing_ 拉回來並記一行);
+  //   吃掉修飾鍵失敗的話,使用者的 Shift 卡住而且完全查不到原因。
+  RIME_GUARD_BEGIN
   if (eaten) *eaten = FALSE;
+  const ShiftTap tap =
+      shift_tap_.OnKey(BuildKeyEvent(w, l, /*key_up=*/true), ::GetTickCount());
+  if (tap != ShiftTap::kToggleAsciiMode) return S_OK;
+
+  // ⚠ 送的是**輕點 Shift 自己的正規形式**(裸的 XK_Shift_L),不是
+  //   Ctrl+空白鍵那一組。服務端要分得出來才有辦法只關掉這一顆,
+  //   而使用者關掉它時 Ctrl+空白鍵必須照樣能用(common/hotkey_policy.h)。
+  //
+  // 開關關著時服務端會回 handled=false,於是這裡什麼都不做 ——
+  // 那正是「關掉之後一點痕跡都沒有」。
+  Trace("輕點 Shift:偵測到(scan=0x%02X)",
+        static_cast<unsigned>((l >> 16) & 0xFF));
+  SendAsciiToggle(ctx, ShiftTapKeysym(), ShiftTapModifiers(), "輕點 Shift");
   return S_OK;
+  RIME_GUARD_END_HR
 }
 
 STDMETHODIMP TextService::OnKeyUp(ITfContext*, WPARAM, LPARAM, BOOL* eaten) {
+  // ⚠ 這裡**故意不餵** shift_tap_。同一顆鍵餵兩次的話,一次乾淨的
+  //   按放會變成「按下、按下、放開、放開」—— 而第二個按下會被狀態機
+  //   當成自動重複而整段作廢,也就是這顆鍵永遠不會有反應。
+  //   餵的地方只有 OnTestKeyDown / OnTestKeyUp,理由見那兩處。
   if (eaten) *eaten = FALSE;
   return S_OK;
 }
@@ -770,8 +855,12 @@ const Win32KeyboardOracle& TextService::Oracle() {
 }
 
 TextService::KeyPlan TextService::PlanKey(WPARAM w, LPARAM l, bool key_up) {
+  return PlanKey(BuildKeyEvent(w, l, key_up));
+}
+
+TextService::KeyPlan TextService::PlanKey(const KeyEvent& e) {
   KeyPlan p;
-  p.mapped = MapKey(BuildKeyEvent(w, l, key_up), Oracle());
+  p.mapped = MapKey(e, Oracle());
   p.kind = ClassifyKeyKind(p.mapped.keysym, p.mapped.modifiers);
   p.eat = ShouldEatKey(p.kind, Composing());
   return p;

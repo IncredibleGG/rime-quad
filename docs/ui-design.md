@@ -1992,7 +1992,7 @@ return CreateFontIndirectW(with lfFaceName = "")   # 交給 GDI 依 lfPitchAndFa
 | **Ctrl + 空白鍵** | 「Shift 不通」（問的是 Shift，不是這一顆） | **通了。** `tsf/text_service.cc` 註冊了 `PreserveKey{VK_SPACE, TF_MOD_CONTROL}`;判斷在四端共用的 `common/hotkey_policy.cc`;`pipe_server.cc` 接得起來 |
 | **系統匣** | 「沒有中英那一項」 | **有了。** 右鍵選單上「中文 / 英文」兩項，走 `Engine::SetAsciiModeAll()`。它在服務活著時**必然存在**，與有沒有宿主在用無關 |
 | 語言列 | `InitMenu` 回 `E_NOTIMPL` | 不變（沒做，也不打算做 —— `GUID_LBI_INPUTMODE` 另開工單） |
-| Shift 輕點 | TSF 不交付純修飾鍵 | **量到了，而那句話是假的。** CI run `31511075812`（sha `ca97498`）`logic-x64` 的「真的經過 TSF」那一步：在真的 `ActivateEx` 過的文字服務上經 `ITfKeystrokeMgr` 送一次左 Shift，`SHIFT_TRACE_LINES=1`，而多出來的那一行是 `OnTestKeyDown` 自己寫的（`vk=0x10 scan=0x2A keysym=0xFFE1 族=host-only 吃掉=0`）。**sink 收得到純修飾鍵，不需要低階鍵盤 hook**；`common/key_eat_policy.cc:120` 才是對的那一份。⚠ **但至今仍未實作**（#89），而且「真實宿主的訊息迴圈會不會把 `VK_SHIFT` 送進 TSF」只有真機驗得到（#48）。量法與跨端影響見 `docs/coordination.md` 的 `[2026-08-12] [winbar]` |
+| Shift 輕點 | TSF 不交付純修飾鍵 | **量到了，而那句話是假的。** CI run `31511075812`（sha `ca97498`）`logic-x64` 的「真的經過 TSF」那一步：在真的 `ActivateEx` 過的文字服務上經 `ITfKeystrokeMgr` 送一次左 Shift，`SHIFT_TRACE_LINES=1`，而多出來的那一行是 `OnTestKeyDown` 自己寫的（`vk=0x10 scan=0x2A keysym=0xFFE1 族=host-only 吃掉=0`）。**sink 收得到純修飾鍵，不需要低階鍵盤 hook**；`common/key_eat_policy.cc:120` 才是對的那一份。✅ **2026-08-12 已實作**（#89）：`common/shift_tap.cc` 的純函數狀態機，接在 `OnTestKeyDown` / `OnTestKeyUp`，`*eaten` 一律 FALSE；開關 `text.shiftTapToggle` 預設開。⚠ 「真實宿主的訊息迴圈會不會把 `VK_SHIFT` 送進 TSF」仍然只有真機驗得到（#48）。量法與跨端影響見 `docs/coordination.md` 的 `[2026-08-12] [winbar]` |
 
 **新的論證：**
 

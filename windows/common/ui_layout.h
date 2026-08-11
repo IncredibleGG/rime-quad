@@ -267,6 +267,9 @@ enum SettingsControlId : int {
   IDC_PUNCT_0,
   IDC_PUNCT_1,
   IDC_PUNCT_2,
+  IDC_SHIFTTAP_HEAD,
+  IDC_SHIFTTAP_BLURB,
+  IDC_SHIFTTAP_SWITCH,
 
   // 進階
   IDC_ADV_TITLE = 500,

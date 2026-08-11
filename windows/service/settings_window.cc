@@ -169,6 +169,12 @@ const ControlDef kControls[] = {
     {IDC_PUNCT_0, L"BUTTON", RADIO1, UiString::kPunctFollow},
     {IDC_PUNCT_1, L"BUTTON", RADIO, UiString::kPunctChinese},
     {IDC_PUNCT_2, L"BUTTON", RADIO, UiString::kPunctEnglish},
+    {IDC_SHIFTTAP_HEAD, L"STATIC", ST, UiString::kShiftTapHeading},
+    {IDC_SHIFTTAP_BLURB, L"STATIC", ST, UiString::kShiftTapBlurb},
+    // §12.5.2:開關 = BUTTON + BS_AUTOCHECKBOX | BS_RIGHTBUTTON。
+    // ⚠ 不可以 owner-draw(與 BS_AUTOCHECKBOX 互斥),見 IDC_FOLLOW_MODE。
+    {IDC_SHIFTTAP_SWITCH, L"BUTTON",
+     BS_AUTOCHECKBOX | BS_RIGHTBUTTON | WS_TABSTOP, UiString::kShiftTapSwitch},
 
     // ── 進階 ──
     {IDC_ADV_TITLE, L"STATIC", ST, UiString::kAdvancedTitle},
@@ -1506,6 +1512,11 @@ void SettingsWindow::ReloadFromSettings() {
   CheckRadio(hwnd_, IDC_PUNCT_0, 3,
              punct == Tri::kUnset ? 0 : (punct == Tri::kFalse ? 1 : 2));
 
+  // 輕點 Shift 切中英,預設**開**(業界慣例,理由見 common/settings.h)。
+  // ⚠ 問的是 ShiftTapToggle() 而不是自己比一次 Tri —— 那個判斷只有一份。
+  ::SendMessageW(Ctl(hwnd_, IDC_SHIFTTAP_SWITCH), BM_SETCHECK,
+                 settings_.ShiftTapToggle() ? BST_CHECKED : BST_UNCHECKED, 0);
+
   // ⚠ 一次顯示幾個字是 **A 層**(librime 的一頁候選數),不在設定檔裡 ——
   //   所以它從 default.custom.yaml 讀。
   {
@@ -1632,6 +1643,26 @@ void SettingsWindow::ApplyPunctNow() {
   if (t != Tri::kUnset) engine_->SetOptionAll("ascii_punct", t == Tri::kTrue);
   SetTransientStatus(t == Tri::kUnset ? UiString::kStatusPunctFollow
                                       : UiString::kStatusApplied);
+}
+
+void SettingsWindow::ApplyShiftTapToggle() {
+  const bool on =
+      ::SendMessageW(Ctl(hwnd_, IDC_SHIFTTAP_SWITCH), BM_GETCHECK, 0, 0) ==
+      BST_CHECKED;
+  // 預設是**開**,所以「開」= 沒表示過意見 = 刪掉那個鍵(settings.h 檔頭)。
+  if (on)
+    settings_.Unset(keys::kTextShiftTapToggle);
+  else
+    settings_.SetTri(keys::kTextShiftTapToggle, Tri::kFalse);
+  if (!store_->Save(settings_)) {
+    SetStatus(UiString::kStatusSaveFailed);
+    return;
+  }
+  // ⚠ 這裡**不必**通知任何人。偵測在瘦 DLL 裡,而決定切不切的那一格
+  //   (service/pipe_server.cc)是在**收到那顆鍵的當下**才讀設定檔的 ——
+  //   所以按下去就生效,連下一顆按鍵都不用等。這是刻意的:一顆
+  //   「要重開才生效」的開關,使用者會以為它壞了。
+  SetTransientStatus(UiString::kStatusApplied);
 }
 
 void SettingsWindow::ApplyAppearancePref() {
@@ -2012,6 +2043,9 @@ void SettingsWindow::OnCommand(int id, int code) {
     }
     case IDC_BAR_SHOW:
       ApplyStatusBarVisibility();
+      return;
+    case IDC_SHIFTTAP_SWITCH:
+      ApplyShiftTapToggle();
       return;
     case IDC_NET_SWITCH:
       OnNetSwitchToggled();

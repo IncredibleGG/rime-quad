@@ -114,6 +114,9 @@ enum class UiString : int {
   kPunctFollow,
   kPunctChinese,
   kPunctEnglish,
+  kShiftTapHeading,
+  kShiftTapBlurb,
+  kShiftTapSwitch,
   kTextHonestNote,
   kTextHonestAction,
 

@@ -194,6 +194,9 @@ class SettingsWindow {
   void ApplyUiLanguage();
   void ApplyScaleNow();
   void ApplyStatusBarVisibility();
+  // 輕點 Shift 切中英(#89)。存的是設定,不必通知任何人 ——
+  // 決定切不切的那一格在收到那顆鍵的當下才讀設定檔。
+  void ApplyShiftTapToggle();
   void DoResetSettings();
   bool ApplyOrderAndPageSize(std::string* error);
   // ── 連上網路 / 更新 ──────────────────────────────────────

@@ -153,7 +153,12 @@ add_library(rime_common STATIC
   common/bar_visibility.cc
   # ⚠ Ctrl+空白鍵。判斷只有這一份:瘦 DLL 與服務各要問一次,
   #   兩邊各寫一份就是兩份真相。走 PreserveKey,**不動 key_eat_policy**。
-  common/hotkey_policy.cc)
+  common/hotkey_policy.cc
+  # ⚠ 輕點 Shift 切中英(#89)。同樣是純函式,而且理由更硬:它答錯的
+  #   樣子是「打大寫字母時中英一直亂跳」,比沒有這個功能糟得多 ——
+  #   留在 tsf/text_service.cc 裡的話只有真人在 Windows 上驗得到,
+  #   也就是實際上沒有人驗。
+  common/shift_tap.cc)
 target_include_directories(rime_common PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/common"
   "${RIME_ROOT}/core/include")
@@ -206,6 +211,7 @@ add_executable(rime_tests
   tests/test_service_state.cc
   tests/test_status_cells.cc
   tests/test_hotkey_policy.cc
+  tests/test_shift_tap.cc
   # 這一支用**真的**鍵盤佈局(LoadKeyboardLayout + ToUnicodeEx),
   # 是 CI 上唯一驗得到「有沒有真的問佈局」的地方。
   tests/test_win32_layouts.cc

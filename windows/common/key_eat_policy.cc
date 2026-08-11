@@ -128,7 +128,7 @@ KeyKind ClassifyKeyKind(int32_t keysym, uint32_t modifiers) {
   //   吃掉=0 —— 也就是**這一格的判斷當場被實測驗證了一次**。
   //   (tsf/text_service.cc 的 OnTestKeyUp 曾經寫著相反的話,已照實測改寫。)
   //
-  // ⚠ 「輕點 Shift 切中英」要做的話**不是**改這一格的分類:分類仍然是不吃
+  // ⚠ 「輕點 Shift 切中英」(#89,2026-08-12 做了)**沒有**改這一格的分類:仍然是不吃
   //   (三支 sink 的 *eaten 實測都是 0),偵測輕點是 sink 那一層的狀態機。
   if (keysym >= kShiftL && keysym <= kSuperR) return KeyKind::kHostOnly;
 

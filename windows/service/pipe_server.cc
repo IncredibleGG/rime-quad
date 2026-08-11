@@ -635,7 +635,38 @@ void PipeServer::ServeClient(HANDLE pipe) {
         // ⚠ 這裡不需要新的協議操作:那一顆鍵就走既有的 kKey,所以線路
         //   格式一個位元都沒有變 —— 舊 DLL 配新服務、新 DLL 配舊服務
         //   兩個方向都仍然連得起來。
-        Result r = IsAsciiToggleHotkey(k.keysym, k.mods)
+        //
+        // ── 輕點 Shift 也走這裡(工單 #89)────────────────────────
+        //
+        // 瘦 DLL 偵測到一次輕點之後送的是「一顆裸的 XK_Shift_L」——
+        // 同一個 kKey,線路格式一樣一個位元都沒有變。兩顆鍵分成兩格是
+        // 因為**只有輕點 Shift 有開關**(見 hotkey_policy.h)。
+        //
+        // ⚠ 設定是在**這一刻**讀的,不是開機時讀一次快取起來:
+        //   使用者在設定裡按下那顆開關之後,下一次輕點就該照新的走 ——
+        //   而一顆「要重開才生效」的開關,他會以為它壞了。
+        //   成本是一次小檔案讀取,而且只發生在真的輕點了 Shift 的時候
+        //   (組合鍵一律不會走到這裡),不在每一顆按鍵的路上。
+        const bool shift_tap_on =
+            settings_ ? settings_->Load().ShiftTapToggle() : true;
+        const KeyAction action =
+            DecideKeyAction(k.keysym, k.mods, shift_tap_on);
+        if (action == KeyAction::kIgnore) {
+          // 使用者把輕點 Shift 關掉了。**什麼都不做** ——
+          //
+          // ⚠ 而「什麼都不做」包含**不碰 UI**。這裡不可以走 push_ui:
+          //   那一份空快照會把候選窗與那一橫當成「沒有候選了」而收掉,
+          //   於是使用者組字到一半按了一下 Shift,畫面上的候選就消失了。
+          //   一個被關掉的功能不可以有任何看得見的痕跡。
+          //
+          // ⚠ 也不可以順手交給 librime(它自己也認得 Shift_L)——
+          //   理由見 common/hotkey_policy.h 的 KeyAction::kIgnore。
+          Result r;
+          r.handled = false;
+          if (!send(EncodeResult(seq, r))) goto done;
+          break;
+        }
+        Result r = action == KeyAction::kToggleAsciiMode
                        ? engine_->ToggleAsciiMode(k.session)
                        : engine_->ProcessKey(k.session, k.keysym, k.mods);
         note_schema(r.snap);

@@ -213,6 +213,11 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
       radios({IDC_VARIANT_0, IDC_VARIANT_1, IDC_VARIANT_2}, "variant_radio");
       heading(IDC_PUNCT_HEAD, IDC_PUNCT_BLURB, 2);
       radios({IDC_PUNCT_0, IDC_PUNCT_1, IDC_PUNCT_2}, "punct_radio");
+      // 輕點 Shift 切中英(#89)。說明佔四行:它要講清楚「什麼算、
+      // 什麼不算」,而那正是使用者會不會信任這顆鍵的關鍵。
+      heading(IDC_SHIFTTAP_HEAD, IDC_SHIFTTAP_BLURB, 4);
+      emit(IDC_SHIFTTAP_SWITCH, st.Push(metric::kSidebarItemH, space::s7), true,
+           "shift_tap_switch");
       break;
     }
     case kPageNetwork: {

@@ -21,6 +21,7 @@
 #include <string>
 
 #include "../common/key_eat_policy.h"
+#include "../common/shift_tap.h"
 #include "ipc_client.h"
 #include "win32_oracle.h"
 
@@ -93,6 +94,10 @@ class TextService : public ITfTextInputProcessorEx,
     bool eat = false;
   };
   KeyPlan PlanKey(WPARAM w, LPARAM l, bool key_up);
+  // 事件已經組好時走這一個。⚠ BuildKeyEvent 裡有一次 GetKeyboardState,
+  //   而 OnTestKeyDown 要把同一顆事件同時餵給輕點 Shift 的狀態機 ——
+  //   組兩次是在宿主的 UI 執行緒上白付一次系統呼叫。
+  KeyPlan PlanKey(const KeyEvent& e);
 
   // 目前有沒有進行中的組字。
   //
@@ -104,6 +109,15 @@ class TextService : public ITfTextInputProcessorEx,
 
   // 一顆按鍵的完整處理。回傳「宿主要不要吃掉它」。
   bool HandleKey(ITfContext* ctx, WPARAM w, LPARAM l, bool key_up);
+
+  // 送出一次「中英切換」並把回來的快照套進文件。回傳:服務有沒有處理它。
+  //
+  // ⚠ 兩個入口共用:Ctrl+空白鍵(OnPreservedKey)與輕點 Shift(OnTestKeyUp)。
+  //   切中英**會**產生上屏文字(切到英數時 librime 把組字上屏並清掉),
+  //   而那份快照是那段文字唯一的一次現身 —— 兩邊各寫一份收尾邏輯,
+  //   漂移的樣子就是「使用者打到一半的字不見了」。細節見 .cc 裡那一整段 ⚠。
+  bool SendAsciiToggle(ITfContext* ctx, int32_t keysym, uint32_t mods,
+                       const char* label);
   // 引擎說它不處理這顆字元鍵時,由我們把那個字寫進文件。
   // 見 common/key_eat_policy.h:宣告吃掉的鍵一定要有人負責。
   bool SelfInsertChar(ITfContext* ctx, char32_t ch);
@@ -154,6 +168,16 @@ class TextService : public ITfTextInputProcessorEx,
   // UnpreserveKey —— 對一顆沒註冊過的鍵反註冊會拿到錯誤碼,而那則錯誤
   // 會蓋掉真正的問題。理由與整個做法見 common/hotkey_policy.h。
   bool preserved_key_ok_ = false;
+
+  // 輕點 Shift 切中英的狀態機(工單 #89)。判斷本體是純函式,
+  // 住在 common/shift_tap.h —— 在 Ubuntu 上有一張逐事件的真值表。
+  //
+  // ⚠ 每一個 TextService 實例一份,也就是**每個宿主進程各自一份**。
+  //   那是對的:按鍵是逐進程送進來的,而使用者一次只在一個程式裡打字。
+  //
+  // ⚠ 只由 OnTestKeyDown / OnTestKeyUp 餵(它們是修飾鍵唯一會走到的兩趟),
+  //   並由 Deactivate 與兩個 OnSetFocus 歸零。
+  ShiftTapState shift_tap_;
 
   // ⚠ **不可以每一顆都寫。** OnTestKeyDown 跑在宿主的 UI 執行緒上,
   //   每一顆按鍵一次磁碟寫入是不能接受的。而診斷需要的資訊在前幾顆就齊了:

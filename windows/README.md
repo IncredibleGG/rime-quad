@@ -54,7 +54,12 @@
 | 行為 | `verify_ime.sh` → `rime_probe --ascii-toggle`(真的具名管道) | 中文模式吃掉字母、英數模式不吃、**再按一次要切得回來** |
 | 判斷本身 | `rime_tests` 的 `test_hotkey_policy.cc` | 一張逐鍵真值表:26 個 Ctrl+字母、10 個 Ctrl+數字、9 種空白鍵的修飾鍵組合、19 顆功能鍵、94 個可列印字元,**全部必須不命中** |
 
-⚠ **Shift 單擊切中英(微軟拼音的預設)刻意沒做。** 技術上不需要 hook ——
+⚠ ~~**Shift 單擊切中英(微軟拼音的預設)刻意沒做。**~~
+**已於 2026-08-12 做出來(#89),而且走的不是下面說的 `TF_PRESERVEDKEY`**
+—— 那條路會讓 TSF 攛下**每一次** Shift 放開,而宿主收不到修飾鍵的
+key-up 就是使用者眼裡的「Shift 卡住了」。實際的做法是 `common/shift_tap.cc`
+的純函數狀態機接在 key event sink 上,`*eaten` 一律 FALSE。下面保留當時的論證。
+舊的理由: 技術上不需要 hook ——
 `TF_PRESERVEDKEY` 的 `uModifiers` 有 `TF_MOD_ON_KEYUP`,配 `VK_SHIFT` 就是
 「Shift 放開時」。沒做的理由是**驗不到**:那顆鍵的正確行為是「Shift 單獨按放
 才算,拿它打大寫字母時不算」,而這裡沒有辦法證明 TSF 是不是這樣分辨的。
@@ -66,7 +71,8 @@
 (出處與量法見下面「已知的功能缺口」那一節的第二條),所以輕點偵測可以做成
 sink 裡的**純函式狀態機** —— 而純函式意味著「單獨按放才算、拿它打大寫字母時
 不算」變成一條餵得進單元測試的規則,不再是「沒有辦法證明 TSF 是不是這樣分辨」。
-**這一輪仍然沒有做**,只是把路量出來了;要做仍然要連同那顆開關與真機驗證一起。
+**下一輪就是照這條路做的**(2026-08-12):判斷在 `common/shift_tap.cc`,
+開關是 `text.shiftTapToggle`(預設開)。⚠ 真機驗證還欠著 —— 見 #48。
 
 ### W-2 那一橫的第一格「中 En」兩個都畫出來
 
@@ -1554,7 +1560,12 @@ true;寫成「等於 true 才算開」的話,全新安裝的機器上自動挑�
   · **結論**:**key event sink 收得到純修飾鍵,不需要低階鍵盤 hook。**
     我們只是照 `common/key_eat_policy.cc` 把它放行給宿主(`kHostOnly`),
     那一份的「不太會…但交過來時」才是對的那一份。
-  · ⚠ **仍然沒有做。** 這一輪只改敘述,輕點 Shift 一行都沒有實作(#89)。
+  · **做了**(2026-08-12,#89)。判斷在 `common/shift_tap.cc` —— 一個吃
+    `(vk, scan, 按下/放開, 時間)` 事件流的**純函式狀態機**,
+    `tests/test_shift_tap.cc` 是一張逐事件的真值表。TSF 那一端接在
+    `OnTestKeyDown` / `OnTestKeyUp`(修飾鍵永遠不吃,也就永遠不會有
+    `OnKeyDown`),`Deactivate` 與兩個 `OnSetFocus` 歸零。開關叫
+    `text.shiftTapToggle`(**預設開**),在設定的「文字」頁。
   · ⚠ **仍然沒有量到**:那支 harness 走的是 `ITfKeystrokeMgr::KeyDown`,
     **那是宿主呼叫的入口**。它證得到「sink 收得到」,證不到「真實宿主
     (記事本 / Chrome / Word)的訊息迴圈會不會把 `VK_SHIFT` 送進 TSF」。
