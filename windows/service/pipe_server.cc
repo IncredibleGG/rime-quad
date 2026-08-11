@@ -691,6 +691,23 @@ void PipeServer::ServeClient(HANDLE pipe) {
       case Op::kSelectSchema: {
         SchemaReq sc;
         if (!DecodeSelectSchema(payload, &seq, &sc)) goto done;
+        // ⚠ 換方案之前先把設定檔裡的簡繁偏好重讀一次。
+        //
+        //   Engine::SelectAndApply 換完方案要重套簡繁(librime 每次載入
+        //   方案都會把 switches 重設回方案宣告的值),而它用的是
+        //   Engine::variant_pref_ —— 那是**設定的複本**,只有服務啟動時
+        //   與設定視窗改過時才更新(engine.h 自己寫著「真相在設定檔」)。
+        //
+        //   設定檔在服務跑著的時候被別人改掉,這一趟就會拿舊偏好去洗掉
+        //   使用者剛選的簡繁。真的走得到:設定視窗有一顆「用記事本開啟
+        //   設定檔」,而 verify_installer.sh §6g 案例二也正是這條路 ——
+        //   先寫檔、再連上已經在跑的服務、再換方案,上屏變回繁體。
+        //
+        //   SESSION_NEW 那一條路每一次都重讀設定(見上面的 st/choice/opts),
+        //   這裡照做。SetVariantPref 與 SelectSchema 都走同步的 Post,
+        //   所以順序是保證的。這條 op 本來就要載入詞典與 prism,
+        //   多一次讀設定檔不會改變它的量級。
+        if (settings_) engine_->SetVariantPref(settings_->Load().SchemaPref());
         Result r = engine_->SelectSchema(sc.session, sc.schema_id);
         push_ui(r.snap);
         if (!send(EncodeResult(seq, r))) goto done;
