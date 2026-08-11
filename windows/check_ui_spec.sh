@@ -1232,7 +1232,8 @@ PYSCRIPT
   #   SCOPE_OK;沒有那一行就當作沒跑過。
   check
   local w29bad=0
-  local w29out; w29out="$("${PY}" - "${sw}" "${CODE_DIR}/common/net_ui.cc" <<'PYSCRIPT'
+  local w29out; w29out="$("${PY}" - "${sw}" "${CODE_DIR}/common/net_ui.cc" \
+    "${CODE_DIR}/common/update_flow.cc" <<'PYSCRIPT'
 import sys as _s
 _s.stdout.reconfigure(encoding='utf-8', newline='')
 import re, sys
@@ -1241,6 +1242,10 @@ try:
     net = open(sys.argv[2], encoding='utf-8', errors='replace').read()
 except OSError:
     net = ''
+try:
+    flow = open(sys.argv[3], encoding='utf-8', errors='replace').read()
+except (OSError, IndexError):
+    flow = ''
 
 def body_of(src, head, endpat='\n}\n'):
     i = src.find(head)
@@ -1251,11 +1256,19 @@ def body_of(src, head, endpat='\n}\n'):
 
 out = []
 
-# -- 1. 純函式那一側還在 common/,而且是這三支 --
-for name in ('UpdateAction DecideUpdateAction(',
-             'UiString NetSwitchSummary(',
+# -- 1. 純函式那一側還在 common/ --
+#
+# ⚠ 更新那兩支在 win-update 併進來時搬了家:判斷從 net_ui.cc 的
+#   DecideUpdateAction() 換成 update_flow.cc 的 DescribeUpdateCard(),
+#   而它守的性質一模一樣 —— 「按下去會發生什麼」不可以住在
+#   settings_window.cc 裡,那個檔案在 Ubuntu 上編不起來。
+for name in ('UiString NetSwitchSummary(',
              'NetLogView BuildNetLogView('):
     if name not in net:
+        out.append('NO_PUREFN=' + name.split(' ')[-1].rstrip('('))
+for name in ('UpdateCard DescribeUpdateCard(',
+             'UiString UpdateFailureText('):
+    if name not in flow:
         out.append('NO_PUREFN=' + name.split(' ')[-1].rstrip('('))
 
 # -- 2. 開關:狀態從 NetGate 讀,那句話從純函式來 --
@@ -1298,32 +1311,55 @@ else:
     if 'kStatusSaveFailed' not in tog:
         out.append('TOGGLE_FAILS_SILENTLY')
 
-# -- 5. 檢查更新:開關先問,而且不在 UI 執行緒上跑 --
-up = body_of(sw, 'void SettingsWindow::StartUpdateCheck() {')
-if up is None:
-    out.append('NO_STARTUPDATE')
-else:
-    if not re.search(r'DecideUpdateAction\(\s*net_gate_\.Enabled\(\),\s*update_running_\s*\)', up):
-        out.append('UPDATE_SKIPS_THE_SWITCH')
-    if 'if (action != UpdateAction::kStart) return;' not in up:
-        out.append('UPDATE_IGNORES_THE_VERDICT')
-    if 'CreateThread' not in up:
-        out.append('UPDATE_NOT_ON_A_THREAD')
-    if 'RunUpdateCheck' in up:
-        out.append('UPDATE_RUNS_ON_THE_UI_THREAD')
-th = body_of(sw, 'DWORD WINAPI SettingsWindow::UpdateThreadEntry(LPVOID param) {')
+# -- 5. 檢查更新 / 下載:開關先問,而且不在 UI 執行緒上跑 --
+#
+# ⚠ 這一段的名字在 win-update 併進來之後全換過一輪。守的**性質**沒有變:
+#   (a) 開關關著一個位元組都不准送出去,而且要說一句話;
+#   (b) 阻塞的那一段(Check / DownloadAndVerify)不准跑在 UI 執行緒上 ——
+#       候選窗與設定視窗共用那條執行緒,卡住它就是「打字打到一半沒反應」;
+#   (c) 結果那句話從純函式來,不是寫死的。
+#   兩個進入點都要驗:**下載那一顆按鈕也會連出去**,只驗「檢查更新」
+#   等於留了一半沒守。
+for fn, tag in (('void SettingsWindow::StartUpdateCheck() {', 'CHECK'),
+                ('void SettingsWindow::StartUpdateDownload() {', 'DOWNLOAD')):
+    b = body_of(sw, fn)
+    if b is None:
+        out.append('NO_START=' + tag)
+        continue
+    i_gate = b.find('if (!net_gate_.Enabled())')
+    i_thread = b.find('CreateThread')
+    if i_gate < 0:
+        out.append('UPDATE_SKIPS_THE_SWITCH=' + tag)
+    if 'UpdateFailure::kSwitchOff' not in b:
+        out.append('UPDATE_SWITCH_OFF_SILENT=' + tag)
+    if i_thread < 0:
+        out.append('UPDATE_NOT_ON_A_THREAD=' + tag)
+    elif i_gate >= 0 and i_gate > i_thread:
+        out.append('UPDATE_ASKS_TOO_LATE=' + tag)
+    for blocking in ('update_.Check(', 'update_.DownloadAndVerify('):
+        if blocking in b:
+            out.append('UPDATE_RUNS_ON_THE_UI_THREAD=' + tag)
+th = body_of(sw, 'DWORD WINAPI SettingsWindow::UpdateWorkerEntry(LPVOID p) {')
 if th is None:
     out.append('NO_UPDATE_THREAD')
-elif 'RunUpdateCheck(job->gate)' not in th:
-    out.append('THREAD_DOES_NOT_CHECK')
-done = body_of(sw, 'void SettingsWindow::OnUpdateCheckDone(')
+else:
+    if 'update_.Check(&why)' not in th:
+        out.append('THREAD_DOES_NOT_CHECK')
+    if 'update_.DownloadAndVerify(&why)' not in th:
+        out.append('THREAD_DOES_NOT_DOWNLOAD')
+done = body_of(sw, 'void SettingsWindow::OnUpdateWorkerDone() {')
 if done is None:
     out.append('NO_UPDATE_DONE')
+elif 'RefreshNetworkAndUpdateCard()' not in done:
+    out.append('RESULT_DOES_NOT_REFRESH')
+card = body_of(sw, 'void SettingsWindow::RefreshNetworkAndUpdateCard() {')
+if card is None:
+    out.append('NO_UPDATE_CARD')
 else:
-    if 'UpdateStateText(' not in done:
+    if 'DescribeUpdateCard(st)' not in card:
         out.append('RESULT_TEXT_HARDCODED')
-    if 'RefreshNetworkPage()' not in done:
-        out.append('RESULT_DOES_NOT_REFRESH')
+    if 'RefreshNetworkPage();' not in card:
+        out.append('CARD_SKIPS_THE_LOG')
 
 # -- 6. 清除紀錄要問一聲 --
 clr = body_of(sw, 'void SettingsWindow::DoClearNetLog() {')
@@ -1387,27 +1423,42 @@ ${w29out}" ;;
         w29msg "開關不是寫進 NetGate::SetEnabled() —— 出口那一側讀到的仍然是舊值" ;;
       TOGGLE_FAILS_SILENTLY)
         w29msg "開關寫不進去時沒有告訴使用者 —— 症狀會是「開關關了,重開又是開的」" ;;
-      NO_STARTUPDATE) w29msg "找不到 StartUpdateCheck —— 掃描範圍錯了" ;;
-      UPDATE_SKIPS_THE_SWITCH)
-        w29msg "「檢查更新」沒有把 net_gate_.Enabled() 送進 DecideUpdateAction() ——
+      NO_START=*) w29msg "找不到 StartUpdate${line29#NO_START=} 那個進入點 —— 掃描範圍錯了" ;;
+      UPDATE_SKIPS_THE_SWITCH=*)
+        w29msg "${line29#UPDATE_SKIPS_THE_SWITCH=} 那個進入點沒有先問 net_gate_.Enabled() ——
      **開關關著也會連出去**。這是這一頁上最嚴重的一種寫壞法,而且
      畫面上看起來完全正常(只多一句「正在檢查更新…」)" ;;
-      UPDATE_IGNORES_THE_VERDICT)
-        w29msg "算出了判斷卻沒有據此收手(預期 if (action != UpdateAction::kStart) return;)" ;;
-      UPDATE_NOT_ON_A_THREAD)
-        w29msg "「檢查更新」沒有開背景執行緒 —— 同步阻塞跑在 UI 執行緒上就是
+      UPDATE_ASKS_TOO_LATE=*)
+        w29msg "${line29#UPDATE_ASKS_TOO_LATE=} 是先開了執行緒才問開關 —— 那條路已經送出去了,
+     問了也收不回來" ;;
+      UPDATE_SWITCH_OFF_SILENT=*)
+        w29msg "${line29#UPDATE_SWITCH_OFF_SILENT=} 在開關關著時什麼都不說(預期
+     UpdateFailure::kSwitchOff)—— 使用者剛按了一顆按鈕,毫無反應
+     會被當成壞掉,然後他會一直按" ;;
+      UPDATE_NOT_ON_A_THREAD=*)
+        w29msg "${line29#UPDATE_NOT_ON_A_THREAD=} 沒有開背景執行緒 —— 同步阻塞跑在 UI 執行緒上就是
      「打字打到一半整個沒反應」(候選窗與設定視窗共用那條執行緒)" ;;
-      UPDATE_RUNS_ON_THE_UI_THREAD)
-        w29msg "StartUpdateCheck 裡直接呼叫了 RunUpdateCheck —— 見上一條" ;;
-      NO_UPDATE_THREAD) w29msg "找不到 UpdateThreadEntry —— 掃描範圍錯了" ;;
+      UPDATE_RUNS_ON_THE_UI_THREAD=*)
+        w29msg "${line29#UPDATE_RUNS_ON_THE_UI_THREAD=} 裡直接呼叫了 UpdateService 的阻塞函式
+     (Check / DownloadAndVerify)—— 見上一條" ;;
+      NO_UPDATE_THREAD) w29msg "找不到 UpdateWorkerEntry —— 掃描範圍錯了" ;;
       THREAD_DOES_NOT_CHECK)
-        w29msg "背景執行緒沒有呼叫 RunUpdateCheck(job->gate) —— 那條路是死的" ;;
-      NO_UPDATE_DONE) w29msg "找不到 OnUpdateCheckDone —— 掃描範圍錯了" ;;
+        w29msg "背景執行緒沒有呼叫 update_.Check(&why) —— 查那條路是死的" ;;
+      THREAD_DOES_NOT_DOWNLOAD)
+        w29msg "背景執行緒沒有呼叫 update_.DownloadAndVerify(&why) —— 下載那條路是死的" ;;
+      NO_UPDATE_DONE) w29msg "找不到 OnUpdateWorkerDone —— 掃描範圍錯了" ;;
+      NO_UPDATE_CARD) w29msg "找不到 RefreshNetworkAndUpdateCard —— 掃描範圍錯了" ;;
       RESULT_TEXT_HARDCODED)
-        w29msg "檢查完的那一句話不是 UpdateStateText() 給的 —— 五種結果會被壓成同一句" ;;
+        w29msg "更新卡片那一句話不是 DescribeUpdateCard(st) 給的 —— 十幾種處境
+     會被壓成同一句,而「開關是關的」與「連出去了但失敗」對使用者
+     的下一步完全不同" ;;
+      CARD_SKIPS_THE_LOG)
+        w29msg "重畫更新卡片時沒有一起重畫連網那半(預期 RefreshNetworkPage();)
+     —— 更新卡片與紀錄在同一頁上,按完更新紀錄裡會多幾筆,
+     不重畫的話使用者要換頁再換回來才看得到" ;;
       RESULT_DOES_NOT_REFRESH)
-        w29msg "檢查完沒有重讀連網紀錄 —— 使用者按完更新,就在這一頁上,
-     卻看不到剛剛那幾筆連線" ;;
+        w29msg "工作執行緒回來之後沒有重畫(預期 RefreshNetworkAndUpdateCard())——
+     使用者按完更新,就在這一頁上,卻看不到結果也看不到剛剛那幾筆連線" ;;
       NO_CLEAR) w29msg "找不到 DoClearNetLog —— 掃描範圍錯了" ;;
       CLEAR_WITHOUT_CONFIRM)
         w29msg "清除連網紀錄沒有確認 —— 那份紀錄是使用者用來稽核我們的證據,
@@ -1417,7 +1468,7 @@ ${w29out}" ;;
       *) w29msg "未知的回報:${line29}" ;;
     esac
   done <<< "${w29out}"
-  [ "${w29bad}" -eq 0 ] && ok "W29 連網那一頁:開關讀寫都走 NetGate、那兩句話與空狀態分支都從純函式來、${w29calls} 個版面呼叫點全部走 PageStateNow(),而「檢查更新」在開關關著時走不到連線那一條路"
+  [ "${w29bad}" -eq 0 ] && ok "W29 連網那一頁:開關讀寫都走 NetGate、那兩句話與空狀態分支都從純函式來、${w29calls} 個版面呼叫點全部走 PageStateNow(),而檢查與下載**兩個**進入點都在開背景執行緒之前先問開關,阻塞的那兩支只在工作執行緒上跑"
 }
 
 # ────────────────────────────────────────────────────────────────
@@ -1506,15 +1557,17 @@ self_check() {
 "W25h 純函式從 common/ 消失|common/ui_layout.cc|s=s.replace('ScrolledPlacement ScrollPlaceControlDip(','ScrolledPlacement ScrollPlaceControlDipGone(',1)"
 "W29a 開關的狀態讀錯地方|service/settings_window.cc|s=s.replace('const bool on = net_gate_.Enabled();','const bool on = settings_.NetworkEnabled();',1)"
 "W29b 開關底下那句話寫死一條|service/settings_window.cc|s=s.replace('SetText(hwnd_, IDC_NET_STATE, UiText(NetSwitchSummary(on)));','SetText(hwnd_, IDC_NET_STATE, UiText(UiString::kNetworkOffSummary));',1)"
-"W29c 檢查更新不問開關(開關關著也連出去)|service/settings_window.cc|s=s.replace('DecideUpdateAction(net_gate_.Enabled(), update_running_)','DecideUpdateAction(true, update_running_)',1)"
-"W29d 算了判斷卻不收手|service/settings_window.cc|s=s.replace('  if (action != UpdateAction::kStart) return;','',1)"
-"W29e 檢查更新在 UI 執行緒上直接跑|service/settings_window.cc|s=s.replace('  update_running_ = true;','  (void)RunUpdateCheck(&net_gate_);' + chr(10) + '  update_running_ = true;',1)"
+"W29c 檢查更新不問開關(開關關著也連出去)|service/settings_window.cc|s=s.replace('  if (!net_gate_.Enabled()) {' + chr(10) + '    update_failure_ = UpdateFailure::kSwitchOff;' + chr(10) + '    update_stage_ = UpdateStage::kIdle;' + chr(10) + '    RefreshNetworkAndUpdateCard();' + chr(10) + '    return;' + chr(10) + '  }' + chr(10),'',1)"
+"W29d 下載那一顆不問開關|service/settings_window.cc|s=s.replace('  if (!net_gate_.Enabled()) {' + chr(10) + '    update_failure_ = UpdateFailure::kSwitchOff;' + chr(10) + '    RefreshNetworkAndUpdateCard();' + chr(10) + '    return;' + chr(10) + '  }' + chr(10),'',1)"
+"W29e 檢查更新在 UI 執行緒上直接跑|service/settings_window.cc|s=s.replace('  update_job_ = 1;','  { UpdateFailure w = UpdateFailure::kNone; (void)update_.Check(&w); }' + chr(10) + '  update_job_ = 1;',1)"
+"W29m 背景執行緒不再去查|service/settings_window.cc|s=s.replace('    self->update_.Check(&why);','    (void)why;',1)"
+"W29n 工作回來之後不重畫|service/settings_window.cc|s=s.replace('  }' + chr(10) + '  RefreshNetworkAndUpdateCard();' + chr(10) + '}' + chr(10),'  }' + chr(10) + '}' + chr(10),1)"
 "W29f 空狀態的版面分支被寫死|service/settings_window.cc|s=s.replace('  s.net_log_empty = net_log_empty_;','  s.net_log_empty = false;',1)"
 "W29g 紀錄不是從出口讀來的|service/settings_window.cc|s=s.replace('BuildNetLogView(net_gate_.ReadLog(), ui_lang_, LocalTzOffsetMinutes())','BuildNetLogView({}, ui_lang_, LocalTzOffsetMinutes())',1)"
-"W29h 檢查完的那一句話寫死|service/settings_window.cc|s=s.replace('  SetStatus(' + chr(10) + '      UpdateStateText(result ? result->state : UpdateCheckState::kFailed));','  SetStatus(UiString::kUpdateUpToDate);',1)"
+"W29h 更新卡片那一句話寫死|service/settings_window.cc|s=s.replace('  const UpdateCard card = DescribeUpdateCard(st);','  const UpdateCard card;',1)"
 "W29i 清除紀錄不問一聲|service/settings_window.cc|s=s.replace('  if (!ConfirmDialog(hwnd_, &theme_, script(),' + chr(10) + '                     UiText(UiString::kNetLogClearHeading),' + chr(10) + '                     UiText(UiString::kNetLogClearBlurb),' + chr(10) + '                     UiText(UiString::kNetLogClearButton),' + chr(10) + '                     UiText(UiString::kCancel)))' + chr(10) + '    return;','',1)"
 "W29j 開關寫不進去卻不說|service/settings_window.cc|s=s.replace('    SetStatus(UiString::kStatusSaveFailed);' + chr(10) + '    RefreshNetworkPage();' + chr(10) + '    return;','    RefreshNetworkPage();' + chr(10) + '    return;',1)"
-"W29k 純函式從 common/ 消失|common/net_ui.cc|s=s.replace('UpdateAction DecideUpdateAction(','UpdateActionGone DecideUpdateActionGone(',1)"
+"W29k 純函式從 common/ 消失|common/update_flow.cc|s=s.replace('UpdateCard DescribeUpdateCard(','UpdateCardGone DescribeUpdateCardGone(',1)"
 "W29l 版面呼叫點繞過真實狀態|service/settings_window.cc|s=s.replace('  const PageLayout pl = LayoutSettingsPageDip(page_, W, PageStateNow());','  const PageLayout pl = LayoutSettingsPageDip(page_, W, PageState{});',1)"
 "範圍|__SCOPE__|"
   )
