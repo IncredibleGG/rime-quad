@@ -155,11 +155,33 @@
 #   這樣它們才進得了快車道(見 .github/workflows/build.yml)。
 #   bad-slot-ids 斷言的是畫面像素,只能跟著模擬器那條車道跑。
 #
-#   --check-ci    不跑任何驗證,只檢查上面宣告的每一種 --plant 都真的接進了
-#                 .github/workflows/build.yml。這一支的三個反向測試曾經
+#   --check-ci    不跑任何驗證,只檢查上面宣告的每一種 --plant 都真的
+#                 **會在目前這條分支上跑**。這一支的三個反向測試曾經
 #                 **一次都沒有在 CI 上跑過**(檔頭寫著、workflow 沒接),
-#                 而那看起來與一切正常一模一樣。--check-ci --self-test
-#                 會先把接線拆掉一條,證明這一關真的會紅。
+#                 而那看起來與一切正常一模一樣。
+#
+#                 ⚠ 只 grep 「build.yml 裡有沒有這串字」是不夠的 —— 那是這一關
+#                   自己踩過的第二次坑:字串接上了,但**分支沒接**。中間隔著
+#                   兩道各自獨立、而且都不出聲的閘門:
+#                     1. `on: push: branches:` 沒列這條分支 → 推上去整份
+#                        workflow 一件都不會觸發;
+#                     2. 列了,但那個 --plant 所在的 job 自己的 `if:` 不認這條
+#                        分支 → 那個 job 整個被跳過,而**跳過的 job 在 checks
+#                        上是灰色的勾**,和跑過而且通過長得一模一樣。
+#                   所以這裡除了問「接線在不在」,還會把 build.yml 的
+#                   `on: push: branches:` 與 job 的 `if:` 真的算一遍
+#                   (scripts/ci_branch_gate.py),任一道不成立就紅,
+#                   而且訊息會指名是哪一道擋住的。
+#
+#                 分支從哪裡來:RIME_CI_BRANCH > GITHUB_HEAD_REF >
+#                 GITHUB_REF_NAME > git rev-parse --abbrev-ref HEAD。
+#                 問的一律是「**這條分支被 push 的時候**會不會跑」——
+#                 在 PR 的 run 上也是問這一件,因為那正是合併前要知道的事。
+#
+#                 --check-ci --self-test 會**分別**拆掉三樣東西各跑一次:
+#                 接線、`on: push: branches:` 裡的這條分支、job 的 `if:` 裡的
+#                 這條分支 —— 三次都必須紅,而且必須紅在對應的那一道閘門上
+#                 (紅錯地方一樣算失敗:那代表訊息在指錯方向)。
 #
 set -uo pipefail
 
@@ -426,23 +448,34 @@ require_device_tools() {
   fi
 }
 
-# ═════════════════ --check-ci:反向測試有沒有真的接進 CI ═════════════════
+# ═══════════ --check-ci:反向測試會不會在**這條分支**上真的跑 ═══════════
 #
-# 這一關擋的是這支腳本自己踩過的坑:檔頭把三種 --plant 寫得清清楚楚,
-# workflow 卻一次都沒有呼叫過。「宣告了反向測試」與「反向測試在跑」
-# 在任何日誌上看起來都一模一樣 —— 除非有人去比對這兩份檔案。
+# 這一關擋的是這支腳本自己踩過兩次的坑:
+#   第一次 —— 檔頭把三種 --plant 寫得清清楚楚,workflow 卻一次都沒有呼叫過。
+#   第二次 —— workflow 呼叫了,但**這條分支既不在 `on: push: branches:` 裡,
+#             也不在那個 job 的 `if:` 裡**,於是推上去以後:整份 workflow 不觸發
+#             (第一道),或那個 job 被跳過(第二道)。而**被跳過的 job 在
+#             checks 上是灰色的勾**,和跑過而且通過長得一模一樣。
+# 兩次都是「宣告了」與「在跑」在日誌上分不出來。所以這裡問的不是
+# 「build.yml 裡有沒有這串字」,是「**推這條分支上去,那一步會不會執行**」。
 if [ "$CHECK_CI" -eq 1 ]; then
-  WF="$ROOT/.github/workflows/build.yml"
+  WF_REAL="$ROOT/.github/workflows/build.yml"
   SELF="${BASH_SOURCE[0]}"
-  if [ "$SELF_TEST" -eq 1 ]; then
-    # 反向測試的反向測試:把接線拆掉一條,這一關必須紅。
-    TMPWF="$(mktemp -d)/build.yml"
-    mkdir -p "$(dirname "$TMPWF")"
-    grep -v -- "--plant narrow-scope" "$WF" > "$TMPWF"
-    WF="$TMPWF"
-    info "自我測試:用一份**拿掉 narrow-scope 接線**的 build.yml"
+  GATE="$HERE/ci_branch_gate.py"
+  [ -f "$WF_REAL" ] || { echo "找不到 $WF_REAL" >&2; exit 2; }
+  [ -f "$GATE" ] || { echo "找不到 $GATE(閘門判讀在那裡)" >&2; exit 2; }
+
+  # 分支名。CI 上 GITHUB_REF_NAME 在 pull_request 事件是「123/merge」,
+  # 那不是分支 —— 所以 PR 上優先看 GITHUB_HEAD_REF(來源分支),
+  # 問的一律是「這條分支被 push 的時候會不會跑」。
+  CI_BRANCH="${RIME_CI_BRANCH:-${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-}}}"
+  if [ -z "$CI_BRANCH" ]; then
+    CI_BRANCH="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
   fi
-  [ -f "$WF" ] || { echo "找不到 $WF" >&2; exit 2; }
+  if [ -z "$CI_BRANCH" ] || [ "$CI_BRANCH" = "HEAD" ]; then
+    echo "問不出目前的分支名(HEAD 是 detached?)。請給 RIME_CI_BRANCH=<分支>。" >&2
+    exit 2
+  fi
 
   # 宣告的植入種類直接從檔頭讀,不要在這裡再抄一份 —— 抄的那一份會漂移,
   # 而漂移時「檢查通過」的那一份說了算。
@@ -456,46 +489,137 @@ if [ "$CHECK_CI" -eq 1 ]; then
     echo "!! 檔頭一個 --scenario 都沒解析出來 —— 解析式壞了,這一關在空轉。" >&2
     exit 1
   fi
-  info "檔頭宣告的植入:${DECLARED[*]};情境:${SCENARIOS[*]}"
-  MISSING=0
-  for sc in "${SCENARIOS[@]}"; do
-    if grep -q -- "--scenario $sc" "$WF"; then
-      pass "build.yml 有跑 --scenario $sc"
-    else
-      fail "build.yml 沒有跑 --scenario $sc —— 檔頭宣告了這個情境,實際上沒人跑過。"
-      MISSING=$((MISSING + 1))
-    fi
-  done
-  for pl in "${DECLARED[@]}"; do
-    if grep -q -- "--plant $pl" "$WF"; then
-      pass "build.yml 有跑 --plant $pl"
-    else
-      fail "build.yml 沒有跑 --plant $pl —— 檔頭宣告了「證明它會紅」,實際上沒人證明過。"
-      MISSING=$((MISSING + 1))
-    fi
-  done
+  info "檔頭宣告的植入:${DECLARED[*]};情境:${SCENARIOS[*]};分支:$CI_BRANCH"
+
+  # 每一根「針」都是一整條命令,不是光禿禿的 --plant X:光有 --plant X
+  # 連「是哪一支腳本被呼叫」都不保證。註解裡的字串不算(ci_branch_gate.py 會濾掉)。
+  NEEDLES=()
+  for sc in "${SCENARIOS[@]}"; do NEEDLES+=("verify_syllables.sh --scenario $sc"); done
+  for pl in "${DECLARED[@]}"; do NEEDLES+=("verify_syllables.sh --plant $pl"); done
   # 正向那一次也要在,否則把正向拿掉、只留植入,一樣是全綠。
-  if grep -qE "verify_syllables\.sh --apk" "$WF"; then
-    pass "build.yml 有跑正向(--apk,不帶 --plant)"
-  else
-    fail "build.yml 找不到不帶 --plant 的正向呼叫。"
-    MISSING=$((MISSING + 1))
-  fi
-  [ "$SELF_TEST" -eq 1 ] && rm -rf "$(dirname "$WF")"
-  echo
+  NEEDLES+=("verify_syllables.sh --apk")
+
+  # 對一份 build.yml 問一次。回傳:0 = 都會跑,1 = 有閘門擋著,2 = 判斷不了。
+  ask_gate() {
+    local wf="$1" br="$2" out="$3" n args=()
+    for n in "${NEEDLES[@]}"; do args+=(--needle "$n"); done
+    python3 "$GATE" --workflow "$wf" --branch "$br" "${args[@]}" >"$out" 2>&1
+  }
+
   if [ "$SELF_TEST" -eq 1 ]; then
-    if [ "$MISSING" -eq 0 ]; then
-      echo "✗ 自我測試失敗:接線都被拆掉一條了,--check-ci 卻還是綠的。"
+    # ── 反向測試的反向測試 ────────────────────────────────────────────
+    # 三樣東西**各拆一次**,每一次都必須紅,而且必須紅在對應的那一道閘門上。
+    # 「紅了」不等於「該紅的那一條紅了」——只看退出碼的話,一個把每份 build.yml
+    # 都判成紅的壞掉版本會全數通過。
+    SELF_DIR="$(mktemp -d)"
+    NOSUCH="__self_test_no_such_branch__"
+    ST_FAILED=0
+    st_case() {  # $1 = 說明,$2 = 變異後的 wf,$3 = 必須出現的標記
+      local why="$1" wf="$2" want="$3" rc out="$SELF_DIR/out.txt"
+      ask_gate "$wf" "$CI_BRANCH" "$out"; rc=$?
+      if [ "$rc" -eq 0 ]; then
+        echo "  [FAIL] 自我測試「$why」:拆掉了卻還是綠的。" >&2
+        ST_FAILED=$((ST_FAILED + 1)); return
+      fi
+      # ⚠ -F:標記長成 FAIL[job-if],`[…]` 在正規式裡是字元集 ——
+      #   不加 -F 的話 grep 找的是「FAIL 後面接一個 j/o/b/-/i/f」,永遠不會命中,
+      #   於是每一條自我測試都會報「訊息在指錯方向」。
+      if ! grep -qF -- "$want" "$out"; then
+        echo "  [FAIL] 自我測試「$why」:紅了,但紅的不是 $want —— 訊息在指錯方向:" >&2
+        sed 's/^/         /' "$out" >&2
+        ST_FAILED=$((ST_FAILED + 1)); return
+      fi
+      echo "  [PASS] 自我測試「$why」→ $want"
+      grep -m1 -F -- "$want" "$out" | sed 's/^/         /'
+    }
+
+    # (甲)接線被拆掉一條。
+    WF_A="$SELF_DIR/a.yml"
+    grep -v -- "--plant narrow-scope" "$WF_REAL" > "$WF_A"
+    st_case "拆掉 narrow-scope 的接線" "$WF_A" "FAIL[not-wired]"
+
+    # (乙)`on: push: branches:` 裡的這條分支被拿掉(整份 workflow 不觸發)。
+    #      只動清單項那一行,不動 if: 裡的 refs/heads/…,這樣兩道才分得開。
+    WF_B="$SELF_DIR/b.yml"
+    sed -E "s|^([[:space:]]*)- ${CI_BRANCH}\$|\1- ${NOSUCH}|" "$WF_REAL" > "$WF_B"
+    if ! grep -q -- "- $NOSUCH" "$WF_B"; then
+      echo "  [FAIL] 自我測試備不出「分支不在 branches: 裡」那一份 —— " \
+           "build.yml 裡找不到「- $CI_BRANCH」這一行。" >&2
+      ST_FAILED=$((ST_FAILED + 1))
+    else
+      st_case "把 $CI_BRANCH 從 on: push: branches: 拿掉" "$WF_B" "FAIL[push-branches]"
+    fi
+
+    # (丙)job 的 if: 裡的這條分支被拿掉(job 被跳過 = 灰色的勾)。
+    #      用改名而不是刪行:刪掉的若是最後一項,括號會不對稱,那就變成
+    #      「YAML 壞了」而不是「這條分支不在 if: 裡」——驗到的會是別件事。
+    WF_C="$SELF_DIR/c.yml"
+    sed "s|refs/heads/${CI_BRANCH}'|refs/heads/${NOSUCH}'|g" "$WF_REAL" > "$WF_C"
+    if ! grep -q -- "refs/heads/$NOSUCH" "$WF_C"; then
+      echo "  [FAIL] 自我測試備不出「分支不在 job 的 if: 裡」那一份 —— " \
+           "build.yml 的 if: 裡找不到 refs/heads/$CI_BRANCH。" >&2
+      ST_FAILED=$((ST_FAILED + 1))
+    else
+      st_case "把 $CI_BRANCH 從慢車道 job 的 if: 拿掉" "$WF_C" "FAIL[job-if]"
+    fi
+
+    # (丁)沒動過的那一份必須是綠的。少了這一條,一個「永遠說紅」的版本
+    #      會把上面三條全數通過。
+    ST_OUT="$SELF_DIR/clean.txt"
+    if ask_gate "$WF_REAL" "$CI_BRANCH" "$ST_OUT"; then
+      echo "  [PASS] 自我測試「沒動過的 build.yml」→ 綠"
+    else
+      echo "  [FAIL] 自我測試「沒動過的 build.yml」:應該是綠的,卻紅了:" >&2
+      sed 's/^/         /' "$ST_OUT" >&2
+      ST_FAILED=$((ST_FAILED + 1))
+    fi
+
+    # 閘門判讀本身也有自己的一套(運算式直譯器、註解不算接線……)。
+    if python3 "$GATE" --self-test > "$SELF_DIR/gate.txt" 2>&1; then
+      echo "  [PASS] ci_branch_gate.py --self-test($(grep -c '^✓' "$SELF_DIR/gate.txt") 條)"
+    else
+      echo "  [FAIL] ci_branch_gate.py --self-test 沒過:" >&2
+      sed 's/^/         /' "$SELF_DIR/gate.txt" >&2
+      ST_FAILED=$((ST_FAILED + 1))
+    fi
+
+    rm -rf "$SELF_DIR"
+    echo
+    if [ "$ST_FAILED" -gt 0 ]; then
+      echo "✗ 自我測試失敗 $ST_FAILED 條 —— --check-ci 這一關本身不可信。"
       exit 1
     fi
-    echo "✓ 自我測試通過:拆掉接線之後 --check-ci 會紅($MISSING 條)"
+    echo "✓ 自我測試通過:三道閘門(接線 / push 的 branches / job 的 if)各拆一次都會紅,"
+    echo "  沒動過的那一份是綠的,而且每一次紅的都是對應的那一道。"
     exit 0
   fi
-  if [ "$MISSING" -gt 0 ]; then
-    echo "✗ $MISSING 條反向測試沒有接進 CI"
+
+  GATE_OUT="$(mktemp)"
+  ask_gate "$WF_REAL" "$CI_BRANCH" "$GATE_OUT"; GATE_RC=$?
+  while IFS= read -r line; do
+    case "$line" in
+      PASS*) pass "${line#PASS }" ;;
+      FAIL*) fail "$line" ;;
+      *)     echo "         $line" ;;
+    esac
+  done < "$GATE_OUT"
+  rm -f "$GATE_OUT"
+  echo
+  if [ "$GATE_RC" -eq 2 ]; then
+    echo "✗ 閘門判讀不了(見上面)。**判斷不了不可以當成綠** —— 這一關就是為了"
+    echo "  不讓「看起來接上了」代替「真的會跑」。"
+    exit 2
+  fi
+  if [ "$GATE_RC" -ne 0 ]; then
+    echo "✗ 在分支「$CI_BRANCH」上,有反向測試不會跑(上面指名了是哪一道閘門)。"
+    echo "  要修的通常是這兩個地方之一:"
+    echo "    · .github/workflows/build.yml 的 on: push: branches:(加一項到既有那一行的清單裡,"
+    echo "      **不要新增第二個 branches: 鍵**);"
+    echo "    · 慢車道 job 的 if:(加一條 github.ref == 'refs/heads/$CI_BRANCH')。"
     exit 1
   fi
-  echo "✓ 檔頭宣告的 ${#DECLARED[@]} 種植入與 ${#SCENARIOS[@]} 種情境都接進 build.yml 了,正向那一次也在"
+  echo "✓ 檔頭宣告的 ${#DECLARED[@]} 種植入與 ${#SCENARIOS[@]} 種情境都接進 build.yml 了,"
+  echo "  正向那一次也在,而且推「$CI_BRANCH」上去時每一步所在的 job 都真的會執行。"
   exit 0
 fi
 
