@@ -38,9 +38,55 @@
 //   §12.9.3 第 1 條規定它們直接寫在狀態列的繪製碼裡、不進 catalog,
 //   而 W10 兩個方向都驗那件事。本檔只決定「拿哪一個」。
 //
+//
+// ── ⚠ 第二格讀的是引擎**實際套用**的字形轉換,不是我們的偏好 ─────
+//
+// 使用者實機回報:設定裡選了簡體,那一格畫「简」,而打出來是繁體。
+//
+// 根因是那一格以前讀 `simplification`,而**本專案打包的方案通通沒有
+// 那個開關**:luna_pinyin 家族與 bopomofo 家族用的是一組互斥的 radio
+// (zh_hant / zh_hans / zh_hant_hk / zh_hant_tw)。`rs_set_option` 對一個
+// 不存在的選項**不會失敗** —— 它原樣記下、原樣回讀。於是那一格顯示的
+// 一直是我們自己剛寫進去的偏好,不是引擎的狀態。畫面在替一件沒有發生
+// 的事作證。
+//
+// 判定順序(§12.10.4,四端一致):
+//
+//     zh_hans 為真                              → 简
+//     zh_hant / zh_hant_hk / zh_hant_tw 任一為真 → 繁
+//     四個都為假                                 → **整格不顯示**
+//
+// ⚠ 「四個都為假」是一個真實而且正確的狀態,不是錯誤:純 luna_pinyin 的
+//   那組 radio **沒有 `reset:`**,而 librime 的 ConcreteEngine::
+//   InitializeOptions() 只在 reset_value >= 0 時才設值 —— 所以剛載入時
+//   四個全是 false,而輸出是繁體(詞典本身就是繁體字集,沒有任何
+//   simplifier 生效)。此時我們**確實**不知道引擎在做哪一種轉換,
+//   整格不顯示是唯一誠實的答案。
+//
+// ⚠ **不要拿 `simplification` 當 fallback。** 純 luna_pinyin + 我們寫進去的
+//   `simplification=1` 會讓這一格畫「简」而輸出是繁體 —— 與使用者截圖
+//   一模一樣的缺陷,只是換一個方案觸發。本結構刻意**沒有**
+//   simplification 這個欄位,連拿它判定的機會都不留下。
+//
+// ⚠ 「整格不顯示」沿用 §8.12「空的那一格整項略過」的既有先例
+//   (第三格的方案名本來就是這樣),不是畫一塊看不出用途的空白。
+//
+// ⚠ 這一格**不得樂觀寫入**:點下去之後,在引擎回報新狀態之前不改變
+//   字面。呼叫端(service/status_bar.cc)負責這一條。
+//
+// ── 殘留(明著寫出來,不假裝解決了)────────────────────────────
+//
+// 一個既沒有那組 radio、也沒有 `simplification` 的第三方方案,
+// `rs_set_option(zh_hans, true)` 仍然會被記下並回讀,這一格仍然會畫
+// 「简」而輸出沒變。用今天的 `rs_` API 問不出「這個方案有沒有宣告
+// 這個選項」—— core/include/rime_shell.h 只有 rs_set_option /
+// rs_get_option,沒有任何 config API。真解是新增
+// `rs_schema_declares_option(schema_id, option)`,已開工單。
+//
 #ifndef RIMEWIN_COMMON_STATUS_CELLS_H_
 #define RIMEWIN_COMMON_STATUS_CELLS_H_
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -54,9 +100,29 @@ struct StatusGlyphs {
   const wchar_t* traditional = nullptr;  // 繁
 };
 
+// ── 那一格的三態(§12.10.4)──────────────────────────────────────
+//
+// kHidden 不是「不知道所以先畫繁體」,是**整格不顯示**。見檔頭。
+enum class VariantCell : uint8_t { kHidden = 0, kTraditional, kSimplified };
+
+// 引擎目前實際套用的字形轉換開關,由 rs_get_option 逐一讀回來
+// (radio group 的四個成員,見 schema_choice.h 的 kVariantOptions)。
+//
+// ⚠ 這裡**沒有** `simplification`。那不是遺漏,是本檔存在的理由:
+//   它是我們寫進去的回音,不是引擎的狀態。見檔頭。
+struct VariantOptions {
+  bool zh_hans = false;
+  bool zh_hant = false;
+  bool zh_hant_hk = false;
+  bool zh_hant_tw = false;
+};
+
+VariantCell VariantCellFromOptions(const VariantOptions& o);
+
 struct StatusBarState {
   bool ascii_mode = false;
-  bool simplified = false;
+  // ⚠ 三態。kHidden = **那一格整項略過**,見檔頭與 VariantCellFromOptions。
+  VariantCell variant = VariantCell::kHidden;
   // 方案名。**空字串 = 那一格整項略過**(§8.12 規範性),
   // 不是畫成一塊看不出用途的空白。
   std::wstring schema_name;

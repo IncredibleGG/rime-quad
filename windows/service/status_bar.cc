@@ -289,7 +289,10 @@ void StatusBar::Relayout() {
     glyphs.traditional = kGlyphTraditional;
     StatusBarState st;
     st.ascii_mode = ascii;
-    st.simplified = simp;
+    // ⚠ 這一行是暫時的接法,simplified_ 本身就是回音
+    // (它來自 kStSimplified ← rs_status.is_simplified ← simplification)。
+    // 下一個 commit 把它換成引擎回報的真三態。
+    st.variant = simp ? VariantCell::kSimplified : VariantCell::kTraditional;
     // 空狀態**整項略過**(§8.12 規範性):方案名還沒載入完成時,
     // 那一格完全不佔位置,不得畫成一塊看不出用途的空白。
     st.schema_name = name.empty() ? std::wstring() : Utf8ToWide(name);

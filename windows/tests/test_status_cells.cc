@@ -69,18 +69,19 @@ TEST(status_cells_mode_and_variant_speak_the_same_way) {
     for (int s = 0; s < 2; ++s) {
       StatusBarState st;
       st.ascii_mode = a != 0;
-      st.simplified = s != 0;
+      st.variant = s ? VariantCell::kSimplified : VariantCell::kTraditional;
       st.schema_name = L"luna";
       st.settings_label = L"settings";
       const std::vector<std::wstring> cells = StatusBarCellTexts(g, st);
       CHECK_INT(static_cast<int>(cells.size()), 4);
 
+      const bool simp = st.variant == VariantCell::kSimplified;
       // 第一格:一個字面。
       CHECK(Contains(cells[0], st.ascii_mode ? kEn : kCn));
       CHECK(!Contains(cells[0], st.ascii_mode ? kCn : kEn));
       // 第二格:一個字面(它本來就是對的,這裡把它釘住)。
-      CHECK(Contains(cells[1], st.simplified ? kSimp : kTrad));
-      CHECK(!Contains(cells[1], st.simplified ? kTrad : kSimp));
+      CHECK(Contains(cells[1], simp ? kSimp : kTrad));
+      CHECK(!Contains(cells[1], simp ? kTrad : kSimp));
 
       // 兩格的「字面數」必須一樣 —— 這就是「講同一種話」。
       const int n0 = (Contains(cells[0], kCn) ? 1 : 0) +
@@ -101,6 +102,7 @@ TEST(status_cells_mode_and_variant_speak_the_same_way) {
 TEST(status_cells_empty_schema_name_is_skipped_not_blank) {
   const StatusGlyphs g = Glyphs();
   StatusBarState st;
+  st.variant = VariantCell::kTraditional;
   st.settings_label = L"settings";
   const std::vector<std::wstring> cells = StatusBarCellTexts(g, st);
   CHECK_INT(static_cast<int>(cells.size()), 4);
@@ -112,4 +114,128 @@ TEST(status_cells_empty_schema_name_is_skipped_not_blank) {
   st.schema_name = L"bopomofo";
   const std::vector<std::wstring> filled = StatusBarCellTexts(g, st);
   CHECK(!filled[2].empty());
+}
+
+// ─────────────────────────────────────────────────────────────
+// §12.10.4 的 variant 判定:引擎**實際套用**的字形轉換,不是我們的偏好
+// ─────────────────────────────────────────────────────────────
+//
+// 使用者實機回報:設定裡選了簡體,那一格畫「简」,打出來卻是繁體。
+// 根因是那一格讀的是 `simplification` —— 而 `rs_set_option` 對一個
+// **不存在的選項**不會失敗,它會原樣記下、原樣回讀。本專案打包的方案
+// (luna_pinyin 家族、bopomofo 家族)通通沒有 `simplification`,所以
+// 那一格讀到的一直是**我們自己剛寫進去的那個值**,不是引擎的狀態。
+//
+// 這一組真值表把新規則釘住,而 W-Variant-1 那一條就是使用者截圖的狀態。
+
+TEST(variant_cell_ignores_simplification_echo) {
+  // ⚠ 這一條是根因本身。四個 radio 全 false = 引擎沒有套任何字形轉換,
+  //   而 `simplification` 就算被我們設成 true 也只是回音 ——
+  //   本結構刻意**沒有** simplification 這個欄位,連拿它判定的機會
+  //   都不留下。這一格在這種狀態下不顯示。
+  VariantOptions o;
+  CHECK(VariantCellFromOptions(o) == VariantCell::kHidden);
+
+  // 「整格不顯示」在那一橫上的表現是空字串(沿用第三格的既有先例)。
+  const StatusGlyphs g = Glyphs();
+  StatusBarState st;
+  st.variant = VariantCellFromOptions(o);
+  st.schema_name = L"luna";
+  st.settings_label = L"settings";
+  const std::vector<std::wstring> cells = StatusBarCellTexts(g, st);
+  CHECK_INT(static_cast<int>(cells.size()), 4);
+  CHECK(cells[1].empty());
+  // ⚠ 不顯示 ≠ 畫一塊空白,也 ≠ 退回去畫繁體。兩個字面都不可以出現。
+  CHECK(!Contains(cells[1], kTrad));
+  CHECK(!Contains(cells[1], kSimp));
+  // 其餘三格照舊在。
+  CHECK(!cells[0].empty());
+  CHECK(!cells[2].empty());
+  CHECK(!cells[3].empty());
+}
+
+TEST(variant_cell_truth_table) {
+  int seen = 0;
+  // 逐一:單獨為真的四種。
+  {
+    VariantOptions o;
+    o.zh_hans = true;
+    CHECK(VariantCellFromOptions(o) == VariantCell::kSimplified);
+    ++seen;
+  }
+  {
+    VariantOptions o;
+    o.zh_hant = true;
+    CHECK(VariantCellFromOptions(o) == VariantCell::kTraditional);
+    ++seen;
+  }
+  {
+    VariantOptions o;
+    o.zh_hant_hk = true;
+    CHECK(VariantCellFromOptions(o) == VariantCell::kTraditional);
+    ++seen;
+  }
+  {
+    // ⚠ 這就是使用者截圖的狀態:luna_pinyin_tw 的 `__patch` 把
+    //   switches/@2/reset 設成 3,載入時 zh_hant_tw = 1,輸出是繁體 ——
+    //   而畫面畫的是「简」。修完之後這裡必須是繁。
+    VariantOptions o;
+    o.zh_hant_tw = true;
+    CHECK(VariantCellFromOptions(o) == VariantCell::kTraditional);
+    ++seen;
+  }
+  // zh_hans 優先:radio 理論上互斥,但 rs_set_option 不維持互斥,
+  // 而「先關再開」中間真的存在兩個都為真的一瞬間。要有確定的答案。
+  for (int hant = 0; hant < 2; ++hant) {
+    for (int hk = 0; hk < 2; ++hk) {
+      for (int tw = 0; tw < 2; ++tw) {
+        VariantOptions o;
+        o.zh_hans = true;
+        o.zh_hant = hant != 0;
+        o.zh_hant_hk = hk != 0;
+        o.zh_hant_tw = tw != 0;
+        CHECK(VariantCellFromOptions(o) == VariantCell::kSimplified);
+        ++seen;
+      }
+    }
+  }
+  // 三種繁體任意組合(沒有 zh_hans)都是繁,而且不會變成 kHidden。
+  for (int hant = 0; hant < 2; ++hant) {
+    for (int hk = 0; hk < 2; ++hk) {
+      for (int tw = 0; tw < 2; ++tw) {
+        if (!hant && !hk && !tw) continue;  // 那是 kHidden,上面測過
+        VariantOptions o;
+        o.zh_hant = hant != 0;
+        o.zh_hant_hk = hk != 0;
+        o.zh_hant_tw = tw != 0;
+        CHECK(VariantCellFromOptions(o) == VariantCell::kTraditional);
+        ++seen;
+      }
+    }
+  }
+  CHECK_INT(seen, 4 + 8 + 7);  // 掃描範圍非空(§2-G2)
+}
+
+TEST(variant_cell_hidden_is_the_only_empty_state) {
+  // 三態各自在那一橫上的字面,一次釘死。
+  const StatusGlyphs g = Glyphs();
+  int seen = 0;
+  const VariantCell all[3] = {VariantCell::kHidden, VariantCell::kTraditional,
+                              VariantCell::kSimplified};
+  for (const VariantCell v : all) {
+    StatusBarState st;
+    st.variant = v;
+    st.schema_name = L"luna";
+    st.settings_label = L"settings";
+    const std::vector<std::wstring> cells = StatusBarCellTexts(g, st);
+    if (v == VariantCell::kHidden) {
+      CHECK(cells[1].empty());
+    } else {
+      CHECK(!cells[1].empty());
+      CHECK(Contains(cells[1], v == VariantCell::kSimplified ? kSimp : kTrad));
+      CHECK(!Contains(cells[1], v == VariantCell::kSimplified ? kTrad : kSimp));
+    }
+    ++seen;
+  }
+  CHECK_INT(seen, 3);
 }
