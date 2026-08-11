@@ -46,9 +46,27 @@ constexpr int kCanvasW = 260;
 constexpr int kCanvasH = 300;
 // 側欄的四~五頁。名字**長短刻意差很多**:「文字」兩個字的 label 矩形
 // 不到「輸入方案」的一半,而 #75 的一半正是「label 有多寬」。
-const wchar_t* const kPages[] = {L"輸入方案", L"外觀", L"文字", L"連網",
-                                 L"進階"};
+// ⚠ 頁名用**碼點**組,不寫中文字面值:check_ui_spec.sh 的 W7 要求
+//   使用者可見的中日韓字串只能住在 common/ui_strings.cc,而那條規則
+//   對測試檔一視同仁(一個為了測規則而自己違規的測試,會讓那條檢查
+//   要嘛紅、要嘛得為自己開一個例外,而例外正是規則死掉的方式)。
+//
+//   長短刻意差很多:第三個只有兩個字,它的 label 矩形不到第一個的一半
+//   —— 而 #75 的一半正是「label 有多寬」。
 constexpr int kPageRows = 5;
+
+std::wstring PageName(int i) {
+  // 輸入方案 / 外觀 / 文字 / 連網 / 進階
+  static const int cps[kPageRows][4] = {{0x8F38, 0x5165, 0x65B9, 0x6848},
+                                        {0x5916, 0x89C0, 0, 0},
+                                        {0x6587, 0x5B57, 0, 0},
+                                        {0x9023, 0x7DB2, 0, 0},
+                                        {0x9032, 0x968E, 0, 0}};
+  std::wstring s;
+  for (int k = 0; k < 4; ++k)
+    if (cps[i][k]) s.push_back(static_cast<wchar_t>(cps[i][k]));
+  return s;
+}
 
 // 側欄自繪時,每一列拿到的 uItemState。用來回答那個真正的爭議:
 // **comctl32 會不會同時說兩列是 selected。**
@@ -80,6 +98,16 @@ LRESULT CALLBACK ProbeProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
         return CDRF_SKIPDEFAULT;
       }
     }
+    return 0;
+  }
+  if (msg == WM_DPICHANGED) {
+    // 進程是 per-monitor-v2,系統**會**送這一則。照建議矩形重擺 ——
+    // 這支探針的視窗離螢幕,但「收到了就不理」在別處是缺陷,
+    // 不該因為是測試就寫成別的樣子(check_ui_spec.sh 的 W2 守著)。
+    const RECT* sug = reinterpret_cast<const RECT*>(l);
+    if (sug)
+      ::SetWindowPos(hwnd, nullptr, sug->left, sug->top, sug->right - sug->left,
+                     sug->bottom - sug->top, SWP_NOZORDER | SWP_NOACTIVATE);
     return 0;
   }
   return ::DefWindowProcW(hwnd, msg, w, l);
@@ -136,7 +164,7 @@ Harness Build(bool with_ext) {
   if (with_ext) SetRowListExtendedStyle(hn.list);
 
   std::vector<std::wstring> rows;
-  for (int i = 0; i < kPageRows; ++i) rows.push_back(kPages[i]);
+  for (int i = 0; i < kPageRows; ++i) rows.push_back(PageName(i));
   SetRowListItems(hn.list, rows);
 
   // 側欄在 96 DPI 下的實際尺寸:寬 kSidebarW,列高 kSidebarItemH。

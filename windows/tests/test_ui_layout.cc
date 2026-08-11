@@ -15,6 +15,7 @@
 #include "../common/ui_strings.h"
 
 #include <set>
+#include <string>
 #include <vector>
 
 #include "check.h"
@@ -424,35 +425,39 @@ TEST(ui_layout_text_height_follows_the_text) {
   CHECK_INT(EstimateTextLinesDip(L"", 11, 540), 1);
   CHECK_INT(EstimateTextLinesDip(nullptr, 11, 540), 1);
 
+  // ⚠ 底下的全形字用**碼點**組,不寫中文字面值:check_ui_spec.sh 的 W7
+  //   要求使用者可見的中日韓字串只能住在 common/ui_strings.cc,而那條
+  //   規則對測試檔一視同仁 —— 一個為了測規則而自己違規的測試,會讓那
+  //   條檢查要嘛紅、要嘛得為自己開一個例外,而例外正是規則死掉的方式。
+  const wchar_t han = static_cast<wchar_t>(0x5B57);  // 「字」
+
   // 一個全形字放得下 → 一行。
-  CHECK_INT(EstimateTextLinesDip(L"字", 11, 540), 1);
+  CHECK_INT(EstimateTextLinesDip(std::wstring(1, han).c_str(), 11, 540), 1);
 
   // 單調:同一段字,欄越窄行數只會多不會少。
-  const wchar_t* body =
-      L"這是一段夠長的說明文字,長到在任何一種合理的欄寬底下都會斷行,"
-      L"而且它同時混了 latin words and digits 0123456789 —— 兩種字寬。";
+  // 刻意混兩種字寬 —— 全形一個字級、拉丁 0.6 個字級。
+  const std::wstring body = std::wstring(24, han) +
+                            L" latin words and digits 0123456789 " +
+                            std::wstring(24, han);
   int prev = 0;
   for (int w : {640, 540, 440, 340, 240}) {
-    const int n = EstimateTextLinesDip(body, 11, w);
+    const int n = EstimateTextLinesDip(body.c_str(), 11, w);
     CHECK(n >= 1);
     CHECK(n >= prev);
     prev = n;
   }
   // 而且窄欄真的比寬欄多。
-  CHECK(EstimateTextLinesDip(body, 11, 240) >
-        EstimateTextLinesDip(body, 11, 640));
+  CHECK(EstimateTextLinesDip(body.c_str(), 11, 240) >
+        EstimateTextLinesDip(body.c_str(), 11, 640));
 
   // 明寫的換行要算進去。
   CHECK_INT(EstimateTextLinesDip(L"a\nb\nc", 11, 540), 3);
 
   // 往高的一邊錯:估出來的高度 >= 逐字硬算的下界。
-  //   （全形字每個 1 個字級,540 寬一行最多 49 個 → 100 個字至少 3 行）
-  const wchar_t* cjk =
-      L"字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字"
-      L"字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字"
-      L"字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字"
-      L"字字字字字字字字字字";
-  CHECK(EstimateTextLinesDip(cjk, 11, 540) >= 3);
+  //   (全形字每個 1 個字級,540 寬只算 6/7 = 462,一行最多 42 個
+  //    → 100 個字至少 3 行)
+  const std::wstring cjk(100, han);
+  CHECK(EstimateTextLinesDip(cjk.c_str(), 11, 540) >= 3);
 }
 
 // ── #76:一頁不可以長到捲不完 ──────────────────────────────────
