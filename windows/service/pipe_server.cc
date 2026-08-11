@@ -331,6 +331,27 @@ void PipeServer::ListenLoop() {
 }
 
 void PipeServer::ServeClient(HANDLE pipe) {
+  // ── 那一橫的主要訊號:有沒有宿主在用這個輸入法(§12.10.6)──────
+  //
+  // ⚠ 為什麼是連線生死而不是焦點:ipc_client.cc 的
+  //   `if (!MayEatKey()) return;` —— 焦點訊號在使用者打第一個字之前
+  //   根本不送。連線生死沒有這道閘,而且與「哪一個輸入框」無關 ——
+  //   同一支程式裡跳輸入框、在都用 LuminaKey 的程式之間 Alt+Tab,
+  //   連線數都不會變,那一橫因此不會閃。
+  //
+  // ⚠ 一定要配對。這一支有很多條 goto done,所以用 RAII 保證離開時
+  //   一定減一 —— 漏掉一次,連線數就永遠偏高,那一橫再也藏不起來,
+  //   而那種缺陷只有人肉試得出來。
+  struct ClientTicket {
+    StatusBar* bar;
+    explicit ClientTicket(StatusBar* b) : bar(b) {
+      if (bar) bar->OnClientAttached();
+    }
+    ~ClientTicket() {
+      if (bar) bar->OnClientDetached();
+    }
+  } ticket(bar_);
+
   FrameReader reader;
   bool authed = false;
   uint64_t session = 0;
@@ -630,6 +651,11 @@ void PipeServer::ServeClient(HANDLE pipe) {
         if (!DecodeArg(payload, &seq, &a)) goto done;
         if (op == Op::kFocus) {
           if (a.arg == 0) ui_->Hide();
+          // ⚠ a.arg == 1(焦點來了)以前完全沒有處理。它是那一橫的
+          //   **加強**條件:知道而且沒有焦點時才走遲滯,拿不到時
+          //   一律視為「有」(fail-visible)。判準在
+          //   common/bar_visibility.cc,這裡只轉達。
+          if (bar_) bar_->OnHostFocus(a.arg != 0);
           break;  // 單向,不回覆
         }
         Result r;

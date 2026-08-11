@@ -50,6 +50,7 @@
 #include <vector>
 
 #include "../common/protocol.h"
+#include "../common/bar_visibility.h"
 #include "../common/status_cells.h"
 #include "../common/service_state.h"
 #include "../common/statusbar_place.h"
@@ -95,6 +96,21 @@ class StatusBar {
   /// 見底下 schema_name_ 的說明:**不是權威**,第一份快照到就被覆蓋。
   void SeedSchemaName(const std::string& name);
 
+  // ── 那一橫該不該在(§12.10.6)────────────────────────────────
+  //
+  // ⚠ 判準本身在 common/bar_visibility.h(純函式,Ubuntu 上測得到)。
+  //   這裡只負責把三個輸入餵給它,以及把結果變成 ShowWindow。
+  //
+  // ⚠ 用**連線生死**當主要訊號,而不是只用焦點:ipc_client.cc 的
+  //   `if (!MayEatKey()) return;` —— 焦點訊號在使用者打第一個字之前
+  //   根本不送。連線生死沒有這道閘。
+  //
+  // 這兩支從**連線執行緒**上呼叫(PipeServer::ServeClient 的頭尾)。
+  void OnClientAttached();
+  void OnClientDetached();
+  // 宿主說焦點來了/走了。從連線執行緒上呼叫(Op::kFocus)。
+  void OnHostFocus(bool focused);
+
  private:
   static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l);
   static LRESULT CALLBACK PopupProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l);
@@ -112,6 +128,8 @@ class StatusBar {
   //   一定要重走這一支 —— 只長寬度不重擺,右端會被推出螢幕。
   void ApplyPlacement(int w_dip);
   void SavePlacement();
+  // 把三個輸入餵給狀態機,並把結果變成 ShowWindow。只在 UI 執行緒上跑。
+  void EvaluateVisibility();
 
   struct Cell {
     RECT rc{};
@@ -171,7 +189,23 @@ class StatusBar {
   int hot_ = -1;
   int pressed_ = -1;
   ServiceState service_state_ = ServiceState::kReady;
-  bool visible_ = true;
+  // ⚠ 這裡以前是一個 visible_,而它同時是兩件事:「使用者要不要這個
+  //   東西」與「現在螢幕上有沒有」。混在一起就沒辦法自動隱藏 ——
+  //   藏起來會被讀成「使用者關掉了」,再也不會自己回來。
+  //
+  //   user_enabled_ = 設定檔那一格(appearance.floatingBar),只由
+  //   WM_RIME_SHOW 改。shown_ = 狀態機算出來的,ShowWindow 只由它驅動。
+  bool user_enabled_ = true;
+  bool shown_ = false;
+  BarVisibility visibility_;
+
+  // 目前握著連線的宿主數。連線執行緒寫、UI 執行緒讀,所以是 atomic。
+  // ⚠ **不是**「有幾個輸入框」。同一支程式裡跳輸入框不會動到它,
+  //   而那正是我們要的:那種時候那一橫不該閃。
+  std::atomic<int> clients_{0};
+  // 收到過任何焦點訊息沒有。為假時**不看** any_focused_(fail-visible)。
+  std::atomic<bool> focus_known_{false};
+  std::atomic<bool> any_focused_{false};
 
   // 拖動。⚠ 不用 WM_NCHITTEST 回 HTCAPTION —— 那會讓整條都變成拖動區,
   //   四格就點不到了;留一小塊「握把」又要使用者去找它。

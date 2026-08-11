@@ -106,6 +106,51 @@ void StatusBar::SetVisible(bool on) {
     ::PostThreadMessageW(thread_id_, WM_RIME_SHOW, on ? 1 : 0, 0);
 }
 
+// ⚠ 這三支從**連線執行緒**上被呼叫,所以只碰 atomic,不碰視窗。
+//   真正的顯示/隱藏由 UI 執行緒上的 kStateTimer 撿走(500 毫秒一次)——
+//   而「立刻顯示」那一條靠 PostThreadMessage 把計時器提前叫醒一次,
+//   不必等下一個 tick。
+void StatusBar::OnClientAttached() {
+  clients_.fetch_add(1);
+  // 立刻顯示是規範的一部分(§12.10.6):使用者切回來打第一個字之前,
+  // 那一橫就該在。等 500 毫秒的話他會先看到一個空位。
+  if (thread_id_) ::PostThreadMessageW(thread_id_, WM_RIME_REFRESH, 0, 0);
+}
+
+void StatusBar::OnClientDetached() {
+  // ⚠ 不可以掉到負數。連線執行緒有很多條,而 ServeClient 的頭尾配對
+  //   在例外路徑上不一定成立 —— 一個負數會讓那一橫再也不顯示,
+  //   而那種缺陷查起來只能靠人肉試。
+  int now = clients_.load();
+  while (now > 0 && !clients_.compare_exchange_weak(now, now - 1)) {
+  }
+  if (thread_id_) ::PostThreadMessageW(thread_id_, WM_RIME_REFRESH, 0, 0);
+}
+
+void StatusBar::OnHostFocus(bool focused) {
+  focus_known_.store(true);
+  any_focused_.store(focused);
+  if (thread_id_) ::PostThreadMessageW(thread_id_, WM_RIME_REFRESH, 0, 0);
+}
+
+void StatusBar::EvaluateVisibility() {
+  if (!hwnd_) return;
+  BarVisibilityInputs in;
+  in.user_enabled = user_enabled_;
+  in.active_clients = clients_.load();
+  in.focus_known = focus_known_.load();
+  in.any_focused = any_focused_.load();
+  in.now_ms = ::GetTickCount64();  // ⚠ 單調時鐘,不是牆上時鐘
+  const BarAction act = visibility_.Feed(in);
+  if (act == BarAction::kPending) return;  // 遲滯還沒到期,維持現狀
+  const bool want = act == BarAction::kShow;
+  if (want == shown_) return;
+  shown_ = want;
+  // ⚠ 重新出現時**不重新定位**:回到使用者拖過的同一個位置。
+  //   ApplyPlacement 已經在 Relayout 裡做過了,這裡只切可見性。
+  ::ShowWindow(hwnd_, want ? SW_SHOWNOACTIVATE : SW_HIDE);
+}
+
 void StatusBar::Refresh() {
   if (thread_id_) ::PostThreadMessageW(thread_id_, WM_RIME_REFRESH, 0, 0);
 }
@@ -200,10 +245,14 @@ void StatusBar::ThreadMain() {
   theme_.Refresh(AppearancePrefFromValue(
       st.Raw(keys::kAppearanceAppearance).c_str()));
   fonts_.Reset(dpi_, Script::kHant);
-  visible_ = st.GetTri(keys::kAppearanceFloatingBar) != Tri::kFalse;
+  user_enabled_ = st.GetTri(keys::kAppearanceFloatingBar) != Tri::kFalse;
 
   Relayout();  // Relayout 自己會走 ApplyPlacement(寬度是它算出來的)
-  if (visible_) ::ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+  // ⚠ **不在這裡 ShowWindow。** 服務剛起來時還沒有任何宿主連上來,
+  //   那一橫不該先出現三秒再消失 —— 那是一次沒有人要求過的閃爍。
+  //   顯示由狀態機決定,而第一個宿主連上來時 OnClientAttached 會把
+  //   計時器提前叫醒。
+  EvaluateVisibility();
   // ⚠ 少了這一行,首次安裝那一橫會一直停在「正在準備」,
   //   直到使用者跑去某個輸入框打一個字(見上面 kStateTimer 的說明)。
   ::SetTimer(hwnd_, kStateTimer, kStatePollMs, nullptr);
@@ -214,11 +263,17 @@ void StatusBar::ThreadMain() {
       switch (msg.message) {
         case WM_RIME_REFRESH:
           Relayout();
+          // 連線生死與焦點訊息也走這一則(它們從連線執行緒上 Post 過來),
+          // 所以「立刻顯示」不必等下一個 500 毫秒的 tick。
+          EvaluateVisibility();
           ::InvalidateRect(hwnd_, nullptr, TRUE);
           continue;
         case WM_RIME_SHOW:
-          visible_ = msg.wParam != 0;
-          ::ShowWindow(hwnd_, visible_ ? SW_SHOWNOACTIVATE : SW_HIDE);
+          // ⚠ 這是**使用者的總開關**,不是「現在顯不顯示」。
+          //   自動隱藏不走這條路 —— 它不改變這個值,所以條件恢復時
+          //   那一橫自己會回來。§12.10.6。
+          user_enabled_ = msg.wParam != 0;
+          EvaluateVisibility();
           continue;
         case WM_RIME_THEME: {
           const Settings s2 = store_ ? store_->Load() : Settings();
@@ -855,6 +910,10 @@ LRESULT CALLBACK StatusBar::WndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
         self->Relayout();
         ::InvalidateRect(hwnd, nullptr, TRUE);
       }
+      // ⚠ 待隱藏的到期就在這裡收 —— **不新增計時器**。這一顆本來就是
+      //   半秒一次,而 3000 毫秒的遲滯用半秒的解析度綽綽有餘。
+      //   多一顆計時器就多一條要對齊的時序。
+      self->EvaluateVisibility();
       return 0;
     }
     case WM_DPICHANGED: {
