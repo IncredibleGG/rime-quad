@@ -1075,14 +1075,24 @@ check_choice 0x0C04 luna_pinyin_tw traditional zh_hant_hk
 
 # 反向測試:認不出來的語言必須**完全不碰**簡繁(規範 §4.2:不要預設繁體)。
 # 少了這一條,一個「永遠設成繁體」的實作也會讓上面兩條繁體的斷言通過。
+#
+# ⚠ 判準是「不碰**簡繁**」,不是「一個 option 都不送」。
+#   `ascii_mode` 一定會送(schema_choice.h:157「永遠有」)—— 它是模式不是
+#   三態偏好,沒有「不干預」那一格。舊版寫成 `grep -q '^option='`,
+#   在 c9fc502 把 ascii_mode 加進 BuildOptionPlan 之後就變成**恆假**,
+#   而這一格從那時起一次都沒有跑過(install-x64 這條車道整個不存在)。
 neg="$(choice_out 0x0409)"
+neg_variant_opts="$(echo "${neg}" | grep -cE '^option=zh_' || true)"
 if [ "$(field_of "${neg}" variant)" = "(不干預)" ] && \
-   ! echo "${neg}" | grep -q '^option='; then
-  ok "0x0409(en-US)完全不碰簡繁 —— 上面幾條不是恆真的"
+   [ "${neg_variant_opts}" = "0" ] && \
+   echo "${neg}" | grep -q '^option=ascii_mode='; then
+  ok "0x0409(en-US)完全不碰簡繁(0 個 zh_* option) —— 上面幾條不是恆真的"
 else
-  note_fail "0x0409 竟然動了簡繁:
+  note_fail "0x0409 竟然動了簡繁,或者連 ascii_mode 都不送了(送了 ${neg_variant_opts} 個 zh_* option):
 $(echo "${neg}" | sed 's/^/       /')
-     規範 §4.2:認不出來的輸入模式一律不表示意見,不要預設繁體。"
+     規範 §4.2:認不出來的輸入模式一律不表示意見,不要預設繁體。
+     ⚠ 這一條只看 zh_* 那幾個開關。ascii_mode 必須照送 —— 它不見了
+     代表 BuildOptionPlan 整個沒回東西,那一樣是紅的。"
 fi
 
 # ══════════════════════════════════════════════════════════════════
