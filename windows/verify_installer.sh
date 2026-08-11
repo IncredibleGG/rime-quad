@@ -617,6 +617,39 @@ if [ "$(printf '%s\n' "${PROFILES}" | sort)" != "$(printf '%s\n' "${EXPECT_PROFI
 fi
 ok "CLSID 與 ${PROFILE_COUNT} 份語言設定檔的 GUID 都與預期一致"
 
+# ⚠ 能力類別的數字也要一份寫死的第二意見 —— 上面那一則的理由一字不改地
+#   適用,而這兩個值原本沒有跟上。
+#
+#   實測(2026-08-12,run 31526574022 / install-x64):把
+#   tsf/registration.cc 的 kTipCapCategories 拿掉
+#   &GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT 一行,下面那兩條斷言印的是
+#
+#       ✓ 能力類別 5 類(GUID_TFCAT_TIP_KEYBOARD + 5 個能力類別)
+#       ✓ 能力類別 5 類 / 13 筆齊全
+#
+#   **兩條都綠。** 原因是預期值 CATEGORY_COUNT / CATEGORY_ITEMS 由被測的
+#   那支 rime_ime_setup.exe 自己報出來(setup_main.cc → registration.cc 的
+#   RegisteredCategoryCount(),它就是 sizeof(kTipCapCategories)),
+#   於是登錄檔少一筆、預期也跟著少一筆,兩邊永遠相等。
+#
+#   而「少一個」正是那兩條斷言宣稱在擋的事:少了 IMMERSIVESUPPORT,
+#   市集 App 與 Edge 裡完全用不了;少了 SECUREMODE,提權視窗上打不了字。
+#   症狀是「在某些程式裡沒反應」,而且與程式碼無關 —— 只是沒註冊。
+#   換句話說:這兩條斷言原本擋不住它們唯一存在的理由。
+#
+# ⚠ 改這兩個數字 = 改變輸入法在哪些宿主裡活得下去。要改請連同
+#   tsf/registration.cc 的 kTipCapCategories 一起,並在這裡寫下為什麼。
+EXPECT_CATEGORY_COUNT=6      # GUID_TFCAT_TIP_KEYBOARD + 5 個能力類別
+EXPECT_CATEGORY_ITEMS=16
+if [ "${CATEGORY_COUNT}" != "${EXPECT_CATEGORY_COUNT}" ] || \
+   [ "${CATEGORY_ITEMS}" != "${EXPECT_CATEGORY_ITEMS}" ]; then
+  die "產品報出來的能力類別是 ${CATEGORY_COUNT} 類 / ${CATEGORY_ITEMS} 筆,
+  這支腳本寫死的第二意見是 ${EXPECT_CATEGORY_COUNT} 類 / ${EXPECT_CATEGORY_ITEMS} 筆。
+  少一類的症狀是「在市集 App / Edge / 提權視窗裡沒有這個輸入法」,
+  而且與程式碼無關 —— 只是沒註冊。若是刻意的,請同時更新這支腳本。"
+fi
+ok "能力類別的預期值與寫死的第二意見一致(${CATEGORY_COUNT} 類 / ${CATEGORY_ITEMS} 筆)"
+
 # ── 安裝之前的語言清單(§4b 要拿它比對)────────────────────────────
 #
 # 這一份是本輪唯一能回答「**啟用一份語言設定檔會不會替使用者新增一個語言**」
@@ -745,6 +778,15 @@ n_ocd2="$( (ls "${INSTALL_DIR}"/data/shared/opencc/*.ocd2 2>/dev/null || true) |
 # ══════════════════════════════════════════════════════════════════
 #  3. 登錄檔斷言(逐個鍵值點名)
 # ══════════════════════════════════════════════════════════════════
+# ── 安裝目錄的基準相片(路徑 + 大小 + 修改時間)──────────────────
+#
+# ⚠ 照在**這裡**,而不是 §6 之前:§5c / §5d 是冷啟動與「瘦 DLL 自己把
+#   服務拉起來」,也就是使用者機器上真正跑的那條路。基準線照在它們後面的話,
+#   它們寫進 Program Files 的東西會被當成本來就在,永遠比對得過。
+#   (理由與實測見 §6 那一段的註解。)
+snapshot() { (cd "${INSTALL_DIR}" && find . -type f -printf '%p\t%s\t%T@\n' | sort); }
+snapshot > "${WORK}/before.txt"
+
 log "3. 登錄檔"
 
 reg_key_exists "${HKLM_CLSID}" && ok "${HKLM_CLSID}" \
@@ -806,7 +848,7 @@ n_cat="$(reg query "${HKLM_CTF_CAT}" //reg:64 2>/dev/null | tr -d '\r' \
          | CATPREFIX="HKEY_LOCAL_MACHINE\\$(get_path HKLM_CTF_CATEGORY)\\" \
            awk 'index($0, ENVIRON["CATPREFIX"]) == 1 { n++ } END { print n + 0 }')"
 [ "${n_cat}" -eq "${CATEGORY_COUNT}" ] \
-  && ok "能力類別 ${n_cat} 類(GUID_TFCAT_TIP_KEYBOARD + 5 個能力類別)" \
+  && ok "能力類別 ${n_cat} 類(GUID_TFCAT_TIP_KEYBOARD + $((n_cat - 1)) 個能力類別)" \
   || note_fail "Category\\Category 底下 ${n_cat} 個,預期 ${CATEGORY_COUNT} 個
      少一個的症狀是「在市集 App / Edge / 提權視窗裡沒有這個輸入法」"
 
@@ -1381,10 +1423,21 @@ fi  # -n "${HOST}"
 # 也就是 DLL 會走的每一段,除了 TSF 本身。
 log "6. 端到端:用安裝好的服務與資料打出「你好」"
 
-# 先照一張安裝目錄的相片(路徑 + 大小 + 修改時間)。
-# 跑完之後要一模一樣 —— 那證明使用者資料真的沒有寫進 Program Files。
-snapshot() { (cd "${INSTALL_DIR}" && find . -type f -printf '%p\t%s\t%T@\n' | sort); }
-snapshot > "${WORK}/before.txt"
+# ⚠ 相片在 §2 裝完的當下就照了(見上面),**不是在這裡**。
+#
+#   原本這一行就在這裡,而那讓 §5c / §5d(冷啟動、瘦 DLL 自己拉起服務)
+#   寫進 Program Files 的東西全部被算進基準線 —— 於是它們永遠比對得過。
+#
+#   實測(2026-08-12,run 31526574022 / install-x64):把 service/main.cc
+#   的 RedirectStdIoIfDetached 從 %LOCALAPPDATA% 改成 %ProgramFiles%,
+#   服務真的把 diagnostics/service.log 寫進了 C:\Program Files\LuminaKey,
+#   而這一條照樣印
+#
+#       ✓ 安裝目錄跑完之後一個檔案都沒變(使用者資料沒有寫進 Program Files)
+#
+#   抓到它的是**別的**斷言(§6d 的「找不到 service.log」與 §8 的
+#   「安裝目錄還留著 1 個我們的檔案」)。這一條自己是瞎的,而且瞎在
+#   它最該看見的那條路上 —— 冷啟動那一支才是使用者機器上真正跑的服務。
 
 READY="${WORK}/ready.txt"
 SVC_LOG="${WORK}/service.log"
@@ -2011,7 +2064,12 @@ esac
 # 整支腳本在這一行**當場死掉** —— 而那正好是我最需要看到後面那幾項診斷的時候
 # (前一步剛剛才報「沒有建立使用者目錄」)。
 n_user="$( (find "${USER_DIR}" -type f 2>/dev/null || true) | wc -l | tr -d ' ')"
-ok "使用者目錄裡有 ${n_user} 個檔案"
+# ⚠ 這一行原本是無條件的 ok —— n_user=0 也會印一個 ✓。
+#   它長得像斷言、排在斷言中間、被算進「189 個 ✓」,而它什麼都沒問。
+#   (靜態掃出來的,2026-08-12;不需要 CI 就看得出來。)
+[ "${n_user}" -gt 0 ] && ok "使用者目錄裡有 ${n_user} 個檔案" \
+  || note_fail "使用者目錄 ${USER_DIR} 底下一個檔案都沒有 ——
+     部署沒有跑到,或它把東西寫到別的地方去了。"
 
 # ── 安裝目錄一個位元都不該變 ──────────────────────────────────────
 #
