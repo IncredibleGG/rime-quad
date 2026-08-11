@@ -33,16 +33,6 @@ on:
     # 單行陣列 [main, a, b] 會讓每一條都改同一行 = 必然衝突。
     branches:
       - main
-      - fix3-cand
-      - fix-publish
-      - fix2-gates
-      - fix-gates
-      - fix-android-ui
-      - fix2-release
-      - fix2-deadend
-      - fix3-install
-      - winbar
-      - t9hole
   pull_request:
     branches:
       - main
@@ -329,26 +319,20 @@ jobs:
     needs: fast
     # 每次 push 都開模擬器太慢,會逼人繞過 CI。推上 main 與手動觸發時跑,
     # 而 publish 掛在它後面 —— 所以「發布前沒驗過」做不到。
-    # ⚠ fix3-cand 與 t9hole 暫時列在這裡,而且**合併回 main 之後就該拿掉**。
-    #   fix3-cand 的理由與下面那一則完全相同:這一輪在慢車道新增了
-    #   `verify_candbar.sh`(候選列的畫面/行為守門),而**一支從來沒有在 CI 上
-    #   跑過的關卡,看起來與一切正常一模一樣** —— 那正是這個專案
-    #   verify_syllables.sh 的三個反向測試踩過的坑(檔頭寫著、workflow 沒接)。
-    #   t9hole 是同一件事往上移了一層:這一輪在慢車道新增了第 5 關(沒被接管
-    #   的那一格)與兩個原始碼植入(tap-swallowed / tap-passthrough)。上一次是
-    #   「檔頭寫著、workflow 沒接」,這一次是**workflow 接了、分支沒接**——
-    #   上面的 on: push: branches: 沒列 t9hole、這裡的 if: 也沒列,兩道閘門
-    #   各自都足以讓它們一次都不跑,而**被跳過的 job 在 checks 上是灰色的勾**,
-    #   和跑過而且通過長得一模一樣。現在 verify_syllables.sh --check-ci
-    #   看得懂這兩道閘門了(scripts/ci_branch_gate.py),再漏一次會當場紅。
+    # ⚠ 支線想讓慢車道在自己這邊跑的話,**上面的 on: push: branches: 與這裡的
+    #   if: 兩邊都要加**,而且合併回 main 之後兩邊都要拿掉
+    #   (這一輪的 fix3-cand 與 t9hole 就是照這條拿掉的)。
+    #   這條規矩是買來的:新增的慢車道關卡曾經一次都沒跑過,而**一支從來沒有
+    #   在 CI 上跑過的關卡,看起來與一切正常一模一樣**。先是「檔頭寫著、
+    #   workflow 沒接」(verify_syllables.sh 的三個反向測試踩過的坑),後來是
+    #   **workflow 接了、分支沒接** —— 兩道閘門各自都足以讓新關卡一次都
+    #   不跑,而**被跳過的 job 在 checks 上是灰色的勾**,和跑過而且通過長得
+    #   一模一樣。現在 verify_syllables.sh --check-ci 看得懂這兩道閘門了
+    #   (scripts/ci_branch_gate.py),再漏一次會當場紅。
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' &&
-       (github.ref == 'refs/heads/main' ||
-        github.ref == 'refs/heads/t9hole' ||
-        github.ref == 'refs/heads/fix3-cand' ||
-        github.ref == 'refs/heads/fix-gates' ||
-        github.ref == 'refs/heads/fix2-release'))
+       github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 90
 

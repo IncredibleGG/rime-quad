@@ -14,7 +14,7 @@ name: Schema store
 
 on:
   push:
-    branches: [main, storefix, winbar]
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
