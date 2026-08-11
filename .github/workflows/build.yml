@@ -42,6 +42,7 @@ on:
       - fix2-deadend
       - fix3-install
       - winbar
+      - t9hole
   pull_request:
     branches:
       - main
@@ -328,15 +329,23 @@ jobs:
     needs: fast
     # 每次 push 都開模擬器太慢,會逼人繞過 CI。推上 main 與手動觸發時跑,
     # 而 publish 掛在它後面 —— 所以「發布前沒驗過」做不到。
-    # ⚠ fix3-cand 暫時列在這裡,而且**合併回 main 之後就該拿掉**。
-    #   理由與下面那一則完全相同:這一輪在慢車道新增了 `verify_candbar.sh`
-    #   (候選列的畫面/行為守門),而**一支從來沒有在 CI 上跑過的關卡,
-    #   看起來與一切正常一模一樣** —— 那正是這個專案 verify_syllables.sh
-    #   的三個反向測試踩過的坑(檔頭寫著、workflow 沒接)。
+    # ⚠ fix3-cand 與 t9hole 暫時列在這裡,而且**合併回 main 之後就該拿掉**。
+    #   fix3-cand 的理由與下面那一則完全相同:這一輪在慢車道新增了
+    #   `verify_candbar.sh`(候選列的畫面/行為守門),而**一支從來沒有在 CI 上
+    #   跑過的關卡,看起來與一切正常一模一樣** —— 那正是這個專案
+    #   verify_syllables.sh 的三個反向測試踩過的坑(檔頭寫著、workflow 沒接)。
+    #   t9hole 是同一件事往上移了一層:這一輪在慢車道新增了第 5 關(沒被接管
+    #   的那一格)與兩個原始碼植入(tap-swallowed / tap-passthrough)。上一次是
+    #   「檔頭寫著、workflow 沒接」,這一次是**workflow 接了、分支沒接**——
+    #   上面的 on: push: branches: 沒列 t9hole、這裡的 if: 也沒列,兩道閘門
+    #   各自都足以讓它們一次都不跑,而**被跳過的 job 在 checks 上是灰色的勾**,
+    #   和跑過而且通過長得一模一樣。現在 verify_syllables.sh --check-ci
+    #   看得懂這兩道閘門了(scripts/ci_branch_gate.py),再漏一次會當場紅。
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' &&
        (github.ref == 'refs/heads/main' ||
+        github.ref == 'refs/heads/t9hole' ||
         github.ref == 'refs/heads/fix3-cand' ||
         github.ref == 'refs/heads/fix-gates' ||
         github.ref == 'refs/heads/fix2-release'))
@@ -451,6 +460,19 @@ jobs:
             # 而且腳本會確認紅的是**指名的那一條**(踩紅別條照樣算失敗)。
             # ⚠ 一行寫完,理由同上面那一行(這個 action 逐行交給 sh -c)。
             bash ./scripts/verify_syllables.sh --plant bad-slot-ids --out build/verify-syllables-plant
+            # 反向測試:第 5 關(沒被接管的那一格)的兩個。這兩個改的是**原始碼**
+            # —— 腳本自己 patch KeyboardView.kt、跑一次 assembleDebug、還原檔案,
+            # 再拿建出來的那份 APK 去驗(所以不能帶 --apk),而且只跑第一份佈局。
+            # 為什麼非得走這條路:tap-swallowed 那個形狀在 `./gradlew test` 610 條
+            # 全綠、連掃原始碼那條檢查也全綠,而使用者按下左欄那顆標點鍵什麼都不會
+            # 發生。只有「在模擬器上點下去、再問宿主輸入框有沒有多出那個字」看得到。
+            # ⚠ 一行寫完,理由同上(這個 action 逐行交給 sh -c)。
+            bash ./scripts/verify_syllables.sh --plant tap-swallowed --out build/verify-syllables-tapswallowed
+            # tap-passthrough:點擊一律走原鍵的 onEvent → 被接管的那幾格只剩
+            # tap = NOOP,點讀音沒有反應 → 第 4 關必須紅(點了 pin 還有 qin)。
+            # 這一條證明的是既有的第 4 關真的有牙齒 —— 它從來沒有在植入下跑過。
+            # ⚠ 一行寫完,理由同上(這個 action 逐行交給 sh -c)。
+            bash ./scripts/verify_syllables.sh --plant tap-passthrough --out build/verify-syllables-tappass
             # 情境:裝置上放一份舊的單編碼方案(collect_data.sh 沒跑過的機器)。
             # 那種方案上 rs_set_input("niGAM") 照樣回 true,而使用者點下第一個
             # 候選就上屏「ni好」—— 真機回報過的那一條。斷言的是**消歧欄整條
@@ -484,10 +506,14 @@ jobs:
           # ⚠ 消歧欄那一關失敗時會印出 build/verify-syllables/... 的截圖路徑,
           #   但以前沒有收進 artifact —— 於是訊息指著一個 run 結束就消失的路徑,
           #   紅了也看不到畫面。這一輪就是因此得靠本機模擬器重跑一次。
+          # ⚠ 用萬用字元收**全部**的 verify-syllables*/:每加一種 --plant 就多一個
+          #   `--out` 目錄(-tapswallowed / -tappass / -stale),而漏收的那一個
+          #   在紅掉的時候正好是唯一的現場。第一次跑慢車道就漏了 ——
+          #   `--plant tap-swallowed` 的 plant-build.log 不在 artifact 裡,
+          #   於是「安裝失敗」這四個字沒有任何東西可以往下查。
           path: |
             build/release-check/
-            build/verify-syllables/
-            build/verify-syllables-plant/
+            build/verify-syllables*/
             build/verify-candbar/
             build/verify-backup/
           if-no-files-found: ignore

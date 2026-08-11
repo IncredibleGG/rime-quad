@@ -1369,6 +1369,39 @@ bash 端再剝一次 `\r`。(同一個檔案早就為了 cp1252 的 stdout 編�
   - `做法:`windows/common/callback_gate.h`(無平台相依)。`Run()` 從頭到尾持有閘的鎖,`Close()` 拿同一把 —— 於是「`Close()` 返回時裡面沒有人,而且之後也不會有人進來」是被鎖保證的,不是被時序猜的。`Stop()` 的**第一句**就是 `Close()`(排在 `if (!started_)` 與 join 佇列之前),然後才 `rs_finalize()`。鎖序固定:**librime 的全域鎖 → 閘的鎖 → 佇列的鎖**,不可反向 —— 握著閘的鎖去呼叫 `rs_*` 就是死鎖。`
   - `⚠ 這種東西**測得到**,但要用「把回呼釘在 `Run()` 裡面,再讓 `Close()` 去撞它」的方式測。「開一堆執行緒猛敲、期待 ASan 剛好撞進那個窗口」實測是**綠的**(窗口由排程決定,而排程不會配合)—— 那種測試會給人一個假的保證。見 `windows/tests/test_callback_gate.cc`:天真版在那裡直接紅,`--asan` 之下是 heap-use-after-free。`
   - `Android / macOS:凡是「C 回呼 + 上層物件的指標」都是同一個形狀(JNI 的 global ref、Swift 那側的 unowned)。`
+- `[2026-08-12] [t9hole→全體] **`--check-ci` 這個做法本身有第二層破口:接了字串,不等於那一步會為你這條分支跑。**
+  上面 `[2026-08-10] [fix-gates→全體]` 那一則給了一般做法(腳本自帶 `--check-ci`,
+  從檔頭解析宣告、去 workflow 裡找)。這一輪發現它擋不住同一個形狀的下一次:
+  `t9hole` 這條分支上新增了三樣慢車道的守門(第 5 關與兩個原始碼植入),
+  `--check-ci` 全綠,而它們**一次都不會在 CI 上跑**。中間隔著兩道各自獨立的閘門:
+    1. `on: push: branches:` 沒有列 `t9hole` → 推上去**整份 workflow 不觸發**;
+    2. 就算列了,那個 job 自己的 `if:`(慢車道只認 main / 幾條 fix 分支)
+       會把它整個跳過 —— 而**被跳過的 job 在 checks 上是灰色的勾**,
+       和跑過而且通過長得一模一樣。
+  `grep -q -- "--plant X" build.yml` 這兩件事都看不到。
+  **這對四端都成立**:`windows.yml` / `macos.yml` 同樣有 `branches:` 清單,
+  同樣有帶 `if:` 的慢車道 job。開新支線時只要忘了其中一處,那條線上**所有**
+  新增的守門都是靜音的,而每一支腳本的 `--check-ci` 都會說綠。
+  **做法**:`scripts/ci_branch_gate.py`(不綁 Android,吃任何 workflow):
+  給它 workflow、分支、以及一串「針」(整條命令,不是光禿禿的 `--plant X`),
+  它回答「推這條分支上去,那一步會不會執行」——
+  `on: push: branches:` 含不含這條分支;那根針**所在的 job**(用 YAML 節點行號
+  對應,不是猜的)的 `if:` 會不會為這條分支成立,連 `needs:` 鏈一起算。
+  `if:` 是拿一個小直譯器真的算一遍的(`&&` `||` `!` `==` `!=` 括號、字串、
+  `contains/startsWith/endsWith`、`always/success/failure/cancelled`、
+  push 事件下 `inputs.*` 為空);**認不得的語法一律 exit 2「判斷不了」,不當成會跑**。
+  三種紅各自有標記:`FAIL[not-wired]` / `FAIL[push-branches]` / `FAIL[job-if]`。
+  順手補的另一個洞:**註解裡的字串不算接線**(舊的 grep 版本連
+  `# … --plant X …` 這種說明文字都當成接上了,而說明文字正是這個坑的來源)。
+  ⚠ 反向測試也要跟著升一級:`--check-ci --self-test` 現在**三樣東西各拆一次**
+  (接線 / `branches:` 裡的這條分支 / job 的 `if:` 裡的這條分支),
+  每一次都必須紅在**對應的**那一道,外加一條「沒動過的那一份必須是綠的」——
+  只看退出碼的話,一個把每份 workflow 都判成紅的壞掉版本會全數通過。
+  拆 `if:` 用**改名**而不是刪行:刪掉的若是最後一項,括號會不對稱,
+  驗到的就變成「YAML 壞了」而不是「這條分支不在 `if:` 裡」。
+  ⚠ 加分支名時**只加一項到既有那一行的清單底下**,不要新增第二個 `branches:` 鍵
+  —— 這個專案為此吃過兩次虧,兩次的症狀都是「整條車道安靜地不存在」;
+  改完跑 `python3 scripts/verify_yaml_no_dup_keys.py`。`
 
 
 ## 6. 各端狀態
