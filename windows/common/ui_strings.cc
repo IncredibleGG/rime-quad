@@ -118,8 +118,8 @@ namespace {
   X(kStatusBarBlurb,                                                           \
     L"A small bar you can drag anywhere. It is the only place to switch "      \
     L"between Chinese and English mid-sentence.",                              \
-    L"可以拖到任何地方的一小橫。**在句子中間切中英文,目前只有它做得到。**",   \
-    L"可以拖到任何地方的一小横。**在句子中间切中英文,目前只有它做得到。**")   \
+    L"可以拖到任何地方的一小橫。要在句子中間切中英文,目前只有它做得到。",     \
+    L"可以拖到任何地方的一小横。要在句子中间切中英文,目前只有它做得到。")     \
   X(kStatusBarShow, L"Show the little bar", L"顯示那一小橫",                   \
     L"显示那一小横")                                                           \
   X(kAppearanceHonestNote,                                                     \
@@ -207,19 +207,19 @@ namespace {
   X(kResetBlurb, \
     L"Everything on these four pages goes back to the way it shipped. " \
     L"Words you have added and the order you set are not touched.", \
-    L"這四頁上的每一項都回到出廠的樣子。**你自己加的詞不會消失**," \
-    L"你排的順序也不會變。", \
-    L"这四页上的每一项都回到出厂的样子。**你自己加的词不会消失**," \
-    L"你排的顺序也不会变。") \
+    L"這四頁上的每一項都回到出廠的樣子。不會動到的有兩樣:你自己加的詞," \
+    L"還有你排的順序。", \
+    L"这四页上的每一项都回到出厂的样子。不会动到的有两样:你自己加的词," \
+    L"还有你排的顺序。") \
   X(kResetButton, L"Put the settings back", L"把設定回復成預設", \
     L"把设置回复成默认") \
   X(kResetConfirmBody, \
     L"These four pages go back to how they started. What will NOT " \
     L"disappear: the words you have added, the order of typing methods, " \
     L"and anything you typed. This cannot be undone.", \
-    L"這四頁上的設定會回到一開始的樣子。**不會消失的是**:你自己加的詞、" \
+    L"這四頁上的設定會回到一開始的樣子。不會消失的有三樣:你自己加的詞、" \
     L"打字方式的順序、以及你打過的任何東西。這件事沒辦法還原。", \
-    L"这四页上的设置会回到一开始的样子。**不会消失的是**:你自己加的词、" \
+    L"这四页上的设置会回到一开始的样子。不会消失的有三样:你自己加的词、" \
     L"打字方式的顺序、以及你打过的任何东西。这件事没办法还原。") \
   X(kStatusResetDone, L"Settings are back to how they started.", \
     L"設定已經回復成一開始的樣子。", L"设置已经回复成一开始的样子。") \

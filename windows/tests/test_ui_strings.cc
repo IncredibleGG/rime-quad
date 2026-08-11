@@ -48,6 +48,41 @@ std::wstring Wide(const char* ascii) {
 
 }  // namespace
 
+// ── #77:使用者看得到的字串裡不可以有 Markdown 的粗體記號 ──────────
+//
+// GDI 的 DrawTextW 不認得 Markdown。`**這樣**` 會被**原樣畫出來** ——
+// 使用者在設定視窗裡看到的是四個星號,而寫的人以為那裡會是粗體。
+//
+// ⚠ 這個專案的字串是給人讀的散文,不是標記語言。一句話需要靠粗體才讀得懂,
+//   代表那句話該重寫 —— 而不是該找一個會畫粗體的控制項:
+//   §12.5.2 的 STATIC 一個字級一種粗細,而換字體去做強調會讓同一段裡
+//   出現兩種字重,那在 §8.6 底下是另一個問題。
+//
+// ⚠ 三個語系全部都要掃。以前那兩段是繁簡各一份帶著 `**`,而英文那一份
+//   沒有 —— 只掃一個語系的話會漏掉整整兩種介面。
+TEST(ui_strings_no_markdown_markup_reaches_the_screen) {
+  // 記號用碼點組,理由與本檔檔頭相同(這裡其實是 ASCII,但規則一致
+  // 比較不會有人下次順手寫一個中文字面值進來)。
+  const std::wstring bold = W({0x2A, 0x2A});        // **
+  const std::wstring under = W({0x5F, 0x5F});       // __
+  int scanned = 0;
+  for (int l = 0; l < static_cast<int>(UiLang::kLangCount); ++l) {
+    const UiLang lang = static_cast<UiLang>(l);
+    for (int i = 0; i < UiStringCount(); ++i) {
+      const wchar_t* t = UiTextIn(lang, static_cast<UiString>(i));
+      CHECK(t != nullptr);
+      if (!t) continue;
+      const std::wstring w(t);
+      CHECK(!Contains(w, bold));
+      CHECK(!Contains(w, under));
+      ++scanned;
+    }
+  }
+  // ⚠ 範圍斷言:掃到零條而報「全部合格」正是 §2-G 講的那個失效方式。
+  CHECK_INT(scanned, 3 * UiStringCount());
+  CHECK(scanned >= 240);
+}
+
 TEST(ui_strings_catalog_is_big_enough) {
   // §12.9.2:條目數 ≥ 80。現況相異中文字面值 85;取 80 是留給重新設計時
   // 的合併,**不是**放寬 —— 低於 80 代表搬漏了。
