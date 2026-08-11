@@ -18,6 +18,31 @@ void EnsureRowListColumn(HWND list) {
   ::SendMessageW(list, LVM_INSERTCOLUMNW, 0, reinterpret_cast<LPARAM>(&col));
 }
 
+void SetRowListExtendedStyle(HWND list) {
+  if (!list) return;
+  const DWORD mask = LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER;
+  // 第一個參數是**遮罩**:只動這兩位元,別人設過的其他旗標不受影響。
+  ::SendMessageW(list, LVM_SETEXTENDEDLISTVIEWSTYLE, mask, mask);
+}
+
+void SelectSidebarRow(HWND list, int row) {
+  if (!list) return;
+  // ⚠ 先全清。見標頭:LVS_SINGLESEL 管的是使用者,不是我們。
+  LVITEMW clear{};
+  clear.mask = LVIF_STATE;
+  clear.stateMask = LVIS_SELECTED | LVIS_FOCUSED;
+  clear.state = 0;
+  ::SendMessageW(list, LVM_SETITEMSTATE, static_cast<WPARAM>(-1),
+                 reinterpret_cast<LPARAM>(&clear));
+  if (row < 0) return;
+  LVITEMW set{};
+  set.mask = LVIF_STATE;
+  set.stateMask = LVIS_SELECTED | LVIS_FOCUSED;
+  set.state = LVIS_SELECTED | LVIS_FOCUSED;
+  ::SendMessageW(list, LVM_SETITEMSTATE, static_cast<WPARAM>(row),
+                 reinterpret_cast<LPARAM>(&set));
+}
+
 HWND CreateRowList(HWND parent, int id, DWORD extra_style) {
   HWND list = ::CreateWindowExW(
       0, WC_LISTVIEWW, L"", WS_CHILD | extra_style, 0, 0, 10, 10, parent,
@@ -27,6 +52,9 @@ HWND CreateRowList(HWND parent, int id, DWORD extra_style) {
   // 唯一那一欄。寬度之後每次擺位置都由 SyncRowListColumn 重新對齊 ——
   // 建立時的 client 是 10×10,那不是最終的寬度。
   EnsureRowListColumn(list);
+  // 整列可點 + 雙緩衝。見標頭 —— 這是「畫出來的地方」與「點得到的地方」
+  // 對齊的另一半。
+  SetRowListExtendedStyle(list);
   return list;
 }
 

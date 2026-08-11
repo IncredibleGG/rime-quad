@@ -66,6 +66,7 @@ SRCS=(
   "${SCRIPT_DIR}/tests/probe_main.cc"
   "${SCRIPT_DIR}/tests/test_win32_layouts.cc"
   "${SCRIPT_DIR}/tests/test_win32_listview.cc"
+  "${SCRIPT_DIR}/tests/test_win32_sidebar.cc"
   "${SCRIPT_DIR}/tests/tsf_host_main.cc"
 )
 

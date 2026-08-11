@@ -1145,6 +1145,33 @@ PYSCRIPT
   need_scope "W28" "${n28}" 1 || w28bad=1
   [ "${w28bad}" -eq 0 ] && ok "W28 自繪的列矩形只從 RowRect() 來(${n28} 處 nmcd.rc 全在 ui_listview.cc 與它的測試裡)"
 
+  # ── W30:OpenAt() 的引數不可以是字面數字 ──────────────────────
+  #
+  # status_bar.cc 本來寫的是 `OpenAt(StateIsFailure(...) ? 3 : 0)`,而旁邊
+  # 的註解說 3 是「進階」。這一輪 ui_layout.h 把 kPageNetwork 插在
+  # kPageAdvanced **前面**(離線為預設的產品,那顆開關不該藏在最後一頁),
+  # 於是 3 變成了「連網」—— 出事的時候會把使用者帶到一頁**沒有**
+  # 「重新整理字詞」的地方,而畫面上沒有任何東西看起來不對:
+  # 每一頁都有名字、每一頁都有內容。
+  #
+  # 側欄的頁數還會長(§5.3),所以這不是一次性的錯 —— 是一個每次加頁
+  # 都會再犯一次的形狀。「哪一頁」永遠要用 common/ui_layout.h 的列舉說。
+  check
+  local w30; w30="$(hits 'OpenAt(')"
+  local n30; n30="$(count_of "${w30}")"
+  local w30bad=0
+  local w30lit
+  w30lit="$(printf '%s\n' "${w30}" | grep -E 'OpenAt\([^)]*[^A-Za-z_0-9][0-9]+' || true)"
+  if [ -n "${w30lit}" ]; then
+    red "W30:OpenAt() 的引數裡有字面數字 —— 頁的順序會變(kPageNetwork 這一輪就插進去了)。改用 common/ui_layout.h 的 kPage* 列舉"
+    printf '%s\n' "${w30lit}" | head -4 >&2
+    w30bad=1
+  fi
+  # ⚠ 範圍非空:宣告 + 定義 + 至少一個呼叫點。掃到零處而報「乾淨」
+  #   正是這張檢核表自己最可能的失效方式。
+  need_scope "W30" "${n30}" 3 || w30bad=1
+  [ "${w30bad}" -eq 0 ] && ok "W30 OpenAt() 的每一處都用列舉說是哪一頁(${n30} 處)"
+
   # ── W29:連網那一頁,三件事的決定權都不在繪製碼裡 ─────────────
   #
   # 這一頁上有三件事,寫壞了**畫面看起來完全正常**:
@@ -1396,6 +1423,7 @@ self_check() {
 "W27c 不讀線路上的旗標|service/status_bar.cc|s=s.replace('SnapshotSaysNotReady(snap.status_flags)','false',1)"
 "W27d 事實少餵一格|service/status_bar.cc|s=s.replace('  facts.engine_says_not_ready = engine_not_ready_.load();','  facts.engine_says_not_ready = false;',1)"
 "W28 自繪直接用 nmcd.rc|service/settings_window.cc|s=s.replace('LRESULT SettingsWindow::DrawSchemaList(NMLVCUSTOMDRAW* cd) {','LRESULT SettingsWindow::DrawSchemaList(NMLVCUSTOMDRAW* cd) { RECT sneaky = cd->nmcd.rc; (void)sneaky;',1)"
+"W30 頁碼又寫死成數字|service/status_bar.cc|s=s.replace('settings_->OpenAt(StateIsFailure(service_state_) ? kPageAdvanced','settings_->OpenAt(StateIsFailure(service_state_) ? 3',1).replace(': kPageSchemas);',': 0);',1)"
 "W9 少一條單元測試|tests/test_status_cells.cc|s=s.replace('TEST(status_cells_input_mode_shows_exactly_one_label)','TEST(status_cells_renamed_away)',1)"
 "W27e 拿掉那一橫自己更新的計時器|service/status_bar.cc|s=s.replace('  ::SetTimer(hwnd_, kStateTimer, kStatePollMs, nullptr);','',1)"
 "W27f 計時器還在但不再比對狀態|service/status_bar.cc|s=s.replace('      if (now != self->service_state_) {','      if (false) {',1)"

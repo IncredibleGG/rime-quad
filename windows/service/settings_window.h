@@ -261,6 +261,14 @@ class SettingsWindow {
   // ⚠ SetScrollInfo 讓捲軸出現/消失時會送 WM_SIZE,而 WM_SIZE 又叫
   //   LayoutUi。沒有這個旗標就是無限遞迴。
   bool in_layout_ = false;
+  // ⚠ 同一個形狀,換一顆控制項:ShowPage 對側欄下 LVM_SETITEMSTATE,
+  //   comctl32 **同步**送 LVN_ITEMCHANGED 回來,而那則通知又叫 ShowPage。
+  //   (比照 in_layout_。)
+  bool in_show_page_ = false;
+  // 現在正在處理側欄的通知。ShowPage 據此決定重排要不要延後 ——
+  // 在 comctl32 更新自己選取範圍的中途對同一顆控制項下 SetWindowPos +
+  // LVM_SETCOLUMNWIDTH,是在重入它。
+  bool in_sidebar_notify_ = false;
   // 每一顆控制項目前被裁掉之後剩下的高度(DIP)。-1 = 沒有裁。
   // ⚠ 存著是為了**只在變動時**才呼叫 SetWindowRgn:那一支會重畫,
   //   每次 LayoutUi 都無條件呼叫的話,捲動時整頁會閃。

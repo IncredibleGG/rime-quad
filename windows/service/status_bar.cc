@@ -520,7 +520,15 @@ void StatusBar::ClickCell(int cell) {
     //   · 還在準備 → 那裡沒有他該做的事;按「重新整理字詞」只是
     //     把剛做到一半的工作重做一次,更慢。帶他到第一頁,
     //     那裡的空狀態會說「字詞還沒整理完」。
-    if (settings_) settings_->OpenAt(StateIsFailure(service_state_) ? 3 : 0);
+    // ⚠ **不可以寫字面數字。** 這裡本來是 `? 3 : 0`,而註解說 3 是
+    //   「進階」。這一輪 ui_layout.h 把 kPageNetwork 插在 kPageAdvanced
+    //   **前面**(離線為預設的產品,那顆開關不該藏在最後一頁),於是 3
+    //   變成了「連網」—— 出事時會把使用者帶到一頁沒有「重新整理字詞」
+    //   的地方,而畫面上沒有任何東西看起來不對。
+    //   check_ui_spec.sh 的 W30 現在擋著這件事。
+    if (settings_)
+      settings_->OpenAt(StateIsFailure(service_state_) ? kPageAdvanced
+                                                       : kPageSchemas);
     return;
   }
   switch (cell) {

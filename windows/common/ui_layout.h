@@ -119,7 +119,37 @@ int ContentXDip(int window_w_dip);
 // ── 側欄 ────────────────────────────────────────────────────────
 //
 // 側欄上**只列已經實作的頁**(§2-D1:做不到就整頁拿掉)。
+//
+// ── ⚠ 這一支回的是**那一列真正在哪裡**,而不是我們希望它在哪裡 ──
+//
+// 側欄是一個真的 SysListView32(LVS_REPORT + 自繪),而 comctl32 排列的
+// 方式是固定的:第一列從清單的 client 頂端開始,之後每一列往下**列高**,
+// **列與列之間沒有間隔**。列高由 SetRowListRowHeight() 釘成
+// metric::kSidebarItemH。
+//
+// 舊版這裡多加了一個 space::s2 的列距:
+//
+//     r.y = space::s5 + index * (metric::kSidebarItemH + space::s2);
+//
+// 那個 +4 在畫面上不存在 —— 沒有任何東西畫得出它,comctl32 也不認得它。
+// 它只存在於**我們以為列在哪裡**的那一份裡,而命中判定用的正是那一份:
+// 到第 5 項(進階)累積差 4 × 4 = **16 DIP**,也就是 #75 使用者回報的
+// 「點得到的地方跟畫出來的地方差了半列」。
+//
+// 現在**只有這一份**。畫在哪裡、點在哪裡,兩件事從同一個算式來,
+// 而 test_ui_layout.cc 的 sidebar_hit_and_draw_are_the_same_rect
+// 把它與 SidebarListDip() + 列高 算出來的位置逐項比對。
+//
+// 回的是**整列**(x = 0,寬 = 側欄全寬)—— 那是 comctl32 命中的範圍,
+// 而 LVS_EX_FULLROWSELECT 讓它也是使用者按得到的範圍。
 RectI SidebarItemDip(int index);
+
+// 那一列上**畫出來的那塊底**(§12.4.2:側欄左右內距 12)。
+//
+// ⚠ 它一定落在 SidebarItemDip(index) 裡面 —— 這是刻意的,而且有測試釘著:
+//   底比列窄是視覺,不是命中範圍。使用者按在底左邊那 12 DIP 上仍然要換頁,
+//   不然那一條會變成一道看不見的死區。
+RectI SidebarItemFillDip(int index);
 // 側欄底部的狀態區(兩行 t5:「可以打字」/「離線」)。
 RectI SidebarStatusDip(int window_h_dip);
 

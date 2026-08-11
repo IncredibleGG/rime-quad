@@ -41,6 +41,39 @@ HWND CreateRowList(HWND parent, int id, DWORD extra_style);
 // 建出來的時候(設定視窗那張控制項表統一建)要自己呼叫一次。
 void EnsureRowListColumn(HWND list);
 
+// ── ⚠ 這一支是 #75 的另一半 ─────────────────────────────────────
+//
+// report 模式的 ListView **預設只有第一欄的 label 矩形算命中**,而 label
+// 的寬度是**文字實際的寬度** —— comctl32 從影像清單槽(1 px)之後起算。
+// 我們畫的底卻是整列(RowRect() 撐到 client 寬)。兩者差多少取決於那一頁
+// 的名字有幾個字:「文字」兩個字的可點範圍不到「輸入方案」的一半,
+// 而畫出來的底一樣寬。使用者按在名字右邊的空白上 —— 那裡看起來是那一列,
+// 而 comctl32 說沒有命中任何一列。
+//
+// LVS_EX_FULLROWSELECT 把命中範圍變成整列,也就是我們畫出來的那一塊。
+// LVS_EX_DOUBLEBUFFER 順手收掉 comctl32 v6 自繪 + 捲動時的閃爍。
+//
+// ⚠ 這兩個旗標全樹以前**零命中**(`git grep LVS_EX_` 只有 res/app.manifest
+//   裡一句註解)。所以 kRowHover 那一格自繪的 hover 底色也從來沒有亮過:
+//   hot tracking 要 LVS_EX_TRACKSELECT 或 SetWindowTheme(L"Explorer"),
+//   兩者都沒有。這裡**刻意不補** TRACKSELECT —— 它會連帶把「滑過就選取」
+//   的行為打開,而那不是側欄該有的樣子。hover 那一格留著是死碼,
+//   要修的話是另一件事(§12.6.4)。
+void SetRowListExtendedStyle(HWND list);
+
+// 把第 row 列設成**唯一**被選取的那一列。row < 0 = 只清不選。
+//
+// ⚠ **先全清再設。** LVS_SINGLESEL 保證的是「使用者點不出第二個選取」;
+//   它**不保證**程式化的 LVM_SETITEMSTATE 會先取消舊的那一列,而那正是
+//   #80 使用者截圖上兩列同時反白的其中一個可能來源。全清用
+//   WPARAM = (WPARAM)-1(所有列)。
+//
+// ⚠ 抽成一支的理由是**測得到**:CI 上的 rime_tests.exe 開真的控制項、
+//   走真的 comctl32,驗的是這一份產品碼本身,不是一份長得很像的複本。
+//   「LVS_SINGLESEL 到底管不管程式化設定」這個爭議因此交給 CI 回答,
+//   而不是繼續在報告裡互相引用記憶。
+void SelectSidebarRow(HWND list, int row);
+
 // 換掉全部的列。文字仍然要寫進 item(自繪畫的是同一份文字,但
 // 螢幕閱讀器讀的是 item 上的那一份)。
 /// 把一列的高度釘成 `px` 像素(**不是 DIP** —— 呼叫端自己換算)。

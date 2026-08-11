@@ -34,6 +34,12 @@ constexpr UINT WM_RIME_UPDATE_DONE = WM_APP + 4;
 //   Win32 少數保證跨執行緒安全的呼叫,而且它不等 —— 這正是重點:
 //   引擎那一頭不可以為了通知我們而卡住,而我們也不可以為了等它而卡住。
 constexpr UINT WM_RIME_SCHEMAS_READY = WM_APP + 5;
+// 「等這一則通知處理完之後再重排一次版面」。
+//
+// ⚠ 它存在的理由很窄:ShowPage 走在 LVN_ITEMCHANGED 途中時,直接
+//   LayoutUi() 會同步對 sidebar_ 下 SetWindowPos + LVM_SETCOLUMNWIDTH,
+//   而那是在 comctl32 更新自己選取範圍的中途重入同一顆控制項。
+constexpr UINT WM_RIME_RELAYOUT = WM_APP + 6;
 constexpr UINT kTrayId = 1;
 constexpr UINT_PTR kDeployTimer = 1;
 constexpr UINT_PTR kStatusTimer = 2;
@@ -587,6 +593,9 @@ LRESULT CALLBACK SettingsWindow::WndProc(HWND hwnd, UINT msg, WPARAM w,
     case WM_RIME_SCHEMAS_READY:
       if (self) self->ReloadSchemaList(false);
       return 0;
+    case WM_RIME_RELAYOUT:
+      if (self) self->LayoutUi();
+      return 0;
     case WM_RIME_SET_VARIANT: {
       const int i = static_cast<int>(w);
       if (self && i >= 0 && i < kVariantCount)
@@ -684,6 +693,12 @@ void SettingsWindow::CreateUi(HWND hwnd) {
   // ⚠ 同一個理由:report 模式沒有欄的話,每一列的矩形都是空的 ——
   //   紀錄裡有列而畫面是一片空白,而那正是這一頁最不該出現的樣子。
   EnsureRowListColumn(net_log_list_);
+  // ⚠ 整列可點 + 雙緩衝。這兩顆是從 kControls 那張表建出來的,
+  //   沒有走 CreateRowList,所以要自己補一次(側欄那一顆在 CreateRowList
+  //   裡已經有了)。少了 FULLROWSELECT,使用者按在方案名字右邊的空白上
+  //   選不到那一列 —— 而那裡看起來就是那一列。
+  SetRowListExtendedStyle(schema_list_);
+  SetRowListExtendedStyle(net_log_list_);
 
   ApplyFonts();
 
@@ -996,17 +1011,26 @@ void SettingsWindow::ShowPage(int page) {
   page_ = page;
   // 換頁一律回到頂端。留著上一頁的捲動量,新的一頁會從半空中開始。
   scroll_ = 0;
-  if (sidebar_) {
-    LVITEMW it{};
-    it.mask = LVIF_STATE;
-    it.stateMask = LVIS_SELECTED | LVIS_FOCUSED;
-    it.state = LVIS_SELECTED | LVIS_FOCUSED;
-    ::SendMessageW(sidebar_, LVM_SETITEMSTATE, static_cast<WPARAM>(page),
-                   reinterpret_cast<LPARAM>(&it));
+  // ⚠ 先全清再設(見 ui_listview.h 的 SelectSidebarRow),而且用重入旗標
+  //   擋住自己寫出來的 LVN_ITEMCHANGED —— 那一次全清會產生好幾則。
+  if (sidebar_ && !in_show_page_) {
+    in_show_page_ = true;
+    SelectSidebarRow(sidebar_, page);
+    in_show_page_ = false;
   }
+  // 反白現在從 page_ 畫(見 DrawSidebar),所以換頁一定要重畫側欄。
+  // FALSE = 不擦背景:每一列的自繪自己會先 FillRect,擦了只是多閃一次。
+  if (sidebar_) ::InvalidateRect(sidebar_, nullptr, FALSE);
   // ⚠ 這裡**不再**自己決定誰看得見。誰在這一頁上,由版面說了算 ——
   //   兩份來源會漂移,而漂移的樣子是一顆停在 (0,0) 的控制項。
-  LayoutUi();
+  //
+  // ⚠ 但走在側欄通知途中的時候要**延後**重排:LayoutUi() 會對 sidebar_
+  //   下 SetWindowPos + LVM_SETCOLUMNWIDTH,而此刻 comctl32 正在自己的
+  //   LVM_SETITEMSTATE / 滑鼠處理裡面。排一則訊息,等它做完再擺。
+  if (in_sidebar_notify_ && hwnd_)
+    ::PostMessageW(hwnd_, WM_RIME_RELAYOUT, 0, 0);
+  else
+    LayoutUi();
 }
 
 // ─────────────────────────── 自繪 ───────────────────────────
@@ -1025,7 +1049,23 @@ LRESULT SettingsWindow::DrawSidebar(NMLVCUSTOMDRAW* cd) {
       return CDRF_NOTIFYITEMDRAW;
     case CDDS_ITEMPREPAINT: {
       const int i = static_cast<int>(cd->nmcd.dwItemSpec);
-      const bool selected = (cd->nmcd.uItemState & CDIS_SELECTED) != 0;
+      // ── #80:反白從 page_ 畫,**不從控制項的狀態畫** ────────────
+      //
+      // 側欄以前有兩份「現在是哪一頁」:page_ 驅動內容,comctl32 的
+      // LVIS_SELECTED 驅動反白。兩份沒有任何地方對帳,分岔之後也沒有人
+      // 會發現 —— 而 WM_CLOSE 只 SW_HIDE(視窗不銷毀),髒狀態跟著進程
+      // 活著,關掉再開一模一樣。使用者截圖上是**兩列同時反白**。
+      //
+      // ⚠ 這一行**不去賭** NMCUSTOMDRAW::uItemState 對 ListView 的
+      //   CDIS_SELECTED 準不準 —— 那件事讀原始碼讀不出來,而且不需要
+      //   知道:畫面只要從 page_ 畫,分岔就不可能存在。這是把賭注拿掉,
+      //   不是賭贏。
+      //
+      // ⚠ 另一條路(移除 LVS_SHOWSELALWAYS、整條側欄改成自己開矩形)
+      //   **刻意不選**:自繪的矩形沒有 UIA 元素,方向鍵巡覽與螢幕閱讀器
+      //   要自己補一份 provider(§12.5.1 的判準是無障礙,不是省事)。
+      //   保留 ListView、只把「畫什麼」的來源收成一份,兩邊都拿得到。
+      const bool selected = (i == page_);
       const bool hot = (cd->nmcd.uItemState & CDIS_HOT) != 0;
       // ⚠ 焦點環只在**鍵盤**使用時畫(§12.6.4 第 1 條)。滑鼠使用者身上
       //   到處是框,是 Win32 自繪最常見的破綻。show_focus_ 由
@@ -1924,9 +1964,30 @@ void SettingsWindow::OnNotify(NMHDR* nm, LRESULT* result) {
       return;
     }
     if (nm->code == LVN_ITEMCHANGED) {
+      // ⚠ 自己寫出來的選取不要繞回來。ShowPage 現在先全清再設,
+      //   那一次全清會同步產生好幾則 LVN_ITEMCHANGED。
+      if (in_show_page_) return;
       NMLISTVIEW* lv = reinterpret_cast<NMLISTVIEW*>(nm);
-      if ((lv->uNewState & LVIS_SELECTED) && !(lv->uOldState & LVIS_SELECTED))
+      if ((lv->uNewState & LVIS_SELECTED) && !(lv->uOldState & LVIS_SELECTED)) {
+        in_sidebar_notify_ = true;
         ShowPage(lv->iItem);
+        in_sidebar_notify_ = false;
+      }
+      return;
+    }
+    // ⚠ 換頁**不可以只吃上升緣**。已經被選取的那一列再按一次不會產生
+    //   「沒有選取 → 有選取」的變化,所以 LVN_ITEMCHANGED 不會來 ——
+    //   而使用者的期待是「按了就去那一頁」。這在正常情況下看不出來
+    //   (那一頁已經在眼前),但只要選取與 page_ 曾經分岔過,
+    //   使用者就會遇到「反白在這一列,按它卻什麼都不會發生」。
+    //   ShowPage 現在是冪等的,所以這裡直接叫它。
+    if (nm->code == NM_CLICK) {
+      const NMITEMACTIVATE* ia = reinterpret_cast<const NMITEMACTIVATE*>(nm);
+      if (ia && ia->iItem >= 0) {
+        in_sidebar_notify_ = true;
+        ShowPage(ia->iItem);
+        in_sidebar_notify_ = false;
+      }
       return;
     }
   }

@@ -103,9 +103,88 @@ TEST(ui_layout_sidebar_items_do_not_overlap_the_status_area) {
 TEST(ui_layout_sidebar_items_are_evenly_spaced) {
   const RectI a = SidebarItemDip(0);
   const RectI b = SidebarItemDip(1);
-  CHECK_INT(b.y - a.bottom(), space::s2);
+  // ⚠ 列與列之間**沒有間隔**。comctl32 就是這樣排的,而以前這裡釘的是
+  //   `space::s2`(4 DIP)—— 一個畫面上不存在、只存在於我們這份算式裡的
+  //   間隔。它就是 #75 那 16 DIP 的來源。
+  CHECK_INT(b.y - a.bottom(), 0);
   CHECK_INT(a.h, metric::kSidebarItemH);
-  CHECK_INT(a.w, metric::kSidebarW - 2 * space::s5);
+  CHECK_INT(a.w, metric::kSidebarW);
+  CHECK_INT(a.x, 0);
+}
+
+// ── #75:點得到的地方與畫出來的地方必須是**同一組矩形** ────────────
+//
+// 使用者回報「點得到的地方跟畫出來的地方差 16 DIP」。那個 16 不是隨便一個
+// 數字,它是 4 項 × 一項差 4 DIP 累積出來的 —— 而 4 正是舊版憑空多加的
+// 那個列距。這一條把兩邊接回同一個來源:
+//
+//   · 畫的那一邊:側欄是真的 ListView,第 i 列在
+//     SidebarListDip(H).y + i × 列高(列高由 SetRowListRowHeight 釘死)。
+//   · 點的那一邊:ClickableTargetsDip() 回的 sidebar_item。
+//
+// ⚠ 這一條在舊版上是紅的,而且從第 1 項就開始紅。
+TEST(ui_layout_sidebar_hit_and_draw_are_the_same_rect) {
+  for (int H : {kWindowMinH, kWindowDefaultH, 700, 1000}) {
+    const RectI list = SidebarListDip(H);
+    const std::vector<HitTarget> targets =
+        ClickableTargetsDip(kWindowDefaultW, H, kPageSchemas,
+                            PageState{false, true});
+    int seen = 0;
+    for (int i = 0; i < kPageCount; ++i) {
+      // comctl32 排出來的那一列(清單的 y + i × 列高,列與列之間無間隔)。
+      const RectI drawn{list.x, list.y + i * metric::kSidebarItemH, list.w,
+                        metric::kSidebarItemH};
+      const RectI item = SidebarItemDip(i);
+      CHECK_INT(item.x, drawn.x);
+      CHECK_INT(item.y, drawn.y);
+      CHECK_INT(item.w, drawn.w);
+      CHECK_INT(item.h, drawn.h);
+
+      // 命中表上的那一份也必須是同一個矩形 —— 不是「差不多」。
+      bool found = false;
+      for (const HitTarget& t : targets) {
+        if (t.id != IDC_SIDEBAR || t.rect.y != item.y) continue;
+        CHECK_INT(t.rect.x, item.x);
+        CHECK_INT(t.rect.w, item.w);
+        CHECK_INT(t.rect.h, item.h);
+        found = true;
+      }
+      CHECK(found);
+      ++seen;
+
+      // 畫出來的那塊底比列窄(§12.4.2 的左右內距 12),但它**一定**
+      // 落在列裡面 —— 底左邊那 12 DIP 仍然按得到,不是死區。
+      const RectI fill = SidebarItemFillDip(i);
+      CHECK(fill.x >= item.x);
+      CHECK(fill.right() <= item.right());
+      CHECK_INT(fill.y, item.y);
+      CHECK_INT(fill.h, item.h);
+      CHECK(fill.w > 0);
+    }
+    // ⚠ 範圍斷言:掃到零項而報「全部合格」正是 §2-G 講的那個失效方式。
+    CHECK_INT(seen, static_cast<int>(kPageCount));
+  }
+}
+
+// ── #75 的另一半:任何一點只會命中一項 ─────────────────────────
+//
+// 上一條驗的是「每一項都對」,這一條驗的是「合起來沒有洞、也沒有疊」。
+// 舊版兩者都不成立:列之間有 4 DIP 的縫(點下去誰都不是),而累積偏移
+// 讓下面的項踩進上一項的畫面範圍。
+TEST(ui_layout_no_point_hits_two_sidebar_items) {
+  const RectI list = SidebarListDip(kWindowDefaultH);
+  int probed = 0;
+  for (int y = list.y; y < list.y + kPageCount * metric::kSidebarItemH; ++y) {
+    int hits = 0;
+    for (int i = 0; i < kPageCount; ++i) {
+      const RectI r = SidebarItemDip(i);
+      if (y >= r.y && y < r.bottom()) ++hits;
+    }
+    // 恰好一項:沒有縫(0),也沒有重疊(2)。
+    CHECK_INT(hits, 1);
+    ++probed;
+  }
+  CHECK(probed >= kPageCount * metric::kSidebarItemH);
 }
 
 // ── 版面的取材面:每一頁都要走得到 ──────────────────────────────

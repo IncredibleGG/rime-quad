@@ -208,6 +208,11 @@ add_executable(rime_tests
   # 也就是「畫得出來嗎」以前在 CI 上完全不存在。這一支開真的控制項、
   # 走真的 comctl32、把畫面渲染進點陣圖數像素,數的是產品碼本身。
   tests/test_win32_listview.cc
+  # 側欄:選取只有一份(#80)、整列都點得到(#75)。這一支問的是
+  # comctl32 的行為 —— LVS_SINGLESEL 管不管程式化設定、report 模式預設
+  # 只有 label 矩形算命中 —— 而那兩件事**只有真的 Windows 答得出來**。
+  # 驅動的是 service/ui_listview.cc 的產品碼本身。
+  tests/test_win32_sidebar.cc
   service/ui_listview.cc
   tsf/win32_oracle.cc)
 target_link_libraries(rime_tests PRIVATE rime_common user32 gdi32 comctl32)

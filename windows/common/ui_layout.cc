@@ -21,10 +21,21 @@ int ContentXDip(int window_w_dip) {
 
 RectI SidebarItemDip(int index) {
   RectI r;
-  r.x = space::s5;
-  r.y = space::s5 + index * (metric::kSidebarItemH + space::s2);
-  r.w = metric::kSidebarW - 2 * space::s5;
+  // ⚠ 整列,而且列距 = 列高(comctl32 的列之間沒有間隔)。
+  //   起點與 SidebarListDip() 的 y 是同一個常數 —— 清單的第一列就從
+  //   清單自己的 client 頂端開始。見標頭。
+  r.x = 0;
+  r.y = space::s5 + index * metric::kSidebarItemH;
+  r.w = metric::kSidebarW;
   r.h = metric::kSidebarItemH;
+  return r;
+}
+
+RectI SidebarItemFillDip(int index) {
+  RectI r = SidebarItemDip(index);
+  r.x += space::s5;
+  r.w -= 2 * space::s5;
+  if (r.w < 0) r.w = 0;
   return r;
 }
 
