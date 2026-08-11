@@ -949,6 +949,25 @@ else:
         out.append('REFRESH_NOT_ASKING')
     if 'Relayout();' not in rb or '::InvalidateRect(' not in rb:
         out.append('REFRESH_NOT_REPAINTING')
+
+# ── kHidden 那一格點不到,是 ClickCell 那一段不可達的**唯一**依據 ──
+#
+# ClickCell 的 kCellVariant 分支明著寫「variant_ 不可能是 kHidden」。
+# 撐住那句話的是兩行 Win32 程式碼:空字串的格子零寬、HitCell 跳過
+# 零寬的格子。兩行都刪得掉,而刪掉之後那一格會在**沒有任何證據**的
+# 狀態下被點到 —— 使用者按到一個看不見的開關,而方向還是猜的。
+# 不能只靠一句註解宣稱它不可達 —— 那正是這一輪在拆的東西。
+rl = re.search(r'void StatusBar::Relayout\(\) \{(.*?)\n\}\n', s, re.S)
+if not rl:
+    out.append('NORELAYOUTDEF')
+elif ('if (c.text.empty()) {' not in rl.group(1)
+      or 'c.rc = RECT{0, 0, 0, 0};' not in rl.group(1)):
+    out.append('EMPTY_CELL_TAKES_SPACE')
+hc = re.search(r'int StatusBar::HitCell\(POINT pt\) const \{(.*?)\n\}\n', s, re.S)
+if not hc:
+    out.append('NOHITCELLDEF')
+elif 'if (r.right <= r.left) continue;' not in hc.group(1):
+    out.append('HITCELL_HITS_ZERO_WIDTH')
 print('SCOPE_OK')
 for line in out:
     print(line)
@@ -981,6 +1000,16 @@ ${w26c}" ;;
         w26msg "${l26#READBACK_BEFORE_SEND=} 那一格先回讀才送出去 —— 讀到的是舊值,
      那一格會停在點下去之前的樣子" ;;
       NOREFRESHDEF) w26msg "找不到 StatusBar::RefreshFromEngine 的定義" ;;
+      NORELAYOUTDEF) w26msg "找不到 StatusBar::Relayout 的定義 —— 掃描範圍錯了" ;;
+      NOHITCELLDEF) w26msg "找不到 StatusBar::HitCell 的定義 —— 掃描範圍錯了" ;;
+      EMPTY_CELL_TAKES_SPACE)
+        w26msg "Relayout 沒有把空字串的格子設成 {0,0,0,0} —— 簡/繁 那一格在
+     kHidden(引擎沒有回報任何字形)時畫的是空字串,而它現在仍然佔位置。
+     使用者會按到一個**看不見的開關**,而 ClickCell 那一段明著寫了
+     「variant_ 不可能是 kHidden」—— 這一行就是那句話的依據" ;;
+      HITCELL_HITS_ZERO_WIDTH)
+        w26msg "HitCell 不再跳過零寬的格子(預期 if (r.right <= r.left) continue;)
+     —— 同上:那一格在沒有任何證據的狀態下按得到,而方向是猜的" ;;
       REFRESH_NOT_ASKING)
         w26msg "RefreshFromEngine 沒有呼叫 ReadBackStatus() —— 它根本沒去問引擎,
      而只看「有沒有呼叫 RefreshFromEngine」的檢查會是綠的" ;;
@@ -1450,6 +1479,8 @@ self_check() {
 "W26b 简繁點完不回讀|service/status_bar.cc|s=s.replace('      RefreshFromEngine();\n      return;\n    }\n    case kCellSchema:','      return;\n    }\n    case kCellSchema:',1)"
 "W26c 回讀不問引擎|service/status_bar.cc|s=s.replace('  const Engine::StatusReadback rb = engine_->ReadBackStatus();','  Engine::StatusReadback rb;',1)"
 "W26d 中英又樂觀寫入|service/status_bar.cc|s=s.replace('      engine_->SetAsciiModeAll(!engine_->AsciiMode());','      { std::lock_guard<std::mutex> lk(mu_); ascii_mode_ = !ascii_mode_; }\n      engine_->SetAsciiModeAll(!engine_->AsciiMode());',1)"
+"W26f 空的那一格又佔位置|service/status_bar.cc|s=s.replace('    if (c.text.empty()) {','    if (false) {',1)"
+"W26g 零寬的那一格又點得到|service/status_bar.cc|s=s.replace('    if (r.right <= r.left) continue;','',1)"
 "W26e 回讀之後不重畫|service/status_bar.cc|s=s.replace('  if (changed) {\n    Relayout();\n    ::InvalidateRect(hwnd_, nullptr, TRUE);\n','  if (changed) {\n',1)"
 "W27a Relayout 不再問狀態|service/status_bar.cc|s=s.replace('  service_state_ = CurrentServiceState();','  service_state_ = ServiceState::kReady;',1)"
 "W27b 那一橫的字寫死一句|service/status_bar.cc|s=s.replace('    c.text = UiText(StatusTextFor(service_state_));','    c.text = UiText(UiString::kBarNotRunning);',1)"
