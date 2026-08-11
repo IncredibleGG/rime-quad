@@ -270,7 +270,15 @@ after="$(tr -d '\r' < "${WORK}/host-after.log")"
 #
 #     > 0  key event sink 收得到純修飾鍵 → P1-乙 可以走 ShiftTapDetector
 #          那條純函式的路(四支 sink 各餵一次,*eaten 一律 FALSE,
-#          偵測到輕點就送既有的正規形式 Ctrl+空白鍵)。
+#          偵測到輕點就送一顆**裸的 XK_Shift_L(keysym 0xFFE1、mods=0)**
+#          走既有的 kKey)。
+#          ⚠ **[2026-08-12 更正]這裡原本寫「送既有的正規形式 Ctrl+空白鍵」,
+#            那是錯的,實作(#89)沒有這樣做,也不可以這樣做。** 它**不能**與
+#            Ctrl+空白鍵送同一組:服務端要分得出這兩顆,才有辦法只關掉輕點
+#            那一顆(`text.shiftTapToggle`)—— 送同一組的話,關掉輕點會把
+#            Ctrl+空白鍵一起關掉。對帳在 tests/test_shift_tap.cc 的
+#            shift_tap_wire_form_round_trips,它明著要求
+#            !IsAsciiToggleHotkey(ShiftTapKeysym(), ShiftTapModifiers())。
 #     = 0  收不到 → 走降級版(PreserveKey{VK_SHIFT, TF_MOD_ON_KEYUP}),
 #          或**乾脆不做 Shift**,靠設定裡那一句文案把 Ctrl + 空白鍵
 #          教出來。那是誠實的退路,不是失敗。

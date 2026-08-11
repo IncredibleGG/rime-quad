@@ -1561,7 +1561,10 @@ true;寫成「等於 true 才算開」的話,全新安裝的機器上自動挑�
     我們只是照 `common/key_eat_policy.cc` 把它放行給宿主(`kHostOnly`),
     那一份的「不太會…但交過來時」才是對的那一份。
   · **做了**(2026-08-12,#89)。判斷在 `common/shift_tap.cc` —— 一個吃
-    `(vk, scan, 按下/放開, 時間)` 事件流的**純函式狀態機**,
+    `(const KeyEvent&, uint32_t time_ms)` 事件流的**純函式狀態機**
+    (`KeyEvent` 用 `common/keymap.h` 既有的那一份,不另定義;⚠ 它的
+    `ctrl` / `alt` / `win` 三格是必要的 —— 「按下 Shift 的當下有沒有別的
+    修飾鍵按著」只有在那一刻問得到),
     `tests/test_shift_tap.cc` 是一張逐事件的真值表。TSF 那一端接在
     `OnTestKeyDown` / `OnTestKeyUp`(修飾鍵永遠不吃,也就永遠不會有
     `OnKeyDown`),`Deactivate` 與兩個 `OnSetFocus` 歸零。開關叫

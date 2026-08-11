@@ -122,6 +122,16 @@ jobs:
       - name: 反向測試（每一條檢核都必須真的會紅）
         run: ./windows/check_ui_spec.sh --self-check
 
+      # 已推翻的主張不可以在別處以現況陳述留著。判準很窄:只追
+      # docs/refuted-claims.tsv 裡逐字登記過的那幾句(集合封閉,誤報率 0)。
+      # ⚠ 自我檢查證兩個方向 —— 沒有記號要紅,補上記號要綠。
+      #   只證會紅的話,一支永遠紅的守門也會通過。
+      - name: 已推翻的主張沒有留在樹上(自我檢查)
+        run: ./windows/check_refuted_claims.sh --self-check
+
+      - name: 已推翻的主張沒有留在樹上
+        run: ./windows/check_refuted_claims.sh
+
       # ── 升級不重開機那一節的判準,自己先驗一次 ────────────────
       #
       # ⚠ windows/verify_installer.sh 只有在**真的裝過一次**的 runner 上
