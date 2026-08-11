@@ -643,12 +643,19 @@ EXPECT_CATEGORY_COUNT=6      # GUID_TFCAT_TIP_KEYBOARD + 5 個能力類別
 EXPECT_CATEGORY_ITEMS=16
 if [ "${CATEGORY_COUNT}" != "${EXPECT_CATEGORY_COUNT}" ] || \
    [ "${CATEGORY_ITEMS}" != "${EXPECT_CATEGORY_ITEMS}" ]; then
-  die "產品報出來的能力類別是 ${CATEGORY_COUNT} 類 / ${CATEGORY_ITEMS} 筆,
-  這支腳本寫死的第二意見是 ${EXPECT_CATEGORY_COUNT} 類 / ${EXPECT_CATEGORY_ITEMS} 筆。
-  少一類的症狀是「在市集 App / Edge / 提權視窗裡沒有這個輸入法」,
-  而且與程式碼無關 —— 只是沒註冊。若是刻意的,請同時更新這支腳本。"
+  # ⚠ 這裡是 note_fail 而不是 die,與上面 CLSID / PROFILES 那兩條不同 ——
+  #   分界線是「後面那 180 幾條還算不算數」。CLSID 換了的話,底下每一條
+  #   登錄檔斷言查的都是別人的鍵,留著只會產生假訊號,所以那兩條 die。
+  #   能力類別少一類不會讓其餘的斷言失去意義:輸入法照樣裝得起來、
+  #   照樣打得出「你好」,只是在市集 App 裡活不了。為了這一個數字把
+  #   整份報告砍掉,下一輪要修的人就得再等一次 CI 才看得到第二個問題。
+  note_fail "產品報出來的能力類別是 ${CATEGORY_COUNT} 類 / ${CATEGORY_ITEMS} 筆,
+     這支腳本寫死的第二意見是 ${EXPECT_CATEGORY_COUNT} 類 / ${EXPECT_CATEGORY_ITEMS} 筆。
+     少一類的症狀是「在市集 App / Edge / 提權視窗裡沒有這個輸入法」,
+     而且與程式碼無關 —— 只是沒註冊。若是刻意的,請同時更新這支腳本。"
+else
+  ok "能力類別的預期值與寫死的第二意見一致(${CATEGORY_COUNT} 類 / ${CATEGORY_ITEMS} 筆)"
 fi
-ok "能力類別的預期值與寫死的第二意見一致(${CATEGORY_COUNT} 類 / ${CATEGORY_ITEMS} 筆)"
 
 # ── 安裝之前的語言清單(§4b 要拿它比對)────────────────────────────
 #
