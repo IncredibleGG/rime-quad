@@ -7,7 +7,8 @@
 namespace rimewin {
 namespace {
 
-constexpr const char* kSettingsFile = "luminakey.settings";
+// ⚠ 名字在 common/settings.h(probe_main.cc 也要用它)。
+constexpr const char* kSettingsFile = kSettingsFileName;
 constexpr const char* kDefaultCustom = "default.custom.yaml";
 constexpr const char* kNetLogFile = "connections.tsv";
 

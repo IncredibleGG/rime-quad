@@ -18,6 +18,13 @@
 //   rime_probe.exe --keys nihao --select 1 --schema luna_pinyin_tw --expect 你好
 //   rime_probe.exe --connect-only            只驗「連得上、握得了手、開得了 session」
 //   rime_probe.exe --ascii-toggle --schema … 驗 Ctrl+空白鍵真的切得了中英
+//
+//   rime_probe.exe --variant simplified --keys nihao --select 3 --expect 逆号
+//     ⚠ **--variant 要在連線之前寫設定檔**,順序就是它的全部意義:
+//       服務在 SESSION_NEW 那一趟現場讀設定檔,所以「先寫檔再連線」
+//       就是「使用者在設定裡選了簡體,然後開一個新程式」。
+//     ⚠ 判準只能用第 3、4 個候選。你好 / 妳好 / 你 在簡繁兩套字集裡
+//       長得一模一樣,拿它們斷言等於沒斷言。
 //   rime_probe.exe --attempts N              最多做 N 次**真正的**連線嘗試
 //
 // ── --attempts 為什麼要存在,而且為什麼預設是 1 ──────────────────
@@ -48,6 +55,7 @@
 #include <vector>
 
 #include "../common/hotkey_policy.h"
+#include "../common/settings.h"
 #include "../tsf/ipc_client.h"
 #include "../winshared/winutil.h"
 
@@ -357,6 +365,9 @@ int main(int /*narrow_argc*/, char** /*narrow_argv*/) {
   int attempts = 1;
   bool connect_only = false;
   bool ascii_toggle = false;
+  // 連線**之前**把 text.variant 寫進設定檔,模擬「使用者在設定裡選了
+  // 簡體,然後開一個新程式」。空字串 = 不碰設定檔。
+  std::string variant;
   for (int i = 1; i < argc; ++i) {
     const std::string& a = args[static_cast<size_t>(i)];
     if (a == "--keys" && i + 1 < argc) keys = args[static_cast<size_t>(++i)];
@@ -368,6 +379,8 @@ int main(int /*narrow_argc*/, char** /*narrow_argv*/) {
       attempts = std::atoi(args[static_cast<size_t>(++i)].c_str());
     else if (a == "--connect-only") connect_only = true;
     else if (a == "--ascii-toggle") ascii_toggle = true;
+    else if (a == "--variant" && i + 1 < argc)
+      variant = args[static_cast<size_t>(++i)];
     else {
       std::fprintf(stderr, "未知參數: %s\n", a.c_str());
       return 2;
@@ -382,6 +395,58 @@ int main(int /*narrow_argc*/, char** /*narrow_argv*/) {
   std::printf("=== rime_probe:經由具名管道驅動服務 ===\n");
   std::printf("管道: %s\n", WideToUtf8(pipe_name).c_str());
   std::fflush(stdout);
+
+  // ── --variant:連線之前先改設定檔 ────────────────────────────
+  //
+  // ⚠ 順序是這一項的全部意義。服務在 SESSION_NEW 那一趟**現場讀設定檔**
+  //   (pipe_server.cc 的 kSessionNew → settings_->Load()),所以先寫檔
+  //   再連線 = 「使用者在設定裡選了簡體,然後開一個新程式」。
+  //   連完再寫就完全測不到那條路徑。
+  //
+  // ⚠ 讀出來改一格再寫回去,不是覆蓋整份。CI 上這個目錄是沿用的,
+  //   蓋掉別人的設定會讓後面的案例以看不懂的方式紅。
+  if (!variant.empty()) {
+    const std::wstring dir = RimeUserDataDir();
+    if (dir.empty()) {
+      std::fprintf(stderr, "!! 問不出使用者資料目錄,--variant 沒有地方寫\n");
+      return 2;
+    }
+    const std::wstring path =
+        dir + L"\\" + Utf8ToWide(std::string(keys::kSettingsFileName));
+    std::string text;
+    {
+      HANDLE h = ::CreateFileW(path.c_str(), GENERIC_READ,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+      if (h != INVALID_HANDLE_VALUE) {
+        char buf[8192];
+        DWORD got = 0;
+        while (::ReadFile(h, buf, sizeof(buf), &got, nullptr) && got > 0)
+          text.append(buf, got);
+        ::CloseHandle(h);
+      }
+    }
+    Settings st = Settings::Parse(text);
+    st.SetRaw(keys::kTextVariant, variant);
+    const std::string out = st.Serialize();
+    HANDLE h = ::CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
+                             CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+      std::fprintf(stderr, "!! 寫不進設定檔(%lu)\n",
+                   static_cast<unsigned long>(::GetLastError()));
+      return 2;
+    }
+    DWORD wrote = 0;
+    const BOOL okw = ::WriteFile(h, out.data(),
+                                 static_cast<DWORD>(out.size()), &wrote, nullptr);
+    ::CloseHandle(h);
+    if (!okw || wrote != out.size()) {
+      std::fprintf(stderr, "!! 設定檔只寫進去一部分\n");
+      return 2;
+    }
+    std::printf("text.variant -> %s(寫進 %s)\n", variant.c_str(),
+                WideToUtf8(path).c_str());
+  }
 
   IpcClient ipc;
   // 刻意**不**設服務路徑:這支程式不負責把服務叫起來。

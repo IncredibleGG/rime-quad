@@ -114,6 +114,15 @@ int IndexOfCandScale(int value);
 int CandCountAtIndex(int index);
 int CandScaleAtIndex(int index);
 
+// 設定檔在使用者資料目錄底下叫什麼。
+//
+// ⚠ 這個名字以前寫死在 service/settings_store.cc 裡,而 tests/probe_main.cc
+//   也要用它(它要在連線之前把偏好寫進去,模擬「使用者在設定裡選了簡體
+//   然後開一個新程式」)。兩個地方各寫一份的話,改名的那一天探針會安靜地
+//   寫到一個沒有人讀的檔案 —— 而症狀是「CI 說簡繁沒生效」,查半天才發現
+//   是檔名。
+constexpr const char* kSettingsFileName = "luminakey.settings";
+
 class Settings {
  public:
   // 解析。**永不失敗** —— 壞掉的行整行丟掉,其餘照常。

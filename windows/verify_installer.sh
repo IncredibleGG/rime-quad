@@ -1450,6 +1450,68 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════
+#  6g. 簡繁真的送到引擎了嗎(使用者實機回報的那一條)
+# ══════════════════════════════════════════════════════════════════
+#
+# 使用者回報:設定裡選了簡體,狀態列畫「简」,而打出來是繁體。
+#
+# ⚠ **判準只能用第 3、4 個候選。** 你好 / 妳好 / 你 在簡繁兩套字集裡長得
+#   一模一樣,拿它們斷言等於沒斷言 —— 上面 §6f 那一格用 `你好` 是對的
+#   (它問的是「打不打得出字」),但拿來問簡繁就會永遠是綠的。
+#
+#   nihao 的第 3、4 個候選:簡體 = 逆号 / 拟好,繁體 = 逆號 / 擬好。
+#
+# ⚠ --variant 在**連線之前**寫設定檔。順序就是它的全部意義:服務在
+#   SESSION_NEW 那一趟現場讀設定檔,所以「先寫檔再連線」= 「使用者在
+#   設定裡選了簡體,然後開一個新程式」。
+log "6g. 簡繁:設定裡選簡體之後,新開的程式打出來要是簡體"
+
+# ── 案例一:不帶 --schema(靠 langid 選方案,驗新 session 那條路)──
+set +e
+"${PROBE}" --variant simplified --keys nihao --select 3 --expect 逆号 \
+  --attempts 1 > "${WORK}/probe-variant-new.log" 2>&1
+rc_v1=$?
+set -e
+tr -d '\r' < "${WORK}/probe-variant-new.log"
+if [ "${rc_v1}" -eq 0 ] \
+   && grep -qE '^>>> COMMIT: "逆号"$' <(tr -d '\r' < "${WORK}/probe-variant-new.log"); then
+  ok "設定選簡體 → 新 session 打出簡體(逆号)"
+else
+  note_fail "設定選了簡體,新開的 session 打出來卻不是簡體。
+     ⚠ 如果上屏的是「逆號」,那就是使用者回報的那一條:偏好送到了畫面、
+     沒送到引擎(或送了又被換方案洗掉)。看 windows/common/schema_choice.cc
+     的 BuildOptionPlan 與 service/engine.cc 的 SelectAndApply。"
+fi
+
+# ── 案例二:**帶** --schema,釘住「換方案會洗掉簡繁」那條路 ────────
+#
+# ⚠ 這一條釘的是 Engine::SelectSchema。librime 的
+#   ConcreteEngine::InitializeOptions() 每一次載入方案都會把 switches 重設回
+#   方案宣告的值,而 luna_pinyin_tw 的 __patch 把 switches/@2/reset 設成 3
+#   —— 換一次方案,zh_hant_tw 回到真、zh_hans 回到假,使用者剛選的簡體
+#   被悄悄洗掉。
+#
+#   修法是 Engine::SelectAndApply(選方案 → 立刻重套簡繁),而
+#   windows/audit_single_source.sh 在原始碼層面守「只能有一個裸的
+#   rs_select_schema」。這一格是那件事在**真的服務**上的證據。
+set +e
+"${PROBE}" --variant simplified --schema luna_pinyin_tw \
+  --keys nihao --select 3 --expect 逆号 \
+  --attempts 1 > "${WORK}/probe-variant-sel.log" 2>&1
+rc_v2=$?
+set -e
+tr -d '\r' < "${WORK}/probe-variant-sel.log"
+if [ "${rc_v2}" -eq 0 ] \
+   && grep -qE '^>>> COMMIT: "逆号"$' <(tr -d '\r' < "${WORK}/probe-variant-sel.log"); then
+  ok "換方案之後簡繁還在(逆号)"
+else
+  note_fail "換一次方案就把簡繁洗掉了 —— 上屏的多半是「逆號」。
+     Engine::SelectSchema 那條路少了重套簡繁那一步。
+     見 service/engine.cc 的 SelectAndApply 與 windows/audit_single_source.sh
+     的規則 2。"
+fi
+
+# ══════════════════════════════════════════════════════════════════
 #  6c. **經由真的 TSF** 打一次字
 # ══════════════════════════════════════════════════════════════════
 #
