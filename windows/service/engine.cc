@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "../common/ime_policy.h"
+#include "../common/status_cells.h"
 #include "rime_shell.h"
 
 namespace rimewin {
