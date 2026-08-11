@@ -1752,7 +1752,18 @@ void SettingsWindow::OnApplyDone(unsigned seq, bool ok) {
   // ⚠ 連按三下的時候,前兩次的結果不可以寫進那一行:使用者現在關心的
   //   是最後那一下。舊的通知安靜地丟掉。
   if (seq != apply_seq_) return;
-  SetTransientStatus(ok ? apply_ok_status_ : UiString::kStatusApplyFailed);
+  if (!ok) {
+    // ⚠ **失敗不走 transient。** 這曾經是整個檔案裡唯一一句會自己
+    //   消失的失敗訊息 —— 其他每一句(kStatusSaveFailed ×10、
+    //   kStatusRedeployFailed、kStatusOrderNotApplied)都走 SetStatus,
+    //   寫上去就留著。而它偏偏是最長的那一句(英文兩行),又正好
+    //   出現在使用者剛被告知「已送出,正在套用…」、最可能把視線
+    //   移開的那一刻:4 秒之後回頭看,那一行是空的,而空白跟成功
+    //   長得一模一樣。判準在 check_ui_spec.sh 的 W35。
+    SetStatus(UiString::kStatusApplyFailed);
+    return;
+  }
+  SetTransientStatus(apply_ok_status_);
 }
 
 // ─────────────────────────── 套用 ───────────────────────────

@@ -2233,6 +2233,83 @@ PYSCRIPT
     esac
   done <<< "${w34out}"
   [ "${w34bad}" -eq 0 ] && ok "W34 ${napply} 個非同步套用點全部走 BeginApply() + ApplyDoneNotifier(同一個序號),Engine 那兩支排不進佇列時也會說,${ntkt} 張票都有人讀、${nwipe} 處收回訊息都先問過 StillShowing(),而 OnApplyDone 擋得掉過期的回覆"
+
+  # ── W35:失敗訊息不會自己消失 ──────────────────────────────────
+  #
+  # 設定視窗底部那一行有兩種寫法:SetStatus() 寫上去就留著,
+  # SetTransientStatus() 4 秒之後自己清掉(§12.5.3:成功訊息不值得一個
+  # 新表面,所以借用那一行,再自己收回去)。
+  #
+  # ⚠ **失敗不准借那條路。** 使用者沒有讀完的權利被 4 秒剝奪掉,而失敗
+  #   訊息消失之後畫面上是一片空白 —— 那跟「成功了」長得一模一樣。
+  #   這個檔案裡曾經只有一句失敗走 transient(kStatusApplyFailed),
+  #   而其他每一句(kStatusSaveFailed ×10、kStatusRedeployFailed、
+  #   kStatusOrderNotApplied)都是 SetStatus。偏偏那一句是最長的
+  #   (英文兩行),又正好出現在使用者剛被告知「已送出,正在套用…」、
+  #   最可能把視線移開的那一刻。
+  #
+  # 兩條路都要堵:直接傳給 SetTransientStatus() 的,以及從 BeginApply()
+  # 那一頭經由 apply_ok_status_ 繞進來的。
+  check
+  local w35bad=0
+  local w35out; w35out="$("${PY}" - "${CODE_DIR}" <<'PYSCRIPT'
+import os, re, sys
+root = sys.argv[1]
+try:
+    sw = open(os.path.join(root, 'service/settings_window.cc'),
+              encoding='utf-8', errors='replace').read()
+except OSError:
+    print('NOSRC=1')
+    raise SystemExit(0)
+
+def args_at(src, lparen):
+    depth = 0
+    for j in range(lparen, len(src)):
+        if src[j] == '(':
+            depth += 1
+        elif src[j] == ')':
+            depth -= 1
+            if depth == 0:
+                return src[lparen + 1:j]
+    return src[lparen + 1:]
+
+FAILNAME = re.compile(r'\bk\w*(?:Failed|NotApplied)\w*\b')
+ntrans = 0
+# ⚠ (?<![:\w]):定義那一行是 SettingsWindow::SetTransientStatus(UiString s),
+#   前面是冒號。把它算進去的話,分母會多一個永遠乾淨的假樣本。
+for m in re.finditer(r'(?<![:\w])(SetTransientStatus|BeginApply)\s*\(', sw):
+    if m.group(1) == 'SetTransientStatus':
+        ntrans += 1
+    for bad in FAILNAME.findall(args_at(sw, m.end() - 1)):
+        print('TRANSIENTFAIL=%s@%s' % (bad, m.group(1)))
+print('NTRANS=%d' % ntrans)
+print('NPERM=%d' % len(re.findall(
+    r'SetStatus\(\s*UiString::k\w*(?:Failed|NotApplied)\w*\s*\)', sw)))
+PYSCRIPT
+)"
+  local ntrans; ntrans="$(num "$(printf '%s\n' "${w35out}" | grep '^NTRANS=' | cut -d= -f2)")"
+  local nperm;  nperm="$(num "$(printf '%s\n' "${w35out}" | grep '^NPERM=' | cut -d= -f2)")"
+  # ⚠ 兩個分母都要非空:一邊是零就代表這一條沒有在比較任何東西。
+  need_scope "W35 會自己消失的訊息" "${ntrans}" 6 || w35bad=1
+  need_scope "W35 留在畫面上的失敗訊息" "${nperm}" 8 || w35bad=1
+  local w35line
+  while IFS= read -r w35line; do
+    case "${w35line}" in
+      NOSRC=*)
+        red "W35:找不到 service/settings_window.cc —— 掃描範圍錯了"
+        w35bad=1 ;;
+      TRANSIENTFAIL=*)
+        local w35n="${w35line#TRANSIENTFAIL=}"
+        case "${w35n}" in
+          *@BeginApply)
+            red "W35:${w35n%%@*} 被當成 BeginApply() 的成功文案 —— 那一句最後會走 SetTransientStatus(apply_ok_status_),失敗訊息從這一頭混進去,結果一樣是 4 秒後自己消失" ;;
+          *)
+            red "W35:${w35n%%@*} 走了 SetTransientStatus —— 失敗訊息 4 秒後自己消失,使用者回頭看到的是一片空白,而空白跟成功長得一模一樣" ;;
+        esac
+        w35bad=1 ;;
+    esac
+  done <<< "${w35out}"
+  [ "${w35bad}" -eq 0 ] && ok "W35 ${ntrans} 句會自己消失的訊息裡沒有一句是失敗,${nperm} 句失敗訊息全部留在畫面上等使用者自己看完"
 }
 
 # ────────────────────────────────────────────────────────────────
@@ -2353,6 +2430,9 @@ self_check() {
 "W31n1 SelectOnlyRow 只清不設(覆核者實測的拆法 N1)|service/ui_listview.cc|k='  ::SendMessageW(list, LVM_SETITEMSTATE, static_cast<WPARAM>(row),' + chr(10) + '                 reinterpret_cast<LPARAM>(&set));' + chr(10); s=s.replace(k,'',1)"
 "W31n2 方案清單悄悄退出受管(覆核者實測的拆法 N2)|service/settings_window.cc|s=s.replace('    SelectOnlyRow(schema_list_, row);' + chr(10),'',1)"
 "W31n6 全清那一發改成把每一列都選起來|service/ui_listview.cc|s=s.replace('  clear.state = 0;','  clear.state = LVIS_SELECTED;',1)"
+"W35a 套用失敗那一句改回會自己消失|service/settings_window.cc|s=s.replace('    SetStatus(UiString::kStatusApplyFailed);','    SetTransientStatus(UiString::kStatusApplyFailed);',1)"
+"W35b 存檔失敗那一句也改成會自己消失|service/settings_window.cc|s=s.replace('    SetStatus(UiString::kStatusSaveFailed);','    SetTransientStatus(UiString::kStatusSaveFailed);',1)"
+"W35c 失敗訊息從 BeginApply 那一頭混進 transient|service/settings_window.cc|s=s.replace('  const unsigned seq = BeginApply(UiString::kStatusResetDone);','  const unsigned seq = BeginApply(UiString::kStatusRedeployFailed);',1)"
 "範圍|__SCOPE__|"
   )
 
