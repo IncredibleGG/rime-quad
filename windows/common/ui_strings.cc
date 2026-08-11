@@ -254,6 +254,19 @@ namespace {
   X(kApplyCountLater, L"Later", L"晚點再說", L"晚点再说")                      \
   /* ── 視窗底部那一行 ────────────────────────────────────────── */          \
   X(kStatusApplied, L"Done.", L"已套用。", L"已套用。")                        \
+  /* ⚠ 「已送出」與「已套用」是兩件事,而它們之間隔著一整條工作佇列。 */ \
+  /* 舊版在按下的當下就無條件說「已套用」—— 那是在替一件還躺在佇列裡 */ \
+  /* 的工作背書。引擎卡著的時候那句話是假的。                          */ \
+  X(kStatusApplyQueued, L"Sent - applying it now...",                          \
+    L"已送出,正在套用…", L"已送出,正在套用…")                              \
+  /* ⚠ 這一句與 kStatusSaveFailed 是**不同的失敗**,所以是不同的話:   */ \
+  /* 那一句是「存不起來,現在有效」;這一句是「存起來了,現在還沒有效」。*/ \
+  /* 兩者共用一句紅字正是 #62。                                        */ \
+  X(kStatusApplyFailed,                                                        \
+    L"Saved, but it did not reach the windows you have open. Open a new one "  \
+    L"and it will be there.",                                                  \
+    L"已存起來,但沒有套到你現在開著的視窗上。開一個新的就會是新的設定。",     \
+    L"已存起来,但没有套到你现在开着的窗口上。开一个新的就会是新的设置。")     \
   X(kStatusSaveFailed,                                                         \
     L"Could not save - the change works now but will not survive a restart.",  \
     L"設定存不起來 —— 現在有效,但不會留到下次開機。",                         \

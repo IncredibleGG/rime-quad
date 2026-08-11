@@ -56,11 +56,13 @@
 // NM_CUSTOMDRAW 的處理常式簽章帶著 NMLVCUSTOMDRAW,而那個型別在這裡。
 #include <commctrl.h>
 
+#include <functional>
 #include <string>
 #include <vector>
 
 #include "../common/schema_choice.h"
 #include "../common/service_state.h"
+#include "../common/status_line.h"
 // ⚠ 頁、控制項 id 與**每一頁的版面**都住在這裡面。本檔不再自己算矩形。
 #include "../common/ui_layout.h"
 #include "../common/ui_strings.h"
@@ -218,6 +220,25 @@ class SettingsWindow {
   // 成功訊息 4 秒後自己清掉(§12.5.3:不做浮層,成功不值得一個新表面)。
   void SetTransientStatus(UiString s);
 
+  // ── ⚠ 「已送出」→「已套用 / 套用失敗」 ──────────────────────
+  //
+  //   引擎那一頭是非同步的(見 engine.h 的 SetOptionAll / ApplyVariantAll),
+  //   所以按下的當下唯一為真的句子是「已送出」。真正的結果由工作者
+  //   PostMessage(WM_RIME_APPLY_DONE)回來,再把那句話換掉。
+  //
+  //   為什麼選這一條、而不是「等工作回來才說話」:引擎正常時那一趟是
+  //   幾毫秒,兩條路看起來一樣;引擎卡住時,「等回來才說話」的畫面是
+  //   **按了完全沒反應**,而那正是 #79 使用者的原話。按下去一定要有
+  //   東西動,而那個東西必須說實話。
+  //
+  //   ⚠ seq 是為了「連按三下」:只有**最後一次**送出的結果可以寫進
+  //     那一行。少了它,前一次的失敗會蓋掉後一次的成功。
+  unsigned BeginApply(UiString ok_status);
+  // 給引擎的完成通知。⚠ 回傳的 lambda 跑在**工作者執行緒**上,
+  //   所以它只捕捉 HWND 與 seq(都是傳值),而且只做 PostMessageW。
+  std::function<void(bool)> ApplyDoneNotifier(unsigned seq);
+  void OnApplyDone(unsigned seq, bool ok);
+
   int SelectedSchemaRow() const;
   std::wstring SchemaDisplayName(size_t index) const;
   Script script() const;
@@ -254,6 +275,22 @@ class SettingsWindow {
   // 上一次心跳看到的引擎狀態(見 OnServiceStateTick)。只有它**變了**
   // 才寫底下那一行 —— 每半秒無條件寫一次會把使用者剛看到的訊息蓋掉。
   bool engine_stalled_ = false;
+
+  // ── 底下那一行狀態訊息:誰寫的、誰可以收回 ────────────────────
+  //
+  // ⚠ **收回**(清空)與**說話**不一樣:清空只有在「收的是自己寫的
+  //   那一則」時才是對的。舊版兩處都是無條件 SetStatus(L""),於是
+  //   4 秒的計時器與心跳解除都會在隨機的時間點抹掉使用者剛拿到的紅字。
+  //   判斷邏輯在 common/status_line.h(那裡測得到)。
+  StatusLine status_line_;
+  StatusLine::Ticket transient_ticket_ = StatusLine::kNone;
+  StatusLine::Ticket engine_busy_ticket_ = StatusLine::kNone;
+
+  // 送出去給引擎的第幾次套用。只有最新的那一次的結果可以寫進狀態行。
+  unsigned apply_seq_ = 0;
+  // 這一次成功要說的那一句(各個呼叫點不一樣:已套用 / 自動挑開了 /
+  // 已還原成預設…)。
+  UiString apply_ok_status_ = UiString::kStatusApplied;
 
   // 內容區的捲動量與上限,單位 DIP(不是像素 —— 換螢幕時 DPI 會變)。
   int scroll_ = 0;

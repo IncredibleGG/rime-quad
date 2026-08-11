@@ -197,8 +197,8 @@ void Engine::Post(const char* label, std::function<void()> fn) {
   queue_.Call(label, std::move(fn), 0);
 }
 
-void Engine::PostAsync(const char* label, std::function<void()> fn) {
-  queue_.Post(label, std::move(fn));
+bool Engine::PostAsync(const char* label, std::function<void()> fn) {
+  return queue_.Post(label, std::move(fn));
 }
 
 void Engine::PostLow(const char* label, std::function<void()> fn) {
@@ -581,17 +581,29 @@ bool Engine::SetOption(uint64_t id, const char* option, bool value) {
   return ok;
 }
 
-void Engine::SetOptionAll(const char* option, bool value) {
-  // ⚠ **非同步。** 這一支的呼叫端是設定視窗的 UI 執行緒,而它沒有回傳值
-  //   —— UI 只是要引擎「去做」。同步等的話,引擎慢一次就是視窗死一次
-  //   (#79)。
+void Engine::SetOptionAll(const char* option, bool value,
+                         std::function<void(bool)> on_done) {
+  // ⚠ **非同步。** 這一支的呼叫端是設定視窗的 UI 執行緒。同步等的話,
+  //   引擎慢一次就是視窗死一次(#79)。
   // ⚠ option 複製成 std::string:工作跑起來的時候呼叫端的框可能已經
   //   不在了。今天的呼叫端都傳字面值,但這個保證不該靠呼叫端記得。
   const std::string opt = option ? option : "";
-  PostAsync("對所有 session 設選項", [this, opt, value] {
-    if (opt.empty()) return;
-    for (const auto& kv : sessions_) rs_set_option(kv.second, opt.c_str(), value);
-  });
+  const bool queued =
+      PostAsync("對所有 session 設選項", [this, opt, value, on_done] {
+        if (opt.empty()) {
+          if (on_done) on_done(false);
+          return;
+        }
+        // ⚠ 一個 session 沒設成功就是失敗。「有幾個成功」對使用者沒有
+        //   意義 —— 他問的是「我剛才那一下算不算數」。
+        bool ok = true;
+        for (const auto& kv : sessions_)
+          if (!rs_set_option(kv.second, opt.c_str(), value)) ok = false;
+        if (on_done) on_done(ok);
+      });
+  // 沒有入列 = 這件事永遠不會發生。**一定要說**,不然畫面上那句
+  // 「正在套用…」會永遠停在那裡。
+  if (!queued && on_done) on_done(false);
 }
 
 void Engine::SetAsciiModeAll(bool on) {
@@ -633,7 +645,8 @@ void Engine::SetSessionLangId(uint64_t id, uint32_t langid) {
   Post("記下 session 的語言", [&] { session_lang_[id] = langid; });
 }
 
-void Engine::ApplyVariantAll(const SchemaPreference& pref) {
+void Engine::ApplyVariantAll(const SchemaPreference& pref,
+                            std::function<void(bool)> on_done) {
   // ⚠ **非同步,而且 pref 要傳值。**
   //
   //   這一支就是 #79 使用者按下去的那一顆:設定視窗的「簡體字」單選鈕
@@ -644,18 +657,26 @@ void Engine::ApplyVariantAll(const SchemaPreference& pref) {
   //   改非同步之後,原本的 `[&]` 就變成一個 use-after-free:pref 是
   //   呼叫端 CommitVariantPref 框上的一個暫時值。傳值捕捉不是保險,
   //   是必須(見 tests/test_work_queue.cc 的 async_job_owns_its_arguments)。
-  PostAsync("對所有 session 套簡繁", [this, pref] {
-    for (const auto& kv : sessions_) {
-      auto it = session_lang_.find(kv.first);
-      const uint32_t lang = (it == session_lang_.end()) ? 0u : it->second;
-      bool simplified = false;
-      // ⚠ 與建 session 時走的是**同一支** DecideVariant。兩份會漂移,
-      //   而漂移的症狀是「改設定當下沒變、換個程式就變了」。
-      if (!DecideVariant(lang, pref, &simplified)) continue;
-      for (const OptionAssign& a : PlanVariant(simplified, lang))
-        rs_set_option(kv.second, a.option, a.value);
-    }
-  });
+  const bool queued =
+      PostAsync("對所有 session 套簡繁", [this, pref, on_done] {
+        bool ok = true;
+        for (const auto& kv : sessions_) {
+          auto it = session_lang_.find(kv.first);
+          const uint32_t lang = (it == session_lang_.end()) ? 0u : it->second;
+          bool simplified = false;
+          // ⚠ 與建 session 時走的是**同一支** DecideVariant。兩份會漂移,
+          //   而漂移的症狀是「改設定當下沒變、換個程式就變了」。
+          //
+          // ⚠ DecideVariant 回 false = 「這一個 session 刻意不動」
+          //   (例如使用者關掉了自動挑)。那**不是失敗** —— 把它算成
+          //   失敗的話,關掉自動挑的人每按一次都會拿到一行紅字。
+          if (!DecideVariant(lang, pref, &simplified)) continue;
+          for (const OptionAssign& a : PlanVariant(simplified, lang))
+            if (!rs_set_option(kv.second, a.option, a.value)) ok = false;
+        }
+        if (on_done) on_done(ok);
+      });
+  if (!queued && on_done) on_done(false);
 }
 
 void Engine::SelectSchemaAll(const std::string& schema_id) {

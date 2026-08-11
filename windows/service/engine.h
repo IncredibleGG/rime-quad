@@ -200,7 +200,20 @@ class Engine {
 
   // 對**目前存在的每一個 session** 套用。設定介面改了字形之後,
   // 使用者不該還要換一個程式才看得到效果。
-  void SetOptionAll(const char* option, bool value);
+  // ── ⚠ on_done:非同步的東西必須說得出「做完了沒有、成不成功」 ──
+  //
+  //   這兩支改成非同步之後,設定視窗那一頭原本是**無條件**在按下的
+  //   當下就說「已套用」—— 它在替一件還躺在佇列裡的工作背書。引擎
+  //   卡著的時候那句話是假的,而工作失敗時畫面上什麼都沒有。
+  //
+  //   所以它們現在收一個完成通知。⚠ `on_done` 跑在**工作者執行緒**上,
+  //   不是 UI 執行緒;裡面只能做跨執行緒安全的事(設定視窗傳進來的
+  //   那一份只做一件:PostMessageW)。捕捉的每一樣東西都要傳值。
+  //
+  //   ⚠ 工作**沒有入列**時(引擎在停)也一定要叫一次 on_done(false)——
+  //     不叫的話,畫面上那句「正在套用…」會永遠停在那裡。
+  void SetOptionAll(const char* option, bool value,
+                    std::function<void(bool)> on_done = {});
 
   // ── ⚠ 中英切換:這一輪之前 Windows 端**完全沒有**這個功能 ──────
   //
@@ -253,7 +266,9 @@ class Engine {
   // 少了這一格,使用者改完設定要換一個程式才看得到效果 ——
   // 而他當下看到的是「這個下拉沒有作用」。
   void SetSessionLangId(uint64_t id, uint32_t langid);
-  void ApplyVariantAll(const SchemaPreference& pref);
+  // on_done 的約定見 SetOptionAll。
+  void ApplyVariantAll(const SchemaPreference& pref,
+                       std::function<void(bool)> on_done = {});
 
   bool SetOption(uint64_t id, const char* option, bool value);
   std::string SchemaOfSession(uint64_t id);
@@ -302,7 +317,9 @@ class Engine {
   void Post(const char* label, std::function<void()> fn);
   // 丟了就走,**不等**。⚠ fn 捕捉的東西一律傳值(見 common/work_queue.h):
   //   這一支返回時工作通常還沒開始跑,呼叫端的框隨時會消失。
-  void PostAsync(const char* label, std::function<void()> fn);
+  // ⚠ 回傳 false = **沒有入列**,那件工作永遠不會跑。等完成通知的
+  //   呼叫端一定要看它(見 common/work_queue.h 的 Post)。
+  bool PostAsync(const char* label, std::function<void()> fn);
   // 丟一件「有空再做」的工作:不等它,而且**優先權比一般工作低**
   // (要等引擎閒下來 kLowPriorityIdleMs 才會被撿走)。
   void PostLow(const char* label, std::function<void()> fn);

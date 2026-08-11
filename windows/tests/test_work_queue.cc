@@ -386,3 +386,31 @@ TEST(work_queue_oldest_waiting_ignores_low_priority) {
   gate.Open();
   q.Stop();
 }
+
+// ── 11. 丟了就走的那一支也要說得出「沒有人會做這件事」 ────────────
+//
+// 第 7 條已經替 Call 守住這件事(「沒有工作者要說出來」)。Post 沒有 ——
+// 它在 `!started_ || stop_` 時直接 return void,呼叫端拿不到任何線索。
+//
+// 這在介面上有一個很具體的後果:設定視窗現在會在按下去的當下說
+// 「正在套用…」,然後**等工作回來**才把那句話換成「已套用」或
+// 「套用失敗」。工作根本沒有入列的話,那個回來永遠不會發生,
+// 而使用者面對的是一句永遠停在「正在套用…」的話 ——
+// 比舊版那句假的「已套用」好不了多少。
+TEST(work_queue_post_says_whether_the_job_was_actually_queued) {
+  WorkQueue q;  // 沒有 Start()
+  std::atomic<int> ran{0};
+  CHECK(!q.Post("測試:沒有工作者", [&] { ran.fetch_add(1); }));
+  CHECK(!q.PostLow("測試:沒有工作者(低優先)", [&] { ran.fetch_add(1); }));
+  CHECK_INT(ran.load(), 0);
+
+  q.Start();
+  CHECK(q.Post("測試:有工作者", [&] { ran.fetch_add(1); }));
+  CHECK(q.PostLow("測試:有工作者(低優先)", [&] { ran.fetch_add(1); }));
+  q.Stop();  // Stop 會把佇列排乾
+  CHECK_INT(ran.load(), 2);
+
+  // 停了之後也要說「沒有」,不要靜靜地把工作丟掉。
+  CHECK(!q.Post("測試:停了之後", [&] { ran.fetch_add(1); }));
+  CHECK_INT(ran.load(), 2);
+}

@@ -85,12 +85,18 @@ class WorkQueue {
   //   這一支返回時工作通常還沒開始跑,呼叫端的框隨時會消失。
   //   `[&]` 在這裡是一個 use-after-free,而且它不會當場崩 ——
   //   它會在幾百毫秒之後,拿一段已經被別人用掉的記憶體當設定值。
-  void Post(const char* label, std::function<void()> fn);
+  //
+  // 回傳 false = **沒有入列**(佇列沒啟動或已經在停了),那件工作
+  // 永遠不會跑。⚠ 呼叫端如果在畫面上說了「正在做…」並等一個完成通知,
+  // 一定要看這個回傳值 —— 不看的話那句話會永遠停在那裡,
+  // 而那比舊版那句假的「已完成」好不了多少。
+  bool Post(const char* label, std::function<void()> fn);
 
   // 「有空再做」:優先權比 Post 低,而且要等佇列**真的閒下來**
   // (SetLowPriorityIdleMs)才會被撿走。給那些沒有人在等、但是很貴的
   // 收尾工作用 —— 在別人還等著的時候動它們,等於偷走那個人的時間。
-  void PostLow(const char* label, std::function<void()> fn);
+  // 回傳值的意思與 Post 相同。
+  bool PostLow(const char* label, std::function<void()> fn);
 
   // ── 丟了並等它做完,**有上限** ──────────────────────────────
   //

@@ -200,6 +200,9 @@ add_executable(rime_tests
   tests/test_status_cells.cc
   tests/test_hotkey_policy.cc
   tests/test_work_queue.cc
+  # 狀態行「誰寫的、誰可以收回」。純順序邏輯,而它守的是**訊息消失**
+  # 那一類缺陷 —— 使用者不會回報「我沒看到一句話」。
+  tests/test_status_line.cc
   # 這一支用**真的**鍵盤佈局(LoadKeyboardLayout + ToUnicodeEx),
   # 是 CI 上唯一驗得到「有沒有真的問佈局」的地方。
   tests/test_win32_layouts.cc

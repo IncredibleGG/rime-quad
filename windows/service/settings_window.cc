@@ -40,6 +40,11 @@ constexpr UINT WM_RIME_SCHEMAS_READY = WM_APP + 5;
 //   LayoutUi() 會同步對 sidebar_ 下 SetWindowPos + LVM_SETCOLUMNWIDTH,
 //   而那是在 comctl32 更新自己選取範圍的中途重入同一顆控制項。
 constexpr UINT WM_RIME_RELAYOUT = WM_APP + 6;
+
+// 引擎把一件「套用」做完了(wParam = 第幾次送出,lParam = 成不成功)。
+// ⚠ 由**工作者執行緒** PostMessage 過來,所以它只帶得動兩個純量;
+//   任何要碰成員的事都在這一頭做。見 SettingsWindow::ApplyDoneNotifier。
+constexpr UINT WM_RIME_APPLY_DONE = WM_APP + 7;
 constexpr UINT kTrayId = 1;
 constexpr UINT_PTR kDeployTimer = 1;
 constexpr UINT_PTR kStatusTimer = 2;
@@ -582,7 +587,14 @@ LRESULT CALLBACK SettingsWindow::WndProc(HWND hwnd, UINT msg, WPARAM w,
       if (self && w == kDeployTimer) self->OnDeployTick();
       if (self && w == kStatusTimer) {
         ::KillTimer(hwnd, kStatusTimer);
-        self->SetStatus(std::wstring());
+        // ⚠ **只清自己那一則。** 這個計時器是為了收回 4 秒前那句成功
+        //   訊息而設的,但它收的曾經是「那一刻畫面上的任何東西」——
+        //   使用者在這 4 秒裡按了別的東西、拿到一行紅字,那行紅字會
+        //   在他還沒讀完的時候消失,而且不留任何痕跡。
+        if (self->status_line_.StillShowing(self->transient_ticket_)) {
+          self->transient_ticket_ = StatusLine::kNone;
+          self->SetStatus(std::wstring());
+        }
       }
       return 0;
     case WM_RIME_UPDATE_DONE:
@@ -595,6 +607,9 @@ LRESULT CALLBACK SettingsWindow::WndProc(HWND hwnd, UINT msg, WPARAM w,
       return 0;
     case WM_RIME_RELAYOUT:
       if (self) self->LayoutUi();
+      return 0;
+    case WM_RIME_APPLY_DONE:
+      if (self) self->OnApplyDone(static_cast<unsigned>(w), l != 0);
       return 0;
     case WM_RIME_SET_VARIANT: {
       const int i = static_cast<int>(w);
@@ -1636,6 +1651,10 @@ void SettingsWindow::ReloadFromSettings() {
 }
 
 void SettingsWindow::SetStatus(const std::wstring& text) {
+  // ⚠ 每一次寫都要記一筆。**收回**的那兩處(4 秒的計時器、心跳解除)
+  //   靠它分辨「畫面上還是不是我寫的那一則」——
+  //   判斷邏輯在 common/status_line.h,那裡有單元測試。
+  status_line_.Write();
   SetText(hwnd_, IDC_STATUS, text.c_str());
 }
 
@@ -1644,7 +1663,40 @@ void SettingsWindow::SetTransientStatus(UiString s) {
   // (等於這則訊息可能永遠不出現)。**不要做浮層** —— 用視窗底部
   // 已經有的那一行,4 秒後清掉。成功訊息不值得一個新表面。
   SetStatus(UiText(s));
+  transient_ticket_ = status_line_.current();
   ::SetTimer(hwnd_, kStatusTimer, 4000, nullptr);
+}
+
+// ── 「已送出」→「已套用 / 套用失敗」 ────────────────────────────
+
+unsigned SettingsWindow::BeginApply(UiString ok_status) {
+  apply_ok_status_ = ok_status;
+  ++apply_seq_;
+  // ⚠ 這一句沒有 4 秒的計時器:它要一直留到引擎回來為止。
+  //   反過來也要把上一輪留下來的計時器殺掉,不然它會在半路把
+  //   「正在套用…」清成空白,而使用者看到的是「按了之後什麼都沒有」。
+  ::KillTimer(hwnd_, kStatusTimer);
+  transient_ticket_ = StatusLine::kNone;
+  SetStatus(UiString::kStatusApplyQueued);
+  return apply_seq_;
+}
+
+std::function<void(bool)> SettingsWindow::ApplyDoneNotifier(unsigned seq) {
+  HWND h = hwnd_;
+  // ⚠ **只捕捉傳值的純量。** 這一份會被引擎執行緒拿去跑,而那時這個
+  //   物件的框可能早就不在了(見 common/work_queue.h 的檔頭)。
+  //   裡面唯一做的事是 PostMessageW —— 所有 UI 狀態只在 UI 執行緒上動。
+  return [h, seq](bool ok) {
+    if (h) ::PostMessageW(h, WM_RIME_APPLY_DONE, static_cast<WPARAM>(seq),
+                          ok ? 1 : 0);
+  };
+}
+
+void SettingsWindow::OnApplyDone(unsigned seq, bool ok) {
+  // ⚠ 連按三下的時候,前兩次的結果不可以寫進那一行:使用者現在關心的
+  //   是最後那一下。舊的通知安靜地丟掉。
+  if (seq != apply_seq_) return;
+  SetTransientStatus(ok ? apply_ok_status_ : UiString::kStatusApplyFailed);
 }
 
 // ─────────────────────────── 套用 ───────────────────────────
@@ -1662,13 +1714,17 @@ void SettingsWindow::CommitVariantPref(VariantPref v) {
   }
   // 立刻對現有的每一個輸入視窗套用。少了這一步,使用者改了之後要換一個
   // 程式才會生效 —— 而他當下看到的是「這個選項沒有作用」。
-  engine_->ApplyVariantAll(settings_.SchemaPref());
+  //
+  // ⚠ 這一支是**非同步**的(#79)。所以這裡先說「已送出」,真正的
+  //   「已套用」由 WM_RIME_APPLY_DONE 換上去 —— 舊版在這裡無條件說
+  //   「已套用」,而那是在替一件還躺在佇列裡的工作背書。
+  const unsigned seq = BeginApply(UiString::kStatusApplied);
+  engine_->ApplyVariantAll(settings_.SchemaPref(), ApplyDoneNotifier(seq));
   int vsel = 0;
   for (int i = 0; i < kVariantCount; ++i)
     if (kVariantOrder[i] == v) vsel = i;
   CheckRadio(hwnd_, IDC_VARIANT_0, kVariantCount, vsel);
   if (bar_) bar_->Refresh();
-  SetTransientStatus(UiString::kStatusApplied);
 }
 
 void SettingsWindow::SetVariantPref(VariantPref v) {
@@ -1694,9 +1750,14 @@ void SettingsWindow::ApplyPunctNow() {
   }
   // ⚠ kUnset(不干預)= **完全不呼叫 rs_set_option**。設成 false 不是
   //   同一件事:很多方案根本沒有這個開關,而有些方案的預設是 true。
-  if (t != Tri::kUnset) engine_->SetOptionAll("ascii_punct", t == Tri::kTrue);
-  SetTransientStatus(t == Tri::kUnset ? UiString::kStatusPunctFollow
-                                      : UiString::kStatusApplied);
+  if (t == Tri::kUnset) {
+    // 沒有任何東西被送進佇列,所以這一句當場就是真的。
+    SetTransientStatus(UiString::kStatusPunctFollow);
+    return;
+  }
+  const unsigned seq = BeginApply(UiString::kStatusApplied);
+  engine_->SetOptionAll("ascii_punct", t == Tri::kTrue,
+                        ApplyDoneNotifier(seq));
 }
 
 void SettingsWindow::ApplyAppearancePref() {
@@ -1784,14 +1845,16 @@ void SettingsWindow::DoResetSettings() {
     SetStatus(UiString::kStatusSaveFailed);
     return;
   }
+  // ⚠ 順序:ReloadFromSettings() 最後會 SetStatus(L"") 把那一行清空,
+  //   所以「已送出」一定要在它**之後**才寫。
   ReloadFromSettings();
-  engine_->ApplyVariantAll(settings_.SchemaPref());
+  const unsigned seq = BeginApply(UiString::kStatusResetDone);
+  engine_->ApplyVariantAll(settings_.SchemaPref(), ApplyDoneNotifier(seq));
   if (cand_) cand_->SetTextScale(1.0);
   if (bar_) {
     bar_->SetVisible(true);
     bar_->Refresh();
   }
-  SetTransientStatus(UiString::kStatusResetDone);
 }
 
 bool SettingsWindow::ApplyOrderAndPageSize(std::string* error) {
@@ -1901,8 +1964,17 @@ void SettingsWindow::OnServiceStateTick() {
                      static_cast<long long>(engine_->OldestWaitingMs()));
         std::fflush(stderr);
         SetStatus(UiString::kStatusEngineBusy);
-      } else {
+        engine_busy_ticket_ = status_line_.current();
+      } else if (status_line_.StillShowing(engine_busy_ticket_)) {
+        // ⚠ **只清自己那一則。** 舊版這裡是無條件清空,而「引擎不忙了」
+        //   與「使用者剛拿到一行紅字」在時間上完全獨立 —— 兩者相撞時
+        //   紅字就沒了,而且沒有任何痕跡。
+        engine_busy_ticket_ = StatusLine::kNone;
         SetStatus(std::wstring());
+      } else {
+        // 別人蓋過去了。那一則不是我的,不動它;但要放掉自己的票,
+        // 免得序號繞回來時誤判(status_line.h:序號只增不減)。
+        engine_busy_ticket_ = StatusLine::kNone;
       }
     }
   }
@@ -2134,9 +2206,9 @@ void SettingsWindow::OnCommand(int id, int code) {
       }
       // ⚠ 關掉「自動挑」時**連簡繁都不碰**:使用者要的是「我自己管」,
       //   半套更難理解。
-      engine_->ApplyVariantAll(settings_.SchemaPref());
-      SetTransientStatus(on ? UiString::kStatusFollowOn
-                            : UiString::kStatusFollowOff);
+      const unsigned seq = BeginApply(on ? UiString::kStatusFollowOn
+                                         : UiString::kStatusFollowOff);
+      engine_->ApplyVariantAll(settings_.SchemaPref(), ApplyDoneNotifier(seq));
       return;
     }
     case IDC_BAR_SHOW:

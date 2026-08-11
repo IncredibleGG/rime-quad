@@ -166,6 +166,8 @@ enum class UiString : int {
 
   // ── 狀態列(視窗底部那一行)──────────────────────────────────
   kStatusApplied,
+  kStatusApplyQueued,
+  kStatusApplyFailed,
   kStatusSaveFailed,
   kStatusEngineBusy,
   kStatusOrderNotApplied,

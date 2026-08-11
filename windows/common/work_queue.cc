@@ -131,10 +131,11 @@ void WorkQueue::ThreadMain() {
   if (on_exit_) on_exit_();
 }
 
-void WorkQueue::Post(const char* label, std::function<void()> fn) {
+bool WorkQueue::Post(const char* label, std::function<void()> fn) {
   {
     std::lock_guard<std::mutex> lock(mu_);
-    if (!started_ || stop_) return;
+    // 沒有工作者可以跑它 —— 說出來,不要靜靜地把工作丟掉(理由見標頭)。
+    if (!started_ || stop_) return false;
     Job j;
     j.label = label;
     j.enqueued_ms = WorkQueueNowMs();
@@ -143,12 +144,14 @@ void WorkQueue::Post(const char* label, std::function<void()> fn) {
     queue_.push_back(std::move(j));
   }
   cv_.notify_all();
+  return true;
 }
 
-void WorkQueue::PostLow(const char* label, std::function<void()> fn) {
+bool WorkQueue::PostLow(const char* label, std::function<void()> fn) {
   {
     std::lock_guard<std::mutex> lock(mu_);
-    if (!started_ || stop_) return;
+    // 沒有工作者可以跑它 —— 說出來,不要靜靜地把工作丟掉(理由見標頭)。
+    if (!started_ || stop_) return false;
     Job j;
     j.label = label;
     j.enqueued_ms = WorkQueueNowMs();
@@ -156,6 +159,7 @@ void WorkQueue::PostLow(const char* label, std::function<void()> fn) {
     low_queue_.push_back(std::move(j));
   }
   cv_.notify_all();
+  return true;
 }
 
 WorkQueue::Status WorkQueue::Call(const char* label, std::function<void()> fn,
