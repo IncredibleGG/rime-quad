@@ -94,7 +94,7 @@ landed_rows() {
 服務結束事件|windows/winshared/winutil.cc|L"Local\\\\${RS_PRODUCT_NAME}ServiceQuit." + sid
 服務單一實例鎖|windows/winshared/winutil.cc|L"Local\\\\${RS_PRODUCT_NAME}Service." + sid
 設定視窗事件|windows/winshared/winutil.cc|L"Local\\\\${RS_PRODUCT_NAME}Settings." + CurrentUserSidString()
-設定檔名|windows/service/settings_store.cc|constexpr const char* kSettingsFile = "${RS_WIN_SETTINGS_FILE}";
+設定檔名|windows/common/settings.h|constexpr const char* kSettingsFileName = "${RS_WIN_SETTINGS_FILE}";
 設定檔表頭|windows/common/settings.cc|"# ${RS_PRODUCT_NAME} 設定。由設定介面寫入,也可以自己改。\\n"
 候選窗類別名|windows/service/cand_window.cc|constexpr wchar_t kClassName[] = L"${RS_PRODUCT_NAME}CandidateWindow";
 設定窗類別名|windows/service/settings_window.cc|constexpr wchar_t kClass[] = L"${RS_PRODUCT_NAME}SettingsWindow";
