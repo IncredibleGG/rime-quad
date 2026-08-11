@@ -26,6 +26,7 @@ const KnownKey kKnownKeys[] = {
     {keys::kAppearanceFloatingBarPos, nullptr},
     {keys::kTextVariant, "文字"},
     {keys::kTextPunctuation, nullptr},
+    {keys::kTextShiftTapToggle, nullptr},
     {keys::kAdvancedLanguage, "進階"},
     {keys::kNetworkEnabled, "連網"},
     {keys::kStoreIndexUrl, nullptr},

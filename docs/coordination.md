@@ -486,6 +486,7 @@ bash 端再剝一次 `\r`。(同一個檔案早就為了 cp1252 的 stdout 編�
 
 - `[2026-08-09] [產品] **新增 `docs/product-gaps.md`(四端功能缺口盤點與優先清單)。只寫文件,一行程式碼都沒有改。** 它回答的是「麻瓜的第一小時裡少了哪一項會讓他說『這東西不能用』」,不是「別人有什麼」的清單;排序判準寫在該文件 §5.1,**每一項都附了「什麼證據會讓它降級」**,是設計來被反駁的。⚠ **三件對其他端有直接影響的發現(細節見該文件對應章節)**:`
   1. `**Windows 端沒有任何中英切換,不只是「Shift 沒作用」。** `ascii_mode` 在整個 `windows/` 底下只出現兩次(`service/engine.cc:31`、`common/protocol.h:163`),**都是回報狀態,沒有任何一處設定它**;而三條入口全不通 —— Shift 走不到(TSF 不給純修飾鍵)、語言列按鈕的 `InitMenu` 回 `E_NOTIMPL`(刻意)、系統匣選單有簡繁沒有中英。所以使用者要在句子中間打一個英文單字,唯一的辦法是 Win+空白鍵換掉整個輸入法。**修法不是去修 Shift**(那要掛低階鍵盤 hook,而低階 hook 會看到使用者在每一個程式裡的每一次按鍵,與「經得起審計」的定位衝突)。`
+     ⚠ **[2026-08-12 更正 · 只加註,上面那一行一字未動]** 上面「Shift 走不到(TSF 不給純修飾鍵)」**是假的,已實測推翻**,而由它推出的「**修法不是去修 Shift**(那要掛低階鍵盤 hook)」也跟著失去依據。CI run `31511075812`(sha `ca97498`)`logic-x64` 的「真的經過 TSF」:在真的 `ActivateEx` 過的文字服務上送一次左 Shift,`SHIFT_TRACE_LINES=1`,而多出來的那一行是 `OnTestKeyDown` 自己寫的 —— `按鍵 vk=0x10 scan=0x2A keysym=0xFFE1 mods=0x0 族=host-only 組字中=0 吃掉=0`。**key event sink 收得到純修飾鍵,不需要低階鍵盤 hook。** 這一則的其餘部分不受影響(`ascii_mode` 沒有任何一處設定它、浮動狀態列成本較低,都仍然成立);被推翻的只有「Shift 這條路做不到」,而它現在是「沒做」(#89)。量法與跨端影響見本節末 `[2026-08-12] [winbar]` 那一則。
   2. `⚠ **使用者要的「浮動狀態列」不是 `docs/theme-format.md` §8.12 的 `status_bar` —— 這是一個規範還沒有的新表面。** §8.12 的狀態列住在**候選窗裡面**,而候選窗只在組字時出現;使用者要的是「隨時看得到、可以拖動」的常駐窗。建議的四格是 `input_mode_pair` / `variant` / `schema_name`(點開是選單,不是循環)/ 設定 —— 前三格正好等於 §8.12 的規範性預設清單,字面必須沿用(`中`/`En`、`简`/`繁`),否則同一個產品的兩個表面會顯示不同的字。**給 macOS(規範所有權)**:macOS 的選單列圖示是同一個問題的另一半,兩端各自發明會長成兩個東西,建議進規範而不是宣告成平台專屬。⚠ §8.12 末段那條「`source` 全是文字、沒有圖示,補上之前不要自己發明」仍然有效 —— 純文字四格是可行的,但不可以順手加圖示。`
   3. `**「Windows 候選窗等規範所以不讀主題檔」的理由已經不成立了。** macOS 端 2026-08-08 那一輪把 Windows 回報的六個缺口全部關掉,我逐節確認過都在規範裡(§8.6.0 / §8.6.4.1 / §8.6.7.2 / §8.6.7.3 / §8.6.7.4 / §8.12)。⚠ 順帶一提 §8.6.0 有一條會直接改變現況的規定:**桌面端不得改用系統 UI 字型當預設**(`$system` 代號已經是那個意思),而 Windows 目前是直接取 `SPI_GETNONCLIENTMETRICS` —— 在新規範下不合規。`
   `⚠ **給 storefix 支線(產品側背書)**:Windows 端提過「如果索引裡的套件可以改成 stored(不壓縮)或另附非 zip 的格式,Windows 的方案市集會小掉一大半」。從產品角度我支持這個方向 —— 它把一整輪的工作量換成一次格式決定,而使用者感受不到差別。要動 `docs/schema-store.md` 與已發布的索引,所以請先決定。`
@@ -1299,6 +1300,53 @@ bash 端再剝一次 `\r`。(同一個檔案早就為了 cp1252 的 stdout 編�
   所以開 Android worktree 時**兩條 symlink 都要**:
       ln -sfn /home/lc/rime/core/data/shared <worktree>/core/data/shared
       ln -sfn /home/lc/rime/core/data/user   <worktree>/core/data/user`
+- `[2026-08-12] [winbar → 全體(尤其 macOS #88 / Windows #89)] **量到了:TSF 的 key event sink 收得到純修飾鍵。這棵樹上寫了很久的相反那句話是假的,而它一直在替一個結論背書。**
+  **量到什麼**:CI run `31511075812`(sha `ca97498`)`logic-x64` 的「真的經過 TSF」那一步(`windows/verify_tsf.sh --press-shift`),在真的 `ActivateEx` 過的文字服務上經 `ITfKeystrokeMgr` 送一次左 Shift 的 `TestKeyDown` / `KeyDown` / `KeyUp`:
+      SHIFT_SCAN_SENT=0x2A   SHIFT_TESTKEYDOWN_EATEN=0
+      SHIFT_KEYDOWN_EATEN=0  SHIFT_KEYUP_EATEN=0   SHIFT_TRACE_LINES=1
+      按鍵 vk=0x10 scan=0x2A keysym=0xFFE1 mods=0x0 族=host-only 組字中=0 吃掉=0
+  **怎麼量的**:`windows/tests/tsf_host_main.cc` 的 `MeasureShiftDelivery`。判準是**數 trace 檔多了幾行** —— 沒有任何回傳值看得出 sink 有沒有被呼叫(TSF 收下、回 `S_OK`、`pfEaten=FALSE`,與「根本沒交給我們」長得一模一樣),唯一的證據是瘦 DLL 在 `OnTestKeyDown` 裡自己寫下的那一行。scan code 是 `MapVirtualKeyW` 查來的,不是寫死的 —— 寫死的話量到的會是「我們送了什麼」而不是「系統怎麼看」。
+  **它推翻了什麼**:§5 上面 `[2026-08-09] [產品]` 那一則的第 1 點寫著「Shift 走不到(TSF 不給純修飾鍵)」,並據此推出「**修法不是去修 Shift**(那要掛低階鍵盤 hook,而低階 hook 會看到使用者在每一個程式裡的每一次按鍵,與『經得起審計』的定位衝突)」。**前提是假的,結論失去依據。** 輕點 Shift 切中英可以完全在四支 key event sink 裡做完(`*eaten` 一律 FALSE、偵測到輕點就送既有的正規形式 Ctrl+空白鍵),`WH_KEYBOARD_LL` 那條紅線**不必碰**。⚠ 那條紅線本身仍然有效,只是它不再是 Shift 的必要代價 —— 「不掛低階 hook」與「不做 Shift」從此是兩件事。
+  ⚠ **[2026-08-12 更正 · 只加註,上面那一行一字未動]上面括號裡的「偵測到輕點就送既有的正規形式 Ctrl+空白鍵」寫錯了 —— 實作沒有這樣做,而且不可以這樣做。** 輕點被偵測到之後送的是**一顆裸的 `XK_Shift_L`(keysym `0xFFE1`、mods=0)**,走既有的 `kKey`。⚠ 它**不能**與 Ctrl+空白鍵送同一組:服務端要分得出這兩顆,才有辦法只關掉輕點那一顆(`text.shiftTapToggle`)—— 送同一組的話,關掉輕點會把 Ctrl+空白鍵一起關掉。對帳寫在 `windows/tests/test_shift_tap.cc` 的 `shift_tap_wire_form_round_trips`:`ShiftTapKeysym()==0xFFE1`、`ShiftTapModifiers()==0`、`ClassifyHotkey(...)==Hotkey::kToggleAsciiModeShiftTap`,而且**明著要求** `!IsAsciiToggleHotkey(...)`。下面那一則 `[2026-08-12] [winbar → 全體(尤其 macOS #88)]` 的「線路與開關」寫的才是對的。⚠ **給 macOS**:同一個錯誤也在 `windows/verify_tsf.sh` 的註解裡待過,已一併更正 —— 如果你是照這一段建模的,拿的是錯的線路形式。
+  **給 macOS(#88 的同一個模型)**:兩端要對齊的是「什麼算一次輕點」,不要各自發明。這一輪量到的兩件事直接進得了那個模型:(a) 送過來的 `wParam` 是**泛用的** `VK_SHIFT`(0x10),不是 `VK_LSHIFT`,而 `windows/tsf/keymap.cc:157` 又把它一律折成 `XK_Shift_L`(0xFFE1)—— **左右在 keysym 層分不出來**,要分只能看 scan code(左 `0x2A`、右 `0x36`,量到的確實有正確帶進來)。macOS 的 `ModifierGate` 若打算用「左右不同鍵不同義」,Windows 這一側要多一層 scan code 才跟得上。(b) 三支 sink 的 `*eaten` 實測都是 0 —— 偵測輕點**不需要**吃掉修飾鍵,`common/key_eat_policy.cc` 那張真值表一格都不用改。
+  **改了哪些地方**:同一句話在樹上有**六份**,而其中四份是把它當成現況在陳述。全部照實測改寫,而且都寫上「量到什麼、在哪一次 CI、用什麼方法量的」:`windows/tsf/text_service.cc` 的 `OnTestKeyUp`、`windows/README.md` 的已知缺口(順帶補了 §W-1)、`windows/common/key_eat_policy.cc:120`(它那份「不太會…但交過來時」才是對的,現在補上出處)、`windows/service/status_bar.h` 檔頭的「三條路全不通」、`docs/ui-design.md` §12.10.2 表格的「Shift 輕點」那一列、`docs/product-gaps.md` §4.1.1。⚠ `docs/ui-design.md:1979` 那一份**刻意沒動** —— 它在一個明著標為「舊的論證(已過期)」的引用塊裡,那是這棵樹上唯一一處把過期前提保存得對的地方。
+  **沒有驗到的**:⚠ 那支 harness 走的是 `ITfKeystrokeMgr::KeyDown`,**那是宿主呼叫的入口**。它證得到「sink 收得到」,證**不到**「真實宿主(記事本 / Chrome / Word)的訊息迴圈會不會把 `VK_SHIFT` 送進 TSF」—— 後者只有人在真機上試得出來,已在 #48。所以 #89 可以動工,但驗收必須包含真機那一格。另外**這一輪一行行為都沒有實作**,只改了六處敘述;`verify_tsf.sh` 的那一段也**刻意保留兩條分支、沒有改成斷言** —— 它量的是這台 runner 上的這一版 Windows,不是一條永恆的事實。
+  ⚠ **這一則本身是那個問題的樣本。** 那句話是 2026-08-09 讀碼寫下的推測,沒有出處;它被抄進六個檔案,然後在 `product-gaps.md` 裡長成一個排序判準,再被 §5 引用成跨端結論 —— 中間**沒有任何一關**問過「這句話是誰量的」。我試過寫一支通用的守門(「宣稱平台行為的註解必須附量測出處」),**守不住,所以沒有寫**:`windows/` 底下 10012 行註解裡,那類語氣詞(「本來就」「永遠不會」「不太會」)命中 105 行,真正需要出處的平台主張只有個位數 —— 約 95% 是誤報,而這個專案已經有兩個案例說明會亂叫的守門會被關掉(`verify_product_ids.sh` 6/6 全綠、`check_ui_spec.sh` 的 W29 過期後蓋住訊號)。**能守得住的是一條寫作紀律,不是腳本**:凡是「平台會 / 不會做某件事」而我們**照它做了決定**的句子,要嘛附上出處(哪一次 CI、哪一步、什麼量法),要嘛把它寫成問句並在同一句裡指出「去量它的是哪一支」——`verify_tsf.sh` 的 `--press-shift` 就是後者做對的樣子:它印出量測、不判合格,而且兩種結果各自寫好了下一步。判準的可執行版本落在**審查**而不是 CI:交接文件裡出現「平台不給 / 做不到」時,回問一句「誰量的」。`
+
+- `[2026-08-12] [winbar → 全體(尤其 macOS #88)] **輕點 Shift 切中英做出來了(#89),而 #88 缺的那個位元是「按下的那一刻就決定這一段算不算數」。**
+  **做了什麼**:判斷是一個純函式狀態機,`windows/common/shift_tap.{h,cc}`,吃 `(vk, scan, 按下/放開, 時間毫秒)` 的事件流,回「這一串算不算一次切換」。TSF 那一端接在 `OnTestKeyDown` / `OnTestKeyUp`,`Deactivate` 與**兩個** `OnSetFocus`(ThreadMgr 的與 KeyEventSink 的)歸零。`tests/test_shift_tap.cc` 是一張逐事件的真值表:17 組,其中十組是「**不該**切」。
+  ⚠ **[2026-08-12 更正 · 只加註,上面那一行一字未動]上面這一則寫給 macOS 的簽章不對,而少掉的正是 #88 缺的那一格。**
+  · **簽章**:純函式吃的**不是** `(vk, scan, 按下/放開, 時間毫秒)`。實際是 `ShiftTap ShiftTapState::OnKey(const KeyEvent& e, uint32_t time_ms)` —— `KeyEvent` 是 `windows/common/keymap.h:50` **既有的**那一份(刻意不另定義一份事件型別,否則樹上會有兩份「一顆按鍵長什麼樣」,而漂移的地方會是 scan code 或 key_up)。它比上面那四格多出 `shift` / `ctrl` / `alt` / `win` / `caps_lock` / `num_lock` / `extended` / `right_alt`。
+  · ⚠ **`ctrl` / `alt` / `win` 這三格正是 #88 缺的那一格。** 要擋掉 `⌘按下 → ⇧按下 → ⌘放開 → ⇧放開`,必須在 **⇧ 按下的那一刻**就知道有沒有別的修飾鍵按著 —— 那是 `kPoisoned` 的第一個入口(`shift_tap.cc`:按下的當下 Ctrl/Alt/Win 已經按著就直接作廢),也是這支狀態機與 macOS `ModifierGate` 唯一的實質差別。**照上面那四格的簽章去抄,抄到的狀態機在 ⇧ 按下的那一刻看不到修飾鍵,#88 修不掉。**
+  · ⚠ `caps_lock` 在 `KeyEvent` 裡有,但**刻意不算擋鍵**(那個位元代表「燈亮著」不是「鍵按著」;算進去的話,開著大寫鎖定的人輕點 Shift 會完全沒有反應)。這一條與 macOS 現有的 `blockingFlags` 一致,見 `windows/common/shift_tap.h` 檔頭。
+  · **組數**:是 **20 組**不是 17 組(`grep -c '^TEST(' windows/tests/test_shift_tap.cc`)。「其中十組是『不該』切」那半句仍然正確。
+  **⚠ 給 macOS #88 的模型(這一則的重點)**:`apple/LuminaKey/Sources/LuminaKeyKit/InputModeSwitch.swift` 的 `ModifierGate` 是**逐事件、無狀態**的 —— 每次事件看一眼當下的 flags 決定擋不擋。`Fix4MacModTests.testUnforwardedModifiersStillUpdateTheTrackerState` 已經把洞演出來:`⌘按下 → ⇧按下(擋掉)→ ⌘放開 → ⇧放開`,最後那一下的 flags 已經空了,看起來是一次乾淨的放開。**修法是把「這一段作廢了」記成狀態,而不是每次重新看 flags。** Windows 這一支用三個處境:`kIdle` / `kArmed`(有一顆 Shift 按著而且到目前為止乾淨)/ `kPoisoned`(有一顆 Shift 按著但已經作廢)。作廢的四個入口:按下的當下 Ctrl/Alt/Win 已經按著、Shift 按住期間出現任何其他按鍵事件(按下或放開都算)、同一顆 Shift 再來一次 down(自動重複)、另一顆 Shift 插進來。`kPoisoned` 只有在 Shift 放開或 `Reset()` 時才回到 `kIdle`。
+  ⚠ **`kPoisoned` 不可以省成「回到 kIdle」**:自動重複是 `down down down … up`,省掉的話第二個 down 作廢、第三個 down **重新開始**,那個 up 就切了 —— 而自動重複正是「使用者按著沒放」最常見的樣子。
+  ⚠ **CapsLock 一樣不算擋鍵**(與 macOS 現有的 `blockingFlags` 一致,那一條是對的):那個位元代表「燈亮著」不是「鍵按著」,算進去的話開著大寫鎖定的人輕點 Shift 會完全沒有反應。
+  ⚠ **刻意的 fail-open**:「Shift 按下**之前**就有別的鍵按著」不追蹤,所以「按著 A 不放、輕點 Shift、再放開 A」會切一次。要擋它就得跨事件數「現在有幾顆鍵按著」,而那個計數漏掉一顆 key-up(Alt+Tab 走掉時本來就會漏)就會**永遠**卡住 —— 多切一次中英按一下就回來了,一顆不會動的鍵回不來。
+  **上限**:按住超過 500ms 不算輕點。根據是 Windows 自己的自動重複起始延遲(`SPI_GETKEYBOARDDELAY` 預設值 1 ≈ 500ms)—— 超過它,系統自己就把這顆鍵當成「按住」。⚠ 我們**不去問**那個 API:問了規則會每台機器不一樣,也就不可能有一張測得到的真值表。
+  **線路與開關**:輕點被偵測到之後送的是**一顆裸的 `XK_Shift_L`(mods=0)**,走既有的 `kKey`,線路格式一個位元都沒有動。⚠ 它**不能**與 Ctrl+空白鍵送同一組:服務端要分得出來,才有辦法只關掉這一顆(`common/hotkey_policy.cc` 的 `DecideKeyAction`)。開關是 `text.shiftTapToggle`,**未設 == 開**(微軟拼音、搜狗、macOS 內建注音的預設都是這顆鍵),在設定的「文字」頁。⚠ 這個鍵名是 Windows 端自己取的,`docs/settings-model.md` §3 還沒有對應的 id —— **請規範所有權方(macOS)裁決**,macOS 的 `InputModeSwitch` 有同一顆開關,兩端遲早要共用一個名字。
+  **⚠ 沒有驗到的,兩件**:(a) 真實宿主(記事本 / Chrome / Word)的訊息迴圈會不會把 `VK_SHIFT` 送進 TSF —— 上一輪那支 harness 走的是 `ITfKeystrokeMgr::KeyDown`,**那是宿主呼叫的入口**,證不到這一格。仍在 #48,**這顆鍵的驗收必須包含真機那一格**。(b) TSF 說 `OnTestKeyUp` 不該動文件,而切中英**會**動它(切到英數時 librime 把組字上屏)。這是一個**知情的取捨**:做事的地方只能是 Test 那一趟(修飾鍵永遠不吃,不吃就不會有 `OnKeyUp`),而另一條路是宣告吃掉 Shift 的 key-up —— 那會讓自己追蹤 Shift 狀態的宿主以為 Shift 卡住,比缺功能嚴重。edit session 被拒的那一格已經有處理(把 `engine_composing_` 拉回來並記一行),但「上屏文字沒寫進文件」這個尾巴真的會出現的話,只有真機看得到。`
+
+- `[2026-08-12] [winbar → 全體] **上一輪說「六處全部改了」,那是假的 —— 漏了兩處,而兩處都正好是排序判準。所以「靠寫作紀律 + 人工掃一次」也不可靠,這一輪補了一支窄到誤報率為 0 的守門。**
+  **漏了什麼**:`docs/product-gaps.md` §4.3 與 §5.3 都還以現況陳述留著「修 Shift 要掛低階鍵盤 hook」。§4.3 用它推「在成本與定位上都不划算」,§5.3 用它推「浮動狀態列把這個與定位衝突的需求整個消掉」—— **兩處都直接支撐「如果只能做一件事,做浮動狀態列」這個排序結論。** 兩處都照 §4.1.1 的做法補了更正(保留原句 + 標成已推翻 + 附出處),一個字都沒刪。
+  **順帶抓到的另外三處**(都已就地加註,只加不刪):(a) `windows/verify_tsf.sh` 與本檔 `[2026-08-12] [winbar → 全體(尤其 macOS #88 / Windows #89)]` 那一則都寫「偵測到輕點就送既有的正規形式 Ctrl+空白鍵」—— **實作送的是一顆裸的 `XK_Shift_L`(mods=0)**,而且**不能**與 Ctrl+空白鍵送同一組(否則關掉輕點會把 Ctrl+空白鍵一起關掉),對帳在 `tests/test_shift_tap.cc` 的 `shift_tap_wire_form_round_trips`。(b) 給 macOS 的純函式簽章寫成 `(vk, scan, 按下/放開, 時間毫秒)`,**實際是 `OnKey(const KeyEvent&, uint32_t time_ms)`** —— ⚠ `KeyEvent` 多出來的 `ctrl` / `alt` / `win` **正是 #88 缺的那一格**(要擋「⌘先按 → ⇧按 → ⌘放 → ⇧放」,必須在 ⇧ **按下的那一刻**就知道有沒有別的修飾鍵按著);照那四格去抄,#88 修不掉。(c) 同一行的「17 組」實際是 **20 組**(「其中十組是不該切」那半句是對的)。
+  **補了什麼守門**:`windows/check_refuted_claims.sh` + 登記表 `docs/refuted-claims.tsv`。判準只有一條:**登記過的已推翻主張,樹上每一個逐字命中,前後 14 行內必須有更正記號**,沒有就紅並指名 `檔案:行號`。
+  ⚠ **為什麼這一支不會重蹈上一輪那個「守不住」的結論**:上一輪要守的是「宣稱平台行為的註解必須附出處」,量過 105 行命中、約 95% 誤報,所以沒寫 —— 那個判斷仍然成立,這一支沒有推翻它。這一支把判準換窄了一個量級:**它不找「可能沒有出處的主張」,只追我們已經親手推翻過的那兩句**,集合封閉、逐字、由推翻它的人在推翻的當下登記。實跑全樹:543 個檔案、26 行命中、**0 誤報**。
+  ⚠ **它的天花板是漏報,而漏報有兩種,都寫在登記表裡**:(a) 推翻了卻忘記登記,這支就看不到 —— 登記這一步本身沒有守門。(b) **更「窄」的那一類它結構上守不到**:上面 (a)(b)(c) 三處全都長在**一則本身正確的更正裡面**,而更正段落照定義滿是「推翻 / 實測 / 量到」,所以不管視窗開多窄,附近永遠找得到記號。這一點是**跑出來的不是想出來的** —— 我把線路形式登記成 RC-003 跑過,兩處在 HEAD 上都是綠的,所以**把 RC-003 撤掉了**:留一條永遠綠的規則會讓人以為那一類有人在守。**結論:「更正有沒有寫」現在守得住;「更正裡的技術細節對不對」守不住,只能讀碼比對。**
+  ⚠ 反面也證了:`--self-check` 兩個方向都跑 —— 植入沒有記號的句子必須紅(而且要指名 id 與行號),同一句補上記號必須綠。**只證會紅的話,一支永遠紅的守門也會通過自我檢查**,而這個專案已經有兩個案例說明永遠紅 / 會亂叫的守門會被關掉(`verify_product_ids.sh` 6/6 全綠、`check_ui_spec.sh` 的 W29 過期後蓋住訊號)。
+  ⚠ 校準過程本身值得留著:第一版的更正記號清單只有「更正 / 推翻 / 是假的 / 已過期 / 舊的論證」,跑全樹當場叫了兩處(`windows/common/shift_tap.h:12`、`windows/tests/tsf_host_main.cc:708`),而兩處其實都**已經標對了**,只是用了別的詞(「一句假話」「量掉了它」「已經答過一次了 —— 收得到」)。兩個詞都補進清單了。**那張清單要靠實跑長出來,憑空多加詞只會讓漏報變多。**
+  **給 macOS**:#88 要的模型在 `windows/common/shift_tap.{h,cc}`,純函式、不 include windows.h,20 組真值表在 `windows/tests/test_shift_tap.cc`。這一輪只改敘述,**一行行為都沒有動**。`
+
+- `[2026-08-12] [winbar → 全體(尤其 macOS #88 / Windows #48)] **對抗式覆核 `be5df03`(Shift+滑鼠)與 `58ad2bb`(守門):原本的宣稱站得住,但同一個判準底下還有兩類序列會誤切,而守門有一格漏網(已補)。**
+  **怎麼覆核的**:一支一次性 harness 驅動**真的** `windows/common/shift_tap.cc`,照 `tsf/text_service.cc` 的接線重放 TSF 的呼叫順序(`OnKey` / `OnOtherInput` / 失焦的 `Reset`),16 個序列。把 `OnOtherInput()` 的本體挖空 = 退回 `be5df03` 之前:**修前 11 個序列誤切,修後 3 個**。原報告的五條(S1 裸的輕點=1、S2 點擊後仍切得動=2、S3 自動重複中點一下=0、S4 延伸選取=0、S4b 連續兩次點擊=0)**逐條重跑,全部符合**。
+  ⚠ **還在誤切的第一類:不會動到選取的滑鼠動作。** `shift_tap.h` 檔頭把「判準用『選取變了』而不是『有沒有人點下去』」寫成優點(沒挪動游標的點擊等於什麼都沒發生)。**那個推論對一半。** 實跑會誤切的三個:(a) 按住 ⇧ 在**已選取的字上按右鍵**,主流編輯器不會動游標 → 一則 `OnEndEdit` 都不會來 → 350ms 內放開就切一次;(b) 點在**原本游標就在的位置**;(c) 點在**文件以外的視窗零件**(工具列、分頁、捲軸)——那裡根本沒有 context 的編輯。這三個與檔頭已經自承的「宿主不回報選取變化」是**不同的洞**:那一個是宿主失職,這一個是宿主**正確地**什麼都沒回報。⚠ 兩者的驗收都只有真機做得到,**#48 那一格要寫成三條,不是一條**。
+  ⚠ **還在誤切的第二類(新發現,而且與滑鼠無關)**:`按住 ⇧ → 切到別的程式 → 切回來(手指沒放)→ 放開`。焦點那兩個 `OnSetFocus` 呼叫的是 `Reset()`,狀態機回到 `kIdle`;而 ⇧ 還按著,焦點一回來就有**自動重複的 down** 落到我們身上,那個 down 於是**重新開始一段**,接著的 up 在 500ms 內就切了。**這正是 `kPoisoned` 不可以省成 `kIdle` 的那條理由,只是套在 `Reset()` 上沒人套。** `⇧+Alt+Tab`(反向切窗)是它最常見的樣子。⚠ **實跑確認這一條在 `be5df03` 之前就在**(修前修後都紅),不是這一輪弄壞的。**這一輪刻意沒改**:要分辨「新按下」與「自動重複」得看 `lParam` bit 30,而 `KeyEvent` 沒有那一格 —— `BuildKeyEvent` 的 `GetKeyboardState` 在 ⇧ 的 down 那一刻對兩者給**同一個答案**,所以沒有零成本的修法。改法要動四端共用的 `keymap.h`,值得單獨一輪。
+  **給 macOS(#88 抄這張表的人請看)**:上面那一則列的「作廢的四個入口」現在是**五個** —— 第五個是 `ShiftTapState::OnOtherInput()`:**⇧ 按住期間有一種我們看不到的輸入動了宿主的文件**(滑鼠 / 觸控 / 手寫筆)。Windows 這一側接在 `ITfTextEditSink::OnEndEdit` 且 `GetSelectionStatus()` 為真、以及 `ITfCompositionSink::OnCompositionTerminated` 兩條腿上。⚠ 它是**作廢(kPoisoned)不是 Reset()**,理由與自動重複那一條同一條。**照四個入口抄的話,macOS 會原封不動複製「按住 ⇧ 用滑鼠選一段字就切一次中英」這個缺陷** —— 而延伸選取是每個人每天都在做的手勢。
+  **守門漏了一格(已補)**:`audit_single_source.sh` 規則 4 那三格線路檢查(繼承 / QueryInterface / `AdviseSink`)守不住第四種壞法 —— **把掛接的呼叫端全部註解掉**(5 處 `WatchFocusedContext()` / `WatchContextOf()`)。`AdviseSink` 那一行住在 `WatchContext` 的本體裡,而 `Deactivate` 的 `WatchContext(nullptr)` 讓它**永遠**留在檔案裡,所以第三格看不出來。實跑:三支守門**全綠**,而 `ITfTextEditSink` 一次都沒掛上去 = S4 的修法在**每一個**宿主裡都不生效。已補成分函式的第四格(6 個掛接呼叫點:`ActivateEx`、兩個 push/pop、`OnSetFocus`、以及 `WatchFocusedContext` → `WatchContextOf` → `WatchContext` 這條鏈),並加進 `--self-check`(現在 16 個植入)。
+  **另外五個植入逐一實跑重驗**:G1(三處 `Reset()` 全註解)、G2(兩處 `OnKey(` 也註解)、G3a(兩個偏好參數位置對調)、G3b(位置不動、來源對調)、G4(設定檔那一格永遠 `Unreadable()`)—— **五個都紅,而且紅在原報告指名的那一條規則上**。另外自己想的兩個也紅:只註解掉**三處 `Reset()` 的其中一處**(規則 4 精準指名 `ITfKeyEventSink::OnSetFocus`)、兩格偏好**都從設定檔來**(規則 5 指名第 2 個引數出現 `settings_`)。
+  **順帶結掉兩件上一輪留著的事**:(a) `shift_tap.cc` 那一行 `if (e.scan_code != armed_scan) return ShiftTap::kNothing;`(文件那一輪誤還原的那一行)——**它應該留著**:把它拿掉重跑,`shift_tap_releasing_the_other_shift_while_armed_does_not_toggle` 紅(8 個斷言裡 2 個),所以現在有測試守它,不必再回頭問意圖。(b) 上一輪沒解釋的「437 個相異 TEST 名字 vs 跑了 441 個案例」**不是重複註冊也不是參數化**:`da5eb2b` 的 34 支被編譯的測試檔裡有 **441 行 `^TEST(`、441 個完全相異的名字**,一個不多一個不少。差額全部來自**數名字的方法** —— 這棵樹上有 **15 個測試名字含中文**(例如 `TEST(ProfileTag_認得的中文標籤)`),而 `[A-Za-z0-9_]+` 這種抽名字的正規式會在第一個非 ASCII 位元組停住,把其中 12 個折成同一個空字串、`ProfileTag_` 那兩個折成同一個。**要對帳就數 `grep -c '^TEST('`,不要抽名字再 `sort -u`。**
+  ⚠ **協調層要裁的事(上一輪已經提過一次,這一輪重申)**:`/home/lc/rime-winbar` 這一輪從頭到尾 `git status` 都是乾淨的,沒有撞到人。但上一輪三條線同時寫這個 worktree 的紀錄還在,而**任何一方的「植入前後」量測都可能量到對方的中間狀態**。這一輪所有的植入實驗一律做在 `git archive` 出來的 `/tmp` 複本上,工作區一個檔案都沒被植入過 —— 那是繞開,不是解法。**分 worktree 還是分檔案,要有人決定。**
 
 - `[2026-08-11] [Windows] **重新部署會在活著的 session 腳下抽換詞庫檔(mmap)。這件事四端都成立,我只修了 Windows。** (task #90)`
   - `事實(逐條查證過,不必再查):`core/src/rime_shell.cc` 的 `rs_deploy()` 走 librime 的 `s_api.deploy = RimeDeployWorkspace`,而它是 `deployer.RunTask(...)` 連續四次**同步就地跑完**,**從不呼叫 StartWork() / StartMaintenance()**。後果有三個:(a) `maintenance_mode_` 沒被設起來,`Service::disabled()` 全程 false,所以**所有 session 全程活著**;(b) librime **一個 deploy 通知都不發**(message_sink_ 只在 `Deployer::Run()` 裡),上層拿得到終局純粹靠 rime_shell.cc:370–376 自己補的那一個;(c) `dict_compiler.cc:265 / :358` 的 `table->Remove()` / `prism_->Remove()` **回傳值沒有人看**,而 `MappedFile::Remove()` 就是刪檔。`
@@ -1408,7 +1456,82 @@ bash 端再剝一次 `\r`。(同一個檔案早就為了 cp1252 的 stdout 編�
   已知缺口:只有 x64;**簡體使用者選 zh-Hans 那一份打出來仍是繁體字**
   (langid 沒有帶進 IPC,預設方案還是 luna_pinyin_tw);
   `enable-user` 不會替使用者把中文加進 Windows 的語言清單;
-  TSF 不給純修飾鍵事件;沒有顯示屬性;沒有系統匣;沒有編 librime-lua。
+  ~~TSF 不給純修飾鍵事件~~(**已實測推翻**,見 §5 的 `[2026-08-12] [winbar]`;輕點 Shift 切中英**已於 2026-08-12 實作**,#89,真機驗收在 #48);沒有顯示屬性;沒有系統匣;沒有編 librime-lua。
 
   前兩個里程碑(核心層、TSF)的細節保留在下面。
 - **iOS** — 未開始。
+
+
+---
+
+## Windows → macOS / Android：`rs_status.variant`、以及那一橫的可見性
+
+**2026-08-11，winbar 這條線。** 三件事，前兩件會影響你們的程式碼。
+
+### 1. `rs_status` 新增 `rs_variant variant`（ABI 純加法）
+
+```c
+typedef enum {
+  RS_VARIANT_UNKNOWN = 0,  /* 四個 radio 都為假 —— 前端應整格不顯示 */
+  RS_VARIANT_HANT = 1,
+  RS_VARIANT_HANS = 2
+} rs_variant;
+```
+
+由 `zh_hans` / `zh_hant` / `zh_hant_hk` / `zh_hant_tw` 四個選項算出來
+（`zh_hans` 優先;三種繁體任一為真 → HANT;四個都假 → UNKNOWN）。
+
+**⚠ `rs_status.is_simplified` 從今天起在本專案打包的方案上是沒有意義的。**
+
+它只反映 `simplification`，而 luna_pinyin 家族與 bopomofo 家族**沒有那個
+開關** —— 它們用的是上面那組互斥的 radio。而 `rs_set_option` 對一個不存在
+的選項**不會失敗**：librime 只是記下一個沒有人讀的選項，然後原樣回讀。
+所以任何前端從 `is_simplified` 讀到的，一直都是它自己剛寫進去的偏好。
+
+Windows 端使用者實機回報的形狀：設定裡選了簡體 → 狀態列畫「简」→
+打出來是繁體。**如果你們的簡繁指示器也讀 `is_simplified`，它有同一條
+缺陷。** 欄位是新增的，舊程式碼不受影響，兩端可以各自挑時間接上。
+
+⚠ 殘留（沒有解決，已開工單）：一個既沒有那組 radio、也沒有
+`simplification` 的第三方方案，`rs_set_option(zh_hans, true)` 仍然會被記下
+並回讀，`variant` 仍然會回 HANS 而輸出沒變。今天的 `rs_` API 問不出
+「這個方案有沒有宣告這個選項」（`core/include/rime_shell.h` 只有
+`rs_set_option` / `rs_get_option`，沒有任何 config API）。真解是
+`rs_schema_declares_option(schema_id, option)`。
+
+### 2. 「換方案」與「套簡繁」必須是一個不可分割的動作
+
+librime 的 `ConcreteEngine::InitializeOptions()` 在**每一次**載入方案時都會
+把 switches 重設回方案宣告的值（有 `reset:` 的那些）。`luna_pinyin_tw` 的
+`__patch` 把 `switches/@2/reset` 設成 3，所以換一次方案，`zh_hant_tw` 就
+被設回真、`zh_hans` 被設回假 —— 使用者剛選的簡體被悄悄洗掉。
+
+Windows 端本來有四個裸的 `rs_select_schema`，其中三個之後沒有重套簡繁。
+**如果你們也有多個換方案的呼叫點，值得查一次。**
+
+在 emulator-5558 上實測過（`scripts/verify_variant_persistence.sh`，四端
+都跑得動，純 librime + rime_shell）：裸選一次同一個方案 → 候選從
+「逆号 拟好」變回「逆號 擬好」;選完立刻重套 → 留得住。
+
+⚠ 順帶一個會影響判讀的實測：`shared/default.yaml` 的
+`switcher/save_options` 列著 `zh_hant` / `zh_hans` / `zh_hant_tw`
+（**沒有** `zh_hant_hk`），librime 會記住它們並在後來建的 session 上還原。
+所以「四個 radio 全假」在出貨設定下幾乎看不到 —— 驗證腳本要用
+**全新的 user 目錄**，否則量到的是上一次跑剩下的狀態。
+
+### 3. `ui-design.md` §12.10.6：懸浮狀態列的可見性（四端一致）
+
+新增一節，規範文字在那裡。摘要：跟著「這個輸入法目前有沒有被宿主使用」
+走（macOS = 至少一個 input client;Android = IME 被系統選中且輸入視窗
+存在），條件消失後 3000 毫秒才隱藏，恢復時**取消**待隱藏，重新出現時回到
+使用者拖過的同一個位置。焦點只是加強條件，**拿不到時一律視為「有」**。
+
+⚠ 自動隱藏**不是**關閉：它不改變使用者的總開關，條件恢復時自己回來。
+⚠ 每一端都必須有一個與那一橫無關、而且在這個輸入法沒被使用時仍然存在的
+入口通往設定。macOS 的 `NSStatusItem` 天生就有「只在該輸入法啟用時出現」
+的行為，兩端在這裡會對齊。
+
+Windows 端的實作：判準是純函式（`windows/common/bar_visibility.{h,cc}`，
+九支測試），service 只負責接線。§12.10.2 那一節也整節重寫了 —— 它原本的
+論證是「這一橫是中英切換唯一的家」，而那個前提在 fix4-winkey 註冊
+`PreserveKey{VK_SPACE, TF_MOD_CONTROL}` 之後就已經過期。

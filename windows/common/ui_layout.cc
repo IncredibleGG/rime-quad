@@ -402,6 +402,15 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
       radios({IDC_VARIANT_0, IDC_VARIANT_1, IDC_VARIANT_2}, "variant_radio");
       heading(IDC_PUNCT_HEAD, IDC_PUNCT_BLURB, UiString::kPunctBlurb);
       radios({IDC_PUNCT_0, IDC_PUNCT_1, IDC_PUNCT_2}, "punct_radio");
+      // 輕點 Shift 切中英(#89)。說明很長:它要講清楚「什麼算、
+      // 什麼不算」,而那正是使用者會不會信任這顆鍵的關鍵。
+      //
+      // ⚠ 合併時從寫死的「四行」改成量真的那一句(heading 的第三個引數
+      //   已經換成 UiString)。寫死行數就是「連網頁 632 DIP 在摺線下」
+      //   那個缺陷的形狀:字一長就算少了,底下的東西全部往上疊。
+      heading(IDC_SHIFTTAP_HEAD, IDC_SHIFTTAP_BLURB, UiString::kShiftTapBlurb);
+      emit(IDC_SHIFTTAP_SWITCH, st.Push(metric::kSidebarItemH, space::s7), true,
+           "shift_tap_switch");
       break;
     }
     case kPageNetwork: {

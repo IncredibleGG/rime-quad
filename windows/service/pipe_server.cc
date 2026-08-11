@@ -87,28 +87,24 @@ Engine::SessionPlan PipeServer::PlanForLang(
   const SchemaChoice choice = ChooseSchema(langid, ids, st.SchemaPref());
   Engine::SessionPlan plan;
   plan.schema_id = choice.schema_id;
-  if (choice.set_variant) plan.options = PlanVariant(choice.simplified, langid);
-  // 標點是獨立的一項(不屬於簡繁那一組)。
-  // ⚠ kUnset = followSchema = **完全不呼叫 rs_set_option**。
-  //   設成 false 不是同一件事:很多方案根本沒有那個開關,
-  //   而有些方案的預設是 true。
-  const Tri punct = st.Punctuation();
-  if (punct != Tri::kUnset)
-    plan.options.push_back({"ascii_punct", punct == Tri::kTrue});
-  // ── 中英模式 ────────────────────────────────────────────────
+  // ⚠ **整份計畫只有一個產生點:common/schema_choice.cc 的 BuildOptionPlan。**
   //
-  // ⚠ 使用者用懸浮狀態列切成英文之後開一個新程式,那個程式**也**要是
-  //   英文的 —— 少了它,症狀是「這個開關會自己跳回去」,而使用者不會把
-  //   「我開了一個新視窗」與那件事聯想在一起。
+  //   這裡以前是「PlanVariant + ascii_punct + ascii_mode」三段手拉的碼,
+  //   而暖機那一條路(main.cc)是另一份 —— 兩份會漂移,而漂移的形狀
+  //   最惡劣:順序不同時 SameOptions 逐項比對就不相等,備用池整池報廢,
+  //   而**行為完全正確**,只是每一個新視窗都慢半秒。
+  //   windows/audit_single_source.sh 規則 1 在原始碼層面守這一條:
+  //   main.cc / pipe_server.cc 裡不得出現 PlanVariant 的呼叫。
   //
-  // ⚠ 放進 options(而不是建完 session 再設一次)是刻意的:
-  //   options 同時是備用 session 的**計畫**,而 TakeSpareSession 會比對
-  //   計畫合不合。不放進來的話,備用池裡那個照舊狀態配好的 session
-  //   會被判成「計畫相同」而直接交出去。
-  //
-  // ⚠ 與標點不同,這裡**沒有**「不干預」那一態:中英是一個模式,
-  //   不是一個三態偏好,而它的預設(false = 中文)就是 librime 的預設。
-  plan.options.push_back({"ascii_mode", engine_ && engine_->AsciiMode()});
+  //   那份計畫裡的三件事:
+  //     1. 簡繁(set_variant 為假 = 使用者說「我自己管」,一個都不碰)
+  //     2. 標點(kUnset = followSchema = 整項不出現;設成 false 不是同一件事)
+  //     3. 中英(**永遠在**)—— 使用者在那一橫上切成英文之後開的新程式
+  //        也要是英文的;而它同時是備用 session 的**計畫**,不放進來的話
+  //        備用池裡那個照舊狀態配好的 session 會被判成「計畫相同」
+  //        而直接交出去。
+  plan.options = BuildOptionPlan(choice, langid, st.Punctuation(),
+                                 engine_ && engine_->AsciiMode());
   return plan;
 }
 
@@ -383,6 +379,27 @@ void PipeServer::ListenLoop() {
 }
 
 void PipeServer::ServeClient(HANDLE pipe) {
+  // ── 那一橫的主要訊號:有沒有宿主在用這個輸入法(§12.10.6)──────
+  //
+  // ⚠ 為什麼是連線生死而不是焦點:ipc_client.cc 的
+  //   `if (!MayEatKey()) return;` —— 焦點訊號在使用者打第一個字之前
+  //   根本不送。連線生死沒有這道閘,而且與「哪一個輸入框」無關 ——
+  //   同一支程式裡跳輸入框、在都用 LuminaKey 的程式之間 Alt+Tab,
+  //   連線數都不會變,那一橫因此不會閃。
+  //
+  // ⚠ 一定要配對。這一支有很多條 goto done,所以用 RAII 保證離開時
+  //   一定減一 —— 漏掉一次,連線數就永遠偏高,那一橫再也藏不起來,
+  //   而那種缺陷只有人肉試得出來。
+  struct ClientTicket {
+    StatusBar* bar;
+    explicit ClientTicket(StatusBar* b) : bar(b) {
+      if (bar) bar->OnClientAttached();
+    }
+    ~ClientTicket() {
+      if (bar) bar->OnClientDetached();
+    }
+  } ticket(bar_);
+
   FrameReader reader;
   bool authed = false;
   uint64_t session = 0;
@@ -663,7 +680,38 @@ void PipeServer::ServeClient(HANDLE pipe) {
         // ⚠ 這裡不需要新的協議操作:那一顆鍵就走既有的 kKey,所以線路
         //   格式一個位元都沒有變 —— 舊 DLL 配新服務、新 DLL 配舊服務
         //   兩個方向都仍然連得起來。
-        Result r = IsAsciiToggleHotkey(k.keysym, k.mods)
+        //
+        // ── 輕點 Shift 也走這裡(工單 #89)────────────────────────
+        //
+        // 瘦 DLL 偵測到一次輕點之後送的是「一顆裸的 XK_Shift_L」——
+        // 同一個 kKey,線路格式一樣一個位元都沒有變。兩顆鍵分成兩格是
+        // 因為**只有輕點 Shift 有開關**(見 hotkey_policy.h)。
+        //
+        // ⚠ 設定是在**這一刻**讀的,不是開機時讀一次快取起來:
+        //   使用者在設定裡按下那顆開關之後,下一次輕點就該照新的走 ——
+        //   而一顆「要重開才生效」的開關,他會以為它壞了。
+        //   成本是一次小檔案讀取,而且只發生在真的輕點了 Shift 的時候
+        //   (組合鍵一律不會走到這裡),不在每一顆按鍵的路上。
+        const bool shift_tap_on =
+            settings_ ? settings_->Load().ShiftTapToggle() : true;
+        const KeyAction action =
+            DecideKeyAction(k.keysym, k.mods, shift_tap_on);
+        if (action == KeyAction::kIgnore) {
+          // 使用者把輕點 Shift 關掉了。**什麼都不做** ——
+          //
+          // ⚠ 而「什麼都不做」包含**不碰 UI**。這裡不可以走 push_ui:
+          //   那一份空快照會把候選窗與那一橫當成「沒有候選了」而收掉,
+          //   於是使用者組字到一半按了一下 Shift,畫面上的候選就消失了。
+          //   一個被關掉的功能不可以有任何看得見的痕跡。
+          //
+          // ⚠ 也不可以順手交給 librime(它自己也認得 Shift_L)——
+          //   理由見 common/hotkey_policy.h 的 KeyAction::kIgnore。
+          Result r;
+          r.handled = false;
+          if (!send(EncodeResult(seq, r))) goto done;
+          break;
+        }
+        Result r = action == KeyAction::kToggleAsciiMode
                        ? engine_->ToggleAsciiMode(k.session)
                        : engine_->ProcessKey(k.session, k.keysym, k.mods);
         note_schema(r.snap);
@@ -679,6 +727,11 @@ void PipeServer::ServeClient(HANDLE pipe) {
         if (!DecodeArg(payload, &seq, &a)) goto done;
         if (op == Op::kFocus) {
           if (a.arg == 0) ui_->Hide();
+          // ⚠ a.arg == 1(焦點來了)以前完全沒有處理。它是那一橫的
+          //   **加強**條件:知道而且沒有焦點時才走遲滯,拿不到時
+          //   一律視為「有」(fail-visible)。判準在
+          //   common/bar_visibility.cc,這裡只轉達。
+          if (bar_) bar_->OnHostFocus(a.arg != 0);
           break;  // 單向,不回覆
         }
         Result r;
@@ -714,6 +767,49 @@ void PipeServer::ServeClient(HANDLE pipe) {
       case Op::kSelectSchema: {
         SchemaReq sc;
         if (!DecodeSelectSchema(payload, &seq, &sc)) goto done;
+        // ⚠ 換方案之前先把設定檔裡的簡繁偏好重讀一次。
+        //
+        //   Engine::SelectAndApply 換完方案要重套簡繁(librime 每次載入
+        //   方案都會把 switches 重設回方案宣告的值),而它用的是
+        //   Engine::variant_pref_ —— 那是**設定的複本**,只有服務啟動時
+        //   與設定視窗改過時才更新(engine.h 自己寫著「真相在設定檔」)。
+        //
+        //   設定檔在服務跑著的時候被別人改掉,這一趟就會拿舊偏好去洗掉
+        //   使用者剛選的簡繁。真的走得到:設定視窗有一顆「用記事本開啟
+        //   設定檔」,而 verify_installer.sh §6g 案例二也正是這條路 ——
+        //   先寫檔、再連上已經在跑的服務、再換方案,上屏變回繁體。
+        //
+        //   SESSION_NEW 那一條路每一次都重讀設定(見上面的 st/choice/opts),
+        //   這裡照做。SetVariantPref 與 SelectSchema 都走同步的 Post,
+        //   所以順序是保證的。這條 op 本來就要載入詞典與 prism,
+        //   多一次讀設定檔不會改變它的量級。
+        //
+        // ⚠ **判斷本身不在這裡**,在 common/schema_choice.cc 的
+        //   PickVariantPrefForSchemaSwitch —— windows/service/ 在 Ubuntu 上
+        //   編不起來,寫在這裡的判斷等於只有 Windows CI 驗得到,而這一格
+        //   唯一的守門(verify_installer.sh §6g 案例二)正是那種東西。
+        //   抽出去之後 tests/test_schema_choice.cc 驗得到它。
+        //   而「這裡真的呼叫了它」由 audit_single_source.sh 規則 3 守。
+        //
+        // ⚠ 兩個參數的型別**刻意不同**(OnDiskPref / EngineCopyPref)。
+        //   同型別的舊簽章對調之後就是 648c02c 的原缺陷,而編譯器、純函式
+        //   測試、規則 3 全都看不見 —— 理由整段在 schema_choice.h 的
+        //   OnDiskPref 檔頭。這裡**不要**把它們拆成區域變數再傳:
+        //   規則 5 驗的是這一行實際的引數(設定檔那一格必須真的走
+        //   settings_->Load(),引擎那一格必須真的是 VariantPrefCopy()),
+        //   而它只看得到寫在呼叫裡的東西。
+        const VariantPrefPick pick = PickVariantPrefForSchemaSwitch(
+            settings_ ? OnDiskPref::FromSettingsFile(
+                            settings_->Load().SchemaPref())
+                      : OnDiskPref::Unreadable(),
+            EngineCopyPref(engine_->VariantPrefCopy()));
+        engine_->SetVariantPref(pick.use);
+        if (pick.engine_copy_was_stale) {
+          // 只在真的過期時說話。這一行是「設定檔在服務跑著的時候被改掉」
+          // 唯一留得下痕跡的地方 —— 沒有它,查這個缺陷時看到的只有
+          // 「換方案之後簡繁不對」,而看不到偏好是什麼時候漂走的。
+          Log("[pipe] 換方案:引擎手上的簡繁偏好已經過期,改用設定檔那一份\n");
+        }
         Result r = engine_->SelectSchema(sc.session, sc.schema_id);
         push_ui(r.snap);
         if (!send(EncodeResult(seq, r))) goto done;

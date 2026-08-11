@@ -7,9 +7,11 @@
 // Windows 端的版本是使用者實際回報過的:選了簡體輸入法,打出來全是繁體字。
 
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "../common/schema_choice.h"
+#include "../common/settings.h"  // Tri
 #include "check.h"
 
 using namespace rimewin;
@@ -237,6 +239,77 @@ TEST(PlanVariant_picks_the_right_kind_of_traditional) {
     CHECK_INT(CountOn(PlanVariant(false, id)), 1);
 }
 
+// ── PlanVariant 的**順序**:契約要寫成不依賴 PlanVariant 自己的斷言 ──
+//
+// ⚠ 這一支存在的理由是一次真的失效,而失效的是**測試**本身。
+//
+//   順序原本唯一的守門是下面那支
+//   build_option_plan_is_order_stable_and_matches_plan_variant_prefix:
+//   它拿 BuildOptionPlan 的前綴去比 PlanVariant。但 BuildOptionPlan 的
+//   前綴**就是 PlanVariant 回傳的那一份**(schema_choice.cc:
+//   `if (choice.set_variant) out = PlanVariant(choice.simplified, langid);`)
+//   —— 同一支函式擺在等號兩邊,順序一起變,那個斷言對 PlanVariant
+//   自己的順序**恆真**。覆核者把「先關再開」改成「先開再關」植入一次,
+//   全樹仍然全綠。
+//
+//   所以這裡把契約寫成獨立的斷言,一條都不拿 PlanVariant 的輸出當基準:
+//
+//     1. 第一項是 simplification。它不屬於那組 radio,但位置要固定 ——
+//        SameOptions 是**逐項**比對,位置一浮動,備用池就整池報廢。
+//     2. 四個 radio 各出現恰好一次,而且恰好一個為 true。
+//     3. **為 true 的那一項是整份計畫的最後一項。**
+//     4. 因此被關掉的三個一定排在被開啟的那一項之前。
+//
+//   3 與 4 合起來就是「先關再開」的全部內容,而它不是風格問題:
+//   rs_set_option **不維持** radio 的互斥(見 schema_choice.h 檔頭),
+//   先開再關的話最後留下的是**四個都 false** —— 那一格於是整格消失
+//   (status_cells.cc 的 kHidden),而打出來的字一次轉換都沒有做。
+//
+// ⚠ 沒有在真的 Windows 上看過:這是純邏輯,Ubuntu 上跑得完。
+TEST(PlanVariant_switches_the_chosen_one_on_last) {
+  struct Case {
+    bool simplified;
+    uint32_t langid;
+    const char* on;
+  };
+  const Case kCases[] = {
+      {true, 0x0804u, "zh_hans"},      {true, 0u, "zh_hans"},
+      {true, 0x0404u, "zh_hans"},      {false, 0x0404u, "zh_hant_tw"},
+      {false, 0x0C04u, "zh_hant_hk"},  {false, 0x1404u, "zh_hant_hk"},
+      {false, 0u, "zh_hant"},          {false, 0x0409u, "zh_hant"},
+  };
+  int seen = 0;
+  for (const Case& k : kCases) {
+    const std::vector<OptionAssign> v = PlanVariant(k.simplified, k.langid);
+
+    // 1. simplification + 四個 radio,而 simplification 在最前面。
+    CHECK_INT(static_cast<int>(v.size()), kVariantOptionCount + 1);
+    CHECK_STR(std::string(v[0].option), "simplification");
+    CHECK(v[0].value == k.simplified);
+
+    // 2. 四個 radio 各恰好一次(沒有漏、也沒有重複設兩次)。
+    for (int i = 0; i < kVariantOptionCount; ++i) {
+      int n = 0;
+      for (const OptionAssign& a : v)
+        if (std::string(a.option) == std::string(kVariantOptions[i])) ++n;
+      CHECK_INT(n, 1);
+    }
+
+    // 3. 為 true 的那一項是**最後一項**,而且就是該開的那一個。
+    const OptionAssign& last = v[v.size() - 1];
+    CHECK_STR(std::string(last.option), std::string(k.on));
+    CHECK(last.value);
+
+    // 4. 夾在中間的三個 radio 全部是 false —— 「先關再開」。
+    for (size_t j = 1; j + 1 < v.size(); ++j) {
+      CHECK(!v[j].value);
+      CHECK(std::string(v[j].option) != std::string(k.on));
+    }
+    ++seen;
+  }
+  CHECK_INT(seen, 8);  // 掃描範圍非空(§2-G2)
+}
+
 TEST(VariantPref_token_roundtrip) {
   const VariantPref all[] = {VariantPref::kFollowInputMode,
                              VariantPref::kTraditional,
@@ -330,4 +403,452 @@ TEST(warm_up_langids_cover_every_real_users_option_plan) {
     }
     CHECK(covered);
   }
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// BuildOptionPlan:暖機與 SESSION_NEW 只能有**一份**選項計畫
+// ─────────────────────────────────────────────────────────────
+//
+// service/main.cc 的暖機那一段有一句註解寫著「這一段必須與 pipe_server 的
+// kSessionNew 逐字相同」。它已經漂了:pipe_server 後來補上了
+// `ascii_mode`(使用者在那一橫上切成英文之後,新開的程式也要是英文的),
+// 而暖機那一份沒有跟著補。
+//
+// 後果不是「暖機少設一個選項」,是**整個預熱失效**:Engine::TakeSpareSession
+// 用 SameOptions 比對計畫,而 SameOptions 第一件事就是比長度。長度不同 →
+// 每一個預熱好的備用 session 都被判成過期、當場丟掉、當場重建,而
+// rs_session_create 量到過 442~753 毫秒,SESSION_NEW 的預算是 300 毫秒。
+//
+// 「一句註解要求兩段程式碼逐字相同」本來就不是一個守得住的約定。
+// 現在只有一份,而下面這幾條把它的形狀釘住。
+
+namespace {
+
+bool SamePlan(const std::vector<OptionAssign>& a,
+              const std::vector<OptionAssign>& b) {
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); ++i) {
+    if (a[i].value != b[i].value) return false;
+    if (std::string(a[i].option ? a[i].option : "") !=
+        std::string(b[i].option ? b[i].option : ""))
+      return false;
+  }
+  return true;
+}
+
+int CountOption(const std::vector<OptionAssign>& v, const char* name) {
+  int n = 0;
+  for (const OptionAssign& a : v)
+    if (std::string(a.option ? a.option : "") == std::string(name)) ++n;
+  return n;
+}
+
+}  // namespace
+
+// ⚠ 這一條就是那個漂移。ascii_mode 必須**永遠**在計畫裡,而且只有一次 ——
+//   不是「切成英文的時候才加」。少了它,計畫長度就會與另一條路徑不同。
+TEST(build_option_plan_always_carries_ascii_mode) {
+  SchemaPreference pref;
+  const std::vector<std::string> shipped = {"luna_pinyin", "luna_pinyin_tw",
+                                            "bopomofo"};
+  int seen = 0;
+  for (int i = 0; i < kWarmUpLangIdCount; ++i) {
+    const uint32_t langid = kWarmUpLangIds[i];
+    const SchemaChoice c = ChooseSchema(langid, shipped, pref);
+    for (int punct = 0; punct < 3; ++punct) {
+      for (int ascii = 0; ascii < 2; ++ascii) {
+        const std::vector<OptionAssign> plan = BuildOptionPlan(
+            c, langid, static_cast<Tri>(punct), ascii != 0);
+        CHECK_INT(CountOption(plan, "ascii_mode"), 1);
+        // 而且值要是傳進去的那一個。
+        bool found = false;
+        for (const OptionAssign& a : plan)
+          if (std::string(a.option) == "ascii_mode") {
+            CHECK(a.value == (ascii != 0));
+            found = true;
+          }
+        CHECK(found);
+        ++seen;
+      }
+    }
+  }
+  CHECK_INT(seen, kWarmUpLangIdCount * 3 * 2);  // 掃描範圍非空(§2-G2)
+}
+
+// 標點的三態:kUnset = followSchema = **完全不出現在計畫裡**。
+// 設成 false 不是同一件事 —— 很多方案根本沒有那個開關,有些預設是 true。
+TEST(build_option_plan_unset_punctuation_is_absent_not_false) {
+  SchemaPreference pref;
+  const std::vector<std::string> shipped = {"luna_pinyin"};
+  const SchemaChoice c = ChooseSchema(0x0804u, shipped, pref);
+
+  const std::vector<OptionAssign> unset =
+      BuildOptionPlan(c, 0x0804u, Tri::kUnset, false);
+  CHECK_INT(CountOption(unset, "ascii_punct"), 0);
+
+  const std::vector<OptionAssign> off =
+      BuildOptionPlan(c, 0x0804u, Tri::kFalse, false);
+  CHECK_INT(CountOption(off, "ascii_punct"), 1);
+  const std::vector<OptionAssign> on =
+      BuildOptionPlan(c, 0x0804u, Tri::kTrue, false);
+  CHECK_INT(CountOption(on, "ascii_punct"), 1);
+
+  // 三態真的分岔:長度不同、值不同。
+  CHECK(unset.size() + 1 == off.size());
+  CHECK(!SamePlan(off, on));
+}
+
+// followInputMode 關掉時**連簡繁都不碰**,但 ascii_mode 仍然要在 ——
+// 它不屬於簡繁那一組,它是一個模式。
+TEST(build_option_plan_variant_untouched_still_carries_mode) {
+  SchemaPreference pref;
+  pref.follow_input_mode = false;
+  const std::vector<std::string> shipped = {"luna_pinyin"};
+  const SchemaChoice c = ChooseSchema(0x0804u, shipped, pref);
+  CHECK(!c.set_variant);
+
+  const std::vector<OptionAssign> plan =
+      BuildOptionPlan(c, 0x0804u, Tri::kUnset, true);
+  CHECK_INT(static_cast<int>(plan.size()), 1);
+  CHECK_STR(std::string(plan[0].option), "ascii_mode");
+  CHECK(plan[0].value);
+  // 一個 radio 都不能出現。
+  for (int i = 0; i < kVariantOptionCount; ++i)
+    CHECK_INT(CountOption(plan, kVariantOptions[i]), 0);
+  CHECK_INT(CountOption(plan, "simplification"), 0);
+}
+
+// 順序也是契約的一部分:SameOptions 是**逐項**比對,不是集合比對。
+// 兩條路徑產出同一組選項但順序不同,備用池照樣全滅。
+TEST(build_option_plan_is_order_stable_and_matches_plan_variant_prefix) {
+  SchemaPreference pref;
+  const std::vector<std::string> shipped = {"luna_pinyin", "luna_pinyin_tw"};
+  int seen = 0;
+  for (int i = 0; i < kWarmUpLangIdCount; ++i) {
+    const uint32_t langid = kWarmUpLangIds[i];
+    const SchemaChoice c = ChooseSchema(langid, shipped, pref);
+    const std::vector<OptionAssign> plan =
+        BuildOptionPlan(c, langid, Tri::kTrue, false);
+
+    size_t k = 0;
+    if (c.set_variant) {
+      const std::vector<OptionAssign> v = PlanVariant(c.simplified, langid);
+      CHECK(plan.size() > v.size());
+      for (size_t j = 0; j < v.size(); ++j) {
+        CHECK_STR(std::string(plan[j].option), std::string(v[j].option));
+        CHECK(plan[j].value == v[j].value);
+      }
+      k = v.size();
+    }
+    CHECK_STR(std::string(plan[k].option), "ascii_punct");
+    CHECK_STR(std::string(plan[k + 1].option), "ascii_mode");
+    CHECK_INT(static_cast<int>(plan.size()), static_cast<int>(k + 2));
+
+    // 同樣的輸入呼叫兩次要一模一樣(沒有隱藏狀態)。
+    CHECK(SamePlan(plan, BuildOptionPlan(c, langid, Tri::kTrue, false)));
+    ++seen;
+  }
+  CHECK_INT(seen, kWarmUpLangIdCount);
+}
+
+// ── 暖的那一組與真的用的那一組是同一組 ─────────────────────────
+//
+// 上面那一支 warmup 的測試比的是 ChooseSchema + PlanVariant;現在兩條
+// 路徑走的是 BuildOptionPlan,所以這裡比的是**完整的計畫**,也就是
+// SameOptions 真的會拿去比對的那一份。
+TEST(build_option_plan_warmup_covers_every_real_langid) {
+  const std::vector<std::string> shipped = {"luna_pinyin", "luna_pinyin_tw",
+                                            "bopomofo"};
+  SchemaPreference pref;
+  const uint32_t kReal[] = {0u, 0x0404u, 0x0804u, 0x0C04u};
+  int seen = 0;
+  for (uint32_t langid : kReal) {
+    const SchemaChoice want = ChooseSchema(langid, shipped, pref);
+    // SESSION_NEW 那一趟:標點沿用方案、中英是行程層級的目前值。
+    const std::vector<OptionAssign> want_plan =
+        BuildOptionPlan(want, langid, Tri::kUnset, false);
+
+    bool covered = false;
+    for (int i = 0; i < kWarmUpLangIdCount; ++i) {
+      const uint32_t w = kWarmUpLangIds[i];
+      const SchemaChoice got = ChooseSchema(w, shipped, pref);
+      if (got.schema_id != want.schema_id) continue;
+      if (SamePlan(BuildOptionPlan(got, w, Tri::kUnset, false), want_plan)) {
+        covered = true;
+        break;
+      }
+    }
+    CHECK(covered);
+    ++seen;
+  }
+  CHECK_INT(seen, 4);
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  改完簡繁設定之後,備用 session 池還用不用得上
+// ══════════════════════════════════════════════════════════════════
+//
+// ⚠ 這一組守的是 ac4a721 宣稱修好、但實際上**恆定失效**的那件事。
+//
+//   Engine::TakeSpareSession 用 SameOptions 比對計畫,計畫不合就把那個
+//   備用 session 當場丟掉、當場重建 —— 而 rs_session_create 量到過
+//   442~753 毫秒,SESSION_NEW 的預算是 300 毫秒。症狀:改完簡繁設定
+//   之後開的第一個程式,第一顆按鍵明顯變慢,而使用者不會把兩件事
+//   聯想在一起。
+//
+//   ac4a721 的做法是「逐項就地覆蓋 value、保留舊順序」。但 PlanVariant
+//   的名字順序隨 simplified / langid 而變(「先關再開」把被跳過的那一個
+//   排到最後),而 SameOptions 是**逐項**比對 —— 簡繁只要真的變了,
+//   順序就一定變。也就是說:它在唯一針對的情境下從來沒有生效過。
+//
+//   那段程式碼在 service/engine.cc 裡,Ubuntu 上編不動,所以一支自動化
+//   測試都看不到它。現在那一段是 common/schema_choice.cc 的
+//   UpdateVariantInPlan(純函式),下面這兩支盯著它。
+
+// 覆核者在建置機上手寫重演程式跑過的那一次,原封不動寫成測試。
+TEST(spare_plan_survives_a_traditional_to_simplified_switch) {
+  const uint32_t langid = 0x0404u;  // zh-Hant-TW
+
+  // 備用池是照「跟著輸入模式走」暖起來的 → 繁體(臺灣字形)。
+  SchemaPreference before;
+  const SchemaChoice hant = ChooseSchema(langid, kShipped, before);
+  CHECK(hant.set_variant);
+  CHECK(!hant.simplified);
+  const std::vector<OptionAssign> spare =
+      BuildOptionPlan(hant, langid, Tri::kUnset, false);
+
+  // 使用者在設定裡把「文字」改成簡體。
+  SchemaPreference now;
+  now.variant = VariantPref::kSimplified;
+  bool simplified = false;
+  const bool set_variant = DecideVariant(langid, now, &simplified);
+  CHECK(set_variant);
+  CHECK(simplified);
+
+  // 更新之後的計畫,必須與 SESSION_NEW 那一趟重算的**逐項相同** ——
+  // 那正是 SameOptions 會拿去比的兩份。
+  const std::vector<OptionAssign> updated =
+      UpdateVariantInPlan(spare, set_variant, simplified, langid);
+  const std::vector<OptionAssign> fresh = BuildOptionPlan(
+      ChooseSchema(langid, kShipped, now), langid, Tri::kUnset, false);
+  CHECK(SamePlan(updated, fresh));
+
+  // 而且被開起來的那一個仍然排在最後(「先關再開」沒有被更新弄丟)——
+  // 這一份不只是比對用的鍵,MakeSpareOnEngineThread 會照它逐項重放。
+  CHECK_STR(std::string(updated[0].option), "simplification");
+  CHECK(updated[0].value);
+  CHECK_STR(std::string(updated[updated.size() - 2].option), "zh_hans");
+  CHECK(updated[updated.size() - 2].value);
+  CHECK_STR(std::string(updated[updated.size() - 1].option), "ascii_mode");
+}
+
+// 全面版:每一種「暖起來時的偏好 × 改成什麼 × 標點 × 中英 × langid」,
+// 更新之後都要與重算的那一份逐項相同。
+//
+// ⚠ 第四種偏好(followInputMode 關掉 = 「我自己管」)是同一個缺陷的
+//   **第二個入口**,而舊做法連碰都沒碰到 —— 它在 !set_variant 時直接
+//   continue,計畫裡於是留著一組 SESSION_NEW 根本不會送的選項,
+//   長度就對不上,備用池一樣整池報廢。
+TEST(updated_spare_plan_is_identical_to_a_freshly_built_one) {
+  struct Pref {
+    bool follow;
+    VariantPref variant;
+  };
+  const Pref kPrefs[] = {
+      {true, VariantPref::kFollowInputMode},
+      {true, VariantPref::kTraditional},
+      {true, VariantPref::kSimplified},
+      {false, VariantPref::kFollowInputMode},
+  };
+  const uint32_t kLangs[] = {0u, 0x0404u, 0x0804u, 0x0C04u};
+
+  int seen = 0;
+  for (uint32_t langid : kLangs) {
+    for (const Pref& warm : kPrefs) {
+      SchemaPreference before;
+      before.follow_input_mode = warm.follow;
+      before.variant = warm.variant;
+      for (int punct = 0; punct < 3; ++punct) {
+        for (int ascii = 0; ascii < 2; ++ascii) {
+          const std::vector<OptionAssign> spare = BuildOptionPlan(
+              ChooseSchema(langid, kShipped, before), langid,
+              static_cast<Tri>(punct), ascii != 0);
+          for (const Pref& after : kPrefs) {
+            SchemaPreference now;
+            now.follow_input_mode = after.follow;
+            now.variant = after.variant;
+            bool simplified = false;
+            const bool set_variant = DecideVariant(langid, now, &simplified);
+            const std::vector<OptionAssign> updated =
+                UpdateVariantInPlan(spare, set_variant, simplified, langid);
+            const std::vector<OptionAssign> fresh = BuildOptionPlan(
+                ChooseSchema(langid, kShipped, now), langid,
+                static_cast<Tri>(punct), ascii != 0);
+            CHECK(SamePlan(updated, fresh));
+            ++seen;
+          }
+        }
+      }
+    }
+  }
+  CHECK_INT(seen, 4 * 4 * 3 * 2 * 4);  // 掃描範圍非空(§2-G2)
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  換方案之前,簡繁偏好拿哪一份(648c02c 的判斷)
+// ══════════════════════════════════════════════════════════════════
+//
+// 這一組守的是 648c02c —— 那一輪**唯一改變使用者看得到的行為**的修法
+// (換方案不再洗掉簡繁)。在這一組存在之前,它唯一的守門是
+// windows/verify_installer.sh §6g 案例二:一支只有 Windows 跑得動的腳本。
+// 覆核實跑過:把 pipe_server.cc 那一行刪掉,三支守門全綠。
+//
+// ⚠ 這一組驗的是**判斷**。「pipe_server.cc 真的呼叫了它」是另一件事,
+//   由 windows/audit_single_source.sh 規則 3 在原始碼層面守。
+
+// ══ 參數放錯位置必須**編不過** ═══════════════════════════════════
+//
+// 這一格守的不是行為,是簽章。舊簽章的兩個 SchemaPreference 對調之後
+// 語意正好是 648c02c 的原缺陷(拿引擎手上那份過期的複本洗掉設定檔),
+// 而編譯器、下面那一整組測試、audit_single_source.sh 規則 3 **全部都是綠的**
+// —— 只有 verify_installer.sh §6g 案例二抓得到,而那支只有 Windows 跑得動。
+// 所以兩份偏好現在是兩個型別(schema_choice.h 的 OnDiskPref / EngineCopyPref)。
+//
+// ⚠ 為什麼要在測試檔裡再釘一次:型別保護會被一個「順手」加上的隱式轉換
+//   安靜地拆掉,而拆掉之後一支測試都不會紅。下面四條就是那個警報器。
+static_assert(std::is_invocable_v<decltype(&PickVariantPrefForSchemaSwitch),
+                                  OnDiskPref, EngineCopyPref>,
+              "正著傳必須編得過 —— 不然下面那一條反向斷言證明不了任何事");
+static_assert(!std::is_invocable_v<decltype(&PickVariantPrefForSchemaSwitch),
+                                   EngineCopyPref, OnDiskPref>,
+              "兩個偏好參數對調必須編不過(648c02c 的原缺陷)");
+static_assert(!std::is_constructible_v<OnDiskPref, SchemaPreference>,
+              "OnDiskPref 只能走具名工廠 —— 隱式轉換會讓上面那條失效");
+static_assert(!std::is_convertible_v<SchemaPreference, EngineCopyPref>,
+              "EngineCopyPref 的建構子必須是 explicit,理由同上");
+
+namespace {
+
+// 走真的檔案格式來回一趟:SetRaw → Serialize → Parse → SchemaPref()。
+// 直接組一個 SchemaPreference 也測得到函式本身,但測不到
+// 「設定檔裡寫著 simplified,讀出來就是 kSimplified」這一段 ——
+// 而產品裡那一段就在同一行上(settings_->Load().SchemaPref())。
+SchemaPreference PrefFromSettingsText(const std::string& variant_token,
+                                      const std::string& pinned_global = "") {
+  Settings st;
+  st.SetRaw(keys::kTextVariant, variant_token);
+  if (!pinned_global.empty())
+    st.SetRaw(keys::kSchemasPinnedGlobal, pinned_global);
+  return Settings::Parse(st.Serialize()).SchemaPref();
+}
+
+}  // namespace
+
+TEST(VariantPick_settings_file_beats_the_engines_stale_copy) {
+  // 使用者在記事本裡把設定檔改成簡體(設定視窗有那一顆按鈕),
+  // 而服務還跑著 —— 引擎手上那一份仍然是舊的繁體。
+  const SchemaPreference on_disk = PrefFromSettingsText("simplified");
+  SchemaPreference engine_copy;
+  engine_copy.variant = VariantPref::kTraditional;
+
+  const VariantPrefPick pick = PickVariantPrefForSchemaSwitch(
+      OnDiskPref::FromSettingsFile(on_disk), EngineCopyPref(engine_copy));
+  CHECK(pick.from_settings_file);
+  CHECK(pick.engine_copy_was_stale);
+  CHECK(pick.use.variant == VariantPref::kSimplified);
+
+  // 而這就是使用者看得到的那一格:換完方案重套簡繁時,套的是簡體。
+  bool simplified = false;
+  CHECK(DecideVariant(0x0404u, pick.use, &simplified));
+  CHECK(simplified);
+
+  // 反向:拿引擎手上那一份去套,就是 648c02c 之前的行為 ——
+  // 使用者剛選的簡體被洗回繁體,而畫面上那一格還畫著「简」。
+  bool old_simplified = true;
+  CHECK(DecideVariant(0x0404u, engine_copy, &old_simplified));
+  CHECK(!old_simplified);
+}
+
+TEST(VariantPick_takes_the_file_even_when_the_copy_agrees) {
+  // 「一樣的時候不用更新」是一個很容易寫進去的最佳化,而它把正確性
+  // 押在 SameSchemaPreference 永遠不漏欄位上。這裡釘住:一律用設定檔那一份。
+  const SchemaPreference on_disk = PrefFromSettingsText("traditional");
+  const VariantPrefPick pick = PickVariantPrefForSchemaSwitch(
+      OnDiskPref::FromSettingsFile(on_disk), EngineCopyPref(on_disk));
+  CHECK(pick.from_settings_file);
+  CHECK(!pick.engine_copy_was_stale);
+  CHECK(pick.use.variant == VariantPref::kTraditional);
+}
+
+TEST(VariantPick_unreadable_settings_keeps_the_copy_not_the_default) {
+  // 讀不到設定(settings_ 是空的)時**不可以**退回預設值 ——
+  // 那會把使用者存過的偏好換成「跟隨輸入模式」,也就是同一個缺陷換一個入口。
+  SchemaPreference engine_copy;
+  engine_copy.variant = VariantPref::kSimplified;
+  engine_copy.pinned_global = "luna_pinyin";
+
+  // ⚠ 「讀不到」現在是 OnDiskPref::Unreadable(),不是「傳一份預設值進去」——
+  //    後者長得跟「設定檔裡真的寫著預設值」一模一樣,而兩者的正確答案不同。
+  const VariantPrefPick pick = PickVariantPrefForSchemaSwitch(
+      OnDiskPref::Unreadable(), EngineCopyPref(engine_copy));
+  CHECK(!pick.from_settings_file);
+  CHECK(!pick.engine_copy_was_stale);  // 沒有東西可以比,不謊報
+  CHECK(pick.use.variant == VariantPref::kSimplified);
+  CHECK_STR(pick.use.pinned_global, "luna_pinyin");
+  // 而預設值長這樣 —— 確定上面那一條不是碰巧相同。
+  CHECK(SchemaPreference().variant == VariantPref::kFollowInputMode);
+}
+
+TEST(VariantPick_the_select_schema_path_now_matches_session_new) {
+  // 兩條路的差別就是 648c02c 的根因:SESSION_NEW 每一次都重讀設定檔,
+  // SESSION_SELECT_SCHEMA 沒有。這一條釘住「現在兩條算出來的一樣」。
+  //
+  // 掃全部三態 × 四個 langid,而不是挑一個 —— 挑一個的話,
+  // 「只有 simplified 被修好」這種半套修法會是綠的。
+  const char* kTokens[] = {"followInputMode", "traditional", "simplified"};
+  const uint32_t kLangs[] = {0u, 0x0404u, 0x0804u, 0x0C04u};
+  int seen = 0;
+  for (const char* token : kTokens) {
+    const SchemaPreference on_disk = PrefFromSettingsText(token);
+    for (uint32_t langid : kLangs) {
+      // SESSION_NEW 那一趟:現場讀設定檔。
+      bool want_simplified = false;
+      const bool want_set = DecideVariant(langid, on_disk, &want_simplified);
+      // SESSION_SELECT_SCHEMA 那一趟:先過本函式,再交給引擎。
+      // 引擎手上那一份刻意給成**相反的**,證明它沒有參與結果。
+      SchemaPreference stale;
+      stale.variant = (on_disk.variant == VariantPref::kSimplified)
+                          ? VariantPref::kTraditional
+                          : VariantPref::kSimplified;
+      const SchemaPreference use =
+          PickVariantPrefForSchemaSwitch(OnDiskPref::FromSettingsFile(on_disk),
+                                         EngineCopyPref(stale))
+              .use;
+      bool got_simplified = false;
+      const bool got_set = DecideVariant(langid, use, &got_simplified);
+      CHECK(got_set == want_set);
+      CHECK(got_simplified == want_simplified);
+      ++seen;
+    }
+  }
+  CHECK_INT(seen, 3 * 4);  // 掃描範圍非空(§2-G2)
+}
+
+TEST(SameSchemaPreference_looks_at_every_field) {
+  // 每一欄各動一次。少比一欄的症狀是 engine_copy_was_stale 少報 ——
+  // 日誌上看起來一切正常,而那正是這個缺陷最初藏起來的方式。
+  const SchemaPreference base;
+  CHECK(SameSchemaPreference(base, base));
+
+  SchemaPreference a = base; a.follow_input_mode = !base.follow_input_mode;
+  CHECK(!SameSchemaPreference(base, a));
+  SchemaPreference b = base; b.pinned_global = "luna_pinyin";
+  CHECK(!SameSchemaPreference(base, b));
+  SchemaPreference c = base; c.pinned_hant = "luna_pinyin_tw";
+  CHECK(!SameSchemaPreference(base, c));
+  SchemaPreference d = base; d.pinned_hans = "luna_pinyin";
+  CHECK(!SameSchemaPreference(base, d));
+  SchemaPreference e = base; e.variant = VariantPref::kSimplified;
+  CHECK(!SameSchemaPreference(base, e));
 }

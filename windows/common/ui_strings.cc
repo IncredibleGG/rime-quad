@@ -141,10 +141,13 @@ namespace {
     L"正在讀方案…", L"正在读方案…")                                          \
   X(kStatusBarHeading, L"The little bar", L"那一小橫", L"那一小横")            \
   X(kStatusBarBlurb,                                                           \
-    L"A small bar you can drag anywhere. It is the only place to switch "      \
-    L"between Chinese and English mid-sentence.",                              \
-    L"可以拖到任何地方的一小橫。要在句子中間切中英文,目前只有它做得到。",     \
-    L"可以拖到任何地方的一小横。要在句子中间切中英文,目前只有它做得到。")     \
+    L"A small bar you can drag anywhere. It shows up while you are using "     \
+    L"this input method. To switch between Chinese and English "               \
+    L"mid-sentence: Ctrl + Space, or click the first cell on the bar.",        \
+    L"可以拖到任何地方的一小橫。你在用這個輸入法的時候它才出現。"               \
+    L"在句子中間切中英文:Ctrl + 空白鍵,或點這一橫的第一格。",                 \
+    L"可以拖到任何地方的一小横。你在用这个输入法的时候它才出现。"               \
+    L"在句子中间切中英文:Ctrl + 空白键,或点这一横的第一格。")                 \
   X(kStatusBarShow, L"Show the little bar", L"顯示那一小橫",                   \
     L"显示那一小横")                                                           \
   X(kAppearanceHonestNote,                                                     \
@@ -180,6 +183,21 @@ namespace {
   X(kPunctFollow, L"Leave it alone", L"不干預", L"不干预")                     \
   X(kPunctChinese, L"Chinese  ,  。", L"中文  ,  。", L"中文  ,  。")          \
   X(kPunctEnglish, L"English  ,  .", L"英文  ,  .", L"英文  ,  .")             \
+  X(kShiftTapHeading, L"Switching between Chinese and English",                \
+    L"切中英文的鍵", L"切中英文的键")                                          \
+  X(kShiftTapBlurb,                                                            \
+    L"Tap Shift on its own — press it and let go without touching anything "   \
+    L"else — and typing switches between Chinese and English. Using Shift to " \
+    L"type a capital letter does not switch. Ctrl + Space always switches, "   \
+    L"whether this is on or off.",                                            \
+    L"單獨按一下 Shift —— 按下去、什麼都不碰、放開 —— 就在中英文之間切換。"    \
+    L"拿 Shift 打大寫字母不會切。不管這裡開著還是關著,"                       \
+    L"Ctrl + 空白鍵一樣可以切。",                                              \
+    L"单独按一下 Shift —— 按下去、什么都不碰、放开 —— 就在中英文之间切换。"    \
+    L"拿 Shift 打大写字母不会切。不管这里开着还是关着,"                       \
+    L"Ctrl + 空白键一样可以切。")                                              \
+  X(kShiftTapSwitch, L"Tap Shift to switch", L"按一下 Shift 就切",             \
+    L"按一下 Shift 就切")                                                      \
   X(kTextHonestNote,                                                           \
     L"This typing method only produces Simplified characters. To type "        \
     L"Traditional, switch to a Traditional one.",                              \
@@ -370,6 +388,8 @@ namespace {
   X(kTrayRedeploy, L"Rebuild words", L"重新整理字詞(&R)", L"重新整理字词(&R)") \
   X(kTrayQuit, L"Stop the input method", L"結束輸入法服務(&X)",                \
     L"结束输入法服务(&X)")                                                     \
+  X(kTrayModeChinese, L"Chinese", L"中文", L"中文")                            \
+  X(kTrayModeEnglish, L"English", L"英文", L"英文")                            \
   X(kTrayTip, L"LuminaKey Input Method", L"LuminaKey 輸入法",                  \
     L"LuminaKey 输入法")                                                       \
   /* ── 語言列 ────────────────────────────────────────────────── */          \

@@ -34,11 +34,7 @@ name: Windows (核心驗證 + TSF)
 
 on:
   push:
-<<<<<<< HEAD
-    branches: [main, windows, fix-win, fix2-winmsg, fix2-gates, fix3-win, fix4-winkey, win-next]
-=======
-    branches: [main, windows, fix-win, fix2-winmsg, fix2-gates, fix3-win, fix4-winkey, win-netgate, win-update]
->>>>>>> win-update
+    branches: [main, windows, fix-win, fix2-winmsg, fix2-gates, fix3-win, fix4-winkey, win-next, win-netgate, win-update, winbar]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -49,11 +45,55 @@ concurrency:
 
 jobs:
   # ────────────────────────────────────────────────────────────────
+  # 接線稽核(Ubuntu)。
+  #
+  # ⚠ 這個 job 補的是一格**空的**:`windows/audit_single_source.sh` 在這一輪
+  #   之前**一次都沒有在任何車道上跑過**。它只掛在 `windows/run_logic_tests.sh`
+  #   的尾巴,而那一支沒有任何 workflow 呼叫 —— 也就是說規則 4(輕點 Shift
+  #   的狀態機有沒有真的接在 TSF 的 sink 上)與規則 5(換方案時傳進去的是
+  #   哪兩份偏好)守的是**開發機**,不是這條車道。下面 logic-x64 的
+  #   `rime_tests.exe` 只跑得到純函式那一半,而這兩條規則守的正好是
+  #   「純函式驗不到的那一格」。
+  #
+  # ⚠ 為什麼不併進 logic-x64:那一支已經跑到 26 分鐘(見它的 timeout 註解),
+  #   而這裡只需要 bash + python3,不編譯,一分鐘以內。
+  #
+  # ⚠ 兩步都要。第二步(--self-check)把 16 個植入各跑一次,證明第一步的
+  #   綠燈算數 —— 這個專案的教訓一向不是「程式碼寫錯」,是「守門的東西
+  #   沒有人守」(verify_product_ids.sh 6/6 全綠、check_ui_spec.sh 的 W29
+  #   過期後蓋住訊號,兩個前科)。
+  # ────────────────────────────────────────────────────────────────
+  wiring-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: 取出原始碼
+        uses: actions/checkout@v4
+
+      - name: 單一來源稽核(含輕點 Shift 的接線、換方案的簡繁來源)
+        run: ./windows/audit_single_source.sh
+
+      - name: 反向測試（每一個植入都必須真的會紅）
+        run: ./windows/audit_single_source.sh --self-check
+
+  # ────────────────────────────────────────────────────────────────
   # 快速 job:不碰 librime。開發時最常紅的就是這一組,所以讓它先跑完。
   # ────────────────────────────────────────────────────────────────
   logic-x64:
     runs-on: windows-latest
-    timeout-minutes: 30
+    # ⚠ 30 分鐘不夠,而不夠的方式很難看:job 被 runner 砍掉,
+    #   結論是 cancelled 而不是 failure,已經跑過的那十幾步照樣顯示綠色。
+    #   實測(run 31505165420)第 15 步跑完時已經 26 分鐘,
+    #   單單「反向測試（每一條檢核都必須真的會紅）」就佔了約 20 分鐘 ——
+    #   它要把 68 個植入各跑一次完整的 check_ui_spec.sh,而在 Windows 上
+    #   一次要十幾秒(Ubuntu 上 4.5 秒)。
+    #   ⚠ 這是**把時間加夠**,不是把它變快。那一步慢得不合理,見任務 #90。
+    timeout-minutes: 60
 
     defaults:
       run:
@@ -118,6 +158,16 @@ jobs:
       #   那一條從第一天起就是假綠的,是這個反向測試把它翻出來的。
       - name: 反向測試（每一條檢核都必須真的會紅）
         run: ./windows/check_ui_spec.sh --self-check
+
+      # 已推翻的主張不可以在別處以現況陳述留著。判準很窄:只追
+      # docs/refuted-claims.tsv 裡逐字登記過的那幾句(集合封閉,誤報率 0)。
+      # ⚠ 自我檢查證兩個方向 —— 沒有記號要紅,補上記號要綠。
+      #   只證會紅的話,一支永遠紅的守門也會通過。
+      - name: 已推翻的主張沒有留在樹上(自我檢查)
+        run: ./windows/check_refuted_claims.sh --self-check
+
+      - name: 已推翻的主張沒有留在樹上
+        run: ./windows/check_refuted_claims.sh
 
       # ── 升級不重開機那一節的判準,自己先驗一次 ────────────────
       #

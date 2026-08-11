@@ -3,6 +3,8 @@
 
 #include "schema_choice.h"
 
+#include "settings.h"  // Tri 的列舉值(標頭裡只有不透明宣告)
+
 #include <algorithm>
 
 namespace rimewin {
@@ -200,6 +202,72 @@ std::vector<OptionAssign> PlanVariant(bool simplified, uint32_t langid_hint) {
     out.push_back({kVariantOptions[i], false});
   }
   out.push_back({on, true});
+  return out;
+}
+
+std::vector<OptionAssign> BuildOptionPlan(const SchemaChoice& choice,
+                                          uint32_t langid,
+                                          Tri punctuation,
+                                          bool ascii_mode) {
+  std::vector<OptionAssign> out;
+  // 1. 簡繁。set_variant 為假 = 使用者說「我自己管」,一個都不碰。
+  if (choice.set_variant) out = PlanVariant(choice.simplified, langid);
+  // 2. 標點。kUnset = followSchema = 整項不出現。
+  if (punctuation != Tri::kUnset)
+    out.push_back({"ascii_punct", punctuation == Tri::kTrue});
+  // 3. 中英。**永遠**在計畫裡 —— 少了它,兩條路徑的計畫長度就會不同,
+  //    而 SameOptions 第一件事就是比長度。那正是這一支要修的東西。
+  out.push_back({"ascii_mode", ascii_mode});
+  return out;
+}
+
+std::vector<OptionAssign> UpdateVariantInPlan(
+    const std::vector<OptionAssign>& plan, bool set_variant, bool simplified,
+    uint32_t langid) {
+  // 說明見標頭。新的簡繁那一組整組擺在最前面(BuildOptionPlan 的位置),
+  // 舊計畫裡屬於那一組的通通丟掉,其餘照原順序接在後面。
+  std::vector<OptionAssign> out;
+  if (set_variant) out = PlanVariant(simplified, langid);
+  for (const OptionAssign& a : plan) {
+    const std::string name(a.option ? a.option : "");
+    if (name == kSimplification) continue;
+    bool is_radio = false;
+    for (int i = 0; i < kVariantOptionCount; ++i)
+      if (name == kVariantOptions[i]) is_radio = true;
+    if (is_radio) continue;
+    out.push_back(a);
+  }
+  return out;
+}
+
+bool SameSchemaPreference(const SchemaPreference& a, const SchemaPreference& b) {
+  // ⚠ 逐欄位,而且**每一欄都要在**。這個函式漏一欄的症狀不是「比錯了」,
+  //   是 engine_copy_was_stale 少報一次 —— 而那只是日誌。真正的保護在
+  //   PickVariantPrefForSchemaSwitch:它一律回設定檔那一份,不看這裡的答案。
+  return a.follow_input_mode == b.follow_input_mode &&
+         a.pinned_global == b.pinned_global && a.pinned_hant == b.pinned_hant &&
+         a.pinned_hans == b.pinned_hans && a.variant == b.variant;
+}
+
+// ⚠ 兩個參數的型別不同,而那是這一支唯一的防呆:對調就編不過。
+//   理由整段寫在 schema_choice.h 的 OnDiskPref 檔頭,不要「順手」把它們
+//   合回同一個型別 —— 合回去的那一刻,648c02c 的原缺陷就能無聲地復活。
+VariantPrefPick PickVariantPrefForSchemaSwitch(
+    const OnDiskPref& on_disk, const EngineCopyPref& engine_copy) {
+  VariantPrefPick out;
+  if (!on_disk.readable()) {
+    // 讀不到設定 = 沒有比引擎手上那一份更好的來源。**不要**退回預設值:
+    // 那會把使用者存過的偏好換成「跟隨輸入模式」,也就是同一個缺陷,
+    // 只是換一個入口。
+    out.use = engine_copy.value();
+    out.from_settings_file = false;
+    out.engine_copy_was_stale = false;  // 沒有東西可以比,不謊報
+    return out;
+  }
+  out.use = on_disk.value();      // 真相在設定檔,無條件
+  out.from_settings_file = true;
+  out.engine_copy_was_stale =
+      !SameSchemaPreference(on_disk.value(), engine_copy.value());
   return out;
 }
 

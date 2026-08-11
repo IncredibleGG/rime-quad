@@ -41,6 +41,7 @@ on:
       - fix2-release
       - fix2-deadend
       - fix3-install
+      - winbar
   pull_request:
     branches:
       - main

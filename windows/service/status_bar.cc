@@ -105,9 +105,89 @@ void StatusBar::Stop() {
   }
 }
 
+// 見標頭:那四個字面的唯一出口。
+const wchar_t* BarModeGlyph(bool ascii_mode) {
+  return ascii_mode ? kGlyphAscii : kGlyphChinese;
+}
+
 void StatusBar::SetVisible(bool on) {
   if (thread_id_)
     ::PostThreadMessageW(thread_id_, WM_RIME_SHOW, on ? 1 : 0, 0);
+}
+
+// ⚠ 這三支從**連線執行緒**上被呼叫,所以只碰 atomic,不碰視窗。
+//   真正的顯示/隱藏由 UI 執行緒上的 kStateTimer 撿走(500 毫秒一次)——
+//   而「立刻顯示」那一條靠 PostThreadMessage 把計時器提前叫醒一次,
+//   不必等下一個 tick。
+void StatusBar::OnClientAttached() {
+  clients_.fetch_add(1);
+  // 立刻顯示是規範的一部分(§12.10.6):使用者切回來打第一個字之前,
+  // 那一橫就該在。等 500 毫秒的話他會先看到一個空位。
+  if (thread_id_) ::PostThreadMessageW(thread_id_, WM_RIME_REFRESH, 0, 0);
+}
+
+void StatusBar::OnClientDetached() {
+  // ⚠ 不可以掉到負數。連線執行緒有很多條,而 ServeClient 的頭尾配對
+  //   在例外路徑上不一定成立 —— 一個負數會讓那一橫再也不顯示,
+  //   而那種缺陷查起來只能靠人肉試。
+  int now = clients_.load();
+  while (now > 0 && !clients_.compare_exchange_weak(now, now - 1)) {
+  }
+  if (thread_id_) ::PostThreadMessageW(thread_id_, WM_RIME_REFRESH, 0, 0);
+}
+
+void StatusBar::OnHostFocus(bool focused) {
+  focus_known_.store(true);
+  any_focused_.store(focused);
+  if (thread_id_) ::PostThreadMessageW(thread_id_, WM_RIME_REFRESH, 0, 0);
+}
+
+// ⚠ 只在那一橫自己的 UI 執行緒上呼叫(它會阻塞在 Post 上等引擎回話,
+//   與既有的 SetAsciiModeAll 同一個風險類別,不引入新的)。
+void StatusBar::RefreshFromEngine() {
+  if (!engine_) return;
+  const Engine::StatusReadback rb = engine_->ReadBackStatus();
+  // ⚠ 一個活著的 session 都沒有 → **什麼都不改**。在這裡塞一份預設值
+  //   等於宣稱「現在是中文、繁體」,而那又是一次沒有證據的宣稱。
+  if (!rb.ok) return;
+  bool changed = false;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    const bool a = (rb.status_flags & kStAsciiMode) != 0;
+    const VariantCell v =
+        VariantCellFrom((rb.status_flags & kStVariantKnown) != 0,
+                        (rb.status_flags & kStSimplified) != 0);
+    if (a != ascii_mode_ || v != variant_) {
+      ascii_mode_ = a;
+      variant_ = v;
+      changed = true;
+    }
+  }
+  if (changed) {
+    Relayout();
+    ::InvalidateRect(hwnd_, nullptr, TRUE);
+    // 托盤那一格畫的也是中英模式 —— 兩個指示器講的是同一件事,
+    // 不能只更新一個。⚠ 只是 Post,真正的重畫在設定視窗那條執行緒上。
+    if (settings_) settings_->NotifyModeChanged();
+  }
+}
+
+void StatusBar::EvaluateVisibility() {
+  if (!hwnd_) return;
+  BarVisibilityInputs in;
+  in.user_enabled = user_enabled_;
+  in.active_clients = clients_.load();
+  in.focus_known = focus_known_.load();
+  in.any_focused = any_focused_.load();
+  in.now_ms = ::GetTickCount64();  // ⚠ 單調時鐘,不是牆上時鐘
+  const BarAction act = visibility_.Feed(in);
+  if (act == BarAction::kPending) return;  // 遲滯還沒到期,維持現狀
+  const bool want = act == BarAction::kShow;
+  if (want == shown_) return;
+  shown_ = want;
+  // ⚠ 重新出現時**不重新定位**:回到使用者拖過的同一個位置。
+  //   ApplyPlacement 已經在 Relayout 裡做過了,這裡只切可見性。
+  ::ShowWindow(hwnd_, want ? SW_SHOWNOACTIVATE : SW_HIDE);
 }
 
 void StatusBar::Refresh() {
@@ -133,11 +213,16 @@ void StatusBar::OnSnapshot(const Snapshot& snap) {
     //   那正是這個檔頭說的「說謊的指示器」。
     if (SnapshotFlagsAreUsable(snap.status_flags)) {
       const bool a = (snap.status_flags & kStAsciiMode) != 0;
-      const bool s = (snap.status_flags & kStSimplified) != 0;
-      if (a != ascii_mode_ || s != simplified_ ||
+      // ⚠ 三態,而且**known 為假時不看 simplified**。
+      //   舊版的服務不會送 kStVariantKnown → 這裡是 kHidden → 那一格
+      //   整格不顯示,而不是退回去畫繁體。判斷本身在 common/,測得到。
+      const VariantCell v =
+          VariantCellFrom((snap.status_flags & kStVariantKnown) != 0,
+                          (snap.status_flags & kStSimplified) != 0);
+      if (a != ascii_mode_ || v != variant_ ||
           snap.schema_name != schema_name_ || !have_snapshot_) {
         ascii_mode_ = a;
-        simplified_ = s;
+        variant_ = v;
         if (!snap.schema_name.empty()) schema_name_ = snap.schema_name;
         have_snapshot_ = true;
         changed = true;
@@ -210,10 +295,14 @@ void StatusBar::ThreadMain() {
   theme_.Refresh(AppearancePrefFromValue(
       st.Raw(keys::kAppearanceAppearance).c_str()));
   fonts_.Reset(dpi_, Script::kHant);
-  visible_ = st.GetTri(keys::kAppearanceFloatingBar) != Tri::kFalse;
+  user_enabled_ = st.GetTri(keys::kAppearanceFloatingBar) != Tri::kFalse;
 
   Relayout();  // Relayout 自己會走 ApplyPlacement(寬度是它算出來的)
-  if (visible_) ::ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+  // ⚠ **不在這裡 ShowWindow。** 服務剛起來時還沒有任何宿主連上來,
+  //   那一橫不該先出現三秒再消失 —— 那是一次沒有人要求過的閃爍。
+  //   顯示由狀態機決定,而第一個宿主連上來時 OnClientAttached 會把
+  //   計時器提前叫醒。
+  EvaluateVisibility();
   // ⚠ 少了這一行,首次安裝那一橫會一直停在「正在準備」,
   //   直到使用者跑去某個輸入框打一個字(見上面 kStateTimer 的說明)。
   ::SetTimer(hwnd_, kStateTimer, kStatePollMs, nullptr);
@@ -224,11 +313,17 @@ void StatusBar::ThreadMain() {
       switch (msg.message) {
         case WM_RIME_REFRESH:
           Relayout();
+          // 連線生死與焦點訊息也走這一則(它們從連線執行緒上 Post 過來),
+          // 所以「立刻顯示」不必等下一個 500 毫秒的 tick。
+          EvaluateVisibility();
           ::InvalidateRect(hwnd_, nullptr, TRUE);
           continue;
         case WM_RIME_SHOW:
-          visible_ = msg.wParam != 0;
-          ::ShowWindow(hwnd_, visible_ ? SW_SHOWNOACTIVATE : SW_HIDE);
+          // ⚠ 這是**使用者的總開關**,不是「現在顯不顯示」。
+          //   自動隱藏不走這條路 —— 它不改變這個值,所以條件恢復時
+          //   那一橫自己會回來。§12.10.6。
+          user_enabled_ = msg.wParam != 0;
+          EvaluateVisibility();
           continue;
         case WM_RIME_THEME: {
           const Settings s2 = store_ ? store_->Load() : Settings();
@@ -284,12 +379,13 @@ void StatusBar::SeedSchemaName(const std::string& name) {
 }
 
 void StatusBar::Relayout() {
-  bool ascii, simp;
+  bool ascii;
+  VariantCell variant;
   std::string name;
   {
     std::lock_guard<std::mutex> lock(mu_);
     ascii = ascii_mode_;
-    simp = simplified_;
+    variant = variant_;
     name = schema_name_;
   }
   // ⚠ 這裡以前是一個布林:
@@ -320,7 +416,8 @@ void StatusBar::Relayout() {
     glyphs.traditional = kGlyphTraditional;
     StatusBarState st;
     st.ascii_mode = ascii;
-    st.simplified = simp;
+    // 三態直接交給純函式;kHidden 那一格會拿到空字串 = 整項略過。
+    st.variant = variant;
     // 空狀態**整項略過**(§8.12 規範性):方案名還沒載入完成時,
     // 那一格完全不佔位置,不得畫成一塊看不出用途的空白。
     st.schema_name = name.empty() ? std::wstring() : Utf8ToWide(name);
@@ -566,39 +663,60 @@ void StatusBar::ClickCell(int cell) {
     case kCellMode: {
       // ⚠ 這一格是這一輪最重要的一顆鍵。在它之前,Windows 使用者
       //   **完全沒有**中英切換 —— ascii_mode 從來沒有被設定過。
-      bool now;
-      {
-        std::lock_guard<std::mutex> lock(mu_);
-        now = ascii_mode_;
-        ascii_mode_ = !now;
-      }
-      if (engine_) engine_->SetAsciiModeAll(!now);
-      Relayout();
-      ::InvalidateRect(hwnd_, nullptr, TRUE);
+      //
+      // ⚠ 方向從**引擎**的行程層級狀態算,不是從畫面上那個字算。
+      //   拿畫面反推的話,只要畫面曾經與引擎不一致(而那正是這一輪在修
+      //   的東西),再按一次送的就是同一個值 —— 使用者會覺得這一格
+      //   只能往一個方向切。
+      if (!engine_) return;
+      engine_->SetAsciiModeAll(!engine_->AsciiMode());
+      // ⚠ **不樂觀寫入。** 立刻回讀,由引擎說現在是什麼。
+      RefreshFromEngine();
       return;
     }
     case kCellVariant: {
-      // ⚠ 這裡以前**只讀不寫** simplified_。而 simplified_ 全 windows/
-      //   只有一個寫入點(OnSnapshot),OnSnapshot 只在使用者真的打一個字
-      //   時才會來。後果有兩層:
-      //     · 按下去畫面完全不變(指示器在說謊);
-      //     · ClickCell 是拿 simplified_ 反推要送哪一個值,所以在打字之前
-      //       **再按一次送的是同一個值** —— 使用者會覺得這一格只能往
-      //       一個方向切。
-      //   第一格(中/En)在上面就是樂觀寫入的,兩格的行為必須一致。
-      bool now;
+      // ⚠ 這一格以前是**樂觀寫入**:點下去就自己翻,不等任何引擎的
+      //   證據。當時的理由很實際 —— variant_ 唯一的更新路徑是
+      //   OnSnapshot,而 OnSnapshot 要等使用者真的打一個字。但代價是
+      //   那一橫可以顯示一個從來沒有發生過的狀態,而使用者回報的
+      //   「畫面說简、打出來是繁」就是那個形狀的一種。
+      //
+      //   現在改成「送出去 → 立刻向引擎回讀」。回讀是證據,而且一樣
+      //   不需要使用者先打一個字。
+      bool now_simplified;
       {
         std::lock_guard<std::mutex> lock(mu_);
-        now = simplified_;
-        simplified_ = !now;
+        // ⚠ **這裡讀到的 variant_ 不可能是 kHidden,而那是刻意的。**
+        //
+        //   舊註解寫的是「kHidden 當成現在不是簡體,所以點下去會切到
+        //   簡體」。那段行為**永遠不會發生** —— 又一句替不會發生的事
+        //   作證的註解。不可達是三行程式碼合起來的結果:
+        //     1. kHidden → StatusBarCellTexts 給這一格**空字串**
+        //        (common/status_cells.cc)
+        //     2. 空字串 → Relayout 把它的矩形設成 {0,0,0,0}
+        //        (本檔的 `if (c.text.empty())`)
+        //     3. 零寬 → HitCell 跳過(`if (r.right <= r.left) continue;`)
+        //   後兩行是 Win32、Ubuntu 上編不動,所以由 check_ui_spec.sh 的
+        //   W26 在原始碼層面守著(它有反向測試 W26f / W26g)。
+        //
+        //   **而「點不到」是要的行為,不是缺陷。** kHidden 的意思是引擎
+        //   沒有回報任何字形 —— 這個方案根本沒有那一組開關(第三方方案
+        //   多半沒有),或使用者說了「簡繁我自己管」。那一格此刻不代表
+        //   任何事實,所以整格不畫;一個畫不出來卻按得到的開關,按下去
+        //   改變的是使用者看不見的東西,而且方向還是猜的 —— 那正是這一
+        //   輪在拆的樂觀寫入,只是換了個位置。
+        //
+        //   使用者要改簡繁的路沒有斷:設定視窗的「文字」那一項。設過
+        //   之後 DecideVariant 就會回真,選項真的被送到引擎,這一格也就
+        //   有證據可以畫、可以點了。
+        now_simplified = variant_ == VariantCell::kSimplified;
       }
       // 走設定視窗那一支,三條路(狀態列、系統匣、設定)共用同一份寫入 ——
       // 各寫一份會漂移,而漂移的症狀是「從這裡切有效、從那裡切無效」。
       if (settings_)
-        settings_->SetVariantPref(now ? VariantPref::kTraditional
-                                      : VariantPref::kSimplified);
-      Relayout();
-      ::InvalidateRect(hwnd_, nullptr, TRUE);
+        settings_->SetVariantPref(now_simplified ? VariantPref::kTraditional
+                                                 : VariantPref::kSimplified);
+      RefreshFromEngine();
       return;
     }
     case kCellSchema:
@@ -812,9 +930,16 @@ LRESULT CALLBACK StatusBar::PopupProc(HWND hwnd, UINT msg, WPARAM w,
            pick < static_cast<int>(self->popup_items_.size()))
               ? self->popup_items_[pick].first
               : std::string();
-      // ⚠ 與 简/繁 那一格同一個形狀:schema_name_ 只有 OnSnapshot 寫,
-      //   而 OnSnapshot 要等使用者真的打一個字。不樂觀寫入的話,選完方案
-      //   那一格上還印著舊方案的名字 —— 使用者會以為沒選到、再選一次。
+      // ⚠ 這裡以前也是樂觀寫入(直接把 schema_name_ 寫成選單上的名字)。
+      //   當時的理由是「不寫的話,選完方案那一格上還印著舊名字,使用者
+      //   會以為沒選到、再選一次」。
+      //
+      //   但方案名與簡繁不一樣:它是**選單上那一項自己的字面**,不是
+      //   一個我們推測出來的引擎狀態 —— 使用者點的就是這一項。真正
+      //   不誠實的是「選了但其實沒選成功」,而那件事現在由
+      //   SelectSchemaAll 之後的回讀來收:方案名照舊先寫上去(它是使用者
+      //   剛剛點的東西),中英與簡繁則等引擎回話 ——
+      //   換方案會把 switches 重設,那一格必須跟著動。
       const std::string picked_name =
           (inside && pick >= 0 &&
            pick < static_cast<int>(self->popup_items_.size()))
@@ -827,6 +952,10 @@ LRESULT CALLBACK StatusBar::PopupProc(HWND hwnd, UINT msg, WPARAM w,
           self->schema_name_ = picked_name;
         }
         self->engine_->SelectSchemaAll(id);
+        // ⚠ 換方案之後那一格**一定會變**(SelectAndApply 會重套簡繁,
+        //   而新方案宣告的字形也可能不同)。不回讀的話,那一格會停在
+        //   換方案之前的字面,直到使用者打一個字。
+        self->RefreshFromEngine();
         self->Relayout();
         ::InvalidateRect(self->hwnd_, nullptr, TRUE);
       }
@@ -947,6 +1076,14 @@ LRESULT CALLBACK StatusBar::WndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
         self->Relayout();
         ::InvalidateRect(hwnd, nullptr, TRUE);
       }
+      // ⚠ 待隱藏的到期就在這裡收 —— **不新增計時器**。這一顆本來就是
+      //   半秒一次,而 3000 毫秒的遲滯用半秒的解析度綽綽有餘。
+      //   多一顆計時器就多一條要對齊的時序。
+      self->EvaluateVisibility();
+      // ⚠ 順便保鮮:引擎那一側可能被別的路徑改了(設定視窗、系統匣、
+      //   方案自己的按鍵),而那些路徑不會通知這一橫。半秒問一次,
+      //   沒變就什麼都不做(RefreshFromEngine 自己會比對)。
+      self->RefreshFromEngine();
       return 0;
     }
     case WM_DPICHANGED: {

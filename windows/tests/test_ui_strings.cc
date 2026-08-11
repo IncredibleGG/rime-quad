@@ -233,3 +233,42 @@ TEST(ui_strings_out_of_range_is_empty_not_a_crash) {
   CHECK(UiText(static_cast<UiString>(-1))[0] == L'\0');
   CHECK(UiText(static_cast<UiString>(999999))[0] == L'\0');
 }
+
+
+// ─────────────────────────────────────────────────────────────
+// 那一橫的說明必須說得出「怎麼切中英文」
+// ─────────────────────────────────────────────────────────────
+//
+// 使用者實機回報:「我用 shift 切換中英文,但是他不變」。
+//
+// 他以為有一顆鍵,而**確實有**(fix4-winkey 那一輪註冊了
+// PreserveKey{VK_SPACE, TF_MOD_CONTROL},tsf/text_service.cc)——
+// 只是我們從來沒有告訴過他。而那一橫的說明當時還寫著「在句子中間切
+// 中英文,目前只有它做得到」,那句話在那一輪之後就已經是假的。
+//
+// 這一條把「說明裡要提到那顆鍵」變成一個測得到的事實。它同時是
+// 那一橫敢自動隱藏的前提:那一橫會消失,而鍵盤上那顆鍵不會。
+TEST(ui_strings_bar_blurb_names_the_hotkey) {
+  int checked = 0;
+  for (int lang = 0; lang < static_cast<int>(UiLang::kLangCount); ++lang) {
+    const std::wstring blurb =
+        UiTextIn(static_cast<UiLang>(lang), UiString::kStatusBarBlurb);
+    CHECK(!blurb.empty());
+    // Ctrl 與空白鍵。⚠ 三個語系都要有 —— 缺一個的使用者就回到
+    //   「我以為只有那一橫做得到」。
+    CHECK(Contains(blurb, L"Ctrl"));
+    // 「空白」的中文寫法各語系不同,所以只斷言西文那一半 +
+    // 「這一句有提到一個組合鍵」的形狀(有 + 號或 Space)。
+    CHECK(Contains(blurb, L"+") || Contains(blurb, L"Space"));
+
+    // ⚠ 而且不得再宣稱「只有它做得到」。這句話現在是假的。
+    //   判準用碼點寫(本檔不含中日韓字面值,見檔頭)。
+    //   「只有」= U+53EA U+6709
+    CHECK(!Contains(blurb, W({0x53EA, 0x6709})));
+
+    // ⚠ Windows 的文案不走 Markdown,`**` 會被原樣畫成星號(工單 #77)。
+    CHECK(!Contains(blurb, L"**"));
+    ++checked;
+  }
+  CHECK_INT(checked, static_cast<int>(UiLang::kLangCount));  // 掃描範圍非空(§2-G2)
+}

@@ -341,12 +341,24 @@ TEST(ui_layout_appearance_page_still_needs_scrolling_at_the_default_size) {
   //   移了。舊值 574 / 604 / 634 / 754 / 810,content_h 890。
   //   ⚠ **重點沒有變**:深淺三態仍然在可視高度(506)以下,這一頁仍然
   //     非捲不可。修的是「多出來的空白」,不是「這頁其實放得下」。
+  //
+  // ⚠ 2026-08-12(winbar 併進來):那一橫的說明從
+  //   「…要在句子中間切中英文,目前只有它做得到。」改成
+  //   「…你在用這個輸入法的時候它才出現。在句子中間切中英文:
+  //     Ctrl + 空白鍵,或點這一橫的第一格。」
+  //   —— 多一行,所以它**底下**的三個數字各 +16(714→730、770→786、
+  //   822→838)。深淺三態在那一段**上面**,一格都沒動。
+  //
+  //   這正是這兩條線碰在一起的地方:winbar 把那句話改長(舊的那句在
+  //   它改完狀態列生命週期之後是**假的**),而 win-next 讓版面真的去
+  //   量那句話。兩件事都要在,所以數字必須跟著走 —— 釘住舊數字等於
+  //   宣稱那句話沒改。
   CHECK_INT(find(IDC_THEME_0).y, 563);
   CHECK_INT(find(IDC_THEME_1).y, 593);
   CHECK_INT(find(IDC_THEME_2).y, 623);
-  CHECK_INT(find(IDC_BAR_SHOW).y, 714);
-  CHECK_INT(find(IDC_APPEAR_NOTE).y, 770);
-  CHECK_INT(pl.content_h_dip, 822);
+  CHECK_INT(find(IDC_BAR_SHOW).y, 730);
+  CHECK_INT(find(IDC_APPEAR_NOTE).y, 786);
+  CHECK_INT(pl.content_h_dip, 838);
 
   // 預設尺寸下的可視高度是 506 —— 深淺三態在 574 以下,**看不到**。
   CHECK_INT(ContentViewportHeightDip(kWindowDefaultH), 506);

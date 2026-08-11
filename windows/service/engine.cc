@@ -8,6 +8,7 @@
 
 #include "../common/callback_gate.h"
 #include "../common/ime_policy.h"
+#include "../common/status_cells.h"
 #include "rime_shell.h"
 
 namespace rimewin {
@@ -98,7 +99,13 @@ uint32_t FlagsOf(const rs_status& s) {
   if (s.is_composing) f |= kStComposing;
   if (s.is_ascii_mode) f |= kStAsciiMode;
   if (s.is_full_shape) f |= kStFullShape;
-  if (s.is_simplified) f |= kStSimplified;
+  // ⚠ **不是** s.is_simplified。那個欄位只反映 `simplification`,而本專案
+  //   打包的方案通通沒有那個開關 —— rs_set_option 對不存在的選項不會
+  //   失敗、會原樣記下並回讀,所以讀它等於把我們自己寫進去的偏好當成
+  //   引擎的狀態回報。使用者實機回報過:設定裡選簡體、狀態列畫「简」、
+  //   打出來是繁體。真相在 s.variant(core/include/rime_shell.h)。
+  if (s.variant != RS_VARIANT_UNKNOWN) f |= kStVariantKnown;
+  if (s.variant == RS_VARIANT_HANS) f |= kStSimplified;
   if (s.is_ascii_punct) f |= kStAsciiPunct;
   if (s.is_disabled) f |= kStDisabled;
   return f;
@@ -370,6 +377,33 @@ void Engine::RequestSpareSession(uint32_t langid, const std::string& schema_id,
   });
 }
 
+// ⚠ **engine.cc 裡唯一允許出現 rs_select_schema 的地方**(見 engine.h)。
+//   windows/audit_single_source.sh 在原始碼層面守這一條。
+bool Engine::SelectAndApply(uint64_t id, uintptr_t sess,
+                            const std::string& schema_id) {
+  if (!sess) return false;
+  bool selected = false;
+  if (!schema_id.empty()) {
+    selected = rs_select_schema(sess, schema_id.c_str());
+    // 換方案失敗就不要再套簡繁 —— 那個 session 現在是什麼方案我們不知道,
+    // 而對一個沒選成功的方案套字形只會讓狀態更難解釋。
+    if (!selected) return false;
+  }
+  // 換方案會重建 context 並把 switches 重設回方案宣告的值,所以簡繁
+  // 一定要在**選完之後**才套。順序反過來的話,設的那一份會被洗掉,
+  // 而那是**靜默**的:畫面照舊、打出來的字變了。
+  auto it = session_lang_.find(id);
+  const uint32_t lang = (it == session_lang_.end()) ? 0u : it->second;
+  bool simplified = false;
+  // ⚠ 與建 session 時走的是**同一支** DecideVariant / PlanVariant。
+  //   兩份會漂移,而漂移的症狀是「改設定當下沒變、換個程式就變了」。
+  if (DecideVariant(lang, variant_pref_, &simplified)) {
+    for (const OptionAssign& a : PlanVariant(simplified, lang))
+      rs_set_option(sess, a.option, a.value);
+  }
+  return selected;
+}
+
 // ⚠ **只能在引擎執行緒上呼叫**(它直接碰 sessions_ / next_id_ 與 rs_*)。
 void Engine::MakeSpareOnEngineThread(uint32_t langid,
                                      const std::string& schema_id,
@@ -383,8 +417,14 @@ void Engine::MakeSpareOnEngineThread(uint32_t langid,
   const uint64_t id = next_id_++;
   sessions_[id] = s;
   session_lang_[id] = langid;
-  if (!schema_id.empty()) rs_select_schema(s, schema_id.c_str());
-  // 字形要在選方案**之後**才設(換方案會重建 context)。
+  // ⚠ 這裡走 SelectAndApply,而不是裸的 rs_select_schema —— 備用 session
+  //   也是 session,它一樣會被換方案洗掉簡繁。
+  //
+  //   接著才套 options:它是**呼叫端算好的完整計畫**(BuildOptionPlan),
+  //   含簡繁、標點、中英,而且 TakeSpareSession 會拿它比對。所以順序是
+  //   「選方案 → SelectAndApply 保底 → options 覆蓋」,最後生效的一定是
+  //   計畫裡那一份。
+  SelectAndApply(id, s, schema_id);
   for (const OptionAssign& a : options) rs_set_option(s, a.option, a.value);
   std::lock_guard<std::mutex> lock(spare_mu_);
   SparePlan p;
@@ -610,7 +650,9 @@ Result Engine::SelectSchema(uint64_t id, const std::string& schema_id) {
   Post("換方案", [&] {
     const uintptr_t sess = Find(id);
     if (!sess) return;
-    r.handled = rs_select_schema(sess, schema_id.c_str());
+    // ⚠ 換完一定要重套簡繁 —— 這條路徑是 SendSelectSchema 進來的,
+    //   而它以前是裸呼叫:使用者從設定裡換一次方案,他選的簡體就沒了。
+    r.handled = SelectAndApply(id, sess, schema_id);
     r.snap = TakeSnapshotLocked(sess);
   });
   return r;
@@ -791,6 +833,50 @@ void Engine::SetSessionLangId(uint64_t id, uint32_t langid) {
 
 void Engine::ApplyVariantAll(const SchemaPreference& pref,
                             std::function<void(bool)> on_done) {
+  // ⚠ 先把備用池的**計畫**改掉,再去改真的 session。
+  //
+  //   TakeSpareSession 用 SameOptions 比對計畫,計畫不合就把那個備用
+  //   session 當場丟掉、當場重建。所以改完簡繁設定之後,如果不同步
+  //   更新備用池的計畫,**池子裡每一個 session 都會被判成過期** ——
+  //   正確性沒事,但 442~753 毫秒的 session 建立成本又回到使用者
+  //   等待的那一趟裡(SESSION_NEW 的預算是 300 毫秒)。
+  //
+  //   症狀:改完簡繁設定之後開的第一個程式,第一顆按鍵明顯變慢,
+  //   而使用者不會把「我剛改了設定」與那件事聯想在一起。
+  //
+  //   這與 SetAsciiModeAll 是同一個形狀,做法照抄它。
+  //
+  // ⚠ 這一段留在**呼叫端**執行緒上(不搬進下面那件非同步工作裡),
+  //   理由與拿掉第二個 Post 是同一條:spare_mu_ 一旦在引擎執行緒上被
+  //   拿住,SESSION_NEW 那一趟(TakeSpareSession / RequestSpareSession)
+  //   就在呼叫端執行緒上等它。這裡只是幾筆純記憶體運算,沒有 rs_*。
+  //
+  //   代價是計畫先更新、session 的選項晚一步(下面那件工作)才更新。
+  //   那個空窗**不會留下錯的狀態**:備用 session 從建立起就一直在
+  //   sessions_ 裡(MakeSpareOnEngineThread 的第一件事就是
+  //   `sessions_[id] = s;`),所以下面那個迴圈照樣會套到它,
+  //   不論它在空窗期間有沒有被 TakeSpareSession 交出去。
+  {
+    std::lock_guard<std::mutex> lock(spare_mu_);
+    for (auto& kv : spare_) {
+      bool simplified = false;
+      const bool set_variant = DecideVariant(kv.first, pref, &simplified);
+      // ⚠ **整組換掉,不是逐項覆蓋 value。**
+      //
+      //   這裡原本是「逐項就地覆蓋 value、保留舊順序」,而那在它唯一
+      //   針對的情境下**恆定失效**:PlanVariant 的名字順序隨 simplified
+      //   而變(先關再開會把被跳過的那一個排到最後),SameOptions 是
+      //   逐項比對 —— 簡繁只要真的變了,順序就一定變,備用池照樣整池
+      //   報廢。而且 !set_variant 那一條路以前直接 continue,計畫裡會
+      //   留著一組 SESSION_NEW 根本不會送的選項,長度就對不上。
+      //
+      //   兩件事現在都由 common/schema_choice.cc 的 UpdateVariantInPlan
+      //   處理,而它是純函式 —— tests/test_schema_choice.cc 驗得到,
+      //   不必等一輪 CI,也不必有一台 Windows。
+      kv.second.options = UpdateVariantInPlan(kv.second.options, set_variant,
+                                              simplified, kv.first);
+    }
+  }
   // ⚠ **非同步,而且 pref 要傳值。**
   //
   //   這一支就是 #79 使用者按下去的那一顆:設定視窗的「簡體字」單選鈕
@@ -803,6 +889,13 @@ void Engine::ApplyVariantAll(const SchemaPreference& pref,
   //   是必須(見 tests/test_work_queue.cc 的 async_job_owns_its_arguments)。
   const bool queued =
       PostAsync("對所有 session 套簡繁", [this, pref, on_done] {
+        // SelectAndApply 之後要用它重算 —— 少了這一行,使用者改完設定再
+        // 換一次方案,換回去的是**改設定之前**那一份簡繁。
+        //
+        // ⚠ 改成非同步之後這一格晚了一拍,但**順序仍然對**:佇列是先進
+        //   先出,而換方案那條路(SelectSchemaAll / SelectSchema)也走
+        //   同一條佇列,一定排在這件工作後面。
+        variant_pref_ = pref;
         bool ok = true;
         for (const auto& kv : sessions_) {
           auto it = session_lang_.find(kv.first);
@@ -821,6 +914,22 @@ void Engine::ApplyVariantAll(const SchemaPreference& pref,
         if (on_done) on_done(ok);
       });
   if (!queued && on_done) on_done(false);
+  // ⚠ 這裡以前還有第二個 Post(「對備用 session 套簡繁」),註解寫著
+  //   「備用 session 不在 sessions_ 的迴圈裡(它們在 spare_ 底下)」。
+  //   **那句話是假的。** MakeSpareOnEngineThread 建完備用 session 的
+  //   第一件事就是 `sessions_[id] = s;`,spare_ 存的只是「哪一個 id
+  //   備著、配了什麼計畫」。備用 session 從頭到尾都在 sessions_ 裡,
+  //   所以上面那個迴圈已經套過它們了,而且套的是同一份 ——
+  //   session_lang_[id] 就是 langid,與 spare_ 的鍵相同。
+  //
+  //   那段註解自己就推翻自己:它的迴圈 body 呼叫 Find(),而 Find 查的
+  //   **就是 sessions_**。如果備用 session 真的不在 sessions_ 裡,
+  //   Find 會回 0、continue,整個 Post 一個選項都不會設 —— 它宣稱
+  //   在防的那個「靜默錯誤」它根本防不到。
+  //
+  //   拿掉它不是整理:它會在引擎執行緒上**再拿一次 spare_mu_**,而那把
+  //   鎖同時擋著呼叫端執行緒的 TakeSpareSession / RequestSpareSession
+  //   ——SESSION_NEW 那一趟正在等它。
 }
 
 void Engine::SelectSchemaAll(const std::string& schema_id) {
@@ -828,7 +937,15 @@ void Engine::SelectSchemaAll(const std::string& schema_id) {
   //   而 schema_id 是那個選單的一個成員的複本 —— 選單在這一支返回之後
   //   就關掉了。
   PostAsync("對所有 session 換方案", [this, schema_id] {
-    for (const auto& kv : sessions_) rs_select_schema(kv.second, schema_id.c_str());
+    // ⚠ 這是懸浮狀態列第三格那個方案選單走的路。它以前是裸呼叫,
+    //   於是「換一次方案」就把使用者選的簡繁洗掉,而畫面上那一格
+    //   還畫著舊的 —— 使用者回報的兩件事(那一橫、簡繁說謊)在這裡
+    //   是同一個缺陷。
+    //
+    // ⚠ **不可以**改回裸 rs_select_schema:engine.cc 裡只准有一處,
+    //   而那一處必須在 SelectAndApply 裡(audit_single_source.sh 規則 2)。
+    for (const auto& kv : sessions_)
+      SelectAndApply(kv.first, kv.second, schema_id);
   });
 }
 
@@ -847,14 +964,52 @@ std::string Engine::SchemaOfSession(uint64_t id) {
   return out;
 }
 
+Engine::StatusReadback Engine::ReadBackStatus() {
+  StatusReadback out;
+  Post("回讀狀態", [&] {
+    // 挑一個活著的 session。沒有就退而求其次用備用池裡的 ——
+    // 它們的選項是照同一份計畫配的,回讀出來的是同一件事。
+    uintptr_t sess = 0;
+    if (!sessions_.empty()) sess = sessions_.begin()->second;
+    if (!sess) {
+      std::lock_guard<std::mutex> lock(spare_mu_);
+      if (!spare_.empty()) sess = Find(spare_.begin()->second.session);
+    }
+    // ⚠ 一個都沒有 → ok 維持 false,呼叫端**什麼都不要改**。
+    //   在這裡回一份預設值等於宣稱「現在是中文、繁體」,而那又是
+    //   一次沒有證據的宣稱。
+    if (!sess) return;
+    out.ok = true;
+    if (rs_get_option(sess, "ascii_mode")) out.status_flags |= kStAsciiMode;
+    // ⚠ 簡繁**不讀 `simplification`**。理由見 common/status_cells.h:
+    //   本專案打包的方案通通沒有那個開關,而 rs_set_option 對不存在的
+    //   選項不會失敗、會原樣記下並回讀 —— 讀它等於讀自己寫進去的回音。
+    // ⚠ 用字面名字而不是 kVariantOptions[i]:那個陣列的順序是
+    //   PlanVariant 的「先關再開」用的,拿索引對應欄位等於把兩件無關的
+    //   東西綁在一起 —— 哪天順序調了,這裡會靜默地讀錯欄位。
+    VariantOptions vo;
+    vo.zh_hans = rs_get_option(sess, "zh_hans");
+    vo.zh_hant = rs_get_option(sess, "zh_hant");
+    vo.zh_hant_hk = rs_get_option(sess, "zh_hant_hk");
+    vo.zh_hant_tw = rs_get_option(sess, "zh_hant_tw");
+    const VariantCell v = VariantCellFromOptions(vo);
+    if (v != VariantCell::kHidden) out.status_flags |= kStVariantKnown;
+    if (v == VariantCell::kSimplified) out.status_flags |= kStSimplified;
+  });
+  return out;
+}
+
 std::string Engine::ApplyChoice(uint64_t id, const std::string& schema_id,
                                 const std::vector<OptionAssign>& options) {
   std::string chosen;
   Post("套用方案與選項", [&] {
     const uintptr_t sess = Find(id);
     if (!sess) return;
-    if (!schema_id.empty() && rs_select_schema(sess, schema_id.c_str()))
-      chosen = schema_id;
+    // ⚠ 走 SelectAndApply(而不是裸的 rs_select_schema)。
+    //   它保底把簡繁套一次;接著 options 是呼叫端算好的完整計畫
+    //   (BuildOptionPlan:簡繁 + 標點 + 中英),覆蓋在上面。
+    //   兩者的簡繁部分一致 —— 都走 DecideVariant / PlanVariant。
+    if (SelectAndApply(id, sess, schema_id)) chosen = schema_id;
     // 字形要在選方案**之後**才設:換方案會重建 context,
     // 先設的話會被換方案那一步洗掉。
     for (const OptionAssign& a : options) rs_set_option(sess, a.option, a.value);
@@ -958,7 +1113,21 @@ void Engine::RebuildSessionsOnEngineThread() {
     if (planner_) {
       const SessionPlan plan = planner_(ps.langid, schemas);
       // 字形要在選方案**之後**才設(換方案會重建 context)。
-      if (!plan.schema_id.empty()) rs_select_schema(s, plan.schema_id.c_str());
+      //
+      // ⚠ 這裡走 SelectAndApply,不是裸的 rs_select_schema —— 與
+      //   MakeSpareOnEngineThread 同一條規矩:engine.cc 裡只准有一個
+      //   rs_select_schema 呼叫點,而它在 SelectAndApply 裡
+      //   (windows/audit_single_source.sh 規則 2)。
+      //   這一格是**合併時新長出來的**呼叫點:#90 的重建路徑在 winbar
+      //   立那條規矩的時候還不存在,而它正是規矩要防的那個形狀 ——
+      //   換方案會把 switches 重設回方案宣告的值。
+      //
+      //   順序與備用 session 那一支完全一樣:「選方案 → SelectAndApply
+      //   用 variant_pref_ 保底 → plan.options 覆蓋」。最後生效的一定是
+      //   planner_ 算出來的那一份(它含簡繁、標點、中英,而且是照
+      //   **設定檔**算的)。SelectAndApply 只是讓「選了方案卻沒重套簡繁」
+      //   這條路在原始碼裡不存在。
+      SelectAndApply(ps.id, s, plan.schema_id);
       for (const OptionAssign& a : plan.options)
         rs_set_option(s, a.option, a.value);
     }

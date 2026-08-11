@@ -876,21 +876,32 @@ PYSCRIPT
     red "W26:ApplyPlacement 沒有收寬度參數 —— 從 GetWindowRect 讀回來的是舊寬度"
     w26bad=1
   fi
-  # ── 按下去畫面要立刻動:兩格都要「樂觀寫入 + 重畫」 ──────────
+  # ── 按下去畫面要立刻動,而且動的是**引擎說的**那個值 ──────────
   #
-  # ⚠ 上一版只看 kCellVariant 分支裡有沒有 `simplified_ = `。覆核者
-  #   保留樂觀寫入、只拿掉 `Relayout()` + `::InvalidateRect()`,
-  #   那一格照樣不會變 —— 而 W26 仍然印 ok。狀態寫了沒有重畫,
-  #   使用者看到的與「根本沒寫」一模一樣。
+  # ⚠ 這一條的判準**反過來了**,而反過來的理由是使用者實機回報。
   #
-  #   所以現在對**兩格**(中/En 與 简/繁)都要求同一個形狀,而且要求
-  #   順序:先寫本地狀態 → 再送出去 → 再重畫。少一步就紅。
+  #   舊版要求兩格「樂觀寫入 + 重畫」:點下去就自己翻,不等引擎。
+  #   那個要求當時解的是真問題(那兩格唯一的更新路徑是 OnSnapshot,
+  #   而 OnSnapshot 要等使用者真的打一個字,所以不寫的話點下去畫面
+  #   完全不變)。
+  #
+  #   但代價是那一橫可以顯示一個**從來沒有發生過的狀態**。使用者回報:
+  #   設定裡選了簡體、畫面說「简」、打出來是繁體。那一格在替一件沒有
+  #   發生的事作證,而 W26 舊版正是**要求**它那樣做。
+  #
+  #   現在的形狀是「送出去 → 立刻向引擎回讀」:
+  #     · 不得有樂觀寫入(本地狀態的指派)
+  #     · 一定要有送出去的呼叫
+  #     · 一定要有 RefreshFromEngine(),而且在送出去**之後**
+  #
+  #   回讀一樣不需要使用者先打一個字 —— 它解掉舊要求要解的問題,
+  #   而且不必宣稱任何沒有證據的事。
+  #
+  # ⚠ 順序仍然是判準的一部分:先回讀才送出去的話,讀到的是舊值,
+  #   那一格會停在點下去之前的樣子。
   local w26c; w26c="$("${PY}" - "${bar}" <<'PYSCRIPT'
 import sys as _s
-# ⚠ windows-latest 的 runner 上 python 的 print 吐的是 CRLF。bash 的 $(...)
-#   只剥掉末尾的 \n,於是每一行都帶著 \r —— `case "${line}" in SCOPE_OK)`
-#   就對不上,而症狀是「未知的回報:SCOPE_OK」這種看不懂的紅字。
-#   (實際發生過:CI run 31331902667 的 W12。)
+# ⚠ windows-latest 的 runner 上 python 的 print 吐的是 CRLF,見 W25 的說明。
 _s.stdout.reconfigure(encoding='utf-8', newline='')
 import re, sys
 s = open(sys.argv[1], encoding='utf-8', errors='replace').read()
@@ -902,29 +913,61 @@ if not m:
     raise SystemExit
 body = m.group(1)
 
-# (格名, 樂觀寫入的形態, 送出去的呼叫)
+# (格名, 送出去的呼叫, 不得出現的樂觀寫入)
 cells = (
-    ('kCellMode', 'ascii_mode_ = !now;', 'SetAsciiModeAll('),
-    ('kCellVariant', 'simplified_ = !now;', 'SetVariantPref('),
+    ('kCellMode', 'SetAsciiModeAll(', 'ascii_mode_ = '),
+    ('kCellVariant', 'SetVariantPref(', 'variant_ = '),
 )
-for name, write, send in cells:
+for name, send, optimistic in cells:
     c = re.search(r'case ' + name + r': \{(.*?)\n    \}', body, re.S)
     if not c:
         out.append('NOCELL=' + name)
         continue
     b = c.group(1)
-    iw = b.find(write)
-    if iw < 0:
-        out.append('NOOPTIMISTIC=' + name)
-        continue
-    if send not in b:
+    # 註解裡會提到這些名字,所以先把註解整行剔掉再判斷。
+    code = '\n'.join(l for l in b.split('\n') if not l.lstrip().startswith('//'))
+    if optimistic in code:
+        out.append('OPTIMISTIC=' + name)
+    isend = code.find(send)
+    if isend < 0:
         out.append('NOSEND=' + name)
-    ir = b.find('Relayout();')
-    ii = b.find('::InvalidateRect(hwnd_, nullptr, TRUE);')
-    if ir < 0 or ii < 0:
-        out.append('NOREPAINT=' + name)
-    elif ir < iw or ii < iw:
-        out.append('REPAINT_BEFORE_WRITE=' + name)
+        continue
+    iread = code.find('RefreshFromEngine();')
+    if iread < 0:
+        out.append('NOREADBACK=' + name)
+    elif iread < isend:
+        out.append('READBACK_BEFORE_SEND=' + name)
+
+# 回讀那一支本身要真的去問引擎,而且要重畫 —— 定義留著、身體空掉
+# 一樣是綠的,那正是上一輪被拆掉的形狀。
+r = re.search(r'void StatusBar::RefreshFromEngine\(\) \{(.*?)\n\}\n', s, re.S)
+if not r:
+    out.append('NOREFRESHDEF')
+else:
+    rb = r.group(1)
+    if 'ReadBackStatus()' not in rb:
+        out.append('REFRESH_NOT_ASKING')
+    if 'Relayout();' not in rb or '::InvalidateRect(' not in rb:
+        out.append('REFRESH_NOT_REPAINTING')
+
+# ── kHidden 那一格點不到,是 ClickCell 那一段不可達的**唯一**依據 ──
+#
+# ClickCell 的 kCellVariant 分支明著寫「variant_ 不可能是 kHidden」。
+# 撐住那句話的是兩行 Win32 程式碼:空字串的格子零寬、HitCell 跳過
+# 零寬的格子。兩行都刪得掉,而刪掉之後那一格會在**沒有任何證據**的
+# 狀態下被點到 —— 使用者按到一個看不見的開關,而方向還是猜的。
+# 不能只靠一句註解宣稱它不可達 —— 那正是這一輪在拆的東西。
+rl = re.search(r'void StatusBar::Relayout\(\) \{(.*?)\n\}\n', s, re.S)
+if not rl:
+    out.append('NORELAYOUTDEF')
+elif ('if (c.text.empty()) {' not in rl.group(1)
+      or 'c.rc = RECT{0, 0, 0, 0};' not in rl.group(1)):
+    out.append('EMPTY_CELL_TAKES_SPACE')
+hc = re.search(r'int StatusBar::HitCell\(POINT pt\) const \{(.*?)\n\}\n', s, re.S)
+if not hc:
+    out.append('NOHITCELLDEF')
+elif 'if (r.right <= r.left) continue;' not in hc.group(1):
+    out.append('HITCELL_HITS_ZERO_WIDTH')
 print('SCOPE_OK')
 for line in out:
     print(line)
@@ -943,22 +986,45 @@ ${w26c}" ;;
       ''|SCOPE_OK) continue ;;
       NOFUNC)   w26msg "找不到 StatusBar::ClickCell —— 掃描範圍錯了" ;;
       NOCELL=*) w26msg "ClickCell 裡找不到 ${l26#NOCELL=} 分支 —— 掃描範圍錯了" ;;
-      NOOPTIMISTIC=*)
-        w26msg "${l26#NOOPTIMISTIC=} 那一格沒有樂觀寫入本地狀態 —— 指示器要等使用者
-     打一個字才會動,而且再按一次送的是同一個值(它是拿本地狀態反推的)" ;;
+      OPTIMISTIC=*)
+        w26msg "${l26#OPTIMISTIC=} 那一格又樂觀寫入本地狀態了 —— 點下去畫面就翻,
+     而引擎有沒有照做完全沒問過。使用者回報的「畫面說简、打出來是繁」
+     就是這個形狀。送出去之後走 RefreshFromEngine(),讓引擎說了算。" ;;
       NOSEND=*)
-        w26msg "${l26#NOSEND=} 那一格只改了本地狀態,沒有把新值送出去 ——
-     指示器動了而引擎沒動,那比不動更糟" ;;
-      NOREPAINT=*)
-        w26msg "${l26#NOREPAINT=} 那一格寫了狀態卻沒有 Relayout() + InvalidateRect() ——
-     **那一格照樣不會變**。使用者看到的與根本沒寫一模一樣,
-     而只看「有沒有寫入」的檢查會是綠的(上一輪就是這樣被拆掉的)。" ;;
-      REPAINT_BEFORE_WRITE=*)
-        w26msg "${l26#REPAINT_BEFORE_WRITE=} 那一格先重畫才寫狀態 —— 畫出來的是舊值" ;;
+        w26msg "${l26#NOSEND=} 那一格沒有把新值送出去 —— 點了等於沒點" ;;
+      NOREADBACK=*)
+        w26msg "${l26#NOREADBACK=} 那一格送出去之後沒有 RefreshFromEngine() ——
+     **那一格要等使用者真的打一個字才會變**,而使用者會以為沒點到,
+     然後再點一次(於是切回去了)。" ;;
+      READBACK_BEFORE_SEND=*)
+        w26msg "${l26#READBACK_BEFORE_SEND=} 那一格先回讀才送出去 —— 讀到的是舊值,
+     那一格會停在點下去之前的樣子" ;;
+      NOREFRESHDEF) w26msg "找不到 StatusBar::RefreshFromEngine 的定義" ;;
+      NORELAYOUTDEF) w26msg "找不到 StatusBar::Relayout 的定義 —— 掃描範圍錯了" ;;
+      NOHITCELLDEF) w26msg "找不到 StatusBar::HitCell 的定義 —— 掃描範圍錯了" ;;
+      EMPTY_CELL_TAKES_SPACE)
+        w26msg "Relayout 沒有把空字串的格子設成 {0,0,0,0} —— 簡/繁 那一格在
+     kHidden(引擎沒有回報任何字形)時畫的是空字串,而它現在仍然佔位置。
+     使用者會按到一個**看不見的開關**,而 ClickCell 那一段明著寫了
+     「variant_ 不可能是 kHidden」—— 這一行就是那句話的依據" ;;
+      HITCELL_HITS_ZERO_WIDTH)
+        w26msg "HitCell 不再跳過零寬的格子(預期 if (r.right <= r.left) continue;)
+     —— 同上:那一格在沒有任何證據的狀態下按得到,而方向是猜的" ;;
+      REFRESH_NOT_ASKING)
+        w26msg "RefreshFromEngine 沒有呼叫 ReadBackStatus() —— 它根本沒去問引擎,
+     而只看「有沒有呼叫 RefreshFromEngine」的檢查會是綠的" ;;
+      REFRESH_NOT_REPAINTING)
+        w26msg "RefreshFromEngine 讀了狀態卻沒有 Relayout() + InvalidateRect() ——
+     那一格照樣不會變,使用者看到的與根本沒讀一模一樣" ;;
       *) w26msg "未知的回報:${l26}" ;;
     esac
   done <<< "${w26c}"
-  [ "${w26bad}" -eq 0 ] && ok "W26 狀態列寬度一變就重走 PlaceStatusBar,而且 简/繁 那一格按下去立刻改變"
+  # ⚠ 這句話要說**現在**的判準。舊版寫的是「简/繁 那一格按下去立刻改變」,
+  #   而「立刻改變」正是新判準明文禁止的樂觀寫入 —— 上面那一段抓的是
+  #   `variant_ = ` / `ascii_mode_ = `,通過的意思是「沒有樂觀寫入」。
+  #   讀守門輸出的人會照這句話去理解程式碼該長什麼樣子,說反了就是
+  #   叫下一個人把缺陷寫回來。
+  [ "${w26bad}" -eq 0 ] && ok "W26 狀態列寬度一變就重走 PlaceStatusBar,而且 中/En 與 简/繁 兩格都**不**樂觀寫入 —— 送出去之後立刻向引擎回讀,畫面上那個字是引擎說的"
 
   # ── W27:三種處境三句話,而且那三句話真的流到畫面上 ─────────────
   #
@@ -2655,7 +2721,15 @@ if rb is None:
 else:
     if 'planner_(' not in rb:
         print('NOPLANNER=1')
-    if 'rs_select_schema(' not in rb or 'rs_set_option(' not in rb:
+    # ⚠ 這裡問的是 SelectAndApply,不是 rs_select_schema。
+    #   winbar 併進來之後 engine.cc 裡**只准有一個**裸的 rs_select_schema,
+    #   而那一個在 Engine::SelectAndApply 裡(audit_single_source.sh 規則 2)
+    #   —— 換方案會把 switches 重設回方案宣告的值,所以「選方案」與
+    #   「重套簡繁」被綁成一個不可分割的動作。
+    #   照舊掃 rs_select_schema 的話,這一條與那條規則**互相矛盾**:
+    #   一邊要求重建裡有裸呼叫,另一邊禁止它。兩邊要的性質其實是同一個
+    #   ——「重建之後使用者的方案與選項都回得來」—— 所以判準跟著搬家。
+    if 'SelectAndApply(' not in rb or 'rs_set_option(' not in rb:
         print('NOREAPPLY=1')
 
 # ── 6. 按鍵那道門 ────────────────────────────────────────────────
@@ -2738,7 +2812,7 @@ PYSCRIPT
       NOPLANNER=*)
         red "W36:重建沒有問過 planner_ —— 建 session 時套什麼與重建時套什麼會變成兩份,而漂移是靜默的(#85)"; w36bad=1 ;;
       NOREAPPLY=*)
-        red "W36:重建沒有重套方案與選項(rs_select_schema / rs_set_option)—— 使用者按一次「重新整理字詞」,他釘的方案、選的簡繁、剛切到的英數全部回到預設,而畫面上寫的是「完成」(#85)"; w36bad=1 ;;
+        red "W36:重建沒有重套方案與選項(SelectAndApply / rs_set_option)—— 使用者按一次「重新整理字詞」,他釘的方案、選的簡繁、剛切到的英數全部回到預設,而畫面上寫的是「完成」(#85)。⚠ 走 SelectAndApply 而不是裸的 rs_select_schema:engine.cc 裡只准有一個裸呼叫點,見 audit_single_source.sh 規則 2"; w36bad=1 ;;
       NOGATEFN=*)
         red "W36:找不到 Engine::${w36line#NOGATEFN=} —— 掃描範圍錯了"; w36bad=1 ;;
       NOGATE=*)
@@ -2934,7 +3008,12 @@ self_check() {
 "W25 拿掉滾輪|service/settings_window.cc|s=s.replace('case WM_MOUSEWHEEL:','case WM_NULL + 4242:',1)"
 "W25b 又把高度丟掉|common/ui_layout.cc|s=s.replace('int ScrollMaxDip(int page, int window_w_dip, int window_h_dip,','int ScrollMaxDipRemoved(int page, int window_w_dip, int window_h_dip,',1)"
 "W26 狀態列不重擺|service/status_bar.cc|s=s.replace('  ApplyPlacement(MulDivRound(total_w, 96, static_cast<int>(dpi_)));','',1)"
-"W26b 简繁不樂觀寫入|service/status_bar.cc|s=s.replace('        now = simplified_;\n        simplified_ = !now;\n      }\n      // 走設定視窗那一支','        now = simplified_;\n      }\n      // 走設定視窗那一支',1)"
+"W26b 简繁點完不回讀|service/status_bar.cc|s=s.replace('      RefreshFromEngine();\n      return;\n    }\n    case kCellSchema:','      return;\n    }\n    case kCellSchema:',1)"
+"W26c 回讀不問引擎|service/status_bar.cc|s=s.replace('  const Engine::StatusReadback rb = engine_->ReadBackStatus();','  Engine::StatusReadback rb;',1)"
+"W26d 中英又樂觀寫入|service/status_bar.cc|s=s.replace('      engine_->SetAsciiModeAll(!engine_->AsciiMode());','      { std::lock_guard<std::mutex> lk(mu_); ascii_mode_ = !ascii_mode_; }\n      engine_->SetAsciiModeAll(!engine_->AsciiMode());',1)"
+"W26f 空的那一格又佔位置|service/status_bar.cc|s=s.replace('    if (c.text.empty()) {','    if (false) {',1)"
+"W26g 零寬的那一格又點得到|service/status_bar.cc|s=s.replace('    if (r.right <= r.left) continue;','',1)"
+"W26e 回讀之後不重畫|service/status_bar.cc|s=s.replace('  if (changed) {\n    Relayout();\n    ::InvalidateRect(hwnd_, nullptr, TRUE);\n','  if (changed) {\n',1)"
 "W27a Relayout 不再問狀態|service/status_bar.cc|s=s.replace('  service_state_ = CurrentServiceState();','  service_state_ = ServiceState::kReady;',1)"
 "W27b 那一橫的字寫死一句|service/status_bar.cc|s=s.replace('    c.text = UiText(StatusTextFor(service_state_));','    c.text = UiText(UiString::kBarNotRunning);',1)"
 "W27c 不讀線路上的旗標|service/status_bar.cc|s=s.replace('SnapshotSaysNotReady(snap.status_flags)','false',1)"
@@ -2965,8 +3044,6 @@ self_check() {
 "W25f 滾輪分支在但什麼都不做|service/settings_window.cc|s=s.replace('      if (self) self->OnMouseWheel(GET_WHEEL_DELTA_WPARAM(w));','',1)"
 "W25g 裁切高度不從純函式來|service/settings_window.cc|s=s.replace('ClipToViewport(i, c, p->rect.w, sp.clip_h_dip);','ClipToViewport(i, c, p->rect.w, -1);',1)"
 "W25h 純函式從 common/ 消失|common/ui_layout.cc|s=s.replace('ScrolledPlacement ScrollPlaceControlDip(','ScrolledPlacement ScrollPlaceControlDipGone(',1)"
-"W26c 简/繁 寫了狀態但不重畫(覆核者實測的拆法)|service/status_bar.cc|s=s.replace('                                      : VariantPref::kSimplified);\\n      Relayout();\\n      ::InvalidateRect(hwnd_, nullptr, TRUE);','                                      : VariantPref::kSimplified);',1)"
-"W26d 中/En 寫了狀態但不重畫|service/status_bar.cc|s=s.replace('      if (engine_) engine_->SetAsciiModeAll(!now);\\n      Relayout();\\n      ::InvalidateRect(hwnd_, nullptr, TRUE);','      if (engine_) engine_->SetAsciiModeAll(!now);',1)"
 "W29a 開關的狀態讀錯地方|service/settings_window.cc|s=s.replace('const bool on = net_gate_.Enabled();','const bool on = settings_.NetworkEnabled();',1)"
 "W29b 開關底下那句話寫死一條|service/settings_window.cc|s=s.replace('SetText(hwnd_, IDC_NET_STATE, UiText(NetSwitchSummary(on)));','SetText(hwnd_, IDC_NET_STATE, UiText(UiString::kNetworkOffSummary));',1)"
 "W29c 檢查更新那道門整個拿掉(開關關著也連出去)|service/settings_window.cc|blk='  if (!net_gate_.Enabled()) {' + chr(10) + '    update_failure_ = UpdateFailure::kSwitchOff;' + chr(10) + '    update_stage_ = UpdateStage::kIdle;' + chr(10) + '    RefreshNetworkAndUpdateCard();' + chr(10) + '    return;' + chr(10) + '  }' + chr(10); s=s.replace(blk,'',1)"
@@ -2988,6 +3065,7 @@ self_check() {
 "W29k 更新卡片的純函式從 common/ 消失|common/update_flow.cc|s=s.replace('UpdateCard DescribeUpdateCard(','UpdateCard DescribeUpdateCardGone(',1)"
 "W29k2 那一句失敗文案的純函式從 common/ 消失|common/update_flow.cc|s=s.replace('UiString UpdateFailureText(','UiString UpdateFailureTextGone(',1)"
 "W29k3 「要不要提開關」的純函式從 common/ 消失|common/update_flow.cc|s=s.replace('bool UpdateFailureNeedsSwitch(','bool UpdateFailureNeedsSwitchGone(',1)"
+"W29u 背景執行緒不再去查(winbar 帶進來的:win-next 那一側沒有任何植入碰得到 THREAD_DOES_NOT_CHECK)|service/settings_window.cc|s=s.replace('    self->update_.Check(&why);','    (void)why;',1)"
 "W29l 版面呼叫點繞過真實狀態|service/settings_window.cc|s=s.replace('  const PageLayout pl = LayoutSettingsPageDip(page_, W, PageStateNow());','  const PageLayout pl = LayoutSettingsPageDip(page_, W, PageState{});',1)"
 "W34a 套用的呼叫點改回無條件說「已套用」(覆核者實測的拆法 A1)|service/settings_window.cc|old='  const unsigned seq = BeginApply(UiString::kStatusApplied);' + chr(10) + '  engine_->ApplyVariantAll(settings_.SchemaPref(), ApplyDoneNotifier(seq));' + chr(10) + '  int vsel = 0;'; new='  engine_->ApplyVariantAll(settings_.SchemaPref(), [](bool) {});' + chr(10) + '  SetTransientStatus(UiString::kStatusApplied);' + chr(10) + '  int vsel = 0;'; s=s.replace(old,new,1)"
 "W34b Engine::ApplyVariantAll 不再說「根本沒排進去」(覆核者實測的拆法 A2)|service/engine.cc|k='  if (!queued && on_done) on_done(false);' + chr(10); i=s.index('void Engine::ApplyVariantAll'); j=s.index(k,i); s=s[:j]+s[j+len(k):]"
@@ -3018,7 +3096,8 @@ self_check() {
 "W36c 備用 session 那一處的門被拿掉|service/engine.cc|s=s.replace('  if (!SessionCreationAllowed(phase_.load())) return;' + chr(10) + '  const rs_session s = rs_session_create();','  const rs_session s = rs_session_create();',1)"
 "W36d 部署終局不再把 session 建回來|service/engine.cc|s=s.replace('  RebuildSessionsAsync();' + chr(10) + '}','}',1)"
 "W36e 按鍵那道門排到 Find() 後面|service/engine.cc|s=s.replace('  if (ShouldFailOpen(phase_.load(), deploy_state_.load() == 1,' + chr(10) + '                     &r.snap.status_flags)) {','  (void)Find(id);' + chr(10) + '  if (ShouldFailOpen(phase_.load(), deploy_state_.load() == 1,' + chr(10) + '                     &r.snap.status_flags)) {',1)"
-"W36f 重建不再重套方案與選項(#85)|service/engine.cc|s=s.replace('      if (!plan.schema_id.empty()) rs_select_schema(s, plan.schema_id.c_str());' + chr(10) + '      for (const OptionAssign& a : plan.options)' + chr(10) + '        rs_set_option(s, a.option, a.value);','      (void)plan;',1)"
+"W36f 重建不再重套方案與選項(#85)|service/engine.cc|s=s.replace('      SelectAndApply(ps.id, s, plan.schema_id);' + chr(10) + '      for (const OptionAssign& a : plan.options)' + chr(10) + '        rs_set_option(s, a.option, a.value);','      (void)plan;',1)"
+"W36n 重建繞過 SelectAndApply,自己裸呼叫一次(winbar 規則 2 的形狀)|service/engine.cc|s=s.replace('      SelectAndApply(ps.id, s, plan.schema_id);','      if (!plan.schema_id.empty()) rs_select_schema(s, plan.schema_id.c_str());',1)"
 "W36g 那道門讀不到階段|service/engine.cc|s=s.replace('ShouldFailOpen(phase_.load(), deploy_state_.load() == 1,','ShouldFailOpen(RedeployPhase::kIdle, deploy_state_.load() == 1,',1)"
 "W36h BeginDeploy 沒有先把門關上|service/engine.cc|s=s.replace('RedeployEvent::kRequested','RedeployEvent::kRebuilt',1)"
 "W36i 收乾淨那一支不再銷毀 session|service/engine.cc|s=s.replace('    rs_session_destroy(kv.second);' + chr(10) + '  }' + chr(10) + '  const int total','  }' + chr(10) + '  const int total',1)"
@@ -3100,6 +3179,11 @@ PYMUT
   rm -rf "${base}"
 
   info "反向測試:${pass} 條會紅,${fail} 條不會"
+  # ⚠ 「baseline 紅的時候上面那個數字沒有意義」那一條**還在**,但它搬到
+  #   這一支的開頭了(見 base_rc 那一段):winbar 的版本是跑完整張表再
+  #   回 1,win-next 的版本是**一發現基準不綠就直接 return 1**,連跑都
+  #   不跑。後者嚴格得多 —— 基準紅的時候整張表的每一個 ok 都是假的,
+  #   印出來只會讓人以為守門有在做事。所以這裡不再讀 baseline_red。
   [ "${fail}" -eq 0 ] || return 1
   return 0
 }

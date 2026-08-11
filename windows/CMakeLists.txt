@@ -152,13 +152,22 @@ add_library(rime_common STATIC
   #   而那個檔案在 Ubuntu 上編不起來 —— 「第一格畫了兩個字面」這種
   #   只有人看得出來的缺陷,沒有任何自動化碰得到。
   common/status_cells.cc
+  # ⚠ 那一橫什麼時候該在(§12.10.6)。判準放這裡而不是 service/ 的理由與
+  #   status_cells.cc 同一條:顯示時機的缺陷全部長成時序問題,而時序問題
+  #   沒有測試就只能靠人肉試 —— 而 service/ 在開發機上編不起來。
+  common/bar_visibility.cc
   # ⚠ Ctrl+空白鍵。判斷只有這一份:瘦 DLL 與服務各要問一次,
   #   兩邊各寫一份就是兩份真相。走 PreserveKey,**不動 key_eat_policy**。
   common/hotkey_policy.cc
   # ⚠ 一條工作者執行緒 + 有界等待。它在 common/ 而不是 service/,理由與
   #   ui_layout.cc 一樣:那一格(逾時之後遲到的工作寫進誰的記憶體)
   #   在 service/ 裡沒有任何自動化碰得到,而它正是 #79 最難的那一格。
-  common/work_queue.cc)
+  common/work_queue.cc
+  # ⚠ 輕點 Shift 切中英(#89)。同樣是純函式,而且理由更硬:它答錯的
+  #   樣子是「打大寫字母時中英一直亂跳」,比沒有這個功能糟得多 ——
+  #   留在 tsf/text_service.cc 裡的話只有真人在 Windows 上驗得到,
+  #   也就是實際上沒有人驗。
+  common/shift_tap.cc)
 target_include_directories(rime_common PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/common"
   "${RIME_ROOT}/core/include")
@@ -186,6 +195,13 @@ add_executable(rime_tests
   tests/test_net_policy.cc
   tests/test_net_gate_core.cc
   tests/test_net_ui.cc
+  # ⚠ 這四支以前只在 windows/run_logic_tests.sh(Ubuntu)上跑,不在這裡 ——
+  #   也就是 CI 上那支 rime_tests.exe 一次都沒有執行過它們,而 CI 是綠的。
+  #   涵蓋的是線上更新的整個判斷層與那一橫的顯示時機。
+  tests/test_sha256.cc
+  tests/test_update_manifest.cc
+  tests/test_update_flow.cc
+  tests/test_bar_visibility.cc
   tests/test_proto_compat.cc
   tests/test_schema_list_patch.cc
   tests/test_store_basics.cc
@@ -213,6 +229,7 @@ add_executable(rime_tests
   # 狀態行「誰寫的、誰可以收回」。純順序邏輯,而它守的是**訊息消失**
   # 那一類缺陷 —— 使用者不會回報「我沒看到一句話」。
   tests/test_status_line.cc
+  tests/test_shift_tap.cc
   # 這一支用**真的**鍵盤佈局(LoadKeyboardLayout + ToUnicodeEx),
   # 是 CI 上唯一驗得到「有沒有真的問佈局」的地方。
   tests/test_win32_layouts.cc
@@ -401,7 +418,14 @@ add_executable(rime_service
   service/settings_store.cc
   service/schema_store.cc
   service/settings_window.cc
+  # ⚠ 線上更新的 Windows 那一半。它以前**不在這個清單上** —— 檔案在、
+  #   語法檢查是綠的、common/ 那一側的單元測試也全過,而 rime_service.exe
+  #   裡一行都沒有,症狀是 settings_window.cc.obj 的 8 個 LNK2019。
+  service/update_service.cc
   service/status_bar.cc
+  # 自繪的托盤圖示(中 / En)。獨立成一個檔案是為了讓 settings_window.cc
+  # 只改兩行 —— 那個檔案同時有另一條線在改。
+  service/tray_icon.cc
   service/ui_listview.cc
   service/ui_font.cc
   service/ui_theme.cc

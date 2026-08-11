@@ -165,6 +165,21 @@ enum StatusFlag : uint32_t {
   kStSimplified = 1u << 3,
   kStAsciiPunct = 1u << 4,
   kStDisabled = 1u << 5,
+  // 簡繁那一格的內容可不可信(§12.10.4 的三態)。
+  //
+  //   為假 → **整格不顯示**(kStSimplified 這時沒有意義,不得拿來畫繁體)
+  //   為真 → 看 kStSimplified
+  //
+  // ⚠ 為什麼要多一個位元:那一格有三態,而一個 kStSimplified 表不出三態。
+  //   「不知道」與「繁體」是兩件事 —— 引擎剛載入一個沒有宣告字形開關的
+  //   方案時,我們**確實**不知道它在做哪一種轉換,此時畫任何一個字都是
+  //   在替一件沒有發生的事作證。
+  //
+  // ⚠ 這是**純加法**:它住在既有的那個 u32 裡,不改變任何欄位的位置或
+  //   長度。DLL 與服務可能來自不同的建置(那個 DLL 住在瀏覽器裡,而
+  //   瀏覽器可以開著好幾天),舊的那一端只是看不見這個位元,不會解錯。
+  //   tests/test_proto_compat.cc 兩個方向都驗。
+  kStVariantKnown = 1u << 6,
 };
 
 struct Snapshot {

@@ -81,6 +81,12 @@ constexpr const char* kAppearanceFloatingBarPos = "appearance.floatingBarPos";
 // 文字
 constexpr const char* kTextVariant = "text.variant";
 constexpr const char* kTextPunctuation = "text.punctuation";
+// ⚠ 這一個也是 **Windows 端自己加的**(同 appearance.floatingBar 那兩個):
+//   docs/settings-model.md §3 還沒有「切中英要按哪一顆鍵」的 id。
+//   已寫進 docs/coordination.md §5 請規範所有權方(macOS 端)裁決 ——
+//   macOS 的 InputModeSwitch 有同一顆開關,兩端遲早要共用一個名字。
+//   在裁決之前用這個名字,而且**不與規範的鍵重名**。
+constexpr const char* kTextShiftTapToggle = "text.shiftTapToggle";
 // 連網
 // 進階
 // 介面語言。system / en / zh-Hant / zh-Hans。
@@ -113,6 +119,15 @@ int IndexOfCandScale(int value);
 // 索引超出範圍一律回 0 那一格的值。
 int CandCountAtIndex(int index);
 int CandScaleAtIndex(int index);
+
+// 設定檔在使用者資料目錄底下叫什麼。
+//
+// ⚠ 這個名字以前寫死在 service/settings_store.cc 裡,而 tests/probe_main.cc
+//   也要用它(它要在連線之前把偏好寫進去,模擬「使用者在設定裡選了簡體
+//   然後開一個新程式」)。兩個地方各寫一份的話,改名的那一天探針會安靜地
+//   寫到一個沒有人讀的檔案 —— 而症狀是「CI 說簡繁沒生效」,查半天才發現
+//   是檔名。
+constexpr const char* kSettingsFileName = "luminakey.settings";
 
 class Settings {
  public:
@@ -149,6 +164,22 @@ class Settings {
   //    變成「一律西文標點」,而使用者選的是不干預。
   Tri Punctuation() const { return GetTri(keys::kTextPunctuation); }
   void SetPunctuation(Tri t);
+
+  // 輕點 Shift 切中英。
+  //
+  // ⚠ **未設 == 開。** 根據是業界慣例:微軟拼音、搜狗、macOS 內建的注音
+  //   與拼音,預設全部是這顆鍵 —— 從別的輸入法換過來的人會直接按它,
+  //   而「按了沒反應」他不會去設定裡找一個他不知道存在的開關。
+  //
+  // ⚠ 而它必須關得掉:有些人用 Shift 打大寫打得很兇,對他們來說
+  //   誤觸的成本是每隔幾個字就要切回來一次。
+  //
+  // ⚠ 判斷只有這一份。服務端(pipe_server)與設定介面各寫一次
+  //   `GetTri(...) != kFalse` 就是兩份真相,而漂移的樣子是
+  //   「設定介面顯示關著,實際上還是會切」。
+  bool ShiftTapToggle() const {
+    return GetTri(keys::kTextShiftTapToggle) != Tri::kFalse;
+  }
 
   // 連網總開關。⚠ 未設 == **關**。這一條不可以寫成「未設 == 開」,
   // 也不可以在別處各寫一次判斷 —— 只有這一個函式知道答案。

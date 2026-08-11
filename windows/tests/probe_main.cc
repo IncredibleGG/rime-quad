@@ -18,7 +18,41 @@
 //   rime_probe.exe --keys nihao --select 1 --schema luna_pinyin_tw --expect 你好
 //   rime_probe.exe --connect-only            只驗「連得上、握得了手、開得了 session」
 //   rime_probe.exe --ascii-toggle --schema … 驗 Ctrl+空白鍵真的切得了中英
+//
+//   rime_probe.exe --variant simplified --keys nihao --select-text 逆号 --expect 逆号
+//     ⚠ **--variant 要在連線之前寫設定檔**,順序就是它的全部意義:
+//       服務在 SESSION_NEW 那一趟現場讀設定檔,所以「先寫檔再連線」
+//       就是「使用者在設定裡選了簡體,然後開一個新程式」。
+//     ⚠ 判準只能用「逆号 / 拟好」這一類的候選。你好 / 妳好 / 你 在簡繁
+//       兩套字集裡長得一模一樣,拿它們斷言等於沒斷言。
 //   rime_probe.exe --attempts N              最多做 N 次**真正的**連線嘗試
+//
+// ── --select-text:用**內容**選候選,不要用位置 ────────────────────
+//
+// ⚠ 這一項的存在是一個真的缺陷,而且是**測試自己**的缺陷。
+//
+//   verify_installer.sh §6g 兩個案例先後在同一支服務上跑,相差 76 毫秒:
+//
+//     16:15:21.322  [新 session]  2. 妳好  3. 逆号  → COMMIT "逆号"  ✓
+//     16:15:21.398  [換方案]      2. 逆号  3. 妳好  → COMMIT "妳好"  紅
+//
+//   兩邊**都是簡體**(產品那一格是好的)。紅的原因是上一個斷言把「逆号」
+//   上屏了,librime 的使用者詞典就地學習,把它從第 3 位拱到第 2 位 ——
+//   而斷言寫的是 `--select 3`。
+//
+//   所以真正的形狀是:**任何依賴候選位置的斷言,都會隨著前面的斷言漂**。
+//   位置是引擎的輸出,不是我們的約定;拿它當判準等於把「使用者詞典學了
+//   什麼」寫進測試的前提裡,而那件事沒有人聲明過、也不該由測試決定。
+//
+//   `--select-text 逆号` 問的是「候選裡有沒有『逆号』」,那才是這一格
+//   真正要斷言的事(打出來是簡體還是繁體)。找不到就紅,而且把整頁候選
+//   印出來 —— 「第 3 個不是我要的」與「我要的根本不在」是兩件事。
+//
+// ⚠ 它只管**第一次**選字。之後那幾步(多段的第二段起)仍然用 --select,
+//   預設 1。這一支目前所有的用法都是一次選完就上屏,而把規則寫成
+//   「每一步都找那個字」會讓「第二段剛好也有同一個字」變成靜靜選錯。
+// ⚠ 它只看**當頁**。找不到不會自動翻頁 —— 翻頁之後的位置一樣會漂,
+//   而且「要翻幾頁才找得到」本身就是一個位置判準。
 //
 // ── --attempts 為什麼要存在,而且為什麼預設是 1 ──────────────────
 //
@@ -48,6 +82,7 @@
 #include <vector>
 
 #include "../common/hotkey_policy.h"
+#include "../common/settings.h"
 #include "../tsf/ipc_client.h"
 #include "../winshared/winutil.h"
 
@@ -354,9 +389,14 @@ int main(int /*narrow_argc*/, char** /*narrow_argv*/) {
   std::string expect;
   std::string schema;
   int select = 1;
+  // 用內容選候選(見檔頭)。空 = 沿用 --select 的位置。
+  std::string select_text;
   int attempts = 1;
   bool connect_only = false;
   bool ascii_toggle = false;
+  // 連線**之前**把 text.variant 寫進設定檔,模擬「使用者在設定裡選了
+  // 簡體,然後開一個新程式」。空字串 = 不碰設定檔。
+  std::string variant;
   for (int i = 1; i < argc; ++i) {
     const std::string& a = args[static_cast<size_t>(i)];
     if (a == "--keys" && i + 1 < argc) keys = args[static_cast<size_t>(++i)];
@@ -364,10 +404,14 @@ int main(int /*narrow_argc*/, char** /*narrow_argv*/) {
     else if (a == "--schema" && i + 1 < argc) schema = args[static_cast<size_t>(++i)];
     else if (a == "--select" && i + 1 < argc)
       select = std::atoi(args[static_cast<size_t>(++i)].c_str());
+    else if (a == "--select-text" && i + 1 < argc)
+      select_text = args[static_cast<size_t>(++i)];
     else if (a == "--attempts" && i + 1 < argc)
       attempts = std::atoi(args[static_cast<size_t>(++i)].c_str());
     else if (a == "--connect-only") connect_only = true;
     else if (a == "--ascii-toggle") ascii_toggle = true;
+    else if (a == "--variant" && i + 1 < argc)
+      variant = args[static_cast<size_t>(++i)];
     else {
       std::fprintf(stderr, "未知參數: %s\n", a.c_str());
       return 2;
@@ -382,6 +426,58 @@ int main(int /*narrow_argc*/, char** /*narrow_argv*/) {
   std::printf("=== rime_probe:經由具名管道驅動服務 ===\n");
   std::printf("管道: %s\n", WideToUtf8(pipe_name).c_str());
   std::fflush(stdout);
+
+  // ── --variant:連線之前先改設定檔 ────────────────────────────
+  //
+  // ⚠ 順序是這一項的全部意義。服務在 SESSION_NEW 那一趟**現場讀設定檔**
+  //   (pipe_server.cc 的 kSessionNew → settings_->Load()),所以先寫檔
+  //   再連線 = 「使用者在設定裡選了簡體,然後開一個新程式」。
+  //   連完再寫就完全測不到那條路徑。
+  //
+  // ⚠ 讀出來改一格再寫回去,不是覆蓋整份。CI 上這個目錄是沿用的,
+  //   蓋掉別人的設定會讓後面的案例以看不懂的方式紅。
+  if (!variant.empty()) {
+    const std::wstring dir = RimeUserDataDir();
+    if (dir.empty()) {
+      std::fprintf(stderr, "!! 問不出使用者資料目錄,--variant 沒有地方寫\n");
+      return 2;
+    }
+    const std::wstring path =
+        dir + L"\\" + Utf8ToWide(std::string(kSettingsFileName));
+    std::string text;
+    {
+      HANDLE h = ::CreateFileW(path.c_str(), GENERIC_READ,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+      if (h != INVALID_HANDLE_VALUE) {
+        char buf[8192];
+        DWORD got = 0;
+        while (::ReadFile(h, buf, sizeof(buf), &got, nullptr) && got > 0)
+          text.append(buf, got);
+        ::CloseHandle(h);
+      }
+    }
+    Settings st = Settings::Parse(text);
+    st.SetRaw(keys::kTextVariant, variant);
+    const std::string out = st.Serialize();
+    HANDLE h = ::CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
+                             CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+      std::fprintf(stderr, "!! 寫不進設定檔(%lu)\n",
+                   static_cast<unsigned long>(::GetLastError()));
+      return 2;
+    }
+    DWORD wrote = 0;
+    const BOOL okw = ::WriteFile(h, out.data(),
+                                 static_cast<DWORD>(out.size()), &wrote, nullptr);
+    ::CloseHandle(h);
+    if (!okw || wrote != out.size()) {
+      std::fprintf(stderr, "!! 設定檔只寫進去一部分\n");
+      return 2;
+    }
+    std::printf("text.variant -> %s(寫進 %s)\n", variant.c_str(),
+                WideToUtf8(path).c_str());
+  }
 
   IpcClient ipc;
   // 刻意**不**設服務路徑:這支程式不負責把服務叫起來。
@@ -460,6 +556,7 @@ int main(int /*narrow_argc*/, char** /*narrow_argv*/) {
   //   count > 0                  → 還有段落待選
   //   count == 0 && is_composing → 轉換完成待確認
   std::printf("\n--- 政策迴圈 ---\n");
+  bool select_text_used = false;
   for (int step = 1; step <= 12; ++step) {
     const int count = static_cast<int>(last.items.size());
     const bool composing = (last.status_flags & kStComposing) != 0;
@@ -467,7 +564,37 @@ int main(int /*narrow_argc*/, char** /*narrow_argv*/) {
                 composing ? 1 : 0, count, last.preedit.c_str());
     Result r;
     if (count > 0) {
-      if (!ipc.SendSelect(select - 1, &r)) {  // rs_select_candidate 是 0 起算
+      // 預設走位置;--select-text 給了的話,**第一次**選字改成找內容。
+      // 見檔頭:位置是引擎的輸出,前一個斷言上屏過什麼就會把它推著跑。
+      int index = select - 1;  // rs_select_candidate 是 0 起算
+      if (!select_text.empty() && !select_text_used) {
+        int found = -1;
+        for (int k = 0; k < count; ++k)
+          if (last.items[static_cast<size_t>(k)].text == select_text) {
+            found = k;
+            break;
+          }
+        if (found < 0) {
+          // 把整頁印出來。「第 N 個不是我要的」與「我要的根本不在這一頁」
+          // 是兩件完全不同的事,而只說「選字失敗」會把它們混成一句。
+          std::fprintf(stderr,
+                       "!! 這一頁候選裡沒有「%s」—— 要斷言的東西不在,\n"
+                       "   而不是「選錯了第幾個」。整頁如下:\n",
+                       select_text.c_str());
+          for (int k = 0; k < count; ++k)
+            std::fprintf(stderr, "     %d. %s\n", k + 1,
+                         last.items[static_cast<size_t>(k)].text.c_str());
+          std::fprintf(stderr,
+                       "   ⚠ 只找當頁,不自動翻頁 —— 「要翻幾頁才找得到」\n"
+                       "     本身就是一個會漂的位置判準。\n");
+          return 1;
+        }
+        std::printf("      用內容選:「%s」在第 %d 個\n", select_text.c_str(),
+                    found + 1);
+        index = found;
+        select_text_used = true;
+      }
+      if (!ipc.SendSelect(index, &r)) {
         std::fprintf(stderr, "!! 選字失敗\n");
         return 1;
       }
@@ -484,6 +611,17 @@ int main(int /*narrow_argc*/, char** /*narrow_argv*/) {
   }
 
   std::printf("\n>>> COMMIT: \"%s\"\n", committed.c_str());
+
+  // 給了 --select-text 卻一次都沒用到 = 整趟一個候選都沒出現過。
+  // 沒有這一條的話,「引擎根本沒給候選」會走完 CommitComposition 那條路,
+  // 而斷言碰巧通過的話就是一格在說謊的綠燈。
+  if (!select_text.empty() && !select_text_used) {
+    std::fprintf(stderr,
+                 "!! --select-text「%s」一次都沒有用到 —— 整趟沒有出現過\n"
+                 "   任何候選,這一格等於沒有在測選字。\n",
+                 select_text.c_str());
+    return 1;
+  }
 
   if (!expect.empty()) {
     // 整串精確比對。只用「包含」是不夠的:上屏成「你好嗎」一樣會通過。

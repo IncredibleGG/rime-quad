@@ -695,6 +695,104 @@ PreservedSend PressPreservedKey(ITfKeystrokeMgr* ks, ITfContext* ctx,
   return out;
 }
 
+// ── ⚠ 這是一支**量測**,不是斷言 ──────────────────────────────
+//
+// 使用者實機回報:「我用 shift 切換中英文,但是他不變」。要不要做
+// 「輕點 Shift 切中英」取決於一個至今沒有人量過的事實:
+//
+//   **TSF 到底會不會把純修飾鍵交給 key event sink?**
+//
+// 這棵樹裡有兩份互相矛盾的答案,而兩份都沒有任何測試或實測在背書:
+//
+//   tsf/text_service.cc 的 OnTestKeyUp:
+//     「TSF 本來就不會把純修飾鍵(Shift / Ctrl)的事件交給 key event
+//       sink,所以 librime 那套『按一下 Shift 切中英』在這條路徑上
+//       做不到」
+//
+//   common/key_eat_policy.cc:
+//     「不太會…但交過來時」(它替 Shift_L…Super_R 準備了 kHostOnly)
+//
+// 擋著 Shift 這條路的不是技術,是這一句沒有人量過的話。所以這一支
+// **不 Fail**:它把量到的東西印出來,由那個結果決定下一輪走哪一條。
+//
+// ⚠ **2026-08-12:這一支已經答過一次了 —— 收得到。** CI run 31511075812
+//   (sha ca97498)logic-x64:SHIFT_TRACE_LINES=1,vk=0x10 scan=0x2A
+//   keysym=0xFFE1 族=host-only 吃掉=0。上面那兩份互相矛盾的答案裡,
+//   **key_eat_policy.cc 是對的那一份**;text_service.cc 那一份已照實測改寫。
+//   這一支**留著**:它是那個結論唯一的出處,而且事實會隨 OS 版本改變。
+//
+// ── 判準與 PressPreservedKey 一樣:數 trace 檔多了幾行 ────────────
+//
+// 沒有任何回傳值看得出來 OnTestKeyDown 有沒有被呼叫:TSF 收下按鍵、
+// 回 S_OK、pfEaten=FALSE —— 與「根本沒交給我們」長得一模一樣。唯一的
+// 證據是瘦 DLL 自己在 OnTestKeyDown 裡寫下的那一行「按鍵 vk=…」。
+//
+// ⚠ 順便量兩件下一輪一定會用到的事實,而且它們都寫在那一行記錄裡:
+//     · wParam 是泛用的 VK_SHIFT(0x10)還是 VK_LSHIFT(0xA0)?
+//       keymap.cc:157 現在把泛用的 VK_SHIFT 一律折成 XK_Shift_L,
+//       左右分不出來 —— 如果 TSF 送的是泛用碼,那就得靠 scan code 分。
+//     · scan code 有沒有正確帶進來(左 Shift = 0x2A,右 = 0x36)。
+//
+// ⚠ 這支 harness 走的是 ITfKeystrokeMgr::KeyDown —— **那是宿主呼叫的
+//   入口**。它證明的是「sink 收得到」,證**不到**「真實宿主的訊息迴圈
+//   會不會把 VK_SHIFT 送進 TSF」。後者只有人在記事本 / Chrome / Word
+//   上試得出來,已列進 #48。
+void MeasureShiftDelivery(ITfKeystrokeMgr* ks, const std::wstring& trace_path) {
+  static const char kMark[] = "按鍵 vk=";
+  const std::string before_all = ReadAll(trace_path);
+  const int before = CountIn(before_all, kMark);
+
+  // 左 Shift。scan code 從系統查,不要寫死 —— 不同的鍵盤配置上不一樣,
+  // 而寫死一個值會讓量到的結果變成「我們送了什麼」而不是「系統怎麼看」。
+  const UINT scan = ::MapVirtualKeyW(VK_LSHIFT, MAPVK_VK_TO_VSC);
+  const LPARAM lp = static_cast<LPARAM>(1 | (static_cast<LPARAM>(scan) << 16));
+  BOOL test_eaten = FALSE;
+  BOOL down_eaten = FALSE;
+  BOOL up_eaten = FALSE;
+  ks->TestKeyDown(VK_SHIFT, lp, &test_eaten);
+  ks->KeyDown(VK_SHIFT, lp, &down_eaten);
+  ks->KeyUp(VK_SHIFT, lp | 0xC0000000, &up_eaten);
+  Pump(80);
+
+  const std::string after_all = ReadAll(trace_path);
+  const int after = CountIn(after_all, kMark);
+
+  Say("  SHIFT_SCAN_SENT=0x%02X\n", static_cast<unsigned>(scan));
+  Say("  SHIFT_TESTKEYDOWN_EATEN=%d\n", test_eaten ? 1 : 0);
+  Say("  SHIFT_KEYDOWN_EATEN=%d\n", down_eaten ? 1 : 0);
+  Say("  SHIFT_KEYUP_EATEN=%d\n", up_eaten ? 1 : 0);
+  // ⚠ **這一行就是整支的產出。** 0 = TSF 沒把純修飾鍵交給 sink
+  //   (text_service.cc 那句話成立);> 0 = 它交了,而那條路走得通。
+  Say("  SHIFT_TRACE_LINES=%d\n", after - before);
+
+  if (after > before) {
+    // 把新增的那幾行原樣印出來 —— vk 與 scan 的**實際值**在裡面,
+    // 而下一輪的 ResolveShiftSide() 就是照那個值寫的。
+    Say("  ── 新增的按鍵記錄 ──\n");
+    size_t at = before_all.size() <= after_all.size() ? before_all.size() : 0;
+    size_t line = after_all.find('\n', at);
+    int shown = 0;
+    while (at < after_all.size() && shown < 8) {
+      const size_t end = (line == std::string::npos) ? after_all.size() : line;
+      const std::string one = after_all.substr(at, end - at);
+      if (one.find(kMark) != std::string::npos) {
+        Say("  %s\n", one.c_str());
+        ++shown;
+      }
+      if (line == std::string::npos) break;
+      at = line + 1;
+      line = after_all.find('\n', at);
+    }
+  } else {
+    Say("  (一行都沒有多 —— key event sink 沒有收到這顆鍵)\n");
+  }
+  // ⚠ **刻意不 Fail。** 這一支問的是「事實是什麼」,不是「合不合格」。
+  //   兩種結果都會發生,而兩種都有對應的下一步:
+  //     > 0 → P1-乙 走 ShiftTapDetector 那條路
+  //     = 0 → 走降級版(TF_MOD_ON_KEYUP)或乾脆不做 Shift,靠文案把
+  //           Ctrl + 空白鍵教出來。那是誠實的退路,不是失敗。
+}
+
 SendOutcome SendKeyThrough(ITfKeystrokeMgr* ks, FakeDoc* doc, const SeqKey& sk) {
   SendOutcome o;
   ks->TestKeyDown(sk.vk, sk.lparam, &o.test_eaten);
@@ -841,6 +939,8 @@ static int Run(int argc, wchar_t** argv) {
   bool check_preserved = false;
   // ⚠ 註冊之外的另一半:那顆鍵**按下去**會不會走完整條路。見 PressPreservedKey()。
   bool press_preserved = false;
+  // ⚠ 量測,不是斷言。見 MeasureShiftDelivery()。
+  bool press_shift = false;
   std::wstring toggle_keys;
   std::wstring expect_toggle_doc;
   bool have_expect_toggle = false;
@@ -872,6 +972,7 @@ static int Run(int argc, wchar_t** argv) {
     else if (a == L"--expect" && i + 1 < argc) expect = argv[++i];
     else if (a == L"--trace" && i + 1 < argc) trace_path = argv[++i];
     else if (a == L"--check-preserved-key") check_preserved = true;
+    else if (a == L"--press-shift") press_shift = true;
     else if (a == L"--press-preserved-key") press_preserved = true;
     else if (a == L"--toggle-mid-compose" && i + 1 < argc) {
       toggle_keys = argv[++i];
@@ -1171,6 +1272,11 @@ static int Run(int argc, wchar_t** argv) {
                "     這是測試台/工作階段的問題,不是輸入法的問題。");
       }
       if (check_preserved) CheckPreservedKey(ks);
+      // ⚠ 擺在這裡(其他按鍵送出去**之前**)是刻意的:trace 的按鍵額度
+      //   有限(text_service.cc 的 key_trace_budget_),被別的鍵用完的話
+      //   這一支量到的 0 會是假的 0 —— 而假的 0 會讓我們做出「Shift
+      //   這條路不通」的錯誤結論。
+      if (press_shift) MeasureShiftDelivery(ks, trace_path);
       Say("\n--- 送按鍵 ---\n");
       for (const SeqKey& sk : plan) {
         const SendOutcome o = SendKeyThrough(ks, doc, sk);

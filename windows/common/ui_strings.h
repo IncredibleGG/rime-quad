@@ -127,6 +127,9 @@ enum class UiString : int {
   kPunctFollow,
   kPunctChinese,
   kPunctEnglish,
+  kShiftTapHeading,
+  kShiftTapBlurb,
+  kShiftTapSwitch,
   kTextHonestNote,
   kTextHonestAction,
 
@@ -208,6 +211,11 @@ enum class UiString : int {
   kTraySettings,
   kTrayRedeploy,
   kTrayQuit,
+  // 系統匣右鍵選單的中英兩項。
+  // ⚠ 這兩個**是**介面文字(選單項),要在地化 —— 與那一橫上的
+  //   中 / En 不一樣。那四個是 §8.12 的狀態指示,不進 catalog。
+  kTrayModeChinese,
+  kTrayModeEnglish,
   kTrayTip,
 
   // ── 語言列(住在每一個宿主進程裡的那顆按鈕)────────────────

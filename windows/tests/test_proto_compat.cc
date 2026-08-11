@@ -185,3 +185,151 @@ TEST(Proto_open_settings_op_value_is_pinned) {
   CHECK(DecodeSimple(p, &seq, &sess));
   CHECK_INT(sess, 77);
 }
+
+
+// ─────────────────────────────────────────────────────────────
+// kStVariantKnown:「那一格不顯示」也要有線路表示
+// ─────────────────────────────────────────────────────────────
+//
+// 簡繁那一格現在有三態(简 / 繁 / 整格不顯示),而線路上原本只有一個
+// kStSimplified —— 一個位元表不出三態。加一個 bit 6 表示「這一格的
+// 內容是可信的」:
+//
+//     kStVariantKnown 為假 → 整格不顯示(kStSimplified 這時沒有意義)
+//     kStVariantKnown 為真 → 看 kStSimplified
+//
+// ⚠ 這必須是**純加法**:DLL 與服務可能來自不同的建置(那個 DLL 住在
+//   瀏覽器裡,而瀏覽器可以開著好幾天)。加一個旗標位元不得改變任何
+//   欄位的位置或長度,否則舊的那一端會從錯的偏移量讀起 —— 而那不是
+//   「少一個功能」,是整則訊息解錯,後果由 link_state 兜成 fail-open,
+//   使用者看到的是打不出中文。
+
+namespace {
+
+// **舊解碼器**只認得 bit 0..5。它不是「把 bit 6 讀成別的東西」,
+// 是**根本不知道有 bit 6**,所以拿到的 flags 要先罩掉。
+constexpr uint32_t kV1StatusMask = kStComposing | kStAsciiMode | kStFullShape |
+                                   kStSimplified | kStAsciiPunct | kStDisabled;
+
+Result SampleResult(uint32_t flags) {
+  Result r;
+  r.handled = true;
+  r.snap.has_commit = true;
+  r.snap.commit_text = "commit";
+  r.snap.preedit = "nihao";
+  r.snap.sel_start = 1;
+  r.snap.sel_end = 2;
+  r.snap.caret = 3;
+  Candidate c1;
+  c1.text = "cand-one";
+  c1.comment = "cmt";
+  c1.label = "1";
+  Candidate c2;
+  c2.text = "cand-two";
+  r.snap.items.push_back(c1);
+  r.snap.items.push_back(c2);
+  r.snap.page_no = 2;
+  r.snap.highlighted = 1;
+  r.snap.is_last_page = false;
+  r.snap.schema_id = "luna_pinyin_tw";
+  r.snap.schema_name = "schema-name";
+  r.snap.status_flags = flags;
+  return r;
+}
+
+void CheckSnapshotBodyIntact(const Snapshot& got) {
+  CHECK(got.has_commit);
+  CHECK_STR(got.commit_text, "commit");
+  CHECK_STR(got.preedit, "nihao");
+  CHECK_INT(got.sel_start, 1);
+  CHECK_INT(got.sel_end, 2);
+  CHECK_INT(got.caret, 3);
+  CHECK_INT(static_cast<int>(got.items.size()), 2);
+  CHECK_STR(got.items[0].text, "cand-one");
+  CHECK_STR(got.items[0].comment, "cmt");
+  CHECK_STR(got.items[0].label, "1");
+  CHECK_STR(got.items[1].text, "cand-two");
+  CHECK_INT(got.page_no, 2);
+  CHECK_INT(got.highlighted, 1);
+  CHECK(!got.is_last_page);
+  CHECK_STR(got.schema_id, "luna_pinyin_tw");
+  CHECK_STR(got.schema_name, "schema-name");
+}
+
+}  // namespace
+
+TEST(proto_variant_known_bit_does_not_collide) {
+  // 新的位元必須是 bit 6,而且不得與任何既有的旗標重疊。
+  CHECK_INT(static_cast<int>(kStVariantKnown), 1 << 6);
+  CHECK_INT(static_cast<int>(kStVariantKnown & kV1StatusMask), 0);
+  // 既有六個一個都不能動(改了值就等於改線路格式)。
+  CHECK_INT(static_cast<int>(kStComposing), 1 << 0);
+  CHECK_INT(static_cast<int>(kStAsciiMode), 1 << 1);
+  CHECK_INT(static_cast<int>(kStFullShape), 1 << 2);
+  CHECK_INT(static_cast<int>(kStSimplified), 1 << 3);
+  CHECK_INT(static_cast<int>(kStAsciiPunct), 1 << 4);
+  CHECK_INT(static_cast<int>(kStDisabled), 1 << 5);
+}
+
+TEST(proto_variant_known_bit_is_purely_additive) {
+  const uint32_t base = kStComposing | kStAsciiMode | kStSimplified;
+  const std::string without = EncodeResult(7, SampleResult(base));
+  const std::string with =
+      EncodeResult(7, SampleResult(base | kStVariantKnown));
+
+  // ⚠ 這一條是核心:多一個旗標位元**不得改變訊息長度**,
+  //   因為它住在一個既有的 u32 裡。長度變了就表示有人加了欄位,
+  //   而那會讓舊的那一端從錯的偏移量讀起。
+  CHECK_INT(static_cast<int>(with.size()), static_cast<int>(without.size()));
+
+  // 而且兩則只差在那個 u32 的一個位元組上。
+  int differing = 0;
+  for (size_t i = 0; i < with.size(); ++i)
+    if (with[i] != without[i]) ++differing;
+  CHECK_INT(differing, 1);
+}
+
+TEST(proto_old_decoder_survives_the_variant_known_bit) {
+  const uint32_t flags =
+      kStComposing | kStAsciiMode | kStSimplified | kStVariantKnown;
+  const std::string wire = EncodeResult(11, SampleResult(flags));
+
+  uint32_t seq = 0;
+  Result got;
+  CHECK(DecodeResult(wire, &seq, &got));
+  CHECK_INT(static_cast<int>(seq), 11);
+  CHECK(got.handled);
+  CHECK_INT(static_cast<int>(got.snap.status_flags), static_cast<int>(flags));
+  CheckSnapshotBodyIntact(got.snap);
+
+  // **舊那一端**:它不知道有 bit 6,所以把 flags 罩掉。
+  // 罩掉之後其餘欄位必須一個字都沒變 —— 那就是「純加法」的意思。
+  const uint32_t as_old = got.snap.status_flags & kV1StatusMask;
+  CHECK_INT(static_cast<int>(as_old), static_cast<int>(kStComposing | kStAsciiMode | kStSimplified));
+  CheckSnapshotBodyIntact(got.snap);
+}
+
+TEST(proto_variant_unknown_still_round_trips) {
+  // 「整格不顯示」= kStVariantKnown 為假。這一態也要過得了線路,
+  // 而且不得被誤解成「繁體」。
+  const std::string wire = EncodeResult(3, SampleResult(kStComposing));
+  uint32_t seq = 0;
+  Result got;
+  CHECK(DecodeResult(wire, &seq, &got));
+  CHECK_INT(static_cast<int>(got.snap.status_flags & kStVariantKnown), 0);
+  CHECK_INT(static_cast<int>(got.snap.status_flags & kStSimplified), 0);
+  CheckSnapshotBodyIntact(got.snap);
+
+  // 三種組合都要能來回,而且互相分得開。
+  const uint32_t kCases[3] = {0u, kStVariantKnown,
+                              kStVariantKnown | kStSimplified};
+  int seen = 0;
+  for (uint32_t f : kCases) {
+    uint32_t s2 = 0;
+    Result r2;
+    CHECK(DecodeResult(EncodeResult(1, SampleResult(f)), &s2, &r2));
+    CHECK_INT(static_cast<int>(r2.snap.status_flags), static_cast<int>(f));
+    ++seen;
+  }
+  CHECK_INT(seen, 3);
+}

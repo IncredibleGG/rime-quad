@@ -23,8 +23,22 @@
 // ── ⚠ 為什麼預設是開的 ──────────────────────────────────────────
 //
 // `ascii_mode` 在這一輪之前,整個 `windows/` 底下只被**讀**過兩次,
-// **一次都沒有被設定過**。三條可能的路全部不通:Shift(TSF 不交付純修飾鍵)、
+// **一次都沒有被設定過**。三條可能的路當時全部不通:Shift、
 // 語言列(InitMenu 回 E_NOTIMPL)、系統匣(沒有中英那一項)。
+//
+// ⚠ **Shift 那一條當時給的理由(「TSF 不交付純修飾鍵」)是假的,已實測
+//   推翻。** CI run 31511075812(sha ca97498)logic-x64 的「真的經過 TSF」:
+//   送一次左 Shift,SHIFT_TRACE_LINES=1,而多出來的那一行是 OnTestKeyDown
+//   自己寫的(vk=0x10 scan=0x2A keysym=0xFFE1 族=host-only 吃掉=0)。
+//   **sink 收得到純修飾鍵,不需要低階鍵盤 hook。**
+//   ⚠ **[2026-08-12] Shift 那一條已經做了**(#89):輕點偵測是
+//   `common/shift_tap.cc` 的純函數狀態機,接在 `OnTestKeyDown` /
+//   `OnTestKeyUp`,`*eaten` 一律 FALSE(不吃任何一顆修飾鍵)。
+//   也就是說這一橫不再是「那個功能唯一的家」—— 下面那句話已經過期。
+//   ⏳ 但真機驗收還沒做(#48),所以這一橫預設仍然是開的。
+//   ⚠ 下面那句「唯一的辦法是 Win+空白鍵」**也已經過期**:Ctrl+空白鍵與
+//   系統匣兩條後來通了。完整的更新在 docs/ui-design.md §12.10.2 的表格,
+//   量測本身見 docs/coordination.md 的 [2026-08-12] [winbar] 那一則。
 //
 // 也就是說:**Windows 使用者要在句子中間打一個英文字,唯一的辦法是按
 // Win+空白鍵把整個輸入法換掉。** 這一橫不是「多一個方便的入口」,
@@ -50,6 +64,8 @@
 #include <vector>
 
 #include "../common/protocol.h"
+#include "../common/bar_visibility.h"
+#include "../common/status_cells.h"
 #include "../common/service_state.h"
 #include "../common/statusbar_place.h"
 #include "ui_font.h"
@@ -60,6 +76,15 @@ namespace rimewin {
 class Engine;
 class SettingsWindow;
 class SettingsStore;
+
+// §8.12 的中英字面(中 / En)。
+//
+// ⚠ 這四個規範性字面全 repo 只住在 service/status_bar.cc 一個地方
+//   (§12.9.3 第 1 條:它們是狀態指示,不是介面文字,不進 catalog),
+//   而 W7 / W10 兩個方向守著那件事。托盤圖示要畫同一個字,所以走這一支
+//   拿 —— 在別的檔案裡再寫一份會多出第二份真相,而「改名改一半」正是
+//   這個專案吃過虧的形狀。
+const wchar_t* BarModeGlyph(bool ascii_mode);
 
 class StatusBar {
  public:
@@ -94,6 +119,21 @@ class StatusBar {
   /// 見底下 schema_name_ 的說明:**不是權威**,第一份快照到就被覆蓋。
   void SeedSchemaName(const std::string& name);
 
+  // ── 那一橫該不該在(§12.10.6)────────────────────────────────
+  //
+  // ⚠ 判準本身在 common/bar_visibility.h(純函式,Ubuntu 上測得到)。
+  //   這裡只負責把三個輸入餵給它,以及把結果變成 ShowWindow。
+  //
+  // ⚠ 用**連線生死**當主要訊號,而不是只用焦點:ipc_client.cc 的
+  //   `if (!MayEatKey()) return;` —— 焦點訊號在使用者打第一個字之前
+  //   根本不送。連線生死沒有這道閘。
+  //
+  // 這兩支從**連線執行緒**上呼叫(PipeServer::ServeClient 的頭尾)。
+  void OnClientAttached();
+  void OnClientDetached();
+  // 宿主說焦點來了/走了。從連線執行緒上呼叫(Op::kFocus)。
+  void OnHostFocus(bool focused);
+
  private:
   static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l);
   static LRESULT CALLBACK PopupProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l);
@@ -116,6 +156,13 @@ class StatusBar {
   //   一定要重走這一支 —— 只長寬度不重擺,右端會被推出螢幕。
   void ApplyPlacement(int w_dip);
   void SavePlacement();
+  // 把三個輸入餵給狀態機,並把結果變成 ShowWindow。只在 UI 執行緒上跑。
+  void EvaluateVisibility();
+  // 向引擎回讀一次,把結果貼進 ascii_mode_ / variant_ 並重畫。
+  //
+  // ⚠ 這一支取代了那三格的**樂觀寫入**。點下去之後畫面要不要變、變成
+  //   什麼,由引擎說了算 —— 而不是由「我們剛剛送出去了什麼」說了算。
+  void RefreshFromEngine();
 
   struct Cell {
     RECT rc{};
@@ -144,7 +191,11 @@ class StatusBar {
 
   std::mutex mu_;
   bool ascii_mode_ = false;
-  bool simplified_ = false;
+  // ⚠ 三態,不是布林。kHidden = 引擎沒有回報字形 → **那一格整格不顯示**。
+  //   舊版是 bool simplified_,而它的來源是 kStSimplified ←
+  //   rs_status.is_simplified ← `simplification` —— 一個本專案打包的方案
+  //   通通沒有的開關,讀到的一直是我們自己寫進去的回音。
+  VariantCell variant_ = VariantCell::kHidden;
   std::string schema_name_;
 
   // ⚠ 種子:引擎在管道打開之前就知道方案叫什麼了(WarmUpEngine 選好了),
@@ -171,7 +222,23 @@ class StatusBar {
   int hot_ = -1;
   int pressed_ = -1;
   ServiceState service_state_ = ServiceState::kReady;
-  bool visible_ = true;
+  // ⚠ 這裡以前是一個 visible_,而它同時是兩件事:「使用者要不要這個
+  //   東西」與「現在螢幕上有沒有」。混在一起就沒辦法自動隱藏 ——
+  //   藏起來會被讀成「使用者關掉了」,再也不會自己回來。
+  //
+  //   user_enabled_ = 設定檔那一格(appearance.floatingBar),只由
+  //   WM_RIME_SHOW 改。shown_ = 狀態機算出來的,ShowWindow 只由它驅動。
+  bool user_enabled_ = true;
+  bool shown_ = false;
+  BarVisibility visibility_;
+
+  // 目前握著連線的宿主數。連線執行緒寫、UI 執行緒讀,所以是 atomic。
+  // ⚠ **不是**「有幾個輸入框」。同一支程式裡跳輸入框不會動到它,
+  //   而那正是我們要的:那種時候那一橫不該閃。
+  std::atomic<int> clients_{0};
+  // 收到過任何焦點訊息沒有。為假時**不看** any_focused_(fail-visible)。
+  std::atomic<bool> focus_known_{false};
+  std::atomic<bool> any_focused_{false};
 
   // 拖動。⚠ 不用 WM_NCHITTEST 回 HTCAPTION —— 那會讓整條都變成拖動區,
   //   四格就點不到了;留一小塊「握把」又要使用者去找它。

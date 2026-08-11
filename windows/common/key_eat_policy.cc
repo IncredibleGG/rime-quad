@@ -117,8 +117,19 @@ KeyKind ClassifyKeyKind(int32_t keysym, uint32_t modifiers) {
 
   // F1–F24。
   if (keysym >= kF1 && keysym <= kF24) return KeyKind::kHostOnly;
-  // 修飾鍵本身(Shift_L … Super_R)。TSF 本來就不太會把它們交過來,
-  // 但交過來時吃掉它們會讓使用者按不了任何組合鍵。
+  // 修飾鍵本身(Shift_L … Super_R)。吃掉它們會讓使用者按不了任何組合鍵。
+  //
+  // ⚠ 這裡原本寫「TSF 本來就不太會把它們交過來,但交過來時…」。**「不太會」
+  //   那半句已經量掉了:TSF 會交過來。** 出處 CI run 31511075812
+  //   (sha ca97498)logic-x64 的「真的經過 TSF」,量法見
+  //   windows/tests/tsf_host_main.cc 的 MeasureShiftDelivery(送一次左 Shift,
+  //   數 trace 檔多了幾行)。量到 SHIFT_TRACE_LINES=1,而那一行是
+  //   OnTestKeyDown 自己寫的:vk=0x10 scan=0x2A keysym=0xFFE1 族=host-only
+  //   吃掉=0 —— 也就是**這一格的判斷當場被實測驗證了一次**。
+  //   (tsf/text_service.cc 的 OnTestKeyUp 曾經寫著相反的話,已照實測改寫。)
+  //
+  // ⚠ 「輕點 Shift 切中英」(#89,2026-08-12 做了)**沒有**改這一格的分類:仍然是不吃
+  //   (三支 sink 的 *eaten 實測都是 0),偵測輕點是 sink 那一層的狀態機。
   if (keysym >= kShiftL && keysym <= kSuperR) return KeyKind::kHostOnly;
 
   // 數字鍵台的數字與運算符號。**是字元鍵** —— 使用者按數字鍵台的 3

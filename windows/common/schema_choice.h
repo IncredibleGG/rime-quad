@@ -132,6 +132,88 @@ struct OptionAssign {
 };
 std::vector<OptionAssign> PlanVariant(bool simplified, uint32_t langid_hint);
 
+// ── 一整份選項計畫:建 session 的兩條路徑只能有這一份 ──────────
+//
+// ⚠ 這一支存在的理由是一個真的缺陷,不是整理。
+//
+//   service/main.cc 暖機那一段有一句註解寫著「這一段必須與 pipe_server 的
+//   kSessionNew 逐字相同」。它已經漂了:pipe_server 後來補上了
+//   `ascii_mode`(使用者在那一橫上切成英文之後,新開的程式也要是英文的),
+//   而暖機那一份沒有跟著補。
+//
+//   後果不是「暖機少設一個選項」,是**整個預熱失效**:
+//   Engine::TakeSpareSession 用 SameOptions 比對計畫,而 SameOptions 第一件事
+//   就是比長度。長度不同 → 每一個預熱好的備用 session 都被判成過期、
+//   當場丟掉、當場重建,而 rs_session_create 量到過 442~753 毫秒,
+//   SESSION_NEW 的預算是 300 毫秒。也就是說:那筆錢又回到使用者
+//   等待的那一趟裡,而畫面上什麼異狀都沒有。
+//
+//   「一句註解要求兩段程式碼逐字相同」本來就不是一個守得住的約定。
+//
+// 順序是契約的一部分(SameOptions 是**逐項**比對,不是集合比對):
+//
+//     1. 簡繁那一組(choice.set_variant 為真時才有,見 PlanVariant)
+//     2. ascii_punct(punctuation != kUnset 時才有)
+//     3. ascii_mode(**永遠有**)
+//
+// ⚠ punctuation 的 kUnset = followSchema = **完全不出現在計畫裡**。
+//   設成 false 不是同一件事:很多方案根本沒有那個開關,而有些方案的
+//   預設是 true。
+//
+// ⚠ ascii_mode 沒有「不干預」那一態 —— 它是一個模式,不是三態偏好,
+//   而它的預設(false = 中文)就是 librime 的預設。
+//
+// ⚠ Tri 定義在 settings.h,而 settings.h 反過來 include 本檔 ——
+//   所以這裡用不透明宣告,不能 include 它。scoped enum 的底層型別
+//   預設就是 int,兩處宣告一致。
+enum class Tri : int;
+
+std::vector<OptionAssign> BuildOptionPlan(const SchemaChoice& choice,
+                                          uint32_t langid,
+                                          Tri punctuation,
+                                          bool ascii_mode);
+
+// ── 改完簡繁設定之後,備用池的那一份計畫要怎麼更新 ────────────────
+//
+// ⚠ 這一支存在的理由是 ac4a721(「改完簡繁設定之後,備用 session 池不再
+//   整池報廢」)在**它唯一針對的情境下恆定失效**,而那個失效一支自動化
+//   測試都看不到 —— 那段程式碼在 service/engine.cc 裡,Ubuntu 上編不動。
+//   抽成純函式之後,run_logic_tests.sh 就驗得到。
+//
+//   舊做法是「逐項就地覆蓋 value、保留舊順序」。但 PlanVariant 的**名字
+//   順序**隨 simplified / langid 而變(「先關再開」把被跳過的那一個排到
+//   最後),而 SameOptions 是**逐項**比對:
+//
+//     備用池的計畫(繁,0x0404)
+//       simplification=0 zh_hant=0 zh_hans=0 zh_hant_hk=0 zh_hant_tw=1
+//     就地覆蓋成簡體之後
+//       simplification=1 zh_hant=0 zh_hans=1 zh_hant_hk=0 zh_hant_tw=0
+//     SESSION_NEW 重算的計畫
+//       simplification=1 zh_hant=0 zh_hant_hk=0 zh_hant_tw=0 zh_hans=1
+//
+//   值全對、順序不同 → SameOptions 回 false → 備用池仍然整池報廢。
+//   簡繁只要**真的變了**,順序就一定變,所以那一段從來沒有生效過。
+//
+// 正確的做法是把簡繁那一組**整組換掉**,而且擺回它在 BuildOptionPlan
+// 裡的位置(整份計畫的最前面),其餘照原順序保留。這樣算出來的計畫與
+// SESSION_NEW 那一趟重算的**逐項相同**。
+//
+// ⚠ set_variant 為 false(使用者把 followInputMode 關掉 = 「我自己管」)
+//   時要把那一組**整組拿掉**,不是留著舊值 —— BuildOptionPlan 在那個
+//   情境下產出的計畫裡一個 variant 選項都沒有,留著長度就對不上,
+//   一樣整池報廢。這是同一個缺陷的第二個入口,舊做法連碰都沒碰到
+//   (它在 !set_variant 時直接 continue)。
+//
+// ⚠ 為什麼不改成「讓 SameOptions 與順序無關」:那一份計畫不只是比對用的
+//   鍵,它同時是**重放腳本** —— Engine::MakeSpareOnEngineThread 會照它
+//   逐項 rs_set_option。而順序在那裡是有作用的(rs_set_option 不維持
+//   radio 的互斥,「先關再開」是刻意的)。把比對改成集合比對,等於接受
+//   一份**套用順序是錯的**計畫,把缺陷藏起來而不是修掉。所以留著嚴格的
+//   逐項比對,修產出那一端。
+std::vector<OptionAssign> UpdateVariantInPlan(
+    const std::vector<OptionAssign>& plan, bool set_variant, bool simplified,
+    uint32_t langid);
+
 // radio group 的四個成員(luna_pinyin.schema.yaml 的 `options:`)。
 extern const char* const kVariantOptions[4];
 constexpr int kVariantOptionCount = 4;
@@ -158,6 +240,120 @@ constexpr int kWarmUpLangIdCount = 4;
 
 // 給日誌用的短名,例如 0x0804 → "zh-Hans-CN"。認不得回傳 "?"。
 const char* LangIdName(uint32_t langid);
+
+// ── 換方案之前,簡繁偏好要拿哪一份 ──────────────────────────────
+//
+// ⚠ 這一支存在的理由是 648c02c(「換方案洗掉簡繁」)這個**使用者看得到
+//   的行為改變**,它唯一的守門在 windows/verify_installer.sh §6g 案例二
+//   —— 一支只有 Windows 跑得動的腳本。實跑覆核過:把 pipe_server.cc 的
+//   那一行刪掉,三支守門全綠。也就是說那個修法在開發機上等於沒有守門。
+//
+// ── 它在守什麼 ─────────────────────────────────────────────────
+//
+//   `Engine::SelectAndApply` 換完方案要重套簡繁(librime 每次載入方案都會
+//   把 switches 重設回方案宣告的值),而它用的是 `Engine::variant_pref_`。
+//   那是**設定的複本**,engine.h 自己寫著「不是真相的來源,真相在設定檔」,
+//   更新它的只有服務啟動時與設定視窗改簡繁時兩處。設定檔在服務跑著的
+//   時候被別人改掉(設定視窗有一顆「用記事本開啟設定檔」),這份複本就
+//   過期了 —— 而換一次方案就會拿過期的那一份把使用者剛選的簡繁洗掉。
+//
+//   SESSION_NEW 那一條路每一次都重讀設定檔,所以它是對的;
+//   SESSION_SELECT_SCHEMA 那一條沒有。這一支就是「那一條路該拿哪一份」
+//   這個判斷本身,抽出來讓 Ubuntu 上的 run_logic_tests.sh 驗得到。
+//
+// ⚠ 這一支**驗不到**「pipe_server.cc 真的呼叫了它」。那一格由
+//   windows/audit_single_source.sh 的規則 3 在原始碼層面守
+//   (windows/service/ 在 Ubuntu 上編不起來,所以只能這樣守)。
+//   兩件事缺一不可:這裡守判斷、那裡守接線。
+//
+// ⚠ 而規則 3 **驗不到參數**(它數的是三個 token 在不在、誰先誰後)。
+//   那個縫隙很寬,見下面 OnDiskPref / EngineCopyPref 檔頭那一整段。
+struct VariantPrefPick {
+  // 要交給 Engine::SetVariantPref 的那一份。
+  SchemaPreference use;
+  // true = 用的是設定檔那一份(正常情況)。false = 讀不到設定,只能沿用
+  // 引擎手上的複本 —— fail-open:讀不到設定不該讓換方案整個失敗。
+  bool from_settings_file = false;
+  // 複本與設定檔不同 = 複本過期了。**只給日誌**,不參與判斷 ——
+  // 判斷永遠是「設定檔贏」,不是「不一樣的時候才更新」。
+  // (「只有不一樣才更新」與「一律更新」在結果上相同,但前者要求兩邊的
+  //  比較函式永遠正確;比較函式漏一個欄位,症狀就是這個缺陷本身。)
+  bool engine_copy_was_stale = false;
+};
+
+// 逐欄位比對。給 engine_copy_was_stale 用,順便讓「漏了哪一欄」測得到。
+bool SameSchemaPreference(const SchemaPreference& a, const SchemaPreference& b);
+
+// ── 兩份偏好長得一模一樣 —— 所以用**型別**把它們分開 ──────────────
+//
+// ⚠ 這兩個包裝存在的唯一理由是「參數放錯位置要編不過」,不是封裝。
+//
+//   本函式的舊簽章是 `(bool, const SchemaPreference&, const SchemaPreference&)`。
+//   把後兩個**對調**,語意正好翻回 648c02c 的原缺陷 —— 拿引擎手上那份
+//   過期的複本去洗掉使用者剛在設定檔裡選的簡繁 —— 而:
+//
+//     · 編譯器一聲都不吭(兩個參數同型別、同 const 參考);
+//     · 本檔下面那一組純函式測試也全綠(它們自己傳的參數是對的);
+//     · audit_single_source.sh 規則 3 也全綠(它驗的是三個 token 在不在、
+//       誰先誰後,**不驗參數**);
+//     · 只有 verify_installer.sh §6g 案例二抓得到,而那支只有 Windows
+//       跑得動 —— 也就是開發機上等於沒有守門。實跑覆核過。
+//
+//   包一層之後,對調是**型別錯誤**,而型別錯誤在 run_logic_tests.sh
+//   (g++ 編 tests/)與 syntax_check_mingw.sh(mingw 編 service/)兩支上
+//   各紅一次。那比任何 grep 都硬:它不必猜參數長什麼樣,也繞不開。
+//   tests/test_schema_choice.cc 裡有兩條 static_assert 把「對調編不過」
+//   這件事本身釘住 —— 不然哪天有人加了隱式轉換,保護會安靜地消失。
+//
+// ⚠ 建構子一律 explicit / 具名工廠。留一個隱式轉換,SchemaPreference 就
+//   會自己變成任何一邊,上面整段就白寫了。
+
+// 設定檔那一份。
+//
+// ⚠ 「設定檔讀不到」折進**這個型別**是刻意的:舊簽章把它放在一個裸的
+//   `bool settings_readable`,而**永遠傳 false** 是同一個缺陷的另一個入口
+//   (永遠不讀設定檔 = 永遠拿引擎手上那份過期的),偏偏那個植入在原始碼上
+//   跟正常的長得一模一樣 —— 一個 `false` 而已。折進來之後,「不讀設定檔」
+//   只寫得成 `OnDiskPref::Unreadable()`,一個叫得出名字、找得到的東西,
+//   audit_single_source.sh 規則 5 就驗得到呼叫端有沒有真的走設定檔那條路。
+//
+// ⚠ 「讀不到」與「讀到一份預設值」不是同一件事:後者會把使用者存過的
+//   偏好換成「跟隨輸入模式」。所以 Unreadable() **沒有值**,不是預設值。
+class OnDiskPref {
+ public:
+  // 設定檔讀得到,這是它的內容。
+  static OnDiskPref FromSettingsFile(const SchemaPreference& v) {
+    OnDiskPref p;
+    p.readable_ = true;
+    p.value_ = v;
+    return p;
+  }
+  // 沒有 SettingsStore = 讀不到。**沒有內容**,呼叫端會 fail-open 沿用複本。
+  static OnDiskPref Unreadable() { return OnDiskPref(); }
+
+  bool readable() const { return readable_; }
+  // ⚠ readable() 為 false 時這一份沒有意義,不要用它。
+  const SchemaPreference& value() const { return value_; }
+
+ private:
+  OnDiskPref() = default;
+  bool readable_ = false;
+  SchemaPreference value_;
+};
+
+// 引擎手上那一份複本(Engine::VariantPrefCopy())。
+// engine.h 自己寫著「不是真相的來源」—— 它只在設定檔讀不到時才派得上用場。
+class EngineCopyPref {
+ public:
+  explicit EngineCopyPref(const SchemaPreference& v) : value_(v) {}
+  const SchemaPreference& value() const { return value_; }
+
+ private:
+  SchemaPreference value_;
+};
+
+VariantPrefPick PickVariantPrefForSchemaSwitch(const OnDiskPref& on_disk,
+                                               const EngineCopyPref& engine_copy);
 
 }  // namespace rimewin
 

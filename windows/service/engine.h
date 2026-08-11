@@ -345,6 +345,29 @@ class Engine {
   bool SetOption(uint64_t id, const char* option, bool value);
   std::string SchemaOfSession(uint64_t id);
 
+  // ── 向引擎回讀「現在到底是什麼狀態」──────────────────────────
+  //
+  // ⚠ 這一支存在的理由是一個真的缺陷:懸浮狀態列那三格以前是**樂觀
+  //   寫入** —— 點下去就自己翻,不等任何引擎的證據。理由當時很實際
+  //   (那三格唯一的更新路徑是 OnSnapshot,而 OnSnapshot 要等使用者
+  //   真的打一個字),但代價是那一橫可以顯示一個從來沒有發生過的狀態。
+  //   使用者回報的「畫面說简、打出來是繁」就是那個形狀的一種。
+  //
+  //   回讀是**證據**,而且一樣不需要使用者先打一個字。
+  //
+  // ⚠ 刻意用 rs_get_option 而不是 rs_snapshot_acquire:acquire 會在當下
+  //   消費掉待取的 commit(rime_shell.h 檔頭),而這一支是使用者點那一橫
+  //   時呼叫的 —— 那時完全可能有一個還沒送到宿主的 commit。
+  //   吃掉它的症狀是「打到一半的字消失了」,而且查不出來。
+  //
+  // 回傳 protocol.h 的 status_flags 形式,與 OnSnapshot 吃的是同一種
+  // 東西 —— 兩條路徑產生兩種格式的話,那一橫就會有兩套解讀。
+  struct StatusReadback {
+    bool ok = false;  // 一個活著的 session 都沒有 → 什麼都不要改
+    uint32_t status_flags = 0;
+  };
+  StatusReadback ReadBackStatus();
+
   // 把「這個語言該用什麼」套到一個 session 上。回傳實際選中的方案 id
   // (沒有選就回空字串)。
   std::string ApplyChoice(uint64_t id, const std::string& schema_id,
@@ -422,6 +445,70 @@ class Engine {
   void RebuildSessionsAsync();
   // 宿主在部署期間關掉了 —— 把它從「等著被建回來」的名單上劃掉。
   void ForgetParked(uint64_t id);
+
+  // ── 選方案 + 套簡繁,一個不可分割的動作 ──────────────────────
+  //
+  // ⚠ **engine.cc 裡唯一允許出現 rs_select_schema 的地方。**
+  //   windows/audit_single_source.sh 在原始碼層面守這一條。
+  //
+  // 為什麼必須綁在一起:librime 的 ConcreteEngine::InitializeOptions()
+  // 在每一次載入方案時都會把 switches 重設回方案宣告的值(有 `reset:`
+  // 的那些)。luna_pinyin_tw 的 __patch 把 switches/@2/reset 設成 3,
+  // 所以換一次方案,zh_hant_tw 就被設回真、zh_hans 被設回假 ——
+  // 使用者剛選的簡體被悄悄洗掉。
+  //
+  // 這條路徑產品裡真的會走到:懸浮狀態列第三格的方案選單 →
+  // SelectSchemaAll → 之後沒有任何人重套簡繁。而使用者回報的「狀態列
+  // 說简、打出來是繁」與「那一橫」是同一個畫面上的兩件事。
+  //
+  // (emulator-5558 上實測過,scripts/verify_variant_persistence.sh 的
+  //  情境 B 與 C:裸選一次 → 候選變回「逆號 擬好」;選完立刻重套 →
+  //  仍然是「逆号 拟好」。)
+  //
+  // 回傳「真的換了方案」(schema_id 非空而且 rs_select_schema 成功)。
+  // schema_id 為空時不換方案,但**仍然重套一次簡繁** —— 保底不花錢。
+  //
+  // ⚠ 只能在引擎執行緒上呼叫。sess 是已經解出來的 rs_session。
+  bool SelectAndApply(uint64_t id, uintptr_t sess,
+                      const std::string& schema_id);
+
+  // 目前的簡繁偏好。SelectAndApply 要用它替換方案之後重算一次,
+  // 而 langid 由 session_lang_ 提供。
+  //
+  // ⚠ 它是**設定的複本**,不是真相的來源 —— 真相在設定檔。存一份是
+  //   因為 SelectAndApply 跑在引擎執行緒上,而讀設定檔要碰磁碟。
+  //   ApplyVariantAll 與設定存檔時更新它。
+  SchemaPreference variant_pref_;
+
+ public:
+  // 啟動時把設定檔裡那一份種進來。少了它,服務剛起來到使用者第一次改
+  // 設定之間,SelectAndApply 用的是**預設值**而不是他存過的偏好 ——
+  // 症狀是「換一次方案,簡繁跳回預設」,而他沒有碰過簡繁。
+  void SetVariantPref(const SchemaPreference& pref) {
+    Post("記下簡繁偏好", [&] { variant_pref_ = pref; });
+  }
+
+  // 取一份複本出來。⚠ 走 Post 而不是直接回傳 variant_pref_ 的參考:
+  //   它只屬於引擎執行緒,而呼叫者(pipe_server 的 kSelectSchema)在
+  //   連線的執行緒上。Post 是同步的,所以拿到的是當下那一份。
+  //
+  // 它的用途**只有診斷**:common/schema_choice.h 的
+  // PickVariantPrefForSchemaSwitch 拿它來判斷「這一份過期了沒」,
+  // 而那個答案只進日誌。判斷本身一律以設定檔為準。
+  //
+  // ⚠ 合併 win-next 之後 Post() 會回 WorkQueue::Status,而這兩支刻意
+  //   不看它:引擎在停(kStopped)時工作根本沒跑,SetVariantPref 等於
+  //   沒記、VariantPrefCopy 回的是預設值。兩件都可以接受 ——
+  //   前者在 Start() 之後才有人呼叫,後者的答案**只進日誌**
+  //   (判斷一律以設定檔為準,見 PickVariantPrefForSchemaSwitch)。
+  //   要是哪天有人拿它去做決定,那時就得先把回傳值接起來。
+  SchemaPreference VariantPrefCopy() {
+    SchemaPreference out;
+    Post("讀簡繁偏好", [&] { out = variant_pref_; });
+    return out;
+  }
+
+ private:
 
   // 以下三個只在引擎執行緒上呼叫。
   Snapshot TakeSnapshot(uint64_t id);

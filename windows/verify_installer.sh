@@ -617,6 +617,46 @@ if [ "$(printf '%s\n' "${PROFILES}" | sort)" != "$(printf '%s\n' "${EXPECT_PROFI
 fi
 ok "CLSID 與 ${PROFILE_COUNT} 份語言設定檔的 GUID 都與預期一致"
 
+# ⚠ 能力類別的數字也要一份寫死的第二意見 —— 上面那一則的理由一字不改地
+#   適用,而這兩個值原本沒有跟上。
+#
+#   實測(2026-08-12,run 31526574022 / install-x64):把
+#   tsf/registration.cc 的 kTipCapCategories 拿掉
+#   &GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT 一行,下面那兩條斷言印的是
+#
+#       ✓ 能力類別 5 類(GUID_TFCAT_TIP_KEYBOARD + 5 個能力類別)
+#       ✓ 能力類別 5 類 / 13 筆齊全
+#
+#   **兩條都綠。** 原因是預期值 CATEGORY_COUNT / CATEGORY_ITEMS 由被測的
+#   那支 rime_ime_setup.exe 自己報出來(setup_main.cc → registration.cc 的
+#   RegisteredCategoryCount(),它就是 sizeof(kTipCapCategories)),
+#   於是登錄檔少一筆、預期也跟著少一筆,兩邊永遠相等。
+#
+#   而「少一個」正是那兩條斷言宣稱在擋的事:少了 IMMERSIVESUPPORT,
+#   市集 App 與 Edge 裡完全用不了;少了 SECUREMODE,提權視窗上打不了字。
+#   症狀是「在某些程式裡沒反應」,而且與程式碼無關 —— 只是沒註冊。
+#   換句話說:這兩條斷言原本擋不住它們唯一存在的理由。
+#
+# ⚠ 改這兩個數字 = 改變輸入法在哪些宿主裡活得下去。要改請連同
+#   tsf/registration.cc 的 kTipCapCategories 一起,並在這裡寫下為什麼。
+EXPECT_CATEGORY_COUNT=6      # GUID_TFCAT_TIP_KEYBOARD + 5 個能力類別
+EXPECT_CATEGORY_ITEMS=16
+if [ "${CATEGORY_COUNT}" != "${EXPECT_CATEGORY_COUNT}" ] || \
+   [ "${CATEGORY_ITEMS}" != "${EXPECT_CATEGORY_ITEMS}" ]; then
+  # ⚠ 這裡是 note_fail 而不是 die,與上面 CLSID / PROFILES 那兩條不同 ——
+  #   分界線是「後面那 180 幾條還算不算數」。CLSID 換了的話,底下每一條
+  #   登錄檔斷言查的都是別人的鍵,留著只會產生假訊號,所以那兩條 die。
+  #   能力類別少一類不會讓其餘的斷言失去意義:輸入法照樣裝得起來、
+  #   照樣打得出「你好」,只是在市集 App 裡活不了。為了這一個數字把
+  #   整份報告砍掉,下一輪要修的人就得再等一次 CI 才看得到第二個問題。
+  note_fail "產品報出來的能力類別是 ${CATEGORY_COUNT} 類 / ${CATEGORY_ITEMS} 筆,
+     這支腳本寫死的第二意見是 ${EXPECT_CATEGORY_COUNT} 類 / ${EXPECT_CATEGORY_ITEMS} 筆。
+     少一類的症狀是「在市集 App / Edge / 提權視窗裡沒有這個輸入法」,
+     而且與程式碼無關 —— 只是沒註冊。若是刻意的,請同時更新這支腳本。"
+else
+  ok "能力類別的預期值與寫死的第二意見一致(${CATEGORY_COUNT} 類 / ${CATEGORY_ITEMS} 筆)"
+fi
+
 # ── 安裝之前的語言清單(§4b 要拿它比對)────────────────────────────
 #
 # 這一份是本輪唯一能回答「**啟用一份語言設定檔會不會替使用者新增一個語言**」
@@ -745,6 +785,15 @@ n_ocd2="$( (ls "${INSTALL_DIR}"/data/shared/opencc/*.ocd2 2>/dev/null || true) |
 # ══════════════════════════════════════════════════════════════════
 #  3. 登錄檔斷言(逐個鍵值點名)
 # ══════════════════════════════════════════════════════════════════
+# ── 安裝目錄的基準相片(路徑 + 大小 + 修改時間)──────────────────
+#
+# ⚠ 照在**這裡**,而不是 §6 之前:§5c / §5d 是冷啟動與「瘦 DLL 自己把
+#   服務拉起來」,也就是使用者機器上真正跑的那條路。基準線照在它們後面的話,
+#   它們寫進 Program Files 的東西會被當成本來就在,永遠比對得過。
+#   (理由與實測見 §6 那一段的註解。)
+snapshot() { (cd "${INSTALL_DIR}" && find . -type f -printf '%p\t%s\t%T@\n' | sort); }
+snapshot > "${WORK}/before.txt"
+
 log "3. 登錄檔"
 
 reg_key_exists "${HKLM_CLSID}" && ok "${HKLM_CLSID}" \
@@ -806,7 +855,7 @@ n_cat="$(reg query "${HKLM_CTF_CAT}" //reg:64 2>/dev/null | tr -d '\r' \
          | CATPREFIX="HKEY_LOCAL_MACHINE\\$(get_path HKLM_CTF_CATEGORY)\\" \
            awk 'index($0, ENVIRON["CATPREFIX"]) == 1 { n++ } END { print n + 0 }')"
 [ "${n_cat}" -eq "${CATEGORY_COUNT}" ] \
-  && ok "能力類別 ${n_cat} 類(GUID_TFCAT_TIP_KEYBOARD + 5 個能力類別)" \
+  && ok "能力類別 ${n_cat} 類(GUID_TFCAT_TIP_KEYBOARD + $((n_cat - 1)) 個能力類別)" \
   || note_fail "Category\\Category 底下 ${n_cat} 個,預期 ${CATEGORY_COUNT} 個
      少一個的症狀是「在市集 App / Edge / 提權視窗裡沒有這個輸入法」"
 
@@ -1075,14 +1124,24 @@ check_choice 0x0C04 luna_pinyin_tw traditional zh_hant_hk
 
 # 反向測試:認不出來的語言必須**完全不碰**簡繁(規範 §4.2:不要預設繁體)。
 # 少了這一條,一個「永遠設成繁體」的實作也會讓上面兩條繁體的斷言通過。
+#
+# ⚠ 判準是「不碰**簡繁**」,不是「一個 option 都不送」。
+#   `ascii_mode` 一定會送(schema_choice.h:157「永遠有」)—— 它是模式不是
+#   三態偏好,沒有「不干預」那一格。舊版寫成 `grep -q '^option='`,
+#   在 c9fc502 把 ascii_mode 加進 BuildOptionPlan 之後就變成**恆假**,
+#   而這一格從那時起一次都沒有跑過(install-x64 這條車道整個不存在)。
 neg="$(choice_out 0x0409)"
+neg_variant_opts="$(echo "${neg}" | grep -cE '^option=zh_' || true)"
 if [ "$(field_of "${neg}" variant)" = "(不干預)" ] && \
-   ! echo "${neg}" | grep -q '^option='; then
-  ok "0x0409(en-US)完全不碰簡繁 —— 上面幾條不是恆真的"
+   [ "${neg_variant_opts}" = "0" ] && \
+   echo "${neg}" | grep -q '^option=ascii_mode='; then
+  ok "0x0409(en-US)完全不碰簡繁(0 個 zh_* option) —— 上面幾條不是恆真的"
 else
-  note_fail "0x0409 竟然動了簡繁:
+  note_fail "0x0409 竟然動了簡繁,或者連 ascii_mode 都不送了(送了 ${neg_variant_opts} 個 zh_* option):
 $(echo "${neg}" | sed 's/^/       /')
-     規範 §4.2:認不出來的輸入模式一律不表示意見,不要預設繁體。"
+     規範 §4.2:認不出來的輸入模式一律不表示意見,不要預設繁體。
+     ⚠ 這一條只看 zh_* 那幾個開關。ascii_mode 必須照送 —— 它不見了
+     代表 BuildOptionPlan 整個沒回東西,那一樣是紅的。"
 fi
 
 # ══════════════════════════════════════════════════════════════════
@@ -1371,19 +1430,86 @@ fi  # -n "${HOST}"
 # 也就是 DLL 會走的每一段,除了 TSF 本身。
 log "6. 端到端:用安裝好的服務與資料打出「你好」"
 
-# 先照一張安裝目錄的相片(路徑 + 大小 + 修改時間)。
-# 跑完之後要一模一樣 —— 那證明使用者資料真的沒有寫進 Program Files。
-snapshot() { (cd "${INSTALL_DIR}" && find . -type f -printf '%p\t%s\t%T@\n' | sort); }
-snapshot > "${WORK}/before.txt"
+# ⚠ 相片在 §2 裝完的當下就照了(見上面),**不是在這裡**。
+#
+#   原本這一行就在這裡,而那讓 §5c / §5d(冷啟動、瘦 DLL 自己拉起服務)
+#   寫進 Program Files 的東西全部被算進基準線 —— 於是它們永遠比對得過。
+#
+#   實測(2026-08-12,run 31526574022 / install-x64):把 service/main.cc
+#   的 RedirectStdIoIfDetached 從 %LOCALAPPDATA% 改成 %ProgramFiles%,
+#   服務真的把 diagnostics/service.log 寫進了安裝目錄(${INSTALL_DIR}),
+#   ⚠ 這一行原本把安裝路徑連同產品名一起寫成字面值,而 scripts/
+#     verify_product_ids.sh §3 與 windows/verify_product_names.sh §5
+#     連註解一起掃 —— 那是對的:改名時漏掉的正是註解裡那一份,
+#     而它會在下一個人讀的時候變成錯的說明。識別碼一律向
+#     product.env 那條線要(這裡直接用已經讀好的 ${INSTALL_DIR})。
+#   而這一條照樣印
+#
+#       ✓ 安裝目錄跑完之後一個檔案都沒變(使用者資料沒有寫進 Program Files)
+#
+#   抓到它的是**別的**斷言(§6d 的「找不到 service.log」與 §8 的
+#   「安裝目錄還留著 1 個我們的檔案」)。這一條自己是瞎的,而且瞎在
+#   它最該看見的那條路上 —— 冷啟動那一支才是使用者機器上真正跑的服務。
 
-READY="${WORK}/ready.txt"; rm -f "${READY}"
-"${INSTALL_DIR}/rime_service.exe" \
-  --no-ui --wait-deploy 1200 \
-  --ready-file "$(w "${READY}")" --quit-after 900 \
-  > "${WORK}/service.log" 2>&1 &
-SVC_PID=$!
+READY="${WORK}/ready.txt"
+SVC_LOG="${WORK}/service.log"
+: > "${SVC_LOG}"
+SVC_PID=""
+
+# ── 起 / 停這一段的服務 ──────────────────────────────────────────
+#
+# 抽成函式是因為 §6g 要**重起好幾次**:那一節的每一個案例都要自己一份
+# 乾淨的使用者詞典,而詞典是服務進程開著的(見 §6g 的長註解)。
+# 日誌一律附加到同一個 service.log,前面加一行標題分段 ——
+# 後面 §15 掃的是整份,分成好幾個檔案會讓它漏掉。
+start_probe_service() {   # $1 = 這一趟的標籤(只進日誌與錯誤訊息)
+  rm -f "${READY}"
+  echo "=== [服務啟動:$1] ===" >> "${SVC_LOG}"
+  "${INSTALL_DIR}/rime_service.exe" \
+    --no-ui --wait-deploy 1200 \
+    --ready-file "$(w "${READY}")" --quit-after 900 \
+    >> "${SVC_LOG}" 2>&1 &
+  SVC_PID=$!
+  local i
+  for i in $(seq 1 1200); do
+    [ -f "${READY}" ] && break
+    if ! kill -0 "${SVC_PID}" 2>/dev/null; then
+      echo "--- service.log ---"; tr -d '\r' < "${SVC_LOG}"
+      die "服務進程提前結束了($1)"
+    fi
+    sleep 1
+    [ $((i % 60)) -eq 0 ] && log "    ...已等 ${i}s"
+  done
+  [ -f "${READY}" ] \
+    || { tr -d '\r' < "${SVC_LOG}"; die "服務在 1200 秒內沒有就緒($1)"; }
+}
+
+stop_probe_service() {
+  "${INSTALL_DIR}/rime_ime_setup.exe" stop-service --dir "${INSTALL_DIR_W}" \
+    > "${WORK}/stop-restart.log" 2>&1 || true
+  if [ -n "${SVC_PID}" ]; then
+    kill "${SVC_PID}" 2>/dev/null || true
+    wait "${SVC_PID}" 2>/dev/null || true
+  fi
+  SVC_PID=""
+  # ⚠ 一定要等到進程真的不見,而且不能只等自己的子行程。
+  #   單一實例的互斥鎖還被握著的話,下一支會**安靜地以 0 結束** ——
+  #   症狀是「ready 檔一直不出現」,而那看起來像部署很慢。
+  local i
+  for i in $(seq 1 30); do
+    [ "$(tasklist 2>/dev/null | grep -c -i 'rime_service\.exe' || true)" -eq 0 ] \
+      && break
+    sleep 1
+  done
+  # ⚠ 一定要明著 return 0。這個 for 是函式的最後一句,而它最後一輪的
+  #   `[ ... ] && break` 在「等滿 30 秒都沒停下來」時回 1 —— 配上 set -e,
+  #   整支腳本會在**這裡**當場結束,而畫面上不會有任何一句話說明原因。
+  #   真的停不下來由下一步的 ready 檔逾時來報,那句話說得清楚得多。
+  return 0
+}
+
 cleanup() {
-  if kill -0 "${SVC_PID}" 2>/dev/null; then
+  if [ -n "${SVC_PID}" ] && kill -0 "${SVC_PID}" 2>/dev/null; then
     # 走正常的停止路徑(送結束事件),順便把它也驗一次。
     "${INSTALL_DIR}/rime_ime_setup.exe" stop-service --dir "${INSTALL_DIR_W}" \
       > "${WORK}/stop.log" 2>&1 || true
@@ -1394,16 +1520,7 @@ cleanup() {
 trap cleanup EXIT
 
 log "  等待服務就緒(首次部署要編譯詞庫,可能數分鐘)"
-for i in $(seq 1 1200); do
-  [ -f "${READY}" ] && break
-  if ! kill -0 "${SVC_PID}" 2>/dev/null; then
-    echo "--- service.log ---"; tr -d '\r' < "${WORK}/service.log"
-    die "服務進程提前結束了"
-  fi
-  sleep 1
-  [ $((i % 60)) -eq 0 ] && log "    ...已等 ${i}s"
-done
-[ -f "${READY}" ] || { tr -d '\r' < "${WORK}/service.log"; die "服務在 1200 秒內沒有就緒"; }
+start_probe_service "§6"
 ok "服務就緒"
 
 # ⚠ --attempts 1:「ready 檔存在」必須等於「立刻連得上」。
@@ -1418,7 +1535,10 @@ ok "服務就緒"
 #   接得起連線、引擎也預熱過了。所以第一次就該成功,而失敗時 probe 會
 #   說出是哪一步(開管道 / 握手 / 建 session)以及對方回了什麼。
 set +e
-"${PROBE}" --keys nihao --select 1 --schema luna_pinyin_tw --expect 你好 \
+# ⚠ `--select-text 你好` 而不是 `--select 1`。理由見 §6g 開頭那一段:
+#   候選的**位置**是引擎的輸出,前面每一個上屏過的斷言都會把它推著跑。
+#   這一格問的是「打不打得出你好」,那就直接問內容。
+"${PROBE}" --keys nihao --select-text 你好 --schema luna_pinyin_tw --expect 你好 \
   --attempts 1 > "${WORK}/probe.log" 2>&1
 rc=$?
 set -e
@@ -1448,6 +1568,151 @@ else
     note_fail "probe 的輸出裡沒有 >>> COMMIT: \"你好\""
   fi
 fi
+
+# ══════════════════════════════════════════════════════════════════
+#  6g. 簡繁真的送到引擎了嗎(使用者實機回報的那一條)
+# ══════════════════════════════════════════════════════════════════
+#
+# 使用者回報:設定裡選了簡體,狀態列畫「简」,而打出來是繁體。
+#
+# ⚠ **判準只能用「逆号 / 拟好」這一類的字。** 你好 / 妳好 / 你 在簡繁兩套
+#   字集裡長得一模一樣,拿它們斷言等於沒斷言 —— 上面 §6 那一格用 `你好`
+#   是對的(它問的是「打不打得出字」),但拿來問簡繁就會永遠是綠的。
+#
+#   nihao 的那兩個字:簡體 = 逆号 / 拟好,繁體 = 逆號 / 擬好。
+#
+# ⚠ --variant 在**連線之前**寫設定檔。順序就是它的全部意義:服務在
+#   SESSION_NEW 那一趟現場讀設定檔,所以「先寫檔再連線」= 「使用者在
+#   設定裡選了簡體,然後開一個新程式」。
+#
+# ══ 這一節為什麼要自己重起服務、自己清詞典 ═══════════════════════
+#
+# ⚠ 2026-08-12 之前,這兩個案例是這樣紅的:
+#
+#     16:15:21.322  [新 session]  2. 妳好  3. 逆号  → COMMIT "逆号"  ✓
+#     16:15:21.398  [換方案]      2. 逆号  3. 妳好  → COMMIT "妳好"  紅
+#
+#   兩邊**都是簡體**,所以產品那一格(648c02c)是好的。紅的原因是**測試
+#   沒有隔離**:兩次相差 76 毫秒,中間唯一發生的事,是上一個斷言把「逆号」
+#   上屏了 —— librime 的使用者詞典就地學習,把它從第 3 位拱到第 2 位,
+#   而斷言寫的是 `--select 3`。
+#
+#   所以真正的形狀不是「這兩行寫錯了」,是:
+#   **任何依賴候選位置的斷言,在這支腳本裡都會隨著前面的斷言漂。**
+#   位置是引擎的輸出,不是我們的約定;拿它當判準,等於把「使用者詞典
+#   剛剛學了什麼」偷偷寫進測試的前提裡。
+#
+#   兩件事都要做,少一件就只是把症狀壓下去:
+#
+#     1. **用內容選候選**(`--select-text 逆号`)—— 位置不再是判準。
+#     2. **每個案例自己一份使用者詞典** —— 斷言之間互不影響。
+#        只做第 1 件的話,詞典仍然是共用的:librime 學到夠多之後,
+#        「逆号」會直接變成第 1 個候選,而那時第 1 件也保不住
+#        §6c 那幾格 `nihao1`(用按鍵 '1' 選第一個)的斷言。
+#
+#   第 2 件的做法是「每個案例前重置」:停掉服務 → 刪掉 `*.userdb`
+#   → 重起。**不是**換一個使用者目錄 —— 換目錄會連 `build/` 底下編好的
+#   詞庫一起換掉,每個案例都要重編一次(以分鐘計)。`*.userdb` 是
+#   librime 唯一會「學」的東西,刪它就夠,而設定檔、default.custom.yaml、
+#   編譯產物全部留著。
+#
+# ⚠ 詞典是**服務進程開著的**(mmap),所以非得先停掉服務不可。
+#   服務跑著的時候 rm 會失敗,而失敗的樣子是「刪了但檔案還在」——
+#   下面那一格會當場點名。
+#
+# ⚠ **仍然是位置判準的:§5c / §5d / §6c / §13 那五處 `nihao1`。**
+#   那是 rime_tsf_host.exe 送的按鍵 '1'(= 選第一個候選),而它經由 TSF
+#   走,看不到候選清單,沒有「用內容選」這個選項。護住它們的是這一節:
+#   §6g 結束時會再重置一次,所以 §6c 拿到的是一份沒學過任何詞的詞典;
+#   而整支腳本上屏過的中文只有「你好」與這一節的「逆号」,前者本來就是
+#   第 1 個候選,學習只會把它釘得更牢。⚠ 哪天有人加了一個會上屏別的字
+#   的案例,那五處就會開始漂 —— 屆時要修的是 tsf_host 那一側。
+log "6g. 簡繁:設定裡選簡體之後,新開的程式打出來要是簡體"
+
+# 刪掉 librime 學過的詞,其餘一個檔案都不動。**呼叫前服務必須是停的。**
+reset_user_dict() {   # $1 = 這一趟的標籤
+  rm -rf "${USER_DIR}"/*.userdb "${USER_DIR}"/*.userdb.txt 2>/dev/null || true
+  local left
+  left="$( (find "${USER_DIR}" -maxdepth 1 -name '*.userdb*' 2>/dev/null || true) \
+           | wc -l | tr -d ' ')"
+  if [ "${left}" -ne 0 ]; then
+    note_fail "$1:刪不掉使用者詞典(還剩 ${left} 個 *.userdb*)——
+     多半是服務還握著它。這個案例的候選排序會被前一個案例的上屏帶著跑,
+     而那正是這一節要隔離掉的東西。"
+  else
+    ok "$1:使用者詞典已重置(從沒學過任何詞的狀態開始)"
+  fi
+}
+
+# ── 案例一:不帶 --schema(靠 langid 選方案,驗新 session 那條路)──
+log "  6g-1. 重置詞典並重起服務"
+stop_probe_service
+reset_user_dict "案例一"
+start_probe_service "6g 案例一"
+
+set +e
+"${PROBE}" --variant simplified --keys nihao --select-text 逆号 --expect 逆号 \
+  --attempts 1 > "${WORK}/probe-variant-new.log" 2>&1
+rc_v1=$?
+set -e
+tr -d '\r' < "${WORK}/probe-variant-new.log"
+if [ "${rc_v1}" -eq 0 ] \
+   && grep -qE '^>>> COMMIT: "逆号"$' <(tr -d '\r' < "${WORK}/probe-variant-new.log"); then
+  ok "設定選簡體 → 新 session 打出簡體(逆号)"
+else
+  note_fail "設定選了簡體,新開的 session 打出來卻不是簡體。
+     ⚠ 如果上屏的是「逆號」,那就是使用者回報的那一條:偏好送到了畫面、
+     沒送到引擎(或送了又被換方案洗掉)。看 windows/common/schema_choice.cc
+     的 BuildOptionPlan 與 service/engine.cc 的 SelectAndApply。"
+fi
+
+# ── 案例二:**帶** --schema,釘住「換方案會洗掉簡繁」那條路 ────────
+#
+# ⚠ 這一條釘的是 Engine::SelectSchema。librime 的
+#   ConcreteEngine::InitializeOptions() 每一次載入方案都會把 switches 重設回
+#   方案宣告的值,而 luna_pinyin_tw 的 __patch 把 switches/@2/reset 設成 3
+#   —— 換一次方案,zh_hant_tw 回到真、zh_hans 回到假,使用者剛選的簡體
+#   被悄悄洗掉。
+#
+#   修法有兩截,而且兩截都有原始碼層面的守門(windows/ 在 Ubuntu 上
+#   編不起來,所以只能那樣守):
+#     · Engine::SelectAndApply(選方案 → 立刻重套簡繁)
+#       ← audit_single_source.sh 規則 2「只能有一個裸的 rs_select_schema」
+#     · 重套時拿的是**設定檔**那一份,不是引擎手上那份過期的複本(648c02c)
+#       ← audit_single_source.sh 規則 3 + common/schema_choice.cc 的
+#         PickVariantPrefForSchemaSwitch(tests/test_schema_choice.cc 驗判斷)
+#   這一格是那兩件事在**真的服務**上的證據。
+log "  6g-2. 重置詞典並重起服務(案例二不可以看到案例一學過的東西)"
+stop_probe_service
+reset_user_dict "案例二"
+start_probe_service "6g 案例二"
+
+set +e
+"${PROBE}" --variant simplified --schema luna_pinyin_tw \
+  --keys nihao --select-text 逆号 --expect 逆号 \
+  --attempts 1 > "${WORK}/probe-variant-sel.log" 2>&1
+rc_v2=$?
+set -e
+tr -d '\r' < "${WORK}/probe-variant-sel.log"
+if [ "${rc_v2}" -eq 0 ] \
+   && grep -qE '^>>> COMMIT: "逆号"$' <(tr -d '\r' < "${WORK}/probe-variant-sel.log"); then
+  ok "換方案之後簡繁還在(逆号)"
+else
+  note_fail "換一次方案就把簡繁洗掉了 —— 上屏的多半是「逆號」。
+     Engine::SelectSchema 那條路少了重套簡繁那一步,或者重套時拿的是
+     引擎手上那份**過期的**偏好複本。
+     見 service/engine.cc 的 SelectAndApply、service/pipe_server.cc 的
+     kSelectSchema,以及 windows/audit_single_source.sh 的規則 2 與規則 3。
+     ⚠ 這一格現在有自己的一份使用者詞典,所以它**不會**再因為案例一
+       上屏過什麼而紅 —— 真的紅就是產品的事。"
+fi
+
+# 場地還原:後面 §6c 起的每一格都用這一支服務,而其中 `nihao1` 那幾處
+# 仍然是位置判準(見本節開頭)。交還一份沒學過任何詞的詞典給它們。
+log "  6g-3. 重置詞典並重起服務(交還給 §6c 起的那幾節)"
+stop_probe_service
+reset_user_dict "交還給 §6c"
+start_probe_service "§6c 起"
 
 # ══════════════════════════════════════════════════════════════════
 #  6c. **經由真的 TSF** 打一次字
@@ -1811,7 +2076,12 @@ esac
 # 整支腳本在這一行**當場死掉** —— 而那正好是我最需要看到後面那幾項診斷的時候
 # (前一步剛剛才報「沒有建立使用者目錄」)。
 n_user="$( (find "${USER_DIR}" -type f 2>/dev/null || true) | wc -l | tr -d ' ')"
-ok "使用者目錄裡有 ${n_user} 個檔案"
+# ⚠ 這一行原本是無條件的 ok —— n_user=0 也會印一個 ✓。
+#   它長得像斷言、排在斷言中間、被算進「189 個 ✓」,而它什麼都沒問。
+#   (靜態掃出來的,2026-08-12;不需要 CI 就看得出來。)
+[ "${n_user}" -gt 0 ] && ok "使用者目錄裡有 ${n_user} 個檔案" \
+  || note_fail "使用者目錄 ${USER_DIR} 底下一個檔案都沒有 ——
+     部署沒有跑到,或它把東西寫到別的地方去了。"
 
 # ── 安裝目錄一個位元都不該變 ──────────────────────────────────────
 #
