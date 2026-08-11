@@ -116,10 +116,13 @@ namespace {
   X(kThemeDark, L"Dark", L"深色", L"深色")                                     \
   X(kStatusBarHeading, L"The little bar", L"那一小橫", L"那一小横")            \
   X(kStatusBarBlurb,                                                           \
-    L"A small bar you can drag anywhere. It is the only place to switch "      \
-    L"between Chinese and English mid-sentence.",                              \
-    L"可以拖到任何地方的一小橫。**在句子中間切中英文,目前只有它做得到。**",   \
-    L"可以拖到任何地方的一小横。**在句子中间切中英文,目前只有它做得到。**")   \
+    L"A small bar you can drag anywhere. It shows up while you are using "     \
+    L"this input method. To switch between Chinese and English "               \
+    L"mid-sentence: Ctrl + Space, or click the first cell on the bar.",        \
+    L"可以拖到任何地方的一小橫。你在用這個輸入法的時候它才出現。"               \
+    L"在句子中間切中英文:Ctrl + 空白鍵,或點這一橫的第一格。",                 \
+    L"可以拖到任何地方的一小横。你在用这个输入法的时候它才出现。"               \
+    L"在句子中间切中英文:Ctrl + 空白键,或点这一横的第一格。")                 \
   X(kStatusBarShow, L"Show the little bar", L"顯示那一小橫",                   \
     L"显示那一小横")                                                           \
   X(kAppearanceHonestNote,                                                     \
