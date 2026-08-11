@@ -760,20 +760,22 @@ void Engine::ApplyVariantAll(const SchemaPreference& pref) {
         rs_set_option(kv.second, a.option, a.value);
     }
   });
-  // 備用 session 不在 sessions_ 的迴圈裡(它們在 spare_ 底下),
-  // 所以真的那一份也要另外設一次 —— 只改計畫不改 session,交出去的
-  // 會是一個計畫說簡體、實際還是繁體的 session,而那種錯誤是靜默的。
-  Post("對備用 session 套簡繁", [&] {
-    std::lock_guard<std::mutex> lock(spare_mu_);
-    for (const auto& kv : spare_) {
-      const uintptr_t sess = Find(kv.second.session);
-      if (!sess) continue;
-      bool simplified = false;
-      if (!DecideVariant(kv.first, pref, &simplified)) continue;
-      for (const OptionAssign& a : PlanVariant(simplified, kv.first))
-        rs_set_option(sess, a.option, a.value);
-    }
-  });
+  // ⚠ 這裡以前還有第二個 Post(「對備用 session 套簡繁」),註解寫著
+  //   「備用 session 不在 sessions_ 的迴圈裡(它們在 spare_ 底下)」。
+  //   **那句話是假的。** MakeSpareOnEngineThread 建完備用 session 的
+  //   第一件事就是 `sessions_[id] = s;`(見本檔 431 行),spare_ 存的
+  //   只是「哪一個 id 備著、配了什麼計畫」。備用 session 從頭到尾都在
+  //   sessions_ 裡,所以上面那個迴圈已經套過它們了,而且套的是同一份
+  //   ——session_lang_[id] 就是 langid(432 行),與 spare_ 的鍵相同。
+  //
+  //   那段註解自己就推翻自己:它的迴圈body 呼叫 Find(),而 Find 查的
+  //   **就是 sessions_**(296 行)。如果備用 session 真的不在 sessions_
+  //   裡,Find 會回 0、continue,整個 Post 一個選項都不會設 —— 它宣稱
+  //   在防的那個「靜默錯誤」它根本防不到。
+  //
+  //   拿掉它不是整理:它會在引擎執行緒上**再拿一次 spare_mu_**,而那把
+  //   鎖同時擋著呼叫端執行緒的 TakeSpareSession / RequestSpareSession
+  //   ——SESSION_NEW 那一趟正在等它。
 }
 
 void Engine::SelectSchemaAll(const std::string& schema_id) {
