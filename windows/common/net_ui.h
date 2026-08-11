@@ -10,9 +10,21 @@
 //
 // 這一頁上有三件事**寫壞了畫面看起來完全正常**,所以三件都在這裡:
 //
-//   1. **開關關著時按「檢查更新」不可以連出去。** 判斷是
-//      DecideUpdateAction(),它把「開關」排在「已經在跑了」前面 ——
-//      順序是規定的,不是實作細節。
+//   1. **開關關著時按「檢查更新」不可以連出去。**
+//      ⚠ 這一件已經不在本檔了,而且比原本強:硬執行下沉到
+//        common/net_gate_core.cc 的 RunFetch() —— 它**每一跳都重問**
+//        is_enabled,關著就回 kBlocked 且一個字都不記
+//        (tests/test_net_gate_core.cc 的 switch_off_never_touches_the_wire
+//        那一組)。呈現面(哪一句話、哪一顆按鈕)在
+//        common/update_flow.cc 的 DescribeUpdateCard() /
+//        UpdateFailureText() / UpdateFailureNeedsSwitch()。
+//      ⚠ 本檔曾經有一支 DecideUpdateAction();它已經不存在,而這一段
+//        註解對讀者說了好一陣子它還在(#83)。**還沒做完的那一半**:
+//        StartUpdateCheck() / StartUpdateDownload() 的**前置**判斷
+//        (不要白開一條執行緒、給出 kSwitchOff 那一句)今天仍然是
+//        settings_window.cc 裡的 inline if,沒有純函式也沒有單元測試。
+//        守門(check_ui_spec.sh 的 W29)驗的是它問在 CreateThread
+//        之前並且真的收手 —— 那是接線,不是那個判斷本身。
 //   2. **紀錄是空的時候要說「一次都沒有連過」。** 空白讓人分不出
 //      「沒連過」與「壞掉了」,而那正是使用者用來驗證我們的那句話。
 //      BuildNetLogView() 一定會給一句 summary,空的時候也給。
