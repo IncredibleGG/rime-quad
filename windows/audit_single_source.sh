@@ -67,6 +67,66 @@ audit_root() {
     bad=1
   fi
 
+  # ── 規則 3:換方案之前一定要重讀設定檔裡的簡繁偏好 ──────────────
+  #
+  # 守的是 648c02c ——「換方案洗掉簡繁」。規則 2 守的是「換完方案要重套」,
+  # 這一條守的是**重套時拿的是哪一份偏好**:`Engine::variant_pref_` 是設定的
+  # 複本,設定檔在服務跑著的時候被別人改掉(設定視窗有一顆「用記事本開啟
+  # 設定檔」)它就過期了,而拿過期那一份重套 = 把使用者剛選的簡繁洗掉。
+  #
+  # ⚠ 為什麼這一條非要在原始碼層面守不可:648c02c 唯一的守門是
+  #   windows/verify_installer.sh §6g 案例二,而那支只有 Windows 跑得動。
+  #   覆核實跑證明:把 pipe_server.cc 那一行刪掉,三支守門全綠 ——
+  #   也就是說那一輪唯一改變使用者看得到的行為的修法,在開發機上
+  #   沒有任何東西攔得住它被刪掉。
+  #
+  #   判斷本身已經抽成 common/schema_choice.cc 的
+  #   PickVariantPrefForSchemaSwitch(),tests/test_schema_choice.cc 驗得到;
+  #   純函式驗不到的是**有沒有人呼叫它**,那一格就是這一條。
+  #
+  # ⚠ 只看 kSelectSchema 那一個 case 的區塊,而且**先把註解行濾掉** ——
+  #   註解裡提到函式名不算(與規則 2 同一個判準)。
+  local blk
+  blk="$(awk '{ if (f == 1 && $0 ~ /case Op::/) exit;
+                if (f == 1) print;
+                if ($0 ~ /case Op::kSelectSchema:/) { f = 1; print } }' \
+         "${root}/windows/service/pipe_server.cc" \
+       | grep -v '^[[:space:]]*//')"
+  if [ -z "${blk}" ]; then
+    echo "!! pipe_server.cc 裡找不到 case Op::kSelectSchema —— 規則 3 沒有東西可守" >&2
+    bad=1
+  else
+    local n_pick n_set n_sel
+    n_pick=$(printf '%s\n' "${blk}" | grep -n 'PickVariantPrefForSchemaSwitch(' \
+             | head -1 | cut -d: -f1)
+    n_set=$(printf '%s\n' "${blk}" | grep -n 'engine_->SetVariantPref(' \
+            | head -1 | cut -d: -f1)
+    n_sel=$(printf '%s\n' "${blk}" | grep -n 'engine_->SelectSchema(' \
+            | head -1 | cut -d: -f1)
+    if [ -z "${n_pick}" ]; then
+      echo "!! pipe_server.cc 的 kSelectSchema 沒有呼叫 PickVariantPrefForSchemaSwitch(" >&2
+      echo "   換方案時會拿引擎手上那份**過期的**簡繁偏好去重套 ——" >&2
+      echo "   使用者剛在設定檔裡選的簡繁被洗掉,而狀態列那一格還畫著新的。" >&2
+      echo "   見 common/schema_choice.h 的 PickVariantPrefForSchemaSwitch。" >&2
+      bad=1
+    fi
+    if [ -z "${n_set}" ]; then
+      echo "!! pipe_server.cc 的 kSelectSchema 算了偏好卻沒有 engine_->SetVariantPref(" >&2
+      echo "   算出來沒有交給引擎 = 沒算。" >&2
+      bad=1
+    fi
+    if [ -z "${n_sel}" ]; then
+      echo "!! pipe_server.cc 的 kSelectSchema 裡沒有 engine_->SelectSchema( —— 規則 3 沒有東西可守" >&2
+      bad=1
+    fi
+    if [ -n "${n_pick}" ] && [ -n "${n_sel}" ] && [ "${n_pick}" -gt "${n_sel}" ]; then
+      echo "!! pipe_server.cc 的 kSelectSchema 先換方案才重讀偏好 —— 順序反了" >&2
+      echo "   順序就是這一條的全部意義:SelectAndApply 在換方案的**當下**" >&2
+      echo "   就會拿 variant_pref_ 重套,晚一步更新等於沒更新。" >&2
+      bad=1
+    fi
+  fi
+
   return "${bad}"
 }
 
@@ -74,7 +134,8 @@ if [ "${1:-}" = "--self-check" ]; then
   # 反向測試:真的把違規植入一份**複本**,要求上面那一支抓得到。
   # 不接受只看綠燈 —— 這個專案有過「守門的東西沒有人守」。
   fail=0
-  for plant in plan_variant bare_select_schema no_select_and_apply; do
+  for plant in plan_variant bare_select_schema no_select_and_apply \
+               no_variant_reread variant_reread_too_late; do
     tmp="$(mktemp -d)"
     mkdir -p "${tmp}/windows/service"
     cp "${ROOT_DEFAULT}/windows/service/main.cc" \
@@ -90,6 +151,16 @@ if [ "${1:-}" = "--self-check" ]; then
       no_select_and_apply)
         sed -i 's/^bool Engine::SelectAndApply(/bool Engine::SelectAndApplyX(/' \
           "${tmp}/windows/service/engine.cc" ;;
+      # 這一個就是覆核實際做過的那個植入:把重讀設定檔那一行刪掉。
+      # 在規則 3 存在之前,做完這件事三支守門全綠。
+      no_variant_reread)
+        sed -i '/PickVariantPrefForSchemaSwitch(/d' \
+          "${tmp}/windows/service/pipe_server.cc" ;;
+      # 順序反了:先換方案、才重讀偏好。SelectAndApply 在換方案的當下就
+      # 拿 variant_pref_ 重套了,所以晚一步 = 沒更新,而它看起來完全正確。
+      variant_reread_too_late)
+        sed -i 's/^\([[:space:]]*\)const VariantPrefPick pick = PickVariantPrefForSchemaSwitch(/\1Result r0 = engine_->SelectSchema(sc.session, sc.schema_id);\n\1const VariantPrefPick pick = PickVariantPrefForSchemaSwitch(/' \
+          "${tmp}/windows/service/pipe_server.cc" ;;
     esac
     if audit_root "${tmp}" >/dev/null 2>&1; then
       echo "!! 植入了 ${plant},稽核卻以 0 結束 —— 它不會紅" >&2

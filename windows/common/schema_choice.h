@@ -241,6 +241,50 @@ constexpr int kWarmUpLangIdCount = 4;
 // 給日誌用的短名,例如 0x0804 → "zh-Hans-CN"。認不得回傳 "?"。
 const char* LangIdName(uint32_t langid);
 
+// ── 換方案之前,簡繁偏好要拿哪一份 ──────────────────────────────
+//
+// ⚠ 這一支存在的理由是 648c02c(「換方案洗掉簡繁」)這個**使用者看得到
+//   的行為改變**,它唯一的守門在 windows/verify_installer.sh §6g 案例二
+//   —— 一支只有 Windows 跑得動的腳本。實跑覆核過:把 pipe_server.cc 的
+//   那一行刪掉,三支守門全綠。也就是說那個修法在開發機上等於沒有守門。
+//
+// ── 它在守什麼 ─────────────────────────────────────────────────
+//
+//   `Engine::SelectAndApply` 換完方案要重套簡繁(librime 每次載入方案都會
+//   把 switches 重設回方案宣告的值),而它用的是 `Engine::variant_pref_`。
+//   那是**設定的複本**,engine.h 自己寫著「不是真相的來源,真相在設定檔」,
+//   更新它的只有服務啟動時與設定視窗改簡繁時兩處。設定檔在服務跑著的
+//   時候被別人改掉(設定視窗有一顆「用記事本開啟設定檔」),這份複本就
+//   過期了 —— 而換一次方案就會拿過期的那一份把使用者剛選的簡繁洗掉。
+//
+//   SESSION_NEW 那一條路每一次都重讀設定檔,所以它是對的;
+//   SESSION_SELECT_SCHEMA 那一條沒有。這一支就是「那一條路該拿哪一份」
+//   這個判斷本身,抽出來讓 Ubuntu 上的 run_logic_tests.sh 驗得到。
+//
+// ⚠ 這一支**驗不到**「pipe_server.cc 真的呼叫了它」。那一格由
+//   windows/audit_single_source.sh 的規則 3 在原始碼層面守
+//   (windows/service/ 在 Ubuntu 上編不起來,所以只能這樣守)。
+//   兩件事缺一不可:這裡守判斷、那裡守接線。
+struct VariantPrefPick {
+  // 要交給 Engine::SetVariantPref 的那一份。
+  SchemaPreference use;
+  // true = 用的是設定檔那一份(正常情況)。false = 讀不到設定,只能沿用
+  // 引擎手上的複本 —— fail-open:讀不到設定不該讓換方案整個失敗。
+  bool from_settings_file = false;
+  // 複本與設定檔不同 = 複本過期了。**只給日誌**,不參與判斷 ——
+  // 判斷永遠是「設定檔贏」,不是「不一樣的時候才更新」。
+  // (「只有不一樣才更新」與「一律更新」在結果上相同,但前者要求兩邊的
+  //  比較函式永遠正確;比較函式漏一個欄位,症狀就是這個缺陷本身。)
+  bool engine_copy_was_stale = false;
+};
+
+// 逐欄位比對。給 engine_copy_was_stale 用,順便讓「漏了哪一欄」測得到。
+bool SameSchemaPreference(const SchemaPreference& a, const SchemaPreference& b);
+
+VariantPrefPick PickVariantPrefForSchemaSwitch(
+    bool settings_readable, const SchemaPreference& on_disk,
+    const SchemaPreference& engine_copy);
+
 }  // namespace rimewin
 
 #endif  // RIMEWIN_SCHEMA_CHOICE_H_

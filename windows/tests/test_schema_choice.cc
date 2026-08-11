@@ -693,3 +693,136 @@ TEST(updated_spare_plan_is_identical_to_a_freshly_built_one) {
   }
   CHECK_INT(seen, 4 * 4 * 3 * 2 * 4);  // 掃描範圍非空(§2-G2)
 }
+
+// ══════════════════════════════════════════════════════════════════
+//  換方案之前,簡繁偏好拿哪一份(648c02c 的判斷)
+// ══════════════════════════════════════════════════════════════════
+//
+// 這一組守的是 648c02c —— 那一輪**唯一改變使用者看得到的行為**的修法
+// (換方案不再洗掉簡繁)。在這一組存在之前,它唯一的守門是
+// windows/verify_installer.sh §6g 案例二:一支只有 Windows 跑得動的腳本。
+// 覆核實跑過:把 pipe_server.cc 那一行刪掉,三支守門全綠。
+//
+// ⚠ 這一組驗的是**判斷**。「pipe_server.cc 真的呼叫了它」是另一件事,
+//   由 windows/audit_single_source.sh 規則 3 在原始碼層面守。
+
+namespace {
+
+// 走真的檔案格式來回一趟:SetRaw → Serialize → Parse → SchemaPref()。
+// 直接組一個 SchemaPreference 也測得到函式本身,但測不到
+// 「設定檔裡寫著 simplified,讀出來就是 kSimplified」這一段 ——
+// 而產品裡那一段就在同一行上(settings_->Load().SchemaPref())。
+SchemaPreference PrefFromSettingsText(const std::string& variant_token,
+                                      const std::string& pinned_global = "") {
+  Settings st;
+  st.SetRaw(keys::kTextVariant, variant_token);
+  if (!pinned_global.empty())
+    st.SetRaw(keys::kSchemasPinnedGlobal, pinned_global);
+  return Settings::Parse(st.Serialize()).SchemaPref();
+}
+
+}  // namespace
+
+TEST(VariantPick_settings_file_beats_the_engines_stale_copy) {
+  // 使用者在記事本裡把設定檔改成簡體(設定視窗有那一顆按鈕),
+  // 而服務還跑著 —— 引擎手上那一份仍然是舊的繁體。
+  const SchemaPreference on_disk = PrefFromSettingsText("simplified");
+  SchemaPreference engine_copy;
+  engine_copy.variant = VariantPref::kTraditional;
+
+  const VariantPrefPick pick =
+      PickVariantPrefForSchemaSwitch(true, on_disk, engine_copy);
+  CHECK(pick.from_settings_file);
+  CHECK(pick.engine_copy_was_stale);
+  CHECK(pick.use.variant == VariantPref::kSimplified);
+
+  // 而這就是使用者看得到的那一格:換完方案重套簡繁時,套的是簡體。
+  bool simplified = false;
+  CHECK(DecideVariant(0x0404u, pick.use, &simplified));
+  CHECK(simplified);
+
+  // 反向:拿引擎手上那一份去套,就是 648c02c 之前的行為 ——
+  // 使用者剛選的簡體被洗回繁體,而畫面上那一格還畫著「简」。
+  bool old_simplified = true;
+  CHECK(DecideVariant(0x0404u, engine_copy, &old_simplified));
+  CHECK(!old_simplified);
+}
+
+TEST(VariantPick_takes_the_file_even_when_the_copy_agrees) {
+  // 「一樣的時候不用更新」是一個很容易寫進去的最佳化,而它把正確性
+  // 押在 SameSchemaPreference 永遠不漏欄位上。這裡釘住:一律用設定檔那一份。
+  const SchemaPreference on_disk = PrefFromSettingsText("traditional");
+  const VariantPrefPick pick =
+      PickVariantPrefForSchemaSwitch(true, on_disk, on_disk);
+  CHECK(pick.from_settings_file);
+  CHECK(!pick.engine_copy_was_stale);
+  CHECK(pick.use.variant == VariantPref::kTraditional);
+}
+
+TEST(VariantPick_unreadable_settings_keeps_the_copy_not_the_default) {
+  // 讀不到設定(settings_ 是空的)時**不可以**退回預設值 ——
+  // 那會把使用者存過的偏好換成「跟隨輸入模式」,也就是同一個缺陷換一個入口。
+  SchemaPreference engine_copy;
+  engine_copy.variant = VariantPref::kSimplified;
+  engine_copy.pinned_global = "luna_pinyin";
+
+  const VariantPrefPick pick =
+      PickVariantPrefForSchemaSwitch(false, SchemaPreference(), engine_copy);
+  CHECK(!pick.from_settings_file);
+  CHECK(!pick.engine_copy_was_stale);  // 沒有東西可以比,不謊報
+  CHECK(pick.use.variant == VariantPref::kSimplified);
+  CHECK_STR(pick.use.pinned_global, "luna_pinyin");
+  // 而預設值長這樣 —— 確定上面那一條不是碰巧相同。
+  CHECK(SchemaPreference().variant == VariantPref::kFollowInputMode);
+}
+
+TEST(VariantPick_the_select_schema_path_now_matches_session_new) {
+  // 兩條路的差別就是 648c02c 的根因:SESSION_NEW 每一次都重讀設定檔,
+  // SESSION_SELECT_SCHEMA 沒有。這一條釘住「現在兩條算出來的一樣」。
+  //
+  // 掃全部三態 × 四個 langid,而不是挑一個 —— 挑一個的話,
+  // 「只有 simplified 被修好」這種半套修法會是綠的。
+  const char* kTokens[] = {"followInputMode", "traditional", "simplified"};
+  const uint32_t kLangs[] = {0u, 0x0404u, 0x0804u, 0x0C04u};
+  int seen = 0;
+  for (const char* token : kTokens) {
+    const SchemaPreference on_disk = PrefFromSettingsText(token);
+    for (uint32_t langid : kLangs) {
+      // SESSION_NEW 那一趟:現場讀設定檔。
+      bool want_simplified = false;
+      const bool want_set = DecideVariant(langid, on_disk, &want_simplified);
+      // SESSION_SELECT_SCHEMA 那一趟:先過本函式,再交給引擎。
+      // 引擎手上那一份刻意給成**相反的**,證明它沒有參與結果。
+      SchemaPreference stale;
+      stale.variant = (on_disk.variant == VariantPref::kSimplified)
+                          ? VariantPref::kTraditional
+                          : VariantPref::kSimplified;
+      const SchemaPreference use =
+          PickVariantPrefForSchemaSwitch(true, on_disk, stale).use;
+      bool got_simplified = false;
+      const bool got_set = DecideVariant(langid, use, &got_simplified);
+      CHECK(got_set == want_set);
+      CHECK(got_simplified == want_simplified);
+      ++seen;
+    }
+  }
+  CHECK_INT(seen, 3 * 4);  // 掃描範圍非空(§2-G2)
+}
+
+TEST(SameSchemaPreference_looks_at_every_field) {
+  // 每一欄各動一次。少比一欄的症狀是 engine_copy_was_stale 少報 ——
+  // 日誌上看起來一切正常,而那正是這個缺陷最初藏起來的方式。
+  const SchemaPreference base;
+  CHECK(SameSchemaPreference(base, base));
+
+  SchemaPreference a = base; a.follow_input_mode = !base.follow_input_mode;
+  CHECK(!SameSchemaPreference(base, a));
+  SchemaPreference b = base; b.pinned_global = "luna_pinyin";
+  CHECK(!SameSchemaPreference(base, b));
+  SchemaPreference c = base; c.pinned_hant = "luna_pinyin_tw";
+  CHECK(!SameSchemaPreference(base, c));
+  SchemaPreference d = base; d.pinned_hans = "luna_pinyin";
+  CHECK(!SameSchemaPreference(base, d));
+  SchemaPreference e = base; e.variant = VariantPref::kSimplified;
+  CHECK(!SameSchemaPreference(base, e));
+}

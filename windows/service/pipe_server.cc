@@ -738,7 +738,24 @@ void PipeServer::ServeClient(HANDLE pipe) {
         //   這裡照做。SetVariantPref 與 SelectSchema 都走同步的 Post,
         //   所以順序是保證的。這條 op 本來就要載入詞典與 prism,
         //   多一次讀設定檔不會改變它的量級。
-        if (settings_) engine_->SetVariantPref(settings_->Load().SchemaPref());
+        //
+        // ⚠ **判斷本身不在這裡**,在 common/schema_choice.cc 的
+        //   PickVariantPrefForSchemaSwitch —— windows/service/ 在 Ubuntu 上
+        //   編不起來,寫在這裡的判斷等於只有 Windows CI 驗得到,而這一格
+        //   唯一的守門(verify_installer.sh §6g 案例二)正是那種東西。
+        //   抽出去之後 tests/test_schema_choice.cc 驗得到它。
+        //   而「這裡真的呼叫了它」由 audit_single_source.sh 規則 3 守。
+        const VariantPrefPick pick = PickVariantPrefForSchemaSwitch(
+            settings_ != nullptr,
+            settings_ ? settings_->Load().SchemaPref() : SchemaPreference(),
+            engine_->VariantPrefCopy());
+        engine_->SetVariantPref(pick.use);
+        if (pick.engine_copy_was_stale) {
+          // 只在真的過期時說話。這一行是「設定檔在服務跑著的時候被改掉」
+          // 唯一留得下痕跡的地方 —— 沒有它,查這個缺陷時看到的只有
+          // 「換方案之後簡繁不對」,而看不到偏好是什麼時候漂走的。
+          Log("[pipe] 換方案:引擎手上的簡繁偏好已經過期,改用設定檔那一份\n");
+        }
         Result r = engine_->SelectSchema(sc.session, sc.schema_id);
         push_ui(r.snap);
         if (!send(EncodeResult(seq, r))) goto done;

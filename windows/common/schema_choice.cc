@@ -240,4 +240,32 @@ std::vector<OptionAssign> UpdateVariantInPlan(
   return out;
 }
 
+bool SameSchemaPreference(const SchemaPreference& a, const SchemaPreference& b) {
+  // ⚠ 逐欄位,而且**每一欄都要在**。這個函式漏一欄的症狀不是「比錯了」,
+  //   是 engine_copy_was_stale 少報一次 —— 而那只是日誌。真正的保護在
+  //   PickVariantPrefForSchemaSwitch:它一律回設定檔那一份,不看這裡的答案。
+  return a.follow_input_mode == b.follow_input_mode &&
+         a.pinned_global == b.pinned_global && a.pinned_hant == b.pinned_hant &&
+         a.pinned_hans == b.pinned_hans && a.variant == b.variant;
+}
+
+VariantPrefPick PickVariantPrefForSchemaSwitch(
+    bool settings_readable, const SchemaPreference& on_disk,
+    const SchemaPreference& engine_copy) {
+  VariantPrefPick out;
+  if (!settings_readable) {
+    // 讀不到設定 = 沒有比引擎手上那一份更好的來源。**不要**退回預設值:
+    // 那會把使用者存過的偏好換成「跟隨輸入模式」,也就是同一個缺陷,
+    // 只是換一個入口。
+    out.use = engine_copy;
+    out.from_settings_file = false;
+    out.engine_copy_was_stale = false;  // 沒有東西可以比,不謊報
+    return out;
+  }
+  out.use = on_disk;              // 真相在設定檔,無條件
+  out.from_settings_file = true;
+  out.engine_copy_was_stale = !SameSchemaPreference(on_disk, engine_copy);
+  return out;
+}
+
 }  // namespace rimewin

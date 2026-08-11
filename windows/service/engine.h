@@ -313,6 +313,19 @@ class Engine {
     Post("記下簡繁偏好", [&] { variant_pref_ = pref; });
   }
 
+  // 取一份複本出來。⚠ 走 Post 而不是直接回傳 variant_pref_ 的參考:
+  //   它只屬於引擎執行緒,而呼叫者(pipe_server 的 kSelectSchema)在
+  //   連線的執行緒上。Post 是同步的,所以拿到的是當下那一份。
+  //
+  // 它的用途**只有診斷**:common/schema_choice.h 的
+  // PickVariantPrefForSchemaSwitch 拿它來判斷「這一份過期了沒」,
+  // 而那個答案只進日誌。判斷本身一律以設定檔為準。
+  SchemaPreference VariantPrefCopy() {
+    SchemaPreference out;
+    Post("讀簡繁偏好", [&] { out = variant_pref_; });
+    return out;
+  }
+
  private:
 
   // 以下三個只在引擎執行緒上呼叫。

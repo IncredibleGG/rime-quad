@@ -111,6 +111,12 @@ SRCS=(
 #
 # 兩件的共同形狀是「檔案存在 ≠ 有人編它」。這一段用兩個方向擋:
 # 這裡跑的每一支 CMakeLists 都要有,而且每一個 .cc 都要有人編。
+#
+# ⚠ 方向二原本不掃 `tests/`,而那正好是上面第一件事發生的地方 ——
+#   一支放在 windows/tests/ 卻**兩份清單都沒有**的 .cc 會完全隱形:
+#   方向一只看得到寫在本檔 SRCS 裡的檔案,方向二又跳過那個目錄。
+#   test_sha256.cc 那一組當初就是這個形狀,只是它剛好有一半在 SRCS 裡
+#   才被抓到。現在補上(掃到的孤兒數:0)。
 echo "==> 建置清單對帳(本檔 ↔ windows/CMakeLists.txt)"
 python3 - "${SCRIPT_DIR}" <<'PYPARITY'
 import os, re, sys
@@ -125,7 +131,7 @@ bad = []
 for f in sorted(here):
     if f not in cm:
         bad.append('CMakeLists.txt 裡沒有 %s —— 它只在 Ubuntu 上跑過' % f)
-for sub in ('common', 'service', 'tsf', 'setup', 'winshared'):
+for sub in ('common', 'service', 'tsf', 'setup', 'winshared', 'tests'):
     p = os.path.join(d, sub)
     if not os.path.isdir(p):
         continue
