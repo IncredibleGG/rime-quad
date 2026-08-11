@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "../common/callback_gate.h"
 #include "../common/ime_policy.h"
 #include "rime_shell.h"
 
@@ -44,41 +45,52 @@ void ReportSlowJob(const char* label, int64_t waited_ms, int64_t ran_ms) {
   std::fflush(stderr);
 }
 
-std::atomic<int>* g_deploy_slot = nullptr;
-std::atomic<uint32_t>* g_deploy_seq = nullptr;
-// ⚠ 只給 OnDeploy 用,而且只用來排一件工作。與上面兩個同進同出
-//   (Start 設、Stop 清)。
-Engine* g_deploy_engine = nullptr;
+// ── 部署回呼要碰的那個 Engine，活多久 ───────────────────
+//
+// OnDeploy 跑在 **librime 的部署執行緒**上，而 Engine 是 main 那條執行緒
+// 上的物件 —— 它隨時可能因為 Stop() → ~Engine() 而不再存在。
+//
+// ⚠ **把這個指標換成 `std::atomic<Engine*>` 是不夠的。** 那只讓「讀到的
+//   是不是 nullptr」變成定義良好；它一個字都沒有說到讀出來之後的事：
+//   回呼在 `p = load()` 與 `p->OnDeployTerminal()` 之間可以被排掉任意久，
+//   而那段時間足夠 main 跑完整支 Stop() 與 ~Engine()。回呼醒來之後拿的是
+//   一段已經還掉的記憶體，而它會照樣寫進去。窗口小只代表難重現，
+//   在使用者那一側的樣子是「按下重新整理字詞之後服務偶爾自己消失」。
+//
+// 所以要的不是「讀得乾淨」，是**生命週期**：關門的人要等到裡面沒有人。
+// 那一格在 common/callback_gate.h，由 tests/test_callback_gate.cc 在
+// Ubuntu 上直接測（含 --asan；天真的 atomic 版在那裡是 use-after-free）。
+//
+// ⚠ 鎖序固定：**librime 的全域鎖 → 閘的鎖 → 佇列的鎖**，不可以反向。
+//   反向那一步長這樣：某人握著閘的鎖去呼叫 rs_*。所以 Open()/Close()
+//   的呼叫點旁邊不可以有任何 rs_*（Stop() 裡 Close() 排在 rs_finalize()
+//   之前，兩者不重疊）。
+CallbackGate<Engine> g_deploy_gate;
 
 void OnDeploy(rs_deploy_status status, void* /*ud*/) {
-  // ⚠ 這個回呼**不在**呼叫端的執行緒上,而且可能在 rs_deploy() 早已返回
-  //   之後才觸發(rime_shell.h 檔頭)。所以這裡只碰 atomic:
-  //   不加鎖、不碰 session、不碰 UI。
-  if (!g_deploy_slot) return;
-  if (status == RS_DEPLOY_SUCCESS) g_deploy_slot->store(1);
-  else if (status == RS_DEPLOY_FAILURE) g_deploy_slot->store(-1);
-  else return;  // IDLE / RUNNING 不是終局,不動序號
-  // 序號一定要在狀態之後才加:讀的那一邊先看序號再讀狀態,
-  // 反過來的話它會看到新序號配舊狀態。
-  if (g_deploy_seq) g_deploy_seq->fetch_add(1);
+  // ⚠ 這個回呼**不在**呼叫端的執行緒上，而且可能在 rs_deploy() 早已返回
+  //   之後才觸發（rime_shell.h 檔頭）。
+  //
+  // IDLE / RUNNING 不是終局 —— 一個位元都不動。
+  if (status != RS_DEPLOY_SUCCESS && status != RS_DEPLOY_FAILURE) return;
+  const bool ok = (status == RS_DEPLOY_SUCCESS);
 
-  // ── #90:把 session 建回來 ──────────────────────────────────
+  // ── #90：把 session 建回來 ─────────────────────────
   //
-  // ⚠ **這件事不可以掛在設定視窗的計時器上。** 那個視窗是可以被關掉的,
+  // ⚠ **這件事不可以掛在設定視窗的計時器上。** 那個視窗是可以被關掉的，
   //   而關掉之後就再也沒有人會把 session 建回來 —— 使用者從此打不出
-  //   中文,重開機也沒用(每次啟動又走一次同樣的路)。所以觸發點在
-  //   這裡:終局有沒有人在看都會到。
+  //   中文，重開機也沒用（每次啟動又走一次同樣的路）。所以觸發點在
+  //   這裡：終局有沒有人在看都會到。
   //
-  // ⚠ 這一句是**排一件工作**,不是做事。它不碰 sessions_、不呼叫任何
-  //   rs_*,所以「回呼只碰 atomic」那條約定沒有被打破。
-  //   (rime_shell 呼叫這個回呼時**持有** g_global_mutex —— 見 #91 ——
-  //    所以在這裡直接呼叫 rs_* 會是一個真的死鎖。)
-  //
-  // ⚠ 首次部署也會走到這裡,而那時階段是 kIdle,狀態機會把
+  // ⚠ 首次部署也會走到這裡，而那時階段是 kIdle，狀態機會把
   //   kDeployFinished 判成不合法並原地不動 —— 於是不會有任何重建。
-  //   那正是要的:首次部署之前本來就一個 session 都沒有。
-  if (status != RS_DEPLOY_RUNNING && g_deploy_engine)
-    g_deploy_engine->OnDeployTerminal();
+  //   那正是要的：首次部署之前本來就一個 session 都沒有。
+  //
+  // ⚠ 閘裡面只准做兩件事：動 atomic、排一件工作。不加鎖、不碰 session、
+  //   不碰 UI、**不呼叫任何 rs_***（rime_shell 呼叫這個回呼時**持有**
+  //   g_global_mutex —— 見 #91 —— 所以在這裡直接呼叫 rs_* 是一個真的
+  //   死鎖）。而且它跑在閘的鎖裡面：做得越久，Stop() 就陪著等越久。
+  g_deploy_gate.Run([ok](Engine* e) { e->OnDeployTerminal(ok); });
 }
 
 uint32_t FlagsOf(const rs_status& s) {
@@ -139,9 +151,15 @@ Engine::~Engine() { Stop(); }
 
 bool Engine::Start(const std::string& shared_dir, const std::string& user_dir,
                    const std::string& log_dir) {
-  g_deploy_slot = &deploy_state_;
-  g_deploy_seq = &deploy_seq_;
-  g_deploy_engine = this;
+  // ⚠ 開閘要在 rs_init **之前**。rs_init 自己會呼叫
+  //   `start_maintenance(True)`（core/src/rime_shell.cc），而通知回呼在那
+  //   之前就掛上去了 —— 首次部署的終局有可能在 rs_init 還沒返回時就到。
+  //   開晚了掉的那一發是「第一次整理字詞做完了」，而沒有人會再送一次。
+  //
+  //   對稱的那一半在 Stop()：它的第一句就是 Close()，而且刻意排在
+  //   `if (!started_)` 之前 —— 這一支在 rs_init 失敗時回 false 而
+  //   started_ 仍然是 false，閘卻已經開了。
+  g_deploy_gate.Open(this);
 
   // ⚠ rs_init 在**呼叫端的執行緒**上做,不丟給引擎執行緒。
   //
@@ -203,16 +221,34 @@ bool Engine::Start(const std::string& shared_dir, const std::string& user_dir,
 }
 
 void Engine::Stop() {
+  // ── ⚠ 關閘要在**最前面**，兩個理由都是實的 ────────────
+  //
+  //   · 在 `if (!started_)` 之前：Start() 在 rs_init 失敗時回 false 而
+  //     started_ 仍然是 false，但閘那時已經開了（它必須開在 rs_init
+  //     之前，見 Start()）。這一問若先 return，閘上就留著一個指向即將
+  //     被解構的 Engine 的指標，而 librime 的部署執行緒還會照著它呼叫。
+  //   · 在 queue_.Stop() 之前：部署的終局回呼會走 RebuildSessionsAsync()，
+  //     而它在排不進佇列時會去清 parked_ —— 那是**引擎執行緒的**資料。
+  //     佇列正在排乾的那一段裡，工作者可能正在
+  //     RebuildSessionsOnEngineThread() 裡讀它，而回呼執行緒同時清它。
+  //     先關閘，那條路整條不存在。
+  //
+  //   Close() 返回之後保證「沒有回呼在用這個 Engine，而且之後也不會有」
+  //   （common/callback_gate.h）。那個保證是**等**出來的，所以不可以握著
+  //   任何 librime 的東西進來 —— 這裡沒有，rs_finalize() 排在後面。
+  g_deploy_gate.Close();
   if (!started_) return;
-  // ⚠ Stop() 會把佇列**排乾**再 join:每一件已經入列的工作都保證跑到。
-  //   收 session(把使用者詞典寫回去)是用 PostLow 排的,而服務結束時
+  // ⚠ Stop() 會把佇列**排乾**再 join：每一件已經入列的工作都保證跑到。
+  //   收 session（把使用者詞典寫回去）是用 PostLow 排的，而服務結束時
   //   那些工作還在低優先佇列裡 —— 排不乾就是「關掉輸入法會掉字」。
   queue_.Stop();
   started_ = false;
-  g_deploy_slot = nullptr;
-  g_deploy_engine = nullptr;
   // rs_finalize 與 rs_init 在同一條執行緒上。引擎執行緒已經 join,
   // 所以它先前建立的 session 都已經在它身上銷毀了,順序是對的。
+  //
+  // ⚠ rs_finalize() 會拿 librime 那把全域鎖，而部署回呼是**持有那把鎖**
+  //   被呼叫的。所以這一句一定要在閘已經關掉、而且沒有人握著閘的鎖的
+  //   時候跑 —— 反過來就是死鎖（見 common/callback_gate.h 的鎖序）。
   rs_finalize();
 }
 
@@ -438,6 +474,10 @@ Result Engine::ToggleAsciiMode(uint64_t id) {
   // ⚠ #90:判準不是 `deploy_state_ == 1`。那個值首次部署成功之後**永遠**
   //   是 1,所以重新部署期間這道門是開的。要問的是 common/redeploy_flow.h
   //   的 ShouldFailOpen(階段 + 有沒有能用的詞庫),而它在 Ubuntu 上驗得到。
+  //
+  // ⚠ 這道門與 ProcessKey 一樣是在**呼叫端執行緒**上答的，不可以搬進
+  //   Post() 裡 —— 理由（50 毫秒的按鍵預算 vs. 收 session 那一包）寫在
+  //   ProcessKey 那一支上面。
   if (ShouldFailOpen(phase_.load(), deploy_state_.load() == 1,
                      &r.snap.status_flags)) {
     r.handled = false;
@@ -466,23 +506,47 @@ Result Engine::ToggleAsciiMode(uint64_t id) {
 
 Result Engine::ProcessKey(uint64_t id, int32_t keysym, uint32_t mods) {
   Result r;
+  // ── ⚠ 這道門在**呼叫端執行緒**上答，不排進佇列 ──────────
+  //
+  //   機制要寫對，因為它決定的不是「按鍵有沒有被吃掉」，是**連線活不活**：
+  //
+  //   · 這一支跑在**連線執行緒**上（pipe_server 每個 client 一條）。
+  //     Engine::Post() 是 `queue_.Call(label, fn, 0)` —— timeout 0 =
+  //     **永遠等**，而引擎只有一條 FIFO。
+  //   · 使用者按下「重新整理字詞」時排進去的是「收乾淨 session 再開始
+  //     部署」一整包，而收 session 是這條路上最慢的一步（每一個
+  //     rs_session_destroy 都要把使用者詞典寫回去）。
+  //   · 而 DLL 那一側每一顆按鍵的預算是 **50 毫秒**
+  //     （tsf/ipc_client.cc 的 kKeyTimeoutMs）。
+  //
+  //   所以門若是排在 Post() **裡面**，整理期間的第一顆鍵會是：吃滿 50 ms
+  //   → DLL 那側 Fail(kTimeout) → Close()、session_ = 0 ——
+  //   **整條連線被丟掉**。使用者看到的結果仍然是 fail-open（宿主自己收下、
+  //   打出英文），但代價藏在後面：凡是在那段時間打過字的宿主都已經斷線，
+  //   於是部署後「保住原 id、重套方案 / 簡繁 / 英數」那一套（#85）對它
+  //   **不生效** —— 它得重新 SESSION_NEW，而那在回到 kIdle 之前是被擋的。
+  //
+  //   門本身只讀兩個 atomic（phase_ / deploy_state_），不碰 sessions_、
+  //   不呼叫任何 rs_*，所以在哪一條執行緒上答都是同一個答案 —— 而在這裡
+  //   答是微秒級的，一顆鍵都不會排到那一包後面。
+  //
+  //   ⚠ 這樣仍然**不是**「按鍵不會逾時」。剩下的是一個真的窗口：一顆鍵
+  //     剛好在 BeginDeploy 寫下階段之前讀到 kIdle、又排在那一包後面，那一顆
+  //     還是會逾時。要連它也收掉，得讓按鍵的等待有上限，而且遲到的工作
+  //     不可以把那顆鍵打進 librime（不然引擎組了字、宿主也打了字，兩邊
+  //     分岔）—— 那是另一件事，開在 task #93。
+  //
+  // ⚠ 而且這道門必須在 Find() **之前**（#90）：重新部署期間 session 是
+  //   **真的不見了**，先 Find() 就會走進下面那條「找不到」—— 回給宿主的是
+  //   handled=false 配一份 status_flags **全 0** 的快照，而狀態列會把它當成
+  //   「一切正常，而且什麼都沒開」，把使用者剛切好的中英打回預設，
+  //   同時一句「還沒好」都不說。
+  if (ShouldFailOpen(phase_.load(), deploy_state_.load() == 1,
+                     &r.snap.status_flags)) {
+    r.handled = false;
+    return r;
+  }
   Post("按鍵", [&] {
-    // ── ⚠ 這一格必須在 Find() **之前**(#90)────────────────────
-    //
-    //   部署還沒完成時 librime 給不出任何候選。這時**立刻**回「沒處理」,
-    //   讓宿主自己收下那顆鍵 —— 不要讓 DLL 那邊逾時。逾時會讓連線被
-    //   關掉重建,而首次部署要好幾分鐘,那段時間會一直重連。
-    //
-    //   順序不是風格問題。重新部署期間 session 是**真的不見了**,
-    //   舊版先 Find() 就會走進下面那條 `if (!sess) return;` —— 回給宿主的
-    //   是 handled=false 配一份 status_flags **全 0** 的快照,而狀態列
-    //   會把它當成「一切正常,而且什麼都沒開」,把使用者剛切好的中英
-    //   打回預設,同時一句「還沒好」都不說。
-    if (ShouldFailOpen(phase_.load(), deploy_state_.load() == 1,
-                       &r.snap.status_flags)) {
-      r.handled = false;
-      return;
-    }
     const uintptr_t sess = Find(id);
     if (!sess) {
       // 引擎不認得這個 id(部署後重建那一個失敗了,或宿主拿著過期的 id)。
@@ -922,9 +986,14 @@ void Engine::RebuildSessionsAsync() {
   if (AdvanceRedeploy(&p, RedeployEvent::kRebuilt)) phase_.store(p);
 }
 
-void Engine::OnDeployTerminal() {
-  // ⚠ 從**部署回呼的執行緒**上被呼叫(rime_shell 那時還持有它的全域鎖,
-  //   見 #91)。所以這裡只准動一個 atomic 與排一件工作。
+void Engine::OnDeployTerminal(bool deploy_ok) {
+  // ⚠ 從**部署回呼的執行緒**上被呼叫，而且是在 g_deploy_gate 的鎖**裡面**
+  //   （rime_shell 那時還持有它自己的全域鎖，見 #91）。所以這裡只准動
+  //   atomic 與排一件工作：呼叫任何 rs_* 是死鎖，做得久是讓 Stop() 陪等。
+  deploy_state_.store(deploy_ok ? 1 : -1);
+  // ⚠ 序號一定要在狀態之後才加：讀的那一邊（PollDeploy）先看序號再讀
+  //   狀態，反過來的話它會看到新序號配舊狀態。
+  deploy_seq_.fetch_add(1);
   RedeployPhase p = phase_.load();
   if (!AdvanceRedeploy(&p, RedeployEvent::kDeployFinished)) return;
   phase_.store(p);

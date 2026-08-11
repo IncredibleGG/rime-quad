@@ -97,6 +97,7 @@ SRCS=(
   "${SCRIPT_DIR}/tests/test_status_cells.cc"
   "${SCRIPT_DIR}/tests/test_hotkey_policy.cc"
   "${SCRIPT_DIR}/tests/test_work_queue.cc"
+  "${SCRIPT_DIR}/tests/test_callback_gate.cc"
   "${SCRIPT_DIR}/tests/test_status_line.cc"
 )
 

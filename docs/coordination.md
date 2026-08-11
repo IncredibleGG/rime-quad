@@ -1305,7 +1305,23 @@ bash 端再剝一次 `\r`。(同一個檔案早就為了 cp1252 的 stdout 編�
   - `⚠ Windows 上不能刪除也不能 resize 一個還有 section mapping 的檔案 → Remove 失敗(被忽略)→ `MappedFile::Create()` 落進 mapped_file.cc:54–57 的 overwriting 分支 → Resize 失敗(回傳值同樣沒人看)→ **用讀寫模式重新映射舊檔,把新表寫進一個活著的 session 正在讀的記憶體**。librime 從頭到尾回報成功。這正是 weasel / squirrel 用 `RimeStartMaintenance` 而不是 `RimeDeployWorkspace` 的理由。`
   - `POSIX(Android / macOS)不會刪不掉 —— unlink 一個還有 mapping 的檔案是合法的。但**後果不是「沒事」**:舊的 inode 還活著,活著的 session 從此讀的是一份已經被取代的詞庫(而使用者以為他剛剛才更新過),而新檔是另一個 inode。行動端與 macOS 端請自行判斷要不要一起收 session。`
   - `**我沒有動 core/。** 評估過把 `api->deploy()` 換成 `api->start_maintenance(True)`:那一條動的是四端共用的門面,而且**換完之後前端該做的事一件都沒少** —— `RimeStartMaintenance` 內部的 `CleanupAllSessions()` 只清 librime 那一側,`rime_shell` 的 `Session*` 與上層的 session 表仍然指著已經失效的 id,收 session 與重建 session 照樣要做。既然前端該做的事一樣多,就不值得為它動共用層。`
-  - `Windows 這一側的做法(可以照抄的形狀):新增純邏輯的階段機 `windows/common/redeploy_flow.{h,cc}`(kIdle → kClosingSessions → kDeploying → kRebuilding),不變量是「可以改寫詞庫檔」與「可以有 session」永遠互補;部署前在引擎執行緒上把**所有** session(含備用池)銷毀 —— 那同時修好一件本來就壞的事:**使用者剛學到的詞要 destroy_session 才落地,舊版是拿一份缺了最近學習成果的詞庫去重編**;期間的按鍵走既有的 fail-open,並在畫面上說「正在準備」;部署完成後照原本的 id 把 session 建回來並**重套方案 / 簡繁 / 標點 / 中英**(task #85)。`
+  - `Windows 這一側的做法(可以照抄的形狀):新增純邏輯的階段機 `windows/common/redeploy_flow.{h,cc}`(kIdle → kClosingSessions → kDeploying → kRebuilding),不變量是「可以改寫詞庫檔」與「可以有 session」永遠互補;部署前在引擎執行緒上把**所有** session(含備用池)銷毀 —— 那同時修好一件本來就壞的事:**使用者剛學到的詞要 destroy_session 才落地,舊版是拿一份缺了最近學習成果的詞庫去重編**;期間的按鍵走既有的 fail-open(⚠ **那道門要在呼叫端執行緒上答,不可以排進引擎那條佇列** —— 機制寫在下一則,上一輪這裡的說法是錯的),並在畫面上說「正在準備」;部署完成後照原本的 id 把 session 建回來並**重套方案 / 簡繁 / 標點 / 中英**(task #85)。`
+
+- `[2026-08-12] [Windows] **「整理字詞期間打字」的機制上一輪寫錯了:行為是對的,原因不是那個。凡是「核心一條序列化佇列 + 宿主那側每顆鍵有逾時」的端都要看一遍。**(#90 覆核)`
+  - `上一輪寫的是「期間的按鍵走既有的 ShouldFailOpen 那道門」。查證之後:那道門確實會答 fail-open,但**答得太晚**。`Engine::Post` 是 `queue_.Call(label, fn, 0)` —— **timeout 0 = 永遠等**,而引擎只有**一條** FIFO。使用者按下「重新整理字詞」時排進去的「收乾淨 session 再開始部署」那一整包,排在任何按鍵工作**前面**,而收 session 是這條路上最慢的一步(每一個 `rs_session_destroy` 都要把使用者詞典寫回去)。`
+  - `而 DLL 那一側每一顆按鍵的預算是 **50 毫秒**(`windows/tsf/ipc_client.cc` 的 `kKeyTimeoutMs`)。所以按下「重新整理字詞」之後的第一顆鍵是:吃滿 50 ms → `Fail(kTimeout)` → `Close()`、`session_ = 0` —— **整條連線被丟掉**。`
+  - `⚠ 使用者看到的結果**仍然是** fail-open(宿主自己收下、打出英文),所以這件事在畫面上看不出來。代價藏在後面:凡是在那段時間打過字的宿主,連線已經斷了 —— 於是部署後「照原本的 id 把 session 建回來,並重套方案 / 簡繁 / 標點 / 中英」那一套(task #85)對它**不生效**,它得重新 `SESSION_NEW`,而那在階段回到 kIdle 之前是被擋的。`
+  - `修法:把那道門搬到**呼叫端執行緒**上答。它只讀兩個 atomic(階段 + 有沒有能用的詞庫),不碰 session、不呼叫任何 `rs_*`,所以在哪一條執行緒上答都是同一個答案 —— 而在呼叫端答是微秒級的,整場整理期間一顆鍵都不會排到那一包後面。守門:`check_ui_spec.sh` 的 W36 現在**要求**那道門排在 `Post()` 之前。`
+  - `⚠ 剩下一個真的窗口沒有收掉:一顆鍵剛好在 `BeginDeploy` 寫下階段之前讀到 kIdle、又排在那一包後面,那一顆還是會逾時。要連它也收掉,得讓按鍵的等待有上限,而且**遲到的工作不可以把那顆鍵打進 librime**(不然引擎組了字、宿主也打了字,兩邊分岔)—— 開在 task #93,這一輪沒有做。`
+  - `**給另外三端的一般形狀**(不必看 Windows 的程式碼):只要「核心那一側是單一序列化佇列」而「宿主那一側對每顆鍵有逾時」,任何一件排在按鍵前面的**收尾工作**(收 session、寫詞典、重編)都會把「那顆鍵慢了」變成「這條連線斷了」,而斷線的代價通常不是那顆鍵,是重建時丟掉的狀態。判準很短:**能在呼叫端執行緒上答的問題,不要排進那條佇列。**`
+
+- `[2026-08-12] [Windows] **回呼那一側的裸指標:換成 `std::atomic<T*>` 不算修好。**(#90 覆核)`
+  - `librime 的部署終局回呼跑在**它自己的執行緒**上,而上層那個引擎物件是主執行緒的。舊版是 `Engine* g_deploy_engine` 配一個 null 檢查,而 check 與 use 之間不是原子的。`
+  - `⚠ 改成 `std::atomic<Engine*>` 只解決了不重要的那一半:它讓「讀到的是不是 nullptr」變成定義良好,對**讀出來之後**一個字都沒說。回呼在 `load()` 與 `->` 之間可以被排掉任意久,而那段時間足夠主執行緒跑完 `Stop()` 與解構。窗口小只代表難重現。`
+  - `做法:`windows/common/callback_gate.h`(無平台相依)。`Run()` 從頭到尾持有閘的鎖,`Close()` 拿同一把 —— 於是「`Close()` 返回時裡面沒有人,而且之後也不會有人進來」是被鎖保證的,不是被時序猜的。`Stop()` 的**第一句**就是 `Close()`(排在 `if (!started_)` 與 join 佇列之前),然後才 `rs_finalize()`。鎖序固定:**librime 的全域鎖 → 閘的鎖 → 佇列的鎖**,不可反向 —— 握著閘的鎖去呼叫 `rs_*` 就是死鎖。`
+  - `⚠ 這種東西**測得到**,但要用「把回呼釘在 `Run()` 裡面,再讓 `Close()` 去撞它」的方式測。「開一堆執行緒猛敲、期待 ASan 剛好撞進那個窗口」實測是**綠的**(窗口由排程決定,而排程不會配合)—— 那種測試會給人一個假的保證。見 `windows/tests/test_callback_gate.cc`:天真版在那裡直接紅,`--asan` 之下是 heap-use-after-free。`
+  - `Android / macOS:凡是「C 回呼 + 上層物件的指標」都是同一個形狀(JNI 的 global ref、Swift 那側的 unowned)。`
+
 
 ## 6. 各端狀態
 

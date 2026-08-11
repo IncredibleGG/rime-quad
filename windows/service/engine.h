@@ -93,7 +93,15 @@ class Engine {
   //
   // ⚠ 觸發點在這裡而不是設定視窗的計時器上,是刻意的:那個視窗可以被
   //   關掉,而關掉之後就再也沒有人會把 session 建回來。
-  void OnDeployTerminal();
+  //
+  // ⚠ 而且它是在 engine.cc 那個 CallbackGate 的鎖**裡面**跑的：那把鎖是
+  //   「Stop() 返回時保證沒有回呼還在用這個 Engine」唯一的來源
+  //   （common/callback_gate.h）。所以這一支做得越久，Stop() 就陪著等越久
+  //   —— 它只該動 atomic 與排工作，不可以在裡面等任何東西。
+  //
+  // deploy_ok = 這一場部署成功還是失敗。兩者都要把 session 建回來；
+  // 失敗那一條尤其重要（見 .cc）。
+  void OnDeployTerminal(bool deploy_ok);
   // 等待首次部署完成。只給 --selftest 用;正常執行不等。
   bool WaitDeploy(int seconds);
 

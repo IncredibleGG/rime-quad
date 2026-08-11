@@ -206,6 +206,10 @@ add_executable(rime_tests
   tests/test_status_cells.cc
   tests/test_hotkey_policy.cc
   tests/test_work_queue.cc
+  # ⚠ 「關門的人要等到裡面沒有人」。守的是 service/engine.cc 那個
+  #   部署回呼:它跑在 librime 的執行緒上,而 Engine 是 main 的物件。
+  #   換成 std::atomic<Engine*> **不夠** —— 那一條在這裡是紅的。
+  tests/test_callback_gate.cc
   # 狀態行「誰寫的、誰可以收回」。純順序邏輯,而它守的是**訊息消失**
   # 那一類缺陷 —— 使用者不會回報「我沒看到一句話」。
   tests/test_status_line.cc

@@ -2530,7 +2530,9 @@ PYSCRIPT
   #      視窗的計時器上:那個視窗可以被關掉。
   #   5. RebuildSessionsOnEngineThread 要重套方案與選項(#85)。
   #   6. ProcessKey / ToggleAsciiMode 那道門要用 ShouldFailOpen(phase_...),
-  #      而且在 ProcessKey 裡要排在 Find() **之前**。
+  #      而且在 ProcessKey 裡要排在 Find() **之前**;兩支都要排在
+  #      Post() **之前** —— 那道門只讀兩個 atomic,要在呼叫端執行緒上答,
+  #      不可以排在引擎那條唯一的 FIFO 後面(理由見下面那一條紅字)。
   check
   local w36bad=0
   local w36out; w36out="$("${PY}" - "${CODE_DIR}" <<'PYSCRIPT'
@@ -2673,6 +2675,9 @@ for fn in gates:
     i_find = gb.find('Find(id)')
     if i_find >= 0 and i_find < i_gate:
         print('GATEAFTERFIND=%s' % fn)
+    i_post = gb.find('Post(')
+    if i_post >= 0 and i_post < i_gate:
+        print('GATEBEHINDQUEUE=%s' % fn)
     if re.search(r'deploy_state_\.load\(\)\s*!=\s*1', gb):
         print('OLDJUDGE=%s' % fn)
 PYSCRIPT
@@ -2742,11 +2747,139 @@ PYSCRIPT
         red "W36:Engine::${w36line#STALEPHASE=} 傳給 ShouldFailOpen() 的不是 phase_.load() —— 那道門讀不到重新部署走到哪一格,等於永遠開著"; w36bad=1 ;;
       GATEAFTERFIND=*)
         red "W36:Engine::${w36line#GATEAFTERFIND=} 的門排在 Find() 之後 —— 重新部署期間 session 是真的不見了,先 Find() 就會走進「找不到」那條路,回給宿主一份 status_flags 全 0 的快照,而狀態列會把它當成「一切正常」"; w36bad=1 ;;
+      GATEBEHINDQUEUE=*)
+        red "W36:Engine::${w36line#GATEBEHINDQUEUE=} 的門排在 Post() 之後 —— 那道門會在**引擎執行緒**上答,而且排在「收乾淨 session 再開始部署」那一包後面(每一個 rs_session_destroy 都要把使用者詞典寫回去,是這條路上最慢的一步);Engine::Post 是 queue_.Call(...,0) = **永遠等**。而 DLL 那一側每顆鍵的預算是 50 毫秒(tsf/ipc_client.cc 的 kKeyTimeoutMs)—— 逾時就 Fail(kTimeout) → Close()、session_ = 0,**整條連線被丟掉**,於是部署後「保住原 id、重套方案 / 簡繁 / 英數」那一套(#85)對那個宿主不生效"; w36bad=1 ;;
       OLDJUDGE=*)
         red "W36:Engine::${w36line#OLDJUDGE=} 還在用 deploy_state_ != 1 判斷 —— 那個值首次部署成功之後**永遠**是 1,重新部署期間這道門是開的(#90 的原始形狀)"; w36bad=1 ;;
     esac
   done <<< "${w36out}"
-  [ "${w36bad}" -eq 0 ] && ok "W36 ${ncreate} 個建 session 的呼叫點全部先問過 SessionCreationAllowed(),BeginDeploy 不在 UI 執行緒上部署而是整包丟給引擎執行緒,那一包收乾淨才 rs_deploy()、拒絕啟動時會建回來也會讓畫面知道,部署終局那一條不靠任何視窗,重建會重套方案與選項,${ngate} 道按鍵的門都讀 phase_ 而且排在 Find() 之前"
+  [ "${w36bad}" -eq 0 ] && ok "W36 ${ncreate} 個建 session 的呼叫點全部先問過 SessionCreationAllowed(),BeginDeploy 不在 UI 執行緒上部署而是整包丟給引擎執行緒,那一包收乾淨才 rs_deploy()、拒絕啟動時會建回來也會讓畫面知道,部署終局那一條不靠任何視窗,重建會重套方案與選項,${ngate} 道按鍵的門都讀 phase_、排在 Find() 之前、而且排在 Post() 之前(在呼叫端執行緒上答,不排在收 session 那一包後面)"
+  # ── W37:部署回呼碰的那個 Engine,活多久 ─────────────────────────
+  #
+  # OnDeploy 跑在 **librime 的部署執行緒**上,而 Engine 是 main 那條執行緒
+  # 上的物件。舊版是一個裸指標配一個 null 檢查,而 check 與 use 之間不是
+  # 原子的:讀到非空之後,那個物件仍然可能在回呼正在用它的時候被
+  # ~Engine() 拆掉。
+  #
+  # ⚠ **換成 std::atomic<Engine*> 不算修好。** 那只讓「讀到的是不是
+  #   nullptr」變成定義良好,對「讀出來之後」一個字都沒說。要的是生命
+  #   週期保證:關門的人要等到裡面沒有人 —— common/callback_gate.h,
+  #   由 tests/test_callback_gate.cc 在 Ubuntu 上驗(--asan 之下,天真的
+  #   atomic 版在那裡是 heap-use-after-free)。**這裡守的是接線。**
+  check
+  local w37bad=0
+  local w37out; w37out="$("${PY}" - "${CODE_DIR}" <<'PYSCRIPT'
+import os, re, sys
+root = sys.argv[1]
+
+try:
+    en = open(os.path.join(root, 'service/engine.cc'), encoding='utf-8',
+              errors='replace').read()
+except OSError:
+    print('NOSRC=1')
+    raise SystemExit(0)
+
+def match_from(src, i):
+    depth = 0
+    for j in range(i, len(src)):
+        if src[j] == '{':
+            depth += 1
+        elif src[j] == '}':
+            depth -= 1
+            if depth == 0:
+                return (i, j + 1)
+    return (i, len(src))
+
+def body_of(src, sig):
+    i = src.find(sig)
+    if i < 0:
+        return None
+    b = src.find('{', i)
+    if b < 0:
+        return None
+    ob, cb = match_from(src, b)
+    return src[ob + 1:cb - 1]
+
+# 分母:部署回呼的註冊點。掃空 = 範圍寫錯,那必須是紅的。
+print('NREG=%d' % len(re.findall(r'\.on_deploy\s*=', en)))
+
+if 'CallbackGate<Engine>' not in en:
+    print('NOGATEOBJ=1')
+if re.search(r'std::atomic\s*<\s*Engine\s*\*\s*>', en):
+    print('ATOMICONLY=1')
+if re.search(r'^\s*Engine\s*\*\s*g_\w+', en, re.M):
+    print('RAWGLOBAL=1')
+
+ob = body_of(en, 'void OnDeploy(')
+if ob is None:
+    print('NOCBFN=1')
+else:
+    if 'g_deploy_gate.Run(' not in ob:
+        print('NOGATERUN=1')
+    if re.search(r'\brs_[a-z_]+\s*\(', ob):
+        print('RSINCALLBACK=1')
+
+sb = body_of(en, 'bool Engine::Start(')
+if sb is None:
+    print('NOSTARTFN=1')
+elif 'g_deploy_gate.Open(this)' not in sb:
+    print('NOOPEN=1')
+
+tb = body_of(en, 'void Engine::Stop(')
+if tb is None:
+    print('NOSTOPFN=1')
+else:
+    i_close = tb.find('g_deploy_gate.Close()')
+    if i_close < 0:
+        print('NOCLOSE=1')
+    else:
+        i_started = tb.find('if (!started_)')
+        i_queue = tb.find('queue_.Stop()')
+        i_final = tb.find('rs_finalize(')
+        if 0 <= i_started < i_close:
+            print('CLOSEAFTERSTARTEDCHECK=1')
+        if 0 <= i_queue < i_close:
+            print('CLOSEAFTERQUEUE=1')
+        if 0 <= i_final < i_close:
+            print('CLOSEAFTERFINALIZE=1')
+PYSCRIPT
+)"
+  local nreg; nreg="$(num "$(printf '%s\n' "${w37out}" | grep '^NREG=' | cut -d= -f2)")"
+  need_scope "W37 部署回呼的註冊點" "${nreg}" 1 || w37bad=1
+  local w37line
+  while IFS= read -r w37line; do
+    case "${w37line}" in
+      NOSRC=*)
+        red "W37:找不到 service/engine.cc —— 掃描範圍錯了"; w37bad=1 ;;
+      NOCBFN=*)
+        red "W37:找不到 OnDeploy() 的本體 —— 掃描範圍錯了"; w37bad=1 ;;
+      NOSTARTFN=*)
+        red "W37:找不到 Engine::Start 的本體 —— 掃描範圍錯了"; w37bad=1 ;;
+      NOSTOPFN=*)
+        red "W37:找不到 Engine::Stop 的本體 —— 掃描範圍錯了"; w37bad=1 ;;
+      NOGATEOBJ=*)
+        red "W37:engine.cc 裡沒有 CallbackGate<Engine> —— 部署回呼手上那個 Engine 沒有任何生命週期保證,~Engine() 可以在它正在用的時候把它拆掉"; w37bad=1 ;;
+      ATOMICONLY=*)
+        red "W37:那個指標是 std::atomic<Engine*> —— **換型別不夠**。它只讓「是不是 nullptr」這一問變成定義良好,而回呼在 load() 與 -> 之間可以被排掉任意久,那段時間足夠 main 跑完 Stop() 與 ~Engine()(見 common/callback_gate.h)"; w37bad=1 ;;
+      RAWGLOBAL=*)
+        red "W37:engine.cc 裡有一個裸的 Engine* 全域指標 —— check 與 use 之間不是原子的,而且連「讀得乾淨」都沒有"; w37bad=1 ;;
+      NOGATERUN=*)
+        red "W37:OnDeploy 沒有走 g_deploy_gate.Run() —— 它拿到的 Engine 沒有人保證還活著"; w37bad=1 ;;
+      RSINCALLBACK=*)
+        red "W37:OnDeploy 裡呼叫了 rs_* —— rime_shell 呼叫這個回呼時**持有** g_global_mutex(#91),那是一個真的死鎖;而且它是在閘的鎖裡面跑的,做得久就是讓 Stop() 陪著等"; w37bad=1 ;;
+      NOOPEN=*)
+        red "W37:Engine::Start 沒有開閘(g_deploy_gate.Open(this))—— 部署的終局到不了引擎,session 不會被建回來,使用者從此打不出中文"; w37bad=1 ;;
+      NOCLOSE=*)
+        red "W37:Engine::Stop 沒有關閘 —— ~Engine() 之後,librime 的部署執行緒還拿著這個物件在寫"; w37bad=1 ;;
+      CLOSEAFTERSTARTEDCHECK=*)
+        red "W37:Stop() 的關閘排在 if (!started_) 之後 —— Start() 在 rs_init 失敗時 started_ 仍然是 false 而閘已經開了(它必須開在 rs_init 之前),那一問會先 return,閘上就留著一個指向即將被解構的 Engine 的指標"; w37bad=1 ;;
+      CLOSEAFTERQUEUE=*)
+        red "W37:Stop() 的關閘排在 queue_.Stop() 之後 —— 佇列排乾的那一段裡,部署終局的回呼會走 RebuildSessionsAsync() 排不進去的那條路去清 parked_,而工作者可能正在 RebuildSessionsOnEngineThread() 裡讀它"; w37bad=1 ;;
+      CLOSEAFTERFINALIZE=*)
+        red "W37:Stop() 的關閘排在 rs_finalize() 之後 —— 那之後才關等於沒關"; w37bad=1 ;;
+    esac
+  done <<< "${w37out}"
+  [ "${w37bad}" -eq 0 ] && ok "W37 部署回呼走 CallbackGate:OnDeploy 只在閘裡動 atomic 與排一件工作(沒有 rs_*),Start 開閘、Stop 的**第一句**就關閘(排在 started_ 那一問與 queue_.Stop() 之前)—— Stop() 返回時「沒有回呼還在用這個 Engine」是被鎖保證的"
 }
 
 # ────────────────────────────────────────────────────────────────
@@ -2884,11 +3017,17 @@ self_check() {
 "W36b 當場建 session 那一處的門被拿掉|service/engine.cc|s=s.replace('    if (!SessionCreationAllowed(phase_.load())) return;' + chr(10) + '    const rs_session s = rs_session_create();','    const rs_session s = rs_session_create();',1)"
 "W36c 備用 session 那一處的門被拿掉|service/engine.cc|s=s.replace('  if (!SessionCreationAllowed(phase_.load())) return;' + chr(10) + '  const rs_session s = rs_session_create();','  const rs_session s = rs_session_create();',1)"
 "W36d 部署終局不再把 session 建回來|service/engine.cc|s=s.replace('  RebuildSessionsAsync();' + chr(10) + '}','}',1)"
-"W36e 按鍵那道門排到 Find() 後面|service/engine.cc|s=s.replace('    if (ShouldFailOpen(phase_.load(), deploy_state_.load() == 1,' + chr(10) + '                       &r.snap.status_flags)) {','    (void)Find(id);' + chr(10) + '    if (ShouldFailOpen(phase_.load(), deploy_state_.load() == 1,' + chr(10) + '                       &r.snap.status_flags)) {',1)"
+"W36e 按鍵那道門排到 Find() 後面|service/engine.cc|s=s.replace('  if (ShouldFailOpen(phase_.load(), deploy_state_.load() == 1,' + chr(10) + '                     &r.snap.status_flags)) {','  (void)Find(id);' + chr(10) + '  if (ShouldFailOpen(phase_.load(), deploy_state_.load() == 1,' + chr(10) + '                     &r.snap.status_flags)) {',1)"
 "W36f 重建不再重套方案與選項(#85)|service/engine.cc|s=s.replace('      if (!plan.schema_id.empty()) rs_select_schema(s, plan.schema_id.c_str());' + chr(10) + '      for (const OptionAssign& a : plan.options)' + chr(10) + '        rs_set_option(s, a.option, a.value);','      (void)plan;',1)"
 "W36g 那道門讀不到階段|service/engine.cc|s=s.replace('ShouldFailOpen(phase_.load(), deploy_state_.load() == 1,','ShouldFailOpen(RedeployPhase::kIdle, deploy_state_.load() == 1,',1)"
 "W36h BeginDeploy 沒有先把門關上|service/engine.cc|s=s.replace('RedeployEvent::kRequested','RedeployEvent::kRebuilt',1)"
 "W36i 收乾淨那一支不再銷毀 session|service/engine.cc|s=s.replace('    rs_session_destroy(kv.second);' + chr(10) + '  }' + chr(10) + '  const int total','  }' + chr(10) + '  const int total',1)"
+"W36m 按鍵那道門又排到佇列後面|service/engine.cc|s=s.replace('Result Engine::ProcessKey(uint64_t id, int32_t keysym, uint32_t mods) {' + chr(10) + '  Result r;','Result Engine::ProcessKey(uint64_t id, int32_t keysym, uint32_t mods) {' + chr(10) + '  Result r;' + chr(10) + '  Post(' + chr(34) + '先擋一下' + chr(34) + ', [] {});',1)"
+"W37a 部署回呼改回裸指標|service/engine.cc|s=s.replace('  g_deploy_gate.Run([ok](Engine* e) { e->OnDeployTerminal(ok); });','  if (g_deploy_engine) g_deploy_engine->OnDeployTerminal(ok);',1)"
+"W37b 閘換成 std::atomic<Engine*>(只換型別)|service/engine.cc|s=s.replace('CallbackGate<Engine> g_deploy_gate;','std::atomic<Engine*> g_deploy_gate{nullptr};',1)"
+"W37c Stop 的關閘排到佇列後面|service/engine.cc|s=s.replace('  g_deploy_gate.Close();' + chr(10) + '  if (!started_) return;','  if (!started_) return;',1).replace('  started_ = false;','  started_ = false;' + chr(10) + '  g_deploy_gate.Close();',1)"
+"W37d Start 不開閘|service/engine.cc|s=s.replace('  g_deploy_gate.Open(this);' + chr(10),'',1)"
+"W37e 部署回呼裡直接呼叫 rs_*|service/engine.cc|s=s.replace('  const bool ok = (status == RS_DEPLOY_SUCCESS);','  const bool ok = (status == RS_DEPLOY_SUCCESS);' + chr(10) + '  (void)rs_last_error();',1)"
 "範圍|__SCOPE__|"
   )
 
