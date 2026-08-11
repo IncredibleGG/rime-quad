@@ -1394,6 +1394,26 @@ self_check() {
   local base; base="$(mktemp -d)"
   cp -r "${ROOT}/windows" "${base}/windows"
 
+  # ⚠ 反向測試的判準是「植入之後腳本非零結束」。那個判準只有在
+  #   **沒有植入時腳本是零**的前提下才成立。樹本來就紅的話,下面每一條
+  #   都會「變紅」—— 而且是為了別的原因,於是每一個 ok 都不算數,
+  #   包括那些檢查已經被整條拆掉的。
+  #
+  #   這不是假想:W29 那五條掃的是 win-netui 那一版的名字,合併之後
+  #   對不上,乾淨的樹上這支腳本就是 rc=1。也就是說這一整份反向測試
+  #   在那之後一直是**空轉**的,而它印的是一片綠。
+  local baseline_red=0 baserc=0
+  RIMEWIN_ROOT="${base}" bash "${SCRIPT_DIR}/check_ui_spec.sh" >/dev/null 2>&1 \
+    || baserc=$?
+  if [ "${baserc}" -ne 0 ]; then
+    baseline_red=1
+    printf '  \033[1;31m一條都還沒植入,腳本在乾淨的樹上就已經是紅的(rc=%d)。\n     下面每一條「變紅」都可能只是那個既有失敗造成的 —— **一個 ok 都不算數**。\n     先把它修綠,這份反向測試才有意義。既有的失敗是:\033[0m\n' \
+      "${baserc}" >&2
+    local baseout
+    baseout="$(RIMEWIN_ROOT="${base}" bash "${SCRIPT_DIR}/check_ui_spec.sh" 2>&1)"
+    printf '%s\n' "${baseout}" | grep -E '\[FAIL\]|不合格' >&2
+  fi
+
   local pass=0 fail=0
   # 名稱|要改的檔案|python 片段(對 s 做替換)
   local muts=(
@@ -1425,7 +1445,7 @@ self_check() {
 "W26b 简繁點完不回讀|service/status_bar.cc|s=s.replace('      RefreshFromEngine();\n      return;\n    }\n    case kCellSchema:','      return;\n    }\n    case kCellSchema:',1)"
 "W26c 回讀不問引擎|service/status_bar.cc|s=s.replace('  const Engine::StatusReadback rb = engine_->ReadBackStatus();','  Engine::StatusReadback rb;',1)"
 "W26d 中英又樂觀寫入|service/status_bar.cc|s=s.replace('      engine_->SetAsciiModeAll(!engine_->AsciiMode());','      { std::lock_guard<std::mutex> lk(mu_); ascii_mode_ = !ascii_mode_; }\n      engine_->SetAsciiModeAll(!engine_->AsciiMode());',1)"
-"W26e 回讀之後不重畫|service/status_bar.cc|s=s.replace('    Relayout();\n    ::InvalidateRect(hwnd_, nullptr, TRUE);\n  }\n}\n\nvoid StatusBar::EvaluateVisibility','  }\n}\n\nvoid StatusBar::EvaluateVisibility',1)"
+"W26e 回讀之後不重畫|service/status_bar.cc|s=s.replace('  if (changed) {\n    Relayout();\n    ::InvalidateRect(hwnd_, nullptr, TRUE);\n','  if (changed) {\n',1)"
 "W27a Relayout 不再問狀態|service/status_bar.cc|s=s.replace('  service_state_ = CurrentServiceState();','  service_state_ = ServiceState::kReady;',1)"
 "W27b 那一橫的字寫死一句|service/status_bar.cc|s=s.replace('    c.text = UiText(StatusTextFor(service_state_));','    c.text = UiText(UiString::kBarNotRunning);',1)"
 "W27c 不讀線路上的旗標|service/status_bar.cc|s=s.replace('SnapshotSaysNotReady(snap.status_flags)','false',1)"
@@ -1515,6 +1535,8 @@ PYMUT
   rm -rf "${base}"
 
   info "反向測試:${pass} 條會紅,${fail} 條不會"
+  # ⚠ baseline 紅的時候上面那個數字沒有意義,見開頭的說明。
+  [ "${baseline_red}" -eq 0 ] || return 1
   [ "${fail}" -eq 0 ] || return 1
   return 0
 }
