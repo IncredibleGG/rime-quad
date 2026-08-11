@@ -687,9 +687,44 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext* ctx, WPARAM w, LPARAM l,
 STDMETHODIMP TextService::OnTestKeyUp(ITfContext*, WPARAM, LPARAM, BOOL* eaten) {
   // key-up 一律不吃。
   //
-  // TSF 本來就不會把純修飾鍵(Shift / Ctrl)的事件交給 key event sink,
-  // 所以 librime 那套「按一下 Shift 切中英」在這條路徑上做不到 ——
-  // 那需要另外掛低階鍵盤 hook,不在本輪範圍。已列在 README 的已知缺口。
+  // ⚠ 這裡原本寫著「TSF 本來就不會把純修飾鍵(Shift / Ctrl)的事件交給
+  //   key event sink,所以那套『按一下 Shift 切中英』在這條路徑上做不到,
+  //   要另外掛低階鍵盤 hook」。**那句話是假的**,而且它替一個結論背了很久
+  //   的書(見 docs/coordination.md 與 docs/product-gaps.md)。
+  //
+  // ── 實測 ────────────────────────────────────────────────────────
+  //
+  //   出處:CI run 31511075812(sha ca97498),logic-x64 的
+  //         「真的經過 TSF」那一步 = windows/verify_tsf.sh --press-shift。
+  //   量法:windows/tests/tsf_host_main.cc 的 MeasureShiftDelivery。在真的
+  //         ActivateEx 過的文字服務上,經 ITfKeystrokeMgr 送一次左 Shift 的
+  //         TestKeyDown / KeyDown / KeyUp,然後**數 trace 檔多了幾行** ——
+  //         沒有任何回傳值看得出 sink 有沒有被呼叫(TSF 收下、回 S_OK、
+  //         pfEaten=FALSE,與「根本沒交給我們」長得一模一樣)。
+  //   結果:
+  //         SHIFT_SCAN_SENT=0x2A   SHIFT_TESTKEYDOWN_EATEN=0
+  //         SHIFT_KEYDOWN_EATEN=0  SHIFT_KEYUP_EATEN=0   SHIFT_TRACE_LINES=1
+  //         按鍵 vk=0x10 scan=0x2A keysym=0xFFE1 mods=0x0 族=host-only
+  //         組字中=0 吃掉=0
+  //
+  //   → **key event sink 收得到純修飾鍵。** 多出來的那一行是 OnTestKeyDown
+  //     自己寫的,所以純修飾鍵確實走到我們身上;我們只是照
+  //     common/key_eat_policy.cc 的分類把它放行給宿主(kHostOnly)。
+  //     **那一份(「不太會…但交過來時」)才是對的那一份。**
+  //
+  // 所以「要掛低階鍵盤 hook」這個前提不成立:輕點 Shift 切中英可以完全在
+  // 這四支 sink 裡用純函式的狀態機做完(*eaten 一律 FALSE,偵測到輕點就送
+  // 既有的正規形式 Ctrl+空白鍵),WH_KEYBOARD_LL 那條紅線不必碰。
+  // **這一輪只改敘述,一行行為都沒有實作**(工單 #89)。
+  //
+  // ⚠ 仍然沒有量到的:那支 harness 走的是 ITfKeystrokeMgr::KeyDown ——
+  //   **那是宿主呼叫的入口**。它證明「sink 收得到」,證不到「真實宿主
+  //   (記事本 / Chrome / Word)的訊息迴圈會不會把 VK_SHIFT 送進 TSF」。
+  //   後者只有人在真機上試得出來,已列進 #48。
+  //
+  // ⚠ 左右分不出來:送過來的 wParam 是**泛用的** VK_SHIFT(0x10),而
+  //   keymap.cc:157 又把它一律折成 XK_Shift_L(0xFFE1)。要分左右只能看
+  //   scan code(左 0x2A、右 0x36)—— 上面量到 scan code 確實有正確帶進來。
   if (eaten) *eaten = FALSE;
   return S_OK;
 }

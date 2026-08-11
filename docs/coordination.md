@@ -486,6 +486,7 @@ bash 端再剝一次 `\r`。(同一個檔案早就為了 cp1252 的 stdout 編�
 
 - `[2026-08-09] [產品] **新增 `docs/product-gaps.md`(四端功能缺口盤點與優先清單)。只寫文件,一行程式碼都沒有改。** 它回答的是「麻瓜的第一小時裡少了哪一項會讓他說『這東西不能用』」,不是「別人有什麼」的清單;排序判準寫在該文件 §5.1,**每一項都附了「什麼證據會讓它降級」**,是設計來被反駁的。⚠ **三件對其他端有直接影響的發現(細節見該文件對應章節)**:`
   1. `**Windows 端沒有任何中英切換,不只是「Shift 沒作用」。** `ascii_mode` 在整個 `windows/` 底下只出現兩次(`service/engine.cc:31`、`common/protocol.h:163`),**都是回報狀態,沒有任何一處設定它**;而三條入口全不通 —— Shift 走不到(TSF 不給純修飾鍵)、語言列按鈕的 `InitMenu` 回 `E_NOTIMPL`(刻意)、系統匣選單有簡繁沒有中英。所以使用者要在句子中間打一個英文單字,唯一的辦法是 Win+空白鍵換掉整個輸入法。**修法不是去修 Shift**(那要掛低階鍵盤 hook,而低階 hook 會看到使用者在每一個程式裡的每一次按鍵,與「經得起審計」的定位衝突)。`
+     ⚠ **[2026-08-12 更正 · 只加註,上面那一行一字未動]** 上面「Shift 走不到(TSF 不給純修飾鍵)」**是假的,已實測推翻**,而由它推出的「**修法不是去修 Shift**(那要掛低階鍵盤 hook)」也跟著失去依據。CI run `31511075812`(sha `ca97498`)`logic-x64` 的「真的經過 TSF」:在真的 `ActivateEx` 過的文字服務上送一次左 Shift,`SHIFT_TRACE_LINES=1`,而多出來的那一行是 `OnTestKeyDown` 自己寫的 —— `按鍵 vk=0x10 scan=0x2A keysym=0xFFE1 mods=0x0 族=host-only 組字中=0 吃掉=0`。**key event sink 收得到純修飾鍵,不需要低階鍵盤 hook。** 這一則的其餘部分不受影響(`ascii_mode` 沒有任何一處設定它、浮動狀態列成本較低,都仍然成立);被推翻的只有「Shift 這條路做不到」,而它現在是「沒做」(#89)。量法與跨端影響見本節末 `[2026-08-12] [winbar]` 那一則。
   2. `⚠ **使用者要的「浮動狀態列」不是 `docs/theme-format.md` §8.12 的 `status_bar` —— 這是一個規範還沒有的新表面。** §8.12 的狀態列住在**候選窗裡面**,而候選窗只在組字時出現;使用者要的是「隨時看得到、可以拖動」的常駐窗。建議的四格是 `input_mode_pair` / `variant` / `schema_name`(點開是選單,不是循環)/ 設定 —— 前三格正好等於 §8.12 的規範性預設清單,字面必須沿用(`中`/`En`、`简`/`繁`),否則同一個產品的兩個表面會顯示不同的字。**給 macOS(規範所有權)**:macOS 的選單列圖示是同一個問題的另一半,兩端各自發明會長成兩個東西,建議進規範而不是宣告成平台專屬。⚠ §8.12 末段那條「`source` 全是文字、沒有圖示,補上之前不要自己發明」仍然有效 —— 純文字四格是可行的,但不可以順手加圖示。`
   3. `**「Windows 候選窗等規範所以不讀主題檔」的理由已經不成立了。** macOS 端 2026-08-08 那一輪把 Windows 回報的六個缺口全部關掉,我逐節確認過都在規範裡(§8.6.0 / §8.6.4.1 / §8.6.7.2 / §8.6.7.3 / §8.6.7.4 / §8.12)。⚠ 順帶一提 §8.6.0 有一條會直接改變現況的規定:**桌面端不得改用系統 UI 字型當預設**(`$system` 代號已經是那個意思),而 Windows 目前是直接取 `SPI_GETNONCLIENTMETRICS` —— 在新規範下不合規。`
   `⚠ **給 storefix 支線(產品側背書)**:Windows 端提過「如果索引裡的套件可以改成 stored(不壓縮)或另附非 zip 的格式,Windows 的方案市集會小掉一大半」。從產品角度我支持這個方向 —— 它把一整輪的工作量換成一次格式決定,而使用者感受不到差別。要動 `docs/schema-store.md` 與已發布的索引,所以請先決定。`
@@ -1299,6 +1300,17 @@ bash 端再剝一次 `\r`。(同一個檔案早就為了 cp1252 的 stdout 編�
   所以開 Android worktree 時**兩條 symlink 都要**:
       ln -sfn /home/lc/rime/core/data/shared <worktree>/core/data/shared
       ln -sfn /home/lc/rime/core/data/user   <worktree>/core/data/user`
+- `[2026-08-12] [winbar → 全體(尤其 macOS #88 / Windows #89)] **量到了:TSF 的 key event sink 收得到純修飾鍵。這棵樹上寫了很久的相反那句話是假的,而它一直在替一個結論背書。**
+  **量到什麼**:CI run `31511075812`(sha `ca97498`)`logic-x64` 的「真的經過 TSF」那一步(`windows/verify_tsf.sh --press-shift`),在真的 `ActivateEx` 過的文字服務上經 `ITfKeystrokeMgr` 送一次左 Shift 的 `TestKeyDown` / `KeyDown` / `KeyUp`:
+      SHIFT_SCAN_SENT=0x2A   SHIFT_TESTKEYDOWN_EATEN=0
+      SHIFT_KEYDOWN_EATEN=0  SHIFT_KEYUP_EATEN=0   SHIFT_TRACE_LINES=1
+      按鍵 vk=0x10 scan=0x2A keysym=0xFFE1 mods=0x0 族=host-only 組字中=0 吃掉=0
+  **怎麼量的**:`windows/tests/tsf_host_main.cc` 的 `MeasureShiftDelivery`。判準是**數 trace 檔多了幾行** —— 沒有任何回傳值看得出 sink 有沒有被呼叫(TSF 收下、回 `S_OK`、`pfEaten=FALSE`,與「根本沒交給我們」長得一模一樣),唯一的證據是瘦 DLL 在 `OnTestKeyDown` 裡自己寫下的那一行。scan code 是 `MapVirtualKeyW` 查來的,不是寫死的 —— 寫死的話量到的會是「我們送了什麼」而不是「系統怎麼看」。
+  **它推翻了什麼**:§5 上面 `[2026-08-09] [產品]` 那一則的第 1 點寫著「Shift 走不到(TSF 不給純修飾鍵)」,並據此推出「**修法不是去修 Shift**(那要掛低階鍵盤 hook,而低階 hook 會看到使用者在每一個程式裡的每一次按鍵,與『經得起審計』的定位衝突)」。**前提是假的,結論失去依據。** 輕點 Shift 切中英可以完全在四支 key event sink 裡做完(`*eaten` 一律 FALSE、偵測到輕點就送既有的正規形式 Ctrl+空白鍵),`WH_KEYBOARD_LL` 那條紅線**不必碰**。⚠ 那條紅線本身仍然有效,只是它不再是 Shift 的必要代價 —— 「不掛低階 hook」與「不做 Shift」從此是兩件事。
+  **給 macOS(#88 的同一個模型)**:兩端要對齊的是「什麼算一次輕點」,不要各自發明。這一輪量到的兩件事直接進得了那個模型:(a) 送過來的 `wParam` 是**泛用的** `VK_SHIFT`(0x10),不是 `VK_LSHIFT`,而 `windows/tsf/keymap.cc:157` 又把它一律折成 `XK_Shift_L`(0xFFE1)—— **左右在 keysym 層分不出來**,要分只能看 scan code(左 `0x2A`、右 `0x36`,量到的確實有正確帶進來)。macOS 的 `ModifierGate` 若打算用「左右不同鍵不同義」,Windows 這一側要多一層 scan code 才跟得上。(b) 三支 sink 的 `*eaten` 實測都是 0 —— 偵測輕點**不需要**吃掉修飾鍵,`common/key_eat_policy.cc` 那張真值表一格都不用改。
+  **改了哪些地方**:同一句話在樹上有**六份**,而其中四份是把它當成現況在陳述。全部照實測改寫,而且都寫上「量到什麼、在哪一次 CI、用什麼方法量的」:`windows/tsf/text_service.cc` 的 `OnTestKeyUp`、`windows/README.md` 的已知缺口(順帶補了 §W-1)、`windows/common/key_eat_policy.cc:120`(它那份「不太會…但交過來時」才是對的,現在補上出處)、`windows/service/status_bar.h` 檔頭的「三條路全不通」、`docs/ui-design.md` §12.10.2 表格的「Shift 輕點」那一列、`docs/product-gaps.md` §4.1.1。⚠ `docs/ui-design.md:1979` 那一份**刻意沒動** —— 它在一個明著標為「舊的論證(已過期)」的引用塊裡,那是這棵樹上唯一一處把過期前提保存得對的地方。
+  **沒有驗到的**:⚠ 那支 harness 走的是 `ITfKeystrokeMgr::KeyDown`,**那是宿主呼叫的入口**。它證得到「sink 收得到」,證**不到**「真實宿主(記事本 / Chrome / Word)的訊息迴圈會不會把 `VK_SHIFT` 送進 TSF」—— 後者只有人在真機上試得出來,已在 #48。所以 #89 可以動工,但驗收必須包含真機那一格。另外**這一輪一行行為都沒有實作**,只改了六處敘述;`verify_tsf.sh` 的那一段也**刻意保留兩條分支、沒有改成斷言** —— 它量的是這台 runner 上的這一版 Windows,不是一條永恆的事實。
+  ⚠ **這一則本身是那個問題的樣本。** 那句話是 2026-08-09 讀碼寫下的推測,沒有出處;它被抄進六個檔案,然後在 `product-gaps.md` 裡長成一個排序判準,再被 §5 引用成跨端結論 —— 中間**沒有任何一關**問過「這句話是誰量的」。我試過寫一支通用的守門(「宣稱平台行為的註解必須附量測出處」),**守不住,所以沒有寫**:`windows/` 底下 10012 行註解裡,那類語氣詞(「本來就」「永遠不會」「不太會」)命中 105 行,真正需要出處的平台主張只有個位數 —— 約 95% 是誤報,而這個專案已經有兩個案例說明會亂叫的守門會被關掉(`verify_product_ids.sh` 6/6 全綠、`check_ui_spec.sh` 的 W29 過期後蓋住訊號)。**能守得住的是一條寫作紀律,不是腳本**:凡是「平台會 / 不會做某件事」而我們**照它做了決定**的句子,要嘛附上出處(哪一次 CI、哪一步、什麼量法),要嘛把它寫成問句並在同一句裡指出「去量它的是哪一支」——`verify_tsf.sh` 的 `--press-shift` 就是後者做對的樣子:它印出量測、不判合格,而且兩種結果各自寫好了下一步。判準的可執行版本落在**審查**而不是 CI:交接文件裡出現「平台不給 / 做不到」時,回問一句「誰量的」。`
 
 ## 6. 各端狀態
 
@@ -1385,7 +1397,7 @@ bash 端再剝一次 `\r`。(同一個檔案早就為了 cp1252 的 stdout 編�
   已知缺口:只有 x64;**簡體使用者選 zh-Hans 那一份打出來仍是繁體字**
   (langid 沒有帶進 IPC,預設方案還是 luna_pinyin_tw);
   `enable-user` 不會替使用者把中文加進 Windows 的語言清單;
-  TSF 不給純修飾鍵事件;沒有顯示屬性;沒有系統匣;沒有編 librime-lua。
+  ~~TSF 不給純修飾鍵事件~~(**已實測推翻**,見 §5 的 `[2026-08-12] [winbar]`:sink 收得到,但輕點 Shift 仍未實作);沒有顯示屬性;沒有系統匣;沒有編 librime-lua。
 
   前兩個里程碑(核心層、TSF)的細節保留在下面。
 - **iOS** — 未開始。

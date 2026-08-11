@@ -186,7 +186,14 @@ windows/common/protocol.h:163       kStAsciiMode = 1u << 1;                   �
 `ascii_mode` 在整個 `windows/` 底下只出現在這兩行,**都是「回報狀態」,
 沒有任何一處設定它**。而三條可能的路全部不通:
 
-- **Shift** —— TSF 不把純修飾鍵交給 key event sink(`tsf/text_service.cc:549`)。
+- **Shift** —— 當時寫的理由是「TSF 不把純修飾鍵交給 key event sink」
+  (那時指的是 `tsf/text_service.cc` 的 `OnTestKeyUp`,行號已經漂掉)。
+  ⚠ **[2026-08-12 更正]那句話是假的,已實測推翻。** CI run `31511075812`
+  (sha `ca97498`)`logic-x64` 的「真的經過 TSF」送一次左 Shift:
+  `SHIFT_TRACE_LINES=1`,而多出來的那一行是 `OnTestKeyDown` 自己寫的
+  (`vk=0x10 scan=0x2A keysym=0xFFE1 族=host-only 吃掉=0`)。
+  **sink 收得到純修飾鍵。** 這條路是「沒做」,不是「做不到」(#89);
+  量法與跨端影響見 `docs/coordination.md` 的 `[2026-08-12] [winbar]`。
 - **語言列按鈕** —— 只有一顆「設定」,`InitMenu` 回 `E_NOTIMPL`,刻意不做選單。
 - **系統匣右鍵選單** —— 有「設定 / 簡繁三態 / 重新整理字詞 / 結束」,**沒有中英**。
 
@@ -198,6 +205,14 @@ windows/common/protocol.h:163       kStAsciiMode = 1u << 1;                   �
 Shift 那條路要掛低階鍵盤 hook 才做得到,而低階 hook 在一個以「經得起審計」
 為定位的產品上是很貴的東西(它會看到使用者的每一次按鍵,包括別的程式裡的)。
 **浮動狀態列是同一個問題成本低得多的解。**
+
+⚠ **[2026-08-12 更正]上面這一段的前提已被實測推翻。** 「Shift 那條路要掛低階
+鍵盤 hook 才做得到」是假的(出處見上面那一條的更正)。修 Shift **不需要**低階
+hook —— 四支 key event sink 收得到純修飾鍵,輕點偵測是 sink 裡的純函式狀態機,
+`WH_KEYBOARD_LL` 那條紅線不必碰。
+**「浮動狀態列是成本低得多的解」這個結論仍然成立**(它已經做完了,而 Shift
+還沒做),但它的理由只剩「這一輪先做了它」,不再是「Shift 做不到」——
+排下一輪的優先序時要用後面那個版本。
 
 #### 4.1.2 上面該放哪幾個東西
 

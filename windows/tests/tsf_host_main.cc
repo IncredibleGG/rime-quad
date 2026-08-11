@@ -715,6 +715,12 @@ PreservedSend PressPreservedKey(ITfKeystrokeMgr* ks, ITfContext* ctx,
 // 擋著 Shift 這條路的不是技術,是這一句沒有人量過的話。所以這一支
 // **不 Fail**:它把量到的東西印出來,由那個結果決定下一輪走哪一條。
 //
+// ⚠ **2026-08-12:這一支已經答過一次了 —— 收得到。** CI run 31511075812
+//   (sha ca97498)logic-x64:SHIFT_TRACE_LINES=1,vk=0x10 scan=0x2A
+//   keysym=0xFFE1 族=host-only 吃掉=0。上面那兩份互相矛盾的答案裡,
+//   **key_eat_policy.cc 是對的那一份**;text_service.cc 那一份已照實測改寫。
+//   這一支**留著**:它是那個結論唯一的出處,而且事實會隨 OS 版本改變。
+//
 // ── 判準與 PressPreservedKey 一樣:數 trace 檔多了幾行 ────────────
 //
 // 沒有任何回傳值看得出來 OnTestKeyDown 有沒有被呼叫:TSF 收下按鍵、

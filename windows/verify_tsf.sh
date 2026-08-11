@@ -227,6 +227,14 @@ log "3. 建 ITfThreadMgr、給文件焦點、啟用我們的設定檔、送按�
 #     common/key_eat_policy.cc:「不太會…但交過來時」
 #   擋著那條路的不是技術,是這一句沒有人量過的話。
 #
+# ⚠ **2026-08-12:量到了 —— sink 收得到,`key_eat_policy.cc` 那一份是對的。**
+#   出處就是這一步(CI run 31511075812,sha ca97498)。樹上六處敘述已照實測
+#   改寫,跨端影響見 docs/coordination.md 的 [2026-08-12] [winbar] 那一則。
+#   **但這一段仍然保留兩條分支,刻意不改成斷言** —— 它量的是這台 runner 上的
+#   這一版 Windows,不是一條永恆的事實;換 OS、換 runner 之後它還要再答一次。
+#   而一旦改成斷言,答案翻過去的那一天我們看到的會是「這一步紅了」,
+#   而不是「事實變了」。
+#
 #   它不會讓這個 job 紅 —— 它只把 SHIFT_TRACE_LINES 印出來,由那個數字
 #   決定下一輪走哪一條(見下面的判讀)。
 HOST_ARGS=(--langid "${LANGID}" --require-activate
@@ -278,7 +286,7 @@ if [ -n "${shift_lines}" ]; then
   if [ "${shift_lines}" -gt 0 ] 2>/dev/null; then
     echo "  → key event sink **收得到**純修飾鍵。text_service.cc 的"
     echo "    OnTestKeyUp 那句註解(「TSF 本來就不會…」)與這個結果矛盾,"
-    echo "    要照這裡量到的改寫。P1-乙 可以走 ShiftTapDetector 那條路。"
+    echo "    已於 2026-08-12 照它改寫(六處)。P1-乙 可以走 ShiftTapDetector。"
   else
     echo "  → key event sink **收不到**純修飾鍵。P1-乙 走降級版,"
     echo "    或乾脆不做 Shift、靠文案把 Ctrl + 空白鍵教出來。"
