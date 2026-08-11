@@ -1866,10 +1866,16 @@ ServiceState SettingsWindow::SidebarServiceState() const {
 void SettingsWindow::OnServiceStateTick() {
   // ── 引擎心跳 ──────────────────────────────────────────────
   //
-  // ⚠ 這一段**不碰引擎的工作佇列** —— StalledMs() / CurrentJobLabel()
-  //   讀的是一個小鎖底下的兩個純資料。掛在這個 500 毫秒的計時器上是
-  //   刻意的:它本來就只讀 atomic,是這個視窗唯一保證不會被引擎拖住的
-  //   週期性路徑。
+  // ⚠ 這一段**不碰引擎的工作佇列** —— EngineBusyMs() / CurrentJobLabel()
+  //   讀的是兩個小鎖底下的純資料,而那兩個鎖都只被握 O(1) 的時間
+  //   (見 common/work_queue.h 的 OldestWaitingMs)。掛在這個 500 毫秒的
+  //   計時器上是刻意的:它是這個視窗唯一保證不會被引擎拖住的週期性路徑。
+  //
+  // ⚠ **量的是佇列,不是正在跑的那一件。** 舊版問的是 StalledMs(),
+  //   而那只回報「現在跑的那一件跑了多久」。引擎只有一條執行緒,所以
+  //   使用者按下去之後沒有動靜的原因幾乎一定是**別人擋在前面**:
+  //   20 件各 500 毫秒排在他前面 = 他等 10 秒,而 StalledMs() 從不超過
+  //   500 —— 底下那個 2000 毫秒的門檻一次都不會亮。
   //
   // 為什麼要有這一格:改成非同步之後,引擎真的卡住時使用者看到的是
   // 「按了沒反應,但視窗還會動」。那比死掉的視窗好,但它仍然沒有回答
@@ -1880,13 +1886,19 @@ void SettingsWindow::OnServiceStateTick() {
   //   使用者看得到的地方。名字寫 stderr,那裡才是查問題的人在看的。
   {
     const bool stalled =
-        engine_ != nullptr && engine_->StalledMs() > kEngineStallWarnMs;
+        engine_ != nullptr && engine_->EngineBusyMs() > kEngineStallWarnMs;
     if (stalled != engine_stalled_) {
       engine_stalled_ = stalled;
       if (stalled) {
-        std::fprintf(stderr, "[settings] 引擎沒有回應,卡在:%s(%lld ms)\n",
+        // ⚠ 日誌兩個數字都印:「跑很久」與「等很久」要修的地方完全不同
+        //   (見 common/work_queue.cc 的 SlowReporter)。畫面上只說一句話,
+        //   查問題的人在看 stderr。
+        std::fprintf(stderr,
+                     "[settings] 引擎沒有回應,卡在:%s"
+                     "(正在跑 %lld ms,佇列最舊的等了 %lld ms)\n",
                      engine_->CurrentJobLabel().c_str(),
-                     static_cast<long long>(engine_->StalledMs()));
+                     static_cast<long long>(engine_->StalledMs()),
+                     static_cast<long long>(engine_->OldestWaitingMs()));
         std::fflush(stderr);
         SetStatus(UiString::kStatusEngineBusy);
       } else {

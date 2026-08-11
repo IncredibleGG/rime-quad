@@ -178,6 +178,26 @@ class Engine {
   int64_t StalledMs() const { return queue_.StalledMs(); }
   std::string CurrentJobLabel() const { return queue_.CurrentLabel(); }
 
+  // ── ⚠ 介面要判斷「引擎沒有回應」時,要問的是這一支 ────────────
+  //
+  // 上面那一句「引擎只有一條執行緒,所以『我的請求為什麼慢』的答案
+  // 幾乎一定是『**別人**擋在前面』」不是修辭,它有一個直接的後果:
+  //
+  //   20 件各 500 毫秒排在使用者前面 = 他等 10 秒,
+  //   而 StalledMs() 從頭到尾沒有超過 500。
+  //
+  // 心跳如果只看 StalledMs(),那 10 秒裡一次都不會亮 —— 而那正是
+  // 使用者最需要有人跟他說話的 10 秒。要看的是「最舊那件躺了多久」。
+  int64_t OldestWaitingMs() const { return queue_.OldestWaitingMs(); }
+
+  // 介面該不該說「引擎正在忙」,看這一個數字就夠:
+  // 兩種卡法(自己這件很慢 / 別人擋在前面)使用者感受到的是同一件事。
+  int64_t EngineBusyMs() const {
+    const int64_t a = queue_.StalledMs();
+    const int64_t b = queue_.OldestWaitingMs();
+    return a > b ? a : b;
+  }
+
   // 對**目前存在的每一個 session** 套用。設定介面改了字形之後,
   // 使用者不該還要換一個程式才看得到效果。
   void SetOptionAll(const char* option, bool value);

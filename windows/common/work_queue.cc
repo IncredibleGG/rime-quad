@@ -200,6 +200,15 @@ int64_t WorkQueue::StalledMs() const {
   return d > 0 ? d : 0;
 }
 
+int64_t WorkQueue::OldestWaitingMs() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  // queue_ 是 push_back / pop_front,所以 front() 就是最舊的那一件。
+  // ⚠ low_queue_ 刻意不看 —— 見標頭。
+  if (queue_.empty()) return 0;
+  const int64_t d = WorkQueueNowMs() - queue_.front().enqueued_ms;
+  return d > 0 ? d : 0;
+}
+
 std::string WorkQueue::CurrentLabel() const {
   std::lock_guard<std::mutex> lock(state_mu_);
   return running_label_ ? std::string(running_label_) : std::string();

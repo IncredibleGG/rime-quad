@@ -307,3 +307,82 @@ TEST(work_queue_drains_everything_before_it_stops) {
   // 收尾只跑一次,而且是在**排乾之後**。
   CHECK_INT(exited.load(), 1);
 }
+
+// ── 9. 「引擎沒有回應」要量佇列,不是量正在跑的那一件 ────────────
+//
+// StalledMs() 只回報**正在跑的那一件**已經跑了多久。而 work_queue.h /
+// engine.h 自己寫著:引擎只有一條執行緒,所以「我按下去的東西為什麼
+// 沒有動靜」的答案幾乎一定是「**別人**擋在前面」。
+//
+// 20 件各 500 毫秒排在使用者前面 = 他等 10 秒,而 StalledMs() 從頭到尾
+// 沒有超過 500 —— 設定視窗那個 2000 毫秒的心跳門檻**一次都不會亮**,
+// 使用者面對的是一個什麼都不說的視窗。
+//
+// 要量的是**最舊那件在佇列裡躺了多久**。
+TEST(work_queue_oldest_waiting_measures_the_queue_not_the_running_job) {
+  WorkQueue q;
+  q.Start();
+  // 閒著的時候不可以謊報有人在等。
+  CHECK_INT(static_cast<int>(q.OldestWaitingMs()), 0);
+
+  Gate gate1, gate2;
+  std::atomic<bool> in1{false}, in2{false};
+  q.Post("測試:擋在最前面的那一件", [&gate1, &in1] {
+    in1.store(true);
+    gate1.Wait();
+  });
+  for (int i = 0; i < 2000 && !in1.load(); ++i)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  CHECK(in1.load());
+
+  // 第二件與第三件現在都在佇列裡躺著,沒有人碰得到它們。
+  q.Post("測試:第二件", [&gate2, &in2] {
+    in2.store(true);
+    gate2.Wait();
+  });
+  q.Post("測試:第三件", [] {});
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  CHECK(q.OldestWaitingMs() >= 250);
+
+  // ── 這一段才是把 StalledMs() 的語意排除掉的那一格 ────────────────
+  //
+  //   放行第一件:第二件立刻開始跑,於是「正在跑的那一件」的計時
+  //   **歸零**。舊的心跳在這一刻會說「引擎沒事」。
+  //   而第三件已經躺了 300 毫秒以上,而且還要繼續等第二件跑完 ——
+  //   使用者按下的那個東西到現在一點動靜都沒有。
+  gate1.Open();
+  for (int i = 0; i < 2000 && !in2.load(); ++i)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  CHECK(in2.load());
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+
+  CHECK(q.StalledMs() < 250);        // 正在跑的那一件剛開始跑
+  CHECK(q.OldestWaitingMs() >= 300);  // 而佇列尾巴已經等了這麼久
+
+  gate2.Open();
+  q.Stop();
+  // 排乾之後沒有人在等。
+  CHECK_INT(static_cast<int>(q.OldestWaitingMs()), 0);
+}
+
+// ── 10. 低優先的工作不算「在等」 ────────────────────────────────
+//
+// 低優先的工作是**刻意**被押後的(SetLowPriorityIdleMs),沒有人在等它。
+// 把它算進「最舊那件等了多久」的話,心跳會在每一次收尾工作排隊時
+// 謊報引擎卡住 —— 而一句常駐的假警告等於沒有警告。
+// 這與 SlowReporter 對低優先工作不報「等待」是同一條理由。
+TEST(work_queue_oldest_waiting_ignores_low_priority) {
+  WorkQueue q;
+  q.SetLowPriorityIdleMs(1000000);  // 正常情況下低優先的永遠等不到
+  q.Start();
+  Gate gate;
+  std::atomic<bool> entered{false};
+  BlockWorker(&q, &gate, &entered);
+
+  q.PostLow("測試:沒有人在等的收尾", [] {});
+  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  CHECK_INT(static_cast<int>(q.OldestWaitingMs()), 0);
+
+  gate.Open();
+  q.Stop();
+}
