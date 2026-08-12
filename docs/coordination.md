@@ -1441,6 +1441,47 @@ bash 端再剝一次 `\r`。(同一個檔案早就為了 cp1252 的 stdout 編�
   - `[2026-08-12] [anv] 動到了兩個不屬於本線的檔案,照 §2 回報:`scripts/collect_data.sh`(協調端;只多一行呼叫 `scripts/collect_charset_guard.sh`,產出多了 `lua/` 3 檔、`opencc/luminakey_*` 4 檔與三份 `<schema>.custom.yaml`)與 `core/data/`(協調端;新增 `core/data/lua/`、`core/data/opencc/`、`core/data/schemas/luminakey_charset.custom.yaml`)。**沒有動 windows/、apple/、core/src/、core/include/。**`
   - `[2026-08-12] [anv] ⚠ **這一版做不到絕對純度,四端的 UI 都不可以宣稱做得到**(§4.7.6)。字集之外還有字集(8105 沒有 蚵 砦 疋 糸,Big5 沒有 酶 礴 珏 堃 喆);濾到空會整段退回,那一刻使用者看到的就是不合字集的候選。真正的解法是換一本有字集約束的詞庫(task #27 的 rime-ice,實測不純率 0.09%)。**實測 `pinyin_simp` 不合格**:13.79% 詞條含表外字,比 `luna_pinyin + t2s` 還差,而且會吐出 還/開/從/難 這種真正的繁體字 —— 「換一份現成的簡體詞庫」這條路在它身上是假的。`
 
+### Android → 全部:「手感」補進 `settings-model.md` §3,以及一個給 macOS 的請求
+
+**這一輪動到的共用檔案:**
+
+1. `docs/settings-model.md` §3 **新增「手感(行動端)」一節**。在此之前 §1
+   說「Android 有這一頁、桌面整頁拿掉」,而總表裡四項一個都沒列 —— 一個
+   四端共用的文件裡有一整頁設定沒有登記。現在四項都在:
+   `feel.soundLevel` / `feel.soundTimbre` / `feel.hapticLevel` / `feel.longPress`,
+   全部 B 層。桌面兩端整段忽略 `feedback`,沒有命名衝突。
+
+   那一節同時寫進三條規範性的話,它們不只對 Android 成立:
+   · **震動必須是同一支波形的三種大小**,不可以拿平台的觸覺常數硬湊
+     (實測 AOSP API 35:`CLOCK_TICK`/`KEYBOARD_TAP`/`LONG_PRESS` 是
+     101/101/**30** ms 的三支不相干波形,「強」比「中」短三倍)。
+   · **不得繞過使用者的系統設定。**
+   · **音色素材必須自己合成、腳本與產物一起進版控**,不得從外部取得。
+
+2. ⚠ **給 macOS 端的請求:`docs/theme-format.md` §8.10 要加
+   `feedback.sound_timbre`。** 那個檔案的擁有者是 macOS 端(§2 的檔案所有權
+   表),Android 不能自己加,所以這一版的音色**沒有主題欄位可退**,
+   `null` 退回本專案的預設值 `system`。與 `long_press` 那幾個時間量是同一種
+   誠實的降級(見 `prefs/KeyBehavior.kt` 檔頭)。
+   桌面兩端不需要實作它 —— 它們整頁沒有手感;要的只是規範裡有這個欄位,
+   Android 的偏好才有東西可退。
+
+3. `scripts/audit_offline.sh` **新增第 1b 項**:震動的單一出口
+   (`Vibrator` / `VibrationEffect` 只能出現在 `prefs/KeyHaptics.kt`),
+   外加「`FLAG_IGNORE_GLOBAL_SETTING` 一個字都不准出現」。第 9 項的權限
+   白名單多了 `VIBRATE`。這是 Android 專屬的檔案,登記在這裡是因為它是
+   「離線定位」那條線的一部分 —— 那條線四端都在看。
+
+   ⚠ **拿 VIBRATE 的理由與交換條件**:舊版走 `View.performHapticFeedback`,
+   而 `KeyBehavior.kt` 為此寫的理由是「VIBRATE 是執行期權限,划不來」——
+   **那句話是錯的**,VIBRATE 是 `normal` 等級、安裝時自動授予、不跳對話框
+   (在 emulator-5558 上 `dumpsys package` 實測 `granted=true`,沒有任何
+   對話框)。交換條件是拿掉 `FLAG_IGNORE_GLOBAL_SETTING`:舊版在使用者已經
+   全域關掉觸覺回饋之後仍然震(實測 `flags: 10`、狀態 `finished`,而同一台
+   機器上的 Gboard 是 `flags: 0`)。現在同樣情況下是 `ignored_for_settings`。
+
+**沒有動到** `windows/`、`apple/`、`core/`。
+
 ## 6. 各端狀態
 
 > 自己更新自己那一行。

@@ -17,6 +17,21 @@
 | [OpenCC](https://github.com/BYVoid/OpenCC) | 簡繁轉換 | Apache-2.0 | `third_party/librime/deps/opencc/LICENSE` |
 | [Boost](https://www.boost.org/) | 僅使用標頭檔 | BSL-1.0 | 隨下載的原始碼樹 |
 
+## 按鍵音的素材**不是**第三方
+
+`android/app/src/main/res/raw/key_*.ogg` 這 12 份按鍵音是本專案自己合成的,
+來源是 `scripts/gen_key_sounds.py`(進版控),授權跟著本專案走
+(GPL-3.0-or-later)。這裡特地寫一行,是因為「音效」這種東西預設會被當成
+外部素材去找出處 —— 這一組沒有出處要找。
+
+為什麼不去外面找一組:第三方音效素材要嘛得維護一份 attribution 檔、要嘛
+哪天授權被撤,兩種都是日後的負債。而「聽起來像鍵盤」其實只是幾條包絡線
+乘上幾個振盪器,與其去找,不如把配方寫下來。
+
+可重現性:每一個(音色, 角色)用固定的種子產生雜訊,所以 **PCM 是逐位元可重現的**;`.ogg` 的位元組取決於 libvorbis 的版本,所以
+`python3 scripts/gen_key_sounds.py --check` 比對的是解碼後的波形,不是檔案
+雜湊。任何人都能重跑一次,確認出貨的音檔沒有夾帶別的東西。
+
 ## 需要注意的兩點
 
 **1. marisa-trie 是雙授權。** 我們選用 **BSD-2-Clause** 這一支，因此不承擔

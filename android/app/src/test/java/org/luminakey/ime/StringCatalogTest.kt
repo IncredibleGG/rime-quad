@@ -96,6 +96,7 @@ class StringCatalogTest {
         val base = load(default)
         // PrefLevels 是純函式（數字），標籤在 strings.xml（字）。兩邊都由這裡對齊。
         assertEquals(PrefLevels.SOUND_LABELS.size, base.arrays["levels_sound"])
+        assertEquals(PrefLevels.TIMBRE_LABELS.size, base.arrays["levels_timbre"])
         assertEquals(PrefLevels.HAPTIC_LABELS.size, base.arrays["levels_haptic"])
         assertEquals(PrefLevels.LONG_PRESS_LABELS.size, base.arrays["levels_long_press"])
         assertEquals(PrefLevels.CANDIDATE_COUNT_LABELS.size, base.arrays["levels_candidate_count"])

@@ -1,5 +1,6 @@
 package org.luminakey.ime.prefs
 
+import org.luminakey.ime.core.SoundTimbre
 import org.luminakey.ime.theme.HapticStrength
 
 /**
@@ -41,6 +42,20 @@ data class UserPrefs(
 
     /** 對應主題 `feedback.sound_volume`。 */
     val soundVolume: Float? = null,
+
+    /**
+     * 按鍵音的**音色**。`null` = 未設定 = [org.luminakey.ime.core.SoundTimbre.SYSTEM]
+     * (照這支手機 OEM 的調校走)。
+     *
+     * ⚠ 這一項**沒有主題欄位可退**。`docs/theme-format.md` §8.10 只有
+     *   `feedback.sound` 與 `feedback.sound_volume`,沒有音色 —— 而那份文件的
+     *   擁有者是 macOS 端(`docs/coordination.md` §2 的檔案所有權表),
+     *   Android 不能自己加,只能提出。已寫進 §5。
+     *
+     *   在它被加進規範之前,這裡的 null 退回的是本專案的預設值 SYSTEM,
+     *   不是主題值。與 [longPressMs] 那三項同一種誠實的降級。
+     */
+    val soundTimbre: SoundTimbre? = null,
 
     /** 對應主題 `feedback.haptic`。 */
     val hapticEnabled: Boolean? = null,
@@ -195,6 +210,7 @@ data class UserPrefs(
         keyboardHeightScale?.let { m[K_HEIGHT_SCALE] = it }
         soundEnabled?.let { m[K_SOUND] = it }
         soundVolume?.let { m[K_SOUND_VOLUME] = it }
+        soundTimbre?.let { m[K_SOUND_TIMBRE] = it.name }
         hapticEnabled?.let { m[K_HAPTIC] = it }
         hapticStrength?.let { m[K_HAPTIC_STRENGTH] = it.name }
         longPressMs?.let { m[K_LONG_PRESS_MS] = it }
@@ -221,6 +237,7 @@ data class UserPrefs(
         const val K_HEIGHT_SCALE = "keyboard_height_scale"
         const val K_SOUND = "sound_enabled"
         const val K_SOUND_VOLUME = "sound_volume"
+        const val K_SOUND_TIMBRE = "sound_timbre"
         const val K_HAPTIC = "haptic_enabled"
         const val K_HAPTIC_STRENGTH = "haptic_strength"
         const val K_LONG_PRESS_MS = "long_press_ms"
@@ -252,6 +269,7 @@ data class UserPrefs(
             keyboardHeightScale = m.float(K_HEIGHT_SCALE),
             soundEnabled = m.bool(K_SOUND),
             soundVolume = m.float(K_SOUND_VOLUME),
+            soundTimbre = m.enum(K_SOUND_TIMBRE, SoundTimbre.entries),
             hapticEnabled = m.bool(K_HAPTIC),
             hapticStrength = m.enum(K_HAPTIC_STRENGTH, HapticStrength.entries),
             longPressMs = m.int(K_LONG_PRESS_MS),

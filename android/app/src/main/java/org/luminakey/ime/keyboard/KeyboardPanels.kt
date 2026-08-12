@@ -40,7 +40,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import org.luminakey.ime.prefs.AppearanceMode
+import org.luminakey.ime.prefs.FeedbackPreview
+import org.luminakey.ime.prefs.UserPrefs
 import org.luminakey.ime.prefs.HEIGHT_SCALE_MAX
 import org.luminakey.ime.prefs.HEIGHT_SCALE_MIN
 import org.luminakey.ime.prefs.HintVisibility
@@ -626,17 +630,36 @@ internal fun FeelStripContent(
     onEvent: (KeyboardEvent) -> Unit,
 ) {
     val p = state.prefs
+    val view = LocalView.current
+    val context = LocalContext.current
+
+    // 改設定，並且當場試一次 —— 與 App 設定頁的 `editAndTry` 是同一件事，
+    // 而且兩邊都走 FeedbackPreview → KeyBehavior.onKeyPress，也就是**打字時
+    // 走的那一行程式**。
+    //
+    // ⚠ 餵的是 `block(p)`：偏好是非同步寫進 DataStore 的，用畫面上的 `p`
+    //   試播會慢一格。
+    fun editAndTry(block: (UserPrefs) -> UserPrefs) {
+        onEvent(KeyboardEvent.EditPrefs(block))
+        FeedbackPreview.play(context, view, baseTheme, block(p))
+    }
+
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        // ⚠ 音色**不進這個面板**，只有 App 設定頁有。兩個理由：面板實測只有
+        //   約 170 dp（見本檔 :438 一帶的註解），第四列擠不下；而音色是設一次
+        //   就不再動的選擇，打字當下要調的是音量與強弱。
+        //
+        //   兩個入口的值不會漂移 —— 它們讀寫的是同一組 PrefLevels 函式。
         PanelSegmentedLabelled(
             stringResource(R.string.feel_sound), PrefLabels.sound,
             PrefLevels.indexOfSound(p, baseTheme.feedback.sound, baseTheme.feedback.soundVolume),
             style, scaler,
-        ) { i -> onEvent(KeyboardEvent.EditPrefs { pref -> PrefLevels.withSound(pref, i) }) }
+        ) { i -> editAndTry { pref -> PrefLevels.withSound(pref, i) } }
         PanelSegmentedLabelled(
             stringResource(R.string.feel_vibration), PrefLabels.haptic,
             PrefLevels.indexOfHaptic(p, baseTheme.feedback.haptic, baseTheme.feedback.hapticStrength),
             style, scaler,
-        ) { i -> onEvent(KeyboardEvent.EditPrefs { pref -> PrefLevels.withHaptic(pref, i) }) }
+        ) { i -> editAndTry { pref -> PrefLevels.withHaptic(pref, i) } }
         PanelSegmentedLabelled(
             stringResource(R.string.panel_long_press), PrefLabels.longPress,
             PrefLevels.indexOfLongPress(p), style, scaler,
