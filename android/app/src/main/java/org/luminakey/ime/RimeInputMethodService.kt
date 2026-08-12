@@ -25,6 +25,7 @@ import org.luminakey.ime.core.AndroidKeyMap
 import org.luminakey.ime.core.DeployEstimate
 import org.luminakey.ime.core.RimeCore
 import org.luminakey.ime.core.RimeRuntime
+import org.luminakey.ime.core.VariantPlan
 import org.luminakey.ime.keyboard.T9Syllables
 import org.luminakey.ime.keyboard.ConfigRepository
 import org.luminakey.ime.keyboard.KeyboardEvent
@@ -75,16 +76,8 @@ class RimeInputMethodService : InputMethodService() {
         const val TAG = "RimeIME"
 
         /** librime 的開關名。設定畫面與候選列工具列指的是同兩個開關。 */
-        const val OPT_SIMPLIFICATION = "simplification"
+        const val OPT_SIMPLIFICATION = VariantPlan.OPT_SIMPLIFICATION
         const val OPT_ASCII_PUNCT = "ascii_punct"
-
-        /**
-         * 字形互斥選項組。隨附的 luna_pinyin / luna_pinyin_tw 用這一組表達簡繁,
-         * 而不是 `simplification`。見 [applyVariant] 的說明。
-         */
-        const val OPT_ZH_HANS = "zh_hans"
-        const val OPT_ZH_HANT = "zh_hant"
-        val VARIANT_OPTIONS = listOf("zh_hans", "zh_hant", "zh_hant_hk", "zh_hant_tw")
 
         /** X11 的 space keysym。空白鍵行為偏好靠它認出空白鍵。 */
         const val KEYSYM_SPACE = 0x0020
@@ -580,11 +573,11 @@ class RimeInputMethodService : InputMethodService() {
         }
     }
 
-    /** 使用者切成簡體之前,原本開著的那個字形選項。用來把「切回繁體」還原到正確的一支。 */
+    /** 使用者的繁體選擇(臺灣/香港/傳統)。用來把「切回繁體」還原到正確的一支。 */
     private var savedVariantOption: String? = null
 
     /**
-     * 簡繁切換。
+     * 簡繁切換。判斷全部在 [VariantPlan.plan] 裡,這裡只負責讀狀態、送出去。
      *
      * ⚠ 這裡不能只設 `simplification`。**隨附的 luna_pinyin 系列根本沒有那個開關** ——
      * 它們用的是一組互斥選項:
@@ -598,22 +591,25 @@ class RimeInputMethodService : InputMethodService() {
      * 設定看起來完全沒作用。`simplification` 是 simplifier 元件的**預設**
      * option_name,別的方案(例如五筆·簡入繁出)才會用到,所以兩種都要送。
      *
-     * 切回繁體時**還原原本那一支**而不是硬設 `zh_hant`:使用者原本在
-     * 「臺灣字形」,切一趟簡體再切回來卻變成「傳統漢字」,字形會整批改變,
-     * 那不是他要求的。
+     * ⚠ 而且**要把同組其他每一支關掉** —— `rs_set_option` 不維持 radio 的互斥。
+     *   舊版只把要的那一支設成 true,於是切一趟簡體之後 `zh_hant_tw` 與
+     *   `zh_hans` 同時為真,opencc 把 t2s 的結果再串一次 t2tw,候選列就簡繁
+     *   混雜;而且「切回繁體」算出來的「原本那一支」是 `zh_hans` 自己,
+     *   等於什麼都沒做 —— **切過一次簡體就再也回不到繁體**。
+     *   (使用者實機回報,見 [VariantPlan] 的實測紀錄。)
+     *
+     * 判斷抽成純函式是因為這裡驗不到:要有 session、有引擎、有詞庫,
+     * 也就是只有真機跑得動,而真機不在 CI 上。
      */
     private fun applyVariant(wantSimplified: Boolean) {
-        if (RimeCore.getOption(session, OPT_SIMPLIFICATION) != wantSimplified) {
-            RimeCore.setOption(session, OPT_SIMPLIFICATION, wantSimplified)
-        }
-        val current = VARIANT_OPTIONS.firstOrNull { RimeCore.getOption(session, it) }
-        if (wantSimplified) {
-            if (current != OPT_ZH_HANS) {
-                if (current != null) savedVariantOption = current
-                RimeCore.setOption(session, OPT_ZH_HANS, true)
-            }
-        } else if (current == OPT_ZH_HANS) {
-            RimeCore.setOption(session, savedVariantOption ?: OPT_ZH_HANT, true)
+        val current = VariantPlan.VARIANT_OPTIONS
+            .filter { RimeCore.getOption(session, it) }
+            .toSet()
+        val plan = VariantPlan.plan(current, savedVariantOption, wantSimplified)
+        savedVariantOption = plan.remembered
+        // 順序是契約的一部分(先關再開),逐項照送,不要重排也不要跳過。
+        for (assign in plan.assigns) {
+            RimeCore.setOption(session, assign.option, assign.value)
         }
     }
 
@@ -1110,7 +1106,15 @@ class RimeInputMethodService : InputMethodService() {
 
             ActionVerb.TOGGLE_OPTION -> action.arg?.let { opt ->
                 val next = !RimeCore.getOption(session, opt)
-                RimeCore.setOption(session, opt, next)
+                // ⚠ 簡繁要走 applyVariant,不能只設 `simplification` —— 隨附的
+                //   luna_pinyin 家族沒有那個開關,真正決定字形的是那組互斥選項,
+                //   而且同組其他幾支得先關掉。這一條原本只有設定畫面那個入口有,
+                //   工具列上的「繁/簡」是**同一個缺陷的第二個入口**。
+                if (opt == OPT_SIMPLIFICATION) {
+                    applyVariant(next)
+                } else {
+                    RimeCore.setOption(session, opt, next)
+                }
                 // 工具列的簡繁／標點鍵與設定畫面是同一件事的兩個入口。
                 // 不回寫的話,使用者在鍵盤上切成簡體、回設定畫面卻看到「繁體」,
                 // 而且下一次 session 重建又會被偏好切回去。
