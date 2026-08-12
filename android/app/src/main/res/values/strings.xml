@@ -171,8 +171,11 @@
     <!-- ────────────────────────── 手感那一頁 ────────────────────────── -->
 
     <string name="page_feel">Feel</string>
-    <string name="feel_intro">These three can only be judged by actually pressing, so there is a box below to press into.</string>
+    <string name="feel_intro">These four can only be judged by actually pressing, so there is a box below to press into.</string>
     <string name="feel_sound">Key sound</string>
+    <string name="feel_timbre">Which sound</string>
+    <string name="feel_haptic_note">Vibration needs the Vibrate permission. It is granted when you install and it is not a way out: nothing can leave the phone through a motor. If you have turned vibration or haptic feedback off in system settings, the keyboard stays quiet too.</string>
+    <string name="feel_haptic_flat">The motor in this phone cannot do soft and strong — the four steps will feel much the same here. Vibration still needs the Vibrate permission, granted when you install; nothing can leave the phone through a motor, and the system settings still win.</string>
     <string name="feel_vibration">Vibration</string>
     <string name="feel_long_press">How long counts as a long press</string>
     <string name="feel_try">Give it a press</string>
@@ -183,6 +186,10 @@
     <string name="page_text">Text</string>
     <string name="text_characters">Characters</string>
     <string name="text_punctuation">Punctuation</string>
+    <string name="text_charset">Character set</string>
+    <string name="text_charset_strict">Only the kind I picked</string>
+    <string name="text_charset_all">No limit</string>
+    <string name="text_charset_note">Drops candidates that are not the kind you picked. It cannot be perfect: the built-in dictionary covers the whole Chinese character range, so rare characters still show up further down the list, and a few rare characters that do belong get dropped with them. If a syllable would be left with nothing, its original candidates are shown instead.</string>
     <string name="text_space_key">Space key</string>
     <string name="text_follow_keyboard">Follow the keyboard</string>
     <string name="text_traditional">Traditional</string>
@@ -200,6 +207,12 @@
         <item>Quiet</item>
         <item>Medium</item>
         <item>Loud</item>
+    </string-array>
+    <string-array name="levels_timbre">
+        <item>System</item>
+        <item>Soft</item>
+        <item>Click</item>
+        <item>Droplet</item>
     </string-array>
     <string-array name="levels_haptic">
         <item>Off</item>
