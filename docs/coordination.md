@@ -1667,3 +1667,13 @@ Windows 端的實作：判準是純函式（`windows/common/bar_visibility.{h,cc
 九支測試），service 只負責接線。§12.10.2 那一節也整節重寫了 —— 它原本的
 論證是「這一橫是中英切換唯一的家」，而那個前提在 fix4-winkey 註冊
 `PreserveKey{VK_SPACE, TF_MOD_CONTROL}` 之後就已經過期。
+
+---
+
+## 批 1（分支 `b1`，2026-08-13）：Android 端十一條「螢幕上不再出現不是你打的東西」
+
+跨端影響三處，其餘全在 `android/`。
+
+- `[2026-08-13] [b1/Android] **改了 `scripts/collect_data.sh`（原屬協調端）：`core/data/user/` 現在會多產出一個 `default.custom.mobile.yaml`。** 內容 = 共用那一份 ＋ 行動端專屬的 `key_binder/bindings`（不套上游的 `paging_with_comma_period`：實體鍵盤上「組字中按逗號句號翻頁」是好慣例，觸控鍵盤上是缺陷 —— 使用者特地伸手點「。」卻換了一頁候選，而畫面上看不出發生了什麼事。實測 `rime_console` 打 `nihao.` → 候選跳到 page 1，沒有句號）。**桌面端拿到的 `default.custom.yaml` 一個字都沒變**，Android 的 `syncRimeData` 把 mobile 那一份改名蓋上去。兩份共用同一段本文，schema_list 只寫一次。⚠ 舊的 `core/data`（還沒跑過新版 collect_data.sh，例如別條線 symlink 過來的那一份）沒有 `.mobile.yaml` 時，APK 裡留下的是共用那一份 —— **少一項微調，不是整個方案清單消失**。後者正是 §1 記著的那場事故。`
+- `[2026-08-13] [b1/Android] **`core/data/shared/luna_pinyin.custom.yaml` 現在多了一段模糊音（`speller/algebra`），macOS 端會一起吃到。** 規則早就在上游隨附的 `pinyin.yaml:32-72`，但沒有任何方案 patch 它 —— 實測改前 `zongguo` 打不出「中國」。取微軟拼音的六組（zh/z ch/c sh/s、n/l、l/r、f/h wang/huang、eng/ong、en/eng in/ing）。來源檔是新增的 `core/data/schemas/luminakey_fuzzy_pinyin.yaml`，由 `collect_charset_guard.sh` 接在 luna_pinyin 那一份的尾巴（**只接 luna_pinyin**：bopomofo 沒有拼音 algebra，t9_pinyin 自己那套 xlit 折疊已經把這些併掉了）。⚠ `speller/algebra` 是**整組取代**不是追加，所以上游原本的 abbreviation / spelling_correction / key_correction 三組必須重列 —— 不重列的話簡拼會一起消失，而畫面上完全看不出來。⚠ **代價是重碼變多**（`nihao` 的第 3–5 個從 逆號/擬好/你 變成 利好/立好/理好）。這是產品判斷不是技術結論；桌面端覺得候選變吵的話請回報，最先該退掉的是 `n_l_bufen` 與 `r_l_bufen`。逐組開關留給批 3。⚠ **Windows 端不受影響** —— `make_installer.sh` 的白名單沒有收 `*.custom.yaml`（那本身可能是另一個缺口：字集守門在 Windows 上大概也沒生效，請 Windows 端自行確認）。`
+- `[2026-08-13] [b1/Android] **`scripts/release_check.sh` 的「含語言模型」那一關改成會紅的。** 舊寫法 `has "essay" "$LIST"` 問的是「APK 檔案清單裡有沒有出現字串 essay」，而 `essay.txt` 一定在裡面 —— 那一關**從第一天到現在沒有紅過一次**，而且綠得不對：`essay.txt` 是詞典編譯期的靜態詞頻表，不是語言模型。查證：`nm -C librime.a | grep -c octagram` 兩個 ABI 都是 **0**，`grammar.yaml` 與任何 `.gram` 都不存在，schema 裡 `grammar:/hant?` 結尾那個 `?` 是「找不到就靜默略過」。現在驗 `.gram` / `grammar.yaml`，**目前 N_GRAM=0，所以這一關是紅的（刻意的）**。要它變綠請把 librime-octagram 編進去並隨附 `.gram`，不要把判準改回檔名比對。另補一條正控驗 `essay.txt` 仍在（詞頻表本身是必要的，只是它不叫語言模型）。關卡數淨 +1，結尾的下界不必改。`
