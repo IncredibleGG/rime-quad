@@ -188,12 +188,29 @@ object KeyboardTypes {
         val generic = listable.filter { it.wildcard }.filter { brief ->
             allowed.isEmpty() || brief.letters.isEmpty() || allowed.containsAll(brief.letters)
         }
-        // primary 排在泛用的最前面 —— 它是使用者的基準全鍵盤，埋在幾份
-        // 長得差不多的 QWERTY 中間會讓「我只想要普通鍵盤」變成一件要找的事。
-        // 點名的佈局裡，自動命中的那一份排最前面：它就是使用者不做任何事時
-        // 會看到的鍵盤，選單的第一項應該與現況一致。
-        val usable = declared.sortedByDescending { it.autoForSchema.contains(schema.id) } +
-            generic.sortedByDescending { it.primary }
+        /* ── 排序：**第一項必須與「什麼都不做會拿到的鍵盤」一致** ──────────
+         *
+         * 這條規則本來就寫在這裡（「自動命中的那一份排最前面」），但實作是
+         * 「declared 整批排在 generic 前面」——「自動命中」與「有資格」只要
+         * 出現分歧就破功。那個分歧在 `cn-qwerty-numrow` 把 `luna_pinyin_tw`
+         * 加進 `for_schema`（拿到**資格**）之後立刻出現：
+         *
+         *   · 它的 `auto_for_schema` 沒有 luna_pinyin_tw → 切過去不會自動換
+         *     佈局，使用者實際看到的仍然是 `qwerty`；
+         *   · 但它是 declared，整批排在 generic 前面，**選單第一項變成
+         *     「全鍵盤・數字列」**。引導頁每個方案只留一張卡（見
+         *     `starterKeyboards`）而且那張卡是預選的，於是第一屏指著一個
+         *     他其實沒有在用的鍵盤。
+         *
+         * 所以第一項改成明確算一次「§9.1.1 會挑哪一份」：有自動命中就是它，
+         * 沒有就是 primary 全鍵盤。其餘照舊 —— 為這個方案而做的排在泛用的
+         * 前面（`cn-t9-pinyin-numrow` 要跟著 `cn-t9-pinyin` 站在一起，
+         * 不該被 qwerty 插進中間）。
+         */
+        val genericSorted = generic.sortedByDescending { it.primary }
+        val head = declared.firstOrNull { it.autoForSchema.contains(schema.id) }
+            ?: genericSorted.firstOrNull()
+        val usable = listOfNotNull(head) + (declared + genericSorted).filter { it !== head }
         if (usable.isEmpty()) {
             // 一份都配不上時仍要列出這個方案，否則使用者選不到它 ——
             // 那比「選了得到一個不夠好的鍵盤」嚴重得多。佈局交給 §9.1.1。

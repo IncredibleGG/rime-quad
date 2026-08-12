@@ -1,0 +1,61 @@
+# luminakey_fuzzy_pinyin.yaml —— 模糊音的預設組（本專案自撰）
+#
+# `scripts/collect_charset_guard.sh` 把底下那一段**接在**
+# `<shared>/luna_pinyin.custom.yaml` 的尾巴（同一個 `patch:` 對映底下）。
+#
+# ⚠ 只接在 `luna_pinyin` 上：
+#   · `bopomofo` 沒有拼音的 speller/algebra，接了是無效鍵；
+#   · `t9_pinyin` 自己那套 `xlit` 折疊已經把 zh/z、n/l 之類全部併成同一顆鍵，
+#     再疊一層模糊音只會讓重碼再翻一倍，而且一個新字都打不出來。
+#   `luna_pinyin_tw` 靠 `__include: luna_pinyin.schema:/` 繼承母方案，一併吃到。
+#
+# ── 為什麼要有它 ────────────────────────────────────────────────────────
+# 規則本身早就躺在 `<shared>/pinyin.yaml`（上游 rime-luna-pinyin 隨附，
+# 第 32–72 行），但那個檔案只是**定義**，沒有任何方案 patch 它 ——
+# 一整套模糊音在每一台裝置上，一組都沒有生效。
+#
+# 實測（emulator-5558，luna_pinyin_tw，`scripts/run_console_test.sh`）：
+#   改動前  zongguo → 宗國 / 縱谷 / 總 / 宗 / 縱      ← 打不出「中國」
+#
+# ── 選了哪幾組 ──────────────────────────────────────────────────────────
+# 對照微軟拼音的模糊音清單，取聲母與韻母各常見的那幾組：
+#
+#   zh/z ch/c sh/s   `zh_z_bufen`     捲舌與平舌不分（最普遍的一組）
+#   n/l              `n_l_bufen`      「你」「李」不分
+#   l/r              `r_l_bufen`      「熱」念成「樂」
+#   f/h wang/huang   `hu_f_buhun`     「湖」「福」、「王」「黃」
+#   eng/ong          `eng_ong_bufen`  「風」「豐」
+#   en/eng in/ing    `en_eng_bufen`   前後鼻音不分
+#
+# 沒有納入的：`ziantuan` / `zhongguan`（分尖團，那是**反**模糊音，
+# 需求方向相反）。
+#
+# ── 為什麼要把 abbreviation 那三組重列一次 ──────────────────────────────
+# `speller/algebra` 是**整組取代**，不是追加（這是 `pinyin.yaml` 檔頭那段
+# 官方用法範本自己的寫法）。上游 `luna_pinyin.schema.yaml` 的 algebra 就是
+# 那三組；不重列的話，簡拼（`zhrm` → 中華人民…）與常見錯拼會**一起消失** ——
+# 那是一個比模糊音沒生效嚴重得多的迴歸，而且畫面上完全看不出來。
+#
+# 順序照官方範本：先 derive（模糊音）再 abbrev（簡拼）。反過來的話
+# 簡拼取到的是模糊之前的首字母，兩者會對不上。
+#
+# ── 代價，說在前面 ──────────────────────────────────────────────────────
+# 模糊音**必然**增加重碼：同樣打 `ni`，現在也撈得到 `li` / `ri` 的字。
+# 這一版的取捨是「打得出來」優先於「候選少」—— 打不出「中國」是缺陷，
+# 候選多一個不是。**逐組開關留給批 3**（每一組都要能單獨關掉）。
+#
+# ⚠ 這是**產品判斷**，不是技術結論。實機覺得候選變吵的話，最先該退掉的是
+#   `n_l_bufen` 與 `r_l_bufen` —— 那兩組的方言分布最窄，製造的重碼最多。
+  # ── 模糊音（來源：core/data/schemas/luminakey_fuzzy_pinyin.yaml）──
+  "speller/algebra":
+    __patch:
+      - pinyin:/zh_z_bufen
+      - pinyin:/n_l_bufen
+      - pinyin:/r_l_bufen
+      - pinyin:/hu_f_buhun
+      - pinyin:/eng_ong_bufen
+      - pinyin:/en_eng_bufen
+      # ⚠ 底下三組是上游 luna_pinyin.schema.yaml 原本就有的，必須重列。
+      - pinyin:/abbreviation
+      - pinyin:/spelling_correction
+      - pinyin:/key_correction

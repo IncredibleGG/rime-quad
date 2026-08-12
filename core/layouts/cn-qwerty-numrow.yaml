@@ -64,11 +64,20 @@
 #      `Toolbar()` 是寫死的「方案名 + 佈局名」，完全不讀 items。
 #      所以「把切換鍵放進工具列」這條路目前走不通。已回報給主控。
 #
-#  折衷做法：`for_schema: ["luna_pinyin"]`（**只掛原版朙月拼音，不掛
-#  預設的 `luna_pinyin_tw`**）。效果是：
-#    · 預設使用者（luna_pinyin_tw）仍拿到 `qwerty`，**零行為變更**。
-#    · 想試華語風格全鍵盤的人，在方案選單選「朙月拼音」就會換過來；
-#      選回「朙月拼音·臺灣正體」就換回去 —— 進得去也出得來。
+#  折衷做法：`for_schema` 列出**資格**，`auto_for_schema` 保持空的。
+#
+#  ⚠ **這裡原本只寫 `["luna_pinyin"]`，而那等於這份佈局不存在。**
+#     `KeyboardTypes.matches()` 是逐字比對（不是前綴），而隨附的預設方案是
+#     `luna_pinyin_tw`（`core/data/user/default.custom.yaml` 的 schema_list
+#     第一項）。於是「常駐數字列」這份做好的鍵盤**對預設使用者不出現在
+#     鍵盤類型選單裡** —— 他要先切到「朙月拼音（原版）」才看得到，
+#     而那是一個他沒有理由做、也不會想到要做的動作。
+#     這正是這一輪在找的形狀：**功能做完了，只差一行讓人找得到它**。
+#
+#  加上 `luna_pinyin_tw` 之後：
+#    · 預設使用者在鍵盤類型選單裡就看得到「全鍵盤・數字列」。
+#    · **自動切換完全不受影響** —— `auto_for_schema` 仍然只有 `luna_pinyin`，
+#      所以切到 luna_pinyin_tw 不會自己換成這一份；使用者不點它就什麼都不會變。
 #
 #  這同時示範了主控指出的產品模型：**三星把「方案」與「佈局」攤平成
 #  一份「鍵盤類型」清單**（拼音全键盘 / 拼音九键 / 双拼 / 笔画 / 五笔），
@@ -103,7 +112,13 @@ license: "CC0-1.0"
 
 kind: alphabetic
 targets: [android, ios]
-for_schema: ["luna_pinyin"]
+for_schema: ["luna_pinyin", "luna_pinyin_tw"]
+# ⚠ `auto_for_schema` 沒寫時 = `for_schema`（見 LayoutParser §9.1.1），
+#   所以這一行**必須明寫**，否則預設使用者一開機鍵盤就自己變成數字列版 ——
+#   那是行為變更，不是「讓人找得到」。這裡只把 `luna_pinyin` 留在自動命中裡
+#   （與改動前一模一樣），`luna_pinyin_tw` 只拿到**資格**：
+#   選單裡看得到，不點就不會變。
+auto_for_schema: ["luna_pinyin"]
 direction: ltr
 default_layer: lower
 primary: false

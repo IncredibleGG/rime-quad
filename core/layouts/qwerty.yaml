@@ -132,6 +132,16 @@ layers:
                 - { label: "！", send: { keysym: "exclam" } }
                 - { label: "、", send: { text: "、" } }
                 - { label: "…", send: { text: "…" } }
+                # 分詞符。拼音有一整類詞在沒有它的時候打不出來:
+                # `xian` 是「先」,`xi'an` 才是「西安」;`fangan` 是「反感」,
+                # `fang'an` 才是「方案」。桌面端按鍵盤上的 ' 就有,行動端
+                # 在這之前**一顆鍵都送不出它** —— 那不是進階功能,
+                # 是「這幾個詞打不出來」。
+                #
+                # 放在逗號的長按盤而不是給它一顆常駐鍵:它的使用頻率遠低於
+                # 標點,而底列已經滿了。送 keysym 而不是 text:它要進 speller
+                # 當分隔符,走 text 會直接上屏一個撇號。
+                - { label: "'", send: { keysym: "apostrophe" } }
           - id: "enter"
             icon: enter
             style: action

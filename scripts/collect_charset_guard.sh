@@ -30,6 +30,9 @@ OUT_SHARED="${1:-$ROOT/core/data/shared}"
 LUA_SRC="$ROOT/core/data/lua"
 OCC_SRC="$ROOT/core/data/opencc"
 CHARSET_PATCH="$ROOT/core/data/schemas/luminakey_charset.custom.yaml"
+# 模糊音那一段。它是**接在** luna_pinyin.custom.yaml 尾巴的續集，
+# 不是獨立的方案 patch —— 理由見該檔檔頭。
+FUZZY_PATCH="$ROOT/core/data/schemas/luminakey_fuzzy_pinyin.yaml"
 
 die()  { echo "錯誤: $*" >&2; exit 1; }
 note() { echo "  $*"; }
@@ -48,6 +51,7 @@ SRC_FILES=(
   "$OCC_SRC/luminakey_t2tw.json"
   "$OCC_SRC/luminakey_t2tw_extra.txt"
   "$CHARSET_PATCH"
+  "$FUZZY_PATCH"
 )
 for f in "${SRC_FILES[@]}"; do
   [ -f "$f" ] || die "缺少 $f"
@@ -65,6 +69,16 @@ cp "$OCC_SRC"/luminakey_*.json "$OCC_SRC"/luminakey_*.txt "$OUT_SHARED/opencc/"
 for s in luna_pinyin bopomofo t9_pinyin; do
   cp "$CHARSET_PATCH" "$OUT_SHARED/$s.custom.yaml"
 done
+
+# ── 模糊音：**只**接在 luna_pinyin 上 ────────────────────────────────────
+# 理由（注音沒有拼音 algebra、九宮格已經折疊過）與選了哪幾組，
+# 全寫在被接上去的那個檔案的檔頭裡。
+#
+# 用 append 而不是另開一個檔案：librime 一個方案只讀得到一份
+# `<schema>.custom.yaml`，第二份不會被讀到 —— 那會是一個「檔案在、
+# 規則沒生效」而且完全不報錯的坑。
+cat "$FUZZY_PATCH" >> "$OUT_SHARED/luna_pinyin.custom.yaml"
+note "模糊音：6 組接在 luna_pinyin.custom.yaml（luna_pinyin_tw 靠 __include 繼承）"
 
 # ── 放完再驗一次。這裡驗的是**產物**，不是來源。 ──────────────────────────
 for s in luna_pinyin bopomofo t9_pinyin; do
@@ -84,4 +98,14 @@ for cfg in luminakey_t2s.json luminakey_t2tw.json; do
   done < <(grep -oE '"file"[[:space:]]*:[[:space:]]*"[^"]+"' "$OUT_SHARED/opencc/$cfg" \
            | sed 's/.*"\([^"]*\)"$/\1/')
 done
+# ⚠ 驗的是**產物**：接上去了沒。少了這一條，cat 失敗（例如來源被改名）
+#   之後 luna_pinyin.custom.yaml 仍然存在、字集守門仍然生效，
+#   而模糊音靜靜地沒有接上 —— 那正是這個專案反覆吃虧的形狀。
+grep -q '"speller/algebra"' "$OUT_SHARED/luna_pinyin.custom.yaml" \
+  || die "模糊音沒有接上 luna_pinyin.custom.yaml"
+for s in bopomofo t9_pinyin; do
+  ! grep -q '"speller/algebra"' "$OUT_SHARED/$s.custom.yaml" \
+    || die "模糊音接到了 $s —— 那一份不該有（見 luminakey_fuzzy_pinyin.yaml 檔頭）"
+done
+
 note "字集守門：lua/ 3 個檔、opencc 4 個檔、3 份方案 patch"

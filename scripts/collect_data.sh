@@ -95,7 +95,20 @@ echo "=== 7. 使用者初始配置 ==="
 # rime-prelude 的 default.yaml 列了 cangjie5 / quick5 / stroke / terra_pinyin 等
 # 我們沒有全部提供的方案。與其改動上游檔案（日後更新會衝突），
 # 用 RIME 慣用的 default.custom.yaml 做 patch，只列實際提供的方案。
-cat > "$OUT_USER/default.custom.yaml" <<'YAML'
+#
+# ── 兩份，共用同一段本文 ───────────────────────────────────────────────
+#   default.custom.yaml         四端都用（桌面裝的就是這一份）
+#   default.custom.mobile.yaml  行動端用：同一段 **加上**只有觸控鍵盤才成立的
+#                               那幾條（見下面的 MOBILE_ONLY）
+#
+# 為什麼要兩份而不是一份加旗標：`default.custom.yaml` 是 librime 的固定檔名，
+# 一個資料目錄只讀得到一份。而 core/data 是四端共用的，桌面拿到的必須是
+# 沒有行動端那幾條的版本。
+#
+# 為什麼不是兩個獨立檔案各寫一次：schema_list 抄成兩份必定腐爛（改了一邊
+# 忘了另一邊，症狀是「某一端的方案清單少一個」，而且只有裝上去才看得到）。
+# 這裡本文只寫一次，行動端那一份是「本文 + 追加」。
+COMMON_PATCH=$(cat <<'YAML'
 # 由 scripts/collect_data.sh 產生。
 #
 # 上游 rime-prelude 的 default.yaml 列出的方案多於本專案實際打包的，
@@ -109,7 +122,44 @@ patch:
     - schema: luna_pinyin       # 拼音（原版）
     - schema: t9_pinyin         # 九宮格拼音（本專案自撰，共用 luna_pinyin 詞典）
 YAML
+)
+
+# 只有行動端成立的那幾條。**縮排要與上面的 patch: 底下對齊。**
+MOBILE_ONLY=$(cat <<'YAML'
+
+  # ── 行動端不套 paging_with_comma_period ──────────────────────────────
+  #
+  # 上游 default.yaml 的 key_binder 綁了
+  #   { when: paging,   accept: comma,  send: Page_Up }
+  #   { when: has_menu, accept: period, send: Page_Down }
+  #
+  # 在**實體鍵盤**上那是個好慣例：手不用離開主排就能翻頁，而逗號句號
+  # 隨時可以先上屏再打。在**觸控鍵盤**上它是缺陷：底列那顆「。」是使用者
+  # 特地伸手去點的一顆標點鍵，點下去卻換了一頁候選 —— 他要的那個句號
+  # 一個都沒有出來，而且畫面上看不出發生了什麼事。
+  #
+  # 實測（emulator-5558，luna_pinyin_tw，rime_console 打 `nihao.`）：
+  #   組字後 preedit="nihao"，候選 5 個 (page 1)  ← 翻頁了，沒有句號
+  #
+  # 桌面端保留上游行為（它們裝的是 default.custom.yaml，沒有這一段）。
+  #
+  # ⚠ 這裡重寫整份 key_binder/bindings 的 __patch 清單，而不是「移除某幾條」：
+  #   librime 的 key_binder 沒有「取消綁定」的語法，同一顆鍵綁兩次是先到先贏，
+  #   所以唯一乾淨的作法是把清單重列一次、少列那一項。
+  #   代價是上游日後在 default.yaml 的 key_binder 加新項目時這裡要跟著加 ——
+  #   `scripts/verify_yaml_no_dup_keys.py` 之外沒有東西會提醒，記在這裡。
+  key_binder/bindings:
+    __patch:
+      - key_bindings:/emacs_editing
+      - key_bindings:/paging_with_minus_equal
+      - key_bindings:/numbered_mode_switch
+YAML
+)
+
+printf '%s\n' "$COMMON_PATCH" > "$OUT_USER/default.custom.yaml"
+printf '%s\n%s\n' "$COMMON_PATCH" "$MOBILE_ONLY" > "$OUT_USER/default.custom.mobile.yaml"
 note "default.custom.yaml（schema_list 限縮為實際打包的四個方案）"
+note "default.custom.mobile.yaml（同上 ＋ 行動端不翻頁的逗號句號）"
 
 # --------------------------------------------------------------- 完整性檢查 ---
 echo

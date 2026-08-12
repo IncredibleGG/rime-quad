@@ -46,7 +46,32 @@ val syncRimeData = tasks.register<Sync>("syncRimeData") {
     description = "把 core/data、core/layouts、core/themes 同步進 generated assets"
     into(rimeGeneratedAssets)
     from(rimeSharedData) { into("rime/shared") }
-    from(rimeUserData) { into("rime/user") }
+    // ── 使用者初始配置：行動端那一份要覆蓋掉四端共用的那一份 ─────────────
+    //
+    // `collect_data.sh` 產出兩個檔（見那支的第 7 節）：
+    //   default.custom.yaml         四端共用
+    //   default.custom.mobile.yaml  行動端 = 共用的那一份 ＋ 觸控鍵盤專屬的幾條
+    //
+    // librime 只認得 `default.custom.yaml` 這一個檔名，所以行動端那一份要
+    // **改名蓋上去**。兩個 from 加 DuplicatesStrategy.INCLUDE：同一個目的路徑
+    // 出現兩次時後面那個勝出。
+    //
+    // ⚠ 順序不能反，而且第一個 from 刻意**不排除** default.custom.yaml：
+    //   舊的 core/data（還沒跑過新版 collect_data.sh，例如別條線 symlink 過來的
+    //   那一份）裡沒有 .mobile.yaml，那時第二個 from 貢獻零個檔案，
+    //   APK 裡留下的是共用那一份 —— schema_list 仍然完整，只是少了行動端的
+    //   那幾條微調。**少一項設定**與**整個方案清單消失**是兩件事，
+    //   而後者正是 coordination.md §1 記著的那場事故。
+    from(rimeUserData) {
+        into("rime/user")
+        exclude("*.mobile.yaml")
+    }
+    from(rimeUserData) {
+        into("rime/user")
+        include("default.custom.mobile.yaml")
+        rename { "default.custom.yaml" }
+    }
+    duplicatesStrategy = DuplicatesStrategy.INCLUDE
     // 佈局與主題：assets 內的路徑刻意與 docs/theme-format.md §2.3 的
     // 「隨附目錄」同名，四端的搜尋路徑因此長得一樣。
     from(rimeLayouts) { into("rime/layouts") }
