@@ -33,7 +33,6 @@ on:
     # 單行陣列 [main, a, b] 會讓每一條都改同一行 = 必然衝突。
     branches:
       - main
-      - anv2
   pull_request:
     branches:
       - main
@@ -379,8 +378,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' &&
-       (github.ref == 'refs/heads/main' ||
-        github.ref == 'refs/heads/anv2'))
+       github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
