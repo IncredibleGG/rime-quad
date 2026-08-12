@@ -223,6 +223,37 @@ jobs:
       - name: APK 形狀判讀的反向測試(apk_ime_shape.py --self-test,16 條)
         run: python3 scripts/apk_ime_shape.py --self-test
 
+      # 先把 Gradle 發行版抓下來,再進任何一支會用到 gradle 的關卡。
+      # 理由與 windows.yml 那一處取 CMake 的重試一樣,但這裡更值得寫下來:
+      # gradlew 第一次執行會去 services.gradle.org 抓 distribution,而那一下
+      # 斷線時,release_check.sh 看到的只是「gradle 沒有回 0」,於是它照實
+      # 印出
+      #     [FAIL] 單元測試失敗，見 .../unittest.log
+      #     [FAIL] 建置失敗，見 .../build.log
+      # —— 兩句**假的指控**。真正的原文要翻到底下才看得到:
+      #     Downloading https://services.gradle.org/distributions/gradle-8.14.3-bin.zip
+      #     java.net.SocketException: Unexpected end of file from server
+      #         at org.gradle.wrapper.Install.forceFetch
+      # 2026-08-12 併進 main 的那一次就是這樣紅的,而測試與程式碼都沒有問題。
+      #
+      # 抓成功之後 distribution 會留在 ~/.gradle/wrapper/dists,
+      # 後面每一支用到 gradle 的關卡(發布關卡、手感的反向測試)都不必再抓。
+      # ⚠ 這一步不是「加速」,是把一種會偽裝成產品缺陷的失敗擋在門外。
+      #   要拿掉它之前先想清楚上面那兩句假指控會回來。
+      - name: 先取回 Gradle 發行版(斷線會偽裝成「測試失敗」)
+        run: |
+          set -u
+          for i in 1 2 3 4; do
+            if (cd android && ./gradlew --quiet --version); then
+              echo "Gradle 發行版就緒"
+              exit 0
+            fi
+            echo "第 $i 次取 Gradle 發行版失敗,等一下再試"
+            sleep $((5 * i))
+          done
+          echo "::error::連續 4 次取不到 Gradle 發行版 —— 這是網路,不是這份改動"
+          exit 1
+
       - name: 發布關卡(不需要模擬器的部分)
         run: ./scripts/release_check.sh --skip-emu --strict
 
