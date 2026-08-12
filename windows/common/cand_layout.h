@@ -115,6 +115,26 @@ struct WindowStyle {  // §8.6.7
   // -1 = 未指定。
   double column_gap = -1;
   double row_gap = -1;
+  // ── §8.12 `status_bar`,**只有 `page` 那一項**落地 ─────────────
+  //
+  // ⚠ 這幾個欄位不是自己發明的:§8.12 的表上寫著 `padding_h`(預設
+  //   `metrics.padding`)、`padding_v`(2)、`size`(11)、`color`(#808080)。
+  //   本檔的規矩是「只實作規範已經寫下來的欄位」,這四個都在。
+  //
+  // ⚠ **沒有落地的是 `show`。** §8.12 訂 `status_bar.show` 預設 false,
+  //   而頁碼是這一條的唯一內容 —— 照字面做的話,出廠狀態下使用者永遠
+  //   看不到自己在第幾頁(macOS 端在 coordination.md 已經自承同一件事:
+  //   「翻得動」與「看得出翻到第幾頁」是兩件事,他們只做完第一件)。
+  //   §8.12 自己又規定「只有一頁時的 `page` 必須整項略過」——
+  //   也就是說它**只在有第二頁的時候才出現**,那正是它有用的時候,
+  //   §8.12 顧慮的噪音在這一項上本來就不存在。
+  //   所以這裡畫它,而那一格差異已寫進 docs/coordination.md 請規範
+  //   所有權方(macOS 端)裁決。⚠ 其餘 items / arrangement / separator /
+  //   background / 可點,一項都沒做(那是 M5)。
+  double status_padding_h = -1;  // -1 = 未指定,ResolveDefaults 補 metrics.padding
+  double status_padding_v = 2;
+  double status_size = 11;
+  Rgba status_color{0x80, 0x80, 0x80, 0xFF};
   Placement placement = Placement::kAuto;
   double offset_x = 0;
   double offset_y = 6;
@@ -176,7 +196,29 @@ struct WindowLayout {
   std::vector<ItemLayout> items;
   // 需要補 `…` 的項數。診斷用;不是「少畫了幾個」。
   int32_t truncated_count = 0;
+
+  // §8.12 `source: page` 的字面。**空 = 整項略過**,不佔位置、不畫空白
+  //(§8.12 規範性,與第三格方案名同一條先例)。
+  std::string page_text;
+  double page_x = 0, page_y = 0;
 };
+
+// 候選窗現在在第幾頁。⚠ **不給預設值**:ComputeLayout 的呼叫端一定要
+// 明著說一次。給了預設就會出現「忘了傳」這條路,而它的症狀是頁碼永遠
+// 不出現 —— 也就是 G72 本身,只是換一個地方再犯一次。
+struct PageHint {
+  int32_t page_no = 0;
+  bool is_last_page = true;
+};
+
+// §8.12 的 `page` 顯示規則(**規範性,一個字都不要自己改**):
+//
+//     page_no == 0 且 is_last_page  → 空(不顯示)
+//     否則                          → "<page_no + 1>",非最後一頁時後綴 "+"
+//
+// ⚠ 為什麼不是 `1/3`:librime **不提供總頁數**(`rs_menu` 只有
+//   is_last_page),寫成分數就得靠猜。§8.12 把這件事寫得很清楚。
+std::string PageIndicatorText(int32_t page_no, bool is_last_page);
 
 // ── 滾輪要翻幾頁(G71)──────────────────────────────────────────
 //
@@ -196,7 +238,8 @@ struct WindowLayout {
 int32_t WheelPageSteps(int32_t* accumulator, int32_t delta);
 
 WindowLayout ComputeLayout(const std::vector<Candidate>& items,
-                           const CandidateStyle& st, const MeasureFn& measure);
+                           const CandidateStyle& st, const MeasureFn& measure,
+                           const PageHint& page);
 
 struct Rect {
   double left = 0, top = 0, right = 0, bottom = 0;

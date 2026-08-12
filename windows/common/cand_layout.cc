@@ -1,6 +1,7 @@
 #include "cand_layout.h"
 
 #include <algorithm>
+#include <string>
 
 #include "ime_policy.h"
 
@@ -21,12 +22,24 @@ void CandidateStyle::ResolveDefaults() {
   window.border_width = Pick(window.border_width, metrics.border_width);
   // §8.6.7.1:column_gap / row_gap 預設 = candidates.item.spacing。
   // ⚠ 要在 item.spacing 解析完之後才取,否則會拿到 -1。
+  // §8.12:status_bar.padding_h 預設 = metrics.padding。
+  window.status_padding_h = Pick(window.status_padding_h, metrics.padding);
   window.column_gap = Pick(window.column_gap, item.spacing);
   window.row_gap = Pick(window.row_gap, item.spacing);
 }
 
+std::string PageIndicatorText(int32_t page_no, bool is_last_page) {
+  // §8.12,逐字。第一頁而且是最後一頁 → 空。
+  if (page_no <= 0 && is_last_page) return std::string();
+  if (page_no < 0) page_no = 0;  // 線路上的值,不信任
+  std::string s = std::to_string(page_no + 1);
+  if (!is_last_page) s += "+";
+  return s;
+}
+
 WindowLayout ComputeLayout(const std::vector<Candidate>& items,
-                           const CandidateStyle& st, const MeasureFn& measure) {
+                           const CandidateStyle& st, const MeasureFn& measure,
+                           const PageHint& page) {
   WindowLayout out;
   if (items.empty()) return out;
 
@@ -227,6 +240,30 @@ WindowLayout ComputeLayout(const std::vector<Candidate>& items,
   // min_width 是下界,而且**優先於** effective_max(clamp 的既有語義)。
   if (bounded && w > effective_max) w = effective_max;
   out.width = std::max(st.window.min_width, w);
+
+  // ── §8.12 的 `page`:使用者在第幾頁、後面還有沒有 ───────────────
+  //
+  // ⚠ 這在 G72 之前**完全沒有畫**:page_no / is_last_page 一路從
+  //   rs_menu 進到 Snapshot(protocol.h:193–195),而整個 windows/ 底下
+  //   沒有任何一個地方讀它們。使用者翻得動頁,卻不知道自己在第幾頁,
+  //   也不知道後面還有沒有 —— 於是「下一頁就沒了」這個猜測會讓他
+  //   在第一頁就放棄。
+  //
+  // 擺位照 §8.12 status_bar 的預設值:position: bottom(候選底下)、
+  // arrangement: leading(靠左)、padding_h / padding_v 見 WindowStyle。
+  out.page_text = PageIndicatorText(page.page_no, page.is_last_page);
+  if (!out.page_text.empty()) {
+    const Extent pe = measure(out.page_text, st.window.status_size);
+    out.page_x = frame + st.window.status_padding_h;
+    out.page_y = out.height + st.window.status_padding_v;
+    out.height += pe.height + 2 * st.window.status_padding_v;
+    // ⚠ 窄窗時**讓窗變寬**,不要把它裁掉。裁掉之後 "10+" 會變成 "10",
+    //   而使用者讀到的是「這是最後一頁」—— 一個與事實相反的訊息,
+    //   比不畫更糟。同 §8.6.7.2 第 9b 條的精神。
+    const double need =
+        out.page_x + pe.width + st.window.status_padding_h + frame;
+    if (need > out.width) out.width = need;
+  }
 
   out.items.reserve(n);
   for (Piece& p : pieces) out.items.push_back(p.box);

@@ -1706,4 +1706,21 @@ Windows 端的實作：判準是純函式（`windows/common/bar_visibility.{h,cc
   Windows 10 起預設開啟的「捲動非作用中的視窗」。使用者關掉那個系統選項時
   滾輪就沒有作用,而我們**不會**為此去掛 hook。已寫進 #48 的真機清單(兩次:
   那個選項開一次、關一次)。
+- `[2026-08-13] [b1w → macOS(theme-format §8.12 的所有者)] **`status_bar.show` 預設 false,讓「看得出翻到第幾頁」在出廠狀態下四端都不可能 —— 請裁決。**
+  §8.12 把 `page` 訂得很完整(`page_no == 0 且 is_last_page → 空`,
+  否則 `"<page_no + 1>"`、非最後一頁後綴 `+`,並說明為什麼不是 `1/3`)。
+  問題在它的家:`status_bar.show` 預設 `false`,而 `core/themes/` 底下
+  **沒有任何一份**宣告 `status_bar:`(`grep -rl status_bar core/themes` 是 0)。
+  macOS 端在 2026-08-10 那一則已經自承同一件事:「翻得動」與「看得出翻到
+  第幾頁」是兩件事,他們只做完第一件。
+  ⚠ **Windows 這一輪把 `page` 那一項畫出來了,而且沒有等 `show`。**
+  依據是 §8.12 自己的另一條:「只有一頁時的 `page` 必須整項略過」——
+  也就是說它**只在有第二頁的時候才出現**,而那正是它有用的時候;
+  §8.12 顧慮的噪音在這一項上本來就不存在。字面、`padding_h`/`padding_v`/
+  `size`/`color` 全部照 §8.12 的預設值,一個數字都沒有自己取;
+  `items`/`arrangement`/`separator`/`background`/可點一項都沒做(那是 M5)。
+  **請裁決要哪一種**:(a) `page` 這一項不受 `status_bar.show` 管;
+  (b) 出廠主題宣告 `status_bar: { show: true, items: [{source: page}] }`;
+  (c) Windows 把它收回去,接受出廠狀態下沒有頁碼。
+  在裁決之前 Windows 走 (a),而這一格明著記在這裡而不是藏在程式碼裡。
 

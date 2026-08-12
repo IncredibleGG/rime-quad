@@ -3124,6 +3124,129 @@ PYSCRIPT
     esac
   done <<< "${w38out}"
   [ "${w38bad}" -eq 0 ] && ok "W38 滾輪翻頁整條鏈都接著:WM_MOUSEWHEEL → OnWheel(擋空清單、走純函式 WheelPageSteps)→ page_fn_ → PipeServer::OnCandidateWheel → Engine::ChangePage → 候選窗與那一橫**同一份**快照,而且 push_ui 記著「這一頁是誰的」、解構子把回呼收回來"
+
+  # ── W39:頁碼從快照到畫面,整條鏈都要接著 ─────────────────────
+  #
+  # ⚠ 同 W38,守的是鏈。G72 之前:`page_no` / `is_last_page` 一路從
+  #   `rs_menu` 進到 `Snapshot`(protocol.h:193–195),而整個 `windows/`
+  #   底下**沒有任何地方讀它們**。使用者翻得動頁,卻不知道自己在第幾頁、
+  #   後面還有沒有 —— 於是「下一頁大概就沒了」這個猜測會讓他在第一頁
+  #   就停下來。
+  #
+  # ⚠ 字面本身是**規範性**的(theme-format §8.12),所以這裡也守
+  #   「判斷留在純函式裡」:自己在繪製碼裡拼一個 "1/3" 出來,在 Ubuntu 上
+  #   一行都驗不到,而它同時是違反規範的(librime 不提供總頁數)。
+  check
+  local w39bad=0
+  local w39out; w39out="$("${PY}" - "${CODE_DIR}" <<'PYSCRIPT'
+import os, re, sys
+root = sys.argv[1]
+
+def read(rel):
+    try:
+        return open(os.path.join(root, rel), encoding='utf-8',
+                    errors='replace').read()
+    except OSError:
+        return None
+
+cw = read('service/cand_window.cc')
+cl = read('common/cand_layout.cc')
+ch = read('common/cand_layout.h')
+if cw is None or cl is None or ch is None:
+    print('NOSRC=1')
+    raise SystemExit(0)
+
+def match_from(src, i):
+    depth = 0
+    for j in range(i, len(src)):
+        if src[j] == '{':
+            depth += 1
+        elif src[j] == '}':
+            depth -= 1
+            if depth == 0:
+                return (i, j + 1)
+    return (i, len(src))
+
+def body_of(src, sig):
+    i = src.find(sig)
+    if i < 0:
+        return None
+    b = src.find('{', i)
+    if b < 0:
+        return None
+    ob, cb = match_from(src, b)
+    return src[ob + 1:cb - 1]
+
+# 分母:cand_layout.h 上的欄位。掃空 = 範圍寫錯,必須紅。
+print('NFIELD=%d' % len(re.findall(r'^\s+double\s+\w+', ch, re.M)))
+
+# ⚠ 用詞界,不是子字串:把它改名成 PageIndicatorTextRemoved 的植入
+#   在子字串比對底下**完全沒有變紅**(實跑確認過)。
+if not re.search(r'\bPageIndicatorText\s*\(', cl):
+    print('NOPUREIMPL=1')
+
+rl = body_of(cw, 'void CandidateWindow::Relayout()')
+if rl is None:
+    print('NORELAYOUT=1')
+else:
+    if not re.search(r'page\.page_no\s*=\s*shown_\.page_no', rl):
+        print('NOPAGEFROMSNAP=1')
+    if not re.search(r'page\.is_last_page\s*=\s*shown_\.is_last_page', rl):
+        print('NOLASTFROMSNAP=1')
+    # ⚠ 不能用 `[^;]*`:那一次呼叫的第三個引數是一個 lambda,而 lambda
+    #   本體裡有分號。分兩問:有沒有呼叫、最後一個引數是不是 page。
+    if not re.search(r'ComputeLayout\(', rl) or \
+       not re.search(r',\s*page\s*\)\s*;', rl):
+        print('NOPAGEARG=1')
+
+pt = body_of(cw, 'void CandidateWindow::Paint(')
+if pt is None:
+    print('NOPAINT=1')
+else:
+    # ⚠ 「本體裡出現 layout_.page_text」擋不住把守衛改成 if (false) ——
+    #   那個植入實跑之後守門仍然全綠。要問的是**那個判斷本身還在不在**。
+    if 'if (!layout_.page_text.empty())' not in pt:
+        print('NOPAGEDRAW=1')
+    elif 'layout_.page_x' not in pt or 'layout_.page_y' not in pt:
+        print('NOPAGEPOS=1')
+    elif 'TextOutW' not in pt:
+        print('NOPAGETEXTOUT=1')
+
+# 繪製碼不得自己拼頁碼字面(§8.12 是規範性的,而且沒有總頁數)。
+if re.search(r'L"\s*%d\s*/\s*%d', cw) or re.search(r'"/%d"', cw):
+    print('HANDROLLED=1')
+PYSCRIPT
+)"
+  local nfield; nfield="$(num "$(printf '%s\n' "${w39out}" | grep '^NFIELD=' | cut -d= -f2)")"
+  need_scope "W39 cand_layout.h 的欄位" "${nfield}" 20 || w39bad=1
+  local w39line
+  while IFS= read -r w39line; do
+    case "${w39line}" in
+      NOSRC=*)
+        red "W39:找不到 cand_window.cc / cand_layout.{h,cc} —— 掃描範圍錯了"; w39bad=1 ;;
+      NOPUREIMPL=*)
+        red "W39:common/cand_layout.cc 裡沒有 PageIndicatorText —— §8.12 的字面規則沒有純函式版本,Ubuntu 上驗不到"; w39bad=1 ;;
+      NORELAYOUT=*)
+        red "W39:找不到 CandidateWindow::Relayout() 的本體"; w39bad=1 ;;
+      NOPAGEFROMSNAP=*)
+        red "W39:Relayout 沒有從**這一份快照**取 page_no —— 頁碼要嘛不動、要嘛是別人的"; w39bad=1 ;;
+      NOLASTFROMSNAP=*)
+        red "W39:Relayout 沒有從快照取 is_last_page —— 「後面還有沒有」是這一格唯一的內容"; w39bad=1 ;;
+      NOPAGEARG=*)
+        red "W39:ComputeLayout 沒有收到 page —— 版面不知道要留位置,頁碼會壓在候選上面(或根本不畫)"; w39bad=1 ;;
+      NOPAINT=*)
+        red "W39:找不到 CandidateWindow::Paint() 的本體"; w39bad=1 ;;
+      NOPAGEDRAW=*)
+        red "W39:Paint 沒有畫 layout_.page_text —— 又一個「算出來了但沒有人畫」,而那正是 G72 本身"; w39bad=1 ;;
+      NOPAGEPOS=*)
+        red "W39:Paint 沒有用 layout_.page_x / page_y —— 版面算了位置卻不照它畫,頁碼會壓在候選上面"; w39bad=1 ;;
+      NOPAGETEXTOUT=*)
+        red "W39:Paint 讀了 page_text 卻沒有任何輸出呼叫"; w39bad=1 ;;
+      HANDROLLED=*)
+        red "W39:繪製碼自己拼了一個 n/m 形式的頁碼 —— §8.12 明文規定後綴是 `+` 而不是分數,因為 librime **不提供總頁數**,寫成 1/3 就得靠猜"; w39bad=1 ;;
+    esac
+  done <<< "${w39out}"
+  [ "${w39bad}" -eq 0 ] && ok "W39 頁碼整條鏈都接著:快照的 page_no / is_last_page → PageHint → ComputeLayout(留位置)→ PageIndicatorText(§8.12 的字面,純函式)→ Paint 真的畫出來,而且繪製碼沒有自己拼分數"
 }
 
 # ────────────────────────────────────────────────────────────────
@@ -3206,6 +3329,11 @@ self_check() {
 "W38e 翻完頁那一橫沒跟上|service/pipe_server.cc|s=s.replace('  if (bar_) bar_->OnSnapshot(r.snap);','',1)"
 "W38f 沒有人記下這一頁是誰的|service/pipe_server.cc|s=s.replace('ui_session_ = snap.items.empty() ? 0 : session;','ui_session_ = session;',1)"
 "W38g 解構子不把回呼收回來|service/pipe_server.cc|s=s.replace('  if (ui_) ui_->SetPageHandler(nullptr);','',1)"
+"W39a 頁碼算出來了沒有人畫(G72 本身)|service/cand_window.cc|s=s.replace('  if (!layout_.page_text.empty()) {','  if (false) {',1)"
+"W39b 版面不知道有頁碼|service/cand_window.cc|s=s.replace('  }, page);','  }, PageHint());',1)"
+"W39c 頁碼不從這一份快照來|service/cand_window.cc|s=s.replace('  page.page_no = shown_.page_no;','  page.page_no = 0;',1)"
+"W39d 「後面還有沒有」不從快照來|service/cand_window.cc|s=s.replace('  page.is_last_page = shown_.is_last_page;','  page.is_last_page = true;',1)"
+"W39e 純函式那一半不見了|common/cand_layout.cc|s=s.replace('std::string PageIndicatorText(','std::string PageIndicatorTextRemoved(',1).replace('  out.page_text = PageIndicatorText(page.page_no, page.is_last_page);','  out.page_text = PageIndicatorTextRemoved(page.page_no, page.is_last_page);',1)"
 "W27e 拿掉那一橫自己更新的計時器|service/status_bar.cc|s=s.replace('  ::SetTimer(hwnd_, kStateTimer, kStatePollMs, nullptr);','',1)"
 "W27f 計時器還在但不再比對狀態|service/status_bar.cc|s=s.replace('      if (now != self->service_state_) {','      if (false) {',1)"
 "W27g 側欄又變回兩句|service/settings_window.cc|s=s.replace('  ::DrawTextW(hdc, UiText(SidebarStatusTextFor(state)),','  ::DrawTextW(hdc, UiText(UiString::kNavStatusNotRunning),',1)"

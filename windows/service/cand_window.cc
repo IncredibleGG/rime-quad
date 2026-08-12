@@ -280,6 +280,8 @@ void CandidateWindow::Relayout() {
   scaled.window.padding *= dpi_scale;
   scaled.window.border_width *= dpi_scale;
   scaled.window.max_width *= dpi_scale;
+  scaled.window.status_padding_h *= dpi_scale;
+  scaled.window.status_padding_v *= dpi_scale;
   scaled.metrics.spacing *= dpi_scale;
   // 使用者選的候選字級。**排版與繪製要用同一個值**:量測用一個、
   // 畫用另一個的話,字會畫到框外面,而畫面看起來只是「有點擠」。
@@ -287,11 +289,19 @@ void CandidateWindow::Relayout() {
   scaled.label.size *= ts;
   scaled.text.size *= ts;
   scaled.comment.size *= ts;
+  // 頁碼跟著候選一起放大縮小。⚠ 排版與繪製要用**同一個**值,
+  //   不然那一行會畫到框外面(見上面那段對候選字級的說明)。
+  scaled.window.status_size *= ts;
 
+  // ⚠ 頁碼從**這一份快照**來,不是從別的地方猜。page_no / is_last_page
+  //   一路從 rs_menu 進到 Snapshot,而在 G72 之前沒有任何人讀它們。
+  PageHint page;
+  page.page_no = shown_.page_no;
+  page.is_last_page = shown_.is_last_page;
   layout_ = ComputeLayout(shown_.items, scaled, [this](const std::string& s,
                                                        double size) {
     return MeasureWithFont(s, size);
-  });
+  }, page);
 
   Rect work{static_cast<double>(mi.rcWork.left), static_cast<double>(mi.rcWork.top),
             static_cast<double>(mi.rcWork.right),
@@ -395,6 +405,19 @@ void CandidateWindow::Paint(HDC hdc) {
                  static_cast<int>(box.y + box.comment_y), s.c_str(),
                  static_cast<int>(s.size()));
     }
+  }
+
+  // ── §8.12 的 `page`。空字串 = 整項略過,連字型都不用取。 ──────────
+  if (!layout_.page_text.empty()) {
+    HFONT f_page = fonts_.Get(
+        static_cast<int>(style_.window.status_size * ts + 0.5), false,
+        FontRole::kLabel);
+    ::SelectObject(mem, f_page);
+    ::SetTextColor(mem, ToColorRef(style_.window.status_color));
+    const std::wstring s = Utf8ToWide(layout_.page_text);
+    ::TextOutW(mem, static_cast<int>(layout_.page_x),
+               static_cast<int>(layout_.page_y), s.c_str(),
+               static_cast<int>(s.size()));
   }
 
   ::BitBlt(hdc, 0, 0, client.right, client.bottom, mem, 0, 0, SRCCOPY);
