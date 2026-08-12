@@ -28,12 +28,30 @@ import xml.etree.ElementTree as ET
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 ANDROID = os.path.join(ROOT, "android")
-PLAN = os.path.join(ANDROID, "app/src/main/java/org/luminakey/ime/core/FeedbackPlan.kt")
-LEVELS = os.path.join(ANDROID, "app/src/main/java/org/luminakey/ime/prefs/PrefLevels.kt")
+
+# ⚠ 套件名一律從 scripts/lib/product.py 讀,**不得寫死**。
+#   scripts/verify_product_ids.sh 第 3 節掃的就是這件事,而它也在 CI 上 ——
+#   這支檔案第一版把套件名寫死,當場把那一關踩紅了。
+#   理由不是形式:上一次改名的代價,有一半來自散在各處的第二份真相。
+#   一支寫死了路徑的守門腳本,下一次改名時會安靜地掃到一個不存在的目錄、
+#   找不到違規、然後說通過。
+#
+# ⚠ 那一關**連註解一起掃**,而那是對的 —— 改名時漏掉的正是註解裡那一份。
+#   所以這一段說明裡也不寫出任何識別碼的字面值(我第一次修的時候寫了,
+#   又被同一關抓到一次)。
+sys.path.insert(0, os.path.join(HERE, "lib"))
+import product  # noqa: E402  (要先算出 HERE 才 import 得到)
+
+_PKG_PATH = product.VALUES["ANDROID_PKG_PATH"]   # 目錄形式
+_PKG = product.VALUES["ANDROID_APP_ID"]          # 點號形式
+
+_SRC = os.path.join(ANDROID, "app/src/main/java", _PKG_PATH)
+PLAN = os.path.join(_SRC, "core/FeedbackPlan.kt")
+LEVELS = os.path.join(_SRC, "prefs/PrefLevels.kt")
 
 CLASSES = [
-    "org.luminakey.ime.core.FeedbackPlanTest",
-    "org.luminakey.ime.prefs.FeelPrefsTest",
+    _PKG + ".core.FeedbackPlanTest",
+    _PKG + ".prefs.FeelPrefsTest",
 ]
 
 MUTANTS = [
