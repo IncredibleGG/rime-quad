@@ -295,4 +295,39 @@ class VariantPlanTest {
         assertEquals(listOf("zh_hant", "zh_hant_hk", "zh_hant_tw"), VariantPlan.TRADITIONAL_OPTIONS)
         assertEquals("simplification", VariantPlan.OPT_SIMPLIFICATION)
     }
+
+    // ⚠ 這三條守的是**呼叫端給了髒東西**的情況。今天 Android 走不到,
+    //   但這份模型明文要另外三端照抄,而且 remembered 一旦落盤就會讀到舊字串。
+    //   沒有這三條的話,那個掃描不變式的測試只餵四個合法值 —— 等於沒有守。
+    @Test
+    fun `記憶是 zh_hans 時要繁體不可以又選回 zh_hans`() {
+        val p = VariantPlan.plan(emptySet(), VariantPlan.OPT_ZH_HANS, wantSimplified = false)
+        val after = VariantPlan.applyTo(emptySet(), p.assigns)
+        assertEquals(setOf(VariantPlan.OPT_ZH_HANT), after)
+        assertEquals(VariantPlan.OPT_ZH_HANT, p.remembered ?: VariantPlan.OPT_ZH_HANT)
+    }
+
+    @Test
+    fun `記憶是組外的字串時要繁體仍然恰好開一支`() {
+        for (junk in listOf("zh_hant_sg", "", "  ", "simplification", "ZH_HANT")) {
+            val p = VariantPlan.plan(emptySet(), junk, wantSimplified = false)
+            val after = VariantPlan.applyTo(emptySet(), p.assigns)
+            assertEquals(
+                "記憶=\"$junk\" 時同組要恰好一支為真",
+                setOf(VariantPlan.OPT_ZH_HANT),
+                after,
+            )
+        }
+    }
+
+    @Test
+    fun `髒記憶不會被原樣傳下去`() {
+        for (junk in listOf(VariantPlan.OPT_ZH_HANS, "zh_hant_sg", "")) {
+            val p = VariantPlan.plan(emptySet(), junk, wantSimplified = true)
+            assertTrue(
+                "記憶=\"$junk\" 不可以原樣留在 Plan.remembered 裡",
+                p.remembered == null || p.remembered in VariantPlan.TRADITIONAL_OPTIONS,
+            )
+        }
+    }
 }

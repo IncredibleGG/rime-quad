@@ -104,8 +104,16 @@ object VariantPlan {
      *   卻沒有任何一支為真 —— 所以要有一個講得出理由的預設。
      */
     fun plan(current: Set<String>, remembered: String?, wantSimplified: Boolean): Plan {
-        // ⚠ 只看繁體那三支。看整組的話,簡體狀態下會把 zh_hans 記成「原本那一支」。
-        val nextRemembered = TRADITIONAL_OPTIONS.firstOrNull { it in current } ?: remembered
+        // ⚠ **先把傳進來的記憶篩過一次。** 這裡不假設呼叫端給的東西是乾淨的:
+        //   · zh_hans —— 那正是這個缺陷的原形(舊版把它記成「原本那一支」,
+        //     於是「切回繁體」變成「把它再設一次 true」);
+        //   · 不在 TRADITIONAL_OPTIONS 裡的任何字串(拼錯、舊版遺留、
+        //     日後落盤之後讀回來的髒值)—— 照著開它等於同組一支都沒開,
+        //     而那會打破下面那個不變式,**而且畫面上看不出來**。
+        val safeRemembered = remembered?.takeIf { it in TRADITIONAL_OPTIONS }
+
+        // ⚠ 只看繁體那三支。看整組的話,簡體狀態下會把它記成「原本那一支」。
+        val nextRemembered = TRADITIONAL_OPTIONS.firstOrNull { it in current } ?: safeRemembered
 
         val target = if (wantSimplified) OPT_ZH_HANS else (nextRemembered ?: OPT_ZH_HANT)
 
