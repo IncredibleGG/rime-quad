@@ -23,9 +23,11 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import org.luminakey.ime.core.AndroidKeyMap
 import org.luminakey.ime.core.DeployEstimate
+import org.luminakey.ime.core.HostEditorPolicy
 import org.luminakey.ime.core.RimeCore
 import org.luminakey.ime.core.RimeRuntime
 import org.luminakey.ime.core.VariantPlan
+import org.luminakey.ime.keyboard.InlinePreedit
 import org.luminakey.ime.keyboard.T9Syllables
 import org.luminakey.ime.keyboard.ConfigRepository
 import org.luminakey.ime.keyboard.KeyboardEvent
@@ -56,6 +58,7 @@ import org.luminakey.ime.store.InstalledRegistry
 import org.luminakey.ime.store.StoreSettings
 import org.luminakey.ime.theme.ActionVerb
 import org.luminakey.ime.theme.KeyAction
+import org.luminakey.ime.theme.LayoutLayer
 import org.luminakey.ime.theme.Keysym
 import org.luminakey.ime.theme.SendSpec
 import org.luminakey.ime.theme.Theme
@@ -340,6 +343,67 @@ class RimeInputMethodService : InputMethodService() {
         applyEditorPolicy(info)
     }
 
+    /**
+     * 橫屏時**不要**掉進 AOSP 的全螢幕 extract 模式。判斷與理由見
+     * [HostEditorPolicy.useFullscreen]；一句話：那條原生輸入條與 `Done` 鈕
+     * 不是我們畫的，也吃不到 `core/themes` 的任何設定。
+     */
+    override fun onEvaluateFullscreenMode(): Boolean =
+        HostEditorPolicy.useFullscreen(currentInputEditorInfo?.imeOptions ?: 0)
+
+    /**
+     * 宿主回報游標動了。判準見 [HostEditorPolicy.cursorLeftComposition]。
+     *
+     * 這個回呼在這一版之前**整個 repo 零命中** —— 也就是使用者在組字途中
+     * 點到別的地方時，librime 完全不知情。
+     */
+    override fun onUpdateSelection(
+        oldSelStart: Int,
+        oldSelEnd: Int,
+        newSelStart: Int,
+        newSelEnd: Int,
+        candidatesStart: Int,
+        candidatesEnd: Int,
+    ) {
+        super.onUpdateSelection(
+            oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd,
+        )
+        if (session == RimeCore.INVALID_SESSION) return
+        // ⚠ 這裡刻意用 rs_get_input 而不是快照：`rime_shell.h` 明訂
+        //   「每個輸入事件只 acquire 一次」，而 acquire 會**消費掉** commit_text。
+        //   在一個與按鍵無關的回呼裡多開一次快照，等於偷走使用者剛選好的字。
+        val composing = RimeCore.getInput(session).isNotEmpty()
+        if (!HostEditorPolicy.cursorLeftComposition(
+                engineComposing = composing,
+                newSelStart = newSelStart,
+                newSelEnd = newSelEnd,
+                candidatesStart = candidatesStart,
+                candidatesEnd = candidatesEnd,
+            )
+        ) {
+            return
+        }
+        Log.i(TAG, "游標被移到組字區外（$newSelStart..$newSelEnd，組字區 $candidatesStart..$candidatesEnd），結束組字")
+        finishAndForgetComposition()
+    }
+
+    /**
+     * 「宿主那邊的組字區到此為止，引擎也忘掉它」。
+     *
+     * 順序不能反：先 `finishComposingText()` 讓已經打出來的字**原樣留在宿主的
+     * 文字裡**（使用者看得到、也還編輯得動），再叫引擎清空。反過來的話畫面會
+     * 先閃掉一次。
+     *
+     * 不用 `rs_commit_composition`：使用者的動作是「我要去別的地方」，
+     * 不是「這段打完了」—— 替他決定上屏成哪幾個漢字是多做了一步。
+     */
+    private fun finishAndForgetComposition() {
+        currentInputConnection?.finishComposingText()
+        RimeCore.clearComposition(session)
+        confirmedSyllables = emptyList()
+        refreshFromRime(consumeCommit = false)
+    }
+
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         host?.onStartInput()
@@ -466,6 +530,13 @@ class RimeInputMethodService : InputMethodService() {
         }
         super.onDestroy()
     }
+
+    /**
+     * 目前畫在螢幕上的那一層。與 [KeyboardUiState.layer] 同一條規則，
+     * 但讀的是 [LayoutHost] 的當下值 —— 送給宿主的組字串不能慢一幀。
+     */
+    private fun currentLayer(): LayoutLayer? =
+        layoutHost.layout?.let { it.layer(layoutHost.layerId) ?: it.layers.firstOrNull() }
 
     private fun systemInDarkMode(): Boolean =
         (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
@@ -1210,10 +1281,10 @@ class RimeInputMethodService : InputMethodService() {
             // 分支讓 when 維持窮盡。
             ActionVerb.CANDIDATE_NEXT, ActionVerb.CANDIDATE_PREV -> Unit
 
-            ActionVerb.CURSOR_LEFT -> sendHostKey(KeyEvent.KEYCODE_DPAD_LEFT)
-            ActionVerb.CURSOR_RIGHT -> sendHostKey(KeyEvent.KEYCODE_DPAD_RIGHT)
-            ActionVerb.CURSOR_HOME -> sendHostKey(KeyEvent.KEYCODE_MOVE_HOME)
-            ActionVerb.CURSOR_END -> sendHostKey(KeyEvent.KEYCODE_MOVE_END)
+            ActionVerb.CURSOR_LEFT -> moveHostCursor(KeyEvent.KEYCODE_DPAD_LEFT)
+            ActionVerb.CURSOR_RIGHT -> moveHostCursor(KeyEvent.KEYCODE_DPAD_RIGHT)
+            ActionVerb.CURSOR_HOME -> moveHostCursor(KeyEvent.KEYCODE_MOVE_HOME)
+            ActionVerb.CURSOR_END -> moveHostCursor(KeyEvent.KEYCODE_MOVE_END)
 
             ActionVerb.CLEAR -> {
                 RimeCore.clearComposition(session)
@@ -1238,6 +1309,25 @@ class RimeInputMethodService : InputMethodService() {
             ActionVerb.EMOJI -> Unit
         }
         syncConfigToUi()
+    }
+
+    /**
+     * 移動宿主的游標（空白鍵左右滑、`cursor:*` 動詞）。
+     *
+     * ⚠ **這條路本來是這個缺陷的第二個製造者。** 它直接送 DPAD 給宿主，
+     * 於是我們自己提供的功能把游標移出了組字區，而引擎一無所知 ——
+     * 使用者滑一下空白鍵，下一顆鍵打出來的字就落在別的地方。
+     *
+     * 為什麼不靠 [onUpdateSelection] 接住：那一支刻意不理會「宿主沒有回報
+     * 組字區」的過期座標（見 [HostEditorPolicy.cursorLeftComposition]），
+     * 而且它是**事後**才知道；先把組字沖出去才是這條路自己的責任。
+     *
+     * 用 [flushCompositionForLiteralText] 而不是丟掉：使用者滑游標的意思是
+     * 「我要去改前面那一段」，剛打好的字該上屏，不是該消失。
+     */
+    private fun moveHostCursor(keyCode: Int) {
+        flushCompositionForLiteralText()
+        sendHostKey(keyCode)
     }
 
     private fun sendHostKey(keyCode: Int) {
@@ -1351,11 +1441,28 @@ class RimeInputMethodService : InputMethodService() {
         }
 
         // 組字串以 composing text 呈現，讓宿主應用看得到未上屏的內容。
+        //
+        // ⚠ 送出去的**不是**引擎的 preedit 原文，理由與候選列那一格完全相同
+        //   （見 [InlinePreedit]）：九宮格是雙編碼方案，引擎手上的 preedit 是
+        //   代表字母 `MG GAM`，而使用者按的是 `mno` 與 `ghi`。工單 #68 只修了
+        //   候選列那一半，宿主的輸入框仍然照原文畫 —— 實測（emulator-5558，
+        //   九宮格打「你好」）輸入框裡出現的就是 `MG GAM`。
+        //
+        // ⚠ 而且「什麼都不該顯示」時**不能只呼叫 finishComposingText()**。
+        //   那一支只是**結束**組字區，裡面的字會原樣留在宿主的文字裡：
+        //   實測九宮格按一下 `mno`（輸入框顯示 `M`）再按退格，引擎的組字清空了，
+        //   而輸入框裡永遠多出一個 `M` —— 使用者刪光了，螢幕上卻留著一個
+        //   不是他打的字。要真的收乾淨得先把組字區換成空字串（與「重輸」同法）。
         if (ic != null) {
-            if (snapshot.composition.preedit.isNotEmpty()) {
-                ic.setComposingText(snapshot.composition.preedit, 1)
-            } else {
+            val shown = InlinePreedit.forDisplay(
+                snapshot.composition.preedit,
+                InlinePreedit.groupCodeChars(currentLayer()),
+            )
+            if (shown.isNullOrEmpty()) {
+                ic.setComposingText("", 1)
                 ic.finishComposingText()
+            } else {
+                ic.setComposingText(shown, 1)
             }
         }
 
