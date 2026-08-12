@@ -6,6 +6,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -84,6 +86,7 @@ import org.luminakey.ime.theme.KeyboardLayout
 import org.luminakey.ime.theme.KeyStyle
 import org.luminakey.ime.theme.LabelSource
 import org.luminakey.ime.theme.LayoutKey
+import org.luminakey.ime.theme.ExpandButton
 import org.luminakey.ime.theme.LayoutLayer
 import org.luminakey.ime.theme.PageIndicatorStyle
 import org.luminakey.ime.theme.Popup
@@ -141,6 +144,12 @@ fun RimeKeyboard(
      */
     var pinnedSyllable by remember { mutableStateOf<String?>(null) }
     var syllableOffset by remember { mutableStateOf(0) }
+    /* ── 候選列展開（§8.6.6 的 `scroll: expandable`，見 [Expander]）────────
+     *
+     * 與釘住讀音同一條理由，整組留在 UI 這一層：展不展開不改變 librime 的
+     * 任何狀態，它只是候選列的一個檢視條件。
+     */
+    var candidatesExpanded by remember { mutableStateOf(false) }
     LaunchedEffect(state.preedit) {
         pinnedSyllable = null
         syllableOffset = 0
@@ -160,6 +169,12 @@ fun RimeKeyboard(
      * `above_candidates`，不得什麼都不畫。** 少一欄的樣子是「畫面照常顯示
      * 標點」，沒有任何東西會叫 —— 那正是這個專案吃過七次虧的形狀。
      * 4 欄舊版九宮格沒有左標點欄，走的就是這一條。
+     */
+    /* ⚠ **候選列與展開面板必須拿到同一份索引清單。**
+     * 這裡放的是**引擎的頁內索引**，不是畫面位置 —— 選字走
+     * `rs_select_candidate(index_on_page)`。兩邊各算一次的話，消歧欄一篩，
+     * 展開面板上的第 2 個就會與候選列上的第 2 個是不同的字，
+     * 而畫面上完全看不出來。見 [Expander] 的檔頭。
      */
     val syllableStyle = theme.candidates.syllables
     val declaredSlots = T9Syllables.slotKeys(state.layout, state.layerId)
@@ -209,12 +224,23 @@ fun RimeKeyboard(
                 onPick = { onEvent(KeyboardEvent.SelectSyllable(it)) },
             )
         }
+        val shownCandidates = remember(state.candidates, pin, state.highlighted) {
+            T9Syllables.visibleIndices(state.candidates, pin, state.highlighted)
+        }
+        val expand = Expander.state(
+            mode = theme.candidates.bar.scroll,
+            showButton = theme.candidates.bar.expandButton.show,
+            candidateCount = shownCandidates.size,
+            wanted = candidatesExpanded,
+        )
         CandidateBar(
             state = state,
             theme = theme,
             scaler = scaler,
             onEvent = onEvent,
-            pinnedSyllable = pin,
+            shown = shownCandidates,
+            expand = expand,
+            onToggleExpand = { candidatesExpanded = !candidatesExpanded },
         )
         // 面板一律是**浮層**，不是取代品：底下那一列鍵仍然露出來、仍然按得動。
         // 抄的是三星的處理（docs/reference/samsung/photo_5）。理由不是好看 ——
@@ -246,8 +272,202 @@ fun RimeKeyboard(
                     }
                 },
             )
+            if (expand.expanded) {
+                CandidateExpandedPanel(
+                    state = state,
+                    theme = theme,
+                    scaler = scaler,
+                    shown = shownCandidates,
+                    onPick = {
+                        candidatesExpanded = false
+                        onEvent(KeyboardEvent.Candidate(it))
+                    },
+                    onPage = { backward ->
+                        onEvent(KeyboardEvent.Page(backward = backward))
+                    },
+                )
+            }
             if (state.panel != PanelRoute.NONE) {
                 KeyboardPanelHost(state = state, theme = theme, scaler = scaler, onEvent = onEvent)
+            }
+        }
+    }
+}
+
+/**
+ * 候選列右端的展開／收合鍵（§8.6.6 的 `expand_button`）。
+ *
+ * 與翻頁鍵一樣給滿 40dp 的觸控目標:一個 18sp 的字元只有十幾 dp 寬,點不到。
+ */
+@Composable
+private fun ExpandButton(
+    expanded: Boolean,
+    button: ExpandButton,
+    scaler: Scaler,
+    onClick: () -> Unit,
+) {
+    val desc = stringResource(
+        if (expanded) R.string.a11y_candidates_collapse else R.string.a11y_candidates_expand
+    )
+    Box(
+        modifier = Modifier
+            .fillMaxHeight()
+            .width(40.dp)
+            .semantics(mergeDescendants = true) {
+                contentDescription = desc
+                role = Role.Button
+            }
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = if (expanded) "\u2303" else "\u2304",
+            fontSize = scaler.sp(button.size),
+            color = Color(button.color),
+        )
+    }
+}
+
+/**
+ * 展開之後的多列候選面板。
+ *
+ * ⚠ **畫的是當前這一頁,不是全部攤平。** `rs_select_candidate` 吃的是頁內
+ * 索引,攤平之後畫面上的第 6 個對引擎而言是下一頁的第 1 個 —— 使用者點下去
+ * 會上屏別的字,而畫面完全正常。要看後面的,走底下那兩顆翻頁鍵
+ * (`rs_change_page`)。理由與實測見 [Expander] 的檔頭。
+ *
+ * 與其他面板同一條規矩:**浮層,底列的鍵仍然露出來**。面板自己的收合鍵
+ * 出任何差錯時,使用者都還有第二條路。
+ */
+@Composable
+private fun BoxScope.CandidateExpandedPanel(
+    state: KeyboardUiState,
+    theme: Theme,
+    scaler: Scaler,
+    shown: List<Int>,
+    onPick: (Int) -> Unit,
+    onPage: (Boolean) -> Unit,
+) {
+    val bar = theme.candidates.bar
+    val style = bar.style
+    val layout = state.layout
+    val layer = state.layer
+    val fullHeight = if (layout != null && layer != null) {
+        keyboardGeometry(theme, layout, layer).keyboardHeight
+    } else {
+        nominalKeyboardHeight(theme)
+    }
+    val panelHeight = if (layout != null && layer != null) {
+        panelHeightLeavingBottomRow(theme, layout, layer, fullHeight)
+    } else {
+        fullHeight
+    }
+    BoxWithConstraints(
+        modifier = Modifier
+            .align(Alignment.TopStart)
+            .fillMaxWidth()
+            .height(panelHeight.dp)
+            .background(Color(bar.background)),
+    ) {
+        // 一列放幾個由**量到的寬度**決定,不寫死。項寬以最長的那一項估
+        // (CJK 一個字約一個字身),估寬了只是少排一欄,估窄了才會切字。
+        //
+        // ⚠ 估的必須是**畫得出來的那些字**。第一版把 comment 也算進去,而
+        //   面板根本不畫 comment ——「你好」被當成「你好 ni hao」去估,一列
+        //   於是只排得下 2 欄,9 個候選排成 5 列、擠掉最後一個與翻頁鍵。
+        //   估寬公式與渲染內容一旦分家,症狀就是「畫面莫名其妙少一格」。
+        val longest = shown.maxOfOrNull { i -> state.candidates[i].text.length } ?: 1
+        val itemDp = longest * style.text.size +
+            2f * style.item.paddingH + style.item.spacing + 16f
+        val perRow = Expander.perRow(maxWidth.value, itemDp)
+        val rows = Expander.rows(shown, perRow)
+        Column(modifier = Modifier.fillMaxSize()) {
+          // 列數乘上列高有可能超過面板 —— 那時候要捲，**不是**讓最後幾列
+          // 連同翻頁鍵一起被切掉。翻頁鍵留在捲動區外面:它是「看後面那一頁」
+          // 的唯一入口,不可以捲不到就消失。
+          Column(
+            modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+          ) {
+            for (row in rows) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().height(bar.height.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(style.item.spacing.dp),
+                ) {
+                    for (index in row) {
+                        val candidate = state.candidates[index]
+                        val highlighted = index == state.highlighted
+                        // 念出來的序號用**引擎索引**,與候選列一致 ——
+                        // 兩處念不一樣的話,使用者說「第三個」會落在別處。
+                        val candDesc = stringResource(
+                            R.string.a11y_candidate, index + 1, candidate.text
+                        )
+                        Row(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .semantics(mergeDescendants = true) {
+                                    contentDescription = candDesc
+                                    role = Role.Button
+                                }
+                                .clip(RoundedCornerShape(style.item.cornerRadius.dp))
+                                .background(
+                                    Color(
+                                        if (highlighted) style.item.highlightBackground
+                                        else style.item.background
+                                    )
+                                )
+                                .clickable { onPick(index) }
+                                .padding(horizontal = style.item.paddingH.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            if (style.label.show && candidate.label.isNotEmpty()) {
+                                Text(
+                                    text = style.label.render(candidate.label, index),
+                                    fontSize = scaler.sp(style.label.size),
+                                    color = Color(
+                                        if (highlighted) style.label.highlightColor
+                                        else style.label.color
+                                    ),
+                                    modifier = Modifier.padding(end = 3.dp),
+                                )
+                            }
+                            Text(
+                                text = candidate.text,
+                                fontSize = scaler.sp(style.text.size),
+                                maxLines = 1,
+                                color = Color(
+                                    if (highlighted) style.text.highlightColor
+                                    else style.text.color
+                                ),
+                            )
+                        }
+                    }
+                    // 最後一列不滿時補空位,免得剩下的那幾個被拉成整列寬 ——
+                    // 那看起來像另一種東西。
+                    repeat(perRow - row.size) { Spacer(Modifier.weight(1f)) }
+                }
+            }
+          }
+            // 翻頁留在面板裡:展開的是**這一頁**,要看後面的得換頁。
+            Row(
+                modifier = Modifier.fillMaxWidth().height(bar.height.dp),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                PageArrows(
+                    state = Pager.state(
+                        kind = style.pageIndicator.kind,
+                        show = style.pageIndicator.show,
+                        pageNo = state.pageNo,
+                        isLastPage = state.isLastPage,
+                        candidateCount = state.candidates.size,
+                    ),
+                    style = style.pageIndicator,
+                    scaler = scaler,
+                    onEvent = { ev -> if (ev is KeyboardEvent.Page) onPage(ev.backward) },
+                )
             }
         }
     }
@@ -500,8 +720,14 @@ private fun CandidateBar(
     theme: Theme,
     scaler: Scaler,
     onEvent: (KeyboardEvent) -> Unit,
-    /** 使用者在消歧欄釘住的讀音；null = 不篩。見 [T9Syllables]。 */
-    pinnedSyllable: String? = null,
+    /**
+     * 要畫哪幾個候選 —— 放的是**引擎的頁內索引**，由呼叫端算好。
+     * 不在這裡算，是因為展開面板要畫的是同一份；兩邊各算一次就會分岔。
+     */
+    shown: List<Int>,
+    /** 展開鍵的狀態，見 [Expander]。 */
+    expand: Expander.State,
+    onToggleExpand: () -> Unit,
 ) {
     val bar = theme.candidates.bar
     val style = bar.style
@@ -611,12 +837,9 @@ private fun CandidateBar(
                 return@Row
             }
 
-            // 消歧欄釘住讀音時只留該讀音的候選。清單裡放的是**引擎的頁內索引**,
-            // 不是畫面位置 —— 選字走 rs_select_candidate(index_on_page),兩者一旦
-            // 脫鉤,使用者點第二個卻選到第五個,而畫面完全正常。見 [T9Syllables]。
-            val shown = remember(state.candidates, pinnedSyllable, state.highlighted) {
-                T9Syllables.visibleIndices(state.candidates, pinnedSyllable, state.highlighted)
-            }
+            // `shown` 由呼叫端算好，裡面是**引擎的頁內索引**，不是畫面位置 ——
+            // 選字走 rs_select_candidate(index_on_page),兩者一旦脫鉤,使用者
+            // 點第二個卻選到第五個,而畫面完全正常。見 [T9Syllables] 與 [Expander]。
             LazyRow(
                 modifier = Modifier.weight(1f).fillMaxHeight(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -705,6 +928,17 @@ private fun CandidateBar(
                 scaler = scaler,
                 onEvent = onEvent,
             )
+            // §8.6.6 的 expand_button。主題早就寫著 `scroll: expandable`
+            // 與 `expand_button.show: true`,本端一直沒有畫 —— 於是這一列
+            // 畫不完的候選就真的不存在。見 [Expander]。
+            if (expand.show) {
+                ExpandButton(
+                    expanded = expand.expanded,
+                    button = bar.expandButton,
+                    scaler = scaler,
+                    onClick = onToggleExpand,
+                )
+            }
         }
     }
 }

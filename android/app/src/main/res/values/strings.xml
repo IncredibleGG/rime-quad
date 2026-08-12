@@ -572,6 +572,8 @@
     <string name="a11y_cursor_home">Move cursor to start</string>
     <string name="a11y_cursor_end">Move cursor to end</string>
     <string name="a11y_candidate_next_page">Next page of candidates</string>
+    <string name="a11y_candidates_expand">Show more candidates</string>
+    <string name="a11y_candidates_collapse">Show fewer candidates</string>
     <string name="a11y_candidate_prev_page">Previous page of candidates</string>
     <string name="a11y_schema_picker">Choose keyboard</string>
     <string name="a11y_schema_next">Next input method</string>

@@ -2,6 +2,7 @@ package org.luminakey.ime.keyboard
 
 import org.luminakey.ime.theme.LayoutLayer
 import org.luminakey.ime.theme.PageIndicatorKind
+import org.luminakey.ime.theme.ScrollMode
 import org.luminakey.ime.theme.SendSpec
 
 /**
@@ -195,4 +196,113 @@ object Pager {
      */
     fun degradesToArrows(kind: PageIndicatorKind): Boolean =
         kind == PageIndicatorKind.DOTS || kind == PageIndicatorKind.TEXT
+}
+
+/* ═══════════════════════ 候選列展開（§8.6.6 的 scroll）═══════════════════════ */
+
+/**
+ * 候選列的「展開成多列」（規範 §8.6.6 的 `scroll: expandable` 與 `expand_button`）。
+ *
+ * ── 問題長什麼樣 ────────────────────────────────────────────────────────
+ * 使用者的原話是「候選詞只有三個」。三層量下來，三個是**畫面**的數字，
+ * 不是引擎的：
+ *
+ *   引擎（`rime_console`，繁體，打 `nihao`）  5 個：你好 妳好 逆號 擬好 你
+ *   畫面（emulator-5558，1080×2400 @420dpi）
+ *     直式・預設字級   完整畫得出 3 個，第 4 個「擬好」只畫得出「擬」
+ *     直式・font_scale 1.30   **3 個**
+ *     九宮格・直式・預設字級  **3 個**（每一項都掛著 `ni hao` 讀音，項寬幾乎翻倍）
+ *     橫式・預設字級   5 個全上，右邊還空著一大半
+ *
+ * 也就是說：把 `menu/page_size` 從 5 調大，直式**一個字都不會多出來** ——
+ * 那一列本來就已經畫不完 5 個。調大 page_size 而不動這一列，等於沒改。
+ *
+ * ── 為什麼是「展開」而不是「橫向捲動」 ──────────────────────────────────
+ * 候選列**早就已經**是一個 `LazyRow`，也就是說它一直都捲得動 —— 而使用者
+ * 仍然回報「只有三個」。捲動解決不了這件事，因為畫面上沒有任何東西說得出
+ * 「右邊還有」：44dp 高的一條帶子上，看不見的東西等於不存在。
+ *
+ * 規範對這件事早就有答案：`candidates.bar.scroll` 的**預設值就是
+ * `expandable`**，`expand_button.show` 的預設值就是 `true`，而隨附的每一份
+ * 主題都照著寫了。缺的不是決定，是**本端一直沒有把它畫出來** ——
+ * [ThemeModel] 解析了 `scroll` 與 `expand_button` 兩個欄位，然後沒有任何一
+ * 行程式碼讀它們。這與 [Pager] 是同一種形狀：規範裡有、主題裡有、畫面上沒有。
+ *
+ * ── ⚠ 展開的東西是「這一頁」，不是「全部攤平」 ──────────────────────────
+ * **這是這一格唯一會傷到使用者的地方，先寫在最前面。**
+ *
+ * `rs_select_candidate` 吃的是**頁內索引**（`index_on_page`）。實測（模擬器
+ * emulator-5558，`luna_pinyin_tw`，打 `ni`）：
+ *
+ *     第 1 頁  [0]=你 [1]=擬
+ *     第 2 頁  [0]=妳 [1]=妮
+ *     在第 2 頁 select(0) → 上屏「妳」
+ *
+ * 上屏的是第 2 頁的第 0 個，不是第 1 頁的第 0 個 —— 索引確實是頁內的。
+ * 所以把第 2 頁接在第 1 頁後面攤成一長條之後，畫面上的第 6 個對引擎而言
+ * 是第 1 個：**使用者點下去會上屏別的字，而畫面完全正常**。
+ *
+ * 因此展開面板畫的是**當前這一頁**的候選，翻頁仍然走 [Pager] 的箭頭
+ * （`rs_change_page`）。[rows] 收進去的是引擎索引、吐出來的還是引擎索引，
+ * 它只決定「哪幾個排在同一列」，**從不重新編號**。
+ */
+object Expander {
+
+    /** 展開鍵的狀態。`show=false` 時整顆不畫。 */
+    data class State(
+        val show: Boolean,
+        /** 面板真的要畫出來嗎。`show=false` 時必為 false。 */
+        val expanded: Boolean,
+    )
+
+    /**
+     * @param mode 主題的 `candidates.bar.scroll`。
+     * @param showButton 主題的 `candidates.bar.expand_button.show`。
+     * @param candidateCount 這一頁畫得出來的候選數。0 = 候選列現在畫的是工具列，
+     *   展開鍵不該擠進去（與 [Pager.state] 同一條理由）。
+     * @param wanted 使用者現在有沒有按開。
+     */
+    fun state(
+        mode: ScrollMode,
+        showButton: Boolean,
+        candidateCount: Int,
+        wanted: Boolean,
+    ): State {
+        val show = showButton && mode == ScrollMode.EXPANDABLE && candidateCount > 0
+        // 候選變空（選完字、清掉組字）時面板一定要跟著收 —— 否則畫面上會留下
+        // 一片蓋住鍵盤、內容卻是空的浮層,而使用者沒有東西可以點。
+        return State(show = show, expanded = show && wanted)
+    }
+
+    /**
+     * 把一頁的候選切成幾列。
+     *
+     * @param indices **引擎的頁內索引**，順序就是引擎給的順序。
+     * @param perRow 一列放幾個；小於 1 一律當 1（畫面量到 0 欄時不可以整批消失）。
+     * @return 每一列一個清單，裡面**還是引擎索引**。
+     *
+     * ⚠ 這個函式做的事只有分列。它不排序、不去重、不重新編號、不丟東西 ——
+     *   `rows(x, n).flatten() == x` 永遠成立。那一條等式就是「點到隔壁的字」
+     *   這個缺陷的守門：任何一種把位置當成索引的寫法都會讓它紅。
+     */
+    fun rows(indices: List<Int>, perRow: Int): List<List<Int>> {
+        if (indices.isEmpty()) return emptyList()
+        val n = if (perRow < 1) 1 else perRow
+        return indices.chunked(n)
+    }
+
+    /**
+     * 一列放得下幾個 —— 由**量到的寬度**決定，不寫死。
+     *
+     * @param availableDp 面板可用寬度（dp）。
+     * @param itemDp 一項的寬度（dp），呼叫端量出來的。
+     * @param maxPerRow 上限；再寬也不要把一列排成一長串，那跟沒展開一樣難掃。
+     *
+     * 至少回 1：算出 0 的話整頁會變成 0 列，也就是「展開之後一片空白」。
+     */
+    fun perRow(availableDp: Float, itemDp: Float, maxPerRow: Int = 5): Int {
+        if (itemDp <= 0f || availableDp <= 0f) return 1
+        val fit = (availableDp / itemDp).toInt()
+        return fit.coerceIn(1, if (maxPerRow < 1) 1 else maxPerRow)
+    }
 }

@@ -26,6 +26,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 #include <thread>
 #include <chrono>
 
@@ -69,6 +70,73 @@ void dump(const char* tag, rs_session sess) {
   if (s->commit_text)
     std::printf("  [%s] >>> COMMIT: \"%s\"\n", tag, s->commit_text);
   rs_snapshot_release(sess);
+}
+
+
+// ── 量測用的走頁器 ────────────────────────────────────────────────────────
+//
+// 為什麼不用底下那個「政策迴圈」來量:那個迴圈會**選字**,而選字會寫進
+// userdb —— 量完第一組輸入,第二組量到的就是被前一組訓練過的引擎,而且
+// 量測跑過一次之後就再也回不到原狀。量測這條路徑一個候選都不選,只讀快照。
+//
+// 為什麼要走頁:`menu.count` 永遠 <= `menu/page_size`,光看它分不出
+// 「引擎只給得出這麼多」與「一頁只裝得下這麼多」—— 而那正是要量的差別。
+struct PageWalk {
+  int first_page = 0;    // 第一頁的候選數（= 前端拿得到的那一批）
+  int total = 0;         // 走到末頁為止的總數
+  int pages = 0;
+  bool truncated = false;  // 撞到 kMaxPages 才停,不是真的走到末頁
+  std::string first_texts;
+};
+
+PageWalk walk_pages(rs_session sess) {
+  const int kMaxPages = 60;
+  PageWalk w;
+  for (int p = 0; p < kMaxPages; ++p) {
+    const rs_snapshot* s = rs_snapshot_acquire(sess);
+    if (!s)
+      break;
+    const int n = s->menu.count;
+    const bool last = s->menu.is_last_page;
+    if (p == 0) {
+      w.first_page = n;
+      for (int i = 0; i < n; ++i) {
+        if (i)
+          w.first_texts += "|";
+        w.first_texts += s->menu.items[i].text;
+      }
+    }
+    w.total += n;
+    w.pages = p + 1;
+    rs_snapshot_release(sess);
+    if (n == 0 || last)
+      return w;
+    if (!rs_change_page(sess, false))
+      return w;
+  }
+  w.truncated = true;
+  return w;
+}
+
+void send_keys(rs_session sess, const std::string& keys) {
+  for (char c : keys)
+    rs_process_key(sess, (int32_t)(unsigned char)c, 0);
+}
+
+// 逗號分隔的清單拆成一段一段。
+std::vector<std::string> split_commas(const char* spec) {
+  std::vector<std::string> out;
+  std::string s(spec ? spec : "");
+  size_t pos = 0;
+  while (pos <= s.size()) {
+    size_t comma = s.find(',', pos);
+    std::string one =
+        s.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+    pos = (comma == std::string::npos) ? s.size() + 1 : comma + 1;
+    if (!one.empty())
+      out.push_back(one);
+  }
+  return out;
 }
 
 }  // namespace
@@ -218,6 +286,93 @@ int main(int argc, char** argv) {
     std::printf("\n方案預設在英文模式，關掉 ascii_mode（等同使用者按中英切換）\n");
     if (!rs_set_option(sess, "ascii_mode", false))
       std::printf("  rs_set_option 失敗: %s\n", rs_last_error());
+  }
+
+
+  // ── 量測模式(RIME_MEASURE="nihao,ni,hao,…")────────────────────────────
+  //
+  // ⚠ 只讀不選。走完就 return —— 底下的政策迴圈會選字、會寫 userdb,
+  //   而量測必須可以重複跑出同一組數字。
+  //
+  // 印出來的是機器可讀的一行:
+  //   [cand] keys=<輸入> page1=<第一頁幾個> total=<全部幾個> pages=<幾頁> texts=…
+  // page1 就是前端(候選列)實際拿得到的那一批;total 是引擎**還有**多少 ——
+  // 兩者的差就是「調大 page_size 之後畫得出來的空間」。
+  if (const char* spec = std::getenv("RIME_MEASURE")) {
+    std::printf("\n--- 量測(只讀,不選字)---\n");
+    for (const std::string& one : split_commas(spec)) {
+      rs_clear_composition(sess);
+      send_keys(sess, one);
+      PageWalk w = walk_pages(sess);
+      std::printf("[cand] keys=%s page1=%d total=%d pages=%d%s texts=%s\n",
+                  one.c_str(), w.first_page, w.total, w.pages,
+                  w.truncated ? " 截斷" : "", w.first_texts.c_str());
+      std::fflush(stdout);
+      rs_clear_composition(sess);
+    }
+    rs_session_destroy(sess);
+    rs_finalize();
+    std::printf("\n=== 量測結束 ===\n");
+    return 0;
+  }
+
+  // ── 頁內索引探針(RIME_PAGEINDEX="nihao")──────────────────────────────
+  //
+  // 要回答的問題只有一個:`rs_select_candidate(i)` 的 i 是**頁內**索引,
+  // 還是攤平之後的整體索引?兩者在第一頁上完全一樣,所以只能到第二頁去問。
+  //
+  // 做法:翻到第 2 頁,記下第 2 頁的第 0 個是什麼,然後 select(0),
+  // 看上屏的是第 2 頁的第 0 個,還是第 1 頁的第 0 個。
+  // 這一格弄錯的症狀是「點了第 7 個卻上屏第 2 個」,而畫面完全正常。
+  if (const char* pk = std::getenv("RIME_PAGEINDEX")) {
+    std::printf("\n--- 頁內索引探針 ---\n");
+    rs_clear_composition(sess);
+    send_keys(sess, pk);
+
+    std::string p0_first, p0_second;
+    int p0_no = -1, p0_count = 0;
+    if (const rs_snapshot* s = rs_snapshot_acquire(sess)) {
+      p0_no = s->menu.page_no;
+      p0_count = s->menu.count;
+      if (s->menu.count > 0) p0_first = s->menu.items[0].text;
+      if (s->menu.count > 1) p0_second = s->menu.items[1].text;
+      rs_snapshot_release(sess);
+    }
+    std::printf("[pageidx] 第1頁 page_no=%d count=%d [0]=%s [1]=%s\n", p0_no,
+                p0_count, p0_first.c_str(), p0_second.c_str());
+
+    if (!rs_change_page(sess, false)) {
+      std::printf("[pageidx] 只有一頁,這個輸入問不出來\n");
+    } else {
+      std::string p1_first, p1_second;
+      int p1_no = -1, p1_count = 0;
+      if (const rs_snapshot* s = rs_snapshot_acquire(sess)) {
+        p1_no = s->menu.page_no;
+        p1_count = s->menu.count;
+        if (s->menu.count > 0) p1_first = s->menu.items[0].text;
+        if (s->menu.count > 1) p1_second = s->menu.items[1].text;
+        rs_snapshot_release(sess);
+      }
+      std::printf("[pageidx] 第2頁 page_no=%d count=%d [0]=%s [1]=%s\n", p1_no,
+                  p1_count, p1_first.c_str(), p1_second.c_str());
+
+      rs_select_candidate(sess, 0);
+      std::string got;
+      if (const rs_snapshot* s = rs_snapshot_acquire(sess)) {
+        if (s->commit_text) got = s->commit_text;
+        rs_snapshot_release(sess);
+      }
+      std::printf("[pageidx] 在第2頁 select(0) -> commit=\"%s\"\n", got.c_str());
+      std::printf("[pageidx] 判定=%s\n",
+                  got == p1_first ? "頁內索引（index_on_page）"
+                                  : (got == p0_first ? "整體索引（攤平）"
+                                                     : "兩者皆非（要人看）"));
+    }
+    rs_clear_composition(sess);
+    rs_session_destroy(sess);
+    rs_finalize();
+    std::printf("\n=== 探針結束 ===\n");
+    return 0;
   }
 
   dump("初始", sess);

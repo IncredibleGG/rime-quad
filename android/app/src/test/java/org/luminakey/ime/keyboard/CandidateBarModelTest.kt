@@ -7,6 +7,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.luminakey.ime.theme.PageIndicatorKind
+import org.luminakey.ime.theme.ScrollMode
 import org.luminakey.ime.theme.RepoFixtures
 
 /**
@@ -237,6 +238,112 @@ class CandidateBarModelTest {
                 "主題 $id 的候選列關掉了翻頁鍵（show=${pi.show} style=${pi.kind}）—— " +
                     "使用者又會看到「下一頁就沒了」",
                 pi.show && pi.kind != PageIndicatorKind.NONE,
+            )
+            checked++
+        }
+        assertTrue("一份主題都沒掃到,這條在空轉", checked >= 8)
+    }
+
+
+    /* ═══════════════ 候選列展開:不可以重新編號 ═══════════════ */
+
+    /**
+     * **這一條守的是「點了第 6 個卻上屏第 1 個」。**
+     *
+     * `rs_select_candidate` 吃的是頁內索引(實測:第 2 頁 select(0) 上屏的是
+     * 第 2 頁的第 0 個)。展開面板只是把同一頁換個排法,收進去的引擎索引
+     * 必須原封不動地吐回來 —— 順序、值、個數都不准變。
+     *
+     * 什麼時候紅:任何人把 `rows` 改成「回傳畫面位置」(例如 `indices.indices`
+     * 或 `chunked` 之後重新編號),或是為了排版順手排序／去重。
+     */
+    @Test
+    fun `展開之後的候選索引還是引擎索引`() {
+        val engineIndices = listOf(0, 1, 2, 3, 4, 5, 6, 7, 8)
+        val rows = Expander.rows(engineIndices, 4)
+        assertEquals("9 個排 4 欄 = 3 列", 3, rows.size)
+        assertEquals("攤平回來必須與輸入逐項相同", engineIndices, rows.flatten())
+
+        // 消歧欄釘住讀音之後,畫面上只留下引擎的第 3/4/7 個 ——
+        // 那時候「畫面位置」與「引擎索引」本來就不一樣,這一條才有意義。
+        val filtered = listOf(3, 4, 7)
+        val filteredRows = Expander.rows(filtered, 2)
+        assertEquals(listOf(listOf(3, 4), listOf(7)), filteredRows)
+        assertEquals(
+            "被篩選過的清單更不可以重新編號 —— 重編就是選到隔壁的字",
+            filtered,
+            filteredRows.flatten(),
+        )
+    }
+
+    /**
+     * 邊界:一列 0 欄不可以讓候選整批消失。
+     *
+     * 什麼時候紅:有人把 `perRow` 直接拿去 `chunked` 而沒有夾下限 ——
+     * `chunked(0)` 會丟例外,畫面上就是鍵盤整個掛掉。
+     */
+    @Test
+    fun `一列算出零欄時仍然畫得出候選`() {
+        assertEquals(listOf(listOf(1), listOf(2)), Expander.rows(listOf(1, 2), 0))
+        assertEquals(listOf(listOf(1), listOf(2)), Expander.rows(listOf(1, 2), -3))
+        assertTrue("沒有候選就沒有列", Expander.rows(emptyList(), 4).isEmpty())
+        assertEquals("量不到寬度時至少排一欄", 1, Expander.perRow(0f, 40f))
+        assertEquals("項寬是 0 時不可以除以零", 1, Expander.perRow(400f, 0f))
+        assertEquals("再寬也有上限", 5, Expander.perRow(4000f, 40f))
+        assertEquals("411dp 的螢幕、40dp 的項 → 5 欄", 5, Expander.perRow(411f, 40f))
+        assertEquals("項變寬就少一欄", 3, Expander.perRow(411f, 120f))
+    }
+
+    /**
+     * 展開鍵什麼時候該在。
+     *
+     * 什麼時候紅:候選變空(選完字)之後面板還開著 —— 那是一片蓋住鍵盤、
+     * 裡面卻沒有東西可點的浮層,使用者只能退出輸入框。
+     */
+    @Test
+    fun `候選變空時展開面板一定跟著收起來`() {
+        val open = Expander.state(ScrollMode.EXPANDABLE, showButton = true, candidateCount = 9, wanted = true)
+        assertTrue(open.show)
+        assertTrue(open.expanded)
+
+        val emptied = Expander.state(ScrollMode.EXPANDABLE, showButton = true, candidateCount = 0, wanted = true)
+        assertFalse("沒有候選時展開鍵不該擠進工具列", emptied.show)
+        assertFalse("使用者上一刻按開的面板必須自己收掉", emptied.expanded)
+
+        assertFalse(
+            "主題把 scroll 設成 horizontal 就不畫展開鍵",
+            Expander.state(ScrollMode.HORIZONTAL, true, 9, true).show,
+        )
+        assertFalse(
+            "主題把 expand_button.show 關掉就不畫",
+            Expander.state(ScrollMode.EXPANDABLE, false, 9, true).show,
+        )
+        assertFalse(
+            "沒按開就不展開",
+            Expander.state(ScrollMode.EXPANDABLE, true, 9, false).expanded,
+        )
+    }
+
+    /**
+     * 隨附主題不可以把展開這條路關掉 —— 關掉之後直式就真的只剩 3 個,
+     * 而 `menu/page_size` 調到 9 完全看不出來。
+     *
+     * 什麼時候紅:有人在某一份主題裡把 `scroll` 設成 `none`/`horizontal`,
+     * 或把 `expand_button.show` 設成 false。
+     */
+    @Test
+    fun `隨附主題的候選列都展得開`() {
+        val repo = FixtureRepo()
+        var checked = 0
+        for (id in RepoFixtures.themeIds) {
+            val theme = repo.loadTheme(id).value
+            assertNotNull("主題 $id 載不起來", theme)
+            val bar = theme!!.candidates.bar
+            assertTrue(
+                "主題 $id 的候選列展不開(scroll=${bar.scroll} " +
+                    "expand_button.show=${bar.expandButton.show}) —— " +
+                    "直式一列只畫得下 3 個,展不開就等於候選只有 3 個",
+                bar.scroll == ScrollMode.EXPANDABLE && bar.expandButton.show,
             )
             checked++
         }

@@ -485,6 +485,8 @@
     <string name="a11y_cursor_home">游標移到開頭</string>
     <string name="a11y_cursor_end">游標移到結尾</string>
     <string name="a11y_candidate_next_page">下一頁候選字</string>
+    <string name="a11y_candidates_expand">展開候選字</string>
+    <string name="a11y_candidates_collapse">收合候選字</string>
     <string name="a11y_candidate_prev_page">上一頁候選字</string>
     <string name="a11y_schema_picker">選擇鍵盤</string>
     <string name="a11y_schema_next">下一個輸入方案</string>
