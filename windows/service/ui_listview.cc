@@ -5,6 +5,32 @@ namespace {
 
 bool NotEmpty(const RECT& r) { return r.right > r.left && r.bottom > r.top; }
 
+// 掛一個「只有高度、沒有圖」的影像清單。
+//
+// ⚠ 舊的那一份要自己銷毀。LVSIL_SMALL 的影像清單**不屬於**控制項
+//   (除非設了 LVS_SHAREIMAGELISTS),換掉之後不放的話每次改 DPI 都漏一個。
+bool ApplyRowSpacer(HWND list, int cy) {
+  if (!list || cy <= 0) return false;
+  HIMAGELIST spacer = ::ImageList_Create(1, cy, ILC_COLOR32, 1, 1);
+  if (!spacer) return false;
+  HIMAGELIST old = reinterpret_cast<HIMAGELIST>(::SendMessageW(
+      list, LVM_SETIMAGELIST, LVSIL_SMALL,
+      reinterpret_cast<LPARAM>(spacer)));
+  if (old && old != spacer) ::ImageList_Destroy(old);
+  return true;
+}
+
+// 控制項**實際**的列高(像素)。量不到回 0 —— 沒有列可以量的時候
+// LVM_GETITEMRECT 是失敗的,而那時候不可以假裝量到了 0。
+int MeasuredRowHeight(HWND list) {
+  if (!list) return 0;
+  RECT r{};
+  r.left = LVIR_BOUNDS;
+  if (!::SendMessageW(list, LVM_GETITEMRECT, 0, reinterpret_cast<LPARAM>(&r)))
+    return 0;
+  return static_cast<int>(r.bottom - r.top);
+}
+
 }  // namespace
 
 void EnsureRowListColumn(HWND list) {
@@ -77,15 +103,39 @@ void SetRowListRowHeight(HWND list, int px) {
   //   NM_CUSTOMDRAW 畫的(兩者不能並存)。掛一個「只有高度、沒有圖」的
   //   影像清單是 Win32 上調列高的標準做法,而且不影響現有的繪製路徑。
   //   寬度給 1 而不是 0:0 在某些版本上會被當成「沒有影像清單」。
+  //
+  // ⚠ **spacer 的高度不是列高。** 掛 36 px 上去,CI(run #171)上的
+  //   comctl32 給的是 **37** —— 它自己還會加一格。而版面
+  //   (ui_layout.cc 的 SidebarListDip)是照「一列剛好 36」算清單高度的,
+  //   側欄又是 LVS_NOSCROLL:5 列各多 1 px,最後一列**被裁掉**。
+  //   那一格是多少不必知道也不該猜(換一版 comctl32、換一種字型都可能
+  //   不一樣)—— **掛上去、量回來、把差補掉**就好。
   if (!list || px <= 0) return;
-  HIMAGELIST spacer = ::ImageList_Create(1, px, ILC_COLOR32, 1, 1);
-  if (!spacer) return;
-  // ⚠ 舊的那一份要自己銷毀。LVSIL_SMALL 的影像清單**不屬於**控制項
-  //   (除非設了 LVS_SHAREIMAGELISTS),換掉之後不放的話每次改 DPI 都漏一個。
-  HIMAGELIST old = reinterpret_cast<HIMAGELIST>(::SendMessageW(
-      list, LVM_SETIMAGELIST, LVSIL_SMALL,
-      reinterpret_cast<LPARAM>(spacer)));
-  if (old && old != spacer) ::ImageList_Destroy(old);
+  // ⚠ 量得到列高需要至少一列,而 schema_list_ 在 ApplyFonts 跑的時候
+  //   還是空的。空的話暫時借一列,量完刪掉:插入與清空都不會產生帶
+  //   LVIS_SELECTED 的 LVN_ITEMCHANGED,選取那條線碰不到
+  //   (OnNotify 只在「沒選 → 有選」的上升緣才動作)。
+  const bool borrowed = ::SendMessageW(list, LVM_GETITEMCOUNT, 0, 0) == 0;
+  if (borrowed) {
+    wchar_t blank[] = L"";
+    LVITEMW probe{};
+    probe.mask = LVIF_TEXT;
+    probe.iItem = 0;
+    probe.pszText = blank;
+    ::SendMessageW(list, LVM_INSERTITEMW, 0, reinterpret_cast<LPARAM>(&probe));
+  }
+  int cy = px;
+  // 收斂通常一輪就到(差是個常數)。上限擺著是防呆:量不到、或某一版
+  // comctl32 讓它來回震盪的話,寧可停在「至少掛上去了」的舊行為。
+  for (int i = 0; i < 4; ++i) {
+    if (!ApplyRowSpacer(list, cy)) break;
+    const int got = MeasuredRowHeight(list);
+    if (got <= 0 || got == px) break;
+    const int next = cy - (got - px);
+    if (next <= 0 || next == cy) break;
+    cy = next;
+  }
+  if (borrowed) ::SendMessageW(list, LVM_DELETEALLITEMS, 0, 0);
 }
 
 void SetRowListItems(HWND list, const std::vector<std::wstring>& rows) {
@@ -100,6 +150,15 @@ void SetRowListItems(HWND list, const std::vector<std::wstring>& rows) {
     it.pszText = const_cast<wchar_t*>(rows[i].c_str());
     ::SendMessageW(list, LVM_INSERTITEMW, 0, reinterpret_cast<LPARAM>(&it));
   }
+}
+
+bool RowIsSelected(HWND list, int row) {
+  if (!list || row < 0) return false;
+  // ⚠ 見標頭:**不讀 NMCUSTOMDRAW::uItemState**。這一支問的是控制項
+  //   自己那一份,而那一份是權威的。
+  return (::SendMessageW(list, LVM_GETITEMSTATE, static_cast<WPARAM>(row),
+                         static_cast<LPARAM>(LVIS_SELECTED)) &
+          LVIS_SELECTED) != 0;
 }
 
 void SyncRowListColumn(HWND list) {

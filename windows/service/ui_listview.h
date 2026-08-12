@@ -85,6 +85,14 @@ void SelectOnlyRow(HWND list, int row);
 ///
 /// ⚠ 不設的話 comctl32 依字型算,在 t3 下約 20 px,而版面是照 36 算的。
 ///   後果是「預設」徽章被切掉一半,而且一列低於 28 的最小點擊目標。
+///
+/// ⚠ **影像清單的高度不等於列高。** CI(Windows run #171)量到的是:
+///   掛一個 36 px 的 spacer,`LVM_GETITEMRECT` 回來的是 **37** ——
+///   comctl32 自己還會加一格。那 1 px 不是美觀問題:版面
+///   (`common/ui_layout.cc` 的 `SidebarListDip`)是照「一列剛好
+///   `kSidebarItemH`」算清單有多高的,而側欄是 `LVS_NOSCROLL` ——
+///   5 列各多 1 px,最後一列**被裁掉**。
+///   所以這一支不猜那一格是多少,而是**掛上去、量回來、再補償**。
 void SetRowListRowHeight(HWND list, int px);
 
 void SetRowListItems(HWND list, const std::vector<std::wstring>& rows);
@@ -108,6 +116,16 @@ void SyncRowListColumn(HWND list);
 //
 // 回傳 false = 真的沒有矩形可以畫(控制項不見了)。呼叫端這時**不要**畫。
 bool RowRect(HWND list, const NMLVCUSTOMDRAW* cd, RECT* out);
+
+// 那一列現在是不是被選取的 —— **問控制項本人**。
+//
+// ⚠ 自繪時**不可以**改讀 `NMCUSTOMDRAW::uItemState` 的 `CDIS_SELECTED`。
+//   那件事以前是「不去賭它準不準」,現在是量過的:
+//   `tests/test_win32_sidebar.cc` 走一次真的自繪,控制項自己說被選的
+//   只有 1 列,而 `uItemState` **5 列裡說 5 列**都被選 ——
+//   照它畫的結果是整份清單每一列都反白。
+//   (check_ui_spec.sh 的 W31 守著:任何自繪都不准讀那個位元。)
+bool RowIsSelected(HWND list, int row);
 
 }  // namespace rimewin
 

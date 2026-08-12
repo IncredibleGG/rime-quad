@@ -1303,9 +1303,18 @@ PYSCRIPT
   #
   #   1. LVM_SETITEMSTATE 只准出現在 service/ui_listview.cc(單一寫入點)
   #   2. 受管清單的自繪**不可以**從 CDIS_SELECTED 決定反白
-  #      (⚠ 沒有人程式化寫它選取的清單不在此限 —— 那種清單只有一份
-  #        真相,不可能分岔。連網紀錄那一個就是。)
+  #   2b. **任何**自繪處理常式都不可以讀 NMCUSTOMDRAW::uItemState 的
+  #       CDIS_SELECTED —— 要問就問控制項本人
+  #       (service/ui_listview.cc 的 RowIsSelected)。
   #   3. SelectOnlyRow 裡「全清」必須在「設定」**之前**
+  #
+  # ⚠ 2b 以前是 2 的一個**例外**:「沒有人程式化寫它選取的清單不在此限,
+  #   那種清單只有一份真相,不可能分岔;連網紀錄那一個就是。」
+  #   那個例外是錯的,而錯的地方不是分岔 —— 是那個位元本身。
+  #   Windows run #171 上 tests/test_win32_sidebar.cc 走了一次真的自繪:
+  #   控制項自己(LVM_GETITEMSTATE / LVM_GETSELECTEDCOUNT)說被選的只有
+  #   1 列,而 uItemState **5 列裡說 5 列**都被選。照它畫的話,連網紀錄
+  #   是**每一列都反白**;那不是兩份分岔,是直接讀錯。所以例外收掉。
   check
   local w31bad=0
   local w31out; w31out="$("${PY}" - "${CODE_DIR}" <<'PYSCRIPT'
@@ -1375,13 +1384,26 @@ for name in managed:
     if not found:
         print('NODRAW=%s' % name)
 
+# ── 2b. 任何自繪都不准讀 uItemState 的 CDIS_SELECTED ──────────
+#   判準與受管與否無關:那個位元在 run #171 上 5 列裡說 5 列被選。
+ndraw = 0
+for m in re.finditer(r'LRESULT\s+SettingsWindow::(\w+)\s*\(', sw):
+    b = body_after(sw, m.end())
+    if 'CDDS_ITEMPREPAINT' not in b:
+        continue
+    ndraw += 1
+    if re.search(r'uItemState\s*&\s*CDIS_SELECTED', b):
+        print('BADSTATE=%s' % m.group(1))
+print('NDRAW=%d' % ndraw)
+
 # ⚠ 反過來也要成立:一個清單的自繪如果從**我們自己的**狀態決定反白
 #   (const bool selected = (i == xxx_)),那它就一定要走 SelectOnlyRow ——
 #   不然 comctl32 那一份沒有人同步,兩份照樣分岔。而受管名單是從
 #   SelectOnlyRow() 的呼叫點數出來的,所以呼叫點一被拿掉,那個清單就
 #   **悄悄退出受管**,上面那一圈再也掃不到它(覆核者實測的拆法 N2)。
-#   ⚠ 沒有程式化選取的清單不在此限:它的反白從 CDIS_SELECTED 來,
-#     只有一份真相,不可能分岔。連網紀錄那一個就是。
+#   ⚠ 沒有程式化選取的清單不在這一圈裡(它沒有「自己的那一份」可以
+#     跟 comctl32 分岔),但它一樣受 2b 管:反白要問控制項本人,
+#     不准讀 uItemState 的 CDIS_SELECTED。
 for m in re.finditer(r'LRESULT\s+SettingsWindow::(\w+)\s*\(', sw):
     b = body_after(sw, m.end())
     if not re.search(r'const bool selected\s*=\s*\(\s*\w+\s*==\s*\w+_\s*\)', b):
@@ -1428,10 +1450,14 @@ PYSCRIPT
 )"
   local nset; nset="$(num "$(printf '%s\n' "${w31out}" | grep '^NSET=' | cut -d= -f2)")"
   local nman; nman="$(num "$(printf '%s\n' "${w31out}" | grep '^NMANAGED=' | cut -d= -f2)")"
+  local ndraw; ndraw="$(num "$(printf '%s\n' "${w31out}" | grep '^NDRAW=' | cut -d= -f2)")"
   # ⚠ 範圍非空:兩個都是零的話不是「很乾淨」,是掃錯地方了 ——
   #   ui_listview.cc 自己一定用得到 LVM_SETITEMSTATE,而側欄一定受管。
   need_scope "W31 LVM_SETITEMSTATE" "${nset}" 2 || w31bad=1
   need_scope "W31 受管清單" "${nman}" 2 || w31bad=1
+  #   自繪處理常式至少三個(側欄、方案清單、連網紀錄)。掃到 0 個
+  #   而報「沒有人讀那個位元」正是 §2-G 的失效方式。
+  need_scope "W31 自繪處理常式" "${ndraw}" 3 || w31bad=1
   local w31line
   while IFS= read -r w31line; do
     case "${w31line}" in
@@ -1440,6 +1466,9 @@ PYSCRIPT
         w31bad=1 ;;
       BADDRAW=*)
         red "W31:${w31line#BADDRAW=} —— 那是 comctl32 的那一份,不是我們的。兩份會分岔,而分岔的樣子是兩列同時反白(#80)"
+        w31bad=1 ;;
+      BADSTATE=*)
+        red "W31:${w31line#BADSTATE=}() 從 NMCUSTOMDRAW::uItemState 的 CDIS_SELECTED 決定反白 —— 那個位元不能用(run #171 實測:它 5 列裡說 5 列被選,而控制項自己說 1 列)。問控制項本人:service/ui_listview.cc 的 RowIsSelected()"
         w31bad=1 ;;
       NODRAW=*)
         red "W31:找不到畫 ${w31line#NODRAW=} 的那個函式(預期它的本體裡有 RowRect(${w31line#NODRAW=}, cd))—— 掃描範圍錯了"
@@ -1473,7 +1502,7 @@ PYSCRIPT
         w31bad=1 ;;
     esac
   done <<< "${w31out}"
-  [ "${w31bad}" -eq 0 ] && ok "W31 清單的選取只有一個寫入點(${nset} 處 LVM_SETITEMSTATE 全在 ui_listview.cc),${nman} 個受管清單的反白都從自己的狀態畫"
+  [ "${w31bad}" -eq 0 ] && ok "W31 清單的選取只有一個寫入點(${nset} 處 LVM_SETITEMSTATE 全在 ui_listview.cc),${nman} 個受管清單的反白都從自己的狀態畫,${ndraw} 個自繪處理常式沒有一個讀 uItemState 的 CDIS_SELECTED"
 
   # ── W32:介面執行緒上不准出現「會等引擎」的呼叫 ────────────────
   #
@@ -3025,6 +3054,7 @@ self_check() {
 "W31k SelectOnlyRow 拿掉先全清(覆核者實測的拆法 K)|service/ui_listview.cc|s=s.replace('  ::SendMessageW(list, LVM_SETITEMSTATE, static_cast<WPARAM>(-1),' + chr(10) + '                 reinterpret_cast<LPARAM>(&clear));','',1)"
 "W31s 方案清單又自己下 LVM_SETITEMSTATE|service/settings_window.cc|s=s.replace('void SettingsWindow::SelectSchemaRow(int row) {','void SettingsWindow::SelectSchemaRow(int row) { LVITEMW sneaky{}; ::SendMessageW(schema_list_, LVM_SETITEMSTATE, 0, reinterpret_cast<LPARAM>(&sneaky));',1)"
 "W31d 方案清單的反白改回從 CDIS_SELECTED 畫|service/settings_window.cc|s=s.replace('      const bool selected = (i == schema_sel_);','      const bool selected = (cd->nmcd.uItemState & CDIS_SELECTED) != 0;',1)"
+"W31w 連網紀錄的反白改回讀 uItemState(run #171 實測:它 5 列裡說 5 列被選)|service/settings_window.cc|s=s.replace('      const bool selected = RowIsSelected(net_log_list_, static_cast<int>(i));','      const bool selected = (cd->nmcd.uItemState & CDIS_SELECTED) != 0;',1)"
 "W30 頁碼又寫死成數字|service/status_bar.cc|s=s.replace('settings_->OpenAt(StateIsFailure(service_state_) ? kPageAdvanced','settings_->OpenAt(StateIsFailure(service_state_) ? 3',1).replace(': kPageSchemas);',': 0);',1)"
 "W30b 只有一邊改回數字(跨行,而且引數裡自己有括號)|service/status_bar.cc|s=s.replace(': kPageSchemas);',': 0);',1)"
 "W9 少一條單元測試|tests/test_status_cells.cc|s=s.replace('TEST(status_cells_input_mode_shows_exactly_one_label)','TEST(status_cells_renamed_away)',1)"

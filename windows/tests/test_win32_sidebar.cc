@@ -68,12 +68,19 @@ std::wstring PageName(int i) {
   return s;
 }
 
-// 側欄自繪時,每一列拿到的 uItemState。用來回答那個真正的爭議:
-// **comctl32 會不會同時說兩列是 selected。**
+// 自繪那一趟,每一列的兩個來源各說了什麼。
+//
+//   · state_*     控制項自己那一份(LVM_GETITEMSTATE)—— **權威的那一份**,
+//                 也是 service/ui_listview.cc 的 RowIsSelected() 走的路。
+//   · uistate_*   NMCUSTOMDRAW::uItemState 的 CDIS_SELECTED。
+//
+// 兩份都收,是因為「它們一不一樣」正是這一支要回答的爭議。
 struct DrawLog {
   int itemprepaint = 0;
-  int selected_rows = 0;
-  int last_selected = -1;
+  int uistate_rows = 0;
+  int uistate_last = -1;
+  int state_rows = 0;
+  int state_last = -1;
 };
 
 DrawLog g_log;
@@ -89,9 +96,15 @@ LRESULT CALLBACK ProbeProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
       if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
       if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
         ++g_log.itemprepaint;
+        const int row = static_cast<int>(cd->nmcd.dwItemSpec);
         if ((cd->nmcd.uItemState & CDIS_SELECTED) != 0) {
-          ++g_log.selected_rows;
-          g_log.last_selected = static_cast<int>(cd->nmcd.dwItemSpec);
+          ++g_log.uistate_rows;
+          g_log.uistate_last = row;
+        }
+        // 權威的那一份 —— 產品碼(RowIsSelected)走的就是這一條。
+        if (RowIsSelected(g_sidebar, row)) {
+          ++g_log.state_rows;
+          g_log.state_last = row;
         }
         // ⚠ 不畫任何東西:這一支量的是**狀態**,不是像素。
         //   「畫得出來嗎」有 test_win32_listview.cc 在管。
@@ -260,10 +273,28 @@ TEST(sidebar_select_leaves_exactly_one_row_selected) {
   Destroy(hn);
 }
 
-// ── W2:自繪那一趟也只看到一列 selected ──────────────────────────
+// ── W2:自繪那一趟,權威的那一份也只有一列 selected ──────────────
 //
-// 上一條問的是控制項的**狀態**,這一條問的是**繪製時它說了什麼** ——
-// 而使用者看到的是後者。兩列同時反白的直接條件就是這個數字等於 2。
+// 上一條問的是換完頁之後控制項的**狀態**,這一條問的是**繪製途中**
+// 拿得到什麼 —— 而使用者看到的是後者。兩列同時反白的直接條件就是
+// 繪製時有兩列說自己被選。
+//
+// ⚠ 這一條**斷言的是 LVM_GETITEMSTATE,不是 NMCUSTOMDRAW::uItemState**,
+//   而那不是為了讓它好過。它第一次上 CI(Windows run #171)斷言的正是
+//   uItemState,結果是:`g_log.selected_rows == 1 → 5`、
+//   `g_log.last_selected == 2 → 4` —— **5 列裡 5 列**都被回報成 selected,
+//   而同一時刻控制項自己(上一條的 LVM_GETSELECTEDCOUNT)說只有 1 列。
+//
+//   所以那個爭議有答案了,而且答案是「uItemState 這個位元不能用」:
+//   settings_window.cc 的側欄與方案清單本來就不讀它(它們從 page_ /
+//   schema_sel_ 畫),當時的措辭是「不去賭它準不準」—— 現在不是賭,
+//   是量過的。連網紀錄那一個當時仍在讀,照它畫的結果是**每一列都反白**;
+//   這一輪一併改成問控制項本人(service/ui_listview.cc 的 RowIsSelected),
+//   而 check_ui_spec.sh 的 W31 從此不准任何一個自繪處理常式讀那個位元。
+//
+//   兩份都收、只斷言權威的那一份,並把對照印出來:哪一天 comctl32 把
+//   uItemState 修好了,下面那一行會看得出來,而不必為此讓測試變紅
+//   (它變不變好都不改變「產品碼不讀它」這個結論)。
 TEST(sidebar_custom_draw_reports_exactly_one_selected_row) {
   Harness hn = Build(true);
   CHECK(hn.list != nullptr);
@@ -274,8 +305,13 @@ TEST(sidebar_custom_draw_reports_exactly_one_selected_row) {
   CHECK(Paint(hn.list));
   // harness 自己壞掉(一次 ITEMPREPAINT 都沒收到)算失敗,不算通過。
   CHECK_INT(g_log.itemprepaint, kPageRows);
-  CHECK_INT(g_log.selected_rows, 1);
-  CHECK_INT(g_log.last_selected, 2);
+  CHECK_INT(g_log.state_rows, 1);
+  CHECK_INT(g_log.state_last, 2);
+  std::printf(
+      "    [對照] 繪製途中:控制項說 %d 列被選(最後一列 %d);"
+      "NMCUSTOMDRAW::uItemState 說 %d 列(最後一列 %d)\n",
+      g_log.state_rows, g_log.state_last, g_log.uistate_rows,
+      g_log.uistate_last);
   Destroy(hn);
 }
 

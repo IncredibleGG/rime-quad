@@ -1243,7 +1243,16 @@ LRESULT SettingsWindow::DrawNetLogList(NMLVCUSTOMDRAW* cd) {
       return CDRF_NOTIFYITEMDRAW;
     case CDDS_ITEMPREPAINT: {
       const size_t i = static_cast<size_t>(cd->nmcd.dwItemSpec);
-      const bool selected = (cd->nmcd.uItemState & CDIS_SELECTED) != 0;
+      // ⚠ **不讀 NMCUSTOMDRAW::uItemState 的 CDIS_SELECTED。**
+      //   側欄與方案清單早就不讀它了,而那時寫下的理由是
+      //   「不去賭它準不準」。CI(Windows run #171)把答案量出來了:
+      //   tests/test_win32_sidebar.cc 走一次真的自繪,控制項自己說
+      //   被選的只有 1 列,而 uItemState **5 列裡說 5 列**都被選。
+      //
+      //   連網紀錄沒有第二份真相可以分岔,所以它不在 #80 的形狀裡 ——
+      //   它壞的方式不一樣:照 uItemState 畫,**整份紀錄每一列都反白**。
+      //   問控制項本人。
+      const bool selected = RowIsSelected(net_log_list_, static_cast<int>(i));
       const bool hot = (cd->nmcd.uItemState & CDIS_HOT) != 0;
       const bool focused =
           show_focus_ && (cd->nmcd.uItemState & CDIS_FOCUS) != 0;
