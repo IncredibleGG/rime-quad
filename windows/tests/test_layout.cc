@@ -372,3 +372,55 @@ TEST(place_follow_caret_false_pins_to_corner) {
   CHECK_NEAR(r.right, 1920, 1e-9);
   CHECK_NEAR(r.bottom, 1080, 1e-9);
 }
+
+// ══════════════════════════════════════════════════════════════════
+//  滾輪要翻幾頁(G71)
+// ══════════════════════════════════════════════════════════════════
+//
+// ⚠ 這一組守的是「精密觸控板」。滑鼠的滾輪一格固定送 ±120,寫成
+//   `delta > 0 ? 上一頁 : 下一頁` 在滑鼠上完全正常 —— 而精密觸控板
+//   一次輕撥會送出一連串很小的增量(十幾則 ±8),於是使用者輕輕一撥
+//   就翻掉十幾頁,再也回不到他原本看的那一頁。
+//   這個缺陷在 Ubuntu 上驗得到,在真 Windows 上要有觸控板才碰得到。
+
+TEST(wheel_one_full_notch_is_exactly_one_page) {
+  int32_t acc = 0;
+  // 捲輪往上 = 往**前**一頁(與閱讀方向一致,四端要一樣)。
+  CHECK_INT(WheelPageSteps(&acc, 120), -1);
+  CHECK_INT(acc, 0);
+  CHECK_INT(WheelPageSteps(&acc, -120), 1);
+  CHECK_INT(acc, 0);
+}
+
+TEST(wheel_small_touchpad_increments_accumulate_into_one_page) {
+  int32_t acc = 0;
+  // 四則 -30(往下輕撥一次)只可以翻**一**頁,不是四頁。
+  CHECK_INT(WheelPageSteps(&acc, -30), 0);
+  CHECK_INT(WheelPageSteps(&acc, -30), 0);
+  CHECK_INT(WheelPageSteps(&acc, -30), 0);
+  CHECK_INT(WheelPageSteps(&acc, -30), 1);
+  CHECK_INT(acc, 0);
+}
+
+TEST(wheel_reversing_direction_drops_the_leftover) {
+  int32_t acc = 0;
+  CHECK_INT(WheelPageSteps(&acc, -90), 0);  // 往下撥了一點點
+  CHECK_INT(acc, -90);
+  // 改成往上撥:那 -90 的殘值**不可以**留著。留著的話,往上撥
+  // 只要 30 就翻一頁,而使用者感覺是「有時候一撥就跳、有時候撥不動」。
+  CHECK_INT(WheelPageSteps(&acc, 30), 0);
+  CHECK_INT(acc, 30);
+}
+
+TEST(wheel_a_hard_flick_can_turn_more_than_one_page) {
+  int32_t acc = 0;
+  CHECK_INT(WheelPageSteps(&acc, -360), 3);
+  CHECK_INT(acc, 0);
+}
+
+TEST(wheel_zero_delta_does_nothing_and_null_is_safe) {
+  int32_t acc = 55;
+  CHECK_INT(WheelPageSteps(&acc, 0), 0);
+  CHECK_INT(acc, 55);  // 連累積器都不可以動
+  CHECK_INT(WheelPageSteps(nullptr, 120), 0);
+}

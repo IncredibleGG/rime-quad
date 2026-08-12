@@ -2983,6 +2983,147 @@ PYSCRIPT
     esac
   done <<< "${w37out}"
   [ "${w37bad}" -eq 0 ] && ok "W37 部署回呼走 CallbackGate:OnDeploy 只在閘裡動 atomic 與排一件工作(沒有 rs_*),Start 開閘、Stop 的**第一句**就關閘(排在 started_ 那一問與 queue_.Stop() 之前)—— Stop() 返回時「沒有回呼還在用這個 Engine」是被鎖保證的"
+
+  # ── W38:候選窗的滾輪翻頁,整條鏈都要接著 ─────────────────────
+  #
+  # ⚠ 這一條守的**不是點,是鏈**。G71 之前的狀態正是這個專案最會出的那種:
+  #   `Op::kChangePage` 在 protocol.h 上、pipe_server 解得出來、
+  #   Engine::ChangePage 會呼叫 rs_change_page、ipc_client 也有
+  #   SendChangePage —— **整個 windows/ 底下一個呼叫點都沒有**。
+  #   每一段都寫好了,只是沒有人按得到它,而只有使用者的手指找得到這件事。
+  #
+  #   所以這裡逐段問:訊息收得到嗎 → 收到之後走純函式判斷嗎 →
+  #   判斷完交得出去嗎 → 有人接嗎 → 接的人真的翻頁嗎 →
+  #   翻完兩個表面都更新嗎 → 有人記得「這一頁是誰的」嗎。
+  #   少任何一段,畫面上都看不出來(滾輪就是沒反應),而那不會有人回報。
+  check
+  local w38bad=0
+  local w38out; w38out="$("${PY}" - "${CODE_DIR}" <<'PYSCRIPT'
+import os, re, sys
+root = sys.argv[1]
+
+def read(rel):
+    try:
+        return open(os.path.join(root, rel), encoding='utf-8',
+                    errors='replace').read()
+    except OSError:
+        return None
+
+cw = read('service/cand_window.cc')
+ps = read('service/pipe_server.cc')
+cl = read('common/cand_layout.cc')
+if cw is None or ps is None or cl is None:
+    print('NOSRC=1')
+    raise SystemExit(0)
+
+def match_from(src, i):
+    depth = 0
+    for j in range(i, len(src)):
+        if src[j] == '{':
+            depth += 1
+        elif src[j] == '}':
+            depth -= 1
+            if depth == 0:
+                return (i, j + 1)
+    return (i, len(src))
+
+def body_of(src, sig):
+    i = src.find(sig)
+    if i < 0:
+        return None
+    b = src.find('{', i)
+    if b < 0:
+        return None
+    ob, cb = match_from(src, b)
+    return src[ob + 1:cb - 1]
+
+# 分母:候選窗自己處理的視窗訊息。掃空 = 範圍寫錯,那必須紅。
+print('NCASE=%d' % len(re.findall(r'case\s+WM_[A-Z]+', cw)))
+
+if 'case WM_MOUSEWHEEL' not in cw:
+    print('NOWHEELCASE=1')
+elif 'OnWheel(' not in cw:
+    print('WHEELCASENOCALL=1')
+
+ow = body_of(cw, 'void CandidateWindow::OnWheel(')
+if ow is None:
+    print('NOWHEELFN=1')
+else:
+    if 'WheelPageSteps(' not in ow:
+        print('WHEELNOPUREFN=1')
+    # ⚠ 「有讀到 page_fn_」不等於「有叫它」。這一格是覆核時實測出來的:
+    #    植入 W38c(把 `if (fn) fn(steps);` 換成 `(void)steps;`)之後
+    #    整支守門仍然是綠的 —— 那條反向測試本來等於沒做。
+    if 'page_fn_' not in ow or 'fn(steps)' not in ow:
+        print('WHEELNOHANDOFF=1')
+    if 'shown_.items.empty()' not in ow:
+        print('WHEELNOEMPTYGUARD=1')
+
+if 'WheelPageSteps' not in cl:
+    print('NOPUREIMPL=1')
+
+if not re.search(r'SetPageHandler\(\s*\[this\]', ps):
+    print('NOINSTALL=1')
+if 'SetPageHandler(nullptr)' not in ps:
+    print('NOUNINSTALL=1')
+
+oc = body_of(ps, 'void PipeServer::OnCandidateWheel(')
+if oc is None:
+    print('NOHANDLERFN=1')
+else:
+    if 'ChangePage(' not in oc:
+        print('HANDLERNOCHANGEPAGE=1')
+    if 'ui_->Update(' not in oc:
+        print('HANDLERNOREPAINT=1')
+    if 'bar_->OnSnapshot(' not in oc:
+        print('HANDLERNOBAR=1')
+    if 'ui_session_' not in oc:
+        print('HANDLERNOSESSION=1')
+
+if not re.search(r'ui_session_\s*=\s*snap\.items\.empty\(\)', ps):
+    print('NOSESSIONRECORD=1')
+PYSCRIPT
+)"
+  local ncase; ncase="$(num "$(printf '%s\n' "${w38out}" | grep '^NCASE=' | cut -d= -f2)")"
+  need_scope "W38 候選窗的視窗訊息分支" "${ncase}" 4 || w38bad=1
+  local w38line
+  while IFS= read -r w38line; do
+    case "${w38line}" in
+      NOSRC=*)
+        red "W38:找不到 cand_window.cc / pipe_server.cc / cand_layout.cc —— 掃描範圍錯了"; w38bad=1 ;;
+      NOWHEELCASE=*)
+        red "W38:候選窗沒有 WM_MOUSEWHEEL 分支 —— 滾輪翻頁整條鏈的第一段就斷了(而畫面上看起來只是「滾輪沒反應」)"; w38bad=1 ;;
+      WHEELCASENOCALL=*)
+        red "W38:有 WM_MOUSEWHEEL 分支但沒有呼叫 OnWheel() —— 收到了不做事"; w38bad=1 ;;
+      NOWHEELFN=*)
+        red "W38:找不到 CandidateWindow::OnWheel() 的本體"; w38bad=1 ;;
+      WHEELNOPUREFN=*)
+        red "W38:OnWheel 沒有走 WheelPageSteps() —— 直接看 delta 的正負在滑鼠上正常,而精密觸控板一次輕撥會送出一連串小增量,使用者一撥就翻掉十幾頁。判斷要留在純函式裡才驗得到"; w38bad=1 ;;
+      WHEELNOHANDOFF=*)
+        red "W38:OnWheel 算完之後沒有交給 page_fn_ —— 又一個「算對了但沒有人收」"; w38bad=1 ;;
+      WHEELNOEMPTYGUARD=*)
+        red "W38:OnWheel 沒有擋「現在沒有候選」—— 隱藏的視窗仍然收得到 hover 捲動,那時翻頁是在使用者背後動他的組字狀態"; w38bad=1 ;;
+      NOPUREIMPL=*)
+        red "W38:common/cand_layout.cc 裡沒有 WheelPageSteps —— 純函式那一半不見了,Ubuntu 上就驗不到"; w38bad=1 ;;
+      NOINSTALL=*)
+        red "W38:pipe_server 沒有掛上 SetPageHandler —— 候選窗手上那個回呼永遠是空的,這正是 kChangePage 原本的處境(線路接好了沒有人叫它)"; w38bad=1 ;;
+      NOUNINSTALL=*)
+        red "W38:pipe_server 的解構子沒有 SetPageHandler(nullptr) —— 候選窗比它晚死,那個 lambda 捕捉的是一個已經不在的 this"; w38bad=1 ;;
+      NOHANDLERFN=*)
+        red "W38:找不到 PipeServer::OnCandidateWheel() 的本體"; w38bad=1 ;;
+      HANDLERNOCHANGEPAGE=*)
+        red "W38:OnCandidateWheel 沒有呼叫 Engine::ChangePage —— 收到滾輪卻沒有翻頁"; w38bad=1 ;;
+      HANDLERNOREPAINT=*)
+        red "W38:OnCandidateWheel 翻完頁沒有把新快照推回候選窗 —— 頁翻了、畫面沒動,而使用者按的數字鍵會選到看不見的字"; w38bad=1 ;;
+      HANDLERNOBAR=*)
+        red "W38:OnCandidateWheel 只更新候選窗、沒有餵給那一橫 —— ui-design §12.10.1 規範性:兩個表面必須讀同一份快照"; w38bad=1 ;;
+      HANDLERNOSESSION=*)
+        red "W38:OnCandidateWheel 沒有讀 ui_session_ —— 它不知道要翻誰的頁"; w38bad=1 ;;
+      NOSESSIONRECORD=*)
+        red "W38:push_ui 沒有把「沒有候選 → ui_session_ 清成 0」寫下來 —— 候選窗收起來之後,滾輪仍然會去翻一個看不見的 session"; w38bad=1 ;;
+    esac
+  done <<< "${w38out}"
+  [ "${w38bad}" -eq 0 ] && ok "W38 滾輪翻頁整條鏈都接著:WM_MOUSEWHEEL → OnWheel(擋空清單、走純函式 WheelPageSteps)→ page_fn_ → PipeServer::OnCandidateWheel → Engine::ChangePage → 候選窗與那一橫**同一份**快照,而且 push_ui 記著「這一頁是誰的」、解構子把回呼收回來"
 }
 
 # ────────────────────────────────────────────────────────────────
@@ -3058,6 +3199,13 @@ self_check() {
 "W30 頁碼又寫死成數字|service/status_bar.cc|s=s.replace('settings_->OpenAt(StateIsFailure(service_state_) ? kPageAdvanced','settings_->OpenAt(StateIsFailure(service_state_) ? 3',1).replace(': kPageSchemas);',': 0);',1)"
 "W30b 只有一邊改回數字(跨行,而且引數裡自己有括號)|service/status_bar.cc|s=s.replace(': kPageSchemas);',': 0);',1)"
 "W9 少一條單元測試|tests/test_status_cells.cc|s=s.replace('TEST(status_cells_input_mode_shows_exactly_one_label)','TEST(status_cells_renamed_away)',1)"
+"W38a 沒有人收滾輪|service/cand_window.cc|s=s.replace('case WM_MOUSEWHEEL:','case WM_NULL + 4243:',1)"
+"W38b 滾輪不走純函式(觸控板一撥翻十幾頁)|service/cand_window.cc|s=s.replace('const int32_t steps = WheelPageSteps(&wheel_accum_, delta);','const int32_t steps = delta > 0 ? -1 : 1;',1)"
+"W38c 算完了不交出去|service/cand_window.cc|s=s.replace('  if (fn) fn(steps);','  (void)steps;',1)"
+"W38d 回呼沒有人裝(kChangePage 原本的處境)|service/pipe_server.cc|s=s.replace('  if (ui_) ui_->SetPageHandler([this](int32_t steps) {' + chr(10) + '    OnCandidateWheel(steps);' + chr(10) + '  });','',1)"
+"W38e 翻完頁那一橫沒跟上|service/pipe_server.cc|s=s.replace('  if (bar_) bar_->OnSnapshot(r.snap);','',1)"
+"W38f 沒有人記下這一頁是誰的|service/pipe_server.cc|s=s.replace('ui_session_ = snap.items.empty() ? 0 : session;','ui_session_ = session;',1)"
+"W38g 解構子不把回呼收回來|service/pipe_server.cc|s=s.replace('  if (ui_) ui_->SetPageHandler(nullptr);','',1)"
 "W27e 拿掉那一橫自己更新的計時器|service/status_bar.cc|s=s.replace('  ::SetTimer(hwnd_, kStateTimer, kStatePollMs, nullptr);','',1)"
 "W27f 計時器還在但不再比對狀態|service/status_bar.cc|s=s.replace('      if (now != self->service_state_) {','      if (false) {',1)"
 "W27g 側欄又變回兩句|service/settings_window.cc|s=s.replace('  ::DrawTextW(hdc, UiText(SidebarStatusTextFor(state)),','  ::DrawTextW(hdc, UiText(UiString::kNavStatusNotRunning),',1)"

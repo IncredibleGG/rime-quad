@@ -46,6 +46,11 @@ class PipeServer {
   //   所以主程式收到這個回呼時應該讓服務結束,把位置讓出來。
   void SetFatalHandler(std::function<void()> fn) { on_fatal_ = std::move(fn); }
 
+  // 候選窗上的滾輪。⚠ **在候選窗自己的 UI 執行緒上跑**,不是連線執行緒。
+  //   由建構子掛上、解構子拿掉(候選窗比我們晚死,見 service/main.cc 的
+  //   宣告順序)。
+  void OnCandidateWheel(int32_t steps);
+
   ~PipeServer();
 
   // ⚠ 回傳 true 時,管道**確定已經接得起連線** —— 不是「大概快好了」。
@@ -99,6 +104,17 @@ class PipeServer {
   // 監聽執行緒掛上 ConnectNamedPipe 之後設它。Start() 等的就是這個。
   HANDLE listening_event_ = nullptr;
   std::atomic<bool> stopping_{false};
+  // ── 「現在螢幕上那一頁是誰的」──────────────────────────────
+  //
+  // ⚠ 快照本身**沒有** session id(protocol.h 的 Snapshot),而候選窗
+  //   是服務自己的視窗、不屬於任何一條連線。滾輪要翻頁就得知道翻誰的,
+  //   所以由 push_ui 在推畫面的同時記下來。
+  // ⚠ 沒有候選時清成 0:留著的話,候選窗收起來之後滾輪仍然會去翻一個
+  //   看不見的 session —— 使用者在別的地方捲網頁,我們在背後動他的
+  //   組字狀態,而畫面上什麼都看不出來。
+  std::mutex ui_mu_;
+  uint64_t ui_session_ = 0;
+  RECT ui_caret_{};
   std::mutex mu_;
   std::vector<std::thread> clients_;
 };

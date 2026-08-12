@@ -280,4 +280,19 @@ Rect PlaceWindow(const Rect& caret, double w, double h, const Rect& work_area,
   return r;
 }
 
+int32_t WheelPageSteps(int32_t* accumulator, int32_t delta) {
+  // Win32 的 WHEEL_DELTA。這裡寫死是刻意的:本檔不得 include windows.h
+  // (它要在 Ubuntu 上編得起來),而這個值是 API 契約的一部分,不會變。
+  const int32_t kWheelDelta = 120;
+  if (!accumulator) return 0;
+  if (delta == 0) return 0;
+  // 換方向 → 舊的餘數作廢。見標頭。
+  if ((*accumulator > 0) != (delta > 0)) *accumulator = 0;
+  *accumulator += delta;
+  const int32_t notches = *accumulator / kWheelDelta;
+  *accumulator -= notches * kWheelDelta;
+  // 捲輪往上(delta > 0)= 往**前**一頁。
+  return -notches;
+}
+
 }  // namespace rimewin

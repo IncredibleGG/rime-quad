@@ -17,6 +17,8 @@
 #include <windows.h>
 
 #include <atomic>
+#include <cstdint>
+#include <functional>
 #include <mutex>
 
 #include "../common/cand_layout.h"
@@ -32,6 +34,21 @@ class CandidateUi {
   virtual ~CandidateUi() = default;
   virtual void Update(const Snapshot& snap, const RECT& caret) = 0;
   virtual void Hide() = 0;
+
+  // ── 滾輪翻頁(G71)────────────────────────────────────────────
+  //
+  // ⚠ 在這之前,`Op::kChangePage` 那條線路是**接好的而且沒有人叫它**:
+  //   protocol.h 有那個 op、pipe_server 解得出來、Engine::ChangePage 會
+  //   呼叫 rs_change_page、ipc_client 也有 SendChangePage —— 而整個
+  //   windows/ 底下**一個呼叫點都沒有**。使用者翻得動頁(`-`/`=`、
+  //   `,`/`.`、PageUp/PageDown 都送得進 librime),但沒有任何一條路是
+  //   用滑鼠的,而桌面使用者的手就在滑鼠上。
+  //
+  // ⚠ 回呼在**候選窗自己的 UI 執行緒**上跑(不是連線執行緒),
+  //   實作端負責找出「現在螢幕上這一頁是哪一個 session 的」。
+  //   steps < 0 = 往前翻,> 0 = 往後翻,絕對值 = 翻幾頁。
+  using PageFn = std::function<void(int32_t steps)>;
+  virtual void SetPageHandler(PageFn fn) = 0;
 };
 
 // 什麼都不做的實作。CI 的 runner 上沒有人在看螢幕,而建視窗會把
@@ -40,6 +57,7 @@ class NullCandidateUi : public CandidateUi {
  public:
   void Update(const Snapshot&, const RECT&) override {}
   void Hide() override {}
+  void SetPageHandler(PageFn) override {}
 };
 
 // 真的視窗。內部自己起一條有訊息迴圈的執行緒 —— Win32 的視窗屬於建立它的
@@ -55,6 +73,10 @@ class CandidateWindow : public CandidateUi {
   // 可從任何執行緒呼叫:複製一份狀態,再用 PostMessage 叫醒 UI 執行緒。
   void Update(const Snapshot& snap, const RECT& caret) override;
   void Hide() override;
+
+  // ⚠ 只在 Start() 之前呼叫(service/main.cc 的建構順序)。之後再改就是
+  //   一個資料競爭,而它的形狀是「服務關掉時偶爾崩一次」。
+  void SetPageHandler(PageFn fn) override;
 
   // 候選字級的倍率(設定介面的「候選字大小」)。1.0 = 規範預設值。
   //
@@ -72,6 +94,7 @@ class CandidateWindow : public CandidateUi {
   void UiThread();
   void Relayout();
   void Paint(HDC hdc);
+  void OnWheel(int32_t delta);
   Extent MeasureWithFont(const std::string& utf8, double size);
 
   HANDLE thread_ = nullptr;
@@ -82,6 +105,7 @@ class CandidateWindow : public CandidateUi {
   std::mutex mu_;
   Snapshot pending_;
   RECT pending_caret_{};
+  PageFn page_fn_;
 
   // 以下只在 UI 執行緒上碰。
   std::atomic<double> text_scale_{1.0};
@@ -92,6 +116,9 @@ class CandidateWindow : public CandidateUi {
   // ⚠ 沒有 dpi_scale_ 那個 double 了 —— 字型與版面各自用該螢幕的整數 DPI。
   UINT dpi_ = 96;
   FontSet fonts_;
+  // 滾輪的餘數。⚠ 只在 UI 執行緒上碰;判斷本身是純函式
+  // (common/cand_layout.h 的 WheelPageSteps),Ubuntu 上驗得到。
+  int32_t wheel_accum_ = 0;
 };
 
 }  // namespace rimewin
