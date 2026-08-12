@@ -427,7 +427,45 @@ EOF_SHAPE
   has() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
   N_YAML="$(printf '%s\n' "$LIST" | grep -c 'assets/rime/.*\.yaml' || true)"
   [ "$N_YAML" -gt 0 ] && ok "隨附 $N_YAML 份 yaml" || bad "assets 裡沒有任何 yaml"
-  has "essay" "$LIST" && ok "含語言模型" || bad "缺語言模型"
+
+  # ── 這一關以前是「永遠綠」的，而且它宣稱的東西我們根本沒有 ────────────
+  #
+  # 舊寫法：`has "essay" "$LIST" && ok "含語言模型"`。
+  # 它問的是「APK 的檔案清單裡有沒有出現字串 essay」，而
+  # `assets/rime/shared/essay.txt` 一定在裡面 —— 所以那一關**永遠是綠的**，
+  # 從第一天到現在沒有紅過一次。這正是同一支腳本 :400-410 那段註解自己
+  # 警告過的寫法（`grep 名字` 掃整個檔案 = 名字在別處出現一次就永遠綠）。
+  #
+  # 更糟的是它綠得**不對**：`essay.txt` 是詞典編譯期的**靜態詞頻表**
+  # （`〇\t981` 這種一行一詞的字頻），不是語言模型。真正的語言模型是
+  # librime-octagram 的 `.gram` 檔，而本專案：
+  #
+  #   · `nm -C third_party/prebuilt/<abi>/lib/librime.a | grep -c octagram`
+  #     → **0**（x86_64 與 arm64-v8a 都是 0，octagram 根本沒有被編進去）
+  #   · `core/data/shared/grammar.yaml` **不存在**，任何 `.gram` 也不存在
+  #   · 方案裡的 `__patch: - grammar:/hant?` 結尾那個 `?` 是「找不到就靜默
+  #     略過」—— 所以缺檔連一行警告都不會有
+  #
+  # 三個環節做了零個，而關卡說做完了。
+  #
+  # 現在改成驗**真的東西**：APK 裡有沒有語言模型檔（`.gram` / `grammar.yaml`）。
+  # 沒有就是紅的 —— 而且紅得有話說：這一版沒有語言模型，長句組字只能靠
+  # 詞頻，那是一件使用者感覺得到的事（`enable_sentence` 的效果會差很多），
+  # 不該被一句假的「含語言模型」蓋掉。
+  #
+  # ⚠ 要讓它變綠，正確的作法是把 librime-octagram 編進去並隨附 `.gram`，
+  #   **不是**把判準改回檔名比對。
+  N_GRAM="$(printf '%s\n' "$LIST" | grep -cE 'assets/rime/.*(\.gram$|grammar\.yaml$)' || true)"
+  if [ "${N_GRAM:-0}" -gt 0 ]; then
+    ok "含語言模型（$N_GRAM 個 .gram / grammar.yaml）"
+  else
+    bad "缺語言模型：APK 裡沒有任何 .gram 或 grammar.yaml。
+    （essay.txt 不算 —— 那是詞典編譯期的靜態詞頻表，不是語言模型；
+      librime.a 的 octagram 符號數是 0，schema 的 \`grammar:/hant?\` 找不到就靜默略過）"
+  fi
+  # 詞頻表本身仍然是必要的（少了它候選排序會整個亂掉），只是它的名字不叫
+  # 語言模型。這一條是新增的正控，不是把舊斷言改個字。
+  has "essay.txt" "$LIST" && ok "含詞頻表 essay.txt" || bad "缺詞頻表 essay.txt"
 else
   bad "找不到 APK"
 fi
