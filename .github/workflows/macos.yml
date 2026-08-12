@@ -17,7 +17,7 @@ name: macOS (核心 + 輸入法 + 設定介面)
 
 on:
   push:
-    branches: [main]
+    branches: [main, anv2]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -146,6 +146,145 @@ jobs:
 
       - name: 核心驗證 — 注音 su3cl3 → 你好
         run: ./apple/scripts/verify_console.sh su3cl3 bopomofo_tw 你好
+
+      # [diag] 傳與不傳方案 id 各一次。翻頁那一關與這兩關的差別一直被說成
+      # 「有沒有傳方案 id」，所以直接把兩邊並排跑，讓它自己證明是不是這件事。
+      # ⚠ 這一關**永遠綠**：它是對照組，不是把關。上面那兩關才是把關的。
+      - name: '[diag] verify_console.sh：傳方案 id 與不傳，各一次'
+        run: |
+          set -uo pipefail
+          set +e
+          echo "──── 傳方案 id（luna_pinyin_tw）────"
+          ./apple/scripts/verify_console.sh nihao luna_pinyin_tw 你好
+          echo "  → rc=$?"
+          echo ""
+          echo "──── 不傳方案 id（session 停在預設方案）────"
+          ./apple/scripts/verify_console.sh nihao - 你好
+          echo "  → rc=$?"
+          exit 0
+
+      # ═══════════════════════════════════════════════════════════════════
+      #  [diag] 這一輪唯一的目的：讓 runner 自己說出「候選為什麼是 0」
+      # ═══════════════════════════════════════════════════════════════════
+      #
+      # 前情：7d49cad 併進 main 之後這條車道紅在「候選真的翻得了頁」，
+      # 三次量測全都是「候選數是 0 —— 組字根本沒成立」，而同一個 job 裡
+      # `verify_console.sh nihao luna_pinyin_tw 你好` 是**綠的**。
+      # 同一支執行檔、同一份資料、同一個方案 id，結果相反。
+      #
+      # 兩者實際上只差兩件事：
+      #   (1) verify_console.sh 傳的是**絕對路徑**（它自己 cd 到 repo 根算出來的），
+      #       翻頁那一關傳的是 `core/data/shared` 這種**相對路徑**。
+      #   (2) 斷言看的行不同（最終 COMMIT vs `[組字後]` 那一行）。
+      #
+      # (1) 有機制上的理由，而且理由夠硬：
+      #   patches/librime-lua@sandbox.patch 第二層（modules.cc 的
+      #   kRimeQuadPathSandbox）開頭是
+      #       local ROOT_USER = normalize(user_dir, nil)
+      #       if not ROOT_USER then error("...不是絕對路徑...") end
+      #   而 normalize(p, nil) 對相對路徑回 nil。error 之後 C++ 那側走
+      #   rimequad_lua_nuke()，把 require / io / os / package / load 設成 nil。
+      #   librime-lua 載 `lua_filter@*luminakey_charset` 用的是
+      #   src/lua_gears.cc:85 的 `lua_getglobal(L, "require")` —— require 是 nil
+      #   就載不起來，而 librime 對 filter 載入失敗的處置是**整段候選變成空的**。
+      #
+      # 所以這一關把每一種呼叫方式並排跑一次，讓資料自己說話。
+      #
+      # ⚠ 這一關**永遠綠**（最後 exit 0）。它是問問題的，不是把關的；
+      #   把關的是底下那一關（候選真的翻得了頁），它維持硬失敗。
+      # ⚠ 這裡**不過濾 glog**。verify_console.sh 會把 `^[WIE]YYYYMMDD ` 濾掉，
+      #   而 librime 對 lua 載入失敗的抱怨正是走那條路出來的。
+      - name: '[diag] 候選為什麼是 0：把每一種呼叫方式並排跑一次'
+        run: |
+          set -uo pipefail
+          set +e
+
+          ABS="$(pwd)"
+          CONSOLE="$ABS/apple/build/rime_console"
+          S_ABS="$ABS/core/data/shared"; S_REL=core/data/shared
+          U_ABS="$ABS/core/data/user";   U_REL=core/data/user
+          SUMMARY=/tmp/diag_summary.txt
+          : > "$SUMMARY"
+
+          echo "════ 先確認資料真的在（守門的檔案少一個就會讓候選變空）════"
+          ls -la "$S_ABS/lua" 2>&1 | sed 's/^/    /'
+          ls -la "$S_ABS"/*.custom.yaml 2>&1 | sed 's/^/    /'
+          ls -la "$S_ABS/opencc"/luminakey_* 2>&1 | sed 's/^/    /'
+
+          # probe <標籤> <shared> <user> <方案id或-> [KEY=VAL ...]
+          probe() {
+            local label="$1" sh="$2" us="$3" schema="$4"; shift 4
+            echo ""
+            echo "════════════════════════════════════════════════════════════"
+            echo "  $label"
+            echo "    shared = $sh"
+            echo "    user   = $us"
+            echo "    方案id = $schema"
+            echo "    env    = $*"
+            echo "════════════════════════════════════════════════════════════"
+            local out rc
+            if [ "$schema" = "-" ]; then
+              out="$(env "$@" "$CONSOLE" "$sh" "$us" nihao 2>&1)"
+            else
+              out="$(env "$@" "$CONSOLE" "$sh" "$us" nihao 1 "$schema" 2>&1)"
+            fi
+            rc=$?
+            printf '%s\n' "$out"
+            local n commit
+            n="$(printf '%s\n' "$out" \
+                 | sed -n 's/.*\[組字後\] 候選 \([0-9][0-9]*\) 個 (page.*/\1/p' | head -1)"
+            commit="$(printf '%s\n' "$out" | sed -n 's/^>>> COMMIT: "\(.*\)"$/\1/p' | head -1)"
+            printf '%-46s 候選=%-5s COMMIT=%-10s rc=%s\n' \
+                   "$label" "${n:-抽不出}" "${commit:-無}" "$rc" >> "$SUMMARY"
+          }
+
+          # ── 甲組：絕對 vs 相對路徑（傳方案 id） ──────────────────────
+          probe 'A 絕對路徑＋方案id（=verify_console.sh 走的路）' "$S_ABS" "$U_ABS" luna_pinyin_tw
+          probe 'B 相對路徑＋方案id（=翻頁那一關走的路）'         "$S_REL" "$U_REL" luna_pinyin_tw
+
+          # ── 乙組：傳與不傳方案 id ────────────────────────────────────
+          probe 'C 絕對路徑＋不傳方案id' "$S_ABS" "$U_ABS" -
+          probe 'D 相對路徑＋不傳方案id' "$S_REL" "$U_REL" -
+
+          # ── 丙組：把兩個目錄拆開，看是哪一個在決定結果 ───────────────
+          #   lua 沙盒只對 **user_data_dir** 硬性要求絕對路徑
+          #   （shared 是 normalize 之後拿來比對，nil 只會讓唯讀白名單失效）。
+          probe 'E shared 絕對、user 相對' "$S_ABS" "$U_REL" luna_pinyin_tw
+          probe 'F shared 相對、user 絕對' "$S_REL" "$U_ABS" luna_pinyin_tw
+
+          # ── 丁組：把字集守門關掉。**這一組是刀口** ───────────────────
+          #   關掉之後變成 5 個 → 兇手是守門的判斷邏輯（M.pick / M.passes）。
+          #   關掉之後還是 0     → 兇手不在判斷邏輯，在更前面（載不載得起來）。
+          probe 'G 守門關掉＋絕對路徑' "$S_ABS" "$U_ABS" luna_pinyin_tw \
+                RIME_SET_OPTIONS=luminakey_charset_off=1
+          probe 'H 守門關掉＋相對路徑' "$S_REL" "$U_REL" luna_pinyin_tw \
+                RIME_SET_OPTIONS=luminakey_charset_off=1
+
+          # ── 戊組：session 建立之後、還沒切方案時，目前的方案是哪一個 ──
+          probe 'I 不傳方案id＋問切方案前的狀態' "$S_ABS" "$U_ABS" - \
+                RIME_DIAG_PRESWITCH=1
+
+          # ── 己組：守門真正該做事的那一條（簡體）──────────────────────
+          probe 'J 簡體 zh_hans=1（守門本來就該濾掉「妳好」）' "$S_ABS" "$U_ABS" luna_pinyin_tw \
+                RIME_SET_OPTIONS=zh_hans=1
+
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════════════════╗"
+          echo "║  彙整                                                                    ║"
+          echo "╚══════════════════════════════════════════════════════════════════════════╝"
+          cat "$SUMMARY"
+          echo ""
+          echo "── 怎麼讀這張表 ──────────────────────────────────────────────────────"
+          echo "  · G/H（守門關掉）變成 5  → 兇手是守門的**判斷邏輯**"
+          echo "    （M.pick 挑錯字集，或 M.passes 把該過的濾掉，而退回機制沒生效）"
+          echo "  · G/H 仍然是 0，而 A=5、B=0 → 兇手是**相對路徑**："
+          echo "    lua 沙盒 normalize() 對相對路徑回 nil → error → rimequad_lua_nuke()"
+          echo "    → require=nil → lua_filter@*luminakey_charset 載不起來"
+          echo "    → librime 把整段候選變成空的（關不關守門都一樣，因為根本沒載進來）"
+          echo "  · 找 [lua-diag] 開頭的行：有『模組載入成功』= 檔案本體跑到了；"
+          echo "    完全沒有 [lua-diag] = require 那一步就掛了。"
+          echo "  · 找 [diag] 開頭的行：路徑是絕對還是相對、六支簡繁開關各是什麼值。"
+          exit 0
 
       # ── (a-2c) 候選翻頁:回答使用者的「翻不翻得了頁」 ────────────
       # 一頁的候選數來自 core/data/shared/default.yaml 的 menu/page_size(=5),

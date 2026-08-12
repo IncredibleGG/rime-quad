@@ -29,9 +29,67 @@
 #include <thread>
 #include <chrono>
 
+#include <limits.h>
+#include <unistd.h>
+
 namespace {
 
 std::atomic<int> g_deploy_state{-1};  // -1 = 尚未有結果
+
+// ═══════════════════════════════════════════════════════════════════════
+//  [diag] 為了回答「macOS 上候選為什麼是 0」而加的一批診斷
+//
+//  ⚠ 這一批**只印東西**,不改任何行為,定案之後整批拔掉。
+//
+//  特別注意:底下沒有任何一處呼叫 rs_snapshot_acquire()。
+//  rime_shell.h 的契約是「每個輸入事件只可 acquire 一次」,而診斷若自己
+//  多 acquire 一次,就會把「被診斷的缺陷」和「診斷造成的缺陷」混在一起。
+//  rs_get_option() 讀的是 context,不碰快照,所以印它是安全的。
+// ═══════════════════════════════════════════════════════════════════════
+
+// 簡繁互斥組(zh_*)+ 別的方案用的 simplification + 字集守門自己的開關。
+// 這幾支正是 core/data/lua/luminakey_charset.lua 的 M.pick() 會問的東西。
+const char* const kDiagOptions[] = {
+    "zh_hans", "zh_hant", "zh_hant_hk", "zh_hant_tw",
+    "simplification", "luminakey_charset_off", "ascii_mode", "ascii_punct",
+};
+
+void diag_options(rs_session sess, const char* tag) {
+  std::printf("[diag] 選項@%s:", tag);
+  for (const char* o : kDiagOptions)
+    std::printf(" %s=%d", o, rs_get_option(sess, o) ? 1 : 0);
+  std::printf("\n");
+  std::fflush(stdout);
+}
+
+// ⚠ **這一行是這批診斷裡最重要的一行。**
+//
+// patches/librime-lua@sandbox.patch 的第二層(modules.cc 的
+// kRimeQuadPathSandbox)一開頭就做:
+//
+//     local ROOT_USER = normalize(user_dir, nil)
+//     if not ROOT_USER then error("rimequad: 使用者資料目錄不是絕對路徑: "..) end
+//
+// 而 normalize(p, nil) 對**相對路徑**回 nil(它只認 "/" 開頭或 "C:/")。
+// 也就是說:user_data_dir 是相對路徑 -> 沙盒 error -> lua_pcall 失敗 ->
+// rimequad_lua_nuke() 把 require / io / os / package / load 全部設成 nil。
+//
+// 而 librime-lua 載入 `lua_filter@*luminakey_charset` 的方式是
+// src/lua_gears.cc:85 的 `lua_getglobal(L, "require")`。require 是 nil 的話
+// 這個 filter **載不起來**,而 librime 對 filter 載入失敗的處置是
+// **整段候選變成空的**(core/data/lua/luminakey_charset.lua 檔頭記過這件事)。
+//
+// 所以「傳進來的資料目錄是不是絕對路徑」可能直接決定候選數是 5 還是 0。
+void diag_path(const char* label, const char* p) {
+  char buf[PATH_MAX];
+  const char* real = (p && *p) ? realpath(p, buf) : nullptr;
+  const bool absolute = (p && p[0] == '/');
+  std::printf("[diag] %s = \"%s\"  → %s%s\n", label, p ? p : "(null)",
+              absolute ? "絕對路徑" : "相對路徑  ← lua 沙盒的 normalize() 會回 nil",
+              real ? "" : "  (realpath 解不出來)");
+  if (real) std::printf("[diag]   realpath = %s\n", real);
+  std::fflush(stdout);
+}
 
 void on_deploy(rs_deploy_status status, void* /*ud*/) {
   const char* name = "?";
@@ -69,6 +127,10 @@ void dump(const char* tag, rs_session sess) {
   if (s->commit_text)
     std::printf("  [%s] >>> COMMIT: \"%s\"\n", tag, s->commit_text);
   rs_snapshot_release(sess);
+  // [diag] 在同一個 tag 底下把方案選項一起印出來,免得要靠時間戳對兩段。
+  // 放在 release 之後:rs_get_option 不碰快照,順序不重要,但這樣不會有人
+  // 以為它在讀 s。
+  diag_options(sess, tag);
 }
 
 }  // namespace
@@ -94,7 +156,17 @@ int main(int argc, char** argv) {
   std::printf("ABI version : %d\n", rs_abi_version());
   std::printf("shared      : %s\n", shared_dir);
   std::printf("user        : %s\n", user_dir);
-  std::printf("按鍵        : %s\n\n", keys);
+  std::printf("按鍵        : %s\n", keys);
+  std::printf("方案 id     : %s\n\n", want_schema ? want_schema : "(沒有傳)");
+
+  // [diag] 路徑診斷。理由見 diag_path() 上面那一段。
+  {
+    char cwd[PATH_MAX];
+    std::printf("[diag] cwd = %s\n", getcwd(cwd, sizeof cwd) ? cwd : "(取不到)");
+    diag_path("shared_data_dir", shared_dir);
+    diag_path("user_data_dir  ", user_dir);
+  }
+  std::printf("\n");
 
   // keysym 查表是純查表，不需要 rs_init()，所以在這裡先驗。
   // 這兩個函式是對 librime 私有標頭的符號做就地重宣告，靠 C++ mangling 對上 ——
@@ -146,6 +218,15 @@ int main(int argc, char** argv) {
     return 1;
   }
   std::printf("\nsession 已建立\n");
+  // [diag] 這是「還沒切方案」的狀態。想知道此刻**目前的方案**是哪一個,
+  // 要 acquire 快照 —— 而多一次 acquire 會動到契約,所以預設不做,
+  // 由 RIME_DIAG_PRESWITCH=1 另外跑一趟問。不傳方案 id 時本來就不會切,
+  // 底下的 dump("初始") 印的就是這個問題的答案。
+  diag_options(sess, "session 剛建立(還沒切方案)");
+  if (std::getenv("RIME_DIAG_PRESWITCH")) {
+    std::printf("[diag] RIME_DIAG_PRESWITCH=1:額外 acquire 一次問「現在是哪個方案」\n");
+    dump("切方案前", sess);
+  }
 
   // 列出可用方案，順便驗證 rs_schema_list 的字串生命週期沒問題
   // 容量從 16 放大到 64：市集裡有單一套件提供十餘個方案的情況
@@ -174,6 +255,7 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "切換方案失敗: %s\n", rs_last_error());
       return 1;
     }
+    diag_options(sess, "剛切完方案");
   }
 
   // ── 由環境變數指定要開/關哪些方案選項 ────────────────────────────────

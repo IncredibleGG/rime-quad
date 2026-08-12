@@ -45,6 +45,43 @@
 --    · 詞庫本身沒有字集約束，這一層是補救，不是解法。真正的解法是換一本
 --      有字集約束的詞庫（task #27 的 rime-ice）。
 
+-- ═══════════════════════════════════════════════════════════════════════════
+--  [diag] 為了回答「macOS 上候選為什麼是 0」而加的一批診斷
+--
+--  ⚠ 只印東西，不改任何行為。定案之後整批拔掉。
+--
+--  印到 **stdout**（print），不是 glog —— GitHub 的 log 收得到 stdout，
+--  而 glog 在 rime_console 裡走 stderr 且會被 verify_console.sh 過濾掉。
+-- ═══════════════════════════════════════════════════════════════════════════
+local DIAG_MAX = 24          -- 一次執行最多印這麼多行，免得單音節上千候選灌爆 log
+local diag_n = 0
+local function diag(fmt, ...)
+  if diag_n >= DIAG_MAX then return end
+  diag_n = diag_n + 1
+  if type(print) ~= "function" then return end
+  local ok, line = pcall(string.format, fmt, ...)
+  print("[lua-diag] " .. (ok and line or tostring(fmt)))
+end
+
+-- **這一行本身就是證據。** 它印得出來 = `require 'luminakey_charset'` 成功了；
+-- 它沒印出來 = librime-lua 的 lua_gears.cc:85 `lua_getglobal(L, "require")`
+-- 那一步就掛了（例如沙盒 fail-closed 把 require 設成 nil），而那時 librime
+-- 給出的是**空的候選** —— 畫面上與「這個輸入沒有候選」完全一樣。
+diag("模組載入成功：require 'luminakey_charset' 進到檔案本體了")
+diag("沙盒：%s", (function()
+  local m = rawget(_G, "__rimequad_sandbox")
+  if type(m) ~= "table" then
+    return "沒有 __rimequad_sandbox 標記 —— 兩層沙盒都沒裝上"
+  end
+  return string.format("stage=%s io_confined=%s user_dir=%s shared_dir=%s",
+                       tostring(m.stage), tostring(m.io_confined),
+                       tostring(m.user_dir), tostring(m.shared_dir))
+end)())
+diag("基本設施：require=%s io=%s os=%s package=%s utf8=%s",
+     type(require), type(io), type(os), type(package), type(utf8))
+diag("package.path = %s",
+     (type(package) == "table") and tostring(package.path) or "(package 是 nil)")
+
 local M = {}
 
 -- 與 scripts/gen_charset_data.py 的 HAN_RANGES **必須一致**。
@@ -74,6 +111,9 @@ local MAX_HELD = 64
 local function load_set(module_name)
   local ok, data = pcall(require, module_name)
   if not ok or type(data) ~= "string" then
+    diag("字集 %s 載入失敗：ok=%s type=%s err=%s  → 回 nil（整段放行）",
+         module_name, tostring(ok), type(data),
+         (not ok) and tostring(data) or "-")
     -- 讀不到字集就等於沒有這一層。回 nil，呼叫端會整段放行 ——
     -- 絕對不可以在這裡回一個空集合，那會把每一個候選都濾掉。
     return nil
@@ -86,7 +126,11 @@ local function load_set(module_name)
       n = n + 1
     end
   end
-  if n == 0 then return nil end
+  if n == 0 then
+    diag("字集 %s 載入了但一個漢字都沒有 → 回 nil（整段放行）", module_name)
+    return nil
+  end
+  diag("字集 %s 載入成功，漢字 %d 個", module_name, n)
   return set
 end
 
@@ -167,10 +211,35 @@ function M.run(pull, emit, set)
 end
 
 -- ── librime 的 filter 介面 ────────────────────────────────────────────────
+-- [diag] librime-lua 對 filter 裡 raise 出來的錯誤是**吞掉**的，而症狀是
+-- 「整段候選變成空的」—— 任何一個 lua 錯誤在畫面上都長得跟「這個輸入沒有
+-- 候選」一模一樣。所以自己 pcall 包一層，把訊息印到 stdout，印完**原樣
+-- 重新 raise**，對外行為與沒包一樣。
+--
+-- ⚠ 之所以可以用 pcall 包住會 yield 的東西：Lua 5.4 的 pcall 是可 yield 的
+--   （continuation-aware C function）。5.1/5.2 不行，換版本時這裡要重讀。
 function M.func(input, env)
+  local ok, err = pcall(M.func_impl, input, env)
+  if not ok then
+    diag("!! M.func 丟出錯誤（librime 會吞掉它，候選就變成空的）：%s", tostring(err))
+    error(err, 0)
+  end
+end
+
+function M.func_impl(input, env)
   local ctx = env.engine.context
+  -- [diag] 六支開關全部問一遍（M.pick 會短路，短路就看不到後面那幾支）。
+  local shot = {}
+  for _, opt in ipairs({ "luminakey_charset_off", "zh_hans", "zh_hant_tw",
+                         "zh_hant_hk", "zh_hant", "simplification" }) do
+    local okk, v = pcall(function() return ctx:get_option(opt) end)
+    shot[#shot + 1] = string.format("%s=%s", opt, okk and tostring(v) or "?")
+  end
   local name = M.pick(function(opt) return ctx:get_option(opt) end)
   local set = name and charset(name) or nil
+  diag("func：pick=%s set=%s  選項[%s]", tostring(name),
+       set and "有字集（會過濾）" or "nil（整段放行，不過濾）",
+       table.concat(shot, " "))
   -- ⚠ `input:iter()` 回的是**三件套**(f, s, var)，不是一個無狀態的函式。
   --   只接第一個回傳值就會拿到一個少了 self 的 f，一呼叫就是
   --   `bad argument #2 (LuaType<Translation&> expected)`，而 librime 對
@@ -182,7 +251,22 @@ function M.func(input, env)
     var = c
     return c
   end
-  M.run(pull, function(c) yield(c) end, set)
+  -- [diag] 數進來幾個、出去幾個。「進 N 出 0」就是使用者看到的那個 0，
+  -- 而且代表檔頭那條「濾到空就整段退回」的硬規則沒有生效。
+  local nin, nout, first = 0, 0, {}
+  local counted_pull = function()
+    local c = pull()
+    if c then
+      nin = nin + 1
+      if #first < 5 then first[#first + 1] = tostring(c.text) end
+    end
+    return c
+  end
+  local filtered = M.run(counted_pull, function(c) nout = nout + 1; yield(c) end, set)
+  diag("func：進 %d 個 → 出 %d 個（有沒有過濾=%s）%s  前幾個進來的：%s",
+       nin, nout, tostring(filtered),
+       (nin > 0 and nout == 0) and "  ← 濾到 0，退回機制沒有觸發" or "",
+       table.concat(first, " "))
 end
 
 return M
