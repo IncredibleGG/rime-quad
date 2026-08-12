@@ -14,30 +14,51 @@ object HostEditorPolicy {
     /* ───────────────────── 一、全螢幕 extract 模式 ───────────────────── */
 
     /**
-     * 這個編輯框要不要進 AOSP 的全螢幕 extract 模式。**永遠不要。**
+     * 這個編輯框要不要進 AOSP 的全螢幕 extract 模式。
+     * **答案就是 AOSP 的答案：橫屏要，除非宿主明說不要。**
      *
-     * ── 不覆寫的話會發生什麼（實測，emulator-5558，橫屏）────────────────
-     * `InputMethodService.onEvaluateFullscreenMode()` 的預設實作是
-     * 「螢幕高度不夠就進全螢幕」，橫屏幾乎必然成立。那時系統會在鍵盤上方畫出
-     * 一整條**它自己的** UI：一個 `ExtractEditText` 加一顆原生的 `Done` 按鈕，
-     * 用的是系統主題的漸層底色。畫面上於是同時有兩個輸入框、兩套外觀，
-     * 而上面那一個**不是我們畫的**，也吃不到 `core/themes` 的任何設定。
+     * ── 上一版做錯了什麼（這一條是回頭修的）────────────────────────────
+     * 上一版在這裡一律回 `false`，理由是「橫屏時系統會在鍵盤上方畫一條
+     * 不是我們畫的 UI，那條吃不到 core/themes」。原始的抱怨是對的，但拿掉
+     * 整個模式不是修法 —— **extract 模式存在的理由就是橫屏螢幕不夠高**。
      *
-     * 使用者看到的就是「轉個螢幕，鍵盤上面多出一條不屬於這個 app 的東西」。
+     * 實測（emulator-5558，1080×2400 @420dpi，轉橫屏 → 2400×1080）：
+     * 鍵盤視窗的 frame 是 `[128,229][2400,1080]`，也就是 851 px = 螢幕高的
+     * **79 %**。宿主 `dev.rime.imetest` 縮排之後只剩 189 px，那 189 px 全被
+     * 它自己的標題列佔滿：`uiautomator dump` 裡**一個輸入框節點都不存在**。
+     * 使用者看不到自己正在打什麼 —— 比那條原生輸入條嚴重。
      *
-     * ── 為什麼是「一律 false」而不是「橫屏才 false」──────────────────────
-     * extract 模式的存在理由是「宿主的編輯框被鍵盤蓋住了，所以另外畫一個」。
-     * 本專案已經在 `onComputeInsets` 那一輪處理過遮擋（見 task #49）：宿主
-     * 只要正常消費 insets 就看得到自己的框。既然遮擋不是靠 extract 解決的，
-     * extract 就只剩下副作用。
+     * 所以這一版換一條路：**讓 extract 模式生效，但那一條由我們自己畫**
+     * （見 `keyboard/ThemedExtractView`，經 `onCreateExtractTextView()` 交給
+     * 系統的 `setExtractView()`）。G46 抱怨的「吃不到主題」被修掉，而
+     * 「橫屏看得見自己打的字」這個補償留著。
      *
-     * ── 參數為什麼留著 ──────────────────────────────────────────────────
-     * `IME_FLAG_NO_FULLSCREEN` 是宿主**明說**「不要全螢幕」。我們的答案本來
-     * 就是 false，所以這個旗標是自動被尊重的 —— 但把它寫進簽章與測試裡，
-     * 是為了讓「哪天有人把這裡改成看螢幕高度」這件事當場被抓到：那時
-     * 帶著旗標的那一條斷言會紅。
+     * ── 為什麼判準與 AOSP 一模一樣 ────────────────────────────────────
+     * `InputMethodService.onEvaluateFullscreenMode()` 的預設實作就是
+     * 「橫屏 → true，但宿主帶了 `IME_FLAG_NO_FULLSCREEN` → false」。
+     * 兩個分支都留得住「使用者看得到自己打的字」：
+     *
+     *   · 走 extract：字畫在我們的 [ThemedExtractView] 上。
+     *   · 宿主說 `IME_FLAG_NO_FULLSCREEN`：宿主自己宣告它會照 ime inset
+     *     排版（`verify_insets.sh` 驗的就是那條路），我們不該替它改主意。
+     *
+     * 至於 `IME_FLAG_NO_EXTRACT_UI`：AOSP 仍然進全螢幕、只是把 extract 那一條
+     * 藏起來，於是鍵盤以上是透明的、**宿主沒有被縮排**因此仍然看得到自己。
+     * 那也是一條「看得見」的路，所以這裡不另外處理，交給
+     * `onUpdateExtractingVisibility()` 的預設實作。
+     *
+     * ⚠ 有一件 AOSP 做得到而我們做不到：它還會看
+     *   `EditorInfo.internalImeOptions` 的 `APP_WINDOW_PORTRAIT`（分割視窗／
+     *   桌面模式下，顯示器是橫的而宿主視窗是直的）。那個欄位是 `@hide`，
+     *   應用程式讀不到。所以在那種視窗形狀下我們會多進一次全螢幕。
+     *   已知殘留，記在 docs/product-gaps.md。
+     *
+     * @param landscape 顯示器目前是不是橫向（`Configuration.ORIENTATION_LANDSCAPE`）
      */
-    fun useFullscreen(imeOptions: Int): Boolean = false
+    fun useFullscreen(imeOptions: Int, landscape: Boolean): Boolean {
+        if (!landscape) return false
+        return !hostForbidsFullscreen(imeOptions)
+    }
 
     /** 宿主明說不要全螢幕（`EditorInfo.IME_FLAG_NO_FULLSCREEN`）。 */
     fun hostForbidsFullscreen(imeOptions: Int): Boolean =
@@ -53,6 +74,12 @@ object HostEditorPolicy {
      * 也就是說：使用者在組字途中用手指點到句子中間、或選取了一段字，
      * librime 完全不知情 —— 它仍然以為自己在組那一串，下一次按鍵會把
      * preedit 畫到一個與原本完全無關的位置上。
+     *
+     * ⚠ **使用者現在按得到的觸發路徑只有「用手指點宿主的輸入框」。**
+     *   佈局裡那些 `swipe: { left: { tap: "cursor:left" } }` 現在**觸達不到**
+     *   （Android 端沒有實作 swipe 分派，見 §9.6「swipe 是 OPTIONAL」與
+     *   `LayoutSwipeReachabilityTest`）。這一條是用實體方向鍵與觸控點擊
+     *   驗過的，不是靠那條還沒接上的路。
      *
      * ── 判準 ────────────────────────────────────────────────────────────
      * 我們每次都用 `setComposingText(text, 1)` 把游標放在組字區的**末端**。

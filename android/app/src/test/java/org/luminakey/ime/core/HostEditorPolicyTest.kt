@@ -9,25 +9,57 @@ import java.io.File
 /**
  * [HostEditorPolicy] 的兩條規則，外加**它們真的被服務呼叫**這件事。
  *
- * 這兩個缺陷（G46 全螢幕 extract、G02 游標移走）的共同形狀是：
+ * 這兩個缺陷（G46 橫屏、G02 游標移走）的共同形狀是：
  * **那個回呼從來沒有被覆寫過**。所以純函式全綠並不代表修好了 ——
  * 一個沒有人呼叫的正確答案與沒有答案是同一件事。底下第 3 節掃的就是那條線。
+ *
+ * ⚠ 第 1 節這一輪**整組換掉了**。上一版斷言的是「任何情況都不進全螢幕」，
+ *   而那個答案本身是錯的：拿掉 extract 模式等於把「橫屏螢幕不夠高」的補償
+ *   拿掉而不補，實測宿主連一個輸入框都排不下（見 [HostEditorPolicy.useFullscreen]
+ *   的量測）。現在斷言的是 AOSP 那條規則，而**那條輸入條由我們自己畫**。
  */
 class HostEditorPolicyTest {
 
-    /* ─────────────── 1. 全螢幕 ─────────────── */
+    /* ─────────────── 1. 全螢幕 extract ─────────────── */
 
     @Test
-    fun `任何情況都不進全螢幕 extract`() {
-        assertFalse("預設的編輯框不該進全螢幕", HostEditorPolicy.useFullscreen(0))
+    fun `直屏一律不進全螢幕`() {
+        assertFalse(HostEditorPolicy.useFullscreen(0, landscape = false))
         assertFalse(
-            "宿主明說 IME_FLAG_NO_FULLSCREEN 時更不該進",
-            HostEditorPolicy.useFullscreen(EditorInfo.IME_FLAG_NO_FULLSCREEN),
+            HostEditorPolicy.useFullscreen(EditorInfo.IME_FLAG_NO_FULLSCREEN, landscape = false),
         )
         assertFalse(
-            "帶著別的 imeOptions 也一樣",
+            "直屏的宿主自己排得下，extract 只會多一條",
+            HostEditorPolicy.useFullscreen(EditorInfo.IME_ACTION_SEARCH, landscape = false),
+        )
+    }
+
+    @Test
+    fun `橫屏預設要進全螢幕 —— 那是使用者唯一看得到自己在打什麼的路`() {
+        assertTrue(HostEditorPolicy.useFullscreen(0, landscape = true))
+        assertTrue(
+            "IME_FLAG_NO_EXTRACT_UI 不是「不要全螢幕」：AOSP 仍然進，只是把那一條藏起來，" +
+                "而宿主因此不會被縮排、照樣看得見自己",
+            HostEditorPolicy.useFullscreen(EditorInfo.IME_FLAG_NO_EXTRACT_UI, landscape = true),
+        )
+        assertTrue(
             HostEditorPolicy.useFullscreen(
-                EditorInfo.IME_ACTION_SEARCH or EditorInfo.IME_FLAG_NO_EXTRACT_UI
+                EditorInfo.IME_ACTION_SEARCH or EditorInfo.IME_FLAG_NO_ACCESSORY_ACTION,
+                landscape = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `宿主明說不要全螢幕時就不進`() {
+        assertFalse(
+            HostEditorPolicy.useFullscreen(EditorInfo.IME_FLAG_NO_FULLSCREEN, landscape = true),
+        )
+        assertFalse(
+            "跟別的 imeOptions 一起帶也一樣",
+            HostEditorPolicy.useFullscreen(
+                EditorInfo.IME_ACTION_DONE or EditorInfo.IME_FLAG_NO_FULLSCREEN,
+                landscape = true,
             ),
         )
     }
@@ -108,7 +140,7 @@ class HostEditorPolicyTest {
      * 出現這幾個字 —— 後者會被 import、被註解、被別處的定義餵飽。
      */
     @Test
-    fun `RimeInputMethodService 覆寫了那兩個回呼並照結果做事`() {
+    fun `RimeInputMethodService 覆寫了那幾個回呼並照結果做事`() {
         val src = read()
         assertTrue("原始碼只讀到 ${src.length} 個字元，路徑大概錯了", src.length >= MIN_CHARS)
         val problems = wiringProblems(src)
@@ -128,11 +160,33 @@ class HostEditorPolicyTest {
             "刪掉 onEvaluateFullscreenMode 的覆寫" to
                 Regex("""override fun onEvaluateFullscreenMode\(\)""")
                     .replace(src, "private fun neverCalledFullscreen()"),
-            "覆寫還在，但改成回 super（AOSP 的橫屏規則）" to
+            "onEvaluateFullscreenMode 還在，但不再問 HostEditorPolicy" to
                 src.replace(
-                    "HostEditorPolicy.useFullscreen(currentInputEditorInfo?.imeOptions ?: 0)",
-                    "super.onEvaluateFullscreenMode()",
+                    "HostEditorPolicy.useFullscreen(",
+                    "org.luminakey.ime.core.NeverFullscreen.useFullscreen(",
                 ),
+            // ⚠ 這一條就是**上一版交出去的東西**：橫屏一律 false。
+            //   它讓宿主的輸入框在橫屏被鍵盤 100 % 蓋住。
+            "改回一律 false（上一版的做法，橫屏就看不到自己在打什麼）" to
+                src.replace(
+                    "landscape = resources.configuration.orientation ==\n" +
+                        "                Configuration.ORIENTATION_LANDSCAPE,",
+                    "landscape = false,",
+                ),
+            "刪掉 onCreateExtractTextView 的覆寫（那一條會變回系統畫的）" to
+                src.replace(
+                    "    override fun onCreateExtractTextView(): View {",
+                    "    private fun neverCalledExtract(): View {",
+                ),
+            "覆寫還在，但交出去的不是我們畫的那一條" to
+                src.replace(
+                    "val v = ThemedExtractView(this)",
+                    "val v = android.widget.LinearLayout(this)",
+                ),
+            "extract 那一條建出來時沒有套主題" to
+                src.replace("v.applyTheme(effectiveTheme())", "Unit"),
+            "換主題時 extract 那一條不跟著換" to
+                src.replace("        extractView?.applyTheme(effectiveTheme())\n", ""),
             "刪掉 onUpdateSelection 的覆寫" to
                 Regex("""override fun onUpdateSelection\(""")
                     .replace(src, "private fun neverCalledSelection("),
@@ -180,9 +234,38 @@ class HostEditorPolicyTest {
             val out = mutableListOf<String>()
             val fullscreen = bodyOf(src, "override fun onEvaluateFullscreenMode()")
             if (fullscreen == null) {
-                out += "沒有覆寫 onEvaluateFullscreenMode() —— 橫屏會掉回 AOSP 的全螢幕 extract"
-            } else if (!fullscreen.contains("HostEditorPolicy.useFullscreen(")) {
-                out += "onEvaluateFullscreenMode() 沒有問 HostEditorPolicy.useFullscreen()"
+                out += "沒有覆寫 onEvaluateFullscreenMode()"
+            } else {
+                if (!fullscreen.contains("HostEditorPolicy.useFullscreen(")) {
+                    out += "onEvaluateFullscreenMode() 沒有問 HostEditorPolicy.useFullscreen()"
+                }
+                // ⚠ 上一版的缺陷就是「問了，但答案寫死」。所以要守的不是「有沒有問」，
+                //   是**橫向與否真的被讀進去**。
+                if (!fullscreen.contains("Configuration.ORIENTATION_LANDSCAPE")) {
+                    out += "onEvaluateFullscreenMode() 沒有把「現在是不是橫屏」讀進去 —— " +
+                        "答案寫死的話橫屏就沒有 extract，宿主的輸入框會被鍵盤蓋掉 100%"
+                }
+            }
+
+            // extract 那一條必須是我們畫的（G46 抱怨的正是「那一條吃不到主題」），
+            // 而且建出來就要套、換主題也要跟著換。
+            val extract = bodyOf(src, "override fun onCreateExtractTextView(): View {")
+            if (extract == null) {
+                out += "沒有覆寫 onCreateExtractTextView() —— 橫屏那一條會是系統畫的，" +
+                    "帶著原生 Done 鈕、吃不到 core/themes"
+            } else {
+                if (!extract.contains("ThemedExtractView(")) {
+                    out += "onCreateExtractTextView() 交出去的不是 ThemedExtractView"
+                }
+                if (!extract.contains("applyTheme(")) {
+                    out += "onCreateExtractTextView() 建出來沒有套主題"
+                }
+            }
+            val sync = bodyOf(src, "private fun syncConfigToUi()")
+            if (sync == null) {
+                out += "找不到 syncConfigToUi()"
+            } else if (!sync.contains("extractView?.applyTheme(")) {
+                out += "換主題時沒有同步 extract 那一條 —— 它不在 Compose 樹裡，不會自己跟上"
             }
 
             val selection = bodyOf(src, "override fun onUpdateSelection(")
@@ -197,9 +280,13 @@ class HostEditorPolicyTest {
                 }
             }
 
-            // 我們自己的空白鍵左右滑同樣繞過引擎（直接送 DPAD 給宿主）。
-            // 那條路必須自己先把組字沖出去，不能指望上面那個回呼替它收尾 ——
-            // 回呼那一支刻意不理會「宿主沒有組字區」的過期座標，接不住它。
+            // 我們自己的 `cursor:*` 動詞同樣繞過引擎（直接送 DPAD 給宿主）。
+            //
+            // ⚠ 這幾個動詞目前**使用者按不到**：佈局裡它們全部掛在 `swipe:` 底下，
+            //   而 Android 端沒有實作 swipe 分派（§9.6 說 swipe 是 OPTIONAL）。
+            //   守在這裡是因為 G31 接上 swipe 的那一天它必須已經是對的 ——
+            //   「按得到的那天才發現繞過引擎」是本專案吃過的形狀。
+            //   那條路本身按不按得到，由 LayoutSwipeReachabilityTest 明著記著。
             for (verb in listOf("CURSOR_LEFT", "CURSOR_RIGHT", "CURSOR_HOME", "CURSOR_END")) {
                 if (!Regex("""ActionVerb\.$verb -> moveHostCursor\(""").containsMatchIn(src)) {
                     out += "$verb 沒有走 moveHostCursor() —— 它會直接送 DPAD，繞過引擎"
@@ -220,15 +307,17 @@ class HostEditorPolicyTest {
         }
 
         /**
-         * 取 [anchor] 之後那一段（到下一個同縮排的 `override fun` / `private fun` 為止）。
+         * 取 [anchor] 之後那一段（到下一個同縮排的成員為止 —— 另一個 `fun`，
+         * 或下一個成員的 KDoc）。
          *
          * 限定範圍是刻意的：不限定的話，三百行外的另一個函式就能把判準餵飽。
+         * 停在 KDoc 上也是刻意的：註解裡提到某個名字不算「接上了線」。
          */
         fun bodyOf(src: String, anchor: String): String? {
             val start = src.indexOf(anchor)
             if (start < 0) return null
             val rest = src.substring(start + anchor.length)
-            val next = Regex("""\n    (?:override|private|internal) fun """).find(rest)
+            val next = Regex("""\n    (?:/\*\*|(?:override|private|internal) fun )""").find(rest)
             return rest.substring(0, next?.range?.first ?: rest.length)
         }
     }

@@ -29,6 +29,7 @@ import org.luminakey.ime.core.RimeRuntime
 import org.luminakey.ime.core.VariantPlan
 import org.luminakey.ime.keyboard.InlinePreedit
 import org.luminakey.ime.keyboard.T9Syllables
+import org.luminakey.ime.keyboard.ThemedExtractView
 import org.luminakey.ime.keyboard.ConfigRepository
 import org.luminakey.ime.keyboard.KeyboardEvent
 import org.luminakey.ime.keyboard.KeyboardTypes
@@ -344,12 +345,37 @@ class RimeInputMethodService : InputMethodService() {
     }
 
     /**
-     * 橫屏時**不要**掉進 AOSP 的全螢幕 extract 模式。判斷與理由見
-     * [HostEditorPolicy.useFullscreen]；一句話：那條原生輸入條與 `Done` 鈕
-     * 不是我們畫的，也吃不到 `core/themes` 的任何設定。
+     * 橫屏要不要進全螢幕 extract 模式。判斷與理由見
+     * [HostEditorPolicy.useFullscreen]。
+     *
+     * ⚠ **上一版在這裡一律回 `false`，那是錯的。** 拿掉 extract 模式等於把
+     *   「橫屏螢幕不夠高」的補償拿掉而不補：實測 emulator-5558 橫屏，鍵盤
+     *   佔掉 851/1080 px，宿主 `dev.rime.imetest` 縮排之後**一個輸入框都排
+     *   不下**（`uiautomator dump` 裡沒有那個節點）。使用者看不到自己在打
+     *   什麼。現在改成讓它生效，而那一條輸入條由 [ThemedExtractView] 畫。
      */
     override fun onEvaluateFullscreenMode(): Boolean =
-        HostEditorPolicy.useFullscreen(currentInputEditorInfo?.imeOptions ?: 0)
+        HostEditorPolicy.useFullscreen(
+            imeOptions = currentInputEditorInfo?.imeOptions ?: 0,
+            landscape = resources.configuration.orientation ==
+                Configuration.ORIENTATION_LANDSCAPE,
+        )
+
+    /**
+     * extract 模式那一條輸入條 —— 換成我們自己的，理由見 [ThemedExtractView]。
+     *
+     * 這是 G46 真正的修法：抱怨的是「那一條不是我們畫的、吃不到 core/themes」，
+     * 所以要換掉的是**那一條的外觀**，不是整個模式。
+     */
+    override fun onCreateExtractTextView(): View {
+        val v = ThemedExtractView(this)
+        extractView = v
+        v.applyTheme(effectiveTheme())
+        return v
+    }
+
+    /** [onCreateExtractTextView] 交出去的那一份，換主題時要跟著換。 */
+    private var extractView: ThemedExtractView? = null
 
     /**
      * 宿主回報游標動了。判準見 [HostEditorPolicy.cursorLeftComposition]。
@@ -753,6 +779,9 @@ class RimeInputMethodService : InputMethodService() {
 
     /** 把 [LayoutHost] 的當前佈局／層／主題搬進 UI 狀態,並套上使用者覆寫。 */
     private fun syncConfigToUi() {
+        // 橫屏那一條 extract 輸入條不在 Compose 樹裡（它是框架的 View），
+        // 所以要在這裡自己跟上，否則換主題只換一半。
+        extractView?.applyTheme(effectiveTheme())
         uiState = uiState.copy(
             theme = effectiveTheme(),
             layout = layoutHost.layout,
