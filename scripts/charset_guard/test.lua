@@ -1,11 +1,13 @@
 -- test.lua — 字集守門的純函式測試
 --
 -- 由 scripts/verify_charset_guard.sh 用**真的 Lua 5.4.8**（librime-lua 出貨的
--- 那一份原始碼）跑。測的是 core/data/lua/luminakey_charset.lua 裡的三個純函式
--- （passes / pick / run）與兩份產生出來的字集資料，不需要 librime、不需要裝置。
+-- 那一份原始碼）跑。測的是 core/data/lua/luminakey_charset.lua 裡的純函式
+-- （passes / pick / run / choose_set / puller）、filter 的進入點 M.func，
+-- 以及兩份產生出來的字集資料。不需要 librime、不需要裝置。
 --
 -- 為什麼要抽成純函式才測得到：真正的 filter 需要 engine、session、詞庫，
--- 也就是只有真機跑得動，而真機不在 CI 上。
+-- 也就是只有真機跑得動，而真機不在 CI 上。M.func 本身靠假的 input / env
+-- 與自己接管的全域 yield 測 —— 它的錯誤處理正是這一層出過事的地方。
 --
 -- 用法：lua test.lua <core/data/lua 的路徑>
 
@@ -228,6 +230,114 @@ for cp in pairs(HANT) do
 end
 ok(only_s > 1000 and only_t > 4000,
   string.format("兩份字集確實不同（只在簡體 %d、只在繁體 %d、共有 %d）", only_s, only_t, both))
+
+-- ═══════════════════════════════════════════════════════════════════════
+--  5. 硬規則：**任何**錯誤都不可以讓一段候選變成 0
+-- ═══════════════════════════════════════════════════════════════════════
+--
+-- 為什麼要有這一節：這一層被撤回過一次，原因就是「候選變成 0」，而且真正的
+-- 破口不在過濾邏輯裡 —— 是模組載入與錯誤處理。上面 1–3 節全綠的同時，
+-- 使用者打 nihao 得到的是 n-i-h-a-o。所以這裡測的不是「濾得對不對」，
+-- 是「壞掉的時候會不會把候選吃掉」。
+--
+-- ⚠ M.func 用的是**全域** yield（librime-lua 註冊的 C 函式）。測試自己接管它。
+
+-- input:iter() 回三件套；raise_at 指定第幾次拉的時候壞掉。
+local function fake_input(list, raise_at)
+  local i = 0
+  return {
+    iter = function()
+      return function()
+        i = i + 1
+        if raise_at and i == raise_at then error("pull 壞了") end
+        return list[i]
+      end, nil, nil
+    end,
+  }
+end
+
+local function fake_env(opts)
+  return { engine = { context = {
+    get_option = function(_, k) return opts[k] == true end,
+  } } }
+end
+
+-- 連 env.engine.context 都拿不到的環境（引擎狀態不對時真的會這樣）。
+local broken_env = { engine = setmetatable({}, {
+  __index = function() error("engine 壞了") end,
+}) }
+
+local function with_yield(fn)
+  local out = {}
+  local saved = rawget(_G, "yield")
+  rawset(_G, "yield", function(c) out[#out + 1] = c.text end)
+  local okc, err = pcall(fn)
+  rawset(_G, "yield", saved)
+  if not okc then error(err, 0) end   -- 錯誤漏到呼叫端本身就是缺陷
+  return out
+end
+
+do  -- 正控：M.func 真的會過濾（否則底下每一條都是「什麼都沒做」的假綠）
+  local out = with_yield(function()
+    M.func(fake_input(cands("你好", "妳好", "我")), fake_env({ zh_hans = true }))
+  end)
+  eq(join(out), "你好 我", "M.func 走得通，而且簡體模式真的濾掉了「妳好」")
+end
+
+do  -- 決定字集那一步出錯 → 這一層不做事
+  local out = with_yield(function()
+    M.func(fake_input(cands("妳好", "你好", "祂")), broken_env)
+  end)
+  eq(join(out), "妳好 你好 祂", "問不到開關時整段原樣放行，不是變成 0")
+end
+
+do  -- 連迭代器都拿不到 → 不可以把錯誤丟給 librime（那才會讓整段變空）
+  local out = with_yield(function()
+    M.func({ iter = function() error("iter 壞了") end }, fake_env({ zh_hans = true }))
+  end)
+  eq(#out, 0, "取不到迭代器時安靜收工，不把錯誤丟出去")
+end
+
+do  -- 拉候選拉到一半壞掉：緩衝裡的必須倒出來
+  local out = with_yield(function()
+    M.func(fake_input(cands("妳好", "妳", "你"), 3), fake_env({ zh_hans = true }))
+  end)
+  eq(join(out), "妳好 妳", "拉到一半壞掉時，緩衝裡的候選不可以憑空消失")
+end
+
+do  -- 已經吐過候選之後才壞掉：吐出去的留著，錯誤不外漏
+  local out = with_yield(function()
+    M.func(fake_input(cands("你", "我", "它"), 3), fake_env({ zh_hans = true }))
+  end)
+  eq(join(out), "你 我", "壞掉之前吐出去的候選留著")
+end
+
+do  -- M.run 這一層的保證：先 emit 緩衝，再把錯誤往外丟
+  local list = cands("妳", "祂")
+  local i = 0
+  local p = function()
+    i = i + 1
+    if i == 3 then error("pull 壞了") end
+    return list[i]
+  end
+  local e, out = collect()
+  local okr = pcall(M.run, p, e, S)
+  eq(okr, false, "M.run 把錯誤往外丟 —— 上層要知道出過事")
+  eq(join(out), "妳 祂", "但緩衝裡的候選在丟出去之前一定先 emit")
+end
+
+do  -- 沒有字集時中途壞掉：已經放行的留著
+  local list = cands("妳", "祂")
+  local i = 0
+  local p = function()
+    i = i + 1
+    if i == 3 then error("pull 壞了") end
+    return list[i]
+  end
+  local e, out = collect()
+  pcall(M.run, p, e, nil)
+  eq(join(out), "妳 祂", "不過濾模式下壞掉，已經放行的也留著")
+end
 
 -- ═══════════════════════════════════════════════════════════════════════
 io.write(string.format("字集守門：%d 過、%d 失敗\n", pass, fail))
