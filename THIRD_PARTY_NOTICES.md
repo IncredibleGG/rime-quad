@@ -76,6 +76,28 @@ RIME 生態中的既有前端（Weasel、Squirrel、Trime、Hamster 等）多為
 OpenCC 的 `.ocd2` 詞典由本專案以 host 版 OpenCC 從其原始碼樹產生，
 授權同 OpenCC 本體（Apache-2.0）。
 
+### 字集守門（`core/data/lua/`、`core/data/opencc/luminakey_*`）—— 本專案自撰
+
+`luminakey_charset.lua`（過濾器）、兩張補充轉換表與產生它們的
+`scripts/gen_charset_data.py` 由本專案撰寫，授權同本專案（GPL-3.0-or-later）。
+
+兩份**字集資料**的來源要分開說：
+
+| 檔案 | 內容 | 來源 | 授權判斷 |
+|---|---|---|---|
+| `luminakey_charset_hant.lua` | Big5 收得下的 13,063 個漢字 | 由 Python 的 `big5` codec 在本機列舉產生（等同 `iconv -t BIG5`） | 字元編碼的收字範圍是**事實**，不是任何人的著作。任何人跑一次同樣的迴圈都會得到同一份 |
+| `luminakey_charset_hans.lua` | 《通用规范汉字表》的 8,181 個漢字 | 教育部／国家语委 2013 年公告的**字表本身**；離線副本取自 [rime-ice](https://github.com/iDvel/rime-ice) 打包的 `cn_dicts/8105.dict.yaml`（該檔自述資料源為 zh.wiktionary 的該表附錄） | 政府公告的字表是事實性資料。本專案只取**字的集合**，未取 rime-ice 的讀音、詞頻或任何 schema |
+
+⚠ **rime-ice 是 GPL-3.0-only。** 本專案是 GPL-3.0-**or-later**，兩者相容
+（or-later 可以被拉到 3.0-only 那一支）。這裡取的只是字集而非受保護的表達，
+但既然取自那份檔案就在這裡登記出處 —— 日後若要把 rime-ice 的**詞庫**收進來
+（task #27），整體散布就會被 GPL-3.0-only 拘束，那時要回到本檔重新裁決。
+
+`luminakey_t2s.json` / `luminakey_t2tw.json` 只是 OpenCC 設定檔，
+引用的 `.ocd2` 詞典仍是 OpenCC 本體（Apache-2.0）的產物；補表
+`luminakey_t2s_extra.txt` / `luminakey_t2tw_extra.txt` 是本專案由 OpenCC 的
+原始對照表推導 + 手工補齊而成，視同衍生自 OpenCC 資料（Apache-2.0，與 GPL-3 相容）。
+
 ### 九宮格拼音（`t9_pinyin.schema.yaml`）—— 本專案自撰，非第三方
 
 `core/data/schemas/t9_pinyin.schema.yaml` 由本專案撰寫，授權同本專案（GPL-3.0-or-later）。

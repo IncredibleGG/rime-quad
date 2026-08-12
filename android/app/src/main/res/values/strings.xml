@@ -183,6 +183,10 @@
     <string name="page_text">Text</string>
     <string name="text_characters">Characters</string>
     <string name="text_punctuation">Punctuation</string>
+    <string name="text_charset">Character set</string>
+    <string name="text_charset_strict">Only the kind I picked</string>
+    <string name="text_charset_all">No limit</string>
+    <string name="text_charset_note">Drops candidates that are not the kind you picked. It cannot be perfect: the built-in dictionary covers the whole Chinese character range, so rare characters still show up further down the list, and a few rare characters that do belong get dropped with them. If a syllable would be left with nothing, its original candidates are shown instead.</string>
     <string name="text_space_key">Space key</string>
     <string name="text_follow_keyboard">Follow the keyboard</string>
     <string name="text_traditional">Traditional</string>

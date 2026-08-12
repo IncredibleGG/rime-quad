@@ -142,6 +142,10 @@
     <string name="page_text">文字</string>
     <string name="text_characters">字形</string>
     <string name="text_punctuation">标点</string>
+    <string name="text_charset">字集</string>
+    <string name="text_charset_strict">只留我选的那一种</string>
+    <string name="text_charset_all">不限制</string>
+    <string name="text_charset_note">把不是你选的那一种的候选拿掉。做不到完全干净：内置词库收了整个汉字范围，往下翻几页仍会看到罕用字，而少数本来就该留的罕用字也会跟着被拿掉。某个字的候选会被拿光时，那一次就原样显示，不会留白。</string>
     <string name="text_space_key">空格键</string>
     <string name="text_follow_keyboard">跟随键盘</string>
     <string name="text_traditional">繁体</string>

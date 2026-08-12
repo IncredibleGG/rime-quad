@@ -584,6 +584,26 @@ fun TextPage(onBack: () -> Unit) {
             selected = prefs.simplification,
             onSelect = { v -> edit { p -> p.copy(simplification = v) } },
         )
+        // 字集守門。放在「字體」正下方，因為它只有在使用者選過簡或繁之後
+        // 才說得通 —— 它的意思就是「我剛才選的那一種，要不要**只**留那一種」。
+        //
+        // ⚠ 這一組的說明文字是**產品承諾的邊界**，不是裝飾。這一層做不到
+        //   絕對純度（見 docs/settings-model.md §4.7），畫面上就不可以讓人
+        //   以為它做得到。文案要說三件事：會拿掉什麼、拿不乾淨、以及
+        //   「整段被拿光時會退回原樣」。
+        SettingGroup(
+            label = stringResource(R.string.text_charset),
+            // 只有兩態，而且**沒有「跟著鍵盤」** —— 方案自己沒有這個概念，
+            // 不干預在這裡等於關掉，多一格只會讓人以為有第三種行為。
+            options = listOf(
+                true to stringResource(R.string.text_charset_strict),
+                false to stringResource(R.string.text_charset_all),
+            ),
+            // 未設定 = 開。寫 `!= false` 而不是 `== true`，見 UserPrefs.charsetGuard。
+            selected = prefs.charsetGuard != false,
+            onSelect = { v -> edit { p -> p.copy(charsetGuard = v) } },
+            footnote = stringResource(R.string.text_charset_note),
+        )
         SettingGroup(
             label = stringResource(R.string.text_punctuation),
             options = listOf(

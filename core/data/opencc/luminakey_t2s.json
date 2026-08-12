@@ -1,0 +1,22 @@
+{
+  "name": "LuminaKey: OpenCC 標準繁體 → 简化字（t2s + 補表）",
+  "normalization": [
+    { "dict": { "type": "ocd2", "file": "CJK_Compatibility_Ideographs.ocd2" } }
+  ],
+  "conversion_chain": [
+    {
+      "dict": {
+        "type": "group",
+        "match_policy": "short_circuit",
+        "dicts": [
+          { "type": "ocd2", "file": "TSPhrases.ocd2" },
+          { "type": "ocd2", "file": "TSCharactersExt.ocd2", "may_output_tofu": true },
+          { "type": "ocd2", "file": "TSCharacters.ocd2" }
+        ]
+      }
+    },
+    {
+      "dict": { "type": "text", "file": "luminakey_t2s_extra.txt" }
+    }
+  ]
+}

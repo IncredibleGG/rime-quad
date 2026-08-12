@@ -103,6 +103,24 @@ data class UserPrefs(
     /** librime 的 `ascii_punct` 開關。`null` = 不干預。 */
     val asciiPunct: Boolean? = null,
 
+    /**
+     * 字集守門：選了簡體就只留簡體字、選了繁體就只留繁體字。
+     *
+     * ⚠ 這一項的 `null` 與本檔其他欄位不同：**未設定 = 開**。
+     * 理由與 [networkEnabled] 對稱 —— 那一項的安全預設是「不連網」，
+     * 這一項的產品預設是「使用者說要簡體就給簡體」。消費端一律寫
+     * `charsetGuard != false`，不可以寫 `charsetGuard == true`。
+     *
+     * 送給引擎的是**否定式**的 `luminakey_charset_off`：librime 沒有
+     * 「宣告過但預設為真」的 option，沒宣告的一律讀成 false，所以
+     * 「預設開」只能寫成「預設沒有關」。轉換在 applyRimeOptions()。
+     *
+     * 代價寫在設定頁的說明裡，不可以只寫在這裡：字集之外還有字集，
+     * 罕用字（蚵 砦 疋 糸 酶 礴 珏）會一起被濾掉。見
+     * `docs/settings-model.md` §4.7。
+     */
+    val charsetGuard: Boolean? = null,
+
     /** 空白鍵行為。⚠ 規範缺口：主題與佈局格式都沒有描述這件事。 */
     val spaceBehavior: SpaceBehavior? = null,
 
@@ -190,6 +208,7 @@ data class UserPrefs(
         candidateCount?.let { m[K_CANDIDATE_COUNT] = it }
         simplification?.let { m[K_SIMPLIFICATION] = it }
         asciiPunct?.let { m[K_ASCII_PUNCT] = it }
+        charsetGuard?.let { m[K_CHARSET_GUARD] = it }
         spaceBehavior?.let { m[K_SPACE] = it.name }
         networkEnabled?.let { m[K_NETWORK_ENABLED] = it }
         offlineNoticeSeen?.let { m[K_OFFLINE_NOTICE_SEEN] = it }
@@ -215,6 +234,7 @@ data class UserPrefs(
         const val K_CANDIDATE_COUNT = "candidate_count"
         const val K_SIMPLIFICATION = "opt_simplification"
         const val K_ASCII_PUNCT = "opt_ascii_punct"
+        const val K_CHARSET_GUARD = "opt_charset_guard"
         const val K_SPACE = "space_behavior"
         const val K_NETWORK_ENABLED = "network_enabled"
         const val K_OFFLINE_NOTICE_SEEN = "offline_notice_seen"
@@ -245,6 +265,7 @@ data class UserPrefs(
             candidateCount = m.int(K_CANDIDATE_COUNT),
             simplification = m.bool(K_SIMPLIFICATION),
             asciiPunct = m.bool(K_ASCII_PUNCT),
+            charsetGuard = m.bool(K_CHARSET_GUARD),
             spaceBehavior = m.enum(K_SPACE, SpaceBehavior.entries),
             networkEnabled = m.bool(K_NETWORK_ENABLED),
             offlineNoticeSeen = m.bool(K_OFFLINE_NOTICE_SEEN),
