@@ -178,12 +178,12 @@ jobs:
       #   (2) 斷言看的行不同（最終 COMMIT vs `[組字後]` 那一行）。
       #
       # (1) 有機制上的理由，而且理由夠硬：
-      #   patches/librime-lua@sandbox.patch 第二層（modules.cc 的
-      #   kRimeQuadPathSandbox）開頭是
+      #   patches/librime-lua@sandbox.patch 第二層（modules.cc 裡那段
+      #   path sandbox 的 lua 原始碼）開頭是
       #       local ROOT_USER = normalize(user_dir, nil)
       #       if not ROOT_USER then error("...不是絕對路徑...") end
       #   而 normalize(p, nil) 對相對路徑回 nil。error 之後 C++ 那側走
-      #   rimequad_lua_nuke()，把 require / io / os / package / load 設成 nil。
+      #   沙盒的 fail-closed 那條路，把 require / io / os / package / load 設成 nil。
       #   librime-lua 載 `lua_filter@*luminakey_charset` 用的是
       #   src/lua_gears.cc:85 的 `lua_getglobal(L, "require")` —— require 是 nil
       #   就載不起來，而 librime 對 filter 載入失敗的處置是**整段候選變成空的**。
@@ -278,7 +278,7 @@ jobs:
           echo "  · G/H（守門關掉）變成 5  → 兇手是守門的**判斷邏輯**"
           echo "    （M.pick 挑錯字集，或 M.passes 把該過的濾掉，而退回機制沒生效）"
           echo "  · G/H 仍然是 0，而 A=5、B=0 → 兇手是**相對路徑**："
-          echo "    lua 沙盒 normalize() 對相對路徑回 nil → error → rimequad_lua_nuke()"
+          echo "    lua 沙盒 normalize() 對相對路徑回 nil → error → 沙盒 fail-closed"
           echo "    → require=nil → lua_filter@*luminakey_charset 載不起來"
           echo "    → librime 把整段候選變成空的（關不關守門都一樣，因為根本沒載進來）"
           echo "  · 找 [lua-diag] 開頭的行：有『模組載入成功』= 檔案本體跑到了；"
