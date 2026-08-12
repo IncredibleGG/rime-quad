@@ -296,7 +296,14 @@ def main():
         return
 
     if shutil.which("ffmpeg") is None:
-        sys.exit("找不到 ffmpeg —— 需要它把 WAV 轉成 .ogg(libvorbis)")
+        # 離開碼 3 = **這一關跑不起來**,不是「音檔與腳本對不上」。
+        # 兩者都必須是紅的,但說法不能混:混了就會有人去改一份其實
+        # 沒問題的音檔。呼叫端(verify_key_feedback.py)認這個 3。
+        print("找不到 ffmpeg —— --check 需要它把出貨的 .ogg 解回 PCM。\n"
+              "這是**環境缺工具**,不是音檔的問題;裝了它再跑一次。\n"
+              "  Debian/Ubuntu: sudo apt-get install -y ffmpeg",
+              file=sys.stderr)
+        sys.exit(3)
 
     os.makedirs(OUT_DIR, exist_ok=True)
     rows = []

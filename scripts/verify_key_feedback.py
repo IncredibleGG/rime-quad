@@ -131,6 +131,16 @@ def main():
     tail = p.stdout.decode("utf-8", "replace").strip().splitlines()
     if p.returncode == 0:
         print("  [PASS] " + tail[-1].strip())
+    elif p.returncode == 3:
+        # 缺工具 → 這一關**沒有驗到任何東西**。仍然算失敗(不驗過的關卡
+        # 不可以是綠的),但不可以說成「音檔與腳本對不上」—— 那是一句
+        # 假的指控,會讓人去動一份其實沒問題的出貨資料。
+        # 2026-08-12 這條車道就是這樣紅的:runner 上沒有 ffmpeg,
+        # 標題卻寫著音檔對不上。(同一個形狀的第二次,第一次是 numpy。)
+        fails += 1
+        print("  [FAIL] 這一關跑不起來 —— 環境缺工具,音檔本身沒有被驗到")
+        for l in tail[-6:]:
+            print("         " + l)
     else:
         fails += 1
         print("  [FAIL] 音檔與腳本對不上")

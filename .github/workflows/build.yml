@@ -272,8 +272,17 @@ jobs:
         #   原本用 numpy,而 runner 上沒有 —— 2026-08-12 這條車道就是紅在
         #   `ModuleNotFoundError: No module named 'numpy'`,產品一點事都沒有。
         #   合成已經改成純標準函式庫(見那支腳本的檔頭)。唯一的外部相依是
-        #   ffmpeg(Vorbis 編碼器,標準函式庫沒有),ubuntu runner 內建。
-        run: python3 ./scripts/verify_key_feedback.py
+        #   ffmpeg(Vorbis 編解碼,標準函式庫沒有)。
+        #
+        # ⚠ ffmpeg **不是** ubuntu runner 內建的 —— 上一版的註解在這裡寫錯,
+        #   而開發機上有,所以本機一直綠、只有 CI 紅。這是 numpy 那件事的
+        #   同一個形狀第二次:守門跑不起來,而畫面上長得像出貨資料壞了。
+        #   所以下面那一行 apt-get 是這一關的一部分,不要「順手拿掉」。
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          ffmpeg -version | head -1
+          python3 ./scripts/verify_key_feedback.py
 
       - name: 守門腳本的反向測試(植入 16 條真違規,確認它會紅)
         # 放在發布關卡**之後**:其中一條要用已建置的 APK
