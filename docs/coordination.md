@@ -157,6 +157,27 @@ bash 端再剝一次 `\r`。(同一個檔案早就為了 cp1252 的 stdout 編�
 **`adb shell input tap` 這類注入可能太快。** 變灰那個 bug 用 tap 重現不出來,要用
 `input swipe` 模擬按住 100ms 以上。**「模擬器測不出來」的結論都要重新懷疑一次。**
 
+**`core/data/` 是四端共用的,改它就是同時改四個產品。** 2026-08-12 有一批改動
+(opencc 補充表 + 一支字集守門的 lua filter)在 emulator 上驗過、綠的,併進 main 之後
+**macOS 與 Android 兩條車道同時紅**,整批被 `git revert -m 1` 撤回。在一端驗過只是
+四分之一。而且支線**只跑得到自己接了線的那幾條車道** —— 沒接的不是紅的,是根本不跑,
+而 checks 上被跳過的 job 是灰色的勾,和跑過而且通過長得一模一樣。
+`scripts/verify_core_data_fanout.sh` 現在會在動到 `core/data/` 時,逐條檢查這條分支
+在每一份讀 `core/data/` 的 workflow 上是不是真的跑得到(兩道閘門都看),
+跑不到就紅並指名是哪一道。**要動 `core/data/` 就先把分支接進四份 workflow,
+合併回 main 之前再拿掉。**
+
+**資料目錄一定要是絕對路徑,而它的失敗長得像「輸入法壞了」。** 上面那次撤回的真兇
+不是字集守門的判斷邏輯,是**相對路徑**:`librime-lua` 的路徑沙盒
+(`patches/librime-lua@sandbox.patch` 第二層)對相對路徑 fail-closed → `require` 被設成
+nil → schema 裡的 `lua_filter@*luminakey_charset` 載不起來 → 上游的 `LuaFilter::Apply`
+回傳一個「一取就錯」的 translation → **整段候選被吃掉** → 使用者打 nihao 上屏 "nihao"。
+症狀離原因有五層遠,而四條車道裡只有 macOS 的一關餵相對路徑,所以只有它紅。
+現在三處各補一道:`rs_init()` 會把兩個資料目錄轉成絕對路徑(`core/src/rime_shell.cc`
+的 `make_absolute()`);`patches/librime-lua@filter-passthrough.patch` 讓裝不起來的
+filter 原樣放行而不是吃掉候選;`core/data/lua/luminakey_charset.lua` 自己 pcall,
+任何錯誤都當成「這一層不做事」。**四端誰都不要再依賴「呼叫端會傳絕對路徑」這個約定。**
+
 **離線定位是硬約束。** 單一連網出口、連網紀錄、開關預設關閉,而且**不得宣稱做不到
 的事**(不能說「本 app 沒有網路權限」—— 那是假的)。第三方方案有程式碼執行能力,
 移植 librime-lua 時**必須套用 `patches/librime-lua@sandbox.patch`**。
