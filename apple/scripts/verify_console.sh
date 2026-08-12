@@ -9,11 +9,6 @@
 #   verify_console.sh <keys> <schema> <expect>
 #   verify_console.sh --expect-fail <keys> <schema> <wrong-expect>
 #
-#   <schema> 傳一個單獨的 "-" 代表**不要傳方案 id 給 rime_console**
-#   （[diag] 這一輪加的對照組）。rime_console 的第 5 個引數不給時，它
-#   不會走 rs_select_schema，session 就停在預設方案上。傳與不傳各跑一次，
-#   紅的時候兩邊的差別會直接印在一起。定案之後這個分支可以拔掉。
-#
 # ── 為什麼斷言要這樣寫（不要放寬）─────────────────────────────
 #
 # rime_console 有三處會印出 COMMIT，格式各不相同:
@@ -52,11 +47,7 @@ EXPECT="${3:?需要 expect}"
 
 run_case() {
   local out rc
-  if [ "${SCHEMA}" = "-" ]; then
-    out="$("${CONSOLE}" "${SHARED}" "${USER_DIR}" "${KEYS}" 2>&1)"
-  else
-    out="$("${CONSOLE}" "${SHARED}" "${USER_DIR}" "${KEYS}" 1 "${SCHEMA}" 2>&1)"
-  fi
+  out="$("${CONSOLE}" "${SHARED}" "${USER_DIR}" "${KEYS}" 1 "${SCHEMA}" 2>&1)"
   rc=$?
 
   # glog 的部署訊息很吵，成功時只留下非 glog 的行

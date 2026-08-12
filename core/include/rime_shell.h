@@ -97,7 +97,17 @@ int32_t rs_abi_version(void);
 /* 全域初始化，行程內只可呼叫一次。失敗時以 rs_last_error() 取得原因。
  *
  * rs_setup 內的所有字串都會被**複製**一份，本函式返回後呼叫端即可釋放。
- * （JNI 的 GetStringUTFChars、Swift 的暫時字串都不必特地保留。） */
+ * （JNI 的 GetStringUTFChars、Swift 的暫時字串都不必特地保留。）
+ *
+ * ⚠ 兩個資料目錄若是相對路徑，本層會**以呼叫當下的 cwd 轉成絕對路徑**再交給
+ *   librime。呼叫端因此不必自己算，但也不要指望「傳相對路徑之後再 chdir」
+ *   還會跟著走 —— 綁定在 rs_init 的那一刻。
+ *
+ *   為什麼門面要管這件事：librime-lua 的路徑沙盒對相對路徑是 fail-closed 的，
+ *   而它 fail 之後的症狀是**所有候選消失**（lua filter 載不起來 → librime
+ *   讓整段 translation 變空 → 使用者打 nihao 上屏 "nihao"）。症狀離原因五層遠，
+ *   四端各有一個踩得到的入口，所以在唯一的共用邊界上一次解決。
+ *   細節見 core/src/rime_shell.cc 的 make_absolute()。 */
 bool rs_init(const rs_setup* setup);
 void rs_finalize(void);
 

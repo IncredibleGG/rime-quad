@@ -21,12 +21,19 @@
 #include <rime_api.h>
 
 #include <atomic>
+#include <cctype>
 #include <cstring>
 #include <cstdio>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
+
+#ifdef _WIN32
+#include <direct.h>   // _getcwd
+#else
+#include <unistd.h>   // getcwd
+#endif
 
 // librime 私有標頭 rime/key_table.h 的宣告，在此就地重宣告而不 #include 它。
 //
@@ -59,6 +66,69 @@ bool g_deploy_in_flight = false;
 // 沒有明文保證，不要賭。
 std::string g_shared_dir, g_user_dir, g_log_dir, g_app_name;
 bool g_has_log_dir = false;
+
+// ── 資料目錄一律轉成絕對路徑 ──────────────────────────────────
+//
+// ⚠ 這不是整潔強迫症，是一個真的把整個輸入法變成「只吐拼音字母」的缺陷。
+//
+// librime-lua 的路徑沙盒（patches/librime-lua@sandbox.patch 第二層）第一件事
+// 就是把 user_data_dir 正規化，而**相對路徑一律被拒絕** —— 它無從得知呼叫端
+// 的 cwd，而 cwd 是行程全域的、隨時可能被別的執行緒改掉，拿它當基準等於把
+// 沙盒的邊界交給運氣。沙盒裝不上就 fail-closed：require / io / os / package
+// 全部設成 nil。於是 schema 裡的 `lua_filter@*luminakey_charset` 載不起來，
+// 而 librime-lua 對「filter 載入失敗」的處置是讓那個 filter 回傳**空的**
+// translation —— 整段候選消失。使用者打 nihao，得到的是 n-i-h-a-o 五個字母。
+//
+// 實測（emulator-5558，同一支執行檔、同一份 core/data）：
+//     ./rime_console /abs/shared /abs/user nihao 1 luna_pinyin_tw → 候選 5，你好
+//     ./rime_console     shared      user  nihao 1 luna_pinyin_tw → 候選 0，nihao
+// 而 .github/workflows/macos.yml 裡唯一傳相對路徑的那一關，就是唯一紅的那關。
+//
+// 為什麼修在這一層，而不是叫四端都傳絕對路徑：那是一條守不住的約定 ——
+// 它沒有任何一處會失敗給你看，踩到時症狀離原因有五層遠（相對路徑 → 沙盒 →
+// require → filter → 候選 → 上屏），而且四端各有一個踩得到的入口。
+// 門面的職責就是把這種「呼叫端無從得知的耦合」吸收掉。
+//
+// ⚠ 只做**字面**拼接：不解 symlink、不要求路徑存在。首次啟動時使用者資料
+//   目錄還不存在（librime 自己會建），realpath()/canonical 在那時會失敗。
+bool is_absolute_path(const std::string& p) {
+  if (p.empty())
+    return false;
+  if (p[0] == '/' || p[0] == '\\')
+    return true;
+  // Windows 磁碟機代號。注意 "C:foo"（磁碟機相對）也走這裡：我們沒有辦法
+  // 可攜地問出「C: 的目前目錄」，所以不碰它，原樣交給下游。
+  if (p.size() >= 2 && std::isalpha(static_cast<unsigned char>(p[0])) && p[1] == ':')
+    return true;
+  return false;
+}
+
+std::string current_dir() {
+  char buf[4096];
+#ifdef _WIN32
+  return _getcwd(buf, sizeof(buf)) ? std::string(buf) : std::string();
+#else
+  return getcwd(buf, sizeof(buf)) ? std::string(buf) : std::string();
+#endif
+}
+
+// 回傳空字串代表「轉不成絕對路徑」，呼叫端必須當成失敗 —— 悄悄放行相對路徑
+// 正是上面那個缺陷的成因。
+std::string make_absolute(const std::string& p) {
+  if (is_absolute_path(p))
+    return p;
+  std::string cwd = current_dir();
+  if (cwd.empty())
+    return std::string();
+  if (p.empty())
+    return cwd;
+  char sep = (cwd.find('/') == std::string::npos && cwd.find('\\') != std::string::npos)
+                 ? '\\'
+                 : '/';
+  if (cwd.back() == '/' || cwd.back() == '\\')
+    return cwd + p;
+  return cwd + sep + p;
+}
 
 // rs_last_error 的約定是「永不回傳 NULL」，且不同執行緒互不干擾。
 thread_local std::string t_last_error;
@@ -318,8 +388,14 @@ bool rs_init(const rs_setup* setup) {
     return false;
   }
 
-  g_shared_dir = setup->shared_data_dir;
-  g_user_dir = setup->user_data_dir;
+  // 見上面 make_absolute() 的說明：相對路徑會讓 lua 沙盒 fail-closed，
+  // 最終症狀是「所有候選消失」。在這裡吸收掉，四端都不必知道這件事。
+  g_shared_dir = make_absolute(setup->shared_data_dir);
+  g_user_dir = make_absolute(setup->user_data_dir);
+  if (g_shared_dir.empty() || g_user_dir.empty()) {
+    set_error("資料目錄是相對路徑，而且取不到目前工作目錄，無法轉成絕對路徑");
+    return false;
+  }
   g_has_log_dir = setup->log_dir != nullptr;
   g_log_dir = g_has_log_dir ? setup->log_dir : "";
   g_app_name = setup->app_name ? setup->app_name : "rime.shell";

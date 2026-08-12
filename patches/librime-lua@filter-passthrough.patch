@@ -1,0 +1,83 @@
+diff --git a/src/lua_gears.cc b/src/lua_gears.cc
+index b5a6bf5..909b9ee 100644
+--- a/src/lua_gears.cc
++++ b/src/lua_gears.cc
+@@ -69,7 +69,8 @@ static bool sub_module_init(lua_State *L, const Ticket &t,
+ }
+ //---
+ static void raw_init(lua_State *L, const Ticket &t,
+-                     an<LuaObj> *env, an<LuaObj> *func, an<LuaObj> *fini, an<LuaObj> *tags_match= NULL) {
++                     an<LuaObj> *env, an<LuaObj> *func, an<LuaObj> *fini, an<LuaObj> *tags_match= NULL,
++                     bool *func_ok = NULL) {
+   lua_newtable(L);
+   Engine *e = t.engine;
+   LuaType<Engine *>::pushdata(L, e);
+@@ -140,6 +141,9 @@ static void raw_init(lua_State *L, const Ticket &t,
+       << " name_space: " << t.name_space
+       << " func type: " << luaL_typename(L, -1)
+       << " ): " << "func type error expect function ";
++  } else if (func_ok) {
++    // RimeQuad:唯一一處「這個元件真的可用」的判定，見 LuaFilter::Apply。
++    *func_ok = true;
+   }
+   *func = LuaObj::todata(L, -1);
+   lua_pop(L, 1);
+@@ -148,11 +152,42 @@ static void raw_init(lua_State *L, const Ticket &t,
+ //--- LuaFilter
+ LuaFilter::LuaFilter(const Ticket& ticket, Lua* lua)
+   : Filter(ticket), TagMatching(ticket), lua_(lua) {
+-  lua->to_state([&](lua_State *L) {raw_init(L, ticket, &env_, &func_, &fini_, &tags_match_);});
++  lua->to_state([&](lua_State *L) {
++    raw_init(L, ticket, &env_, &func_, &fini_, &tags_match_, &func_ok_);
++  });
++  if (!func_ok_) {
++    LOG(ERROR) << "RimeQuad: lua_filter " << ticket.name_space
++               << " 沒有裝起來，這一層將原樣放行(不過濾)，而不是讓候選變空。";
++  }
+ }
+ 
+ an<Translation> LuaFilter::Apply(
+   an<Translation> translation, CandidateList* candidates) {
++  // ═══════════════════════════════════════════════════════════════════════
++  //  RimeQuad:filter 掛掉不可以讓整條翻譯變空
++  // ═══════════════════════════════════════════════════════════════════════
++  //
++  // 上游在這裡是無條件建 LuaTranslation。func_ 不是 function 時(模組載不到、
++  // require 被沙盒拿掉、模組裡沒有 func)，newthread 出來的 thread 一 resume
++  // 就錯，LuaTranslation::Next() 於是 set_exhausted(true) —— 而 filter 的
++  // 回傳值**取代**了輸入的 translation，所以輸入的候選整批被丟掉。
++  //
++  // 使用者看到的不是「這個 filter 沒作用」，是**打了字完全沒有候選**；
++  // Android 端在「還在組字但候選是空的」時會直接把 preedit 上屏，
++  // 於是打 nihao 得到 n-i-h-a-o 五個字母。一個過濾器裝不起來，
++  // 代價不該是整個輸入法不能打字。
++  //
++  // 這條路真的被踩到過:資料目錄傳成相對路徑 → 路徑沙盒 fail-closed →
++  // require = nil → lua_filter@*luminakey_charset 載不起來 → 候選 0。
++  // (根因已在 core/src/rime_shell.cc 的 make_absolute() 修掉，這裡是保底:
++  //  任何**其他**讓 filter 裝不起來的原因，都不該再有這個下場。)
++  //
++  // 同一份 lua_gears.cc 裡，其餘三種元件的失敗處置本來就是「這一層不做事」:
++  // LuaSegmentor::Proceed 回 true、LuaProcessor::ProcessKeyEvent 回 kNoop。
++  // filter 是唯一一個會把上游成果吃掉的，這裡把它對齊。
++  if (!func_ok_) {
++    return translation;
++  }
+   auto f = lua_->newthread<an<LuaObj>, an<Translation>,
+                            an<LuaObj>, CandidateList *>(func_, translation, env_, candidates);
+   return New<LuaTranslation>(lua_, f);
+diff --git a/src/lua_gears.h b/src/lua_gears.h
+index 8c44c6f..be498d1 100644
+--- a/src/lua_gears.h
++++ b/src/lua_gears.h
+@@ -60,6 +60,10 @@ private:
+   an<LuaObj> func_;
+   an<LuaObj> fini_;
+   an<LuaObj> tags_match_;
++  // RimeQuad(patches/librime-lua@filter-passthrough.patch):
++  // func_ 真的是一個 lua function 嗎。false 代表這個 filter 根本沒裝起來
++  // (模組載不到、模組裡沒有 func、require 被沙盒拿掉…)，Apply 會原樣放行。
++  bool func_ok_ = false;
+ };
+ 
+ class LuaTranslator : public Translator {
