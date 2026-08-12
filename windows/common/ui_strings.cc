@@ -183,6 +183,19 @@ namespace {
   X(kPunctFollow, L"Leave it alone", L"不干預", L"不干预")                     \
   X(kPunctChinese, L"Chinese  ,  。", L"中文  ,  。", L"中文  ,  。")          \
   X(kPunctEnglish, L"English  ,  .", L"英文  ,  .", L"英文  ,  .")             \
+  X(kShapeHeading, L"How wide letters and numbers are",                        \
+    L"英文字母和數字有多寬", L"英文字母和数字有多宽")                          \
+  X(kShapeBlurb,                                                               \
+    L"Wide letters line up with Chinese characters, one square each; narrow "  \
+    L"ones are the normal keyboard width. Most people want narrow.",           \
+    L"「寬」的字母和中文字一樣寬,一個字佔一格;「窄」的就是鍵盤上原本的"      \
+    L"樣子。絕大多數人要的是窄的。",                                           \
+    L"“宽”的字母和中文字一样宽,一个字占一格;“窄”的就是键盘上原本的"          \
+    L"样子。绝大多数人要的是窄的。")                                           \
+  X(kShapeFollow, L"Leave it alone", L"不干預", L"不干预")                     \
+  X(kShapeHalf, L"Narrow  A B 1 2", L"窄的  A B 1 2", L"窄的  A B 1 2")        \
+  X(kShapeFull, L"Wide  \uFF21 \uFF22 \uFF11 \uFF12",                          \
+    L"寬的  \uFF21 \uFF22 \uFF11 \uFF12", L"宽的  \uFF21 \uFF22 \uFF11 \uFF12") \
   X(kShiftTapHeading, L"Switching between Chinese and English",                \
     L"切中英文的鍵", L"切中英文的键")                                          \
   X(kShiftTapBlurb,                                                            \
@@ -344,6 +357,8 @@ namespace {
   X(kStatusPunctFollow, L"Back to leaving it alone; new windows will use it.", \
     L"改回不干預,下次開新的視窗時生效。",                                     \
     L"改回不干预,下次开新的窗口时生效。")                                     \
+  X(kStatusShapeFollow, L"Back to leaving it alone; new windows will use it.", \
+    L"回到不干預;之後開的程式會照這樣。", L"回到不干预;之后开的程序会照这样。") \
   X(kStatusDefaultCleared,                                                     \
     L"No longer pinned; it will choose again in new windows.",                 \
     L"取消指定,下次開新的視窗時重新挑。",                                     \

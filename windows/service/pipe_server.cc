@@ -99,11 +99,12 @@ Engine::SessionPlan PipeServer::PlanForLang(
   //   那份計畫裡的三件事:
   //     1. 簡繁(set_variant 為假 = 使用者說「我自己管」,一個都不碰)
   //     2. 標點(kUnset = followSchema = 整項不出現;設成 false 不是同一件事)
-  //     3. 中英(**永遠在**)—— 使用者在那一橫上切成英文之後開的新程式
+  //     3. 全／半形(同標點:kUnset = 跟著方案 = 整項不出現)
+  //     4. 中英(**永遠在**)—— 使用者在那一橫上切成英文之後開的新程式
   //        也要是英文的;而它同時是備用 session 的**計畫**,不放進來的話
   //        備用池裡那個照舊狀態配好的 session 會被判成「計畫相同」
   //        而直接交出去。
-  plan.options = BuildOptionPlan(choice, langid, st.Punctuation(),
+  plan.options = BuildOptionPlan(choice, langid, st.Punctuation(), st.Shape(),
                                  engine_ && engine_->AsciiMode());
   return plan;
 }

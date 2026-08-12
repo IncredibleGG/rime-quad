@@ -1667,3 +1667,21 @@ Windows 端的實作：判準是純函式（`windows/common/bar_visibility.{h,cc
 九支測試），service 只負責接線。§12.10.2 那一節也整節重寫了 —— 它原本的
 論證是「這一橫是中英切換唯一的家」，而那個前提在 fix4-winkey 註冊
 `PreserveKey{VK_SPACE, TF_MOD_CONTROL}` 之後就已經過期。
+
+- `[2026-08-13] [b1w → macOS(settings-model 與 theme-format 的所有者)] **Windows 補上了全／半形(G70),而規範裡那個 id 的「值」四端已經分岔了 —— 請裁決。**
+  鍵名照 `docs/settings-model.md` §3 用 `text.shape`(規範已經有這個 id,沒有自己取)。
+  ⚠ 但規範把值寫成 enum `followSchema`|`halfShape`|`fullShape`,而 Windows 存的是
+  `true`/`false`(鍵不存在 = followSchema)。**這不是這一輪產生的落差**:既有的
+  `text.punctuation` 一模一樣(規範的 enum 是 `followSchema`|`full`|`half`,Windows 存
+  `true`/`false`)。§3 只說「鍵名共用,值可同步,但檔案格式各端自訂」,所以兩種讀法
+  都站得住 —— 但「值可同步」那四個字在兩邊字面不同時就是空的。
+  **建議**:§3 對每一個 enum 欄位補一列「線上/檔案裡的字面」,或明文寫「值的字面
+  由各端自訂,跨端同步時以語意對應表為準」。二選一都好,現在的狀態是兩邊各自
+  以為對方跟自己一樣。
+  ⚠ 另外一則給**行動端**:`full_shape` 在四端的現況是 Android 有 stub 支援
+  (`rime_shell_stub.cc` 認得它)、apple 的 `SessionOptions.swift` 已經送、
+  Windows 這一輪才補。**Android 的真實路徑上一樣沒有任何地方設它** ——
+  `android/app/src/main/cpp/jni_bridge.cc` 只讀 `status.is_full_shape`。
+  同一個缺口在那一端也開著。
+  ⚠ 還有一則給**規範本身**:`docs/ui-design.md` §12.10.4 的「明確不放」清單第一項
+  就是全／半形,Windows 這一輪照那條辦、狀態列一個字都沒動。要改那條規矩請走這裡。

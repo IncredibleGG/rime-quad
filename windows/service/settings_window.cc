@@ -198,6 +198,11 @@ const ControlDef kControls[] = {
     {IDC_PUNCT_0, L"BUTTON", RADIO1, UiString::kPunctFollow},
     {IDC_PUNCT_1, L"BUTTON", RADIO, UiString::kPunctChinese},
     {IDC_PUNCT_2, L"BUTTON", RADIO, UiString::kPunctEnglish},
+    {IDC_SHAPE_HEAD, L"STATIC", ST, UiString::kShapeHeading},
+    {IDC_SHAPE_BLURB, L"STATIC", ST, UiString::kShapeBlurb},
+    {IDC_SHAPE_0, L"BUTTON", RADIO1, UiString::kShapeFollow},
+    {IDC_SHAPE_1, L"BUTTON", RADIO, UiString::kShapeHalf},
+    {IDC_SHAPE_2, L"BUTTON", RADIO, UiString::kShapeFull},
     {IDC_SHIFTTAP_HEAD, L"STATIC", ST, UiString::kShiftTapHeading},
     {IDC_SHIFTTAP_BLURB, L"STATIC", ST, UiString::kShiftTapBlurb},
     // §12.5.2:開關 = BUTTON + BS_AUTOCHECKBOX | BS_RIGHTBUTTON。
@@ -505,7 +510,8 @@ LRESULT CALLBACK SettingsWindow::WndProc(HWND hwnd, UINT msg, WPARAM w,
           id == IDC_COUNT_BLURB || id == IDC_SCALE_BLURB ||
           id == IDC_THEME_BLURB || id == IDC_BAR_BLURB ||
           id == IDC_APPEAR_NOTE || id == IDC_VARIANT_BLURB ||
-          id == IDC_PUNCT_BLURB || id == IDC_REDEPLOY_BLURB ||
+          id == IDC_PUNCT_BLURB || id == IDC_SHAPE_BLURB ||
+          id == IDC_REDEPLOY_BLURB ||
           id == IDC_FILES_BLURB || id == IDC_LANG_BLURB ||
           id == IDC_DIAG_NOTE || id == IDC_RESET_BLURB ||
           id == IDC_UPDATE_BLURB || id == IDC_UPDATE_TRUST ||
@@ -790,7 +796,8 @@ void SettingsWindow::ApplyFonts() {
     set(id, title);
   for (int id : {IDC_SCHEMAS_LIST_HEAD, IDC_COUNT_HEAD, IDC_SCALE_HEAD,
                  IDC_THEME_HEAD, IDC_BAR_HEAD, IDC_VARIANT_HEAD,
-                 IDC_PUNCT_HEAD, IDC_REDEPLOY_HEAD, IDC_FILES_HEAD,
+                 IDC_PUNCT_HEAD, IDC_SHAPE_HEAD,
+                 IDC_REDEPLOY_HEAD, IDC_FILES_HEAD,
                  IDC_LANG_HEAD, IDC_DIAG_HEAD, IDC_RESET_HEAD,
                  IDC_UPDATE_HEAD, IDC_NETLOG_HEAD, IDC_NETLOG_CLEAR_HEAD})
     set(id, head);
@@ -798,6 +805,7 @@ void SettingsWindow::ApplyFonts() {
                  IDC_SCHEMAS_LIST_BLURB, IDC_FOLLOW_BLURB, IDC_COUNT_BLURB,
                  IDC_SCALE_BLURB, IDC_THEME_BLURB, IDC_BAR_BLURB,
                  IDC_APPEAR_NOTE, IDC_VARIANT_BLURB, IDC_PUNCT_BLURB,
+                 IDC_SHAPE_BLURB,
                  IDC_REDEPLOY_BLURB, IDC_FILES_BLURB, IDC_LANG_BLURB,
                  IDC_DIAG_NOTE, IDC_RESET_BLURB, IDC_STATUS,
                  IDC_UPDATE_BLURB,
@@ -1677,6 +1685,12 @@ void SettingsWindow::ReloadFromSettings() {
   CheckRadio(hwnd_, IDC_PUNCT_0, 3,
              punct == Tri::kUnset ? 0 : (punct == Tri::kFalse ? 1 : 2));
 
+  // 全／半形(G70)。⚠ 三態的索引順序與 ApplyShapeNow 是同一份對照,
+  //   對不上的症狀是「選了寬的,回來看是窄的」——Android 端踩過同一格。
+  const Tri shape = settings_.Shape();
+  CheckRadio(hwnd_, IDC_SHAPE_0, 3,
+             shape == Tri::kUnset ? 0 : (shape == Tri::kFalse ? 1 : 2));
+
   // 輕點 Shift 切中英,預設**開**(業界慣例,理由見 common/settings.h)。
   // ⚠ 問的是 ShiftTapToggle() 而不是自己比一次 Tri —— 那個判斷只有一份。
   ::SendMessageW(Ctl(hwnd_, IDC_SHIFTTAP_SWITCH), BM_SETCHECK,
@@ -1865,6 +1879,27 @@ void SettingsWindow::ApplyPunctNow() {
   const unsigned seq = BeginApply(UiString::kStatusApplied);
   engine_->SetOptionAll("ascii_punct", t == Tri::kTrue,
                         ApplyDoneNotifier(seq));
+}
+
+void SettingsWindow::ApplyShapeNow() {
+  // ⚠ 與 ApplyPunctNow 逐字同構,而那是刻意的:兩者是同一種三態偏好,
+  //   走同一條「存檔 → 套進每一個活著的 session」的路。
+  const int sel = RadioSel(hwnd_, IDC_SHAPE_0, 3);
+  const Tri t = sel == 0 ? Tri::kUnset : (sel == 1 ? Tri::kFalse : Tri::kTrue);
+  settings_.SetShape(t);
+  if (!store_->Save(settings_)) {
+    SetStatus(UiString::kStatusSaveFailed);
+    return;
+  }
+  // ⚠ kUnset(不干預)= **完全不呼叫 rs_set_option**。送 false 不是同一
+  //   件事:方案沒有這個開關時,送進去會被原樣記下、原樣回讀,而那正是
+  //   status_cells.h 記著的那個「畫面替沒發生的事作證」的形狀。
+  if (t == Tri::kUnset) {
+    SetTransientStatus(UiString::kStatusShapeFollow);
+    return;
+  }
+  const unsigned seq = BeginApply(UiString::kStatusApplied);
+  engine_->SetOptionAll("full_shape", t == Tri::kTrue, ApplyDoneNotifier(seq));
 }
 
 void SettingsWindow::ApplyShiftTapToggle() {
@@ -2285,6 +2320,10 @@ void SettingsWindow::OnCommand(int id, int code) {
   }
   if (id >= IDC_PUNCT_0 && id <= IDC_PUNCT_2 && clicked) {
     ApplyPunctNow();
+    return;
+  }
+  if (id >= IDC_SHAPE_0 && id <= IDC_SHAPE_2 && clicked) {
+    ApplyShapeNow();
     return;
   }
   if (id >= IDC_LANG_0 && id <= IDC_LANG_3 && clicked) {

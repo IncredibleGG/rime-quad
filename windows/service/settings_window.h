@@ -195,6 +195,7 @@ class SettingsWindow {
   void ApplyVariantNow();
   void CommitVariantPref(VariantPref v);
   void ApplyPunctNow();
+  void ApplyShapeNow();
   void ApplyAppearancePref();
   void ApplyUiLanguage();
   void ApplyScaleNow();
