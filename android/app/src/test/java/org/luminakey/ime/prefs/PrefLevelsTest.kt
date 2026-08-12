@@ -1,6 +1,7 @@
 package org.luminakey.ime.prefs
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.luminakey.ime.theme.HapticStrength
 
@@ -89,10 +90,56 @@ class PrefLevelsTest {
         assertEquals(3, PrefLevels.indexOfSound(UserPrefs(), baseEnabled = true, baseVolume = 0.97f))
     }
 
+    /**
+     * 主題的「有多少畫多少」（`max_visible: 0`）落在最後一檔。
+     *
+     * 那一檔以前叫「不限」，現在叫「5 個」—— 因為引擎一頁就是 5 個，
+     * 「不限」與「5 個」在畫面上是同一件事，而前者會讓使用者以為還能更多。
+     */
     @Test
     fun unlimitedCandidateCountIsTheLastStep() {
-        assertEquals(4, PrefLevels.indexOfCandidateCount(UserPrefs(), baseCount = 0))
-        assertEquals(1, PrefLevels.indexOfCandidateCount(UserPrefs(), baseCount = 5))
+        val last = PrefLevels.CANDIDATE_COUNT_LABELS.size - 1
+        assertEquals(last, PrefLevels.indexOfCandidateCount(UserPrefs(), baseCount = 0))
+        assertEquals(last, PrefLevels.indexOfCandidateCount(UserPrefs(), baseCount = 5))
+    }
+
+    /* ── 死檔位：一個按了沒反應的設定比沒有這個設定更糟 ── */
+
+    /**
+     * **每一檔都必須畫得出不同的數量。**
+     *
+     * 改動前這裡有 3 / 5 / 7 / 9 / 不限五檔，而引擎一頁只給
+     * [PrefLevels.ENGINE_PAGE_SIZE] 個（`core/data/shared/default.yaml` 的
+     * `menu/page_size: 5`；實測 emulator-5558 打 `zongguo` 回「候選 5 個」）。
+     * 於是 7 / 9 / 不限三檔按下去畫面**一模一樣** —— 三個死檔位。
+     *
+     * 這一條同時是那三檔的墓碑：把它們加回來就會紅。
+     */
+    @Test
+    fun everyCandidateCountStepChangesSomething() {
+        val caps = PrefLevels.CANDIDATE_COUNT_LABELS.indices.map { i ->
+            PrefLevels.withCandidateCount(UserPrefs(), i).candidateCount
+        }
+        assertEquals("每一檔的值必須互不相同", caps.distinct().size, caps.size)
+        for (cap in caps) {
+            assertTrue(
+                "$cap 超過引擎一頁的 ${PrefLevels.ENGINE_PAGE_SIZE} 個 —— 那一檔按了不會有反應",
+                cap != null && cap in 1..PrefLevels.ENGINE_PAGE_SIZE,
+            )
+        }
+    }
+
+    /** 舊使用者存過的 7 / 9 / 0 不會讓面板指到一個不存在的檔位。 */
+    @Test
+    fun legacyCandidateCountsLandOnTheLastStep() {
+        val last = PrefLevels.CANDIDATE_COUNT_LABELS.size - 1
+        for (old in listOf(0, 7, 9, 99)) {
+            assertEquals(
+                "舊值 $old 應該落在最後一檔",
+                last,
+                PrefLevels.indexOfCandidateCount(UserPrefs(candidateCount = old), baseCount = 0),
+            )
+        }
     }
 
     @Test

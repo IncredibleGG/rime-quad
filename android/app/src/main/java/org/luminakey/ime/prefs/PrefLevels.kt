@@ -110,17 +110,46 @@ object PrefLevels {
 
     /* ─────────────────────── 一次顯示幾個候選 ─────────────────────── */
 
-    val CANDIDATE_COUNT_LABELS = listOf("3 個", "5 個", "7 個", "9 個", "不限")
-    private val CANDIDATE_COUNTS = listOf(3, 5, 7, 9, 0)
+    /**
+     * 引擎一頁最多給幾個候選。
+     *
+     * 來源是 `core/data/shared/default.yaml` 的 `menu/page_size: 5`
+     * （`stroke` 方案自己覆寫成 9，但它不在 `schema_list` 裡）。
+     * 這個數字是**上限**：`rs_snapshot` 的 `menu.items` 一頁就這麼多，
+     * 前端的 `max_visible` 只能從裡面挑得更少，挑不出更多。
+     */
+    const val ENGINE_PAGE_SIZE = 5
+
+    /**
+     * ── 這裡本來有 7 / 9 / 不限三檔，而它們**按了沒反應** ──────────────────
+     * 引擎一頁就 [ENGINE_PAGE_SIZE] 個（實測 emulator-5558：`zongguo` 回
+     * 「候選 5 個 (page 0)」），前端 `take(cap)` 再怎麼放寬也只有 5 個。
+     * 於是使用者把「一次顯示幾個」從 5 調到 7、9、不限，畫面**一模一樣** ——
+     * 那正是本專案抓過五次的「看得到但摸不到」，只是換成設定項的形式。
+     *
+     * **一個按了沒反應的設定比沒有這個設定更糟**：它讓使用者以為問題出在
+     * 別的地方，然後去別的地方找。所以先拿掉；等 `page_size` 真的接上
+     * （批 2 的 G03，要走 coordination 改 `core/data/`）再放回來。
+     *
+     * 三檔都 ≤ [ENGINE_PAGE_SIZE]，而且每一檔真的畫得出不同的數量。
+     */
+    val CANDIDATE_COUNT_LABELS = listOf("3 個", "4 個", "5 個")
+    private val CANDIDATE_COUNTS = listOf(3, 4, 5)
 
     fun indexOfCandidateCount(prefs: UserPrefs, baseCount: Int): Int {
         val n = prefs.candidateCount ?: baseCount
-        if (n <= 0) return 4
-        return nearest(CANDIDATE_COUNTS.dropLast(1).map { it.toFloat() }, n.toFloat())
+        // n <= 0 是主題的「有多少畫多少」（`max_visible: 0`），實際就是一整頁；
+        // n >= 5 含**舊版存下來的 7 / 9**，那些值現在一律落在最後一檔 ——
+        // 它們本來畫出來的也就是 5 個，所以這不是把使用者的選擇改掉，
+        // 是把一個從來沒生效過的數字顯示成它實際的樣子。
+        if (n <= 0 || n >= CANDIDATE_COUNTS.last()) return CANDIDATE_COUNTS.size - 1
+        return nearest(CANDIDATE_COUNTS.map { it.toFloat() }, n.toFloat())
     }
 
     fun withCandidateCount(prefs: UserPrefs, index: Int): UserPrefs =
-        prefs.copy(candidateCount = CANDIDATE_COUNTS[index.coerceIn(0, 4)])
+        prefs.copy(
+            candidateCount = CANDIDATE_COUNTS[index.coerceIn(0, CANDIDATE_COUNTS.size - 1)],
+        )
 
     /* ─────────────────────── 候選字多大 ─────────────────────── */
 
