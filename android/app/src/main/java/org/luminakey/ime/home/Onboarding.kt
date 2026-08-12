@@ -164,10 +164,14 @@ fun OnboardingScreen(
                 Spacer(Modifier.height(Space.s8))
             }
 
+        // ⚠ 這一屏也要捲動。它從只有標題與試打框，變成還帶著那一排鍵盤卡
+        // （見 [ReadyBody] 的註解）—— 卡片數量隨裝了幾個方案而變，不捲的話
+        // 小螢幕上「進階設定」那條出路會被推到畫面外。
         SetupStage.READY ->
-            Column(base) {
+            Column(base.verticalScroll(rememberScrollState())) {
                 Spacer(Modifier.height(Space.s8))
-                ReadyBody(onFinished = onFinished)
+                ReadyBody(phase = phase, onFinished = onFinished)
+                Spacer(Modifier.height(Space.s8))
             }
     }
 }
@@ -509,8 +513,31 @@ private fun FailedBody(
 
 /* ─────────────────────── 狀態 4：好了 ─────────────────────── */
 
+/**
+ * 「好了」——**而且這裡也要問「注音還是拼音」**。
+ *
+ * ── 這一格原本只長在「準備中」那一屏 ────────────────────────────────────
+ * 唯一值得問的那個問題（[PreparingBody] 的那一排 [KeyboardGrid]）本來只在
+ * [SetupStage.PREPARING] 出現。而 `PREPARING` 的定義是「系統那兩步都做完了，
+ * 引擎還在整理字詞」—— 也就是**只有跑得比部署快的人才看得到它**。
+ *
+ * 反過來說：先在系統設定裡設好、隔了一會兒才打開 App 的人（那是常見的走法，
+ * 引導頁自己就是這樣叫他去的），一進來就是 `READY`，於是**從來沒有被問過**
+ * 他要注音還是拼音。他拿到的是預設的朙月拼音全鍵盤，而注音使用者要自己
+ * 摸到鍵盤上的地球鍵才換得掉。
+ *
+ * 三個環節做了兩個：問題想清楚了、元件也寫好了（[KeyboardGrid] 是現成的），
+ * 就是沒有人在這一屏呼叫它。
+ *
+ * ── 為什麼放在試打框**之前** ────────────────────────────────────────────
+ * 試打框是「驗收」，選鍵盤是「設定」。順序反過來的話，使用者會先用錯的鍵盤
+ * 打一次字、覺得怪，才發現原來可以換。
+ */
 @Composable
-private fun ReadyBody(onFinished: () -> Unit) {
+private fun ReadyBody(phase: RimeRuntime.Phase, onFinished: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
     Text(
         text = stringResource(R.string.ready_title),
         fontSize = TypeScale.t1,
@@ -525,6 +552,27 @@ private fun ReadyBody(onFinished: () -> Unit) {
         lineHeight = TypeScale.t3Line,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
+
+    // ⚠ [phase] 一定要是參數，理由與 [PreparingBody] 完全相同：
+    // `RimeRuntime.phase` 是普通的 @Volatile 欄位，讀它不會登記任何讀取關係，
+    // 而沒有參數的 Composable 是可跳過的。上一版有一段文案就是這樣一輩子
+    // 畫不出來的。
+    val all = remember(phase) { starterKeyboards(availableKeyboards(context)) }
+    var picked by remember { mutableStateOf<KeyboardType?>(currentKeyboardOf(context, all)) }
+    val selectedKey = picked?.key ?: all.firstOrNull()?.key
+    if (all.isNotEmpty()) {
+        Spacer(Modifier.height(Space.s7))
+        SectionLabel(stringResource(R.string.preparing_pick))
+        KeyboardGrid(
+            types = all,
+            selectedKey = selectedKey,
+            onPick = { t ->
+                picked = t
+                scope.launch { applyKeyboardChoice(context, t) }
+            },
+        )
+    }
+
     Spacer(Modifier.height(Space.s7))
     TryField()
     Spacer(Modifier.height(Space.s7))
