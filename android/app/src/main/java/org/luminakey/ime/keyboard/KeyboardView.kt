@@ -26,6 +26,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -69,6 +70,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -712,9 +714,8 @@ private fun CandidateBar(
 /**
  * 候選列右端的上一頁／下一頁。
  *
- * 兩顆都**永遠留在原地**（不可用時變灰，用 §8.6.5 的 `disabled_color`）:
- * 把不可用的那一顆藏起來，整條候選列會在翻頁的瞬間橫向位移，使用者剛瞄準的
- * 候選就跑掉了。
+ * **按不動的那一顆不畫**，理由與實測值見 [Pager.State]：那 40 dp 是真的把
+ * 候選字擠出畫面的，而候選列靠左排，少一顆箭頭不會讓任何候選移動。
  */
 @Composable
 private fun PageArrows(
@@ -727,11 +728,15 @@ private fun PageArrows(
     val prevDesc = stringResource(R.string.a11y_candidate_prev_page)
     val nextDesc = stringResource(R.string.a11y_candidate_next_page)
     Row(verticalAlignment = Alignment.CenterVertically) {
-        PageArrow("‹", prevDesc, state.prevEnabled, style, scaler) {
-            onEvent(KeyboardEvent.Page(backward = true))
+        if (state.prevEnabled) {
+            PageArrow("‹", prevDesc, style, scaler) {
+                onEvent(KeyboardEvent.Page(backward = true))
+            }
         }
-        PageArrow("›", nextDesc, state.nextEnabled, style, scaler) {
-            onEvent(KeyboardEvent.Page(backward = false))
+        if (state.nextEnabled) {
+            PageArrow("›", nextDesc, style, scaler) {
+                onEvent(KeyboardEvent.Page(backward = false))
+            }
         }
     }
 }
@@ -740,7 +745,6 @@ private fun PageArrows(
 private fun PageArrow(
     glyph: String,
     description: String,
-    enabled: Boolean,
     style: PageIndicatorStyle,
     scaler: Scaler,
     onClick: () -> Unit,
@@ -754,13 +758,13 @@ private fun PageArrow(
                 contentDescription = description
                 role = Role.Button
             }
-            .clickable(enabled = enabled, onClick = onClick),
+            .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Text(
             text = glyph,
             fontSize = scaler.sp(style.size),
-            color = Color(if (enabled) style.color else style.disabledColor),
+            color = Color(style.color),
         )
     }
 }
@@ -840,8 +844,7 @@ private fun Toolbar(
                     text = if (item.labelFrom == LabelSource.INPUT_MODE_PAIR) {
                         inputModeFace(
                             asciiMode = state.status.isAsciiMode,
-                            activeColor = style.text.color,
-                            idleColor = style.label.color,
+                            color = style.text.color,
                         )
                     } else {
                         AnnotatedString(face)
@@ -1056,7 +1059,24 @@ private fun KeyGrid(
     var gridWidthDp by remember { mutableStateOf(0f) }
     var popupRequest by remember { mutableStateOf<PopupRequest?>(null) }
 
-    Box(
+    // §9.3 的鍵縫**折進 weight**，讓命中格含縫（見 [KeyCells]）。
+    // 這幾個數字只跟主題與佈局有關，與這一幀的狀態無關。
+    val outerLeft = KeyCells.outerPad(pad.left, keySpacing)
+    val outerRight = KeyCells.outerPad(pad.right, keySpacing)
+    val outerTop = KeyCells.outerPad(pad.top, rowSpacing)
+    val outerBottom = KeyCells.outerPad(pad.bottom, rowSpacing)
+    val rowCount = layer.rows.size
+    // 列高：先算「改動前畫出來的高度」，再折進列距。
+    val usableH = height - pad.top - pad.bottom - rowSpacing * (rowCount - 1).coerceAtLeast(0)
+    val rowSizes = KeyCells.visibleSizes(
+        weightsIn = layer.rows.map { it.weight },
+        total = layer.rows.sumOf { it.weight.toDouble() }.toFloat(),
+        availableDp = usableH + rowSpacing * (rowCount - 1).coerceAtLeast(0),
+        spacingDp = rowSpacing,
+    )
+    val rowWeights = KeyCells.weights(rowSizes, rowSpacing, outerTop, outerBottom)
+
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
             .height(height.dp)
@@ -1065,23 +1085,51 @@ private fun KeyGrid(
                 gridWidthDp = with(density) { it.size.width.toDp().value }
             },
     ) {
+        // 鍵寬要用**實際寬度**算，不能等 onGloballyPositioned —— 那要慢一幀，
+        // 而第一幀畫錯的鍵盤是使用者看得見的。
+        val innerW = maxWidth.value - pad.left - pad.right
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(
-                    start = pad.left.dp,
-                    end = pad.right.dp,
-                    top = pad.top.dp,
-                    bottom = pad.bottom.dp,
+                    start = (pad.left - outerLeft).dp,
+                    end = (pad.right - outerRight).dp,
+                    top = (pad.top - outerTop).dp,
+                    bottom = (pad.bottom - outerBottom).dp,
                 ),
-            verticalArrangement = Arrangement.spacedBy(rowSpacing.dp),
+            verticalArrangement = Arrangement.spacedBy(0.dp),
         ) {
-            for (row in layer.rows) {
+            for ((rowIndex, row) in layer.rows.withIndex()) {
+                // §9.3：Σ width < units 時剩餘空間留在該列末端 —— 它在版面上
+                // 就是多一個子項，所以也多吃一道鍵縫（與改動前的行為一致）。
+                val slack = layer.units - row.widthSum
+                val hasSlack = slack > 0.01f
+                val childWidths =
+                    row.keys.map { it.width } + (if (hasSlack) listOf(slack) else emptyList())
+                val childSizes = KeyCells.visibleSizes(
+                    weightsIn = childWidths,
+                    total = layer.units,
+                    availableDp = innerW,
+                    spacingDp = keySpacing,
+                )
+                val childWeights =
+                    KeyCells.weights(childSizes, keySpacing, outerLeft, outerRight)
+                val childCount = childWeights.size
+                val padTop = KeyCells.padStart(rowIndex, rowSpacing, outerTop)
+                val padBottom =
+                    KeyCells.padEnd(rowIndex, rowCount, rowSpacing, outerBottom)
                 Row(
-                    modifier = Modifier.fillMaxWidth().weight(row.weight),
-                    horizontalArrangement = Arrangement.spacedBy(keySpacing.dp),
+                    modifier = Modifier.fillMaxWidth().weight(rowWeights[rowIndex]),
+                    horizontalArrangement = Arrangement.spacedBy(0.dp),
                 ) {
-                    for (key in row.keys) {
+                    for ((keyIndex, key) in row.keys.withIndex()) {
+                        val cell = KeyCells.Inset(
+                            start = KeyCells.padStart(keyIndex, keySpacing, outerLeft),
+                            end = KeyCells.padEnd(keyIndex, childCount, keySpacing, outerRight),
+                            top = padTop,
+                            bottom = padBottom,
+                        )
+                        val cellWeight = childWeights[keyIndex]
                         // 拼音消歧欄：只換鍵面與行為，幾何一格都不動 ——
                         // 組字途中自己重排的鍵盤比看不到讀音更糟。
                         //
@@ -1103,7 +1151,7 @@ private fun KeyGrid(
                         val tapCell = slot.tapCell
                         val speaks = slot.speaks
                         if (shownKey.spacer) {
-                            Spacer(Modifier.weight(shownKey.width).fillMaxHeight())
+                            Spacer(Modifier.weight(cellWeight).fillMaxHeight())
                         } else {
                             KeyView(
                                 key = shownKey,
@@ -1111,6 +1159,7 @@ private fun KeyGrid(
                                 scaler = scaler,
                                 status = state.status,
                                 layerLabels = layerLabels,
+                                cell = cell,
                                 // 消歧欄不是 §9.5 的動作動詞（它沒有 YAML 表示法），
                                 // 所以行為由這一層包起來，而不是發明一個動詞。
                                 onEvent =
@@ -1143,13 +1192,13 @@ private fun KeyGrid(
                                         )
                                     }
                                 },
-                                modifier = Modifier.weight(shownKey.width).fillMaxHeight(),
+                                modifier = Modifier.weight(cellWeight).fillMaxHeight(),
                             )
                         }
                     }
                     // §9.3：Σ width < units 時，剩餘空間留在該列末端。
-                    val slack = layer.units - row.widthSum
-                    if (slack > 0.01f) Spacer(Modifier.weight(slack).fillMaxHeight())
+                    // 它的 weight 已經在上面與鍵一起算過（也吃了一道鍵縫）。
+                    if (hasSlack) Spacer(Modifier.weight(childWeights.last()).fillMaxHeight())
                 }
             }
         }
@@ -1265,6 +1314,13 @@ private fun KeyView(
     scaler: Scaler,
     status: RimeStatus,
     layerLabels: Map<String, String>,
+    /**
+     * 這一格四邊各要往內縮多少（dp）—— **鍵縫**。
+     *
+     * 命中格是整格（含縫），畫出來的那一塊往內縮回原位。理由與量到的數字
+     * 見 [KeyCells]。給 `Inset.ZERO` 時行為與折縫之前完全一樣。
+     */
+    cell: KeyCells.Inset,
     onEvent: (KeyboardEvent) -> Unit,
     onPopup: (left: Float, top: Float, width: Float) -> Unit,
     modifier: Modifier = Modifier,
@@ -1362,7 +1418,17 @@ private fun KeyView(
         }
     }
 
-    var box = modifier.onGloballyPositioned {
+    /**
+     * 「畫出來的那一塊」從這裡開始 —— 它接在 padding **後面**。
+     *
+     * ⚠ 順序是這個修法的全部內容：`Modifier` 的鏈上，padding 之前的修飾子
+     *   看到的是**整格**，之後的看到的是縮進去的那一塊。所以
+     *   語意 + `pointerInput`（命中）必須排在 padding 前面，
+     *   `clip` / `background` / `border` / `BoxWithConstraints` 的量測
+     *   （外觀）排在後面。寫反的話不是編譯錯誤，是「看起來完全一樣、
+     *   鍵縫照樣點不到」—— 也就是什麼都沒改。
+     */
+    var painted: Modifier = Modifier.onGloballyPositioned {
         val pos = it.positionInRoot()
         with(density) {
             anchorLeft = pos.x.toDp().value
@@ -1371,11 +1437,11 @@ private fun KeyView(
         }
     }
     if (style.elevation > 0f) {
-        box = box.shadow(style.elevation.dp, RoundedCornerShape(style.cornerRadius.dp))
+        painted = painted.shadow(style.elevation.dp, RoundedCornerShape(style.cornerRadius.dp))
     }
-    box = box.clip(RoundedCornerShape(style.cornerRadius.dp)).background(Color(background))
+    painted = painted.clip(RoundedCornerShape(style.cornerRadius.dp)).background(Color(background))
     if (style.borderWidth > 0f) {
-        box = box.border(
+        painted = painted.border(
             style.borderWidth.dp,
             Color(style.borderColor),
             RoundedCornerShape(style.cornerRadius.dp),
@@ -1399,7 +1465,7 @@ private fun KeyView(
     val hasLongPress = longPress != null || popup != null
 
     BoxWithConstraints(
-        modifier = box
+        modifier = modifier
             .clearAndSetSemantics {
                 contentDescription = description
                 role = Role.Button
@@ -1441,7 +1507,15 @@ private fun KeyView(
                     else -> null
                 },
             )
-        },
+        }
+            // ── 命中格到此為止 ────────────────────────────────────────────
+            .padding(
+                start = cell.start.dp,
+                end = cell.end.dp,
+                top = cell.top.dp,
+                bottom = cell.bottom.dp,
+            )
+            .then(painted),
         contentAlignment = Alignment.Center,
     ) {
         val face = faceOf(key.labelFrom, key.icon, key.label, status)
@@ -1451,15 +1525,38 @@ private fun KeyView(
         } else {
             style.labelSize
         }
+        val shownFace = if (key.labelFrom == LabelSource.INPUT_MODE_PAIR) {
+            inputModeFace(status.isAsciiMode, foreground)
+        } else {
+            AnnotatedString(face)
+        }
+        // ⚠ 量的必須是**帶樣式的那一份**。中／En 的當前那一態是 Bold，
+        //   粗體比較寬；量純文字的話會量出「放得下」而畫出來放不下 ——
+        //   實測（font_scale 1.30、qwerty 底列）畫出來的是「中/」，En 整段不見。
+        //   量測用的那一份刻意**不帶顏色**：字寬與顏色無關，帶著它等於
+        //   每按一次鍵（按下色一換）就重新量一次。
+        val measuredFace = if (key.labelFrom == LabelSource.INPUT_MODE_PAIR) {
+            inputModeMeasureFace(status.isAsciiMode)
+        } else {
+            AnnotatedString(face)
+        }
         Text(
-            text = if (key.labelFrom == LabelSource.INPUT_MODE_PAIR) {
-                inputModeFace(status.isAsciiMode, foreground, style.hintColor)
-            } else {
-                AnnotatedString(face)
-            },
-            fontSize = fittedLabelSize(face, base, constraints.maxWidth, scaler),
+            text = shownFace,
+            fontSize = fittedLabelSize(measuredFace, base, constraints.maxWidth, scaler),
             color = Color(foreground),
             maxLines = 1,
+            // ⚠ **這一行才是「中/En 變成中/」的真兇。**
+            //   `Text` 的 `softWrap` 預設是 true，於是放不下時 Compose 先做
+            //   **斷行**（CJK 每個字之間、`/` 後面都是合法的斷點），再讓
+            //   `maxLines = 1` 把第二行整段丟掉。畫面上看到的就是「中/」——
+            //   不是被切一半，是第二行不見了。
+            //   量測那一支用的是 `softWrap = false`（量單行寬度），兩邊
+            //   對不上：量到「一行放得下」，畫出來卻斷成兩行。
+            softWrap = false,
+            // 到了 §9.6 的縮放下限仍然放不下時才截斷 —— 而截斷必須看得出來。
+            // Compose 的預設是 `Clip`（無聲切掉），那會讓一顆鍵讀起來像
+            // 另一顆鍵。
+            overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
         )
         if (key.hint.isNotEmpty() && style.hintPosition != HintPosition.NONE) {
@@ -1592,13 +1689,46 @@ internal const val INPUT_MODE_PAIR_TEXT =
  * —— 而它們指向相反的操作。同時畫出兩態、強調其中一態，這個歧義**在結構上
  * 就不存在**，不必靠使用者猜。三星實機是同一個作法（中/En，斜線分隔）。
  */
+/** 未選中那半縮小到這個比例。相對值（em），所以跟著 `label_size` 與系統字級走。 */
+internal const val INPUT_MODE_IDLE_SCALE = 0.82f
+
+/**
+ * 量測用的那一份：**同樣的字重與大小，不帶顏色**。
+ *
+ * 顏色不影響字寬，但它會隨按下狀態改變 —— 把它帶進 `remember` 的 key 裡，
+ * 等於每按一次鍵就重新量一次文字。
+ */
+internal fun inputModeMeasureFace(asciiMode: Boolean): AnnotatedString =
+    inputModeFace(asciiMode, color = 0)
+
+/**
+ * ⚠ **兩半用同一個顏色。** 上一版把未選中那半染成 `hint_color`，
+ * 而那個欄位是給鍵角落那幾個小數字用的（它們坐在白色的 `$key` 上）。
+ * 壓到 `modifier` 樣式的灰底（`$key_mod`）上之後，實測對比只有 **2.84:1**
+ * （淺色主題）—— WCAG 小字要 4.5:1。而且**十二份主題全部不合格**
+ * （最好的一份也只有 4.48:1），所以那不是某一份主題調錯了，
+ * 是「拿 hint_color 當正文顏色」這個用法本身就不成立。
+ *
+ * 那能不能只把顏色調暗一點就好？在這種中間調的鍵底上**不能**：
+ * 要滿足 4.5:1，可用的亮度區間窄到與 `foreground` 幾乎分不出來
+ * （default-light 上是 L 0.057 → 0.091 這一段）。也就是說
+ * 「明顯比較淡」與「看得清楚」在這個底色上是互斥的。
+ *
+ * 所以狀態改用**不靠顏色的兩個線索**：當前那一態是**粗體且滿級數**，
+ * 另一態是**常規字重且 [INPUT_MODE_IDLE_SCALE] 倍大小**。兩者都與對比無關，
+ * 而且字級差在小螢幕上比顏色差更看得出來。
+ */
 internal fun inputModeFace(
     asciiMode: Boolean,
-    activeColor: Int,
-    idleColor: Int,
+    color: Int,
 ): AnnotatedString {
-    val on = SpanStyle(color = Color(activeColor), fontWeight = FontWeight.Bold)
-    val off = SpanStyle(color = Color(idleColor))
+    val tint = Color(color)
+    val on = SpanStyle(color = tint, fontWeight = FontWeight.Bold)
+    val off = SpanStyle(
+        color = tint,
+        fontWeight = FontWeight.Normal,
+        fontSize = INPUT_MODE_IDLE_SCALE.em,
+    )
     return buildAnnotatedString {
         withStyle(if (asciiMode) off else on) { append(INPUT_MODE_CJK) }
         withStyle(off) { append(INPUT_MODE_SEPARATOR) }
@@ -1635,21 +1765,30 @@ internal const val MIN_LABEL_SHRINK = 0.5f
  */
 @Composable
 private fun fittedLabelSize(
-    text: String,
+    text: AnnotatedString,
     baseSize: Float,
     availableWidthPx: Int,
     scaler: Scaler,
 ): TextUnit {
     val base = scaler.sp(baseSize)
-    if (text.isBlank() || availableWidthPx <= 0) return base
+    if (text.text.isBlank() || availableWidthPx <= 0) return base
     val measurer = rememberTextMeasurer()
     // 左右各留一點餘裕，否則字會貼著鍵的圓角邊緣。
     val usable = availableWidthPx - with(LocalDensity.current) { LABEL_INSET_DP.dp.toPx() } * 2f
     if (usable <= 0f) return base
-    val measured = remember(text, base, measurer) {
+    // ⚠ **量的必須是「畫的時候會用的那一份 style」。**
+    //   `Text` 用的是 `LocalTextStyle.current` 合併之後的樣式 —— 那裡面有
+    //   字族與 `letterSpacing`（Material3 的 bodyLarge 是 0.5sp）。
+    //   拿一份光禿禿的 `TextStyle(fontSize = base)` 去量，量到的一定比畫出來的窄，
+    //   於是「量起來放得下、畫出來放不下」。這正是中／En 那顆鍵的形狀。
+    val painted = LocalTextStyle.current.merge(TextStyle(fontSize = base))
+    val measured = remember(text, painted, measurer) {
         measurer.measure(
-            text = AnnotatedString(text),
-            style = TextStyle(fontSize = base),
+            // ⚠ 收 AnnotatedString 而不是 String：**字重也是寬度的一部分**。
+            //   簽章上就把樣式丟掉的話，這個缺陷會靜靜地回來 ——
+            //   而且畫面看起來只是「那顆鍵的字短了一截」。
+            text = text,
+            style = painted,
             maxLines = 1,
             softWrap = false,
         ).size.width.toFloat()

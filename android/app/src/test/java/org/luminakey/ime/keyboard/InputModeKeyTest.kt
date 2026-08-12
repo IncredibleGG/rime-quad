@@ -6,6 +6,8 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.isUnspecified
 import androidx.compose.ui.text.AnnotatedString
 import org.junit.Test
 import org.luminakey.ime.theme.DiagnosticCode
@@ -168,19 +170,33 @@ class InputModeKeyTest {
         assertEquals("中/En", faceOf(LabelSource.INPUT_MODE_PAIR, null, "", en))
     }
 
+    /**
+     * 當前那一態靠**字重與字級**強調，不靠顏色。
+     *
+     * ⚠ 這一條原本測的是顏色（當前那半用 `foreground`、另一半用 `hint_color`）。
+     * 那個作法量出來的對比只有 **2.84:1**（淺色主題；十二份主題全部不合格），
+     * 而在這種中間調的鍵底上「明顯比較淡」與「看得清楚」是互斥的 ——
+     * 理由與量到的數字見 `inputModeFace` 的註解與 [InputModePairTest]。
+     *
+     * 所以兩半現在是同一個顏色，狀態改由粗體 + 滿級數表示。
+     */
     @Test
     fun theCurrentStateIsTheEmphasisedSegment() {
-        val on = 0xFF000000.toInt()
-        val off = 0xFF999999.toInt()
+        val ink = 0xFF000000.toInt()
 
-        val cn = inputModeFace(asciiMode = false, activeColor = on, idleColor = off)
+        val cn = inputModeFace(asciiMode = false, color = ink)
         assertEquals("中/En", cn.text)
-        assertEquals("打中文時亮的是「中」", Color(on), colorAt(cn, cn.text.indexOf('中')))
-        assertEquals(Color(off), colorAt(cn, cn.text.indexOf('E')))
+        assertEquals("兩半同色", Color(ink), colorAt(cn, cn.text.indexOf('中')))
+        assertEquals("兩半同色", Color(ink), colorAt(cn, cn.text.indexOf('E')))
+        assertEquals("打中文時粗的是「中」", FontWeight.Bold, weightAt(cn, cn.text.indexOf('中')))
+        assertEquals(FontWeight.Normal, weightAt(cn, cn.text.indexOf('E')))
+        assertTrue("未選中那半要縮小", sizeAt(cn, cn.text.indexOf('E')) < 1f)
+        assertTrue("選中那半是滿級數", sizeAt(cn, cn.text.indexOf('中')) >= 1f)
 
-        val en = inputModeFace(asciiMode = true, activeColor = on, idleColor = off)
-        assertEquals("打英文時亮的是「En」", Color(on), colorAt(en, en.text.indexOf('E')))
-        assertEquals(Color(off), colorAt(en, en.text.indexOf('中')))
+        val en = inputModeFace(asciiMode = true, color = ink)
+        assertEquals("打英文時粗的是「En」", FontWeight.Bold, weightAt(en, en.text.indexOf('E')))
+        assertEquals(FontWeight.Normal, weightAt(en, en.text.indexOf('中')))
+        assertTrue("未選中那半要縮小", sizeAt(en, en.text.indexOf('中')) < 1f)
     }
 
     /**
@@ -265,6 +281,16 @@ class InputModeKeyTest {
         }
     }
 
-    private fun colorAt(s: AnnotatedString, index: Int): Color =
-        s.spanStyles.first { index >= it.start && index < it.end }.item.color
+    private fun spanAt(s: AnnotatedString, index: Int) =
+        s.spanStyles.first { index >= it.start && index < it.end }.item
+
+    private fun colorAt(s: AnnotatedString, index: Int): Color = spanAt(s, index).color
+
+    private fun weightAt(s: AnnotatedString, index: Int) = spanAt(s, index).fontWeight
+
+    /** 相對字級（em）；沒設就是 1（滿級數）。 */
+    private fun sizeAt(s: AnnotatedString, index: Int): Float {
+        val v = spanAt(s, index).fontSize
+        return if (v.isUnspecified) 1f else v.value
+    }
 }
