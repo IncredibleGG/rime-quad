@@ -132,8 +132,11 @@
     <string name="appearance_preview">調完在這裡看看</string>
 
     <string name="page_feel">手感</string>
-    <string name="feel_intro">這三項只有真的按下去才判斷得出來，所以下面留了一格給你按。</string>
+    <string name="feel_intro">這四項只有真的按下去才判斷得出來，所以下面留了一格給你按。</string>
     <string name="feel_sound">按鍵音</string>
+    <string name="feel_timbre">哪一種聲音</string>
+    <string name="feel_haptic_note">震動需要「震動」權限。它在安裝時就給了，而且它不是一條出路：沒有東西能透過馬達離開這支手機。你若在系統設定裡把震動或觸覺回饋關掉，這個鍵盤也跟著不震。</string>
+    <string name="feel_haptic_flat">這支手機的馬達分不出輕重，四個檔位在這裡感覺會差不多。震動仍然需要「震動」權限，安裝時就給了；沒有東西能透過馬達離開這支手機，而且系統設定關掉就是關掉。</string>
     <string name="feel_vibration">震動</string>
     <string name="feel_long_press">長按多久算長按</string>
     <string name="feel_try">按按看</string>
@@ -161,6 +164,12 @@
         <item>小</item>
         <item>中</item>
         <item>大</item>
+    </string-array>
+    <string-array name="levels_timbre">
+        <item>系統</item>
+        <item>輕點</item>
+        <item>敲擊</item>
+        <item>水滴</item>
     </string-array>
     <string-array name="levels_haptic">
         <item>關</item>

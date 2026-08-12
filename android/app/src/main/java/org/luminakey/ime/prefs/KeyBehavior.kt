@@ -1,12 +1,12 @@
 package org.luminakey.ime.prefs
 
-import android.content.Context
-import android.media.AudioManager
-import android.view.HapticFeedbackConstants
 import android.view.View
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.platform.ViewConfiguration
+import org.luminakey.ime.core.FeedbackPlan
+import org.luminakey.ime.core.KeyRole
+import org.luminakey.ime.core.SoundTimbre
 import org.luminakey.ime.theme.Feedback
 import org.luminakey.ime.theme.HapticStrength
 
@@ -33,6 +33,16 @@ data class KeyBehavior(
     val hapticStrength: HapticStrength,
     val sound: Boolean,
     val soundVolume: Float,
+    /** 按鍵音的音色。與音量是兩個獨立的設定,見 [SoundTimbre]。 */
+    val soundTimbre: SoundTimbre,
+    /**
+     * 這支手機的馬達分不分得出強弱(`Vibrator.hasAmplitudeControl()`)。
+     *
+     * 它不是偏好,是**裝置能力** —— 放在這裡是因為它與四階強度一起決定
+     * 「要送出什麼」,而那個決定必須是一個純函式([FeedbackPlan.haptic])。
+     * 由服務端量一次之後帶進來。
+     */
+    val amplitudeControl: Boolean,
     val longPressMs: Int,
     val repeatDelayMs: Int,
     val repeatIntervalMs: Int,
@@ -41,26 +51,32 @@ data class KeyBehavior(
     /**
      * 按鍵當下的回饋。由 `KeyboardView` 在每一次觸發時呼叫。
      *
-     * 震動走 [View.performHapticFeedback] 而不是 `Vibrator`：後者需要
-     * `android.permission.VIBRATE`，為了三段強度去要一個執行期權限
-     * 划不來，而且系統的觸覺常數在各家 ROM 上調校得比自訂波形好。
-     * 代價是「強度」只能映射到三個粗糙的常數，見下表。
+     * ── 2026-08-12:這一段整個被拆成三塊 ───────────────────────────────
+     * 在此之前它是一坨:三個觸覺常數 + 一律 `FX_KEYPRESS_STANDARD`,而且
+     * 帶著 `FLAG_IGNORE_GLOBAL_SETTING`。三個問題:
+     *
+     *   1. 三個常數不是同一個波形的三種大小,是三支不相干的波形
+     *      (實測「強」比「中」**短三倍**)。使用者要的「大小」不存在。
+     *   2. 一律 STANDARD —— 連系統免費給的四個角色都沒有用上。
+     *   3. 使用者已經在系統設定裡關掉觸覺回饋,我們照震不誤。
+     *
+     * 現在:算計畫([FeedbackPlan],純函式,測得到)→ 交給兩個薄薄的出口
+     * ([KeyHaptics] / [KeySounds])。這一支只剩接線。
+     *
+     * @param role 這一顆鍵算哪一種(空白／刪除／換行／一般)。由呼叫端從
+     *   佈局的 keysym 算出來,見 [FeedbackPlan.roleOf]。
      */
-    fun onKeyPress(view: View) {
-        if (haptic && hapticStrength != HapticStrength.NONE) {
-            view.performHapticFeedback(
-                when (hapticStrength) {
-                    HapticStrength.LIGHT -> HapticFeedbackConstants.CLOCK_TICK
-                    HapticStrength.HEAVY -> HapticFeedbackConstants.LONG_PRESS
-                    else -> HapticFeedbackConstants.KEYBOARD_TAP
-                },
-                HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING,
-            )
-        }
-        if (sound && soundVolume > 0f) {
-            val am = view.context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-            am?.playSoundEffect(AudioManager.FX_KEYPRESS_STANDARD, soundVolume.coerceIn(0f, 1f))
-        }
+    fun onKeyPress(view: View, role: KeyRole = KeyRole.STANDARD) {
+        val context = view.context
+        KeyHaptics.play(
+            context,
+            view,
+            FeedbackPlan.haptic(haptic, hapticStrength, amplitudeControl),
+        )
+        KeySounds.play(
+            context,
+            FeedbackPlan.sound(sound, soundVolume, soundTimbre, role),
+        )
     }
 
     companion object {
@@ -79,6 +95,12 @@ data class KeyBehavior(
             hapticStrength = HapticStrength.MEDIUM,
             sound = false,
             soundVolume = 0.3f,
+            soundTimbre = SoundTimbre.SYSTEM,
+            // ⚠ 沒有人提供這個 CompositionLocal 時,一律當作「這支手機沒有
+            //    振幅控制」—— 於是走的是舊的常數路徑,行為與改動前一致
+            //    (唯一的差別是不再帶 FLAG_IGNORE_GLOBAL_SETTING,那是刻意的)。
+            //    寧可把可調的那條路留給「真的量過」的呼叫端。
+            amplitudeControl = false,
             longPressMs = DEFAULT_LONG_PRESS_MS,
             repeatDelayMs = DEFAULT_REPEAT_DELAY_MS,
             repeatIntervalMs = DEFAULT_REPEAT_INTERVAL_MS,
@@ -91,11 +113,19 @@ data class KeyBehavior(
          * `prefs.hapticEnabled` 之類的欄位 —— 只有一個地方決定回饋設定，
          * 免得兩處邏輯漂移。
          */
-        fun of(feedback: Feedback, prefs: UserPrefs): KeyBehavior = KeyBehavior(
+        fun of(
+            feedback: Feedback,
+            prefs: UserPrefs,
+            amplitudeControl: Boolean = false,
+        ): KeyBehavior = KeyBehavior(
             haptic = feedback.haptic,
             hapticStrength = feedback.hapticStrength,
             sound = feedback.sound,
             soundVolume = feedback.soundVolume,
+            // 音色沒有主題欄位可退(見 UserPrefs.soundTimbre),所以它不經過
+            // applyUserOverrides,直接讀偏好。
+            soundTimbre = prefs.soundTimbre ?: SoundTimbre.SYSTEM,
+            amplitudeControl = amplitudeControl,
             longPressMs = (prefs.longPressMs ?: DEFAULT_LONG_PRESS_MS).coerceIn(150, 1200),
             repeatDelayMs = (prefs.repeatDelayMs ?: DEFAULT_REPEAT_DELAY_MS).coerceIn(150, 1200),
             repeatIntervalMs =

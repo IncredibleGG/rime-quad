@@ -145,6 +145,63 @@ macOS 端把這兩條做成**編譯期與 CI 的斷言**(`SettingsCatalog` 的 `
 設成 `false` 不是同一件事:很多方案根本沒有那個開關,而有些方案的預設是 true。
 無條件設 false 會讓「跟著方案」變成「一律西文標點」,而使用者選的是不干預。
 
+### 手感(行動端)
+
+⚠ 2026-08-12 補。在此之前 §1 說 Android 有「手感」這一頁、桌面整頁拿掉,
+**而總表裡四項一個都沒列** —— 這一節就是補那個洞。
+
+| id | 型別 | 預設 | 層級 | 平台 |
+|---|---|---|---|---|
+| `feel.soundLevel` | enum `off`\|`quiet`\|`medium`\|`loud` | `off` | B | 行動 |
+| `feel.soundTimbre` | enum `system`\|`soft`\|`mechanical`\|`drop` | `system` | B | 行動 |
+| `feel.hapticLevel` | enum `off`\|`light`\|`medium`\|`strong` | `medium` | B | 行動 |
+| `feel.longPress` | enum `fast`\|`standard`\|`slow`\|`slower` | `standard` | B | 行動 |
+
+四項全是 B 層(librime 讀不到)。桌面兩端整段忽略 `feedback`,所以沒有
+命名衝突。
+
+**音量與音色是兩個設定項,不是一個八格的。** 合成一個會有 8 個選項
+(違反 `ui-design.md` §4.2 的「分段控制 2–4 格」),而且「關」該屬於哪一邊
+會說不清。
+
+**「按鍵音=關」時音色那一列不畫成灰的、也不隱藏。** 點它會順便把音量開到
+最小的那一檔並試播一次 —— 一次操作取代兩次,而且沒有死控制項
+(`ui-design.md` §1「做不到的功能不要畫出來」的反面:做得到就不要畫成做不到)。
+
+#### 音色的素材(規範性)
+
+`system` **不是**「沒有音色」,是「照這支手機 OEM 的調校走」。其餘三種由
+本專案自帶。素材不得從外部取得:授權要能一句話說完,而且要可重現。
+Android 端的作法是 `scripts/gen_key_sounds.py` —— 合成腳本進版控,產物
+(`res/raw/key_<音色>_<角色>.ogg`)也進版控,`--check` 會重新合成一次與
+現有檔案比對。
+
+**四個角色。** `standard` / `space` / `delete` / `return`。系統的按鍵音效
+本來就分這四個(`FX_KEYPRESS_*`),自帶素材沒有理由更粗。角色由 keysym
+決定,keysym 缺席才看佈局的 `id`。
+
+#### 震動(規範性)
+
+**必須是同一支波形的三種大小。** 不可以用平台的「觸覺常數」硬湊 ——
+在 API 35 的 AOSP 上實測,`CLOCK_TICK` / `KEYBOARD_TAP` / `LONG_PRESS`
+播出來的是 101 ms / 101 ms / **30 ms** 的三支不相干波形,「強」比「中」
+短三倍。使用者叫它「大小」,那個階梯上沒有大小。
+
+Android 的實作是 `VibrationEffect.createOneShot(ms, amplitude)`,
+15/20/25 ms × 振幅 60/130/220。時長要短:100 ms 的波形在快打時會被下一顆鍵
+砍掉(`dumpsys` 的 `cancelled_superseded`)。
+
+**不得繞過系統設定。** 使用者在系統設定裡關掉震動或觸覺回饋之後,鍵盤就
+不震。Android 端具體是「不准出現 `FLAG_IGNORE_GLOBAL_SETTING`」,
+由 `scripts/audit_offline.sh` 第 1b 項守著。按鍵音同理:自帶素材走的是
+我們自己的音訊軌,系統的按鍵音效開關管不到它,所以要**自己查一次**
+`Settings.System.SOUND_EFFECTS_ENABLED`。
+
+#### 馬達分不出強弱時(規範性)
+
+退回平台常數,**並且在設定頁把這件事講出來**。無聲降級等於在畫面上留
+三個感覺一樣的假檔位。
+
 ### 自己加的詞
 
 見 §5。

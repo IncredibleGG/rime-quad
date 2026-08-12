@@ -28,6 +28,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -40,6 +41,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
@@ -54,7 +56,11 @@ import org.luminakey.ime.net.NetworkRequiredCard
 import org.luminakey.ime.net.NetworkScreen
 import org.luminakey.ime.net.NetworkSwitchCard
 import org.luminakey.ime.net.rememberNetworkEnabled
+import org.luminakey.ime.core.KeyRole
 import org.luminakey.ime.prefs.AppearanceMode
+import org.luminakey.ime.prefs.FeedbackPreview
+import org.luminakey.ime.prefs.KeyHaptics
+import org.luminakey.ime.prefs.KeySounds
 import org.luminakey.ime.prefs.HintVisibility
 import org.luminakey.ime.prefs.KeyRemapSection
 import org.luminakey.ime.prefs.PrefLabels
@@ -505,6 +511,7 @@ internal fun themeFamilies(repo: ConfigRepository): List<ThemeFamily> {
 @Composable
 fun FeelPage(onBack: () -> Unit) {
     val context = LocalContext.current
+    val view = LocalView.current
     val scope = rememberCoroutineScope()
     val store = remember { PrefsStore.get(context) }
     val prefs by store.flow.collectAsState(initial = store.current)
@@ -515,24 +522,61 @@ fun FeelPage(onBack: () -> Unit) {
         resolveBaseTheme(repo, prefs, systemDark)
     }
 
+    // 自帶音色要有 SoundPool 才播得出來。輸入法那一份可能還沒起來（使用者
+    // 可能根本還沒啟用這個鍵盤），所以這一頁自己拿一份 —— KeySounds 用的是
+    // 引用計數，兩邊各自 acquire/release 不會互相踩到。
+    DisposableEffect(Unit) {
+        KeySounds.acquire(context)
+        onDispose { KeySounds.release() }
+    }
+    // 裝置能力，量一次。false 時下面那一行會把「這支手機分不出輕重」講出來。
+    val amplitudeControl = remember { KeyHaptics.hasAmplitudeControl(context) }
+
     fun edit(block: (UserPrefs) -> UserPrefs) {
         scope.launch { store.update(block) }
     }
 
+    /**
+     * 改設定，**並且當場試一次**。
+     *
+     * ⚠ 試播餵的是 `block(prefs)` 而不是畫面上的 `prefs`：DataStore 的寫入是
+     *   非同步的，用舊的那一份試播會每次都慢一格 —— 選「水滴」聽到「敲擊」，
+     *   看起來像「音色沒生效」。
+     */
+    fun editAndTry(role: KeyRole = KeyRole.STANDARD, block: (UserPrefs) -> UserPrefs) {
+        val next = block(prefs)
+        scope.launch { store.update(block) }
+        FeedbackPreview.play(context, view, base, next, role)
+    }
+
     Page(title = stringResource(R.string.page_feel), onBack = onBack) {
         Text(
-            // 三項合成一頁是因為它們是同一個問題的三個面向：「這個鍵盤按起來
-            // 的感覺」。分成三個設定項就是把一件事拆成三次操作。
+            // 四項合成一頁是因為它們是同一個問題的四個面向：「這個鍵盤按起來
+            // 的感覺」。分成四個設定項就是把一件事拆成四次操作。
             text = stringResource(R.string.feel_intro),
             fontSize = TypeScale.t5,
             lineHeight = TypeScale.t5Line,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        val soundLevel =
+            PrefLevels.indexOfSound(prefs, base.feedback.sound, base.feedback.soundVolume)
         SettingGroup(
             label = stringResource(R.string.feel_sound),
             options = PrefLabels.sound.mapIndexed { i, s -> i to s },
-            selected = PrefLevels.indexOfSound(prefs, base.feedback.sound, base.feedback.soundVolume),
-            onSelect = { i -> edit { p -> PrefLevels.withSound(p, i) } },
+            selected = soundLevel,
+            onSelect = { i -> editAndTry { p -> PrefLevels.withSound(p, i) } },
+        )
+        // 音色。與音量分開兩個控制項 —— 合成一個會變成 8 格（ui-design §4.2）。
+        //
+        // 「按鍵音＝關」的時候這一列**不畫成灰的、也不隱藏**（§1）：點下去會
+        // 順便把音量開到「小」並試播一次。一次操作取代兩次，而且沒有死控制項。
+        SettingGroup(
+            label = stringResource(R.string.feel_timbre),
+            options = PrefLabels.timbre.mapIndexed { i, s -> i to s },
+            selected = PrefLevels.indexOfTimbre(prefs),
+            onSelect = { i ->
+                editAndTry { p -> PrefLevels.withTimbre(p, i, soundLevel) }
+            },
         )
         SettingGroup(
             label = stringResource(R.string.feel_vibration),
@@ -542,12 +586,21 @@ fun FeelPage(onBack: () -> Unit) {
                 base.feedback.haptic,
                 base.feedback.hapticStrength,
             ),
-            onSelect = { i -> edit { p -> PrefLevels.withHaptic(p, i) } },
+            onSelect = { i -> editAndTry { p -> PrefLevels.withHaptic(p, i) } },
+            // ⚠ 這一行有兩個工作，兩個都不能省：
+            //   1. 說明為什麼權限清單上有「震動」—— 那是使用者查得到的東西，
+            //      不解釋就會變成一個沒有答案的疑問。
+            //   2. 馬達沒有振幅控制時**要講出來**。無聲降級等於在畫面上留三個
+            //      感覺一樣的假檔位。
+            footnote = stringResource(
+                if (amplitudeControl) R.string.feel_haptic_note else R.string.feel_haptic_flat
+            ),
         )
         SettingGroup(
             label = stringResource(R.string.feel_long_press),
             options = PrefLabels.longPress.mapIndexed { i, s -> i to s },
             selected = PrefLevels.indexOfLongPress(prefs),
+            // 長按門檻沒有「試播」可言 —— 它是一段時間，不是一個回饋。
             onSelect = { i -> edit { p -> PrefLevels.withLongPress(p, i) } },
         )
         Spacer(Modifier.height(Space.s7))

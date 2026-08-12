@@ -42,6 +42,8 @@ import org.luminakey.ime.keyboard.ThemeChoice
 import org.luminakey.ime.keyboard.VerbSupport
 import org.luminakey.ime.keyboard.UserLayoutStore
 import org.luminakey.ime.prefs.KeyBehavior
+import org.luminakey.ime.prefs.KeyHaptics
+import org.luminakey.ime.prefs.KeySounds
 import org.luminakey.ime.prefs.LocalKeyBehavior
 import org.luminakey.ime.prefs.LongPressViewConfiguration
 import org.luminakey.ime.prefs.PrefsStore
@@ -227,6 +229,12 @@ class RimeInputMethodService : InputMethodService() {
 
     private val phaseListener: (RimeRuntime.Phase) -> Unit = { phase -> onPhase(phase) }
 
+    /**
+     * 這支手機的馬達分不分得出強弱。量一次就好 —— 它不會在執行期改變,
+     * 而每按一顆鍵去問一次 `Vibrator` 是白花的。
+     */
+    private val amplitudeControl: Boolean by lazy { KeyHaptics.hasAmplitudeControl(this) }
+
     override fun onCreate() {
         super.onCreate()
         uiState = uiState.copy(isStub = RimeCore.isStub())
@@ -270,6 +278,12 @@ class RimeInputMethodService : InputMethodService() {
             .onEach { onPrefsChanged(it) }
             .launchIn(prefsScope)
 
+        // 自帶音色要預載。SoundPool.load 是非同步的,不先載的話使用者按下
+        // 第一顆鍵時 sampleId 還沒好 —— KeySounds 會退回系統音效,於是
+        // 「剛叫出鍵盤的頭幾下聲音不一樣」。引用計數,設定頁那一份不會被
+        // 輸入法被系統收掉時一起帶走。
+        KeySounds.acquire(this)
+
         RimeRuntime.addListener(phaseListener)
         Log.i(TAG, "onCreate: stub=${RimeCore.isStub()} phase=${RimeRuntime.phase}")
     }
@@ -301,7 +315,7 @@ class RimeInputMethodService : InputMethodService() {
                 // KeyView 的 `try/finally` 讓按下狀態即使被取消也一定歸位。
                 val behavior = remember(current?.feedback, prefs) {
                     if (current == null) KeyBehavior.DEFAULT
-                    else KeyBehavior.of(current.feedback, prefs)
+                    else KeyBehavior.of(current.feedback, prefs, amplitudeControl)
                 }
                 val baseViewConfiguration = LocalViewConfiguration.current
                 val viewConfiguration = remember(baseViewConfiguration, behavior.longPressMs) {
@@ -441,6 +455,7 @@ class RimeInputMethodService : InputMethodService() {
     }
 
     override fun onDestroy() {
+        KeySounds.release()
         prefsScope.cancel()
         RimeRuntime.removeListener(phaseListener)
         host?.onDestroy()
