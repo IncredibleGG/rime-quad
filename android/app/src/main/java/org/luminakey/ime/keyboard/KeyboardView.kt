@@ -74,7 +74,6 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import kotlinx.coroutines.delay
 import org.luminakey.ime.core.RimeStatus
-import org.luminakey.ime.core.FeedbackPlan
 import org.luminakey.ime.prefs.LocalKeyBehavior
 import org.luminakey.ime.R
 import org.luminakey.ime.theme.SyllablePlacement
@@ -88,7 +87,6 @@ import org.luminakey.ime.theme.LayoutLayer
 import org.luminakey.ime.theme.PageIndicatorStyle
 import org.luminakey.ime.theme.Popup
 import org.luminakey.ime.theme.PopupLayout
-import org.luminakey.ime.theme.SendSpec
 import org.luminakey.ime.theme.SubKey
 import org.luminakey.ime.theme.Theme
 import kotlin.math.ceil
@@ -1326,16 +1324,7 @@ private fun KeyView(
     val currentOnPopup by rememberUpdatedState(onPopup)
     val currentBehavior by rememberUpdatedState(behavior)
 
-    // 這一顆鍵在「按鍵音」上算哪一種。系統的按鍵音效本來就分四個角色
-    // (STANDARD / SPACEBAR / DELETE / RETURN),而在這一版之前我們一律送
-    // STANDARD —— 連免費的區分都沒有用上。自帶音色也照這四個角色出素材。
-    //
-    // 以 key 為 remember 的 key:角色只跟佈局有關,按鍵當下不必重算。
-    val keyRole = remember(key) {
-        FeedbackPlan.roleOf((key.send as? SendSpec.Keysym)?.name, key.id)
-    }
-
-    fun haptic() = currentBehavior.onKeyPress(view, keyRole)
+    fun haptic() = currentBehavior.onKeyPress(view)
 
     /** §9.6 的點擊解析：tap → send → noop。 */
     fun fire() {

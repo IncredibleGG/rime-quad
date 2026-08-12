@@ -14,7 +14,7 @@ import org.luminakey.ime.R
  * 相依方向相反，硬塞在同一個物件裡的下場是純函式被 Android 汙染。
  *
  * 所以切開：**數字留在 PrefLevels，字搬到 strings.xml**。這裡是把兩者接起來
- * 的那一層，薄到只有六個 getter。
+ * 的那一層，薄到只有五個 getter。
  *
  * ── 順序即契約 ──────────────────────────────────────────────────────────
  * 陣列的第 n 項對應 `PrefLevels.indexOf*()` 回傳的 n。少一項或多一項都會讓
@@ -26,9 +26,6 @@ object PrefLabels {
 
     val sound: List<String>
         @Composable get() = stringArrayResource(R.array.levels_sound).toList()
-
-    val timbre: List<String>
-        @Composable get() = stringArrayResource(R.array.levels_timbre).toList()
 
     val haptic: List<String>
         @Composable get() = stringArrayResource(R.array.levels_haptic).toList()

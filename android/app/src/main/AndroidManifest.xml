@@ -35,29 +35,6 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!--
-        震動。一句話講得完：**它不是資料通道** —— 沒有東西能透過馬達離開
-        這台機器。這一行不需要上面 INTERNET 那樣的二十行辯護。
-
-        VIBRATE 是 normal 等級的安裝時權限：自動授予、不跳對話框、使用者
-        也取消不掉。它會出現在權限清單上，所以這裡把理由寫下來，設定頁的
-        「震動」底下也有一行給使用者看（feel_haptic_note）。
-
-        為什麼非要不可：在這之前我們走 View.performHapticFeedback 的三個
-        常數，而那三個常數是三支**不相干的波形**，不是同一支的三種大小
-        （實測「強」比「中」短三倍）。使用者要的「大小可調」在那條路上
-        做不出來，只能拿三個粗糙的常數硬湊。
-
-        交換條件（這是條件，不是附帶）：舊版帶著 FLAG_IGNORE_GLOBAL_SETTING，
-        也就是使用者在系統設定裡把觸覺回饋整個關掉之後我們照震不誤
-        （實測 flags: 10，而同一台機器上的 Gboard 是 flags: 0）。
-        那個旗標已經拿掉了。系統關了就是關了。
-
-        查證方式與連網那一條一樣：全 app 唯一碰得到 Vibrator / VibrationEffect
-        的檔案是 prefs/KeyHaptics.kt，scripts/audit_offline.sh 有一項在守它。
-    -->
-    <uses-permission android:name="android.permission.VIBRATE" />
-
-    <!--
         ⚠ allowBackup=false。這一行是隱私邊界，不是效能設定，改它之前請先讀完。
 
         Android 的「自動備份」會把 app 私有目錄整個同步到使用者的 Google Drive。

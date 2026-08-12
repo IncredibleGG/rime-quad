@@ -1,6 +1,5 @@
 package org.luminakey.ime.prefs
 
-import org.luminakey.ime.core.SoundTimbre
 import org.luminakey.ime.theme.HapticStrength
 import kotlin.math.abs
 
@@ -40,38 +39,6 @@ object PrefLevels {
     fun withSound(prefs: UserPrefs, index: Int): UserPrefs =
         if (index <= 0) prefs.copy(soundEnabled = false)
         else prefs.copy(soundEnabled = true, soundVolume = SOUND_VOLUMES[index.coerceAtMost(3)])
-
-    /* ─────────────────────── 按鍵音色 ─────────────────────── */
-
-    /**
-     * 音量與音色是**兩個**控制項,不是一個八格的。
-     *
-     * 合成一個的話會有 8 個選項(違反 `docs/ui-design.md` §4.2 的「分段控制
-     * 2–4 格」),而且「關」該屬於哪一邊會說不清 —— 關掉之後音色還在不在?
-     */
-    val TIMBRE_LABELS = listOf("系統", "輕點", "敲擊", "水滴")
-    private val TIMBRES = listOf(
-        SoundTimbre.SYSTEM, SoundTimbre.SOFT, SoundTimbre.MECHANICAL, SoundTimbre.DROP,
-    )
-
-    fun indexOfTimbre(prefs: UserPrefs): Int =
-        TIMBRES.indexOf(prefs.soundTimbre ?: SoundTimbre.SYSTEM).coerceAtLeast(0)
-
-    /**
-     * @param soundLevel 目前的按鍵音檔位([indexOfSound] 的回傳值)。
-     *
-     * ⚠ 「按鍵音=關」的時候點音色會**順便把音量打開到「小」**。
-     *
-     * 這是刻意的。另外兩種做法都比較差:畫成灰的違反 §1「做不到的功能不要
-     * 畫出來」(它做得到,只是要先開音量);隱藏起來會讓版面跳。而一個
-     * 「點下去什麼都沒發生」的控制項是這個專案抓過好幾次的那一類缺陷。
-     *
-     * 一次操作取代兩次,而且沒有死控制項。
-     */
-    fun withTimbre(prefs: UserPrefs, index: Int, soundLevel: Int): UserPrefs {
-        val next = prefs.copy(soundTimbre = TIMBRES[index.coerceIn(0, TIMBRES.size - 1)])
-        return if (soundLevel <= 0) withSound(next, 1) else next
-    }
 
     /* ─────────────────────── 震動 ─────────────────────── */
 

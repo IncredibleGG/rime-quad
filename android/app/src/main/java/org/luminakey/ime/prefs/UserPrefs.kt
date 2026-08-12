@@ -1,6 +1,5 @@
 package org.luminakey.ime.prefs
 
-import org.luminakey.ime.core.SoundTimbre
 import org.luminakey.ime.theme.HapticStrength
 
 /**
@@ -42,20 +41,6 @@ data class UserPrefs(
 
     /** 對應主題 `feedback.sound_volume`。 */
     val soundVolume: Float? = null,
-
-    /**
-     * 按鍵音的**音色**。`null` = 未設定 = [org.luminakey.ime.core.SoundTimbre.SYSTEM]
-     * (照這支手機 OEM 的調校走)。
-     *
-     * ⚠ 這一項**沒有主題欄位可退**。`docs/theme-format.md` §8.10 只有
-     *   `feedback.sound` 與 `feedback.sound_volume`,沒有音色 —— 而那份文件的
-     *   擁有者是 macOS 端(`docs/coordination.md` §2 的檔案所有權表),
-     *   Android 不能自己加,只能提出。已寫進 §5。
-     *
-     *   在它被加進規範之前,這裡的 null 退回的是本專案的預設值 SYSTEM,
-     *   不是主題值。與 [longPressMs] 那三項同一種誠實的降級。
-     */
-    val soundTimbre: SoundTimbre? = null,
 
     /** 對應主題 `feedback.haptic`。 */
     val hapticEnabled: Boolean? = null,
@@ -117,24 +102,6 @@ data class UserPrefs(
 
     /** librime 的 `ascii_punct` 開關。`null` = 不干預。 */
     val asciiPunct: Boolean? = null,
-
-    /**
-     * 字集守門：選了簡體就只留簡體字、選了繁體就只留繁體字。
-     *
-     * ⚠ 這一項的 `null` 與本檔其他欄位不同：**未設定 = 開**。
-     * 理由與 [networkEnabled] 對稱 —— 那一項的安全預設是「不連網」，
-     * 這一項的產品預設是「使用者說要簡體就給簡體」。消費端一律寫
-     * `charsetGuard != false`，不可以寫 `charsetGuard == true`。
-     *
-     * 送給引擎的是**否定式**的 `luminakey_charset_off`：librime 沒有
-     * 「宣告過但預設為真」的 option，沒宣告的一律讀成 false，所以
-     * 「預設開」只能寫成「預設沒有關」。轉換在 applyRimeOptions()。
-     *
-     * 代價寫在設定頁的說明裡，不可以只寫在這裡：字集之外還有字集，
-     * 罕用字（蚵 砦 疋 糸 酶 礴 珏）會一起被濾掉。見
-     * `docs/settings-model.md` §4.7。
-     */
-    val charsetGuard: Boolean? = null,
 
     /** 空白鍵行為。⚠ 規範缺口：主題與佈局格式都沒有描述這件事。 */
     val spaceBehavior: SpaceBehavior? = null,
@@ -210,7 +177,6 @@ data class UserPrefs(
         keyboardHeightScale?.let { m[K_HEIGHT_SCALE] = it }
         soundEnabled?.let { m[K_SOUND] = it }
         soundVolume?.let { m[K_SOUND_VOLUME] = it }
-        soundTimbre?.let { m[K_SOUND_TIMBRE] = it.name }
         hapticEnabled?.let { m[K_HAPTIC] = it }
         hapticStrength?.let { m[K_HAPTIC_STRENGTH] = it.name }
         longPressMs?.let { m[K_LONG_PRESS_MS] = it }
@@ -224,7 +190,6 @@ data class UserPrefs(
         candidateCount?.let { m[K_CANDIDATE_COUNT] = it }
         simplification?.let { m[K_SIMPLIFICATION] = it }
         asciiPunct?.let { m[K_ASCII_PUNCT] = it }
-        charsetGuard?.let { m[K_CHARSET_GUARD] = it }
         spaceBehavior?.let { m[K_SPACE] = it.name }
         networkEnabled?.let { m[K_NETWORK_ENABLED] = it }
         offlineNoticeSeen?.let { m[K_OFFLINE_NOTICE_SEEN] = it }
@@ -237,7 +202,6 @@ data class UserPrefs(
         const val K_HEIGHT_SCALE = "keyboard_height_scale"
         const val K_SOUND = "sound_enabled"
         const val K_SOUND_VOLUME = "sound_volume"
-        const val K_SOUND_TIMBRE = "sound_timbre"
         const val K_HAPTIC = "haptic_enabled"
         const val K_HAPTIC_STRENGTH = "haptic_strength"
         const val K_LONG_PRESS_MS = "long_press_ms"
@@ -251,7 +215,6 @@ data class UserPrefs(
         const val K_CANDIDATE_COUNT = "candidate_count"
         const val K_SIMPLIFICATION = "opt_simplification"
         const val K_ASCII_PUNCT = "opt_ascii_punct"
-        const val K_CHARSET_GUARD = "opt_charset_guard"
         const val K_SPACE = "space_behavior"
         const val K_NETWORK_ENABLED = "network_enabled"
         const val K_OFFLINE_NOTICE_SEEN = "offline_notice_seen"
@@ -269,7 +232,6 @@ data class UserPrefs(
             keyboardHeightScale = m.float(K_HEIGHT_SCALE),
             soundEnabled = m.bool(K_SOUND),
             soundVolume = m.float(K_SOUND_VOLUME),
-            soundTimbre = m.enum(K_SOUND_TIMBRE, SoundTimbre.entries),
             hapticEnabled = m.bool(K_HAPTIC),
             hapticStrength = m.enum(K_HAPTIC_STRENGTH, HapticStrength.entries),
             longPressMs = m.int(K_LONG_PRESS_MS),
@@ -283,7 +245,6 @@ data class UserPrefs(
             candidateCount = m.int(K_CANDIDATE_COUNT),
             simplification = m.bool(K_SIMPLIFICATION),
             asciiPunct = m.bool(K_ASCII_PUNCT),
-            charsetGuard = m.bool(K_CHARSET_GUARD),
             spaceBehavior = m.enum(K_SPACE, SpaceBehavior.entries),
             networkEnabled = m.bool(K_NETWORK_ENABLED),
             offlineNoticeSeen = m.bool(K_OFFLINE_NOTICE_SEEN),

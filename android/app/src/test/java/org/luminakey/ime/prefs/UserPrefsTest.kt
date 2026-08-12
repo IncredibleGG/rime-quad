@@ -68,7 +68,6 @@ class UserPrefsTest {
             candidateCount = 7,
             simplification = true,
             asciiPunct = false,
-            charsetGuard = false,
             spaceBehavior = SpaceBehavior.ALWAYS_SPACE,
             networkEnabled = true,
             offlineNoticeSeen = true,
@@ -77,29 +76,7 @@ class UserPrefsTest {
         assertFalse(full.isPristine)
         assertEquals(full, UserPrefs.fromMap(full.toMap()))
         // 每一個欄位都必須真的有進映射，否則就是 toMap 漏了一個。
-        assertEquals(21, full.toMap().size)
-    }
-
-    /* ── 字集守門：這一項的「未設定」與其他欄位不同 ───────────────── */
-
-    /**
-     * [UserPrefs.charsetGuard] 的 `null` 是**開**，不是關。
-     *
-     * 這條測試守的是一個很容易被下一個人寫反的地方：本檔其他每一個欄位的
-     * `null` 都是「不干預」，只有這一項與 [UserPrefs.networkEnabled] 一樣
-     * 帶著一個方向。消費端寫成 `charsetGuard == true` 的話，**沒動過設定的
-     * 使用者會拿不到守門** —— 而那正是絕大多數人，也正是這個功能存在的理由。
-     */
-    @Test
-    fun `字集守門沒設定過就是開`() {
-        assertNull(UserPrefs().charsetGuard)
-        assertTrue("未設定必須算開", UserPrefs().charsetGuard != false)
-        assertTrue("明確設 true 也是開", UserPrefs(charsetGuard = true).charsetGuard != false)
-        assertFalse("只有明確設 false 才是關", UserPrefs(charsetGuard = false).charsetGuard != false)
-        // 未設定不可以在儲存層留下 key（本檔的第一不變式）。
-        assertTrue(UserPrefs().toMap().isEmpty())
-        assertEquals(false, UserPrefs.fromMap(UserPrefs(charsetGuard = false).toMap()).charsetGuard)
-        assertEquals(true, UserPrefs.fromMap(UserPrefs(charsetGuard = true).toMap()).charsetGuard)
+        assertEquals(20, full.toMap().size)
     }
 
     /* ── 佈局指定（§9.1.1 的 SHOULD 之持久化）────────────────────────── */

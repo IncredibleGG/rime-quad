@@ -237,24 +237,6 @@ jobs:
         # 的那一份 Lua 5.4.8,真的去 os.execute / io.popen / 讀資料目錄外面的檔案。
         run: ./scripts/verify_lua_sandbox.sh
 
-      - name: 字集守門的純函式測試(43 條 + 5 個變異測試)
-        # core/data/lua/luminakey_charset.lua 是**出貨的程式碼**,它在每一台裝置上
-        # 決定每一個候選字要不要留下來,而 ./gradlew test 碰不到它(不是 Kotlin)。
-        # 這一關用 librime-lua 出貨的那份 Lua 原始碼編一個直譯器把它跑起來,
-        # 最後對它植入五個真缺陷(濾到空不退回、無視關閉開關、連標點都比對、
-        # 不再惰性、兩份字集其實同一份),確認每一個都會被測出來。
-        run: ./scripts/verify_charset_guard.sh
-
-      - name: 手感的反向測試(音檔比對 + 植入 6 個真缺陷)
-        # 兩件 ./gradlew test 做不到的事:
-        #   1. res/raw/key_*.ogg 是**出貨的資料**,它的來源是
-        #      scripts/gen_key_sounds.py。重新合成一次跟現有檔案的波形比對,
-        #      有人手動塞了別的音檔進去這裡會紅。
-        #   2. 對 FeedbackPlan 植入六個真缺陷(其中兩個就是改動前的實作:
-        #      三個不相干的觸覺常數、一律送 FX_KEYPRESS_STANDARD),
-        #      確認每一個都會被 FeedbackPlanTest / FeelPrefsTest 抓到。
-        run: python3 ./scripts/verify_key_feedback.py
-
       - name: 守門腳本的反向測試(植入 16 條真違規,確認它會紅)
         # 放在發布關卡**之後**:其中一條要用已建置的 APK
         # (產物層的「只有 NetworkGate 碰得到 HttpURLConnection」)。

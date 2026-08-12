@@ -84,13 +84,6 @@ cp "$OPENCC_INSTALL"/*.ocd2 "$OUT_SHARED/opencc/"
 cp "$OPENCC_INSTALL"/*.json "$OUT_SHARED/opencc/"
 note "$(ls "$OUT_SHARED/opencc"/*.ocd2 | wc -l) 個 .ocd2、$(ls "$OUT_SHARED/opencc"/*.json | wc -l) 個 .json"
 
-echo "=== 6.5 字集守門（本專案自撰）==="
-# 選了「簡體」就不該看到繁體字，選了「繁體」也不該看到簡體字。
-# RIME 的簡繁開關做不到 —— 那是 opencc 的**字形轉換**，不是**字集篩選**。
-# 這一步放兩樣東西進去：補充轉換表（轉得掉的先轉掉，不損失候選）與
-# 字集守門的 lua_filter（轉不掉的才濾）。細節在被呼叫的那一支裡。
-"$ROOT/scripts/collect_charset_guard.sh" "$OUT_SHARED"
-
 echo "=== 7. 使用者初始配置 ==="
 # rime-prelude 的 default.yaml 列了 cangjie5 / quick5 / stroke / terra_pinyin 等
 # 我們沒有全部提供的方案。與其改動上游檔案（日後更新會衝突），
@@ -119,8 +112,6 @@ for s in luna_pinyin_tw bopomofo_tw luna_pinyin t9_pinyin; do
   [ -f "$OUT_SHARED/$s.schema.yaml" ] || die "schema_list 列了 $s 但沒有 $s.schema.yaml"
 done
 note "schema_list 的四個方案都有對應檔案"
-
-
 
 # 每個 schema 引用的 dictionary 都必須有對應的 .dict.yaml
 #

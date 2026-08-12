@@ -132,11 +132,8 @@
     <string name="appearance_preview">调完在这里看看</string>
 
     <string name="page_feel">手感</string>
-    <string name="feel_intro">这四项只有真的按下去才判断得出来，所以下面留了一格给你按。</string>
+    <string name="feel_intro">这三项只有真的按下去才判断得出来，所以下面留了一格给你按。</string>
     <string name="feel_sound">按键音</string>
-    <string name="feel_timbre">哪一种声音</string>
-    <string name="feel_haptic_note">振动需要「振动」权限。它在安装时就给了，而且它不是一条出路：没有东西能透过马达离开这台手机。你若在系统设置里把振动或触觉反馈关掉，这个键盘也跟着不振。</string>
-    <string name="feel_haptic_flat">这台手机的马达分不出轻重，四个档位在这里感觉会差不多。振动仍然需要「振动」权限，安装时就给了；没有东西能透过马达离开这台手机，而且系统设置关掉就是关掉。</string>
     <string name="feel_vibration">振动</string>
     <string name="feel_long_press">长按多久算长按</string>
     <string name="feel_try">按按看</string>
@@ -145,10 +142,6 @@
     <string name="page_text">文字</string>
     <string name="text_characters">字形</string>
     <string name="text_punctuation">标点</string>
-    <string name="text_charset">字集</string>
-    <string name="text_charset_strict">只留我选的那一种</string>
-    <string name="text_charset_all">不限制</string>
-    <string name="text_charset_note">把不是你选的那一种的候选拿掉。做不到完全干净：内置词库收了整个汉字范围，往下翻几页仍会看到罕用字，而少数本来就该留的罕用字也会跟着被拿掉。某个字的候选会被拿光时，那一次就原样显示，不会留白。</string>
     <string name="text_space_key">空格键</string>
     <string name="text_follow_keyboard">跟随键盘</string>
     <string name="text_traditional">繁体</string>
@@ -164,12 +157,6 @@
         <item>小</item>
         <item>中</item>
         <item>大</item>
-    </string-array>
-    <string-array name="levels_timbre">
-        <item>系统</item>
-        <item>轻点</item>
-        <item>敲击</item>
-        <item>水滴</item>
     </string-array>
     <string-array name="levels_haptic">
         <item>关</item>

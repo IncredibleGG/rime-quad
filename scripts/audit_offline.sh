@@ -179,43 +179,6 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-step "1b. 震動出口唯一(Vibrator 只能出現在 KeyHaptics.kt)"
-# 為什麼震動也要一項:2026-08-12 這個 app 拿了 android.permission.VIBRATE。
-# 它不是資料通道,但它會出現在使用者查得到的權限清單上,而我們在 manifest
-# 與設定頁都寫了「只有按鍵時震、而且系統關掉就不震」。那句話要能被別人
-# 用 grep 查證,不能只是我們自己說 —— 連網那一條怎麼守,這個就怎麼守。
-#
-# ⚠ 這一項也擋著一個具體的迴歸:FLAG_IGNORE_GLOBAL_SETTING。舊版帶著它,
-#   於是使用者在系統設定裡把觸覺回饋整個關掉之後我們照震不誤(實測
-#   flags: 10,同一台機器上的 Gboard 是 flags: 0)。那個旗標**一個字都不
-#   准再出現**,所以它是獨立的一條,不是「順便」。
-#
-# 註解行照第 1 項的判準排除,理由一樣:KeyHaptics.kt 的檔頭刻意在文字裡
-# 寫了這些 token。
-HAPTIC_GATE_REL="main/java/${RS_ANDROID_PKG_PATH}/prefs/KeyHaptics.kt"
-if [ ! -f "$SRC/$HAPTIC_GATE_REL" ]; then
-  bad "找不到 $SRC/$HAPTIC_GATE_REL —— 這一項驗不了(套件路徑對不上?)"
-else
-  VIB_TOKENS='Vibrator|VibrationEffect|VibrationAttributes|VIBRATOR_SERVICE'
-  VHITS="$(grep -rnE "$VIB_TOKENS" "$SRC" --include='*.kt' --include='*.java' \
-            2>/dev/null | strip_comments)"
-  VOFF="$(printf '%s\n' "$VHITS" | grep -v "^$SRC/$HAPTIC_GATE_REL:" | grep -v '^$' || true)"
-  # FLAG_IGNORE_GLOBAL_SETTING 連 KeyHaptics.kt 裡都不准有(註解除外)。
-  BYPASS="$(grep -rn 'FLAG_IGNORE_GLOBAL_SETTING' "$SRC" \
-             --include='*.kt' --include='*.java' 2>/dev/null | strip_comments || true)"
-  if [ -n "$VOFF" ]; then
-    bad "KeyHaptics.kt 以外出現了 Vibrator API —— 「全 app 唯一出口」不再成立"
-    show "$VOFF" 10
-  elif [ -n "$BYPASS" ]; then
-    bad "FLAG_IGNORE_GLOBAL_SETTING 又出現了 —— 那等於無視使用者已關閉的系統震動"
-    show "$BYPASS" 10
-  else
-    VN="$(printf '%s\n' "$VHITS" | grep -c . || true)"
-    ok "只有 KeyHaptics.kt 碰得到馬達(該檔內 $VN 處),且沒有 FLAG_IGNORE_GLOBAL_SETTING"
-  fi
-fi
-
-# ─────────────────────────────────────────────────────────────────────────────
 step "2. 相依裡沒有 crash reporter / 分析 / 網路函式庫"
 # crash reporter 是最容易被「只是為了除錯」加進來的東西,而它送出去的
 # stack trace 會夾帶裝置識別碼與使用情境,對這個專案的使用者是實質風險。
@@ -549,16 +512,12 @@ step "9. 沒有多出來的權限"
 # android:permission="android.permission.BIND_INPUT_METHOD" 是**反過來的**:
 # 那是規定「只有系統才能綁定我們」的限制,不是我們要到的權限,
 # 少了它任何 app 都能綁我們的輸入法服務。把它算成違規是搞反了。
-# ⚠ VIBRATE 是 2026-08-12 加的。它與上面三個**不同類**:前三個都是真的
-#   出得去的能力(連線、查網路狀態、裝 APK),VIBRATE 不是資料通道 ——
-#   沒有東西能透過馬達離開這台機器。加它的理由與交換條件寫在 manifest 的
-#   註解裡,而「只有一個地方碰得到馬達」由下面的第 1b 項守著。
-ALLOWED='INTERNET|ACCESS_NETWORK_STATE|REQUEST_INSTALL_PACKAGES|VIBRATE'
+ALLOWED='INTERNET|ACCESS_NETWORK_STATE|REQUEST_INSTALL_PACKAGES'
 PERMS="$(grep -E '<uses-permission' "$MANIFEST" 2>/dev/null \
           | grep -oE 'android\.permission\.[A-Z_]+' | sort -u || true)"
 EXTRA="$(printf '%s\n' "$PERMS" | grep -vE "$ALLOWED" | grep -v '^$' || true)"
 if [ -z "$EXTRA" ]; then
-  ok "權限只有 INTERNET / ACCESS_NETWORK_STATE / REQUEST_INSTALL_PACKAGES / VIBRATE"
+  ok "權限只有 INTERNET / ACCESS_NETWORK_STATE / REQUEST_INSTALL_PACKAGES"
 else
   bad "manifest 出現了未列入白名單的權限"
   show "$EXTRA" 10
