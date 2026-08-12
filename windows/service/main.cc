@@ -743,6 +743,8 @@ static int RunService(int argc, wchar_t** argv) {
   rimewin::PipeServer server(&engine, ui, &settings_store);
   // 每一份快照也要餵給那一橫(見 pipe_server.h 的說明)。
   server.SetStatusBar(no_ui ? nullptr : &status_bar);
+  // 簡繁快捷鍵要走設定視窗那一支寫入(見 pipe_server.h)。
+  server.SetSettingsWindow(no_ui ? nullptr : &settings);
   server.SetOpenSettingsHandler([&settings]() { settings.Open(); });
   // 監聽迴圈非預期死掉時,讓這支服務結束。
   //

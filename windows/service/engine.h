@@ -167,6 +167,16 @@ class Engine {
   Result CommitComposition(uint64_t id);
   Result Clear(uint64_t id);
   Result ChangePage(uint64_t id, bool backward);
+
+  // ── 只取一份當下的快照,什麼都不動 ────────────────────────────
+  //
+  // ⚠ 給「這顆鍵我們自己處理掉了,但文件不該有任何變化」的路徑用
+  //   (簡繁快捷鍵 Ctrl+Shift+F)。**不可以回一份空的 Result** ——
+  //   DLL 那一側收到 handled=1 之後會把 snap 套進文件
+  //   (tsf/text_service.cc 的 SendAsciiToggle,那裡有一整段 ⚠ 記著
+  //   「這一份快照不可以丟掉」),而空快照的意思是「沒有組字、沒有
+  //   候選」:使用者打到一半的那一段會當場消失。
+  Result CurrentResult(uint64_t id);
   Result SelectSchema(uint64_t id, const std::string& schema_id);
 
   // ── 設定介面要用的 ──────────────────────────────────────────

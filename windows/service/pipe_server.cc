@@ -1,5 +1,6 @@
 #include "pipe_server.h"
 
+#include "settings_window.h"
 #include "status_bar.h"
 
 #include <sddl.h>
@@ -11,6 +12,7 @@
 #include "../common/hotkey_policy.h"
 #include "../common/redeploy_flow.h"
 #include "../common/schema_choice.h"
+#include "../common/status_cells.h"
 #include "../winshared/winutil.h"
 #include "rime_shell.h"
 
@@ -123,6 +125,26 @@ PipeServer::~PipeServer() {
   // 同上:候選窗還活著,而它手上那個 lambda 捕捉的是 this。
   if (ui_) ui_->SetPageHandler(nullptr);
   if (stop_event_) ::CloseHandle(stop_event_);
+}
+
+bool PipeServer::ToggleVariantPref() {
+  if (!settings_window_ || !engine_) return false;
+  // ⚠ 方向從**引擎回讀**算,不是從設定檔算,也不是從畫面反推 ——
+  //   與狀態列第一格那一段是同一條理由:拿畫面反推的話,只要畫面曾經
+  //   與引擎不一致,再按一次送的就是同一個值,使用者會覺得這顆鍵
+  //   只能往一個方向切。
+  const Engine::StatusReadback rb = engine_->ReadBackStatus();
+  if (!rb.ok) return false;
+  const VariantCell now =
+      VariantCellFrom((rb.status_flags & kStVariantKnown) != 0,
+                      (rb.status_flags & kStSimplified) != 0);
+  bool to_simplified = false;
+  // ⚠ 判斷只有一份(common/status_cells.cc)。kHidden 時它回 false ——
+  //   引擎沒有回報字形,方向是猜的,所以這顆鍵什麼都不做。
+  if (!ToggleVariantTarget(now, &to_simplified)) return false;
+  settings_window_->SetVariantPref(to_simplified ? VariantPref::kSimplified
+                                                 : VariantPref::kTraditional);
+  return true;
 }
 
 void PipeServer::OnCandidateWheel(int32_t steps) {
@@ -760,9 +782,27 @@ void PipeServer::ServeClient(HANDLE pipe) {
           if (!send(EncodeResult(seq, r))) goto done;
           break;
         }
-        Result r = action == KeyAction::kToggleAsciiMode
-                       ? engine_->ToggleAsciiMode(k.session)
-                       : engine_->ProcessKey(k.session, k.keysym, k.mods);
+        Result r;
+        if (action == KeyAction::kToggleVariant) {
+          // 簡繁快捷鍵(Ctrl+Shift+F,G76)。
+          //
+          // ⚠ 回的是**當下這一份**快照,不是空的。DLL 收到 handled=1
+          //   之後會把它套進文件(tsf/text_service.cc 的 SendAsciiToggle
+          //   那一整段 ⚠),而空快照的意思是「沒有組字」——
+          //   使用者打到一半的那一段會當場消失。
+          //   簡繁本身是非同步套上去的(設定視窗那條執行緒),所以此刻
+          //   文件本來就不該有任何變化,拿當下這一份正是對的。
+          if (ToggleVariantPref()) {
+            r = engine_->CurrentResult(k.session);
+            r.handled = true;
+          }
+          // ToggleVariantPref 回 false = 什麼都沒做 → r.handled 維持 false
+          // → DLL 把那顆鍵交回宿主。**不可以**假裝切了。
+        } else if (action == KeyAction::kToggleAsciiMode) {
+          r = engine_->ToggleAsciiMode(k.session);
+        } else {
+          r = engine_->ProcessKey(k.session, k.keysym, k.mods);
+        }
         note_schema(r.snap);
         push_ui(r.snap);
         if (!send(EncodeResult(seq, r))) goto done;

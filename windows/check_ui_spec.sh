@@ -3247,6 +3247,150 @@ PYSCRIPT
     esac
   done <<< "${w39out}"
   [ "${w39bad}" -eq 0 ] && ok "W39 頁碼整條鏈都接著:快照的 page_no / is_last_page → PageHint → ComputeLayout(留位置)→ PageIndicatorText(§8.12 的字面,純函式)→ Paint 真的畫出來,而且繪製碼沒有自己拼分數"
+
+  # ── W40:簡繁快捷鍵 Ctrl+Shift+F,整條鏈都要接著 ────────────────
+  #
+  # ⚠ 同 W38 / W39,守的是鏈。這一條有**七段**,而其中三段壞掉時畫面上
+  #   完全一樣(按了沒反應):GUID 沒定義、保留鍵沒註冊、OnPreservedKey
+  #   沒認、服務端沒接、寫入沒走單一來源、回的是空快照、主程式沒把設定
+  #   視窗交給服務。
+  #
+  # ⚠ **回空快照那一段最要命,而且它不是「沒反應」**:DLL 收到 handled=1
+  #   之後會把快照套進文件(tsf/text_service.cc 的 SendAsciiToggle),
+  #   空快照的意思是「沒有組字」—— 使用者打到一半的那一段會當場消失。
+  #   那正是這一批的標題要消滅的東西。
+  check
+  local w40bad=0
+  local w40out; w40out="$("${PY}" - "${CODE_DIR}" <<'PYSCRIPT'
+import os, re, sys
+root = sys.argv[1]
+
+def read(rel):
+    try:
+        return open(os.path.join(root, rel), encoding='utf-8',
+                    errors='replace').read()
+    except OSError:
+        return None
+
+ts = read('tsf/text_service.cc')
+gc = read('tsf/guids.cc')
+hp = read('common/hotkey_policy.cc')
+ps = read('service/pipe_server.cc')
+mn = read('service/main.cc')
+if ts is None or gc is None or hp is None or ps is None or mn is None:
+    print('NOSRC=1')
+    raise SystemExit(0)
+
+def match_from(src, i):
+    depth = 0
+    for j in range(i, len(src)):
+        if src[j] == '{':
+            depth += 1
+        elif src[j] == '}':
+            depth -= 1
+            if depth == 0:
+                return (i, j + 1)
+    return (i, len(src))
+
+def body_of(src, sig):
+    i = src.find(sig)
+    if i < 0:
+        return None
+    b = src.find('{', i)
+    if b < 0:
+        return None
+    ob, cb = match_from(src, b)
+    return src[ob + 1:cb - 1]
+
+# 分母:tsf/ 底下的保留鍵註冊呼叫。掃空 = 範圍寫錯,必須紅。
+print('NPRESERVE=%d' % len(re.findall(r'->PreserveKey\(', ts)))
+
+if not re.search(r'\bGUID_RimePreservedKeyVariant\s*=', gc):
+    print('NOGUID=1')
+
+if not re.search(r'PreserveKey\(\s*client_id_,\s*GUID_RimePreservedKeyVariant',
+                 ts):
+    print('NOREGISTER=1')
+if 'TF_MOD_CONTROL | TF_MOD_SHIFT' not in ts:
+    print('NOMODS=1')
+if 'UnpreserveKey(GUID_RimePreservedKeyVariant' not in ts:
+    print('NOUNREGISTER=1')
+
+ok_ = body_of(ts, 'STDMETHODIMP TextService::OnPreservedKey(')
+if ok_ is None:
+    print('NOONPRESERVED=1')
+else:
+    if 'GUID_RimePreservedKeyVariant' not in ok_:
+        print('ONPRESERVEDNOBRANCH=1')
+    elif 'VariantToggleKeysym()' not in ok_:
+        print('ONPRESERVEDNOSEND=1')
+
+if 'Hotkey::kToggleVariant' not in hp:
+    print('NOCLASSIFY=1')
+
+kb = body_of(ps, 'bool PipeServer::ToggleVariantPref()')
+if kb is None:
+    print('NOTOGGLEFN=1')
+else:
+    if 'ToggleVariantTarget(' not in kb:
+        print('TOGGLENOSINGLESOURCE=1')
+    if 'SetVariantPref(' not in kb:
+        print('TOGGLENOWRITE=1')
+    if 'ReadBackStatus()' not in kb:
+        print('TOGGLENOREADBACK=1')
+
+if 'KeyAction::kToggleVariant' not in ps:
+    print('SERVICENOACTION=1')
+elif 'CurrentResult(' not in ps:
+    print('SERVICEEMPTYSNAP=1')
+
+# ⚠ 要問的是 **server.** 那一個。main.cc 裡還有一個
+#   `status_bar.SetSettingsWindow(&settings)` —— 只比對函式名的話,
+#   把 server 那一行整條刪掉守門仍然全綠(實跑確認過)。
+if 'server.SetSettingsWindow(' not in mn:
+    print('MAINNOWIRE=1')
+PYSCRIPT
+)"
+  local npres; npres="$(num "$(printf '%s\n' "${w40out}" | grep '^NPRESERVE=' | cut -d= -f2)")"
+  need_scope "W40 保留鍵註冊呼叫" "${npres}" 2 || w40bad=1
+  local w40line
+  while IFS= read -r w40line; do
+    case "${w40line}" in
+      NOSRC=*)
+        red "W40:找不到 tsf/ 或 service/ 的原始檔 —— 掃描範圍錯了"; w40bad=1 ;;
+      NOGUID=*)
+        red "W40:tsf/guids.cc 裡沒有 GUID_RimePreservedKeyVariant 的定義"; w40bad=1 ;;
+      NOREGISTER=*)
+        red "W40:ActivateEx 沒有註冊簡繁那一顆保留鍵 —— 按下去 TSF 根本不會交回來,而畫面上與「沒做這個功能」一模一樣"; w40bad=1 ;;
+      NOMODS=*)
+        red "W40:註冊的修飾鍵不是 TF_MOD_CONTROL | TF_MOD_SHIFT —— 與 common/hotkey_policy.cc 的正規形式對不上,等於註冊了一顆永遠不會被認得的鍵"; w40bad=1 ;;
+      NOUNREGISTER=*)
+        red "W40:Deactivate 沒有把簡繁那一顆還回去 —— 這個宿主接下來的 Ctrl+Shift+F 會被一個已經不存在的文字服務攔著,而那查不到我們頭上"; w40bad=1 ;;
+      NOONPRESERVED=*)
+        red "W40:找不到 OnPreservedKey 的本體"; w40bad=1 ;;
+      ONPRESERVEDNOBRANCH=*)
+        red "W40:OnPreservedKey 沒有認簡繁那一顆的 GUID —— 註冊了、TSF 也交回來了,而我們當場丟掉"; w40bad=1 ;;
+      ONPRESERVEDNOSEND=*)
+        red "W40:OnPreservedKey 認了 GUID 卻沒有送 VariantToggleKeysym() —— 兩邊的正規形式對不上"; w40bad=1 ;;
+      NOCLASSIFY=*)
+        red "W40:common/hotkey_policy.cc 認不出 Hotkey::kToggleVariant —— 服務端收到那顆鍵會交給 librime,而 librime 不處理它"; w40bad=1 ;;
+      NOTOGGLEFN=*)
+        red "W40:找不到 PipeServer::ToggleVariantPref() 的本體 —— 服務端沒有人處理那顆鍵"; w40bad=1 ;;
+      TOGGLENOSINGLESOURCE=*)
+        red "W40:ToggleVariantPref 沒有走 ToggleVariantTarget() —— 方向的判斷變成第二份真相,而漂移的樣子是「從這裡切有效、從那裡切無效」"; w40bad=1 ;;
+      TOGGLENOWRITE=*)
+        red "W40:ToggleVariantPref 沒有呼叫 SetVariantPref —— 切了不存,換一個程式就變回去"; w40bad=1 ;;
+      TOGGLENOREADBACK=*)
+        red "W40:ToggleVariantPref 沒有向引擎回讀 —— 方向從畫面或設定檔反推,只要曾經不一致,這顆鍵就只能往一個方向切"; w40bad=1 ;;
+      SERVICENOACTION=*)
+        red "W40:pipe_server 沒有處理 KeyAction::kToggleVariant —— 又一個「線路接好了沒有人叫它」"; w40bad=1 ;;
+      SERVICEEMPTYSNAP=*)
+        red "W40:簡繁那一條沒有回一份真的快照(CurrentResult)—— DLL 會把空快照套進文件,使用者打到一半的字當場消失"; w40bad=1 ;;
+      MAINNOWIRE=*)
+        red "W40:service/main.cc 沒有把設定視窗交給 PipeServer —— ToggleVariantPref 永遠回 false,那顆鍵永遠不做事"; w40bad=1 ;;
+    esac
+  done <<< "${w40out}"
+  [ "${w40bad}" -eq 0 ] && ok "W40 簡繁快捷鍵整條鏈都接著:GUID → PreserveKey{'F', Ctrl|Shift} → OnPreservedKey 認得 → VariantToggleKeysym 的正規形式 → hotkey_policy 分類 → pipe_server 走 ToggleVariantTarget(單一來源)+ 向引擎回讀 + SetVariantPref → 回的是真快照不是空的,而且 main.cc 真的把設定視窗交出去、Deactivate 真的還鍵"
 }
 
 # ────────────────────────────────────────────────────────────────
@@ -3334,6 +3478,15 @@ self_check() {
 "W39c 頁碼不從這一份快照來|service/cand_window.cc|s=s.replace('  page.page_no = shown_.page_no;','  page.page_no = 0;',1)"
 "W39d 「後面還有沒有」不從快照來|service/cand_window.cc|s=s.replace('  page.is_last_page = shown_.is_last_page;','  page.is_last_page = true;',1)"
 "W39e 純函式那一半不見了|common/cand_layout.cc|s=s.replace('std::string PageIndicatorText(','std::string PageIndicatorTextRemoved(',1).replace('  out.page_text = PageIndicatorText(page.page_no, page.is_last_page);','  out.page_text = PageIndicatorTextRemoved(page.page_no, page.is_last_page);',1)"
+"W40a 保留鍵沒註冊|tsf/text_service.cc|s=s.replace('          client_id_, GUID_RimePreservedKeyVariant, &vk, kVarDesc,','          client_id_, GUID_RimePreservedKeyToggle, &vk, kVarDesc,',1)"
+"W40b OnPreservedKey 不認那顆 GUID|tsf/text_service.cc|s=s.replace('  } else if (IsEqualGUID(guid, GUID_RimePreservedKeyVariant)) {','  } else if (false) {',1)"
+"W40c 走了但正規形式對不上|tsf/text_service.cc|s=s.replace('    handled = SendAsciiToggle(ctx, VariantToggleKeysym(),','    handled = SendAsciiToggle(ctx, AsciiToggleKeysym(),',1)"
+"W40d Deactivate 不還鍵|tsf/text_service.cc|s=s.replace('        keystroke->UnpreserveKey(GUID_RimePreservedKeyVariant, &vk);','',1)"
+"W40e 服務端沒有人處理那顆鍵|service/pipe_server.cc|s=s.replace('        if (action == KeyAction::kToggleVariant) {','        if (false) {',1)"
+"W40f 方向自己判一次(第二份真相)|service/pipe_server.cc|s=s.replace('  if (!ToggleVariantTarget(now, &to_simplified)) return false;','  to_simplified = (now != VariantCell::kSimplified);',1)"
+"W40g 切了不回讀,從設定檔反推|service/pipe_server.cc|s=s.replace('  const Engine::StatusReadback rb = engine_->ReadBackStatus();','  Engine::StatusReadback rb; rb.ok = true;',1)"
+"W40h 回一份空快照(使用者打到一半的字會消失)|service/pipe_server.cc|s=s.replace('            r = engine_->CurrentResult(k.session);','',1)"
+"W40i main.cc 沒把設定視窗交出去|service/main.cc|s=s.replace('  server.SetSettingsWindow(no_ui ? nullptr : &settings);','',1)"
 "W27e 拿掉那一橫自己更新的計時器|service/status_bar.cc|s=s.replace('  ::SetTimer(hwnd_, kStateTimer, kStatePollMs, nullptr);','',1)"
 "W27f 計時器還在但不再比對狀態|service/status_bar.cc|s=s.replace('      if (now != self->service_state_) {','      if (false) {',1)"
 "W27g 側欄又變回兩句|service/settings_window.cc|s=s.replace('  ::DrawTextW(hdc, UiText(SidebarStatusTextFor(state)),','  ::DrawTextW(hdc, UiText(UiString::kNavStatusNotRunning),',1)"

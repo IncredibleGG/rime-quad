@@ -357,6 +357,25 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* mgr, TfClientId id,
       Trace("保留鍵 Ctrl+Space:%s hr=0x%08lX",
             preserved_key_ok_ ? "已註冊" : "註冊失敗(可能被別的輸入法佔走)",
             (unsigned long)hr);
+
+      // 簡繁切換(Ctrl+Shift+F,G76)。微軟拼音的預設,我們兩端都沒有。
+      // ⚠ 走的是**同一條**正規做法(PreserveKey),不是低階鍵盤 hook:
+      //   TSF 幫我們比對、只把命中的那一顆交回來,其餘按鍵我們一個都
+      //   看不到。理由見 common/hotkey_policy.h 的檔頭。
+      // ⚠ 也**不動** OnTestKeyDown / key_eat_policy 那張真值表:
+      //   PreserveKey 在 key event sink 之前就把那一顆挑走了。
+      TF_PRESERVEDKEY vk{};
+      vk.uVKey = 'F';
+      vk.uModifiers = TF_MOD_CONTROL | TF_MOD_SHIFT;
+      static const WCHAR kVarDesc[] = L"LuminaKey: Traditional/Simplified";
+      const HRESULT vhr = keystroke->PreserveKey(
+          client_id_, GUID_RimePreservedKeyVariant, &vk, kVarDesc,
+          (ULONG)(sizeof(kVarDesc) / sizeof(kVarDesc[0]) - 1));
+      preserved_variant_ok_ = SUCCEEDED(vhr);
+      Trace("保留鍵 Ctrl+Shift+F:%s hr=0x%08lX",
+            preserved_variant_ok_ ? "已註冊"
+                                  : "註冊失敗(可能被別的輸入法佔走)",
+            (unsigned long)vhr);
       keystroke->Release();
     }
   }
@@ -497,6 +516,14 @@ STDMETHODIMP TextService::Deactivate() {
         pk.uModifiers = TF_MOD_CONTROL;
         keystroke->UnpreserveKey(GUID_RimePreservedKeyToggle, &pk);
         preserved_key_ok_ = false;
+      }
+      // 同上,簡繁那一顆也要還回去。⚠ 只還真的註冊成功的那一顆。
+      if (preserved_variant_ok_) {
+        TF_PRESERVEDKEY vk{};
+        vk.uVKey = 'F';
+        vk.uModifiers = TF_MOD_CONTROL | TF_MOD_SHIFT;
+        keystroke->UnpreserveKey(GUID_RimePreservedKeyVariant, &vk);
+        preserved_variant_ok_ = false;
       }
       keystroke->Release();
     }
@@ -688,10 +715,23 @@ STDMETHODIMP TextService::OnPreservedKey(ITfContext* ctx, REFGUID guid,
                                         BOOL* eaten) {
   RIME_GUARD_BEGIN
   if (eaten) *eaten = FALSE;
-  if (!IsEqualGUID(guid, GUID_RimePreservedKeyToggle)) return S_OK;
-  const bool handled = SendAsciiToggle(ctx, AsciiToggleKeysym(),
-                                       AsciiToggleModifiers(),
-                                       "保留鍵 Ctrl+Space");
+  // ⚠ 兩顆保留鍵走**同一支** SendAsciiToggle。那支的名字是在只有一顆
+  //   熱鍵的時候取的,而它真正做的事是「送一顆鍵給服務,再把回來的快照
+  //   套進文件」—— 那一整段收尾邏輯(尤其「這一份快照不可以丟掉」)
+  //   兩顆鍵一字不差地需要。
+  //   名字沒有改,是因為 windows/audit_single_source.sh:447 把它釘住了
+  //   (它要求 OnTestKeyUp 裡出現 `SendAsciiToggle(`)。
+  bool handled = false;
+  if (IsEqualGUID(guid, GUID_RimePreservedKeyToggle)) {
+    handled = SendAsciiToggle(ctx, AsciiToggleKeysym(), AsciiToggleModifiers(),
+                              "保留鍵 Ctrl+Space");
+  } else if (IsEqualGUID(guid, GUID_RimePreservedKeyVariant)) {
+    handled = SendAsciiToggle(ctx, VariantToggleKeysym(),
+                              VariantToggleModifiers(),
+                              "保留鍵 Ctrl+Shift+F");
+  } else {
+    return S_OK;
+  }
   if (eaten) *eaten = handled ? TRUE : FALSE;
   return S_OK;
   RIME_GUARD_END_HR

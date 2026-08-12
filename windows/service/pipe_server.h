@@ -22,6 +22,7 @@
 namespace rimewin {
 
 class StatusBar;
+class SettingsWindow;
 
 class PipeServer {
  public:
@@ -31,6 +32,14 @@ class PipeServer {
   //   使用者用方案自己的按鍵切了模式時,那一橫必須跟著動,
   //   否則它會變成一個說謊的指示器,而那比沒有指示器更糟。
   void SetStatusBar(StatusBar* b) { bar_ = b; }
+
+  // ⚠ 簡繁快捷鍵(Ctrl+Shift+F,G76)要**走與狀態列第二格、設定視窗
+  //   完全同一支寫入**(SettingsWindow::CommitVariantPref)。各寫一份
+  //   會漂移,而漂移的樣子是「從這裡切有效、從那裡切無效」——
+  //   使用者猜不到差別在哪,而畫面上兩邊看起來都正常。
+  //   ⚠ nullptr 是合法的(--no-ui 的 CI 模式),那時那顆鍵不做事、
+  //     交回宿主,而不是假裝切了。
+  void SetSettingsWindow(SettingsWindow* w) { settings_window_ = w; }
 
   // 收到 Op::kOpenSettings 時呼叫。可以是 nullptr(--no-ui 的 CI 模式)。
   // ⚠ 這個回呼會在**連線執行緒**上跑,實作必須只是 PostMessage。
@@ -84,6 +93,10 @@ class PipeServer {
   //
   // ⚠ 方案清單由呼叫端傳進來,不在這裡問。重建那條路是在**引擎執行緒**
   //   上跑的,在那裡再丟一件工作進引擎佇列就是自己等自己。
+  // 簡繁切一下。回傳 false = **什麼都沒做**(沒有設定視窗、引擎沒有
+  // 回報字形)——呼叫端據此宣告沒有吃掉那顆鍵。
+  bool ToggleVariantPref();
+
   Engine::SessionPlan PlanForLang(
       uint32_t langid,
       const std::vector<std::pair<std::string, std::string>>& schemas) const;
@@ -91,6 +104,7 @@ class PipeServer {
   Engine* engine_;
   CandidateUi* ui_;
   StatusBar* bar_ = nullptr;
+  SettingsWindow* settings_window_ = nullptr;
   SettingsStore* settings_;
   std::function<void()> on_open_settings_;
   std::function<void()> on_fatal_;

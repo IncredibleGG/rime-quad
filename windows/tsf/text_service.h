@@ -194,6 +194,10 @@ class TextService : public ITfTextInputProcessorEx,
   // UnpreserveKey —— 對一顆沒註冊過的鍵反註冊會拿到錯誤碼,而那則錯誤
   // 會蓋掉真正的問題。理由與整個做法見 common/hotkey_policy.h。
   bool preserved_key_ok_ = false;
+  // 簡繁快捷鍵(Ctrl+Shift+F)註冊成功了沒有。⚠ 與上面分開記:
+  //   兩顆鍵可能一顆被別的輸入法佔走、另一顆沒有,而 Deactivate 只能
+  //   還回真的註冊成功的那些(還一顆沒註冊的會是一次無聲的失敗)。
+  bool preserved_variant_ok_ = false;
 
   // 輕點 Shift 切中英的狀態機(工單 #89)。判斷本體是純函式,
   // 住在 common/shift_tap.h —— 在 Ubuntu 上有一張逐事件的真值表。

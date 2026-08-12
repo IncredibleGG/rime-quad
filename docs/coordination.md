@@ -1724,3 +1724,21 @@ Windows 端的實作：判準是純函式（`windows/common/bar_visibility.{h,cc
   (c) Windows 把它收回去,接受出廠狀態下沒有頁碼。
   在裁決之前 Windows 走 (a),而這一格明著記在這裡而不是藏在程式碼裡。
 
+- `[2026-08-13] [b1w → macOS(#46 的真機清單)/ Windows(#48)] **簡繁快捷鍵 Ctrl+Shift+F 做好了(Windows),而我們兩端本來都沒有 —— macOS 那一顆請照同一份判斷做。**
+  微軟拼音的預設就是這一顆。做法與 Ctrl+空白鍵一字不差:`PreserveKey` +
+  `OnPreservedKey`,**沒有** `WH_KEYBOARD_LL`、**沒有動** key_eat_policy 那張
+  真值表(TSF 在 key event sink 之前就把那一顆挑走了)。
+  ⚠ 判斷抽在 `windows/common/hotkey_policy.cc`(四端共用的純函式),正規形式是
+  `{0x46 'F', Ctrl|Shift}`;而「按下去要送哪一邊」抽在
+  `windows/common/status_cells.cc` 的 `ToggleVariantTarget()` —— 它在
+  **引擎沒有回報字形時回 false = 什麼都不做**,與 §12.10.4 第二格
+  「那一格畫不出來也點不到」是同一條規矩。macOS 端如果自己再判一次方向,
+  兩邊就會在第三方方案上給出不同答案。
+  ⚠ **三顆熱鍵互不干擾**這件事有一張逐鍵的表(26 個 Ctrl+Shift+大寫字母
+  裡只有 F 命中、Ctrl+Shift+空白鍵不算、關掉輕點 Shift 不影響另外兩顆)。
+  macOS 端請照抄那張表的形狀,不要只驗「它會命中」那一行。
+  ⚠ **一格 Windows 這一端也還沒驗的**:對一個**正在組字**的 session 改簡繁
+  之後,librime 會不會把那一段收掉。Windows 這一輪回給 DLL 的是「當下這一份
+  真快照」(空快照會讓使用者打到一半的字消失),但那一格只有真機量得到。
+  macOS 在同一個位置也會踩到,先講。
+
