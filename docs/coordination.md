@@ -1403,6 +1403,35 @@ bash 端再剝一次 `\r`。(同一個檔案早就為了 cp1252 的 stdout 編�
   —— 這個專案為此吃過兩次虧,兩次的症狀都是「整條車道安靜地不存在」;
   改完跑 `python3 scripts/verify_yaml_no_dup_keys.py`。`
 
+- `[2026-08-12] [release → 全體] **這一輪四條線併回 `main` 了,以及一條用血換來的 worktree 紀律。**
+  **併了什麼**(三個合併點,父節點都留著,逐條往回看得到):
+    · `win-next` `450c324` —— 設定視窗卡死(#79)、側欄點得到的地方差 16 DIP(#75)、連網頁那顆碰不到的按鈕(#76)、文案裡被畫成星號的 `**`(#77)、重新部署在活著的 session 腳下抽換 mmap(#90)、工作佇列與狀態訊息。
+    · `winbar` `1cc0ec7`,合併點 `5bcc211` —— 狀態欄生命週期(#82)、簡繁真的送到引擎(#81)、輕點 Shift 切中英(#89)、托盤圖示。
+    · `t9hole` `32cf41b`,合併點 `711f845` —— 九宮格消歧欄的空洞(#78)、它的畫面層守門、CI 的分支閘門(`scripts/ci_branch_gate.py`)。
+  ⚠ `win-next` ← `winbar` 那一次是 **8 個檔案衝突、59 個自動併好**,而八個裡有三個是 service 層**結構**被兩邊各改一次(工作佇列與狀態訊息 vs 簡繁回讀與狀態列生命週期)。那一次逐段看語意的紀錄留在合併 commit `5bcc211` 的訊息裡,包含一件值得記住的事:**危險的不是衝突標記裡面,是外面** —— `check_ui_spec.sh` 有一行 `[ "${baseline_red}" -eq 0 ] || return 1` 落在衝突區塊外,git 靜靜地併了進來,而它引用的變數只存在於被取代掉的那一版;`set -u` 讓它當場 rc=1,沒有 `set -u` 的話它會變成一個永遠成立的空條件,而反向測試看起來完全正常。
+  **併完在 `main` 上重跑的數字**:`windows/run_logic_tests.sh` 502 個案例 / 558,173 個斷言失敗 0,建置清單對帳 71 個來源、孤兒 0;`windows/check_ui_spec.sh` 32 組全過、掃描 171 個原始檔;`windows/syntax_check_mingw.sh` 32 個檔案(跳過 1,只有 MSVC 檢得到);`windows/check_ui_spec.sh --self-check` **125 條會紅、0 條不會**;`windows/audit_single_source.sh --self-check` 16 個植入全紅 + 現況綠;`android/ ./gradlew test` debug 與 release **各 610 項、失敗 0**;`scripts/verify_product_ids.sh` 13 項全過。
+  **順手拆掉的暫時接線**:四份 workflow 的 `on: push: branches:` 都收回只剩 `main`(`build.yml` 11→1、`windows.yml` 11→1、`macos.yml` 8→1、`schema-store.yml` 3→1),`build.yml` 慢車道那個 job 的 `if:` 五條也收回 `main`。⚠ 加或減都**只改既有那一份清單**,不要長出第二個 `branches:` 鍵(這棵樹為此吃過兩次虧,症狀都是「整條車道安靜地不存在」);改完跑 `python3 scripts/verify_yaml_no_dup_keys.py`,五份都要是重複鍵 0。⚠ 拆完 `scripts/ci_branch_gate.py` 要仍然說得通 —— 它問的是「目前這條分支在不在清單裡」,而 `main` 還在:`GITHUB_REF_NAME=main bash scripts/verify_syllables.sh --check-ci` 是綠的(8 項全 PASS)。
+
+  ⚠⚠ **一個 worktree 只能有一個人寫。這是這一輪買到最貴的一條,而且它不會有任何錯誤訊息。**
+  上一輪有三條線同時在 `/home/lc/rime-winbar` 裡工作。其中一條要還原自己弄髒的檔案,跑了 `git checkout -- <路徑>`,而那個路徑底下有另一條線**刻意的一次刪除**。`git checkout --` 沒有「只還原我改的那一部分」這種東西:它把整個檔案倒回索引,別人做完的決定被靜靜地復原 —— **沒有衝突、沒有警告、沒有任何輸出**,那條命令做的正是它被叫來做的事。事後也很難發現:被復原的是「本來就該長這樣」的舊碼,而不是壞掉的新碼。
+  ⚠ 危險的不是 `git checkout --` 這一支命令,是**共用寫入權**。同一個目錄裡,`git restore` / `git stash` / `git reset --hard` / `git clean`、甚至 `git add -A` 都有同一個形狀:它們的作用域是**整個工作區**,不是「我這條線碰過的那幾個檔案」。並行的線越多,任何一支的「我只是清一下自己的東西」就越接近一次不會被記錄的回退。
+  **紀律**(§1「每個端一個 worktree」的收緊版):**一條線一個 worktree,而且同一時間只有一個寫入者。** 要看別人的分支就開自己的(`git worktree add`),或用 `git show <branch>:<path>` / `git diff <branch> -- <path>` 這種**唯讀**的問法,不要在別人的目錄裡跑任何會寫檔的 git 子命令。
+  ⚠ 這一輪的做法可以照抄:併四條線是在**新開的** `/home/lc/rime-release` 裡做的,來源那四個 worktree(`rime-winbar` / `rime-win-next` / `rime-t9hole` / `rime-look`)全程唯讀,一次都沒有被 checkout 過;只有最後 `git -C /home/lc/rime merge release` 那一步碰了協調端的 main worktree。
+
+  ⚠⚠ **給 macOS(#88):輕點 Shift 的作廢入口現在是五個,不是四個。照上面那一則 `[2026-08-12] [winbar → 全體(尤其 macOS #88)]` 的「作廢的四個入口」抄,會原封不動複製一個使用者一定會踩到的缺陷。**
+  第五個是 **`OnOtherInput()`** —— **看不見的那一種輸入**。前四個(按下的當下 Ctrl/Alt/Win 已經按著、Shift 按住期間出現任何其他**按鍵**事件、同一顆 Shift 再來一次 down、另一顆 Shift 插進來)全部只看得到**按鍵**。滑鼠一顆按鍵事件都不會產生,所以在狀態機眼裡
+      按住 Shift → 滑鼠點一下/拖一段 → 放開 Shift
+  與一次乾淨的輕點**逐位元相同**。而那一串正是「延伸選取」的標準手勢:任何人在文件裡選一段字都會做,而這顆鍵**預設是開的**。**症狀:按住 ⇧ 用滑鼠選一段字,放開就切成英數。**
+  ⚠ **不要在狀態機那一層想辦法看到滑鼠**,也不要用 `GetAsyncKeyState` / 全域事件監聽那一類東西去問 —— 那條紅線(離線為預設、經得起審計)見 `windows/common/hotkey_policy.h` 與 `windows/audit_offline_win.sh`,macOS 這一側同理。唯一乾淨的通道是「**宿主說這份文件的選取被動過了**」,而那件事只有呼叫端問得到。所以純函式那一層只留一個入口 `OnOtherInput()`,由平台層在收到通知時呼叫。
+  **Windows 那一側接了兩條腿,兩條都要**(`windows/tsf/text_service.cc`):
+    · `ITfTextEditSink::OnEndEdit` → 先 `record->GetSelectionStatus()`,選取**真的變了**才 `OnOtherInput()`。不需要正在組字,但需要宿主回報選取。
+    · `OnCompositionTerminated` → 直接 `OnOtherInput()`。宿主自己把組字收掉,在使用者那一端最常見的原因就是他用滑鼠點了一下;這一條不需要宿主回報選取,但只有「當時正在組字」才會來。
+  兩條都接,是為了讓任何一邊不成立時另一邊還在。**macOS 的等價物**:選取那一條對應客戶端回報的選取變化(`NSTextInputClient` 那一側),組字那一條對應組字被宿主中斷。
+  ⚠ 判準用「**選取變了**」而不是「有沒有人按下滑鼠」是**刻意**的,而且剛好比看到滑鼠更準:一次沒有挪動游標的點擊,對「中間什麼都沒發生」來說本來就等於沒發生;反過來,觸控與手寫筆挪動游標時走的是同一則通知,不必各認一次。
+  ⚠ **涵蓋不到的那一格,說清楚**:宿主**不回報**選取變化時(它得自己呼叫 `ITfContextOwnerServices::OnSelectionChange`,那是宿主的義務,不是我們保證得了的事),這條路上什麼都不會來,那個宿主裡仍然會誤切一次。只有真機驗得到,Windows 記在 #48、macOS 記在 #46。
+  ⚠ 還有一格是**時機**:焦點切過來時輸入框可能**已經有焦點**,而 `OnSetFocus` 只在焦點**改變**時才來 —— 不在啟用時主動掛一次 edit sink 的話,使用者切過來之後的第一個輸入框直到他點到別的地方為止都不會有 `OnEndEdit`,那段期間 Shift+滑鼠仍然會誤切。Windows 這一側是 `ActivateEx` 裡的 `WatchFocusedContext()`,macOS 請找自己的等價點。
+  **守門**:這條接線在 Windows 上不是靠寫作紀律 —— `windows/audit_single_source.sh` 會數「2 個餵入點 / 3 個重置點 / 2 個看不見的輸入入口 / 6 個掛接呼叫點,都在該在的函式裡」,少一個就紅;`--self-check` 的 16 個植入裡有三個打的正是這條腿(`QueryInterface` 不認 `IID_ITfTextEditSink`、`AdviseSink` 沒呼叫、sink 從來沒掛上)。macOS 若照做,建議連守門一起照做 —— 這一格的失敗形狀是「功能看起來好好的,只是偶爾自己切一下」,靠人工回歸抓不到。`
+
 
 ## 6. 各端狀態
 
