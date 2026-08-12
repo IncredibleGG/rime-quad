@@ -51,6 +51,50 @@ take() {
 echo "=== 1. 基礎配置（rime-prelude）==="
 take rime-prelude default.yaml key_bindings.yaml punctuation.yaml symbols.yaml
 
+# ── 一頁幾個候選 ───────────────────────────────────────────────────────────
+#
+# 上游 rime-prelude 寫的是 `menu/page_size: 5`，那是**桌面版的預設，從來沒有
+# 為這個產品重新決定過**。使用者的回報是「候選詞只有三個」，三層量下來：
+#
+#   引擎（rime_console，繁體，打 nihao）              5 個
+#   畫面（emulator-5558，1080×2400 @420dpi，直式）
+#       預設字級          完整畫得出 3 個，第 4 個只畫得出半個字
+#       font_scale 1.30   3 個
+#       九宮格            3 個（每一項都掛著讀音，項寬幾乎翻倍）
+#   橫式                  5 個全上，右邊還空著一大半
+#
+# 為什麼是 9（不是抄競品，理由三條）：
+#
+#   1. **這個產品自己早就說是 9。** 設定頁的「一次顯示幾個字」是
+#      3 / 5 / 7 / 9 / 不限（PrefLevels.CANDIDATE_COUNTS），9 是使用者選得到
+#      的最大值；而底下的引擎只給 5 —— 選 7 或 9 的人拿到的還是 5，
+#      畫面上看不出任何差別。先讓資料與產品自己的說法一致。
+#   2. **9 是「每一個候選都還叫得出名字」的上界。** 候選列每一項都印著序號，
+#      無障礙也照著念（「候選字第 3 個」）。librime 預設的 select_keys 是
+#      `1234567890` 十個字；第 11 個之後 core/src/rime_shell.cc 的 pick_label
+#      退回 `index+1`，畫面上會出現「…0、11、12」這種數不下去的序號。
+#      10 是硬上界，9 是最後一個乾淨的值。
+#   3. **9 是量出來畫得完的量。** 直式一列畫得下 3–4 個，其餘走 §8.6.6 的
+#      展開面板（2–3 欄 × 3 列，一屏掃得完）；橫式一列就放得下。
+#
+# ⚠ **為什麼改 shared/default.yaml 而不是 user/default.custom.yaml。**
+#   user/ 那一份在升級時是「只補不覆蓋」（android RimeRuntime 的註解寫得很
+#   清楚，schema_list 還要靠 BuiltinMigration 逐項補）—— 把 page_size 放在
+#   那裡，**只有全新安裝的人拿得到**，舊使用者永遠停在 5，而且沒有任何徵狀。
+#   shared/ 是唯讀、隨 APK 摘要整份汰換的，改在這裡才會真的到使用者手上。
+#
+# ⚠ 這是本腳本唯一一處**改寫上游檔案內容**的地方，所以它必須「改不到就爆」：
+#   上游哪天把這個鍵改名或改值，底下的比對會失敗、整個 collect 停住，
+#   而不是靜靜地留下 5 —— 那正是「畫面看起來一切正常」的那一類缺陷。
+if ! grep -qE '^  page_size: 5$' "$OUT_SHARED/default.yaml"; then
+  die "rime-prelude 的 default.yaml 裡找不到 '  page_size: 5'。
+上游可能改了鍵名或預設值。確認之後再更新這一段 —— 不要直接拿掉這道檢查,
+拿掉的下場是候選數靜靜地退回上游的桌面預設。"
+fi
+sed -i 's/^  page_size: 5$/  page_size: 9/' "$OUT_SHARED/default.yaml"
+grep -qE '^  page_size: 9$' "$OUT_SHARED/default.yaml" || die "page_size 沒有改成 9"
+note "menu/page_size: 5 → 9（上游是桌面預設，本產品的設定頁最大值就是 9）"
+
 echo "=== 2. 語言模型（rime-essay）==="
 take rime-essay essay.txt
 
@@ -121,6 +165,7 @@ patch:
     - schema: bopomofo_tw       # 注音（臺灣字形）
     - schema: luna_pinyin       # 拼音（原版）
     - schema: t9_pinyin         # 九宮格拼音（本專案自撰，共用 luna_pinyin 詞典）
+
 YAML
 )
 
