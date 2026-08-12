@@ -113,35 +113,66 @@ object PrefLevels {
     /**
      * 引擎一頁最多給幾個候選。
      *
-     * 來源是 `core/data/shared/default.yaml` 的 `menu/page_size: 5`
-     * （`stroke` 方案自己覆寫成 9，但它不在 `schema_list` 裡）。
-     * 這個數字是**上限**：`rs_snapshot` 的 `menu.items` 一頁就這麼多，
+     * **來源只有一份:`core/data/shared/default.yaml` 的 `menu/page_size`。**
+     * 這裡不是抄過來的 —— [ENGINE_PAGE_SIZE_FROM_DATA] 是建置期從那份 yaml
+     * 產生的（`android/app/build.gradle.kts` 的 `generateEnginePageSize`），
+     * 讀不到就不給預設值、直接讓建置失敗。
+     *
+     * 這個數字是**上限**:`rs_snapshot` 的 `menu.items` 一頁就這麼多，
      * 前端的 `max_visible` 只能從裡面挑得更少，挑不出更多。
+     *
+     * ── 為什麼不可以寫死 ──────────────────────────────────────────────
+     * 從前這裡是一個手寫的 `= 5`,而抄本**不知道正本改了**。實際發生過:
+     * 一條線量到引擎給 5 個,於是把檔位砍成 3/4/5 並寫下常數 5;另一條線
+     * 同時把 `menu/page_size` 改成 9。兩邊各自都對,合起來使用者拿到的是
+     * 「畫面畫 9 個、設定列卻顯示 5 個,碰一下就永久鎖在 5、回不到 9」——
+     * 而底下那條守著檔位的測試**不會紅**,因為 3/4/5 確實都 ≤ 9。
+     *
+     * ⚠ 第三方方案可以在自己的 schema 裡覆寫 `menu/page_size`。那時這個常數
+     *   說的是「隨附資料的預設」,不是那個方案的實際值。後果是良性的:
+     *   `take(cap)` 拿到比較少的候選,不錯位也不當掉 —— 「選了 9 但這個方案
+     *   只給得出 5」與從前那個「選了 9 而**任何**方案都只給 5」不是同一件事。
+     *   為什麼不改成執行期問引擎,理由寫在 build.gradle.kts 那一段。
      */
-    const val ENGINE_PAGE_SIZE = 5
+    const val ENGINE_PAGE_SIZE = ENGINE_PAGE_SIZE_FROM_DATA
 
     /**
-     * ── 這裡本來有 7 / 9 / 不限三檔，而它們**按了沒反應** ──────────────────
-     * 引擎一頁就 [ENGINE_PAGE_SIZE] 個（實測 emulator-5558：`zongguo` 回
-     * 「候選 5 個 (page 0)」），前端 `take(cap)` 再怎麼放寬也只有 5 個。
-     * 於是使用者把「一次顯示幾個」從 5 調到 7、9、不限，畫面**一模一樣** ——
-     * 那正是本專案抓過五次的「看得到但摸不到」，只是換成設定項的形式。
+     * ── 這幾檔曾經被砍掉,而砍的理由在資料改了之後就不成立了 ────────────
+     * 批 1 量到引擎一頁只給 5 個,7 / 9 / 不限三檔**按了沒反應**,於是砍成
+     * 3/4/5。那個判斷在當時是對的。候選詞那條線隨後把 `menu/page_size`
+     * 改成 9 —— 引擎真的給得出 9 個了,砍掉的理由就沒了,而檔位沒有跟著回來。
      *
-     * **一個按了沒反應的設定比沒有這個設定更糟**：它讓使用者以為問題出在
-     * 別的地方，然後去別的地方找。所以先拿掉；等 `page_size` 真的接上
-     * （批 2 的 G03，要走 coordination 改 `core/data/`）再放回來。
+     * 現在檔位跟著 [ENGINE_PAGE_SIZE] 走:
      *
-     * 三檔都 ≤ [ENGINE_PAGE_SIZE]，而且每一檔真的畫得出不同的數量。
+     *   · 每一檔都 ≤ [ENGINE_PAGE_SIZE],所以每一檔都真的畫得出不同的數量
+     *     ——「一個按了沒反應的設定比沒有這個設定更糟」那條規矩仍然在。
+     *   · **最後一檔正好等於 [ENGINE_PAGE_SIZE]**,所以引擎給得出來的
+     *     使用者一定選得到。只守「≤」的話,`page_size` 調大之後最後一檔會
+     *     安靜地留在舊值,而畫面上看不出任何異常 —— 那是同一個缺陷的鏡像。
+     *     `EnginePageSizeTest` 兩邊都釘住。
+     *
+     * ⚠ **這裡刻意寫成字面值,不是 `listOf(3, 5, 7, ENGINE_PAGE_SIZE)`。**
+     *   寫成後者的話「最後一檔等於引擎那一頁」永遠成立,那條測試就變成
+     *   套套邏輯 —— 而畫面上的標籤(三份 `strings.xml` 的
+     *   `levels_candidate_count`)是**靜態字串**,不會跟著浮動。
+     *   `page_size` 哪天變成 11,值會變成 11 而標籤還寫著「9 個」,
+     *   使用者看到的仍然是一個對他說謊的設定列。
+     *
+     *   字面值 + `EnginePageSizeTest` 的等式,`page_size` 一改就紅,
+     *   而紅的訊息會說「檔位與三份 strings.xml 要一起改」。
+     *   數字要在兩個地方出現,那就讓測試逼它們一致,不要讓其中一邊安靜地漂。
+     *
+     * 「不限」沒有跟著回來:`max_visible: 0` 畫出來就是一整頁,與最後一檔
+     * (正好一整頁)在畫面上是同一件事,而「不限」會讓使用者以為還能更多。
      */
-    val CANDIDATE_COUNT_LABELS = listOf("3 個", "4 個", "5 個")
-    private val CANDIDATE_COUNTS = listOf(3, 4, 5)
+    val CANDIDATE_COUNT_LABELS = listOf("3 個", "5 個", "7 個", "9 個")
+    private val CANDIDATE_COUNTS = listOf(3, 5, 7, 9)
 
     fun indexOfCandidateCount(prefs: UserPrefs, baseCount: Int): Int {
         val n = prefs.candidateCount ?: baseCount
-        // n <= 0 是主題的「有多少畫多少」（`max_visible: 0`），實際就是一整頁；
-        // n >= 5 含**舊版存下來的 7 / 9**，那些值現在一律落在最後一檔 ——
-        // 它們本來畫出來的也就是 5 個，所以這不是把使用者的選擇改掉，
-        // 是把一個從來沒生效過的數字顯示成它實際的樣子。
+        // n <= 0 是主題的「有多少畫多少」（`max_visible: 0`），實際就是一整頁,
+        // 而一整頁正好是最後一檔。n 比最後一檔還大(舊版存下來的 99、或第三方
+        // 主題寫了一個大數)也落在最後一檔:那是它實際畫得出來的樣子。
         if (n <= 0 || n >= CANDIDATE_COUNTS.last()) return CANDIDATE_COUNTS.size - 1
         return nearest(CANDIDATE_COUNTS.map { it.toFloat() }, n.toFloat())
     }

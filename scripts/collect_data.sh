@@ -65,10 +65,19 @@ take rime-prelude default.yaml key_bindings.yaml punctuation.yaml symbols.yaml
 #
 # 為什麼是 9（不是抄競品，理由三條）：
 #
-#   1. **這個產品自己早就說是 9。** 設定頁的「一次顯示幾個字」是
-#      3 / 5 / 7 / 9 / 不限（PrefLevels.CANDIDATE_COUNTS），9 是使用者選得到
-#      的最大值；而底下的引擎只給 5 —— 選 7 或 9 的人拿到的還是 5，
-#      畫面上看不出任何差別。先讓資料與產品自己的說法一致。
+#   1. ⚠ **這一條原本寫的是「這個產品自己早就說是 9 —— 設定頁的『一次顯示
+#      幾個字』是 3/5/7/9/不限，9 是使用者選得到的最大值」。那句話已經撤掉，
+#      因為它同時是假的、而且本來就不該當理由。**
+#
+#      · **假的。** 批 1（G07）量到 7 / 9 / 不限三檔按了沒反應（引擎那時
+#        真的只給 5），把檔位砍成了 3 / 4 / 5。兩批併起來之後，「設定頁最大
+#        是 9」不成立 —— 最大是 5。
+#      · **不該當理由。** 設定頁的檔位**現在是從這一行產生的**：
+#        page_size → generateEnginePageSize（android/app/build.gradle.kts）
+#        → PrefLevels.ENGINE_PAGE_SIZE → 檔位清單。
+#        拿它回頭證明它自己是繞一圈的循環論證，兩邊會一起漂而沒有人發現。
+#
+#      撐住 9 的是底下的 2 與 3，那兩條都與設定頁無關。
 #   2. **9 是「每一個候選都還叫得出名字」的上界。** 候選列每一項都印著序號，
 #      無障礙也照著念（「候選字第 3 個」）。librime 預設的 select_keys 是
 #      `1234567890` 十個字；第 11 個之後 core/src/rime_shell.cc 的 pick_label
@@ -93,7 +102,7 @@ if ! grep -qE '^  page_size: 5$' "$OUT_SHARED/default.yaml"; then
 fi
 sed -i 's/^  page_size: 5$/  page_size: 9/' "$OUT_SHARED/default.yaml"
 grep -qE '^  page_size: 9$' "$OUT_SHARED/default.yaml" || die "page_size 沒有改成 9"
-note "menu/page_size: 5 → 9（上游是桌面預設，本產品的設定頁最大值就是 9）"
+note "menu/page_size: 5 → 9（上游是桌面預設；9 = 序號還叫得出名字的上界，且量得出畫得完）"
 
 echo "=== 2. 語言模型（rime-essay）==="
 take rime-essay essay.txt

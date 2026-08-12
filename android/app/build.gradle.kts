@@ -27,8 +27,14 @@ val rimeJniClass: String = providers.gradleProperty("rime.jniClass").get()
 // 兩類都走同一條 Sync 任務進 build/ 底下的 generated assets 目錄，
 // 產生物留在產生物該在的地方。
 //
-// 沒跑過 collect_data.sh 的機器一樣建置得起來，只是 APK 內沒有 schema，
-// 執行期 librime 部署會失敗；下面的 doFirst 會先警告。
+// ⚠ **沒跑過 collect_data.sh 的機器現在建置不起來**（從前只是警告）。
+//   擋下來的是 `generateEnginePageSize`：設定頁那個「一次顯示幾個候選」的
+//   上限要從 `core/data/shared/default.yaml` 的 `menu/page_size` 產生，缺那份
+//   資料就無從得知。給一個猜出來的預設值，正是上一次讓設定頁對使用者說謊的
+//   做法（理由寫在那支任務的檔頭）。
+//   而且那樣的 APK 本來就一個方案都沒有、一個字都打不出來 —— 從前那條
+//   「警告一聲照樣出一份壞掉的 APK」的路，本身就是本專案再三提防的形狀。
+//   底下 syncRimeData 的 doFirst 仍然留著警告：它先跑，訊息比較具體。
 // ─────────────────────────────────────────────────────────────────────────────
 val rimeRepoRoot = layout.projectDirectory.dir("../..")
 val rimeSharedData = rimeRepoRoot.dir("core/data/shared")
@@ -143,6 +149,115 @@ val stampRimeData = tasks.register("stampRimeData") {
         out.parentFile.mkdirs()
         out.writeText(hex)
         logger.lifecycle("[rime] shared 摘要 $hex")
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 引擎一頁給幾個候選 —— 從隨附資料產生，不准手寫
+//
+// `PrefLevels.ENGINE_PAGE_SIZE` 從前是一個手寫的 `= 5`。它是設定頁那個
+// 「一次顯示幾個候選」的上限：引擎一頁只給這麼多，前端的 `max_visible`
+// 只能從那一頁裡挑得更少，挑不出更多。
+//
+// ── 為什麼不可以是手寫的常數 ────────────────────────────────────────────
+// 那個 5 抄自 `core/data/shared/default.yaml` 的 `menu/page_size`，而抄本
+// **不知道正本改了**。實際發生過：一條線量到引擎給 5 個，於是把檔位砍成
+// 3/4/5 並寫下常數 5；另一條線同時把 `menu/page_size` 改成 9。兩邊各自
+// 都對，合起來使用者拿到的是「畫面畫 9 個、設定列顯示 5 個，碰一下就永久
+// 鎖在 5」——而守著檔位的那條測試不會紅，因為 3/4/5 確實都 ≤ 9。
+//
+// ── 為什麼是建置期產生，不是執行期問引擎 ────────────────────────────────
+// 「執行期問引擎」看起來更準（第三方方案可以在自己的 schema 裡覆寫
+// `menu/page_size`），但那條路解不掉這個問題：
+//
+//   · **這個數字要在兩個行程裡用。** 設定頁在 App 行程（SettingsPages），
+//     鍵盤上的就地編輯器在輸入法行程。App 那邊沒有、也不該有一個活著的
+//     rime session —— 為了問一個整數去部署一次引擎，是拿數秒的啟動換一個
+//     開機就知道的常數。
+//   · **檔位清單會在使用者腳下變形。** 檔位的標籤是 strings.xml 裡的靜態
+//     字串陣列（三個語系各一份，StringCatalogTest 釘住長度）。跟著當前方案
+//     浮動的話，換一次方案設定頁就少一格或多一格。
+//   · **測不到。** 這一輪的教訓正是「守門是綠的而產品是壞的」。純建置期的
+//     常數才守得住 —— 見 EnginePageSizeTest。
+//
+// 第三方方案宣告了更小的 `page_size` 時，`take(cap)` 自然拿到比較少的候選，
+// 不會錯位、不會當掉；那是「選了 9 但這個方案只給得出 5」，與從前那個
+// 「選了 9 而**任何**方案都只給 5」不是同一件事。已記在
+// docs/coordination.md §5。
+//
+// ⚠ **讀不到就爆，不給預設值。** 「拿一個看起來合理的數字繼續」正是這一輪
+//   在修的那個缺陷本身。`scripts/collect_data.sh` 覆寫這個鍵時用的也是同一
+//   條規矩（改不到就 die）。
+// ─────────────────────────────────────────────────────────────────────────────
+val rimeSharedDefaultYaml = rimeRepoRoot.file("core/data/shared/default.yaml")
+val rimeGeneratedSrc = layout.buildDirectory.dir("generated/rimeEnginePageSize")
+
+/**
+ * 從 `default.yaml` 讀出**頂層** `menu:` 底下的 `page_size`。
+ *
+ * 刻意不是 `grep page_size`：同一份資料裡 `stroke.schema.yaml` 也有一個
+ * `page_size`，而方案自己的那一個與 default 的預設不是同一件事。
+ */
+fun parseMenuPageSize(f: File): Int {
+    var inMenu = false
+    for (line in f.readLines()) {
+        val trimmed = line.trim()
+        if (trimmed.isEmpty() || trimmed.startsWith("#")) continue
+        if (!line[0].isWhitespace()) {
+            inMenu = line.trimEnd().removeSuffix(":") == "menu"
+            continue
+        }
+        if (!inMenu) continue
+        if (trimmed.startsWith("page_size:")) {
+            val v = trimmed.removePrefix("page_size:").trim().toIntOrNull()
+            if (v != null && v > 0) return v
+        }
+    }
+    throw GradleException(
+        "在 ${f.absolutePath} 裡找不到頂層 menu/page_size。\n" +
+            "上游可能改了鍵名。確認之後同時更新 scripts/collect_data.sh 的覆寫" +
+            "與這裡的解析 —— 不要改成給一個預設值,那正是這一段存在的理由。"
+    )
+}
+
+val generateEnginePageSize = tasks.register("generateEnginePageSize") {
+    description = "把 core/data/shared/default.yaml 的 menu/page_size 產生成 Kotlin 常數"
+    val src = rimeSharedDefaultYaml
+    val outDir = rimeGeneratedSrc
+    // ⚠ `inputs.files(...)` 而不是 `inputs.file(...)`。後者會在**任務開始前**
+    //   做存在性驗證,於是檔案不在的時候使用者拿到的是 Gradle 那句
+    //   「Property '$1' specifies file ... which doesn't exist」——
+    //   一句不告訴他該跑什麼的訊息。用 FileCollection 就允許不存在,
+    //   由底下的 doLast 給出那句「先跑 scripts/collect_data.sh」。
+    inputs.files(src).withPathSensitivity(PathSensitivity.RELATIVE)
+        .withPropertyName("sharedDefaultYaml")
+    outputs.dir(outDir)
+    doLast {
+        val f = src.asFile
+        if (!f.isFile) {
+            throw GradleException(
+                "找不到 ${f.absolutePath}。\n" +
+                    "先跑 scripts/collect_data.sh —— 沒有那份資料,APK 裡一個方案都" +
+                    "沒有,而且「引擎一頁給幾個」無從得知。\n" +
+                    "這裡刻意不退回一個預設值:一個猜出來的常數正是上一次讓" +
+                    "設定頁對使用者說謊的東西。"
+            )
+        }
+        val n = parseMenuPageSize(f)
+        val out = outDir.get().file("org/luminakey/ime/prefs/EnginePageSize.kt").asFile
+        out.parentFile.mkdirs()
+        out.writeText(
+            """
+            // 產生的檔案 —— 不要手改,改了下一次建置就會被蓋掉。
+            // 來源:core/data/shared/default.yaml 的 menu/page_size
+            // 產生者:android/app/build.gradle.kts 的 generateEnginePageSize
+            package org.luminakey.ime.prefs
+
+            /** 引擎一頁給幾個候選。見 [PrefLevels.ENGINE_PAGE_SIZE]。 */
+            internal const val ENGINE_PAGE_SIZE_FROM_DATA: Int = $n
+            """.trimIndent() + "\n"
+        )
+        logger.lifecycle("[rime] 引擎一頁 $n 個候選(來自 core/data/shared/default.yaml)")
     }
 }
 
@@ -384,12 +499,19 @@ android {
     // 摘要走**另一個** srcDir，不寫進 syncRimeData 的目的地:Sync 會刪掉
     // 目的地裡不屬於它的檔案，摘要放進去每次建置都會被刪掉再寫回來。
     sourceSets.getByName("main").assets.srcDir(rimeAssetStamp)
+    // 引擎一頁幾個候選:產生出來的常數當成一份 main 原始碼。
+    sourceSets.getByName("main").java.srcDir(rimeGeneratedSrc)
 }
 
 // assets 合併之前必須先同步完資料。
 tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }
     .configureEach { dependsOn(syncRimeData, stampRimeData) }
-tasks.named("preBuild") { dependsOn(syncRimeData, stampRimeData) }
+tasks.named("preBuild") { dependsOn(syncRimeData, stampRimeData, generateEnginePageSize) }
+// Kotlin 編譯要等常數產生出來。掛 preBuild 不夠:AGP 的 compile 任務不保證
+// 排在它後面,而漏掉的症狀是「第一次建置找不到 ENGINE_PAGE_SIZE_FROM_DATA,
+// 第二次就好了」——那種偶發失敗最難查。
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>()
+    .configureEach { dependsOn(generateEnginePageSize) }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 單元測試也吃 core/layouts 與 core/themes
@@ -436,6 +558,13 @@ tasks.withType<Test>().configureEach {
     inputs.file(rimeThemeFormatSpec)
         .withPathSensitivity(PathSensitivity.RELATIVE)
         .withPropertyName("rimeThemeFormatSpec")
+    // core/data/shared/default.yaml 同理。EnginePageSizeTest 當場讀它的
+    // menu/page_size,拿去跟 PrefLevels.ENGINE_PAGE_SIZE 比對。不宣告成輸入的
+    // 話,「只改了 page_size」的那一次會判 UP-TO-DATE —— 而那正是這條測試
+    // 唯一該跑的時候。這一整段的教訓就是這麼來的。
+    inputs.file(rimeSharedDefaultYaml)
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+        .withPropertyName("rimeSharedDefaultYaml")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -93,14 +93,31 @@ class PrefLevelsTest {
     /**
      * 主題的「有多少畫多少」（`max_visible: 0`）落在最後一檔。
      *
-     * 那一檔以前叫「不限」，現在叫「5 個」—— 因為引擎一頁就是 5 個，
-     * 「不限」與「5 個」在畫面上是同一件事，而前者會讓使用者以為還能更多。
+     * 「不限」這個**名字**沒有回來:`max_visible: 0` 畫出來就是一整頁,而
+     * 一整頁正好是最後一檔,兩者在畫面上是同一件事 —— 而「不限」會讓使用者
+     * 以為還能更多。
+     *
+     * ⚠ 這一條就是那個真實缺陷的守門。合併之後預設仍然是「不限」(0),
+     *   但檔位只到 5,於是設定列**顯示成「5 個」**而畫面上其實有 9 個;
+     *   使用者只要碰它一下就寫進 5,永久鎖住、回不到 9。
+     *   最後一檔等於一整頁,這條路才走得通,所以這裡拿
+     *   [PrefLevels.ENGINE_PAGE_SIZE] 當基準,不是寫死的數字。
      */
     @Test
     fun unlimitedCandidateCountIsTheLastStep() {
         val last = PrefLevels.CANDIDATE_COUNT_LABELS.size - 1
         assertEquals(last, PrefLevels.indexOfCandidateCount(UserPrefs(), baseCount = 0))
-        assertEquals(last, PrefLevels.indexOfCandidateCount(UserPrefs(), baseCount = 5))
+        assertEquals(
+            last,
+            PrefLevels.indexOfCandidateCount(UserPrefs(), baseCount = PrefLevels.ENGINE_PAGE_SIZE),
+        )
+        // 而「碰一下」之後存進去的值,必須就是它本來畫得出來的那個數量 ——
+        // 不可以比原本少。這一步是使用者實際會做的動作。
+        assertEquals(
+            "碰一下設定列就把候選數調降了,而使用者沒有要求任何改變",
+            PrefLevels.ENGINE_PAGE_SIZE,
+            PrefLevels.withCandidateCount(UserPrefs(), last).candidateCount,
+        )
     }
 
     /* ── 死檔位：一個按了沒反應的設定比沒有這個設定更糟 ── */
@@ -108,12 +125,15 @@ class PrefLevelsTest {
     /**
      * **每一檔都必須畫得出不同的數量。**
      *
-     * 改動前這裡有 3 / 5 / 7 / 9 / 不限五檔，而引擎一頁只給
-     * [PrefLevels.ENGINE_PAGE_SIZE] 個（`core/data/shared/default.yaml` 的
-     * `menu/page_size: 5`；實測 emulator-5558 打 `zongguo` 回「候選 5 個」）。
-     * 於是 7 / 9 / 不限三檔按下去畫面**一模一樣** —— 三個死檔位。
+     * 這裡一度有 3 / 5 / 7 / 9 / 不限五檔，而當時引擎一頁只給 5 個
+     * （`core/data/shared/default.yaml` 的 `menu/page_size: 5`）。
+     * 於是 7 / 9 / 不限三檔按下去畫面**一模一樣** —— 三個死檔位,砍成 3/4/5。
      *
-     * 這一條同時是那三檔的墓碑：把它們加回來就會紅。
+     * 資料後來把 `page_size` 改成 9,砍掉的理由就沒了。所以這一條守的不是
+     * 某一組數字,是**那條關係**:每一檔都必須落在引擎那一頁之內。
+     * 上限跟著 [PrefLevels.ENGINE_PAGE_SIZE] 走,而那個常數跟著資料走。
+     *
+     * 「最後一檔正好等於引擎那一頁」由 [EnginePageSizeTest] 守另一半。
      */
     @Test
     fun everyCandidateCountStepChangesSomething() {
@@ -127,19 +147,43 @@ class PrefLevelsTest {
                 cap != null && cap in 1..PrefLevels.ENGINE_PAGE_SIZE,
             )
         }
+        // 檔位要遞增。亂序的話「往右調 = 更多」這個唯一的線索就沒了。
+        assertEquals("檔位必須由小到大", caps.filterNotNull().sorted(), caps.filterNotNull())
     }
 
-    /** 舊使用者存過的 7 / 9 / 0 不會讓面板指到一個不存在的檔位。 */
+    /**
+     * 大於一整頁的舊值落在最後一檔。
+     *
+     * ⚠ 這裡**刻意不再包含 7**。7 現在是一個真的檔位（引擎一頁給 9 個），
+     * 舊使用者存的 7 應該回到「7 個」那一格,而不是被推到最後一檔 ——
+     * 把他選過的數字改掉,和從前那個「顯示成一個從來沒生效過的數字」
+     * 是同一類謊,只是方向相反。7 的落點由
+     * [legacyCandidateCountSevenIsARealStepAgain] 守。
+     */
     @Test
     fun legacyCandidateCountsLandOnTheLastStep() {
         val last = PrefLevels.CANDIDATE_COUNT_LABELS.size - 1
-        for (old in listOf(0, 7, 9, 99)) {
+        for (old in listOf(0, PrefLevels.ENGINE_PAGE_SIZE, 99)) {
             assertEquals(
                 "舊值 $old 應該落在最後一檔",
                 last,
                 PrefLevels.indexOfCandidateCount(UserPrefs(candidateCount = old), baseCount = 0),
             )
         }
+    }
+
+    /**
+     * 批 1 把 7 / 9 砍掉時，舊使用者存的 7 被推到最後一檔（當時是「5 個」）。
+     * 引擎一頁變成 9 個之後 7 又畫得出來了，那些人應該拿回自己選過的數字。
+     */
+    @Test
+    fun legacyCandidateCountSevenIsARealStepAgain() {
+        val i = PrefLevels.indexOfCandidateCount(UserPrefs(candidateCount = 7), baseCount = 0)
+        assertEquals(
+            "存過 7 的使用者應該看到「7 個」,而且它真的畫得出 7 個",
+            7,
+            PrefLevels.withCandidateCount(UserPrefs(), i).candidateCount,
+        )
     }
 
     @Test

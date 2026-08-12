@@ -185,8 +185,9 @@
     </string-array>
     <string-array name="levels_candidate_count">
         <item>3 個</item>
-        <item>4 個</item>
         <item>5 個</item>
+        <item>7 個</item>
+        <item>9 個</item>
     </string-array>
     <string-array name="levels_candidate_size">
         <item>小</item>
