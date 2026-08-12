@@ -38,7 +38,7 @@
 # 檢查兩分鐘就跑完。全部綁在一起的結果是「太慢所以只在發版前跑」,
 # 那等於沒有。所以拆開:快的每次 push 跑,慢的推上 main 或手動觸發時跑。
 #
-# **拆開不等於拿掉。** 兩條車道加起來必須仍是原本那 16 項:
+# **拆開不等於拿掉。** 兩條車道加起來必須仍是全部的關卡(數字見檔尾的下界):
 #   --skip-emu → 第 0–4 關(含 3b、3c)  --emu-only → 第 5–7 關
 # 而且 --emu-only 會在結尾明白列出它**沒有**驗的那幾關,免得有人拿慢車道
 # 的綠燈當成「發布關卡通過」。發布必須兩條都綠(見 .github/workflows/build.yml
@@ -81,6 +81,8 @@ if [ "$SKIP_EMU" -eq 1 ] && [ "$EMU_ONLY" -eq 1 ]; then
 fi
 
 mkdir -p "$OUT"
+# 每一輪重寫。留著上一輪的內容 = 缺口修好了報告上還印著它。
+: > "$OUT/known-gaps.md"
 
 # build-tools 的版本不寫死。本機是 35.0.0，CI runner 上不保證 ——
 # 寫死的結果是這支腳本在別的機器上第一步就死，而「只有那一台機器驗得了」
@@ -109,6 +111,70 @@ skip() {
     · $*"
   fi
 }
+
+# ── 第三種結果:[WARN] ────────────────────────────────────────────────
+#
+# 有一類關卡說的是實話,而那句實話是「我們還沒做」——「這一版沒有語言模型」
+# 就是。它不是這一次發布搞壞的東西,是一件本來就還沒做完的事。
+#
+# 判成失敗的話整條車道會停:release_check.sh 在 build.yml 的 `fast` job 裡,
+# 而 `publish` 的 needs: 掛著 fast —— 每一次 push 都紅、任何一版都發不出去,
+# 直到那件事做完。判成通過的話,就回到這支腳本存在的原因:假綠燈。
+#
+# 所以 [WARN] 是第三種結果,而且**警告自己要被守著**:只有登記在
+# scripts/lib/known_gaps.tsv(有工單、有到期日)的缺口才准是警告,
+# 過期就真的紅,沒登記的一律紅。見底下的 gap()。
+#
+# ⚠ 為什麼 --strict 不把 WARN 當成失敗(它把 SKIP 當成失敗)。
+#   兩者不是同一件事:SKIP 是「這一關**沒有驗**」,在 CI 上等於沒有訊號;
+#   WARN 是「驗過了,結論是我們還沒做,而且那件事有名字、有人、有期限」。
+#   把後者也判紅就是回到卡死車道那條路。
+WARN=0
+WARNED=""
+warn() {
+  echo "  [WARN] $*"
+  WARN=$((WARN+1))
+  WARNED="$WARNED
+    · $*"
+  printf '%s\n\n' "$*" >> "$OUT/known-gaps.md"
+}
+
+# 已知缺口清冊。格式與規則見該檔檔頭。
+GAPS_FILE="$ROOT/scripts/lib/known_gaps.tsv"
+GAPS_USED=""
+
+# gap <id> <一句話>
+#
+# 「這件事我們還沒做」。登記過而且沒過期 → [WARN];否則 → [FAIL]。
+gap() {
+  local id="$1" msg="$2" line until ticket today
+  GAPS_USED="$GAPS_USED $id"
+  line="$(awk -F'\t' -v want="$id" '$1==want{print;exit}' "$GAPS_FILE" 2>/dev/null || true)"
+  if [ -z "$line" ]; then
+    bad "$msg
+    —— 而 scripts/lib/known_gaps.tsv 裡沒有登記 '$id'。
+       已知缺口必須先登記(工單 + 到期日)才准只是警告,否則它就是一個
+       沒有人負責、也不會過期的綠燈。"
+    return
+  fi
+  until="$(printf '%s' "$line" | cut -f2)"
+  ticket="$(printf '%s' "$line" | cut -f3)"
+  case "$until" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+    *) bad "known_gaps.tsv 的 '$id' 到期日不是 YYYY-MM-DD:$until"; return ;;
+  esac
+  today="$(date -u +%F)"
+  if [ "$today" ">" "$until" ]; then
+    bad "$msg
+    —— 而且 '$id' 的豁免在 $until 就過期了(工單 $ticket)。
+       要嘛把它做完,要嘛改 known_gaps.tsv 的到期日並在 commit 訊息裡說為什麼。
+       不改而讓它一直是警告,就是把「還沒做」變成永久狀態。"
+    return
+  fi
+  warn "$msg
+      (已知缺口 '$id',工單 $ticket,豁免到 $until 為止 —— 過期之後這一關會真的紅)"
+}
+
 CURRENT_STEP=""
 step() { CURRENT_STEP="$*"; echo; echo "=== $* ==="; }
 
@@ -428,46 +494,103 @@ EOF_SHAPE
   N_YAML="$(printf '%s\n' "$LIST" | grep -c 'assets/rime/.*\.yaml' || true)"
   [ "$N_YAML" -gt 0 ] && ok "隨附 $N_YAML 份 yaml" || bad "assets 裡沒有任何 yaml"
 
-  # ── 這一關以前是「永遠綠」的，而且它宣稱的東西我們根本沒有 ────────────
+  # ── 語言模型:兩級,而且兩級的分界線是「有沒有人宣稱做了」 ──────────────
   #
-  # 舊寫法：`has "essay" "$LIST" && ok "含語言模型"`。
-  # 它問的是「APK 的檔案清單裡有沒有出現字串 essay」，而
-  # `assets/rime/shared/essay.txt` 一定在裡面 —— 所以那一關**永遠是綠的**，
-  # 從第一天到現在沒有紅過一次。這正是同一支腳本 :400-410 那段註解自己
-  # 警告過的寫法（`grep 名字` 掃整個檔案 = 名字在別處出現一次就永遠綠）。
+  # 這一關以前是**永遠綠**的:`has "essay" "$LIST" && ok "含語言模型"` 問的是
+  # 「APK 的檔案清單裡有沒有出現字串 essay」,而 assets/rime/shared/essay.txt
+  # 一定在裡面 —— 從第一天到現在沒有紅過一次。而且它綠得**不對**:essay.txt 是
+  # 詞典編譯期的靜態詞頻表(`〇\t981` 這種一行一詞的字頻),不是語言模型。
+  # 真正的語言模型是 librime-octagram 的 `.gram` 檔,而本專案(2026-08-13 實測):
   #
-  # 更糟的是它綠得**不對**：`essay.txt` 是詞典編譯期的**靜態詞頻表**
-  # （`〇\t981` 這種一行一詞的字頻），不是語言模型。真正的語言模型是
-  # librime-octagram 的 `.gram` 檔，而本專案：
+  #   · nm -C third_party/prebuilt/<abi>/lib/librime.a | grep -c octagram → 0
+  #     (x86_64 與 arm64-v8a 都是 0,octagram 根本沒有被編進去)
+  #   · core/data/shared/grammar.yaml 不存在,任何 .gram 也不存在
+  #   · 方案裡的 `__patch: - grammar:/hant?` 結尾那個 `?` 是「找不到就靜默略過」
   #
-  #   · `nm -C third_party/prebuilt/<abi>/lib/librime.a | grep -c octagram`
-  #     → **0**（x86_64 與 arm64-v8a 都是 0，octagram 根本沒有被編進去）
-  #   · `core/data/shared/grammar.yaml` **不存在**，任何 `.gram` 也不存在
-  #   · 方案裡的 `__patch: - grammar:/hant?` 結尾那個 `?` 是「找不到就靜默
-  #     略過」—— 所以缺檔連一行警告都不會有
+  # 三個環節做了零個,而關卡說做完了。
   #
-  # 三個環節做了零個，而關卡說做完了。
+  # ── 為什麼不是直接判紅 ────────────────────────────────────────────────
+  # 因為那會**卡死整條發布車道**:這支腳本在 build.yml 的 `fast` job 裡(每次
+  # push 都跑),而 `publish` 的 needs: 掛著 fast。判紅 = 在有人把
+  # librime-octagram 編進去、並隨附幾十 MB 的 .gram 之前,一版都發不出去。
+  # 那不是「說實話」,那是把一件還沒排到的工作變成停機。
   #
-  # 現在改成驗**真的東西**：APK 裡有沒有語言模型檔（`.gram` / `grammar.yaml`）。
-  # 沒有就是紅的 —— 而且紅得有話說：這一版沒有語言模型，長句組字只能靠
-  # 詞頻，那是一件使用者感覺得到的事（`enable_sentence` 的效果會差很多），
-  # 不該被一句假的「含語言模型」蓋掉。
+  # 所以拆成兩級,分界線是**有沒有人宣稱做了**:
   #
-  # ⚠ 要讓它變綠，正確的作法是把 librime-octagram 編進去並隨附 `.gram`，
-  #   **不是**把判準改回檔名比對。
+  #   · 沒有語言模型,也沒有任何地方宣稱有 → [WARN],登記在 known_gaps.tsv,
+  #     有工單、有到期日,過期就真的紅。發布報告(build/release-check/
+  #     known-gaps.md)會原樣帶著這句話。
+  #   · **宣稱有、實際沒有** → [FAIL]。那是壞掉,不是還沒做:方案硬性依賴
+  #     grammar 卻缺檔,librime 部署時會出錯;repo 裡有 .gram 卻沒進 APK,
+  #     那是打包漏了。兩種都會讓使用者拿到一份跑不起來或悄悄退化的東西。
   N_GRAM="$(printf '%s\n' "$LIST" | grep -cE 'assets/rime/.*(\.gram$|grammar\.yaml$)' || true)"
   if [ "${N_GRAM:-0}" -gt 0 ]; then
-    ok "含語言模型（$N_GRAM 個 .gram / grammar.yaml）"
+    ok "含語言模型($N_GRAM 個 .gram / grammar.yaml)"
   else
-    bad "缺語言模型：APK 裡沒有任何 .gram 或 grammar.yaml。
-    （essay.txt 不算 —— 那是詞典編譯期的靜態詞頻表，不是語言模型；
-      librime.a 的 octagram 符號數是 0，schema 的 \`grammar:/hant?\` 找不到就靜默略過）"
+    # (a) 方案宣告了**硬性**的 grammar 依賴(結尾沒有 `?` = 找不到就出錯)
+    CLAIM_HARD="$(grep -rn -- '- grammar:' "$ROOT/core/data" 2>/dev/null | grep -v '?[[:space:]]*$' || true)"
+    # (b) repo 裡真的有語言模型檔,卻沒有被打包進去 = 打包漏了
+    CLAIM_ONDISK="$(find "$ROOT/core/data" \( -name '*.gram' -o -name 'grammar.yaml' \) 2>/dev/null | head -5 || true)"
+    if [ -n "$CLAIM_HARD" ] || [ -n "$CLAIM_ONDISK" ]; then
+      bad "宣稱有語言模型,APK 裡卻一個 .gram / grammar.yaml 都沒有:
+${CLAIM_HARD:+
+      · 方案宣告了硬性的 grammar 依賴(結尾少了 '?',缺檔時 librime 會出錯):
+$CLAIM_HARD}${CLAIM_ONDISK:+
+      · repo 裡有語言模型檔,卻沒有被打包進 APK(打包漏了):
+$CLAIM_ONDISK}"
+    else
+      gap "language_model" "這一版沒有語言模型:APK 裡沒有任何 .gram 或 grammar.yaml。
+      長句組字只能靠詞頻表,enable_sentence 的效果會比有語言模型時差很多。
+      (essay.txt 不算 —— 那是詞典編譯期的靜態詞頻表)"
+    fi
   fi
-  # 詞頻表本身仍然是必要的（少了它候選排序會整個亂掉），只是它的名字不叫
-  # 語言模型。這一條是新增的正控，不是把舊斷言改個字。
+  # 詞頻表本身仍然是必要的(少了它候選排序會整個亂掉),只是它的名字不叫
+  # 語言模型。這一條是新增的正控,不是把舊斷言改個字。
   has "essay.txt" "$LIST" && ok "含詞頻表 essay.txt" || bad "缺詞頻表 essay.txt"
 else
   bad "找不到 APK"
+fi
+
+# ── 4b. 已知缺口清單自己要被守 ─────────────────────────────────────────────
+#
+# 一份「可以是警告」的清單,如果沒有人檢查它,就是一份永久豁免名單。
+# 這一關反過來問兩件事:
+#
+#   · 清單上的每一條,這一輪**真的有關卡用到它**嗎?沒有用到 = 那件事已經
+#     做完了(關卡轉綠),豁免卻還留著 —— 判紅,逼人把它刪掉。
+#   · 格式壞掉(欄位不足)也判紅。一行讀不出到期日的豁免等於無限期豁免。
+#
+# 過期那一條不在這裡,在 gap() 裡:過期的當場就是 [FAIL]。
+step "4b. 已知缺口清單(scripts/lib/known_gaps.tsv)"
+if [ ! -f "$GAPS_FILE" ]; then
+  bad "找不到 $GAPS_FILE —— 沒有這份清單,gap() 就沒有任何一條可以是警告"
+else
+  GAP_PROBLEMS=""
+  GAP_N=0
+  while IFS= read -r _l; do
+    case "$_l" in ''|'#'*) continue ;; esac
+    GAP_N=$((GAP_N+1))
+    _id="$(printf '%s' "$_l" | cut -f1)"
+    _until="$(printf '%s' "$_l" | cut -f2)"
+    _ticket="$(printf '%s' "$_l" | cut -f3)"
+    _why="$(printf '%s' "$_l" | cut -f4)"
+    if [ -z "$_until" ] || [ -z "$_ticket" ] || [ -z "$_why" ]; then
+      GAP_PROBLEMS="$GAP_PROBLEMS
+      · '$_id' 欄位不全(要 id/到期日/工單/說明,以 TAB 分隔)"
+      continue
+    fi
+    case " $GAPS_USED " in
+      *" $_id "*) ;;
+      *) GAP_PROBLEMS="$GAP_PROBLEMS
+      · '$_id' 登記著,但這一輪沒有任何一關用到它 —— 那件事做完了嗎?
+        做完了就把這一行刪掉;豁免留著不會有人再看第二眼。" ;;
+    esac
+  done < "$GAPS_FILE"
+  if [ -n "$GAP_PROBLEMS" ]; then
+    bad "已知缺口清單有問題:$GAP_PROBLEMS"
+  else
+    ok "已知缺口 $GAP_N 條,每一條都有工單與到期日,而且這一輪都真的被用到"
+  fi
 fi
 
 fi   # EMU_ONLY == 0
@@ -826,16 +949,30 @@ FINISHED=1   # 走到這裡代表每一關都跑完了 —— 上面的 EXIT 陷
 #     --skip-emu  15 關   --emu-only  4 關   合計 19 關
 #   第一版我把 --skip-emu 訂在 11,結果把 3c 整關刪掉之後總數 12 > 11,
 #   下界沒有咬到 —— 一個訂得太鬆的下界跟沒有下界是一樣的東西。
-MIN_EMU_ONLY=4       # 第 5–7 關
-MIN_SKIP_EMU=15      # 第 0–4 關(含 3b/3c)
-MIN_FULL=19
+# ── 下界 ────────────────────────────────────────────────────────────────
+#
+# ⚠ 這幾個數字**必須跟著實跑的關卡數走**。覆核抓到過一次:快車道實跑 16 關
+#   而下界還寫著 15 —— 剛好空出一格,可以有人刪掉一整關而這道防線不會響。
+#   改關卡的人請當場重跑一次對應的車道,把印出來的「通過+失敗+警告+略過」
+#   填回來,不要用估的。
+#
+#   2026-08-13 三條車道都實跑過一次(emulator-5558):
+#     --skip-emu --strict  通過 16、失敗 0、警告 1、略過 0  = 17 關
+#     --emu-only           通過  6、失敗 0、警告 0、略過 1  =  7 關
+#     完整                 通過 22、失敗 0、警告 1、略過 1  = 24 關 = 17 + 7 ✓
+MIN_EMU_ONLY=7       # 第 5–7 關(含 5b/5c/6b/6c)。原本寫 4,比實跑少 3 關。
+MIN_SKIP_EMU=17      # 第 0–4 關(含 3b/3c/4b)。原本寫 15,比實跑少 1 關。
+# 完整車道 = 兩條車道相加,不另外手寫一個數字(手寫的第三個數字正是上面那個坑)。
+MIN_FULL=$((MIN_SKIP_EMU + MIN_EMU_ONLY))
 
 _min=$MIN_FULL
 _lane="完整"
 if [ "$EMU_ONLY" -eq 1 ]; then _min=$MIN_EMU_ONLY; _lane="--emu-only"
 elif [ "$SKIP_EMU" -eq 1 ]; then _min=$MIN_SKIP_EMU; _lane="--skip-emu"
 fi
-_ran=$((PASS + FAIL + SKIP))
+# ⚠ WARN 必須算進來。不算的話,把一關從 [FAIL] 改成 [WARN] 會讓總數 -1,
+#   於是「下界」這道防線自己被那個改動打了一個洞。
+_ran=$((PASS + FAIL + SKIP + WARN))
 if [ "$_ran" -lt "$_min" ]; then
   echo >&2
   echo "這一輪($_lane)只跑了 $_ran 關,少於下界 $_min 關。" >&2
@@ -846,10 +983,20 @@ fi
 
 echo
 echo "============================================"
-echo " 通過 $PASS 項，失敗 $FAIL 項，略過 $SKIP 項（下界 $_min，$_lane）"
+echo " 通過 $PASS 項，失敗 $FAIL 項，警告 $WARN 項，略過 $SKIP 項（下界 $_min，$_lane）"
 echo "============================================"
 if [ "$SKIP" -gt 0 ]; then
   echo "以下這幾關沒有驗到,發布前自己決定能不能接受:$SKIPPED"
+  echo
+fi
+if [ "$WARN" -gt 0 ]; then
+  echo "以下是**已知缺口** —— 驗過了,結論是我們還沒做。每一條都登記在"
+  echo "scripts/lib/known_gaps.tsv,有工單與到期日,過期之後這幾關會真的紅:$WARNED"
+  echo
+  echo "  這幾句話已經寫進 $OUT/known-gaps.md —— 那份是**發布報告**的一部分,"
+  echo "  請把它帶進這一版的發布說明裡。"
+  echo "  (刻意**不**自動塞進 version.json 的 notes:那是唯一會被舊版 app 顯示給"
+  echo "   使用者看的自由文字,寫什麼是產品決定,不該由一支關卡腳本代勞。)"
   echo
 fi
 if [ "$FAIL" -gt 0 ]; then
