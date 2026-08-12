@@ -79,6 +79,14 @@ class RimeInputMethodService : InputMethodService() {
         const val OPT_SIMPLIFICATION = VariantPlan.OPT_SIMPLIFICATION
         const val OPT_ASCII_PUNCT = "ascii_punct"
 
+        /**
+         * 字集守門的**關閉**開關（`core/data/lua/luminakey_charset.lua` 讀它）。
+         *
+         * 是否定式的：librime 沒宣告的 option 一律讀成 false，
+         * 「預設開」因此只能寫成「預設沒有關」。
+         */
+        const val OPT_CHARSET_OFF = "luminakey_charset_off"
+
         /** X11 的 space keysym。空白鍵行為偏好靠它認出空白鍵。 */
         const val KEYSYM_SPACE = 0x0020
 
@@ -570,6 +578,12 @@ class RimeInputMethodService : InputMethodService() {
             if (RimeCore.getOption(session, OPT_ASCII_PUNCT) != want) {
                 RimeCore.setOption(session, OPT_ASCII_PUNCT, want)
             }
+        }
+        // 字集守門與上面兩項相反:**未設定就是開**,所以這一項不 let,
+        // 每次都送。送出去的是否定式的 off,見 [OPT_CHARSET_OFF]。
+        val guardOff = prefs.charsetGuard == false
+        if (RimeCore.getOption(session, OPT_CHARSET_OFF) != guardOff) {
+            RimeCore.setOption(session, OPT_CHARSET_OFF, guardOff)
         }
     }
 

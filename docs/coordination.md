@@ -1433,6 +1433,14 @@ bash 端再剝一次 `\r`。(同一個檔案早就為了 cp1252 的 stdout 編�
   **守門**:這條接線在 Windows 上不是靠寫作紀律 —— `windows/audit_single_source.sh` 會數「2 個餵入點 / 3 個重置點 / 2 個看不見的輸入入口 / 6 個掛接呼叫點,都在該在的函式裡」,少一個就紅;`--self-check` 的 16 個植入裡有三個打的正是這條腿(`QueryInterface` 不認 `IID_ITfTextEditSink`、`AdviseSink` 沒呼叫、sink 從來沒掛上)。macOS 若照做,建議連守門一起照做 —— 這一格的失敗形狀是「功能看起來好好的,只是偶爾自己切一下」,靠人工回歸抓不到。`
 
 
+- `[2026-08-12] [anv] **簡繁的規範補了兩節,Windows 端等的那個裁決在裡面。** `docs/settings-model.md` 新增 §4.5.1(radio 群組的互斥由呼叫端維持)與 §4.7(字集守門),§4.6 多一條誠實欄,原 §4.7 順延為 §4.8。`
+  - `**§4.5.1 就是 Windows 端在 `windows/common/schema_choice.h` 與 `windows/README.md` 裡標記「已回報,等裁決」的那一條。** 裁決結果:Windows 的做法是對的,規範照它補。「決策照 §4.5、套用是先把同組其餘三支設 false 再設目標那一支」現在是規範性的文字,兩端可以把那些「等裁決」的註解改成引用 §4.5.1。Android 這一輪也照同一個形狀修好了(commit 3ef0784,`core/VariantPlan.kt`)。`
+  - `**§4.7 是新的共用模型,桌面兩端還沒接。** 字集守門是一個 `lua_filter`(`core/data/lua/luminakey_charset.lua`)+ 兩份字集資料,**放在 `core/data/` 隨 shared 資料散佈,四端共用同一份**,不是 Android 專屬的東西。桌面端只要(1)把 `core/data/` 那幾個檔案帶進自己的資料目錄(`scripts/collect_charset_guard.sh <shared 目錄>` 就是做這件事,它不會砍掉目錄裡的其他東西)、(2)在設定裡接一個開關送 `luminakey_charset_off`,就會有一樣的行為。判準(8105 / Big5)、「濾到空要退回」、「先轉再濾」三件事是規範性的,**不要各自挑一份字集**。`
+  - `⚠ **filter 的位置是 `engine/filters/@before last`,不是 `@next`。** uniquifier 的去重是拿「Menu 已經收下的候選」比對的,而 librime-lua 的 translation 會比 Menu 先跑一步 —— 掛在 uniquifier 後面會讓去重**靜靜失效**(實測:補充轉換表把「妳好」轉成「你好」之後,候選列出現兩個一模一樣的「你好」,而候選數仍然是 5,畫面上完全看不出哪裡不對)。任何端要再加 lua filter 都會踩到同一個坑。`
+  - `⚠ **lua 模組一定要放在 `<資料目錄>/lua/<名字>.lua`。** 放在資料目錄根層 `require` 找不到,而 librime 對 filter 載入失敗的處置是**整段候選變成空的** —— Android 接著會把 preedit 上屏,使用者打 `nihao` 得到 n-i-h-a-o。這不是「守門沒生效」,是「輸入法壞了」。`collect_charset_guard.sh` 因此在複製完之後又驗一次產物。`
+  - `[2026-08-12] [anv] 動到了兩個不屬於本線的檔案,照 §2 回報:`scripts/collect_data.sh`(協調端;只多一行呼叫 `scripts/collect_charset_guard.sh`,產出多了 `lua/` 3 檔、`opencc/luminakey_*` 4 檔與三份 `<schema>.custom.yaml`)與 `core/data/`(協調端;新增 `core/data/lua/`、`core/data/opencc/`、`core/data/schemas/luminakey_charset.custom.yaml`)。**沒有動 windows/、apple/、core/src/、core/include/。**`
+  - `[2026-08-12] [anv] ⚠ **這一版做不到絕對純度,四端的 UI 都不可以宣稱做得到**(§4.7.6)。字集之外還有字集(8105 沒有 蚵 砦 疋 糸,Big5 沒有 酶 礴 珏 堃 喆);濾到空會整段退回,那一刻使用者看到的就是不合字集的候選。真正的解法是換一本有字集約束的詞庫(task #27 的 rime-ice,實測不純率 0.09%)。**實測 `pinyin_simp` 不合格**:13.79% 詞條含表外字,比 `luna_pinyin + t2s` 還差,而且會吐出 還/開/從/難 這種真正的繁體字 —— 「換一份現成的簡體詞庫」這條路在它身上是假的。`
+
 ## 6. 各端狀態
 
 > 自己更新自己那一行。
