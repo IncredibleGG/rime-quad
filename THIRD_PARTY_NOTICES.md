@@ -17,6 +17,21 @@
 | [OpenCC](https://github.com/BYVoid/OpenCC) | 簡繁轉換 | Apache-2.0 | `third_party/librime/deps/opencc/LICENSE` |
 | [Boost](https://www.boost.org/) | 僅使用標頭檔 | BSL-1.0 | 隨下載的原始碼樹 |
 
+## 按鍵音的素材**不是**第三方
+
+`android/app/src/main/res/raw/key_*.ogg` 這 12 份按鍵音是本專案自己合成的,
+來源是 `scripts/gen_key_sounds.py`(進版控),授權跟著本專案走
+(GPL-3.0-or-later)。這裡特地寫一行,是因為「音效」這種東西預設會被當成
+外部素材去找出處 —— 這一組沒有出處要找。
+
+為什麼不去外面找一組:第三方音效素材要嘛得維護一份 attribution 檔、要嘛
+哪天授權被撤,兩種都是日後的負債。而「聽起來像鍵盤」其實只是幾條包絡線
+乘上幾個振盪器,與其去找,不如把配方寫下來。
+
+可重現性:每一個(音色, 角色)用固定的種子產生雜訊,所以 **PCM 是逐位元可重現的**;`.ogg` 的位元組取決於 libvorbis 的版本,所以
+`python3 scripts/gen_key_sounds.py --check` 比對的是解碼後的波形,不是檔案
+雜湊。任何人都能重跑一次,確認出貨的音檔沒有夾帶別的東西。
+
 ## 需要注意的兩點
 
 **1. marisa-trie 是雙授權。** 我們選用 **BSD-2-Clause** 這一支，因此不承擔
@@ -75,6 +90,28 @@ RIME 生態中的既有前端（Weasel、Squirrel、Trime、Hamster 等）多為
 
 OpenCC 的 `.ocd2` 詞典由本專案以 host 版 OpenCC 從其原始碼樹產生，
 授權同 OpenCC 本體（Apache-2.0）。
+
+### 字集守門（`core/data/lua/`、`core/data/opencc/luminakey_*`）—— 本專案自撰
+
+`luminakey_charset.lua`（過濾器）、兩張補充轉換表與產生它們的
+`scripts/gen_charset_data.py` 由本專案撰寫，授權同本專案（GPL-3.0-or-later）。
+
+兩份**字集資料**的來源要分開說：
+
+| 檔案 | 內容 | 來源 | 授權判斷 |
+|---|---|---|---|
+| `luminakey_charset_hant.lua` | Big5 收得下的 13,063 個漢字 | 由 Python 的 `big5` codec 在本機列舉產生（等同 `iconv -t BIG5`） | 字元編碼的收字範圍是**事實**，不是任何人的著作。任何人跑一次同樣的迴圈都會得到同一份 |
+| `luminakey_charset_hans.lua` | 《通用规范汉字表》的 8,181 個漢字 | 教育部／国家语委 2013 年公告的**字表本身**；離線副本取自 [rime-ice](https://github.com/iDvel/rime-ice) 打包的 `cn_dicts/8105.dict.yaml`（該檔自述資料源為 zh.wiktionary 的該表附錄） | 政府公告的字表是事實性資料。本專案只取**字的集合**，未取 rime-ice 的讀音、詞頻或任何 schema |
+
+⚠ **rime-ice 是 GPL-3.0-only。** 本專案是 GPL-3.0-**or-later**，兩者相容
+（or-later 可以被拉到 3.0-only 那一支）。這裡取的只是字集而非受保護的表達，
+但既然取自那份檔案就在這裡登記出處 —— 日後若要把 rime-ice 的**詞庫**收進來
+（task #27），整體散布就會被 GPL-3.0-only 拘束，那時要回到本檔重新裁決。
+
+`luminakey_t2s.json` / `luminakey_t2tw.json` 只是 OpenCC 設定檔，
+引用的 `.ocd2` 詞典仍是 OpenCC 本體（Apache-2.0）的產物；補表
+`luminakey_t2s_extra.txt` / `luminakey_t2tw_extra.txt` 是本專案由 OpenCC 的
+原始對照表推導 + 手工補齊而成，視同衍生自 OpenCC 資料（Apache-2.0，與 GPL-3 相容）。
 
 ### 九宮格拼音（`t9_pinyin.schema.yaml`）—— 本專案自撰，非第三方
 

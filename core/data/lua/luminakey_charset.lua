@@ -1,0 +1,260 @@
+-- luminakey_charset.lua — 字集守門（librime 的 lua_filter）
+--
+-- ═══════════════════════════════════════════════════════════════════════════
+--  這是什麼、為什麼在這一層
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- 使用者選了「簡體」就不該在候選裡看到繁體字，選了「繁體」也不該看到簡體字。
+-- RIME 的簡繁開關做不到這件事：它是 opencc 的**字形轉換**，不是**字集篩選**。
+-- 詞庫（luna_pinyin）收了整個 CJK 基本區 + 擴展 A/B，裡面有粵語字、日本
+-- 新字体、部首、異體字 —— 那些字沒有簡繁對應，轉換再多次也還在。
+--
+-- 所以在轉換之後再加一層：**把不屬於當前字集的候選拿掉**。
+--
+-- ── 為什麼放 librime 的 filter 層，不放各端的 UI ──────────────────────────
+-- engine.cc 依 schema 的順序把 filters 掛進 Menu；menu.cc 的 Menu::Prepare()
+-- 是 `while (candidates_.size() < requested && !result_->exhausted())`。
+-- 惰性過濾器因此會**自動補滿一頁**，翻頁與 page_size 都不會亂。
+-- 放在 UI 那一側的話，引擎以為給了 5 個、畫面上只剩 2 個，翻頁還會跳號。
+-- 而且四端各做一次就會做出四種結果。
+--
+-- ── 硬規則：一個 segment 被濾到 0 就整段退回，不過濾 ──────────────────────
+-- Android 的 RimeInputMethodService 在「還在組字、但候選是空的」時會直接把
+-- preedit 上屏（allowAutoCommit）。也就是說濾到 0 的下場不是「畫面上少一格」，
+-- 是**使用者打 fong 得到 f-o-n-g 四個字母**。所以這裡寧可放行也不留空。
+--
+-- 實測（emulator-5558，luna_pinyin_tw，全音節單字掃描 841 組）：
+-- 簡體有 4 組（fong / den / din / wong）、繁體有 4 組（den / din / cei / wong）
+-- 會整頁被濾光。那幾組原本就只有一兩個罕用字候選（甮 / 㩐 / 𨈖 / 𥥈）。
+--
+-- ── 為什麼緩衝有上限 ──────────────────────────────────────────────────────
+-- 「濾到 0 才退回」要知道結果是不是 0，就得把整段走完。單音節的候選可以有
+-- 好幾千個，全部先跑完再吐第一個字 = 使用者按下最後一個鍵之後畫面停住。
+-- 所以只在**還沒吐出任何一個**的時候緩衝，而且緩衝到 MAX_HELD 就放棄過濾
+-- 這一段（前 64 個全部不合格的段落，本來就不是這一層該處理的東西）。
+--
+-- ── 開關 ──────────────────────────────────────────────────────────────────
+-- 預設**開**。使用者在設定裡關掉時，各端送 `luminakey_charset_off = true`。
+-- 用否定式命名是因為 librime 的 option 沒有「宣告過但預設為真」這種東西：
+-- 沒宣告的 option 一律讀成 false，所以「預設開」只能寫成「預設沒有關」。
+--
+-- ⚠ 這一層**做不到絕對純度**，不要在任何地方宣稱它做得到：
+--    · 字集之外還有字集。8105 收不下 蚵 砦 疋 糸，Big5 收不下 酶 礴 珏。
+--      那些字會被濾掉，而它們不是「另一種字」。
+--    · 濾到 0 會整段退回，那一刻使用者看到的就是不合字集的候選。
+--    · 詞庫本身沒有字集約束，這一層是補救，不是解法。真正的解法是換一本
+--      有字集約束的詞庫（task #27 的 rime-ice）。
+
+-- ── 這一層的失敗一律是「不做事」，不是「沒有候選」──────────────────────────
+-- 上面那條硬規則有兩個更前面的破口，兩個都真的發生過，症狀完全相同：
+--
+--   1. **模組根本沒被載進來。** 資料目錄傳成相對路徑 → librime-lua 的路徑沙盒
+--      fail-closed → `require` 被設成 nil → librime-lua 載不起這個 filter →
+--      上游的 LuaFilter::Apply 仍然回傳一個「一取就錯」的 translation，
+--      於是**輸入的候選整批被吃掉**。這一層的程式碼一行都沒跑，卻背了黑鍋。
+--      修在兩處：core/src/rime_shell.cc 的 make_absolute()（根因）與
+--      patches/librime-lua@filter-passthrough.patch（保底：filter 裝不起來
+--      就原樣放行）。
+--   2. **func 跑到一半 raise。** librime-lua 對此的處置是 set_exhausted(true)
+--      —— 那一段剩下的候選全部不見。所以底下自己 pcall，錯誤只讓「過濾」
+--      停手，不讓「候選」消失。
+--
+-- 一句話：這個檔案裡任何一條路徑都不可以讓某一段的候選數變成 0。
+local M = {}
+
+-- 與 scripts/gen_charset_data.py 的 HAN_RANGES **必須一致**。
+-- 兩邊各一份是因為一邊 Lua 一邊 Python，沒有共用的地方；
+-- scripts/verify_charset_guard.sh 會比對這兩份清單，改了一邊會紅。
+local HAN_RANGES = {
+  { 0x3400,  0x4DBF  },   -- 擴展 A
+  { 0x4E00,  0x9FFF  },   -- 基本區
+  { 0xF900,  0xFAFF  },   -- 相容漢字
+  { 0x20000, 0x3134F },   -- 擴展 B 以上
+}
+
+local function is_han(cp)
+  for i = 1, #HAN_RANGES do
+    local r = HAN_RANGES[i]
+    if cp >= r[1] and cp <= r[2] then return true end
+  end
+  return false
+end
+
+-- 只在還沒吐出任何候選時才緩衝，上限見檔頭。
+local MAX_HELD = 64
+
+-- ── 字集載入 ──────────────────────────────────────────────────────────────
+-- 資料模組是產生出來的，內容是一個長字串。這裡只把**漢字碼位**收進集合，
+-- 所以資料檔裡的換行、註解外的空白都不影響結果。
+local function load_set(module_name)
+  -- require 本身可能不存在（沙盒 fail-closed 時它是 nil），所以連
+  -- 「呼叫 require」這件事都要包在 pcall 裡，不能只包它的結果。
+  local ok, data = pcall(function() return require(module_name) end)
+  if not ok or type(data) ~= "string" then
+    -- 讀不到字集就等於沒有這一層。回 nil，呼叫端會整段放行 ——
+    -- 絕對不可以在這裡回一個空集合，那會把每一個候選都濾掉。
+    return nil
+  end
+  local set = {}
+  local n = 0
+  for _, cp in utf8.codes(data) do
+    if is_han(cp) then
+      set[cp] = true
+      n = n + 1
+    end
+  end
+  if n == 0 then
+    return nil
+  end
+  return set
+end
+
+local CHARSETS = {}
+local function charset(name)
+  if CHARSETS[name] == nil then
+    CHARSETS[name] = load_set("luminakey_charset_" .. name) or false
+  end
+  return CHARSETS[name] or nil
+end
+
+-- ── 純函式：這個字串裡的漢字是不是全都在字集裡 ────────────────────────────
+-- 非漢字（標點、拉丁字母、emoji、注音符號）一律放行 —— 它們不是這一層的事。
+-- utf8.codes 遇到壞的 UTF-8 會 raise，那時一律放行（寧可不濾也不要吃掉候選）。
+function M.passes(text, set)
+  if not set or text == nil or text == "" then return true end
+  local ok, bad = pcall(function()
+    for _, cp in utf8.codes(text) do
+      if is_han(cp) and not set[cp] then return true end
+    end
+    return false
+  end)
+  if not ok then return true end
+  return not bad
+end
+
+-- ── 純函式：現在該用哪一個字集 ────────────────────────────────────────────
+-- get 是 `function(option_name) -> boolean`，測試餵一張表進來就好。
+-- 順序有意義：`zh_hans` 先問，因為互斥組被弄髒時（兩支同時為真）
+-- opencc 實際的輸出就是簡體 —— 判斷要跟著引擎真正在做的事，不是跟著名字。
+function M.pick(get)
+  if get("luminakey_charset_off") then return nil end
+  if get("zh_hans") then return "hans" end
+  if get("zh_hant_tw") or get("zh_hant_hk") or get("zh_hant") then return "hant" end
+  -- 別的方案用 simplifier 的預設 option 名。
+  if get("simplification") then return "hans" end
+  return nil
+end
+
+-- ── 純函式：把一段候選走一遍，決定吐哪些出去 ──────────────────────────────
+-- 抽成純函式是為了測得到：真正的 func 需要 engine、session、詞庫，
+-- 也就是只有真機跑得動，而真機不在 CI 上。
+--
+-- pull() 每次回傳下一個候選（沒有了就回 nil），emit(c) 吐一個出去。
+-- 回傳值是「這一段有沒有被過濾」，只給測試看。
+--
+-- ⚠ 保證：**緩衝裡的候選一定會被 emit 出去**，正常結束或中途 raise 都一樣。
+--   緩衝是這一層唯一「拿了還沒還」的地方，它就是候選會憑空消失的唯一縫隙。
+--   （raise 之後仍然照樣往外丟，讓上層知道出過事；上層負責把剩下的補完。）
+function M.run(pull, emit, set)
+  if not set then
+    for c in pull do emit(c) end
+    return false
+  end
+  local held = {}
+  local emitted = false
+  local bailed = false
+  local function flush()
+    if not held then return end
+    for i = 1, #held do emit(held[i]) end
+    held = nil
+  end
+  local ok, err = pcall(function()
+    for c in pull do
+      if bailed or emitted then
+        if bailed or M.passes(c.text, set) then emit(c) end
+      elseif M.passes(c.text, set) then
+        emitted = true
+        held = nil
+        emit(c)
+      else
+        held[#held + 1] = c
+        if #held >= MAX_HELD then
+          -- 前 MAX_HELD 個全部不合格：放棄過濾這一段，把緩衝倒出去，
+          -- 剩下的原樣放行。這是「不留空」那條規則的延伸。
+          bailed = true
+          flush()
+        end
+      end
+    end
+  end)
+  if not ok then
+    flush()          -- 見上面的保證
+    error(err, 0)
+  end
+  if not emitted and not bailed then
+    -- 整段一個都沒過：退回不過濾（見檔頭的硬規則）。
+    flush()
+    return false
+  end
+  return emitted or bailed
+end
+
+-- ── 純函式：這一段要用哪一個字集（nil = 不過濾）────────────────────────────
+-- 抽出來是為了測得到：真正的 func 需要 engine 與 session。
+-- 這裡不做保護 —— 保護在 M.func，因為「失敗了要怎麼辦」是那一層的決定。
+function M.choose_set(env)
+  local ctx = env.engine.context
+  local name = M.pick(function(opt) return ctx:get_option(opt) end)
+  return name and charset(name) or nil
+end
+
+-- ── 純函式：把 input 變成一個「呼叫一次拿一個」的函式 ─────────────────────
+-- ⚠ `input:iter()` 回的是**三件套**(f, s, var)，不是一個無狀態的函式。
+--   只接第一個回傳值就會拿到一個少了 self 的 f，一呼叫就是
+--   `bad argument #2 (LuaType<Translation&> expected)`。
+--   （在 emulator-5558 上真的發生過，四個輸入全部 0 個候選。）
+function M.puller(input)
+  local f, s, var = input:iter()
+  return function()
+    local c = f(s, var)
+    var = c
+    return c
+  end
+end
+
+-- ── librime 的 filter 介面 ────────────────────────────────────────────────
+--
+-- ⚠ **硬規則：這個函式在任何情況下都不可以讓一段候選變成 0。**
+--
+-- librime-lua 對「filter 的 lua 函式 raise」的處置是 LuaTranslation::Next()
+-- 裡的 set_exhausted(true) —— 也就是**那一段剩下的候選全部不見**。畫面上
+-- 與「這個輸入沒有候選」一模一樣，而 Android 端在那個狀態會把 preedit 直接
+-- 上屏：使用者打 nihao 得到 n-i-h-a-o。一個過濾器出錯，代價不該是不能打字。
+--
+-- 所以錯誤在這裡就地吃掉，並改用「不過濾」把還沒吐出去的候選補完。分三段：
+--   (1) 決定字集    失敗 → set = nil，等於這一層不做事
+--   (2) 取得迭代器  失敗 → 沒有 pull 可用，這一段本來就取不出東西（見下）
+--   (3) 走一遍候選  失敗 → 剩下的原樣吐完；緩衝裡的由 M.run 負責倒出來
+--
+-- ⚠ (2) 是唯一一個真的補不了的：連「下一個候選是什麼」都問不到時，Lua 這一側
+--   沒有東西可以吐。那條路的保底在 C++：filter 裝不起來時
+--   patches/librime-lua@filter-passthrough.patch 會讓 Apply 原樣回傳輸入。
+--
+-- ⚠ 之所以可以用 pcall 包住會 yield 的東西：Lua 5.4 的 pcall 是可 yield 的
+--   （continuation-aware C function）。5.1/5.2 不行，換版本時這裡要重讀。
+function M.func(input, env)
+  local ok_set, set = pcall(M.choose_set, env)
+  if not ok_set then set = nil end
+
+  local ok_pull, pull = pcall(M.puller, input)
+  if not ok_pull or type(pull) ~= "function" then return end
+
+  if pcall(M.run, pull, yield, set) then return end
+  -- 過濾途中出錯。**不可以**就這樣 return —— 那正是「候選變成 0」。
+  -- 剩下的原樣放行；再錯就真的沒辦法了，但至少已經吐出去的還在。
+  pcall(function()
+    for c in pull do yield(c) end
+  end)
+end
+
+return M

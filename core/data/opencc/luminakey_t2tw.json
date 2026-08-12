@@ -1,0 +1,21 @@
+{
+  "name": "LuminaKey: OpenCC 標準繁體 → 臺灣字形（t2tw + 補表）",
+  "normalization": [
+    { "dict": { "type": "ocd2", "file": "CJK_Compatibility_Ideographs.ocd2" } }
+  ],
+  "conversion_chain": [
+    {
+      "dict": {
+        "type": "group",
+        "match_policy": "short_circuit",
+        "dicts": [
+          { "type": "ocd2", "file": "TWVariantsPhrases.ocd2" },
+          { "type": "ocd2", "file": "TWVariants.ocd2" }
+        ]
+      }
+    },
+    {
+      "dict": { "type": "text", "file": "luminakey_t2tw_extra.txt" }
+    }
+  ]
+}

@@ -133,12 +133,74 @@ macOS 端把這兩條做成**編譯期與 CI 的斷言**(`SettingsCatalog` 的 `
 | `text.variant` | enum `followInputMode`\|`traditional`\|`simplified` | `followInputMode` | B → C | 全 |
 | `text.punctuation` | enum `followSchema`\|`full`\|`half` | `followSchema` | B → C | 全 |
 | `text.shape` | enum `followSchema`\|`halfShape`\|`fullShape` | `followSchema` | B → C | 全 |
+| `text.charsetGuard` | bool | **`true`** | B → C | 全 |
 
-對應的 session 選項:`simplification` / `ascii_punct` / `full_shape`。
+對應的 session 選項:`simplification` / `ascii_punct` / `full_shape` /
+`luminakey_charset_off`(**否定式**,見 §4.7)。
+
+⚠ `text.charsetGuard` 是這張表裡唯一**預設為真**的項目。它沒有「跟著方案」
+那一態 —— 方案本身沒有字集的概念,不干預在這裡就等於關掉。
 
 ⚠ **`followSchema` = 完全不呼叫 `rs_set_option()`。**
 設成 `false` 不是同一件事:很多方案根本沒有那個開關,而有些方案的預設是 true。
 無條件設 false 會讓「跟著方案」變成「一律西文標點」,而使用者選的是不干預。
+
+### 手感(行動端)
+
+⚠ 2026-08-12 補。在此之前 §1 說 Android 有「手感」這一頁、桌面整頁拿掉,
+**而總表裡四項一個都沒列** —— 這一節就是補那個洞。
+
+| id | 型別 | 預設 | 層級 | 平台 |
+|---|---|---|---|---|
+| `feel.soundLevel` | enum `off`\|`quiet`\|`medium`\|`loud` | `off` | B | 行動 |
+| `feel.soundTimbre` | enum `system`\|`soft`\|`mechanical`\|`drop` | `system` | B | 行動 |
+| `feel.hapticLevel` | enum `off`\|`light`\|`medium`\|`strong` | `medium` | B | 行動 |
+| `feel.longPress` | enum `fast`\|`standard`\|`slow`\|`slower` | `standard` | B | 行動 |
+
+四項全是 B 層(librime 讀不到)。桌面兩端整段忽略 `feedback`,所以沒有
+命名衝突。
+
+**音量與音色是兩個設定項,不是一個八格的。** 合成一個會有 8 個選項
+(違反 `ui-design.md` §4.2 的「分段控制 2–4 格」),而且「關」該屬於哪一邊
+會說不清。
+
+**「按鍵音=關」時音色那一列不畫成灰的、也不隱藏。** 點它會順便把音量開到
+最小的那一檔並試播一次 —— 一次操作取代兩次,而且沒有死控制項
+(`ui-design.md` §1「做不到的功能不要畫出來」的反面:做得到就不要畫成做不到)。
+
+#### 音色的素材(規範性)
+
+`system` **不是**「沒有音色」,是「照這支手機 OEM 的調校走」。其餘三種由
+本專案自帶。素材不得從外部取得:授權要能一句話說完,而且要可重現。
+Android 端的作法是 `scripts/gen_key_sounds.py` —— 合成腳本進版控,產物
+(`res/raw/key_<音色>_<角色>.ogg`)也進版控,`--check` 會重新合成一次與
+現有檔案比對。
+
+**四個角色。** `standard` / `space` / `delete` / `return`。系統的按鍵音效
+本來就分這四個(`FX_KEYPRESS_*`),自帶素材沒有理由更粗。角色由 keysym
+決定,keysym 缺席才看佈局的 `id`。
+
+#### 震動(規範性)
+
+**必須是同一支波形的三種大小。** 不可以用平台的「觸覺常數」硬湊 ——
+在 API 35 的 AOSP 上實測,`CLOCK_TICK` / `KEYBOARD_TAP` / `LONG_PRESS`
+播出來的是 101 ms / 101 ms / **30 ms** 的三支不相干波形,「強」比「中」
+短三倍。使用者叫它「大小」,那個階梯上沒有大小。
+
+Android 的實作是 `VibrationEffect.createOneShot(ms, amplitude)`,
+15/20/25 ms × 振幅 60/130/220。時長要短:100 ms 的波形在快打時會被下一顆鍵
+砍掉(`dumpsys` 的 `cancelled_superseded`)。
+
+**不得繞過系統設定。** 使用者在系統設定裡關掉震動或觸覺回饋之後,鍵盤就
+不震。Android 端具體是「不准出現 `FLAG_IGNORE_GLOBAL_SETTING`」,
+由 `scripts/audit_offline.sh` 第 1b 項守著。按鍵音同理:自帶素材走的是
+我們自己的音訊軌,系統的按鍵音效開關管不到它,所以要**自己查一次**
+`Settings.System.SOUND_EFFECTS_ENABLED`。
+
+#### 馬達分不出強弱時(規範性)
+
+退回平台常數,**並且在設定頁把這件事講出來**。無聲降級等於在畫面上留
+三個感覺一樣的假檔位。
 
 ### 自己加的詞
 
@@ -274,6 +336,42 @@ text.variant == followInputMode:
 * **關掉 `followInputMode` 時連 `simplification` 都不碰。** 使用者要的是「我自己管」,
   半套(方案不跟、簡繁還是跟)更難理解。
 
+#### 4.5.1 只設 `simplification` 是不夠的:radio 群組的互斥要呼叫端自己維持(規範性)
+
+隨附的 `luna_pinyin` 家族**根本沒有 `simplification` 這個開關**。它們的字形是
+一組**互斥選項**:
+
+```yaml
+- options: [ zh_hant, zh_hans, zh_hant_hk, zh_hant_tw ]
+  states:  [ 傳統漢字, 简化字,  香港字形,   臺灣字形 ]
+```
+
+而 `rs_set_option()` **不維持 radio 的互斥** —— 維持互斥的是 librime 的 switcher,
+只有使用者從方案選單裡選的時候才會跑。門面層也問不出來:`core/include/rime_shell.h`
+只有 `rs_set_option` / `rs_get_option`,沒有 radio 的概念。
+
+**硬規則:設想要的那一支之前,必須把同組其他每一支設成 `false`,而且順序是
+「先關再開」。** 五項無條件送,不要因為「跟現在一樣」就跳過 —— 會走到這裡
+通常正是因為狀態與預期不符。
+
+```
+simplification = 想要簡體嗎
+同組其餘三支 = false        ← 少了這一段就是下面那個缺陷
+目標那一支   = true
+```
+
+不照做的下場(2026-08-12 使用者實機回報,Android):切一趟簡體之後
+`zh_hant_tw` 與 `zh_hans` **同時為真**,opencc 把 t2s 的結果再串一次 t2tw,
+候選列簡繁混雜;而「切回繁體」算出來的「原本那一支」是 `zh_hans` 自己,
+等於什麼都沒做 —— **切過一次簡體就再也回不到繁體**。
+
+「原本那一支」**只能從繁體那三支裡找**。從整組四支裡找的話,簡體狀態下算出來
+的就是 `zh_hans` 自己,記憶被自己弄髒。
+
+各端的實作:Windows `windows/common/schema_choice.h` 的 `PlanVariant`(靠 TSF 的
+langid 決定要哪一種繁體);Android `android/.../core/VariantPlan.kt`(沒有 langid,
+改由記憶帶著走)。**決策來源不同,送出去的序列形狀相同。**
+
 ### 4.6 做不到的事(要誠實)
 
 **RIME 的 `simplification` 是單向的:繁 → 簡的 opencc 轉換。**
@@ -282,7 +380,90 @@ text.variant == followInputMode:
 這時只能靠第 3 條(字集相符優先)先挑對方案,挑不到就是挑不到。
 **不要在介面上宣稱做得到**,該說的是「這個方案只有簡體,要繁體請安裝 ○○」。
 
-### 4.7 套用時機
+**`simplification` 是字形轉換,不是字集篩選。**
+選簡體**不保證**候選裡沒有非簡體用字,因為詞庫本身沒有字集約束 ——
+`luna_pinyin` 收了整個 CJK 基本區 + 擴展 A/B,裡面有粵語字(咁 佢 嘅)、
+日本新字体(楽 斉 単)、部首(丶 丨 糸)與大量異體字,這些字**沒有簡繁對應**,
+opencc 轉幾次都還在。實測(emulator-5558,`luna_pinyin_tw`):選簡體時
+第一頁 1.4% 的候選不是規範簡化字,全音節單字掃描最壞 4.4%。
+
+把純度往上推是 §4.7 的字集守門在做的事,而**它也做不到絕對純度**。
+
+### 4.7 字集守門(規範性)
+
+> 這一節是 2026-08-12 新增的。在它之前,「選簡體」只做 opencc 轉換,
+> 使用者看到的仍然是一本沒有字集約束的詞庫吐出來的東西。
+
+**目的**:使用者選了簡體就不要在候選裡看到繁體字,選了繁體也不要看到簡體字。
+
+#### 4.7.1 兩個判準(四端共用,不得各自挑一份)
+
+| | 字集 | 出處 | 字數 |
+|---|---|---|---|
+| 簡體 | 《通用规范汉字表》 | 教育部／国家语委 2013。離線副本取自 rime-ice 打包的 `cn_dicts/8105.dict.yaml` | 8,181 |
+| 繁體 | Big5 | CNS 系的事實標準,`iconv`/Python codec 內建,任何機器都能重算 | 13,063 |
+
+三支繁體選項(`zh_hant` / `zh_hant_hk` / `zh_hant_tw`)**共用同一份** Big5。
+
+**不可以用 opencc 自己當判準**,兩個方向都不行:
+* 正向:`妳` 在 opencc 全部 26 份 `.txt` 詞典裡一次都沒出現,`t2s` 永遠不會動它 ——
+  而它正是使用者回報的那一個字。
+* 反向:把「`STCharacters` 的 key」當成簡化字會誤殺。實跑 luna 詞庫:8.42% 詞條、
+  加權 7.22% 被誤報,第一名是「了」。
+
+**不可以用 `big5hkscs` 當繁體判準**:它收了 351 個真正的簡化字(国 学 发 个 东 业 众…),
+當繁體判準等於把要擋的東西放進來。
+
+#### 4.7.2 放在哪一層(規範性)
+
+**必須放 librime 的 filter 層,不可以放各端的 UI。**
+`engine.cc` 依 schema 順序把 filters 掛進 Menu;`menu.cc` 的 `Menu::Prepare()` 是
+`while (candidates_.size() < requested && !result_->exhausted())` ——
+惰性過濾器會自動補滿一頁,翻頁與 `page_size` 都不會亂。
+放 UI 那一側就是「引擎以為給了 5 個、畫面剩 2 個」,而且四端會做出四種結果。
+
+⚠ **位置是 uniquifier 的前一個,不是最後一個。** uniquifier 的去重是拿
+「Menu 已經收下的候選」比對的,而 librime-lua 的 translation 會比 Menu 先跑一步,
+掛在 uniquifier 後面會讓去重靜靜失效(實測:補表把「妳好」轉成「你好」之後
+候選列出現兩個一模一樣的「你好」)。
+
+#### 4.7.3 硬規則:濾到空要整段退回(規範性)
+
+**一個 segment 被濾到 0 個候選時,必須整段退回不過濾。**
+Android 在「還在組字、但候選是空的」時會直接把 preedit 上屏,也就是說濾到 0 的
+下場不是「畫面上少一格」,是**使用者打 `fong` 得到 f-o-n-g 四個字母**。
+
+緩衝要有上限(現行 64):只在還沒吐出任何候選時緩衝,撞到上限就放棄過濾這一段。
+沒有上限的話,單音節上千個候選會被全部跑完才吐出第一個字。
+
+#### 4.7.4 順序:先轉再濾(規範性)
+
+**轉得掉的先轉掉 —— 轉掉不損失候選,濾掉會。**
+本專案在 opencc 的 `conversion_chain` 尾端各接一張補充轉換表
+(`luminakey_t2s_extra.txt` / `luminakey_t2tw_extra.txt`,由
+`scripts/gen_charset_data.py` 產生),把 `妳→你`、`楽→乐`、`国→國` 這類
+**有對應**的字先轉掉,轉不掉的才交給過濾器。
+
+#### 4.7.5 開關
+
+session 選項 `luminakey_charset_off`,**否定式**。
+librime 沒有「宣告過但預設為真」的 option(沒宣告的一律讀成 `false`),
+所以「預設開」只能寫成「預設沒有關」。各端的偏好一律是正向的
+`text.charsetGuard`,轉換在送給引擎的那一步做。
+
+#### 4.7.6 做不到的事(要誠實,四端的 UI 都受這一條拘束)
+
+1. **字集之外還有字集。** 8105 收不下 `蚵` `砦` `疋` `糸`,Big5 收不下
+   `酶` `礴` `珏` `堃` `喆`。這些字會被濾掉,而它們**不是「另一種字」**。
+2. **濾到空會整段退回**,那一刻使用者看到的就是不合字集的候選。
+   實測 841 個音節裡簡體有 4 組、繁體有 4 組會走到這條路。
+3. **這一層是補救,不是解法。** 真正的解法是換一本有字集約束的詞庫
+   (task #27 的 rime-ice,實測不純率 0.09%)。現行的 `pinyin_simp`
+   **不合格** —— 實測 13.79% 詞條含表外字,比 `luna_pinyin + t2s` 還差。
+4. 介面上**不可以**出現「已支援純簡體／純繁體」這類說法。
+   Android 現行文案見 `res/values*/strings.xml` 的 `text_charset_note`。
+
+### 4.8 套用時機
 
 | 時機 | 做什麼 |
 |---|---|

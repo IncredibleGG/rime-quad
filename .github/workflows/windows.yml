@@ -34,7 +34,7 @@ name: Windows (核心驗證 + TSF)
 
 on:
   push:
-    branches: [main]
+    branches: [main, anv2]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -318,9 +318,44 @@ jobs:
         run: |
           $ver = "${{ env.PINNED_CMAKE }}"
           $url = "https://github.com/Kitware/CMake/releases/download/v$ver/cmake-$ver-windows-x86_64.zip"
-          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\cmake.zip"
-          Expand-Archive -Path "$env:RUNNER_TEMP\cmake.zip" -DestinationPath "$env:RUNNER_TEMP\cmake" -Force
-          $bin = "$env:RUNNER_TEMP\cmake\cmake-$ver-windows-x86_64\bin"
+          $zip = "$env:RUNNER_TEMP\cmake.zip"
+          $dst = "$env:RUNNER_TEMP\cmake"
+          $bin = "$dst\cmake-$ver-windows-x86_64\bin"
+          # 下載會偶發中斷 —— 2026-08-12 這條車道就紅在
+          #   Invoke-WebRequest: The response ended prematurely. (ResponseEnded)
+          # 那是網路,不是任何一份改動;但單次嘗試會讓整條車道紅在一個與
+          # 產品完全無關的地方,而**那種紅看久了就會被當成雜訊**,
+          # 真的缺陷混進來時就沒有人看了。所以重試,而不是重跑一次 CI。
+          #
+          # 解壓也放進重試裡:截斷的 zip 照樣是一個非空檔案,
+          # 「解得開」才是這一步真正要的東西,所以用它當完整性檢查。
+          $ok = $false
+          foreach ($i in 1..4) {
+            try {
+              if (Test-Path $zip) { Remove-Item $zip -Force }
+              if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
+              Invoke-WebRequest -Uri $url -OutFile $zip
+              Expand-Archive -Path $zip -DestinationPath $dst -Force
+              if (-not (Test-Path "$bin\cmake.exe")) { throw "解開了但沒有 $bin\cmake.exe" }
+              $ok = $true
+              break
+            } catch {
+              Write-Host ("第 {0} 次取 CMake {1} 失敗:{2}" -f $i, $ver, $_.Exception.Message)
+              Start-Sleep -Seconds (5 * $i)
+            }
+          }
+          if (-not $ok) {
+            Write-Host "::error::連續 4 次取不到 CMake $ver —— 這是網路,不是這份改動"
+            exit 1
+          }
+          # 釘住的版本要真的是跑起來的那一個,不然 build.sh 會拿到「另一個
+          # CMake」,而那件事會變成一個看不懂的建置錯誤,離成因很遠。
+          $got = (& "$bin\cmake.exe" --version | Select-Object -First 1)
+          Write-Host ("釘到的 CMake:{0}" -f $got)
+          if ($got -notmatch [regex]::Escape($ver)) {
+            Write-Host "::error::釘的是 $ver,實際跑起來的是「$got」"
+            exit 1
+          }
           $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           # 同時以絕對路徑交給 build.sh(它讀 $CMAKE)。vcvars 會把 VS 自帶的
           # CMake 加進 PATH,可能蓋掉這裡釘的版本 —— 絕對路徑不受 PATH 影響。

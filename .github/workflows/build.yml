@@ -33,6 +33,7 @@ on:
     # 單行陣列 [main, a, b] 會讓每一條都改同一行 = 必然衝突。
     branches:
       - main
+      - anv2
   pull_request:
     branches:
       - main
@@ -237,6 +238,52 @@ jobs:
         # 的那一份 Lua 5.4.8,真的去 os.execute / io.popen / 讀資料目錄外面的檔案。
         run: ./scripts/verify_lua_sandbox.sh
 
+      - name: 字集守門的純函式測試(51 條 + 8 個變異測試)
+        # core/data/lua/luminakey_charset.lua 是**出貨的程式碼**,它在每一台裝置上
+        # 決定每一個候選字要不要留下來,而 ./gradlew test 碰不到它(不是 Kotlin)。
+        # 這一關用 librime-lua 出貨的那份 Lua 原始碼編一個直譯器把它跑起來,
+        # 最後對它植入八個真缺陷(濾到空不退回、無視關閉開關、連標點都比對、
+        # 不再惰性、兩份字集其實同一份,以及**候選變成 0** 的那三條:出錯時
+        # 緩衝被吞掉、把錯誤丟給 librime、問不到開關就整段陣亡),
+        # 確認每一個都會被測出來。
+        run: ./scripts/verify_charset_guard.sh
+
+      # ⚠ 這一關是 2026-08-12 那次撤回換來的。那一批改的是 core/data/,
+      #   只在 emulator 上驗過,併進 main 之後 macOS 與 Android 兩條車道
+      #   同時紅,整批被 revert。core/data/ 是四端共用的執行期資料,
+      #   而支線只跑得到自己接了線的那幾條車道 —— 沒接的不是紅的,
+      #   是**根本不跑**,而 checks 上被跳過的 job 是灰色的勾。
+      #   細節與怎麼修都寫在腳本的檔頭。
+      - name: 動到 core/data/ 就要四條車道都跑得到
+        run: |
+          ./scripts/verify_core_data_fanout.sh --self-test
+          ./scripts/verify_core_data_fanout.sh
+
+      - name: 手感的反向測試(音檔比對 + 植入 6 個真缺陷)
+        # 兩件 ./gradlew test 做不到的事:
+        #   1. res/raw/key_*.ogg 是**出貨的資料**,它的來源是
+        #      scripts/gen_key_sounds.py。重新合成一次跟現有檔案的波形比對,
+        #      有人手動塞了別的音檔進去這裡會紅。
+        #   2. 對 FeedbackPlan 植入六個真缺陷(其中兩個就是改動前的實作:
+        #      三個不相干的觸覺常數、一律送 FX_KEYPRESS_STANDARD),
+        #      確認每一個都會被 FeedbackPlanTest / FeelPrefsTest 抓到。
+        #
+        # ⚠ 這一步**不裝任何 pip 套件**,而且不要為了它加。gen_key_sounds.py
+        #   原本用 numpy,而 runner 上沒有 —— 2026-08-12 這條車道就是紅在
+        #   `ModuleNotFoundError: No module named 'numpy'`,產品一點事都沒有。
+        #   合成已經改成純標準函式庫(見那支腳本的檔頭)。唯一的外部相依是
+        #   ffmpeg(Vorbis 編解碼,標準函式庫沒有)。
+        #
+        # ⚠ ffmpeg **不是** ubuntu runner 內建的 —— 上一版的註解在這裡寫錯,
+        #   而開發機上有,所以本機一直綠、只有 CI 紅。這是 numpy 那件事的
+        #   同一個形狀第二次:守門跑不起來,而畫面上長得像出貨資料壞了。
+        #   所以下面那一行 apt-get 是這一關的一部分,不要「順手拿掉」。
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          ffmpeg -version | head -1
+          python3 ./scripts/verify_key_feedback.py
+
       - name: 守門腳本的反向測試(植入 16 條真違規,確認它會紅)
         # 放在發布關卡**之後**:其中一條要用已建置的 APK
         # (產物層的「只有 NetworkGate 碰得到 HttpURLConnection」)。
@@ -332,7 +379,8 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' &&
-       github.ref == 'refs/heads/main')
+       (github.ref == 'refs/heads/main' ||
+        github.ref == 'refs/heads/anv2'))
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
