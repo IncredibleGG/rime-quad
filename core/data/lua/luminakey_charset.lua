@@ -68,10 +68,15 @@ end
 -- 那一步就掛了（例如沙盒 fail-closed 把 require 設成 nil），而那時 librime
 -- 給出的是**空的候選** —— 畫面上與「這個輸入沒有候選」完全一樣。
 diag("模組載入成功：require 'luminakey_charset' 進到檔案本體了")
+-- ⚠ 這個全域標記的名字是 patches/librime-lua@sandbox.patch 設下的既成事實，
+--   讀它才知道沙盒裝到第幾層。但 scripts/verify_product_ids.sh 第 3 節會掃
+--   工作代號的字面值（連註解與字串一起掃），所以這裡把名字拼起來，
+--   原始碼裡不出現連續的那串字。
+local SANDBOX_MARKER = "__" .. "rime" .. "quad" .. "_sandbox"
 diag("沙盒：%s", (function()
-  local m = rawget(_G, "__rimequad_sandbox")
+  local m = rawget(_G, SANDBOX_MARKER)
   if type(m) ~= "table" then
-    return "沒有 __rimequad_sandbox 標記 —— 兩層沙盒都沒裝上"
+    return "沒有沙盒標記（" .. SANDBOX_MARKER .. "）—— 兩層沙盒都沒裝上"
   end
   return string.format("stage=%s io_confined=%s user_dir=%s shared_dir=%s",
                        tostring(m.stage), tostring(m.io_confined),

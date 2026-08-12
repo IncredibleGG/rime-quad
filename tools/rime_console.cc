@@ -64,15 +64,15 @@ void diag_options(rs_session sess, const char* tag) {
 
 // ⚠ **這一行是這批診斷裡最重要的一行。**
 //
-// patches/librime-lua@sandbox.patch 的第二層(modules.cc 的
-// kRimeQuadPathSandbox)一開頭就做:
+// patches/librime-lua@sandbox.patch 的第二層(
+// modules.cc 裡那段 path sandbox 的 lua 原始碼)一開頭就做:
 //
 //     local ROOT_USER = normalize(user_dir, nil)
-//     if not ROOT_USER then error("rimequad: 使用者資料目錄不是絕對路徑: "..) end
+//     if not ROOT_USER then error("<沙盒>: 使用者資料目錄不是絕對路徑: "..) end
 //
 // 而 normalize(p, nil) 對**相對路徑**回 nil(它只認 "/" 開頭或 "C:/")。
 // 也就是說:user_data_dir 是相對路徑 -> 沙盒 error -> lua_pcall 失敗 ->
-// rimequad_lua_nuke() 把 require / io / os / package / load 全部設成 nil。
+// 走沙盒的 fail-closed 那條路,把 require / io / os / package / load 設成 nil。
 //
 // 而 librime-lua 載入 `lua_filter@*luminakey_charset` 的方式是
 // src/lua_gears.cc:85 的 `lua_getglobal(L, "require")`。require 是 nil 的話
