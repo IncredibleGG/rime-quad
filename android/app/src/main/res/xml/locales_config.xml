@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    這個 app 提供哪幾種介面語言。
+
+    ── 為什麼少了它等於「翻了等於沒翻」────────────────────────────────────
+    `res/values-b+zh+Hant/` 與 `res/values-b+zh+Hans/` 各 606 條**早就翻完了**，
+    但它們只在「系統語言本來就是中文」時才會被選中。一支英文手機的使用者
+    沒有任何辦法只把這個 app 切成中文 —— 系統設定裡的「App 語言」那一頁，
+    **只列出宣告了 android:localeConfig 的 app**。
+
+    也就是三個環節做了兩個：字翻好了、資源目錄放對了，就差這一份清單。
+
+    ── 它管得到誰 ──────────────────────────────────────────────────────────
+    「每個 app 各自的語言」是 Android 13（API 33）才有的系統功能。
+    minSdk 26 的裝置上這個檔案不會有任何作用，也不會有害；那些裝置仍然跟隨
+    系統語言。要在 API 33 以下也給出同一個選單，得走 AppCompat 的
+    `setApplicationLocales` 並自己畫一頁，那是另一件事（未做，已回報）。
+
+    ── 名字為什麼寫 zh-Hant / zh-Hans 而不是 zh-TW / zh-CN ────────────────
+    資源目錄用的是 BCP 47 的書寫系統標籤（`b+zh+Hant`），這裡必須對得上，
+    否則系統挑得出語言卻找不到資源，畫面會退回英文而沒有任何錯誤訊息。
+-->
+<locale-config xmlns:android="http://schemas.android.com/apk/res/android"
+    android:defaultLocale="en">
+    <locale android:name="en" />
+    <locale android:name="zh-Hant" />
+    <locale android:name="zh-Hans" />
+</locale-config>
