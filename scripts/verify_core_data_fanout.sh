@@ -25,6 +25,36 @@
 #     這次的改動動到 core/data/ 了嗎？動到的話，**這條分支**在每一條
 #     讀 core/data/ 的車道上，那個 job 真的會跑嗎？
 #
+# ═══════════════════════════════════════════════════════════════════════════
+#  2026-08-13：它守著輸出，而沒有人守輸入
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# cand 那一批把 `menu/page_size` 從 5 改成 9 —— 它自己的 commit 訊息寫著
+# 「四端共用，桌面候選窗也會從 5 變 9」。而這一關對它**整關沉默**：
+#
+#     $ bash scripts/verify_core_data_fanout.sh --base main
+#     這一次沒有動到 core/data/（比對 main）—— 這一關沒有話要說。
+#
+# 成因是一行 pathspec 加一行 .gitignore：
+#
+#     CHANGED=$(git diff --name-only ... -- core/data)
+#     .gitignore:  /core/data/shared
+#                  /core/data/user
+#
+# 那兩個目錄是 **產物**，而且不入版控 —— `git diff` 對它們永遠是空的。
+# 真正的改動在 `scripts/collect_data.sh`（產生器）第 98–104 行的那個
+# `sed -i 's/page_size: 5/page_size: 9/'`，而當時**沒有任何一關在看它**。
+#
+# 對照組成立：同一批裡的 b1 改的是版控裡的 `core/data/schemas/…`，同一支
+# 腳本 EXIT=1 並逐條點名三條車道跑不到。**這道關本身是好的，它只是守著
+# 輸出、而沒有人守輸入。**
+#
+# 所以現在「動到 core/data/」= 產物 ∪ **產生器**。產生器的清單是
+# scripts/lib/shared_data_writers.py **掃**出來的，不是寫死的 ——
+# 寫死的清單會在下一支產生器出現時安靜地漏掉它，那正是這一段要消滅的
+# 失敗模式。掃描器自己有反向測試（分不分得出「寫」與「讀」），而這裡
+# 再釘一條下界：已知的產生器一個都不許掃不到。
+#
 # 判斷「會不會跑」的是 scripts/ci_branch_gate.py（它看得懂兩道閘門）。
 # 這裡只負責：找出哪些車道讀 core/data/、把分支名餵給它、把答案講清楚。
 #
@@ -41,6 +71,7 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GATE="$ROOT/scripts/ci_branch_gate.py"
+SCANNER="$ROOT/scripts/lib/shared_data_writers.py"
 WF_DIR="$ROOT/.github/workflows"
 
 log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
@@ -55,12 +86,54 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --base)      BASE="$2"; shift 2 ;;
     --self-test) SELF_TEST=1; shift ;;
-    -h|--help)   sed -n '2,45p' "$0"; exit 0 ;;
+    # ⚠ 不要寫死行號:檔頭補過一節之後,'2,45p' 會停在半句話上。
+    -h|--help)   sed -n '2,/^set -uo pipefail$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "未知參數: $1" ;;
   esac
 done
 
 [ -f "$GATE" ] || die "找不到 $GATE"
+[ -f "$SCANNER" ] || die "找不到 $SCANNER"
+
+# ── 產生器 ────────────────────────────────────────────────────────────────
+#
+# 「會寫進 core/data/shared 或 core/data/user 的版控腳本」。掃出來的，見
+# scripts/lib/shared_data_writers.py。下面兩張表是它的**下界**與**例外**，
+# 兩者的失敗方向刻意不同：
+#
+#   · MIN  掃不到就死。掃描器認的是形狀不是語意，改壞了會安靜地少掃幾支 ——
+#          而「少掃」的長相正是這一關 2026-08-13 之前的樣子。
+#   · SKIP 掃得到但不算。每一項都要寫**為什麼它不決定出貨內容**，
+#          而且它必須真的被掃到（掃不到 = 這一行過期了，見自我測試）。
+#
+# ⚠ SKIP 的方向是安全的：忘了加只會多亮一次紅燈，不會變成安靜的綠燈。
+GEN_MIN=(
+  scripts/collect_data.sh
+  scripts/collect_charset_guard.sh
+)
+GEN_SKIP=(
+  # 它把測試詞庫寫進 core/data/user 再於 trap 裡還原（檔頭第 35 行自己寫了）。
+  # 借用那個目錄，不產生出貨內容。
+  "apple/scripts/verify_user_dict.sh|借 core/data/user 跑測試，跑完還原"
+  # 只有 --plant stale-schema 那條植入分支會 mkdir 一次；真正的產物寫在
+  # build/ 底下。它是這一關的使用者，不是它的輸入。
+  "scripts/verify_syllables.sh|只在 --plant 分支建一次目錄，產物寫在 build/"
+)
+
+gen_skipped() {
+  local f="$1" e
+  for e in "${GEN_SKIP[@]}"; do [ "${e%%|*}" = "$f" ] && return 0; done
+  return 1
+}
+
+# 掃出來、扣掉 SKIP 之後的產生器清單。
+generators() {
+  local f
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    gen_skipped "$f" || printf '%s\n' "$f"
+  done < <(python3 "$SCANNER" --root "$ROOT")
+}
 
 # ── 車道登記表 ─────────────────────────────────────────────────────────────
 # 一行一條：<workflow 檔名>|<針>|<針>…
@@ -135,6 +208,38 @@ if [ "$SELF_TEST" -eq 1 ]; then
     fi
   done
   echo
+  log "自我測試:產生器掃得出來嗎"
+  # 掃描器自己的反向測試（分不分得出「寫進去」與「只是讀」）。
+  if python3 "$SCANNER" --self-test > /tmp/.gen.$$ 2>&1; then
+    ok "shared_data_writers.py 的反向測試全過"
+  else
+    sed 's/^/         /' /tmp/.gen.$$ >&2
+    bad "shared_data_writers.py 的反向測試沒過 —— 掃描器壞了,下面的清單不可信"
+  fi
+  rm -f /tmp/.gen.$$
+  RAW="$(python3 "$SCANNER" --root "$ROOT")"
+  # 下界:已知的產生器一個都不許掃不到。
+  for g in "${GEN_MIN[@]}"; do
+    if printf '%s\n' "$RAW" | grep -qxF "$g"; then
+      ok "掃得到產生器 $g"
+    else
+      bad "$g 是產生器,掃描器卻沒掃到 —— 這一關又回到只守輸出的那一版了"
+    fi
+  done
+  # 例外清單不可以過期:寫在 SKIP 裡卻根本掃不到,代表那一行在騙人。
+  for e in "${GEN_SKIP[@]}"; do
+    f="${e%%|*}"
+    if printf '%s\n' "$RAW" | grep -qxF "$f"; then
+      ok "SKIP 的 $f 確實掃得到(${e#*|})"
+    else
+      bad "SKIP 裡的 $f 根本掃不到 —— 那一行過期了,拿掉它"
+    fi
+  done
+  n_gen="$(generators | grep -c . || true)"
+  [ "$n_gen" -ge "${#GEN_MIN[@]}" ] \
+    && ok "扣掉 SKIP 之後還有 $n_gen 支產生器" \
+    || bad "扣掉 SKIP 之後只剩 $n_gen 支 —— SKIP 把該守的也扣掉了"
+  echo
   echo "═══ core/data 擴散守門(自我測試):$PASS 過、$FAIL 失敗 ═══"
   [ "$FAIL" -eq 0 ] || exit 1
   exit 0
@@ -166,19 +271,42 @@ if [ -z "$BASE" ]; then
 fi
 [ -n "$BASE" ] || die "找不到可以比對的 main（用 --base 指定）"
 
-CHANGED="$(git -C "$ROOT" diff --name-only "$BASE" HEAD -- core/data 2>/dev/null)"
-# 還沒 commit 的改動也算 —— 本機跑這一支時通常就是為了問「我現在改的東西」。
-CHANGED="$CHANGED
-$(git -C "$ROOT" status --porcelain -- core/data 2>/dev/null | sed 's/^...//')"
-CHANGED="$(printf '%s\n' "$CHANGED" | sed '/^$/d' | sort -u)"
+# ⚠ 兩組 pathspec，不是一組：
+#   · core/data       —— **產物**。但 shared/ 與 user/ 在 .gitignore 裡，
+#                        diff 得出來的只有 schemas/、lua/、opencc/ 那些。
+#   · 產生器          —— 掃出來的（見檔頭 2026-08-13 那一節）。改了它們，
+#                        四端裝進產物裡的東西就變了，而 git 一個字都看不到。
+mapfile -t GEN < <(generators)
+[ "${#GEN[@]}" -gt 0 ] || die "一支產生器都掃不到 —— 掃描器壞了(跑 --self-test 看)"
+# 下界也要在正式跑的路徑上釘住,不能只在自我測試裡。
+for g in "${GEN_MIN[@]}"; do
+  printf '%s\n' "${GEN[@]}" | grep -qxF "$g" \
+    || die "$g 應該被當成產生器,卻不在掃描結果裡 —— 跑 --self-test 看是哪裡壞了"
+done
+
+diff_paths() {  # diff_paths <pathspec…>
+  git -C "$ROOT" diff --name-only "$BASE" HEAD -- "$@" 2>/dev/null
+  # 還沒 commit 的改動也算 —— 本機跑這一支時通常就是為了問「我現在改的東西」。
+  git -C "$ROOT" status --porcelain -- "$@" 2>/dev/null | sed 's/^...//'
+}
+
+CHANGED_DATA="$(diff_paths core/data | sed '/^$/d' | sort -u)"
+CHANGED_GEN="$(diff_paths "${GEN[@]}" | sed '/^$/d' | sort -u)"
+CHANGED="$(printf '%s\n%s\n' "$CHANGED_DATA" "$CHANGED_GEN" | sed '/^$/d' | sort -u)"
 
 if [ -z "$CHANGED" ]; then
-  echo "這一次沒有動到 core/data/（比對 $BASE）—— 這一關沒有話要說。"
+  echo "這一次沒有動到 core/data/,也沒有動到產生它的 ${#GEN[@]} 支腳本（比對 $BASE）—— 這一關沒有話要說。"
   exit 0
 fi
 
-log "動到 core/data/ 的檔案（比對 $BASE）"
-printf '%s\n' "$CHANGED" | sed 's/^/    /'
+if [ -n "$CHANGED_DATA" ]; then
+  log "動到 core/data/ 的檔案（比對 $BASE）"
+  printf '%s\n' "$CHANGED_DATA" | sed 's/^/    /'
+fi
+if [ -n "$CHANGED_GEN" ]; then
+  log "動到**產生器**的檔案（比對 $BASE）—— 產物在 .gitignore 裡,git diff 看不到它們變了什麼"
+  printf '%s\n' "$CHANGED_GEN" | sed 's/^/    /'
+fi
 echo
 log "那麼每一條讀 core/data/ 的車道,在分支「$BRANCH」上都跑得到嗎"
 
@@ -213,8 +341,10 @@ if [ "$FAIL" -ne 0 ]; then
    甲、把這條分支加進紅掉那幾份 workflow 的 `on: push: branches:`，
        慢車道的話**連那個 job 的 if: 也要加**（兩道閘門各自都足以讓它
        整條不跑）。合併回 main 之前記得把分支名拿掉。
-   乙、這次不要動 core/data/。它是四端共用的執行期資料，改它就是同時
-       改四個產品 —— 在一端驗過只是四分之一。
+   乙、這次不要動 core/data/，**也不要動產生它的那幾支腳本**。它是四端
+       共用的執行期資料，改它就是同時改四個產品 —— 在一端驗過只是四分之
+       一。產生器（scripts/collect_data.sh 之類）改一行 `page_size`，
+       四端的候選窗一起變，而 `git diff -- core/data` 一個字都看不到。
 ──────────────────────────────────────────────────────────────────────────
 MSG
 fi
