@@ -1,5 +1,6 @@
 #include "pipe_server.h"
 
+#include "settings_window.h"
 #include "status_bar.h"
 
 #include <sddl.h>
@@ -11,6 +12,7 @@
 #include "../common/hotkey_policy.h"
 #include "../common/redeploy_flow.h"
 #include "../common/schema_choice.h"
+#include "../common/status_cells.h"
 #include "../winshared/winutil.h"
 #include "rime_shell.h"
 
@@ -63,6 +65,11 @@ bool WaitOverlapped(HANDLE pipe, OVERLAPPED* ov, HANDLE stop_event,
 PipeServer::PipeServer(Engine* engine, CandidateUi* ui, SettingsStore* settings)
     : engine_(engine), ui_(ui), settings_(settings) {
   stop_event_ = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  // 候選窗上的滾輪。⚠ 候選窗比我們晚死(main.cc 的宣告順序),
+  //   所以解構子要把這個回呼收回來。
+  if (ui_) ui_->SetPageHandler([this](int32_t steps) {
+    OnCandidateWheel(steps);
+  });
   // ⚠ 部署之後引擎要把 session 建回來,而「該套什麼」只有這裡讀得到
   //   (設定檔 + 語言設定檔 + 方案清單)。把同一支函式交給它,
   //   兩條路就不可能漂移。
@@ -99,11 +106,12 @@ Engine::SessionPlan PipeServer::PlanForLang(
   //   那份計畫裡的三件事:
   //     1. 簡繁(set_variant 為假 = 使用者說「我自己管」,一個都不碰)
   //     2. 標點(kUnset = followSchema = 整項不出現;設成 false 不是同一件事)
-  //     3. 中英(**永遠在**)—— 使用者在那一橫上切成英文之後開的新程式
+  //     3. 全／半形(同標點:kUnset = 跟著方案 = 整項不出現)
+  //     4. 中英(**永遠在**)—— 使用者在那一橫上切成英文之後開的新程式
   //        也要是英文的;而它同時是備用 session 的**計畫**,不放進來的話
   //        備用池裡那個照舊狀態配好的 session 會被判成「計畫相同」
   //        而直接交出去。
-  plan.options = BuildOptionPlan(choice, langid, st.Punctuation(),
+  plan.options = BuildOptionPlan(choice, langid, st.Punctuation(), st.Shape(),
                                  engine_ && engine_->AsciiMode());
   return plan;
 }
@@ -114,7 +122,62 @@ PipeServer::~PipeServer() {
   //   宣告順序),所以走之前要把它收回來 —— 不然引擎關閉時排乾佇列的
   //   那一下,重建工作會呼叫一個已經不在的物件。
   if (engine_) engine_->SetSessionPlanner(nullptr);
+  // 同上:候選窗還活著,而它手上那個 lambda 捕捉的是 this。
+  if (ui_) ui_->SetPageHandler(nullptr);
   if (stop_event_) ::CloseHandle(stop_event_);
+}
+
+bool PipeServer::ToggleVariantPref() {
+  if (!settings_window_ || !engine_) return false;
+  // ⚠ 方向從**引擎回讀**算,不是從設定檔算,也不是從畫面反推 ——
+  //   與狀態列第一格那一段是同一條理由:拿畫面反推的話,只要畫面曾經
+  //   與引擎不一致,再按一次送的就是同一個值,使用者會覺得這顆鍵
+  //   只能往一個方向切。
+  const Engine::StatusReadback rb = engine_->ReadBackStatus();
+  if (!rb.ok) return false;
+  const VariantCell now =
+      VariantCellFrom((rb.status_flags & kStVariantKnown) != 0,
+                      (rb.status_flags & kStSimplified) != 0);
+  bool to_simplified = false;
+  // ⚠ 判斷只有一份(common/status_cells.cc)。kHidden 時它回 false ——
+  //   引擎沒有回報字形,方向是猜的,所以這顆鍵什麼都不做。
+  if (!ToggleVariantTarget(now, &to_simplified)) return false;
+  settings_window_->SetVariantPref(to_simplified ? VariantPref::kSimplified
+                                                 : VariantPref::kTraditional);
+  return true;
+}
+
+void PipeServer::OnCandidateWheel(int32_t steps) {
+  // ⚠ 這一支跑在**候選窗的 UI 執行緒**上。
+  uint64_t sid = 0;
+  RECT caret{};
+  {
+    std::lock_guard<std::mutex> lock(ui_mu_);
+    sid = ui_session_;
+    caret = ui_caret_;
+  }
+  if (sid == 0 || engine_ == nullptr || steps == 0) return;
+  const bool backward = steps < 0;
+  int32_t n = steps < 0 ? -steps : steps;
+  // ⚠ 一次很用力的撥可能算出幾十頁,而每一頁都要走一趟引擎佇列 ——
+  //   而這條執行緒正是畫候選窗的那一條,排隊時它畫不了東西。
+  //   撥過頭的人要的是「往回一點」,不是「跑到最後一頁」。
+  if (n > 8) n = 8;
+  Result r;
+  bool moved = false;
+  for (int32_t i = 0; i < n; ++i) {
+    r = engine_->ChangePage(sid, backward);
+    // 已經在第一頁 / 最後一頁 —— librime 說沒動,就不要再問下去,
+    // 也不要拿一份「沒動」的快照去重畫(那只是白閃一下)。
+    if (!r.handled) break;
+    moved = true;
+  }
+  if (!moved) return;
+  // ⚠ 兩個表面必須讀**同一份**快照(ui-design §12.10.1 規範性)。
+  //   只更新候選窗的話,那一橫上的簡繁/中英會停在翻頁前那一份 ——
+  //   翻頁不改變它們,所以現在看不出來,而那正是它以後會漂的原因。
+  if (ui_) ui_->Update(r.snap, caret);
+  if (bar_) bar_->OnSnapshot(r.snap);
 }
 
 HANDLE PipeServer::CreateInstance(bool first, DWORD* err) {
@@ -443,6 +506,14 @@ void PipeServer::ServeClient(HANDLE pipe) {
   };
 
   auto push_ui = [&](const Snapshot& snap) {
+    {
+      // 滾輪翻頁要知道翻誰的。⚠ 沒有候選時清成 0 —— 留著的話,候選窗
+      //   收起來之後滾輪仍然會去翻一個看不見的 session:使用者在別的
+      //   地方捲網頁,我們在背後動他的組字狀態,而畫面上什麼都看不出來。
+      std::lock_guard<std::mutex> lock(ui_mu_);
+      ui_session_ = snap.items.empty() ? 0 : session;
+      ui_caret_ = caret;
+    }
     if (snap.items.empty())
       ui_->Hide();
     else
@@ -711,9 +782,27 @@ void PipeServer::ServeClient(HANDLE pipe) {
           if (!send(EncodeResult(seq, r))) goto done;
           break;
         }
-        Result r = action == KeyAction::kToggleAsciiMode
-                       ? engine_->ToggleAsciiMode(k.session)
-                       : engine_->ProcessKey(k.session, k.keysym, k.mods);
+        Result r;
+        if (action == KeyAction::kToggleVariant) {
+          // 簡繁快捷鍵(Ctrl+Shift+F,G76)。
+          //
+          // ⚠ 回的是**當下這一份**快照,不是空的。DLL 收到 handled=1
+          //   之後會把它套進文件(tsf/text_service.cc 的 SendAsciiToggle
+          //   那一整段 ⚠),而空快照的意思是「沒有組字」——
+          //   使用者打到一半的那一段會當場消失。
+          //   簡繁本身是非同步套上去的(設定視窗那條執行緒),所以此刻
+          //   文件本來就不該有任何變化,拿當下這一份正是對的。
+          if (ToggleVariantPref()) {
+            r = engine_->CurrentResult(k.session);
+            r.handled = true;
+          }
+          // ToggleVariantPref 回 false = 什麼都沒做 → r.handled 維持 false
+          // → DLL 把那顆鍵交回宿主。**不可以**假裝切了。
+        } else if (action == KeyAction::kToggleAsciiMode) {
+          r = engine_->ToggleAsciiMode(k.session);
+        } else {
+          r = engine_->ProcessKey(k.session, k.keysym, k.mods);
+        }
         note_schema(r.snap);
         push_ui(r.snap);
         if (!send(EncodeResult(seq, r))) goto done;
@@ -843,6 +932,13 @@ done:
   //   成因之一。這裡改成非同步之後,這條連線的執行緒不再陪著等;
   //   工作本身仍然在引擎執行緒上、順序不變,詞典一樣寫得回去。
   if (session != 0) engine_->EndSessionAsync(session);
+  {
+    // ⚠ 這條連線走了,滾輪就不可以再指著它的 session。少了這一段,
+    //   宿主關掉之後在候選窗**最後出現的那個位置**上滾輪,會對一個
+    //   已經被 EndSession 的 id 呼叫 rs_change_page。
+    std::lock_guard<std::mutex> lock(ui_mu_);
+    if (ui_session_ == session) ui_session_ = 0;
+  }
   ui_->Hide();
   ::FlushFileBuffers(pipe);
   ::DisconnectNamedPipe(pipe);

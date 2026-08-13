@@ -2983,6 +2983,414 @@ PYSCRIPT
     esac
   done <<< "${w37out}"
   [ "${w37bad}" -eq 0 ] && ok "W37 部署回呼走 CallbackGate:OnDeploy 只在閘裡動 atomic 與排一件工作(沒有 rs_*),Start 開閘、Stop 的**第一句**就關閘(排在 started_ 那一問與 queue_.Stop() 之前)—— Stop() 返回時「沒有回呼還在用這個 Engine」是被鎖保證的"
+
+  # ── W38:候選窗的滾輪翻頁,整條鏈都要接著 ─────────────────────
+  #
+  # ⚠ 這一條守的**不是點,是鏈**。G71 之前的狀態正是這個專案最會出的那種:
+  #   `Op::kChangePage` 在 protocol.h 上、pipe_server 解得出來、
+  #   Engine::ChangePage 會呼叫 rs_change_page、ipc_client 也有
+  #   SendChangePage —— **整個 windows/ 底下一個呼叫點都沒有**。
+  #   每一段都寫好了,只是沒有人按得到它,而只有使用者的手指找得到這件事。
+  #
+  #   所以這裡逐段問:訊息收得到嗎 → 收到之後走純函式判斷嗎 →
+  #   判斷完交得出去嗎 → 有人接嗎 → 接的人真的翻頁嗎 →
+  #   翻完兩個表面都更新嗎 → 有人記得「這一頁是誰的」嗎。
+  #   少任何一段,畫面上都看不出來(滾輪就是沒反應),而那不會有人回報。
+  check
+  local w38bad=0
+  local w38out; w38out="$("${PY}" - "${CODE_DIR}" <<'PYSCRIPT'
+import os, re, sys
+root = sys.argv[1]
+
+def read(rel):
+    try:
+        return open(os.path.join(root, rel), encoding='utf-8',
+                    errors='replace').read()
+    except OSError:
+        return None
+
+cw = read('service/cand_window.cc')
+ps = read('service/pipe_server.cc')
+cl = read('common/cand_layout.cc')
+if cw is None or ps is None or cl is None:
+    print('NOSRC=1')
+    raise SystemExit(0)
+
+def match_from(src, i):
+    depth = 0
+    for j in range(i, len(src)):
+        if src[j] == '{':
+            depth += 1
+        elif src[j] == '}':
+            depth -= 1
+            if depth == 0:
+                return (i, j + 1)
+    return (i, len(src))
+
+def body_of(src, sig):
+    i = src.find(sig)
+    if i < 0:
+        return None
+    b = src.find('{', i)
+    if b < 0:
+        return None
+    ob, cb = match_from(src, b)
+    return src[ob + 1:cb - 1]
+
+# 分母:候選窗自己處理的視窗訊息。掃空 = 範圍寫錯,那必須紅。
+print('NCASE=%d' % len(re.findall(r'case\s+WM_[A-Z]+', cw)))
+
+if 'case WM_MOUSEWHEEL' not in cw:
+    print('NOWHEELCASE=1')
+elif 'OnWheel(' not in cw:
+    print('WHEELCASENOCALL=1')
+
+ow = body_of(cw, 'void CandidateWindow::OnWheel(')
+if ow is None:
+    print('NOWHEELFN=1')
+else:
+    if 'WheelPageSteps(' not in ow:
+        print('WHEELNOPUREFN=1')
+    # ⚠ 「有讀到 page_fn_」不等於「有叫它」。這一格是覆核時實測出來的:
+    #    植入 W38c(把 `if (fn) fn(steps);` 換成 `(void)steps;`)之後
+    #    整支守門仍然是綠的 —— 那條反向測試本來等於沒做。
+    if 'page_fn_' not in ow or 'fn(steps)' not in ow:
+        print('WHEELNOHANDOFF=1')
+    if 'shown_.items.empty()' not in ow:
+        print('WHEELNOEMPTYGUARD=1')
+
+if 'WheelPageSteps' not in cl:
+    print('NOPUREIMPL=1')
+
+if not re.search(r'SetPageHandler\(\s*\[this\]', ps):
+    print('NOINSTALL=1')
+if 'SetPageHandler(nullptr)' not in ps:
+    print('NOUNINSTALL=1')
+
+oc = body_of(ps, 'void PipeServer::OnCandidateWheel(')
+if oc is None:
+    print('NOHANDLERFN=1')
+else:
+    if 'ChangePage(' not in oc:
+        print('HANDLERNOCHANGEPAGE=1')
+    if 'ui_->Update(' not in oc:
+        print('HANDLERNOREPAINT=1')
+    if 'bar_->OnSnapshot(' not in oc:
+        print('HANDLERNOBAR=1')
+    if 'ui_session_' not in oc:
+        print('HANDLERNOSESSION=1')
+
+if not re.search(r'ui_session_\s*=\s*snap\.items\.empty\(\)', ps):
+    print('NOSESSIONRECORD=1')
+PYSCRIPT
+)"
+  local ncase; ncase="$(num "$(printf '%s\n' "${w38out}" | grep '^NCASE=' | cut -d= -f2)")"
+  need_scope "W38 候選窗的視窗訊息分支" "${ncase}" 4 || w38bad=1
+  local w38line
+  while IFS= read -r w38line; do
+    case "${w38line}" in
+      NOSRC=*)
+        red "W38:找不到 cand_window.cc / pipe_server.cc / cand_layout.cc —— 掃描範圍錯了"; w38bad=1 ;;
+      NOWHEELCASE=*)
+        red "W38:候選窗沒有 WM_MOUSEWHEEL 分支 —— 滾輪翻頁整條鏈的第一段就斷了(而畫面上看起來只是「滾輪沒反應」)"; w38bad=1 ;;
+      WHEELCASENOCALL=*)
+        red "W38:有 WM_MOUSEWHEEL 分支但沒有呼叫 OnWheel() —— 收到了不做事"; w38bad=1 ;;
+      NOWHEELFN=*)
+        red "W38:找不到 CandidateWindow::OnWheel() 的本體"; w38bad=1 ;;
+      WHEELNOPUREFN=*)
+        red "W38:OnWheel 沒有走 WheelPageSteps() —— 直接看 delta 的正負在滑鼠上正常,而精密觸控板一次輕撥會送出一連串小增量,使用者一撥就翻掉十幾頁。判斷要留在純函式裡才驗得到"; w38bad=1 ;;
+      WHEELNOHANDOFF=*)
+        red "W38:OnWheel 算完之後沒有交給 page_fn_ —— 又一個「算對了但沒有人收」"; w38bad=1 ;;
+      WHEELNOEMPTYGUARD=*)
+        red "W38:OnWheel 沒有擋「現在沒有候選」—— 隱藏的視窗仍然收得到 hover 捲動,那時翻頁是在使用者背後動他的組字狀態"; w38bad=1 ;;
+      NOPUREIMPL=*)
+        red "W38:common/cand_layout.cc 裡沒有 WheelPageSteps —— 純函式那一半不見了,Ubuntu 上就驗不到"; w38bad=1 ;;
+      NOINSTALL=*)
+        red "W38:pipe_server 沒有掛上 SetPageHandler —— 候選窗手上那個回呼永遠是空的,這正是 kChangePage 原本的處境(線路接好了沒有人叫它)"; w38bad=1 ;;
+      NOUNINSTALL=*)
+        red "W38:pipe_server 的解構子沒有 SetPageHandler(nullptr) —— 候選窗比它晚死,那個 lambda 捕捉的是一個已經不在的 this"; w38bad=1 ;;
+      NOHANDLERFN=*)
+        red "W38:找不到 PipeServer::OnCandidateWheel() 的本體"; w38bad=1 ;;
+      HANDLERNOCHANGEPAGE=*)
+        red "W38:OnCandidateWheel 沒有呼叫 Engine::ChangePage —— 收到滾輪卻沒有翻頁"; w38bad=1 ;;
+      HANDLERNOREPAINT=*)
+        red "W38:OnCandidateWheel 翻完頁沒有把新快照推回候選窗 —— 頁翻了、畫面沒動,而使用者按的數字鍵會選到看不見的字"; w38bad=1 ;;
+      HANDLERNOBAR=*)
+        red "W38:OnCandidateWheel 只更新候選窗、沒有餵給那一橫 —— ui-design §12.10.1 規範性:兩個表面必須讀同一份快照"; w38bad=1 ;;
+      HANDLERNOSESSION=*)
+        red "W38:OnCandidateWheel 沒有讀 ui_session_ —— 它不知道要翻誰的頁"; w38bad=1 ;;
+      NOSESSIONRECORD=*)
+        red "W38:push_ui 沒有把「沒有候選 → ui_session_ 清成 0」寫下來 —— 候選窗收起來之後,滾輪仍然會去翻一個看不見的 session"; w38bad=1 ;;
+    esac
+  done <<< "${w38out}"
+  [ "${w38bad}" -eq 0 ] && ok "W38 滾輪翻頁整條鏈都接著:WM_MOUSEWHEEL → OnWheel(擋空清單、走純函式 WheelPageSteps)→ page_fn_ → PipeServer::OnCandidateWheel → Engine::ChangePage → 候選窗與那一橫**同一份**快照,而且 push_ui 記著「這一頁是誰的」、解構子把回呼收回來"
+
+  # ── W39:頁碼從快照到畫面,整條鏈都要接著 ─────────────────────
+  #
+  # ⚠ 同 W38,守的是鏈。G72 之前:`page_no` / `is_last_page` 一路從
+  #   `rs_menu` 進到 `Snapshot`(protocol.h:193–195),而整個 `windows/`
+  #   底下**沒有任何地方讀它們**。使用者翻得動頁,卻不知道自己在第幾頁、
+  #   後面還有沒有 —— 於是「下一頁大概就沒了」這個猜測會讓他在第一頁
+  #   就停下來。
+  #
+  # ⚠ 字面本身是**規範性**的(theme-format §8.12),所以這裡也守
+  #   「判斷留在純函式裡」:自己在繪製碼裡拼一個 "1/3" 出來,在 Ubuntu 上
+  #   一行都驗不到,而它同時是違反規範的(librime 不提供總頁數)。
+  check
+  local w39bad=0
+  local w39out; w39out="$("${PY}" - "${CODE_DIR}" <<'PYSCRIPT'
+import os, re, sys
+root = sys.argv[1]
+
+def read(rel):
+    try:
+        return open(os.path.join(root, rel), encoding='utf-8',
+                    errors='replace').read()
+    except OSError:
+        return None
+
+cw = read('service/cand_window.cc')
+cl = read('common/cand_layout.cc')
+ch = read('common/cand_layout.h')
+if cw is None or cl is None or ch is None:
+    print('NOSRC=1')
+    raise SystemExit(0)
+
+def match_from(src, i):
+    depth = 0
+    for j in range(i, len(src)):
+        if src[j] == '{':
+            depth += 1
+        elif src[j] == '}':
+            depth -= 1
+            if depth == 0:
+                return (i, j + 1)
+    return (i, len(src))
+
+def body_of(src, sig):
+    i = src.find(sig)
+    if i < 0:
+        return None
+    b = src.find('{', i)
+    if b < 0:
+        return None
+    ob, cb = match_from(src, b)
+    return src[ob + 1:cb - 1]
+
+# 分母:cand_layout.h 上的欄位。掃空 = 範圍寫錯,必須紅。
+print('NFIELD=%d' % len(re.findall(r'^\s+double\s+\w+', ch, re.M)))
+
+# ⚠ 用詞界,不是子字串:把它改名成 PageIndicatorTextRemoved 的植入
+#   在子字串比對底下**完全沒有變紅**(實跑確認過)。
+if not re.search(r'\bPageIndicatorText\s*\(', cl):
+    print('NOPUREIMPL=1')
+
+rl = body_of(cw, 'void CandidateWindow::Relayout()')
+if rl is None:
+    print('NORELAYOUT=1')
+else:
+    if not re.search(r'page\.page_no\s*=\s*shown_\.page_no', rl):
+        print('NOPAGEFROMSNAP=1')
+    if not re.search(r'page\.is_last_page\s*=\s*shown_\.is_last_page', rl):
+        print('NOLASTFROMSNAP=1')
+    # ⚠ 不能用 `[^;]*`:那一次呼叫的第三個引數是一個 lambda,而 lambda
+    #   本體裡有分號。分兩問:有沒有呼叫、最後一個引數是不是 page。
+    if not re.search(r'ComputeLayout\(', rl) or \
+       not re.search(r',\s*page\s*\)\s*;', rl):
+        print('NOPAGEARG=1')
+
+pt = body_of(cw, 'void CandidateWindow::Paint(')
+if pt is None:
+    print('NOPAINT=1')
+else:
+    # ⚠ 「本體裡出現 layout_.page_text」擋不住把守衛改成 if (false) ——
+    #   那個植入實跑之後守門仍然全綠。要問的是**那個判斷本身還在不在**。
+    if 'if (!layout_.page_text.empty())' not in pt:
+        print('NOPAGEDRAW=1')
+    elif 'layout_.page_x' not in pt or 'layout_.page_y' not in pt:
+        print('NOPAGEPOS=1')
+    elif 'TextOutW' not in pt:
+        print('NOPAGETEXTOUT=1')
+
+# 繪製碼不得自己拼頁碼字面(§8.12 是規範性的,而且沒有總頁數)。
+if re.search(r'L"\s*%d\s*/\s*%d', cw) or re.search(r'"/%d"', cw):
+    print('HANDROLLED=1')
+PYSCRIPT
+)"
+  local nfield; nfield="$(num "$(printf '%s\n' "${w39out}" | grep '^NFIELD=' | cut -d= -f2)")"
+  need_scope "W39 cand_layout.h 的欄位" "${nfield}" 20 || w39bad=1
+  local w39line
+  while IFS= read -r w39line; do
+    case "${w39line}" in
+      NOSRC=*)
+        red "W39:找不到 cand_window.cc / cand_layout.{h,cc} —— 掃描範圍錯了"; w39bad=1 ;;
+      NOPUREIMPL=*)
+        red "W39:common/cand_layout.cc 裡沒有 PageIndicatorText —— §8.12 的字面規則沒有純函式版本,Ubuntu 上驗不到"; w39bad=1 ;;
+      NORELAYOUT=*)
+        red "W39:找不到 CandidateWindow::Relayout() 的本體"; w39bad=1 ;;
+      NOPAGEFROMSNAP=*)
+        red "W39:Relayout 沒有從**這一份快照**取 page_no —— 頁碼要嘛不動、要嘛是別人的"; w39bad=1 ;;
+      NOLASTFROMSNAP=*)
+        red "W39:Relayout 沒有從快照取 is_last_page —— 「後面還有沒有」是這一格唯一的內容"; w39bad=1 ;;
+      NOPAGEARG=*)
+        red "W39:ComputeLayout 沒有收到 page —— 版面不知道要留位置,頁碼會壓在候選上面(或根本不畫)"; w39bad=1 ;;
+      NOPAINT=*)
+        red "W39:找不到 CandidateWindow::Paint() 的本體"; w39bad=1 ;;
+      NOPAGEDRAW=*)
+        red "W39:Paint 沒有畫 layout_.page_text —— 又一個「算出來了但沒有人畫」,而那正是 G72 本身"; w39bad=1 ;;
+      NOPAGEPOS=*)
+        red "W39:Paint 沒有用 layout_.page_x / page_y —— 版面算了位置卻不照它畫,頁碼會壓在候選上面"; w39bad=1 ;;
+      NOPAGETEXTOUT=*)
+        red "W39:Paint 讀了 page_text 卻沒有任何輸出呼叫"; w39bad=1 ;;
+      HANDROLLED=*)
+        red "W39:繪製碼自己拼了一個 n/m 形式的頁碼 —— §8.12 明文規定後綴是 `+` 而不是分數,因為 librime **不提供總頁數**,寫成 1/3 就得靠猜"; w39bad=1 ;;
+    esac
+  done <<< "${w39out}"
+  [ "${w39bad}" -eq 0 ] && ok "W39 頁碼整條鏈都接著:快照的 page_no / is_last_page → PageHint → ComputeLayout(留位置)→ PageIndicatorText(§8.12 的字面,純函式)→ Paint 真的畫出來,而且繪製碼沒有自己拼分數"
+
+  # ── W40:簡繁快捷鍵 Ctrl+Shift+F,整條鏈都要接著 ────────────────
+  #
+  # ⚠ 同 W38 / W39,守的是鏈。這一條有**七段**,而其中三段壞掉時畫面上
+  #   完全一樣(按了沒反應):GUID 沒定義、保留鍵沒註冊、OnPreservedKey
+  #   沒認、服務端沒接、寫入沒走單一來源、回的是空快照、主程式沒把設定
+  #   視窗交給服務。
+  #
+  # ⚠ **回空快照那一段最要命,而且它不是「沒反應」**:DLL 收到 handled=1
+  #   之後會把快照套進文件(tsf/text_service.cc 的 SendAsciiToggle),
+  #   空快照的意思是「沒有組字」—— 使用者打到一半的那一段會當場消失。
+  #   那正是這一批的標題要消滅的東西。
+  check
+  local w40bad=0
+  local w40out; w40out="$("${PY}" - "${CODE_DIR}" <<'PYSCRIPT'
+import os, re, sys
+root = sys.argv[1]
+
+def read(rel):
+    try:
+        return open(os.path.join(root, rel), encoding='utf-8',
+                    errors='replace').read()
+    except OSError:
+        return None
+
+ts = read('tsf/text_service.cc')
+gc = read('tsf/guids.cc')
+hp = read('common/hotkey_policy.cc')
+ps = read('service/pipe_server.cc')
+mn = read('service/main.cc')
+if ts is None or gc is None or hp is None or ps is None or mn is None:
+    print('NOSRC=1')
+    raise SystemExit(0)
+
+def match_from(src, i):
+    depth = 0
+    for j in range(i, len(src)):
+        if src[j] == '{':
+            depth += 1
+        elif src[j] == '}':
+            depth -= 1
+            if depth == 0:
+                return (i, j + 1)
+    return (i, len(src))
+
+def body_of(src, sig):
+    i = src.find(sig)
+    if i < 0:
+        return None
+    b = src.find('{', i)
+    if b < 0:
+        return None
+    ob, cb = match_from(src, b)
+    return src[ob + 1:cb - 1]
+
+# 分母:tsf/ 底下的保留鍵註冊呼叫。掃空 = 範圍寫錯,必須紅。
+print('NPRESERVE=%d' % len(re.findall(r'->PreserveKey\(', ts)))
+
+if not re.search(r'\bGUID_RimePreservedKeyVariant\s*=', gc):
+    print('NOGUID=1')
+
+if not re.search(r'PreserveKey\(\s*client_id_,\s*GUID_RimePreservedKeyVariant',
+                 ts):
+    print('NOREGISTER=1')
+if 'TF_MOD_CONTROL | TF_MOD_SHIFT' not in ts:
+    print('NOMODS=1')
+if 'UnpreserveKey(GUID_RimePreservedKeyVariant' not in ts:
+    print('NOUNREGISTER=1')
+
+ok_ = body_of(ts, 'STDMETHODIMP TextService::OnPreservedKey(')
+if ok_ is None:
+    print('NOONPRESERVED=1')
+else:
+    if 'GUID_RimePreservedKeyVariant' not in ok_:
+        print('ONPRESERVEDNOBRANCH=1')
+    elif 'VariantToggleKeysym()' not in ok_:
+        print('ONPRESERVEDNOSEND=1')
+
+if 'Hotkey::kToggleVariant' not in hp:
+    print('NOCLASSIFY=1')
+
+kb = body_of(ps, 'bool PipeServer::ToggleVariantPref()')
+if kb is None:
+    print('NOTOGGLEFN=1')
+else:
+    if 'ToggleVariantTarget(' not in kb:
+        print('TOGGLENOSINGLESOURCE=1')
+    if 'SetVariantPref(' not in kb:
+        print('TOGGLENOWRITE=1')
+    if 'ReadBackStatus()' not in kb:
+        print('TOGGLENOREADBACK=1')
+
+if 'KeyAction::kToggleVariant' not in ps:
+    print('SERVICENOACTION=1')
+elif 'CurrentResult(' not in ps:
+    print('SERVICEEMPTYSNAP=1')
+
+# ⚠ 要問的是 **server.** 那一個。main.cc 裡還有一個
+#   `status_bar.SetSettingsWindow(&settings)` —— 只比對函式名的話,
+#   把 server 那一行整條刪掉守門仍然全綠(實跑確認過)。
+if 'server.SetSettingsWindow(' not in mn:
+    print('MAINNOWIRE=1')
+PYSCRIPT
+)"
+  local npres; npres="$(num "$(printf '%s\n' "${w40out}" | grep '^NPRESERVE=' | cut -d= -f2)")"
+  need_scope "W40 保留鍵註冊呼叫" "${npres}" 2 || w40bad=1
+  local w40line
+  while IFS= read -r w40line; do
+    case "${w40line}" in
+      NOSRC=*)
+        red "W40:找不到 tsf/ 或 service/ 的原始檔 —— 掃描範圍錯了"; w40bad=1 ;;
+      NOGUID=*)
+        red "W40:tsf/guids.cc 裡沒有 GUID_RimePreservedKeyVariant 的定義"; w40bad=1 ;;
+      NOREGISTER=*)
+        red "W40:ActivateEx 沒有註冊簡繁那一顆保留鍵 —— 按下去 TSF 根本不會交回來,而畫面上與「沒做這個功能」一模一樣"; w40bad=1 ;;
+      NOMODS=*)
+        red "W40:註冊的修飾鍵不是 TF_MOD_CONTROL | TF_MOD_SHIFT —— 與 common/hotkey_policy.cc 的正規形式對不上,等於註冊了一顆永遠不會被認得的鍵"; w40bad=1 ;;
+      NOUNREGISTER=*)
+        red "W40:Deactivate 沒有把簡繁那一顆還回去 —— 這個宿主接下來的 Ctrl+Shift+F 會被一個已經不存在的文字服務攔著,而那查不到我們頭上"; w40bad=1 ;;
+      NOONPRESERVED=*)
+        red "W40:找不到 OnPreservedKey 的本體"; w40bad=1 ;;
+      ONPRESERVEDNOBRANCH=*)
+        red "W40:OnPreservedKey 沒有認簡繁那一顆的 GUID —— 註冊了、TSF 也交回來了,而我們當場丟掉"; w40bad=1 ;;
+      ONPRESERVEDNOSEND=*)
+        red "W40:OnPreservedKey 認了 GUID 卻沒有送 VariantToggleKeysym() —— 兩邊的正規形式對不上"; w40bad=1 ;;
+      NOCLASSIFY=*)
+        red "W40:common/hotkey_policy.cc 認不出 Hotkey::kToggleVariant —— 服務端收到那顆鍵會交給 librime,而 librime 不處理它"; w40bad=1 ;;
+      NOTOGGLEFN=*)
+        red "W40:找不到 PipeServer::ToggleVariantPref() 的本體 —— 服務端沒有人處理那顆鍵"; w40bad=1 ;;
+      TOGGLENOSINGLESOURCE=*)
+        red "W40:ToggleVariantPref 沒有走 ToggleVariantTarget() —— 方向的判斷變成第二份真相,而漂移的樣子是「從這裡切有效、從那裡切無效」"; w40bad=1 ;;
+      TOGGLENOWRITE=*)
+        red "W40:ToggleVariantPref 沒有呼叫 SetVariantPref —— 切了不存,換一個程式就變回去"; w40bad=1 ;;
+      TOGGLENOREADBACK=*)
+        red "W40:ToggleVariantPref 沒有向引擎回讀 —— 方向從畫面或設定檔反推,只要曾經不一致,這顆鍵就只能往一個方向切"; w40bad=1 ;;
+      SERVICENOACTION=*)
+        red "W40:pipe_server 沒有處理 KeyAction::kToggleVariant —— 又一個「線路接好了沒有人叫它」"; w40bad=1 ;;
+      SERVICEEMPTYSNAP=*)
+        red "W40:簡繁那一條沒有回一份真的快照(CurrentResult)—— DLL 會把空快照套進文件,使用者打到一半的字當場消失"; w40bad=1 ;;
+      MAINNOWIRE=*)
+        red "W40:service/main.cc 沒有把設定視窗交給 PipeServer —— ToggleVariantPref 永遠回 false,那顆鍵永遠不做事"; w40bad=1 ;;
+    esac
+  done <<< "${w40out}"
+  [ "${w40bad}" -eq 0 ] && ok "W40 簡繁快捷鍵整條鏈都接著:GUID → PreserveKey{'F', Ctrl|Shift} → OnPreservedKey 認得 → VariantToggleKeysym 的正規形式 → hotkey_policy 分類 → pipe_server 走 ToggleVariantTarget(單一來源)+ 向引擎回讀 + SetVariantPref → 回的是真快照不是空的,而且 main.cc 真的把設定視窗交出去、Deactivate 真的還鍵"
 }
 
 # ────────────────────────────────────────────────────────────────
@@ -3058,6 +3466,27 @@ self_check() {
 "W30 頁碼又寫死成數字|service/status_bar.cc|s=s.replace('settings_->OpenAt(StateIsFailure(service_state_) ? kPageAdvanced','settings_->OpenAt(StateIsFailure(service_state_) ? 3',1).replace(': kPageSchemas);',': 0);',1)"
 "W30b 只有一邊改回數字(跨行,而且引數裡自己有括號)|service/status_bar.cc|s=s.replace(': kPageSchemas);',': 0);',1)"
 "W9 少一條單元測試|tests/test_status_cells.cc|s=s.replace('TEST(status_cells_input_mode_shows_exactly_one_label)','TEST(status_cells_renamed_away)',1)"
+"W38a 沒有人收滾輪|service/cand_window.cc|s=s.replace('case WM_MOUSEWHEEL:','case WM_NULL + 4243:',1)"
+"W38b 滾輪不走純函式(觸控板一撥翻十幾頁)|service/cand_window.cc|s=s.replace('const int32_t steps = WheelPageSteps(&wheel_accum_, delta);','const int32_t steps = delta > 0 ? -1 : 1;',1)"
+"W38c 算完了不交出去|service/cand_window.cc|s=s.replace('  if (fn) fn(steps);','  (void)steps;',1)"
+"W38d 回呼沒有人裝(kChangePage 原本的處境)|service/pipe_server.cc|s=s.replace('  if (ui_) ui_->SetPageHandler([this](int32_t steps) {' + chr(10) + '    OnCandidateWheel(steps);' + chr(10) + '  });','',1)"
+"W38e 翻完頁那一橫沒跟上|service/pipe_server.cc|s=s.replace('  if (bar_) bar_->OnSnapshot(r.snap);','',1)"
+"W38f 沒有人記下這一頁是誰的|service/pipe_server.cc|s=s.replace('ui_session_ = snap.items.empty() ? 0 : session;','ui_session_ = session;',1)"
+"W38g 解構子不把回呼收回來|service/pipe_server.cc|s=s.replace('  if (ui_) ui_->SetPageHandler(nullptr);','',1)"
+"W39a 頁碼算出來了沒有人畫(G72 本身)|service/cand_window.cc|s=s.replace('  if (!layout_.page_text.empty()) {','  if (false) {',1)"
+"W39b 版面不知道有頁碼|service/cand_window.cc|s=s.replace('  }, page);','  }, PageHint());',1)"
+"W39c 頁碼不從這一份快照來|service/cand_window.cc|s=s.replace('  page.page_no = shown_.page_no;','  page.page_no = 0;',1)"
+"W39d 「後面還有沒有」不從快照來|service/cand_window.cc|s=s.replace('  page.is_last_page = shown_.is_last_page;','  page.is_last_page = true;',1)"
+"W39e 純函式那一半不見了|common/cand_layout.cc|s=s.replace('std::string PageIndicatorText(','std::string PageIndicatorTextRemoved(',1).replace('  out.page_text = PageIndicatorText(page.page_no, page.is_last_page);','  out.page_text = PageIndicatorTextRemoved(page.page_no, page.is_last_page);',1)"
+"W40a 保留鍵沒註冊|tsf/text_service.cc|s=s.replace('          client_id_, GUID_RimePreservedKeyVariant, &vk, kVarDesc,','          client_id_, GUID_RimePreservedKeyToggle, &vk, kVarDesc,',1)"
+"W40b OnPreservedKey 不認那顆 GUID|tsf/text_service.cc|s=s.replace('  } else if (IsEqualGUID(guid, GUID_RimePreservedKeyVariant)) {','  } else if (false) {',1)"
+"W40c 走了但正規形式對不上|tsf/text_service.cc|s=s.replace('    handled = SendAsciiToggle(ctx, VariantToggleKeysym(),','    handled = SendAsciiToggle(ctx, AsciiToggleKeysym(),',1)"
+"W40d Deactivate 不還鍵|tsf/text_service.cc|s=s.replace('        keystroke->UnpreserveKey(GUID_RimePreservedKeyVariant, &vk);','',1)"
+"W40e 服務端沒有人處理那顆鍵|service/pipe_server.cc|s=s.replace('        if (action == KeyAction::kToggleVariant) {','        if (false) {',1)"
+"W40f 方向自己判一次(第二份真相)|service/pipe_server.cc|s=s.replace('  if (!ToggleVariantTarget(now, &to_simplified)) return false;','  to_simplified = (now != VariantCell::kSimplified);',1)"
+"W40g 切了不回讀,從設定檔反推|service/pipe_server.cc|s=s.replace('  const Engine::StatusReadback rb = engine_->ReadBackStatus();','  Engine::StatusReadback rb; rb.ok = true;',1)"
+"W40h 回一份空快照(使用者打到一半的字會消失)|service/pipe_server.cc|s=s.replace('            r = engine_->CurrentResult(k.session);','',1)"
+"W40i main.cc 沒把設定視窗交出去|service/main.cc|s=s.replace('  server.SetSettingsWindow(no_ui ? nullptr : &settings);','',1)"
 "W27e 拿掉那一橫自己更新的計時器|service/status_bar.cc|s=s.replace('  ::SetTimer(hwnd_, kStateTimer, kStatePollMs, nullptr);','',1)"
 "W27f 計時器還在但不再比對狀態|service/status_bar.cc|s=s.replace('      if (now != self->service_state_) {','      if (false) {',1)"
 "W27g 側欄又變回兩句|service/settings_window.cc|s=s.replace('  ::DrawTextW(hdc, UiText(SidebarStatusTextFor(state)),','  ::DrawTextW(hdc, UiText(UiString::kNavStatusNotRunning),',1)"

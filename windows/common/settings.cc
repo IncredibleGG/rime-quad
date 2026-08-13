@@ -26,6 +26,7 @@ const KnownKey kKnownKeys[] = {
     {keys::kAppearanceFloatingBarPos, nullptr},
     {keys::kTextVariant, "文字"},
     {keys::kTextPunctuation, nullptr},
+    {keys::kTextShape, nullptr},
     {keys::kTextShiftTapToggle, nullptr},
     {keys::kAdvancedLanguage, "進階"},
     {keys::kNetworkEnabled, "連網"},
@@ -287,5 +288,7 @@ void Settings::SetVariantPref(VariantPref v) {
 }
 
 void Settings::SetPunctuation(Tri t) { SetTri(keys::kTextPunctuation, t); }
+
+void Settings::SetShape(Tri t) { SetTri(keys::kTextShape, t); }
 
 }  // namespace rimewin

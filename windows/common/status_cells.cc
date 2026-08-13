@@ -18,6 +18,22 @@ VariantCell VariantCellFromOptions(const VariantOptions& o) {
   return VariantCell::kHidden;
 }
 
+bool ToggleVariantTarget(VariantCell now, bool* to_simplified) {
+  if (!to_simplified) return false;
+  switch (now) {
+    case VariantCell::kSimplified:
+      *to_simplified = false;
+      return true;
+    case VariantCell::kTraditional:
+      *to_simplified = true;
+      return true;
+    case VariantCell::kHidden:
+      // 見標頭:方向是猜的,所以不做,連輸出都不動。
+      return false;
+  }
+  return false;
+}
+
 VariantCell VariantCellFrom(bool known, bool simplified) {
   if (!known) return VariantCell::kHidden;
   return simplified ? VariantCell::kSimplified : VariantCell::kTraditional;

@@ -208,6 +208,7 @@ std::vector<OptionAssign> PlanVariant(bool simplified, uint32_t langid_hint) {
 std::vector<OptionAssign> BuildOptionPlan(const SchemaChoice& choice,
                                           uint32_t langid,
                                           Tri punctuation,
+                                          Tri shape,
                                           bool ascii_mode) {
   std::vector<OptionAssign> out;
   // 1. 簡繁。set_variant 為假 = 使用者說「我自己管」,一個都不碰。
@@ -215,7 +216,10 @@ std::vector<OptionAssign> BuildOptionPlan(const SchemaChoice& choice,
   // 2. 標點。kUnset = followSchema = 整項不出現。
   if (punctuation != Tri::kUnset)
     out.push_back({"ascii_punct", punctuation == Tri::kTrue});
-  // 3. 中英。**永遠**在計畫裡 —— 少了它,兩條路徑的計畫長度就會不同,
+  // 3. 全／半形。kUnset = followSchema = 整項不出現(與標點同一條規矩)。
+  if (shape != Tri::kUnset)
+    out.push_back({"full_shape", shape == Tri::kTrue});
+  // 4. 中英。**永遠**在計畫裡 —— 少了它,兩條路徑的計畫長度就會不同,
   //    而 SameOptions 第一件事就是比長度。那正是這一支要修的東西。
   out.push_back({"ascii_mode", ascii_mode});
   return out;

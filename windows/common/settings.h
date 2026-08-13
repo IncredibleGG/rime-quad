@@ -81,6 +81,14 @@ constexpr const char* kAppearanceFloatingBarPos = "appearance.floatingBarPos";
 // 文字
 constexpr const char* kTextVariant = "text.variant";
 constexpr const char* kTextPunctuation = "text.punctuation";
+// 全形／半形。⚠ 鍵名照 docs/settings-model.md §3 的 id(`text.shape`),
+//   不要自己取 —— 那份規範說「鍵名共用,值可同步,但檔案格式各端自訂」。
+//   ⚠ 規範把它寫成 enum `followSchema`|`halfShape`|`fullShape`,而這裡存的
+//     值是 `true`/`false`(鍵不存在 = followSchema)。**與 text.punctuation
+//     完全一樣的落差**,那一個已經是這樣了(規範的 enum 是
+//     `followSchema`|`full`|`half`)。鍵名一致、值的字面不一致,已寫進
+//     docs/coordination.md §5 請規範所有權方(macOS 端)裁決要不要統一。
+constexpr const char* kTextShape = "text.shape";
 // ⚠ 這一個也是 **Windows 端自己加的**(同 appearance.floatingBar 那兩個):
 //   docs/settings-model.md §3 還沒有「切中英要按哪一顆鍵」的 id。
 //   已寫進 docs/coordination.md §5 請規範所有權方(macOS 端)裁決 ——
@@ -164,6 +172,19 @@ class Settings {
   //    變成「一律西文標點」,而使用者選的是不干預。
   Tri Punctuation() const { return GetTri(keys::kTextPunctuation); }
   void SetPunctuation(Tri t);
+
+  // 全形／半形。三態:kUnset = followSchema(**完全不呼叫 rs_set_option**)。
+  //
+  // ⚠ 與標點同一條理由,而且更容易踩到:很多方案根本沒有 `full_shape`
+  //    這個開關,而有些方案(注音一族的全形變體、日文一族)預設就是全形。
+  //    無條件送 false 會讓「跟著方案」變成「一律半形」,而使用者選的是
+  //    不干預 —— 那是一個他沒有做過的決定,而且他找不到是誰做的。
+  //
+  // ⚠ **未設 == 跟著方案**,不是「半形」。半形雖然是絕大多數中文方案的
+  //    預設,但把它寫成我們的預設,等於在每一個 session 上都送一次
+  //    `full_shape=false`,連「這個方案沒有這個開關」都一起蓋掉。
+  Tri Shape() const { return GetTri(keys::kTextShape); }
+  void SetShape(Tri t);
 
   // 輕點 Shift 切中英。
   //

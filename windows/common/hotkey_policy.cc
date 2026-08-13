@@ -11,6 +11,9 @@ constexpr int32_t kSpace = 0x20;
 // 左 Shift 的 keysym(X11 的 XK_Shift_L)。見 keymap.cc 的同一個常數。
 constexpr int32_t kShiftL = 0xFFE1;
 
+// 簡繁快捷鍵的字母。**大寫**,理由見標頭 VariantToggleKeysym()。
+constexpr int32_t kUpperF = 0x46;
+
 // 判斷時要看的修飾鍵。
 // ⚠ CapsLock **不看**:它是一個持續的狀態,不是使用者為了這顆熱鍵按的,
 //   而「開著大寫鎖定時 Ctrl+空白鍵失效」是一個沒有人猜得到的規則。
@@ -23,6 +26,9 @@ uint32_t AsciiToggleModifiers() { return kModControl; }
 
 int32_t ShiftTapKeysym() { return kShiftL; }
 uint32_t ShiftTapModifiers() { return 0; }
+
+int32_t VariantToggleKeysym() { return kUpperF; }
+uint32_t VariantToggleModifiers() { return kModControl | kModShift; }
 
 Hotkey ClassifyHotkey(int32_t keysym, uint32_t modifiers) {
   // 放開事件不算。⚠ 少了這一條,按一次會切兩次 —— 而「切了兩次」
@@ -44,6 +50,12 @@ Hotkey ClassifyHotkey(int32_t keysym, uint32_t modifiers) {
   if (keysym == kShiftL && (modifiers & kMask) == 0)
     return Hotkey::kToggleAsciiModeShiftTap;
 
+  // 簡繁切換(G76)。⚠ 同樣用**等於**,不是「有沒有含」:
+  //   Ctrl+F 是每一個程式的「尋找」,Ctrl+Shift+Alt+F 是別人的組合鍵。
+  //   多吃一顆就是一顆壞掉的鍵,而那比缺一個功能嚴重。
+  if (keysym == kUpperF && (modifiers & kMask) == (kModControl | kModShift))
+    return Hotkey::kToggleVariant;
+
   return Hotkey::kNone;
 }
 
@@ -57,6 +69,10 @@ KeyAction DecideKeyAction(int32_t keysym, uint32_t modifiers,
       //   librime 自己也認得 Shift_L。
       return shift_tap_enabled ? KeyAction::kToggleAsciiMode
                                : KeyAction::kIgnore;
+    case Hotkey::kToggleVariant:
+      // ⚠ **沒有**使用者開關(同 Ctrl+空白鍵)。shift_tap_enabled 只管
+      //   輕點 Shift 那一格。
+      return KeyAction::kToggleVariant;
     case Hotkey::kNone:
       break;
   }

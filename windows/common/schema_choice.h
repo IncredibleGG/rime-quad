@@ -154,7 +154,12 @@ std::vector<OptionAssign> PlanVariant(bool simplified, uint32_t langid_hint);
 //
 //     1. 簡繁那一組(choice.set_variant 為真時才有,見 PlanVariant)
 //     2. ascii_punct(punctuation != kUnset 時才有)
-//     3. ascii_mode(**永遠有**)
+//     3. full_shape(shape != kUnset 時才有)
+//     4. ascii_mode(**永遠有**)
+//
+// ⚠ full_shape 排在 ascii_mode **之前**是刻意的:ascii_mode 那一項的
+//   註解說它「永遠是最後一項」時,靠的是「後面沒有東西」這個事實,
+//   而不是一句約定。新增的三態選項一律插在它前面,與 ascii_punct 同一格。
 //
 // ⚠ punctuation 的 kUnset = followSchema = **完全不出現在計畫裡**。
 //   設成 false 不是同一件事:很多方案根本沒有那個開關,而有些方案的
@@ -171,6 +176,7 @@ enum class Tri : int;
 std::vector<OptionAssign> BuildOptionPlan(const SchemaChoice& choice,
                                           uint32_t langid,
                                           Tri punctuation,
+                                          Tri shape,
                                           bool ascii_mode);
 
 // ── 改完簡繁設定之後,備用池的那一份計畫要怎麼更新 ────────────────

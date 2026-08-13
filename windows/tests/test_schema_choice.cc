@@ -459,7 +459,7 @@ TEST(build_option_plan_always_carries_ascii_mode) {
     for (int punct = 0; punct < 3; ++punct) {
       for (int ascii = 0; ascii < 2; ++ascii) {
         const std::vector<OptionAssign> plan = BuildOptionPlan(
-            c, langid, static_cast<Tri>(punct), ascii != 0);
+            c, langid, static_cast<Tri>(punct), Tri::kUnset, ascii != 0);
         CHECK_INT(CountOption(plan, "ascii_mode"), 1);
         // 而且值要是傳進去的那一個。
         bool found = false;
@@ -484,14 +484,14 @@ TEST(build_option_plan_unset_punctuation_is_absent_not_false) {
   const SchemaChoice c = ChooseSchema(0x0804u, shipped, pref);
 
   const std::vector<OptionAssign> unset =
-      BuildOptionPlan(c, 0x0804u, Tri::kUnset, false);
+      BuildOptionPlan(c, 0x0804u, Tri::kUnset, Tri::kUnset, false);
   CHECK_INT(CountOption(unset, "ascii_punct"), 0);
 
   const std::vector<OptionAssign> off =
-      BuildOptionPlan(c, 0x0804u, Tri::kFalse, false);
+      BuildOptionPlan(c, 0x0804u, Tri::kFalse, Tri::kUnset, false);
   CHECK_INT(CountOption(off, "ascii_punct"), 1);
   const std::vector<OptionAssign> on =
-      BuildOptionPlan(c, 0x0804u, Tri::kTrue, false);
+      BuildOptionPlan(c, 0x0804u, Tri::kTrue, Tri::kUnset, false);
   CHECK_INT(CountOption(on, "ascii_punct"), 1);
 
   // 三態真的分岔:長度不同、值不同。
@@ -509,7 +509,7 @@ TEST(build_option_plan_variant_untouched_still_carries_mode) {
   CHECK(!c.set_variant);
 
   const std::vector<OptionAssign> plan =
-      BuildOptionPlan(c, 0x0804u, Tri::kUnset, true);
+      BuildOptionPlan(c, 0x0804u, Tri::kUnset, Tri::kUnset, true);
   CHECK_INT(static_cast<int>(plan.size()), 1);
   CHECK_STR(std::string(plan[0].option), "ascii_mode");
   CHECK(plan[0].value);
@@ -529,7 +529,7 @@ TEST(build_option_plan_is_order_stable_and_matches_plan_variant_prefix) {
     const uint32_t langid = kWarmUpLangIds[i];
     const SchemaChoice c = ChooseSchema(langid, shipped, pref);
     const std::vector<OptionAssign> plan =
-        BuildOptionPlan(c, langid, Tri::kTrue, false);
+        BuildOptionPlan(c, langid, Tri::kTrue, Tri::kUnset, false);
 
     size_t k = 0;
     if (c.set_variant) {
@@ -546,7 +546,7 @@ TEST(build_option_plan_is_order_stable_and_matches_plan_variant_prefix) {
     CHECK_INT(static_cast<int>(plan.size()), static_cast<int>(k + 2));
 
     // 同樣的輸入呼叫兩次要一模一樣(沒有隱藏狀態)。
-    CHECK(SamePlan(plan, BuildOptionPlan(c, langid, Tri::kTrue, false)));
+    CHECK(SamePlan(plan, BuildOptionPlan(c, langid, Tri::kTrue, Tri::kUnset, false)));
     ++seen;
   }
   CHECK_INT(seen, kWarmUpLangIdCount);
@@ -567,14 +567,14 @@ TEST(build_option_plan_warmup_covers_every_real_langid) {
     const SchemaChoice want = ChooseSchema(langid, shipped, pref);
     // SESSION_NEW 那一趟:標點沿用方案、中英是行程層級的目前值。
     const std::vector<OptionAssign> want_plan =
-        BuildOptionPlan(want, langid, Tri::kUnset, false);
+        BuildOptionPlan(want, langid, Tri::kUnset, Tri::kUnset, false);
 
     bool covered = false;
     for (int i = 0; i < kWarmUpLangIdCount; ++i) {
       const uint32_t w = kWarmUpLangIds[i];
       const SchemaChoice got = ChooseSchema(w, shipped, pref);
       if (got.schema_id != want.schema_id) continue;
-      if (SamePlan(BuildOptionPlan(got, w, Tri::kUnset, false), want_plan)) {
+      if (SamePlan(BuildOptionPlan(got, w, Tri::kUnset, Tri::kUnset, false), want_plan)) {
         covered = true;
         break;
       }
@@ -616,7 +616,7 @@ TEST(spare_plan_survives_a_traditional_to_simplified_switch) {
   CHECK(hant.set_variant);
   CHECK(!hant.simplified);
   const std::vector<OptionAssign> spare =
-      BuildOptionPlan(hant, langid, Tri::kUnset, false);
+      BuildOptionPlan(hant, langid, Tri::kUnset, Tri::kUnset, false);
 
   // 使用者在設定裡把「文字」改成簡體。
   SchemaPreference now;
@@ -631,7 +631,7 @@ TEST(spare_plan_survives_a_traditional_to_simplified_switch) {
   const std::vector<OptionAssign> updated =
       UpdateVariantInPlan(spare, set_variant, simplified, langid);
   const std::vector<OptionAssign> fresh = BuildOptionPlan(
-      ChooseSchema(langid, kShipped, now), langid, Tri::kUnset, false);
+      ChooseSchema(langid, kShipped, now), langid, Tri::kUnset, Tri::kUnset, false);
   CHECK(SamePlan(updated, fresh));
 
   // 而且被開起來的那一個仍然排在最後(「先關再開」沒有被更新弄丟)——
@@ -670,10 +670,11 @@ TEST(updated_spare_plan_is_identical_to_a_freshly_built_one) {
       before.follow_input_mode = warm.follow;
       before.variant = warm.variant;
       for (int punct = 0; punct < 3; ++punct) {
+       for (int shape = 0; shape < 3; ++shape) {
         for (int ascii = 0; ascii < 2; ++ascii) {
           const std::vector<OptionAssign> spare = BuildOptionPlan(
               ChooseSchema(langid, kShipped, before), langid,
-              static_cast<Tri>(punct), ascii != 0);
+              static_cast<Tri>(punct), static_cast<Tri>(shape), ascii != 0);
           for (const Pref& after : kPrefs) {
             SchemaPreference now;
             now.follow_input_mode = after.follow;
@@ -684,15 +685,16 @@ TEST(updated_spare_plan_is_identical_to_a_freshly_built_one) {
                 UpdateVariantInPlan(spare, set_variant, simplified, langid);
             const std::vector<OptionAssign> fresh = BuildOptionPlan(
                 ChooseSchema(langid, kShipped, now), langid,
-                static_cast<Tri>(punct), ascii != 0);
+                static_cast<Tri>(punct), static_cast<Tri>(shape), ascii != 0);
             CHECK(SamePlan(updated, fresh));
             ++seen;
           }
         }
+       }
       }
     }
   }
-  CHECK_INT(seen, 4 * 4 * 3 * 2 * 4);  // 掃描範圍非空(§2-G2)
+  CHECK_INT(seen, 4 * 4 * 3 * 3 * 2 * 4);  // 掃描範圍非空(§2-G2)
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -851,4 +853,46 @@ TEST(SameSchemaPreference_looks_at_every_field) {
   CHECK(!SameSchemaPreference(base, d));
   SchemaPreference e = base; e.variant = VariantPref::kSimplified;
   CHECK(!SameSchemaPreference(base, e));
+}
+
+// ── 全／半形進得了選項計畫嗎(G70)──────────────────────────────
+//
+// ⚠ 這一組真正守的是**順序**,不是「有沒有」。BuildOptionPlan 的順序是
+//   契約:Engine::SameOptions 是**逐項**比對(schema_choice.h 檔頭),
+//   把 full_shape 插錯位置 → 備用 session 池每一個都被判成過期、當場
+//   丟掉、當場重建,而 rs_session_create 量到過 442~753 毫秒。
+//   畫面上什麼異狀都沒有,只是每一個新程式的第一次打字都變慢。
+TEST(BuildOptionPlan_carries_full_shape_after_punct_before_ascii_mode) {
+  SchemaChoice c;
+  c.set_variant = false;
+  const std::vector<OptionAssign> plan =
+      BuildOptionPlan(c, 0x0404, Tri::kTrue, Tri::kTrue, false);
+  CHECK_INT(static_cast<int>(plan.size()), 3);
+  CHECK_STR(std::string(plan[0].option), "ascii_punct");
+  CHECK_STR(std::string(plan[1].option), "full_shape");
+  CHECK(plan[1].value);
+  CHECK_STR(std::string(plan[2].option), "ascii_mode");
+}
+
+TEST(BuildOptionPlan_omits_full_shape_when_following_the_schema) {
+  // kUnset = followSchema = **完全不呼叫 rs_set_option**。
+  // 送 false 不是同一件事:見 settings.h 對標點的同一條說明。
+  SchemaChoice c;
+  c.set_variant = false;
+  const std::vector<OptionAssign> plan =
+      BuildOptionPlan(c, 0x0404, Tri::kUnset, Tri::kUnset, false);
+  CHECK_INT(CountOption(plan, "full_shape"), 0);
+  CHECK_INT(static_cast<int>(plan.size()), 1);
+  CHECK_STR(std::string(plan[0].option), "ascii_mode");
+}
+
+TEST(BuildOptionPlan_half_shape_is_sent_as_false_not_omitted) {
+  // 明著選「半形」的人與「不干預」的人**必須**分得出來:
+  // 預設是全形的方案上,兩者的結果完全不同。
+  SchemaChoice c;
+  c.set_variant = false;
+  const std::vector<OptionAssign> plan =
+      BuildOptionPlan(c, 0x0404, Tri::kUnset, Tri::kFalse, false);
+  CHECK_INT(CountOption(plan, "full_shape"), 1);
+  CHECK(!plan[0].value);
 }

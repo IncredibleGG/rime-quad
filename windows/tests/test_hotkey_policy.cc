@@ -119,3 +119,92 @@ TEST(hotkey_unmappable_keys_are_never_a_hotkey) {
   CHECK(ClassifyHotkey(-1, kModControl) == Hotkey::kNone);
   CHECK(ClassifyHotkey(0x20, kModControl) == Hotkey::kToggleAsciiMode);
 }
+
+// ══════════════════════════════════════════════════════════════════
+//  簡繁快捷鍵 Ctrl+Shift+F(G76)—— 而且**只有**它
+// ══════════════════════════════════════════════════════════════════
+//
+// 微軟拼音的預設就是這一顆,而我們兩端都沒有。
+//
+// ⚠ 這一支的重點與 Ctrl+空白鍵那一支完全相同:不是「它會命中」那一行,
+//   是**三顆熱鍵互不干擾**那張表。Ctrl+F 是每一個程式的「尋找」,
+//   Ctrl+Shift+空白鍵在很多程式裡是不斷行空白 —— 多吃一顆就是一顆
+//   壞掉的鍵,而那比缺一個功能嚴重(common/key_eat_policy.h 的那一課)。
+
+TEST(hotkey_ctrl_shift_f_is_the_variant_toggle) {
+  CHECK(ClassifyHotkey(0x46, kModControl | kModShift) ==
+        Hotkey::kToggleVariant);
+  // CapsLock 開著照樣算 —— 它是一個持續的狀態,不是為了這顆熱鍵按的。
+  CHECK(ClassifyHotkey(0x46, kModControl | kModShift | kModCaps) ==
+        Hotkey::kToggleVariant);
+
+  // 正規形式必須與 TSF 那一側註冊的 {'F', TF_MOD_CONTROL | TF_MOD_SHIFT}
+  // 對得上。對不上就是「註冊了一顆永遠不會被認得的鍵」——
+  // 症狀是按下去完全沒反應,而每一層都回報成功。
+  CHECK_INT(VariantToggleKeysym(), 0x46);
+  CHECK_INT(VariantToggleModifiers(), kModControl | kModShift);
+  CHECK(ClassifyHotkey(VariantToggleKeysym(), VariantToggleModifiers()) ==
+        Hotkey::kToggleVariant);
+
+  // ⚠ 這一顆**沒有**使用者開關(同 Ctrl+空白鍵),所以輕點 Shift 那個
+  //   開關關著時它照樣要動。
+  CHECK(DecideKeyAction(VariantToggleKeysym(), VariantToggleModifiers(),
+                        true) == KeyAction::kToggleVariant);
+  CHECK(DecideKeyAction(VariantToggleKeysym(), VariantToggleModifiers(),
+                        false) == KeyAction::kToggleVariant);
+}
+
+TEST(hotkey_three_hotkeys_do_not_interfere) {
+  // 三顆各自命中。
+  CHECK(ClassifyHotkey(0x20, kModControl) == Hotkey::kToggleAsciiMode);
+  CHECK(ClassifyHotkey(0xFFE1, 0) == Hotkey::kToggleAsciiModeShiftTap);
+  CHECK(ClassifyHotkey(0x46, kModControl | kModShift) ==
+        Hotkey::kToggleVariant);
+
+  // ── 交叉:任何一顆的修飾鍵配另一顆的鍵,一個都不可以命中 ──────
+  // Ctrl+Shift+空白鍵:很多程式的「不斷行空白」。
+  CHECK(ClassifyHotkey(0x20, kModControl | kModShift) == Hotkey::kNone);
+  // Ctrl+F:每一個程式的「尋找」。
+  CHECK(ClassifyHotkey(0x46, kModControl) == Hotkey::kNone);
+  // Shift+F / 裸 F:使用者只是在打一個大寫 F。
+  CHECK(ClassifyHotkey(0x46, kModShift) == Hotkey::kNone);
+  CHECK(ClassifyHotkey(0x46, 0) == Hotkey::kNone);
+  // 小寫 f 不是它(TSF 那一側送的是 VK_F,正規形式是大寫)。
+  CHECK(ClassifyHotkey(0x66, kModControl | kModShift) == Hotkey::kNone);
+  // 帶第三顆修飾鍵一律不算(AltGr、Win 組合)。
+  CHECK(ClassifyHotkey(0x46, kModControl | kModShift | kModAlt) ==
+        Hotkey::kNone);
+  CHECK(ClassifyHotkey(0x46, kModControl | kModShift | kModSuper) ==
+        Hotkey::kNone);
+  // 帶修飾鍵的 Shift_L 不是輕點。
+  CHECK(ClassifyHotkey(0xFFE1, kModControl | kModShift) == Hotkey::kNone);
+  // ⚠ 放開事件一律不算。少了這一條,按一次會切兩次 ——
+  //   而「切了兩次」在使用者眼裡就是「按了完全沒反應」。
+  CHECK(ClassifyHotkey(0x46, kModControl | kModShift | kModRelease) ==
+        Hotkey::kNone);
+
+  // ── 使用者把輕點 Shift 關掉,不可以連另外兩顆一起關掉 ───────────
+  CHECK(DecideKeyAction(0xFFE1, 0, false) == KeyAction::kIgnore);
+  CHECK(DecideKeyAction(0x20, kModControl, false) ==
+        KeyAction::kToggleAsciiMode);
+  CHECK(DecideKeyAction(0x46, kModControl | kModShift, false) ==
+        KeyAction::kToggleVariant);
+}
+
+TEST(hotkey_variant_key_does_not_swallow_the_other_ctrl_shift_letters) {
+  // Ctrl+Shift+字母是一大票程式的快捷鍵(Ctrl+Shift+T 復原分頁、
+  // Ctrl+Shift+N 無痕視窗…)。**只有 F 那一顆**是我們的。
+  int checked = 0;
+  for (int32_t ch = 'A'; ch <= 'Z'; ++ch) {
+    const Hotkey h = ClassifyHotkey(ch, kModControl | kModShift);
+    if (ch == 'F') {
+      CHECK(h == Hotkey::kToggleVariant);
+    } else {
+      CHECK(h == Hotkey::kNone);
+    }
+    // 小寫的一顆都不是。
+    CHECK(ClassifyHotkey(ch + 32, kModControl | kModShift) == Hotkey::kNone);
+    checked += 2;
+  }
+  CHECK_INT(checked, 52);  // 掃描範圍非空(§2-G2)
+}

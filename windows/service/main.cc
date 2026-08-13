@@ -323,6 +323,7 @@ void WarmUpEngine(rimewin::Engine* engine, rimewin::SettingsStore* store,
   const rimewin::Settings st = store ? store->Load() : rimewin::Settings();
   const rimewin::SchemaPreference pref = st.SchemaPref();
   const rimewin::Tri punct = st.Punctuation();
+  const rimewin::Tri shape = st.Shape();
   // ⚠ 把簡繁偏好種進引擎。Engine::SelectAndApply 每次換方案之後要用它
   //   重算一次,而它在使用者第一次改設定之前都是**預設值** ——
   //   少了這一行,症狀是「換一次方案,簡繁跳回預設」,而他沒有碰過簡繁。
@@ -342,7 +343,7 @@ void WarmUpEngine(rimewin::Engine* engine, rimewin::SettingsStore* store,
     const rimewin::SchemaChoice choice =
         rimewin::ChooseSchema(langid, ids, pref);
     const std::vector<rimewin::OptionAssign> opts = rimewin::BuildOptionPlan(
-        choice, langid, punct, engine ? engine->AsciiMode() : false);
+        choice, langid, punct, shape, engine ? engine->AsciiMode() : false);
 
     const ULONGLONG t1 = ::GetTickCount64();
     // ⚠ 建好之後**留著**,不要用完就丟。
@@ -529,7 +530,7 @@ static int RunService(int argc, wchar_t** argv) {
     // ⚠ ascii_mode 在這條路徑上只能是預設值(false = 中文):
     //   --print-choice 不啟動引擎,行程層級的那個狀態還不存在。
     for (const rimewin::OptionAssign& a : rimewin::BuildOptionPlan(
-             c, lang, st.Punctuation(), /*ascii_mode=*/false))
+             c, lang, st.Punctuation(), st.Shape(), /*ascii_mode=*/false))
       Say("option=%s=%s\n", a.option, a.value ? "true" : "false");
     Say("source=%s\n", c.source);
     return 0;
@@ -742,6 +743,8 @@ static int RunService(int argc, wchar_t** argv) {
   rimewin::PipeServer server(&engine, ui, &settings_store);
   // 每一份快照也要餵給那一橫(見 pipe_server.h 的說明)。
   server.SetStatusBar(no_ui ? nullptr : &status_bar);
+  // 簡繁快捷鍵要走設定視窗那一支寫入(見 pipe_server.h)。
+  server.SetSettingsWindow(no_ui ? nullptr : &settings);
   server.SetOpenSettingsHandler([&settings]() { settings.Open(); });
   // 監聽迴圈非預期死掉時,讓這支服務結束。
   //

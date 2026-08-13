@@ -265,3 +265,26 @@ TEST(variant_cell_from_wire_flags) {
   CHECK_INT(trad, 1);
   CHECK_INT(simp, 1);
 }
+
+// ── 簡繁快捷鍵按下去要送哪一邊(G76)──────────────────────────────
+//
+// ⚠ 方向的判斷只有這一份。狀態列第二格、Ctrl+Shift+F、設定視窗
+//   三條路各寫一次的話會漂移,而漂移的樣子是「從這裡切有效、
+//   從那裡切無效」,使用者猜不到差別在哪。
+TEST(toggle_variant_target_flips_and_refuses_to_guess) {
+  bool to_simplified = false;
+  CHECK(ToggleVariantTarget(VariantCell::kSimplified, &to_simplified));
+  CHECK(!to_simplified);
+  CHECK(ToggleVariantTarget(VariantCell::kTraditional, &to_simplified));
+  CHECK(to_simplified);
+
+  // ⚠ kHidden = 引擎**沒有回報**任何字形(第三方方案多半沒有那一組
+  //   開關)。此時方向是猜的,而按下去改變的是使用者看不見的東西 ——
+  //   所以什麼都不做,連輸出參數都不動。
+  //   這與 §12.10.4 第二格「那一格點不到」是同一條規矩。
+  to_simplified = true;
+  CHECK(!ToggleVariantTarget(VariantCell::kHidden, &to_simplified));
+  CHECK(to_simplified);
+
+  CHECK(!ToggleVariantTarget(VariantCell::kSimplified, nullptr));
+}

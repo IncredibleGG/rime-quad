@@ -645,6 +645,17 @@ Result Engine::ChangePage(uint64_t id, bool backward) {
   return r;
 }
 
+Result Engine::CurrentResult(uint64_t id) {
+  Result r;
+  Post("取快照", [&] {
+    const uintptr_t sess = Find(id);
+    if (!sess) return;
+    r.handled = true;
+    r.snap = TakeSnapshotLocked(sess);
+  });
+  return r;
+}
+
 Result Engine::SelectSchema(uint64_t id, const std::string& schema_id) {
   Result r;
   Post("換方案", [&] {

@@ -1676,6 +1676,85 @@ Windows 端的實作：判準是純函式（`windows/common/bar_visibility.{h,cc
 論證是「這一橫是中英切換唯一的家」，而那個前提在 fix4-winkey 註冊
 `PreserveKey{VK_SPACE, TF_MOD_CONTROL}` 之後就已經過期。
 
+
+## Windows 批 1(分支 `b1w`)→ macOS / 全體:四則待裁決
+
+（以下四則是 `b1w` 這一批附上的跨端事項，與上面 §12.10.6 那一節無關，
+合併時補上這個標題以免被讀成它的一部分。）
+- `[2026-08-13] [b1w → macOS(settings-model 與 theme-format 的所有者)] **Windows 補上了全／半形(G70),而規範裡那個 id 的「值」四端已經分岔了 —— 請裁決。**
+  鍵名照 `docs/settings-model.md` §3 用 `text.shape`(規範已經有這個 id,沒有自己取)。
+  ⚠ 但規範把值寫成 enum `followSchema`|`halfShape`|`fullShape`,而 Windows 存的是
+  `true`/`false`(鍵不存在 = followSchema)。**這不是這一輪產生的落差**:既有的
+  `text.punctuation` 一模一樣(規範的 enum 是 `followSchema`|`full`|`half`,Windows 存
+  `true`/`false`)。§3 只說「鍵名共用,值可同步,但檔案格式各端自訂」,所以兩種讀法
+  都站得住 —— 但「值可同步」那四個字在兩邊字面不同時就是空的。
+  **建議**:§3 對每一個 enum 欄位補一列「線上/檔案裡的字面」,或明文寫「值的字面
+  由各端自訂,跨端同步時以語意對應表為準」。二選一都好,現在的狀態是兩邊各自
+  以為對方跟自己一樣。
+  ⚠ 另外一則給**行動端**:`full_shape` 在四端的現況是 Android 有 stub 支援
+  (`rime_shell_stub.cc` 認得它)、apple 的 `SessionOptions.swift` 已經送、
+  Windows 這一輪才補。**Android 的真實路徑上一樣沒有任何地方設它** ——
+  `android/app/src/main/cpp/jni_bridge.cc` 只讀 `status.is_full_shape`。
+  同一個缺口在那一端也開著。
+  ⚠ 還有一則給**規範本身**:`docs/ui-design.md` §12.10.4 的「明確不放」清單第一項
+  就是全／半形,Windows 這一輪照那條辦、狀態列一個字都沒動。要改那條規矩請走這裡。
+
+- `[2026-08-13] [b1w → 全體(尤其 macOS #46 / Windows #48)] **Windows 的候選窗滾輪翻得動了;而「滑鼠點選候選」在 Windows 上被架構擋住,那不是懶。**
+  滾輪照 fix3-mac 那一輪的先例接上 `rs_change_page`(判斷抽成純函式
+  `windows/common/cand_layout.cc` 的 `WheelPageSteps`,因為精密觸控板送的是
+  一連串小增量,直接看 delta 正負會讓使用者一撥翻掉十幾頁 —— 這一格請
+  macOS 端也回頭看一次自己那條線)。
+  ⚠ **點選沒有做。** Windows 的候選窗住在**服務進程**裡(不是 DLL),而
+  點選要送出的 `SelectCandidate` 會上屏一段文字 —— 那段文字送不到宿主:
+  這條具名管道是**嚴格的請求/回應**,`tsf/ipc_client.cc:502` 的
+  `RequestResult` 是唯一的讀取點而且只在寫出請求之後才讀;`protocol.h` 的
+  Op 表上服務 → 用戶端只有 `kHelloOk`/`kSessionOk`/`kResult`/`kPong`/`kError`,
+  四個都是回覆,**沒有推播**。硬做的結果是「候選窗消失、宿主裡那段組字還在、
+  下一個字一打『你好』永遠不會出現」—— 螢幕上出現不是使用者打的東西。
+  真解是「服務 → 用戶端多一條單向推播 + DLL 多一條讀取執行緒」,那是協議
+  改動,而且它會落在每一個宿主進程裡(含瀏覽器),要單獨一輪。
+  ⚠ **macOS 沒有這個問題**(IMKit 在宿主進程內),所以那一端的點選可以直接做;
+  兩端在這一格的成本差一個數量級,排優先序時不要當成同一件事。
+  ⚠ 另一則:`WM_MOUSEWHEEL` 送不送得到一個 `WS_EX_NOACTIVATE` 的視窗,靠的是
+  Windows 10 起預設開啟的「捲動非作用中的視窗」。使用者關掉那個系統選項時
+  滾輪就沒有作用,而我們**不會**為此去掛 hook。已寫進 #48 的真機清單(兩次:
+  那個選項開一次、關一次)。
+- `[2026-08-13] [b1w → macOS(theme-format §8.12 的所有者)] **`status_bar.show` 預設 false,讓「看得出翻到第幾頁」在出廠狀態下四端都不可能 —— 請裁決。**
+  §8.12 把 `page` 訂得很完整(`page_no == 0 且 is_last_page → 空`,
+  否則 `"<page_no + 1>"`、非最後一頁後綴 `+`,並說明為什麼不是 `1/3`)。
+  問題在它的家:`status_bar.show` 預設 `false`,而 `core/themes/` 底下
+  **沒有任何一份**宣告 `status_bar:`(`grep -rl status_bar core/themes` 是 0)。
+  macOS 端在 2026-08-10 那一則已經自承同一件事:「翻得動」與「看得出翻到
+  第幾頁」是兩件事,他們只做完第一件。
+  ⚠ **Windows 這一輪把 `page` 那一項畫出來了,而且沒有等 `show`。**
+  依據是 §8.12 自己的另一條:「只有一頁時的 `page` 必須整項略過」——
+  也就是說它**只在有第二頁的時候才出現**,而那正是它有用的時候;
+  §8.12 顧慮的噪音在這一項上本來就不存在。字面、`padding_h`/`padding_v`/
+  `size`/`color` 全部照 §8.12 的預設值,一個數字都沒有自己取;
+  `items`/`arrangement`/`separator`/`background`/可點一項都沒做(那是 M5)。
+  **請裁決要哪一種**:(a) `page` 這一項不受 `status_bar.show` 管;
+  (b) 出廠主題宣告 `status_bar: { show: true, items: [{source: page}] }`;
+  (c) Windows 把它收回去,接受出廠狀態下沒有頁碼。
+  在裁決之前 Windows 走 (a),而這一格明著記在這裡而不是藏在程式碼裡。
+
+- `[2026-08-13] [b1w → macOS(#46 的真機清單)/ Windows(#48)] **簡繁快捷鍵 Ctrl+Shift+F 做好了(Windows),而我們兩端本來都沒有 —— macOS 那一顆請照同一份判斷做。**
+  微軟拼音的預設就是這一顆。做法與 Ctrl+空白鍵一字不差:`PreserveKey` +
+  `OnPreservedKey`,**沒有** `WH_KEYBOARD_LL`、**沒有動** key_eat_policy 那張
+  真值表(TSF 在 key event sink 之前就把那一顆挑走了)。
+  ⚠ 判斷抽在 `windows/common/hotkey_policy.cc`(四端共用的純函式),正規形式是
+  `{0x46 'F', Ctrl|Shift}`;而「按下去要送哪一邊」抽在
+  `windows/common/status_cells.cc` 的 `ToggleVariantTarget()` —— 它在
+  **引擎沒有回報字形時回 false = 什麼都不做**,與 §12.10.4 第二格
+  「那一格畫不出來也點不到」是同一條規矩。macOS 端如果自己再判一次方向,
+  兩邊就會在第三方方案上給出不同答案。
+  ⚠ **三顆熱鍵互不干擾**這件事有一張逐鍵的表(26 個 Ctrl+Shift+大寫字母
+  裡只有 F 命中、Ctrl+Shift+空白鍵不算、關掉輕點 Shift 不影響另外兩顆)。
+  macOS 端請照抄那張表的形狀,不要只驗「它會命中」那一行。
+  ⚠ **一格 Windows 這一端也還沒驗的**:對一個**正在組字**的 session 改簡繁
+  之後,librime 會不會把那一段收掉。Windows 這一輪回給 DLL 的是「當下這一份
+  真快照」(空快照會讓使用者打到一半的字消失),但那一格只有真機量得到。
+  macOS 在同一個位置也會踩到,先講。
+
 ---
 
 ## 批 1（分支 `b1`，2026-08-13）：Android 端十一條「螢幕上不再出現不是你打的東西」

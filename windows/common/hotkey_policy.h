@@ -76,6 +76,16 @@ enum class Hotkey {
   // 輕點 Shift 有一顆使用者關得掉的開關,Ctrl+空白鍵沒有。
   // 壓成同一格的話,關掉開關會連 Ctrl+空白鍵一起關掉。
   kToggleAsciiModeShiftTap,
+  // 簡繁切換(Ctrl+Shift+F)。微軟拼音的預設,而我們兩端都沒有(G76)。
+  //
+  // ⚠ 走的是與 Ctrl+空白鍵**完全同一條路**:TSF 的
+  //   `ITfKeystrokeMgr::PreserveKey` + `OnPreservedKey`。
+  //   `WH_KEYBOARD_LL` 那條紅線一步都沒有靠近(理由見本檔檔頭)。
+  //
+  // ⚠ 這一顆**沒有**使用者開關(同 Ctrl+空白鍵)。輕點 Shift 那顆開關
+  //   只管它自己 —— 壓在一起的話,關掉輕點 Shift 會連簡繁快捷鍵一起
+  //   關掉,而使用者猜不到那條關聯。
+  kToggleVariant,
 };
 
 // keysym + 修飾鍵 → 這是哪一個熱鍵。
@@ -116,12 +126,31 @@ uint32_t AsciiToggleModifiers();
 int32_t ShiftTapKeysym();
 uint32_t ShiftTapModifiers();
 
+// 簡繁切換熱鍵的**正規形式**(G76)。瘦 DLL 在 OnPreservedKey 裡送這一組。
+//
+// ⚠ 它與 TSF 那一側註冊的 `{'F', TF_MOD_CONTROL | TF_MOD_SHIFT}` 是同一顆
+//   鍵的兩種寫法;兩邊對不上就是「註冊了一顆永遠不會被認得的鍵」,
+//   所以單元測試把這兩個值釘死。
+//
+// ⚠ 為什麼是**大寫** 'F'(0x46)而不是小寫:這一組在正常的按鍵路徑上
+//   永遠不會出現 —— `common/key_eat_policy.cc` 把每一個帶 Ctrl 的組合鍵
+//   一律歸成 kHostOnly,瘦 DLL 從來不會把它們送進引擎。也就是說它與
+//   Ctrl+空白鍵一樣,是一個不會與真實按鍵撞號的暗號。
+int32_t VariantToggleKeysym();
+uint32_t VariantToggleModifiers();
+
 // 服務端收到一顆按鍵時,該做哪一件事。
 enum class KeyAction {
   // 交給 librime。**絕大多數按鍵都走這裡。**
   kEngine,
   // 切中英。
   kToggleAsciiMode,
+  // 切簡繁。
+  //
+  // ⚠ 服務端要怎麼切**不在這一層**:它必須走與狀態列第二格、設定視窗
+  //   完全同一支寫入(SettingsWindow::SetVariantPref → CommitVariantPref),
+  //   否則「從這裡切有效、從那裡切無效」。這裡只回答「這顆鍵是什麼」。
+  kToggleVariant,
   // 什麼都不做。
   //
   // ⚠ 這一格與 kEngine **不是**同一件事。輕點 Shift 被使用者關掉時,

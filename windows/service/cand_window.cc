@@ -85,6 +85,28 @@ void CandidateWindow::Hide() {
   if (thread_id_) ::PostThreadMessageW(thread_id_, WM_RIME_HIDE, 0, 0);
 }
 
+void CandidateWindow::SetPageHandler(PageFn fn) {
+  std::lock_guard<std::mutex> lock(mu_);
+  page_fn_ = std::move(fn);
+}
+
+void CandidateWindow::OnWheel(int32_t delta) {
+  // ⚠ 沒有候選就什麼都不做。視窗這時是隱藏的,而**隱藏的視窗仍然收得到
+  //   hover 捲動**(它只是不畫)—— 在那裡翻頁是純粹的副作用:使用者
+  //   在別的地方捲網頁,我們卻在背後動他的組字狀態。
+  if (shown_.items.empty()) return;
+  const int32_t steps = WheelPageSteps(&wheel_accum_, delta);
+  if (steps == 0) return;  // 觸控板的小增量,還沒累積成一頁
+  PageFn fn;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    fn = page_fn_;
+  }
+  // ⚠ 呼叫時**不持鎖**:那個回呼會回頭呼叫 Update(),而 Update() 也要
+  //   同一把鎖 —— 持著鎖叫出去就是一個當場的自我死鎖。
+  if (fn) fn(steps);
+}
+
 DWORD WINAPI CandidateWindow::UiThreadEntry(LPVOID self) {
   static_cast<CandidateWindow*>(self)->UiThread();
   return 0;
@@ -157,6 +179,16 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM w,
     // 點擊候選窗不可以啟動它 —— 見上面 WS_EX_NOACTIVATE 的說明。
     case WM_MOUSEACTIVATE:
       return MA_NOACTIVATE;
+    case WM_MOUSEWHEEL:
+      // ⚠ 這則訊息**不一定**會來。Win32 把滾輪送給有鍵盤焦點的視窗,
+      //   而候選窗是 WS_EX_NOACTIVATE,它永遠沒有焦點。Windows 10 起
+      //   預設開啟的「捲動非作用中的視窗(hover 捲動)」會改送給游標
+      //   底下的視窗 —— 那正是我們要的,而且不需要任何 hook。
+      //   使用者把那個系統選項關掉時,滾輪翻頁就沒有作用。
+      //   **這一條只有真機驗得到**(windows/README.md 的真機清單)。
+      if (self)
+        self->OnWheel(static_cast<int32_t>(GET_WHEEL_DELTA_WPARAM(w)));
+      return 0;
     case WM_ERASEBKGND:
       return 1;  // 全部在 WM_PAINT 裡畫,避免閃爍
     case WM_DPICHANGED:
@@ -248,6 +280,8 @@ void CandidateWindow::Relayout() {
   scaled.window.padding *= dpi_scale;
   scaled.window.border_width *= dpi_scale;
   scaled.window.max_width *= dpi_scale;
+  scaled.window.status_padding_h *= dpi_scale;
+  scaled.window.status_padding_v *= dpi_scale;
   scaled.metrics.spacing *= dpi_scale;
   // 使用者選的候選字級。**排版與繪製要用同一個值**:量測用一個、
   // 畫用另一個的話,字會畫到框外面,而畫面看起來只是「有點擠」。
@@ -255,11 +289,19 @@ void CandidateWindow::Relayout() {
   scaled.label.size *= ts;
   scaled.text.size *= ts;
   scaled.comment.size *= ts;
+  // 頁碼跟著候選一起放大縮小。⚠ 排版與繪製要用**同一個**值,
+  //   不然那一行會畫到框外面(見上面那段對候選字級的說明)。
+  scaled.window.status_size *= ts;
 
+  // ⚠ 頁碼從**這一份快照**來,不是從別的地方猜。page_no / is_last_page
+  //   一路從 rs_menu 進到 Snapshot,而在 G72 之前沒有任何人讀它們。
+  PageHint page;
+  page.page_no = shown_.page_no;
+  page.is_last_page = shown_.is_last_page;
   layout_ = ComputeLayout(shown_.items, scaled, [this](const std::string& s,
                                                        double size) {
     return MeasureWithFont(s, size);
-  });
+  }, page);
 
   Rect work{static_cast<double>(mi.rcWork.left), static_cast<double>(mi.rcWork.top),
             static_cast<double>(mi.rcWork.right),
@@ -363,6 +405,19 @@ void CandidateWindow::Paint(HDC hdc) {
                  static_cast<int>(box.y + box.comment_y), s.c_str(),
                  static_cast<int>(s.size()));
     }
+  }
+
+  // ── §8.12 的 `page`。空字串 = 整項略過,連字型都不用取。 ──────────
+  if (!layout_.page_text.empty()) {
+    HFONT f_page = fonts_.Get(
+        static_cast<int>(style_.window.status_size * ts + 0.5), false,
+        FontRole::kLabel);
+    ::SelectObject(mem, f_page);
+    ::SetTextColor(mem, ToColorRef(style_.window.status_color));
+    const std::wstring s = Utf8ToWide(layout_.page_text);
+    ::TextOutW(mem, static_cast<int>(layout_.page_x),
+               static_cast<int>(layout_.page_y), s.c_str(),
+               static_cast<int>(s.size()));
   }
 
   ::BitBlt(hdc, 0, 0, client.right, client.bottom, mem, 0, 0, SRCCOPY);

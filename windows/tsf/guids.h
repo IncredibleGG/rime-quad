@@ -48,6 +48,9 @@ extern const GUID GUID_RimeProfileHK;
 extern const GUID GUID_RimeDisplayAttributeInput;
 // {5C43BAAB-FD30-4D57-AEC3-0D8E2404D67A}
 extern const GUID GUID_RimePreservedKeyToggle;
+// 簡繁切換的保留鍵(Ctrl+Shift+F,G76)。
+// {3F6A1D28-9C4B-4A7E-B5D3-8E21C0F47A96}
+extern const GUID GUID_RimePreservedKeyVariant;
 
 // 語言列(與工作列輸入指示器)上的那一顆「設定」按鈕。
 // {9E2D5B41-0C7A-4E6E-9E52-5F2B8B1C6A44}

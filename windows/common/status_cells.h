@@ -119,6 +119,16 @@ struct VariantOptions {
 
 VariantCell VariantCellFromOptions(const VariantOptions& o);
 
+// ── 簡繁「切一下」要送哪一邊(§12.10.4 的同一條規矩)──────────────
+//
+// 回傳 false = **什麼都不做**,而且 `*to_simplified` 一個位元都不動。
+//
+// ⚠ kHidden 時不做,不是保守,是唯一誠實的答案:那個狀態的意思是
+//   「引擎沒有回報任何字形」——此刻方向是猜的,而按下去改變的是使用者
+//   看不見的東西。狀態列第二格在 kHidden 時**畫不出來也點不到**,
+//   走這一支的另外兩條路(Ctrl+Shift+F、系統匣)必須得到同一個答案。
+bool ToggleVariantTarget(VariantCell now, bool* to_simplified);
+
 // 線路上那兩個旗標(protocol.h 的 kStVariantKnown / kStSimplified)翻成
 // 三態。刻意收在這裡而不是寫在繪製碼裡 —— 「不知道」與「繁體」是兩件事,
 // 而把它們混起來正是這條缺陷的形狀,那種判斷必須在測得到的地方。

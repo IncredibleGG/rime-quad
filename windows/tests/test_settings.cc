@@ -174,3 +174,47 @@ TEST(Settings_dropdown_index_maps_both_ways) {
   for (int i = 1; i < kCandCountCount; ++i) CHECK(CandCountAtIndex(i) > 0);
 }
 
+
+// ── 全／半形(G70)─────────────────────────────────────────────
+//
+// ⚠ 這一組守的與標點是同一件事:**「跟著方案」與「設成半形」不是同一件事。**
+//   很多方案根本沒有 full_shape 這個開關,而有些方案的預設是全形。
+//   無條件送 false 會讓「不干預」變成「一律半形」,而使用者選的是不干預。
+TEST(Settings_shape_unset_means_follow_schema) {
+  Settings s;
+  CHECK(!s.Has(keys::kTextShape));
+  CHECK(s.Shape() == Tri::kUnset);
+  s.SetShape(Tri::kTrue);
+  CHECK(s.Has(keys::kTextShape));
+  CHECK(s.Shape() == Tri::kTrue);
+  s.SetShape(Tri::kFalse);
+  CHECK(s.Shape() == Tri::kFalse);
+  // 回到「跟著方案」= **刪掉那個鍵**,不是寫一個哨兵值(見 settings.h 檔頭)。
+  s.SetShape(Tri::kUnset);
+  CHECK(!s.Has(keys::kTextShape));
+}
+
+TEST(Settings_shape_survives_a_round_trip) {
+  // 序列化沒有把它列進 kKnownKeys 的話,它會掉到「未知的鍵」那一段 ——
+  // 讀得回來,但分區註解與順序都不對,而且**沒有任何測試看得出來**。
+  // 所以這裡直接斷言它出現在「文字」那一區、而且緊接在標點後面。
+  Settings s;
+  s.SetPunctuation(Tri::kTrue);
+  s.SetShape(Tri::kTrue);
+  const std::string text = s.Serialize();
+  // ⚠ 「排在標點後面」擋不住這件事:**未知的鍵是附在整份設定的最後**,
+  //   所以少列一條 kKnownKeys 時 p < q 照樣成立(實跑確認過:那個植入
+  //   完全沒有變紅)。判準要用「它排在**它後面那個已知鍵**的前面」。
+  s.SetTri(keys::kTextShiftTapToggle, Tri::kFalse);
+  const std::string text2 = s.Serialize();
+  const size_t p = text2.find(keys::kTextPunctuation);
+  const size_t q = text2.find(keys::kTextShape);
+  const size_t r = text2.find(keys::kTextShiftTapToggle);
+  CHECK(p != std::string::npos);
+  CHECK(q != std::string::npos);
+  CHECK(r != std::string::npos);
+  CHECK(p < q);
+  CHECK(q < r);
+  Settings back = Settings::Parse(text);
+  CHECK(back.Shape() == Tri::kTrue);
+}
