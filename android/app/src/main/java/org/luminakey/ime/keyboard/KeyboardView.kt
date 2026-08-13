@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -40,8 +41,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -82,6 +85,7 @@ import org.luminakey.ime.core.FeedbackPlan
 import org.luminakey.ime.prefs.LocalKeyBehavior
 import org.luminakey.ime.R
 import org.luminakey.ime.theme.SyllablePlacement
+import org.luminakey.ime.theme.HighlightStyle
 import org.luminakey.ime.theme.HintPosition
 import org.luminakey.ime.theme.KeyGeometry
 import org.luminakey.ime.theme.KeyboardLayout
@@ -90,6 +94,7 @@ import org.luminakey.ime.theme.LabelSource
 import org.luminakey.ime.theme.LayoutKey
 import org.luminakey.ime.theme.ExpandButton
 import org.luminakey.ime.theme.LayoutLayer
+import org.luminakey.ime.theme.PageIndicatorKind
 import org.luminakey.ime.theme.PageIndicatorStyle
 import org.luminakey.ime.theme.Popup
 import org.luminakey.ime.theme.PopupLayout
@@ -378,9 +383,29 @@ private fun BoxScope.CandidateExpandedPanel(
         //   面板根本不畫 comment ——「你好」被當成「你好 ni hao」去估,一列
         //   於是只排得下 2 欄,9 個候選排成 5 列、擠掉最後一個與翻頁鍵。
         //   估寬公式與渲染內容一旦分家,症狀就是「畫面莫名其妙少一格」。
+        val labelShown = CandidateDensity.labelVisible(
+            style.label.show,
+            CandidateDensity.layerSendsSelectionDigit(layer),
+        )
         val longest = shown.maxOfOrNull { i -> state.candidates[i].text.length } ?: 1
-        val itemDp = longest * style.text.size +
-            2f * style.item.paddingH + style.item.spacing + 16f
+        val longestLabel = if (labelShown) {
+            shown.maxOfOrNull { i -> style.label.render(state.candidates[i].label, i).length } ?: 0
+        } else {
+            0
+        }
+        // 估寬走與候選列**同一個**函式。兩處各寫一份公式正是上一版踩過的坑
+        //（面板把 comment 算進估寬，而它根本不畫 comment，於是一列少一欄）。
+        val itemDp = CandidateDensity.itemWidthDp(
+            textChars = longest,
+            textSize = scaler.scaled(style.text.size),
+            labelChars = longestLabel,
+            labelSize = scaler.scaled(style.label.size),
+            // ⚠ 面板**不畫** comment，所以估寬也不准把它算進去。
+            commentChars = 0,
+            commentSize = 0f,
+            paddingH = style.item.paddingH,
+            minWidth = style.item.minWidth,
+        ) + style.item.spacing
         val perRow = Expander.perRow(maxWidth.value, itemDp)
         val rows = Expander.rows(shown, perRow)
         Column(modifier = Modifier.fillMaxSize()) {
@@ -400,6 +425,9 @@ private fun BoxScope.CandidateExpandedPanel(
                     for (index in row) {
                         val candidate = state.candidates[index]
                         val highlighted = index == state.highlighted
+                        val ink = CandidateInk.of(
+                            style.item, style.text, style.label, style.comment, highlighted
+                        )
                         // 念出來的序號用**引擎索引**,與候選列一致 ——
                         // 兩處念不一樣的話,使用者說「第三個」會落在別處。
                         val candDesc = stringResource(
@@ -414,35 +442,47 @@ private fun BoxScope.CandidateExpandedPanel(
                                     role = Role.Button
                                 }
                                 .clip(RoundedCornerShape(style.item.cornerRadius.dp))
-                                .background(
-                                    Color(
-                                        if (highlighted) style.item.highlightBackground
-                                        else style.item.background
-                                    )
+                                .background(Color(ink.background))
+                                .then(
+                                    if (ink.borderWidth > 0f) {
+                                        Modifier.border(
+                                            ink.borderWidth.dp,
+                                            Color(ink.borderColor),
+                                            RoundedCornerShape(style.item.cornerRadius.dp),
+                                        )
+                                    } else {
+                                        Modifier
+                                    }
                                 )
                                 .clickable { onPick(index) }
                                 .padding(horizontal = style.item.paddingH.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            if (style.label.show && candidate.label.isNotEmpty()) {
+                            if (labelShown && candidate.label.isNotEmpty()) {
                                 Text(
                                     text = style.label.render(candidate.label, index),
                                     fontSize = scaler.sp(style.label.size),
-                                    color = Color(
-                                        if (highlighted) style.label.highlightColor
-                                        else style.label.color
-                                    ),
-                                    modifier = Modifier.padding(end = 3.dp),
+                                    color = Color(ink.label),
+                                    modifier = Modifier.padding(end = CandidateDensity.GAP_DP.dp),
                                 )
                             }
                             Text(
                                 text = candidate.text,
                                 fontSize = scaler.sp(style.text.size),
                                 maxLines = 1,
-                                color = Color(
-                                    if (highlighted) style.text.highlightColor
-                                    else style.text.color
-                                ),
+                                color = Color(ink.text),
+                                modifier = if (ink.underline != null) {
+                                    Modifier.drawBehind {
+                                        val h = 2.dp.toPx()
+                                        drawRect(
+                                            color = Color(ink.underline),
+                                            topLeft = Offset(0f, size.height - h),
+                                            size = Size(size.width, h),
+                                        )
+                                    }
+                                } else {
+                                    Modifier
+                                },
                             )
                         }
                     }
@@ -659,6 +699,16 @@ private fun bottomInsetDp(enabled: Boolean): Dp {
  */
 private class Scaler(private val effective: Float, private val system: Float) {
     fun sp(size: Float): TextUnit = (size * effective / (if (system > 0f) system else 1f)).sp
+
+    /**
+     * 同一個字級在**版面上**佔多少 dp。
+     *
+     * 密度計算（[CandidateDensity]）用的必須是這個數，不是主題檔裡的原始值：
+     * 使用者把系統字級調到 1.3 之後，一格真的變寬了，而「一列排得下幾個」
+     * 跟著要變少。拿原始值去算的話，字級一調大，畫面上的候選就開始被切掉，
+     * 而右端仍然自信地畫著翻頁鍵。
+     */
+    fun scaled(size: Float): Float = size * effective
 }
 
 /**
@@ -793,7 +843,7 @@ private fun CandidateBar(
                     modifier = Modifier.weight(1f).fillMaxHeight(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(style.item.spacing.dp),
-                    contentPadding = PaddingValues(horizontal = 4.dp),
+                    contentPadding = PaddingValues(horizontal = bar.paddingH.dp),
                 ) {
                     itemsIndexed(sample) { index, word ->
                         Row(
@@ -839,6 +889,67 @@ private fun CandidateBar(
                 return@Row
             }
 
+            /* ── §8.6.3.1／§8.6.1.1：這一輪要不要畫註解與序號 ─────────────
+             *
+             * 兩者都是**每一格都要付**的寬度，而它們今天各自解決的問題都已經
+             * 有別的東西在解決：
+             *   · 註解 = 消歧欄的第二份（同一個 `candidate.comment` 欄位）
+             *   · 序號 = 沒有數字鍵的佈局上，一段按不到的文字
+             * 判準抽在 [CandidateDensity]，這裡只負責接上去。
+             */
+            val readings = remember(state.candidates) {
+                T9Syllables.readingsOf(state.candidates)
+            }
+            val commentShown = CandidateDensity.commentVisible(style.comment.show, readings)
+            val labelShown = remember(state.layer, style.label.show) {
+                CandidateDensity.labelVisible(
+                    style.label.show,
+                    CandidateDensity.layerSendsSelectionDigit(state.layer),
+                )
+            }
+
+            /* ── §8.6.4.2／§8.6.6.4：一列排得下幾個，右端那一顆是什麼 ──────
+             *
+             * ⚠ 順序不能倒過來：**先算得下幾個，才知道右端該畫什麼**。
+             * 反過來（先畫翻頁鍵、再看排得下幾個）就是現況的缺陷 ——
+             * `nextEnabled = !isLastPage` 與「畫得出來幾個」完全脫鉤，
+             * 於是一個「看得到 3 個、其實有 9 個」的候選列照樣給你翻頁鍵，
+             * 而按下去跳過的正是那 6 個沒看過的候選。
+             */
+            val screenWidthDp = LocalConfiguration.current.screenWidthDp.toFloat()
+            val pageIndicatorShown =
+                style.pageIndicator.show && style.pageIndicator.kind != PageIndicatorKind.NONE
+            val reservedEnd = CandidateDensity.reservedForMeasure(
+                reservedEnd = bar.reservedEnd,
+                buttonDp = CANDIDATE_BAR_BUTTON_DP.toFloat(),
+                pageNo = state.pageNo,
+                pageIndicatorShown = pageIndicatorShown,
+            )
+            val visible = CandidateDensity.visibleCount(
+                usableDp = CandidateDensity.usableDp(screenWidthDp, bar.paddingH, reservedEnd),
+                widths = shown.map { i ->
+                    val c = state.candidates[i]
+                    CandidateDensity.itemWidthDp(
+                        textChars = c.text.length,
+                        textSize = scaler.scaled(style.text.size),
+                        labelChars =
+                            if (labelShown) style.label.render(c.label, i).length else 0,
+                        labelSize = scaler.scaled(style.label.size),
+                        commentChars = if (commentShown) c.comment.length else 0,
+                        commentSize = scaler.scaled(style.comment.size),
+                        paddingH = style.item.paddingH,
+                        minWidth = style.item.minWidth,
+                    )
+                },
+                spacing = style.item.spacing,
+            )
+            val rightEnd = CandidateDensity.rightEnd(
+                visible = visible,
+                pageCandidateCount = shown.size,
+                expandAvailable = expand.show,
+                panelOpen = expand.expanded,
+            )
+
             // `shown` 由呼叫端算好，裡面是**引擎的頁內索引**，不是畫面位置 ——
             // 選字走 rs_select_candidate(index_on_page),兩者一旦脫鉤,使用者
             // 點第二個卻選到第五個,而畫面完全正常。見 [T9Syllables] 與 [Expander]。
@@ -846,15 +957,21 @@ private fun CandidateBar(
                 modifier = Modifier.weight(1f).fillMaxHeight(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(style.item.spacing.dp),
-                contentPadding = PaddingValues(horizontal = 4.dp),
+                contentPadding = PaddingValues(horizontal = bar.paddingH.dp),
             ) {
                 itemsIndexed(shown) { _, index ->
                     val candidate = state.candidates[index]
                     val highlighted = index == state.highlighted
+                    val ink = CandidateInk.of(
+                        style.item, style.text, style.label, style.comment, highlighted
+                    )
                     // 候選字本身念得出來,但少了序號使用者無從說「我要第三個」;
                     // 而「現在停在哪一個」走 stateDescription,選字移動時會重念。
                     // 序號用**引擎索引**而不是畫面位置:篩選之後畫面上的第二個
                     // 仍然是引擎的第五個,念錯的話使用者說出來的指令會落在別處。
+                    //
+                    // ⚠ 這一段**不受 labelShown 影響**。視覺上不畫序號與朗讀時
+                    //   不念序號是兩件事:使用者說「我要第三個」靠的是後者。
                     val candDesc = stringResource(
                         R.string.a11y_candidate, index + 1, candidate.text
                     )
@@ -866,12 +983,28 @@ private fun CandidateBar(
                                 role = Role.Button
                                 if (highlighted) stateDescription = candState
                             }
+                            // §8.6.4.2:觸控目標的下界。以前這個欄位解析了卻沒有
+                            // 任何 widthIn 套用它 —— 一字候選的可點寬度只有
+                            // `text.size + 2 × padding_h`,在 20 sp / 8 dp 之下是
+                            // 36 dp,低於 ui-design §3.6 的 48 dp。
+                            .widthIn(min = style.item.minWidth.dp)
                             .clip(RoundedCornerShape(style.item.cornerRadius.dp))
-                            .background(
-                                Color(
-                                    if (highlighted) style.item.highlightBackground
-                                    else style.item.background
-                                )
+                            .background(Color(ink.background))
+                            .then(
+                                // `item.border_width` / `highlight_border_width` 在
+                                // ThemeParser 解析了,而候選格的 modifier 鏈上一直
+                                // 沒有 border —— 兩個欄位在本端畫不出來。接上去
+                                // 之後 `highlight_style: outline` 才真的有東西。
+                                // border 畫在內側,**不改變量測寬度**（§8.6.4.3）。
+                                if (ink.borderWidth > 0f) {
+                                    Modifier.border(
+                                        ink.borderWidth.dp,
+                                        Color(ink.borderColor),
+                                        RoundedCornerShape(style.item.cornerRadius.dp),
+                                    )
+                                } else {
+                                    Modifier
+                                }
                             )
                             .clickable { onEvent(KeyboardEvent.Candidate(index)) }
                             .padding(
@@ -879,66 +1012,87 @@ private fun CandidateBar(
                                 vertical = style.item.paddingV.dp,
                             ),
                         verticalAlignment = Alignment.CenterVertically,
+                        // min_width 撐出來的餘裕要平均分在兩邊 —— 靠左的話
+                        // 一字候選看起來像是黏在左邊那一個上。
+                        horizontalArrangement = Arrangement.Center,
                     ) {
-                        if (style.label.show && candidate.label.isNotEmpty()) {
+                        if (labelShown && candidate.label.isNotEmpty()) {
                             Text(
                                 text = style.label.render(candidate.label, index),
                                 fontSize = scaler.sp(style.label.size),
-                                color = Color(
-                                    if (highlighted) style.label.highlightColor
-                                    else style.label.color
-                                ),
-                                modifier = Modifier.padding(end = 3.dp),
+                                color = Color(ink.label),
+                                modifier = Modifier.padding(end = CandidateDensity.GAP_DP.dp),
                             )
                         }
                         Text(
                             text = candidate.text,
                             fontSize = scaler.sp(style.text.size),
                             fontWeight = if (highlighted) FontWeight.SemiBold else FontWeight.Normal,
-                            color = Color(
-                                if (highlighted) style.text.highlightColor else style.text.color
-                            ),
+                            color = Color(ink.text),
+                            // §8.6.4.3 的 `underline`:格底一條 2 dp、寬度等於
+                            // **候選文字墨跡**。走 drawBehind 而不是多一個
+                            // Box/Spacer,因為它一個 dp 的版面都不佔 ——
+                            // 高亮不得改變該格的量測寬度。
+                            modifier = if (ink.underline != null) {
+                                Modifier.drawBehind {
+                                    val h = 2.dp.toPx()
+                                    drawRect(
+                                        color = Color(ink.underline),
+                                        topLeft = Offset(0f, size.height - h),
+                                        size = Size(size.width, h),
+                                    )
+                                }
+                            } else {
+                                Modifier
+                            },
                         )
-                        if (style.comment.show && candidate.comment.isNotEmpty()) {
+                        if (commentShown && candidate.comment.isNotEmpty()) {
                             Text(
                                 text = candidate.comment,
                                 fontSize = scaler.sp(style.comment.size),
-                                color = Color(
-                                    if (highlighted) style.comment.highlightColor
-                                    else style.comment.color
-                                ),
-                                modifier = Modifier.padding(start = 3.dp),
+                                color = Color(ink.comment),
+                                modifier = Modifier.padding(start = CandidateDensity.GAP_DP.dp),
                             )
                         }
                     }
                 }
             }
 
-            // §8.6.5 的 page_indicator。規範的預設本來就是 show:true / arrows,
-            // 本端一直沒有畫 —— 於是 rs_change_page 與 KeyboardEvent.Page
-            // 兩邊都做好了,中間沒有任何東西會送出它:使用者看到的就是
-            //「候選只有 5 個,下一頁就沒了」。判準抽在 [Pager]。
-            PageArrows(
-                state = Pager.state(
-                    kind = style.pageIndicator.kind,
-                    show = style.pageIndicator.show,
-                    pageNo = state.pageNo,
-                    isLastPage = state.isLastPage,
-                    candidateCount = state.candidates.size,
-                ),
-                style = style.pageIndicator,
-                scaler = scaler,
-                onEvent = onEvent,
-            )
-            // §8.6.6 的 expand_button。主題早就寫著 `scroll: expandable`
-            // 與 `expand_button.show: true`,本端一直沒有畫 —— 於是這一列
-            // 畫不完的候選就真的不存在。見 [Expander]。
-            if (expand.show) {
-                ExpandButton(
+            /* ── §8.6.6.4:右端**最多一顆** ─────────────────────────────────
+             *
+             * 翻頁鍵與展開鍵解決的是同一個問題(「還有更多」)。兩顆一起出現
+             * 是同一份資訊的第二份 —— 與註解／消歧欄同一個病 —— 而它們一起
+             * 吃掉候選列 19.4% 的寬度(實測 411.43 dp:80 dp 對 40 dp 恰好
+             * 差一個候選)。寫成 `when` 而不是兩個 `if`,「都畫」就不再是一個
+             * 表達得出來的狀態。
+             */
+            when (rightEnd) {
+                CandidateDensity.RightEnd.NONE -> Unit
+
+                // 本頁還有畫不出來的候選 → 出口是展開面板,翻頁在面板裡面。
+                CandidateDensity.RightEnd.EXPAND -> ExpandButton(
                     expanded = expand.expanded,
                     button = bar.expandButton,
                     scaler = scaler,
                     onClick = onToggleExpand,
+                )
+
+                // 本頁全部畫得出來 = 本頁看完了,這時候翻頁才是誠實的。
+                // ⚠ candidateCount 傳的是 **visible**,不是 state.candidates.size:
+                //   那個參數的 KDoc 從第一天就寫著「這一頁畫得出來的候選數」,
+                //   而呼叫端一直傳整頁的數量 —— 那正是「按 › 跳過六個沒看過的
+                //   候選」的來源。
+                CandidateDensity.RightEnd.PAGER -> PageArrows(
+                    state = Pager.state(
+                        kind = style.pageIndicator.kind,
+                        show = style.pageIndicator.show,
+                        pageNo = state.pageNo,
+                        isLastPage = state.isLastPage,
+                        candidateCount = visible,
+                    ),
+                    style = style.pageIndicator,
+                    scaler = scaler,
+                    onEvent = onEvent,
                 )
             }
         }

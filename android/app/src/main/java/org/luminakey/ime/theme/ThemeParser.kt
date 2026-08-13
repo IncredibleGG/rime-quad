@@ -94,6 +94,10 @@ object ThemeDefaults {
             cornerRadius = m.cornerRadius, minWidth = 0f,
             background = ColorSpec.TRANSPARENT,
             highlightBackground = 0xFF3060C0.toInt(),
+            // §8.6.4.3：預設是**格底一條**，不是實心塊。實心塊的寬度成本是 0
+            // （實測墨跡逐 px 相同），它不是密度的成因 —— 但六個候選並排時，
+            // 一個大色塊會讓其餘五個看起來像背景，而且它正當化了寬內距。
+            highlightStyle = HighlightStyle.UNDERLINE,
             borderWidth = 0f, borderColor = ColorSpec.TRANSPARENT,
             highlightBorderWidth = 0f, highlightBorderColor = ColorSpec.TRANSPARENT
         ),
@@ -146,6 +150,7 @@ object ThemeParser {
     private val SYLLABLES_KEYS = setOf("placement", "trigger", "max_items", "height")
     private val BAR_KEYS = CANDIDATE_STYLE_KEYS + setOf(
         "height", "background", "border_top_width", "border_top_color", "max_visible",
+        "padding_h", "reserved_end",
         "scroll", "expand_button", "show_preedit_inline", "empty_shows_toolbar", "toolbar"
     )
     private val TOOLBAR_KEYS = setOf("show", "items")
@@ -160,7 +165,8 @@ object ThemeParser {
     private val COMMENT_KEYS = setOf("show", "position", "size", "color", "highlight_color")
     private val ITEM_KEYS = setOf(
         "padding_h", "padding_v", "spacing", "corner_radius", "min_width",
-        "background", "highlight_background", "border_width", "border_color",
+        "background", "highlight_background", "highlight_style",
+        "border_width", "border_color",
         "highlight_border_width", "highlight_border_color"
     )
     private val SEPARATOR_KEYS = setOf("show", "color", "width")
@@ -398,6 +404,7 @@ object ThemeParser {
             minWidth = i.child("min_width").length(base.item.minWidth, 0f, 512f),
             background = i.child("background").color(base.item.background),
             highlightBackground = i.child("highlight_background").color(base.item.highlightBackground),
+            highlightStyle = i.child("highlight_style").enumValue(base.item.highlightStyle),
             borderWidth = i.child("border_width").length(base.item.borderWidth, 0f, 8f),
             borderColor = i.child("border_color").color(base.item.borderColor),
             highlightBorderWidth = i.child("highlight_border_width").length(base.item.highlightBorderWidth, 0f, 8f),
@@ -437,6 +444,10 @@ object ThemeParser {
             background = c.child("background").color(0xFFFFFFFF.toInt()),
             borderTopWidth = c.child("border_top_width").length(0f, 0f, 8f),
             borderTopColor = c.child("border_top_color").color(ColorSpec.TRANSPARENT),
+            // §8.6.4.2：以前寫死在渲染端的兩個數，現在是欄位。
+            // 預設值就是渲染端本來寫死的那一個（4）與一顆控制鍵的寬度（40）。
+            paddingH = c.child("padding_h").length(4f, 0f, 32f),
+            reservedEnd = c.child("reserved_end").length(40f, 0f, 160f),
             maxVisible = c.child("max_visible").int(0, 0, 128),
             scroll = c.child("scroll").enumValue(ScrollMode.EXPANDABLE),
             expandButton = ExpandButton(

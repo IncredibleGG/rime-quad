@@ -102,6 +102,27 @@ data class CommentStyle(
     val highlightColor: Int
 )
 
+/**
+ * 高亮怎麼畫（規範草稿 §8.6.4.3）。它回答的問題只有一個：
+ * **「我現在按空白鍵會上哪一個」**。
+ *
+ * ⛔ **三種都不得改變該格的量測寬度。** 使用者每移動一次選字整列就重排，
+ * 是比「不夠顯眼」嚴重得多的缺陷。
+ *
+ * **沒有 `text_only`**：只靠顏色區分不合格（CJK 小字的字重差異幾乎看不出來，
+ * 不構成第二個通道），規範不提供一個做錯的選項。
+ */
+enum class HighlightStyle {
+    /** `highlight_background` 鋪滿整格。iOS 系主題的視覺語彙。 */
+    FILL,
+
+    /** 格底一條 2 dp、寬度等於**候選文字墨跡**的重點色橫條。預設。 */
+    UNDERLINE,
+
+    /** `highlight_border_width` / `highlight_border_color` 描邊。 */
+    OUTLINE,
+}
+
 data class ItemStyle(
     val paddingH: Float,
     val paddingV: Float,
@@ -110,6 +131,7 @@ data class ItemStyle(
     val minWidth: Float,
     val background: Int,
     val highlightBackground: Int,
+    val highlightStyle: HighlightStyle,
     val borderWidth: Float,
     val borderColor: Int,
     val highlightBorderWidth: Float,
@@ -170,6 +192,20 @@ data class CandidateBar(
     val background: Int,
     val borderTopWidth: Float,
     val borderTopColor: Int,
+    /**
+     * 候選列左右兩端的內距（規範草稿 §8.6.4.2）。
+     *
+     * ⚠ 這個值以前**寫死在渲染端**（`contentPadding = PaddingValues(horizontal = 4.dp)`），
+     * 於是規範算 `inner_w` 的公式與畫面實際用的數不是同一組。
+     */
+    val paddingH: Float,
+    /**
+     * 右端保留給控制鍵的寬度（規範草稿 §8.6.4.2 / §8.6.6.4）。
+     *
+     * 預設 40 = **一顆**。實測 411.43 dp 的機器上，80 dp（翻頁＋展開兩顆）
+     * 與 40 dp（一顆）的差**恰好是一個候選**（5 vs 6）。
+     */
+    val reservedEnd: Float,
     val maxVisible: Int,
     val scroll: ScrollMode,
     val expandButton: ExpandButton,

@@ -177,6 +177,10 @@ class PanelStringsTest {
             "KeyRemap.kt" to 26,
             "KeyboardTypes.kt" to 13,
             "LayoutEscape.kt" to 5,
+            // 與 LayoutEscape.kt 同一種:建置期測試印給**開發者**看的診斷,
+            // 不上使用者畫面。它要說清楚是哪兩層、差幾 %,那句話是給讀
+            // CI 輸出的人看的,翻成英文反而讓現場的人看不懂。
+            "LayerGeometry.kt" to 4,
             "LayoutHost.kt" to 12,
             "RemappedLayouts.kt" to 2,
             "SchemaLanguages.kt" to 5,

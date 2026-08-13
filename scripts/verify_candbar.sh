@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
-# verify_candbar.sh — 候選列的**畫面／行為**驗證:
-#                     左端不印按鍵代碼、翻得到第 2 頁而且選得下去
+# verify_candbar.sh — 候選列的**畫面／行為**驗證:左端不印按鍵代碼、
+#                     右端那一顆是展開鍵而不是翻頁鍵、翻得到第 2 頁而且
+#                     選得下去、一列真的排得下 6 個
 #
 # ── 為什麼需要這支 ──────────────────────────────────────────────────────
 #
@@ -17,69 +18,41 @@
 #   **東西有沒有真的畫出來、點不點得到、點下去有沒有用**。
 #   這個專案已經吃過七次「單元測試綠、使用者打開看不到」的虧。
 #
-# ── 兩道關 ──────────────────────────────────────────────────────────────
+# ── 四道關 ──────────────────────────────────────────────────────────────
 #   1  打完 MGGAM 之後,**第一個候選左邊沒有任何墨跡**。
-#      定位不靠寫死的座標,而是先找到高亮候選那一塊(整條上唯一的飽和色塊),
+#      定位不靠寫死的座標,而是先找到高亮候選(整條上唯一的飽和色),
 #      再看它左邊那一段有沒有東西。有東西就是那一格組字串又冒出來了。
 #
 #      ⚠ 第一版是「把整條帶子裁下來 OCR,讀不到 GAM 就算過」,而它在 CI 上
 #      **紅得莫名其妙**:CI 的模擬器是 1080x2400、開發機是 1440x3120,
 #      同一段 OCR 前處理在兩邊讀出來的東西完全不同,CI 那次只讀到「ee」。
-#      有沒有墨跡是像素等級的事實,兩邊一樣;而且「找不到高亮塊」本身就是
+#      有沒有墨跡是像素等級的事實,兩邊一樣;而且「找不到高亮」本身就是
 #      「這一關沒有東西可驗」的訊號,不會靜靜地變成綠燈。
-#   2  **翻得到第 2 頁,而且第 2 頁的候選選得下去**:
-#        第一輪  打 MGGAM → 直接選高亮那一個 → 記下上屏的詞 T1
-#        第二輪  打 MGGAM → 點下一頁 →(a)輸入框的內容不可以變
-#                         → 選高亮那一個 →(b)上屏的詞 T2 != T1
 #
-#      ⚠ **(a) 那一條是這一關的重點,不是附帶的。** 第一版只有 (b),而把
-#      翻頁鍵整個拿掉之後它**照樣是綠的** —— 因為候選列最右端本來就有候選,
-#      點下去上屏的是「米高」,一樣 != 你好。也就是說那一版驗的是
-#      「右邊有東西可以點」,不是「有翻頁鍵」。
-#      翻頁鍵與候選的差別在於:**點翻頁鍵不會上屏任何東西**。所以先比一次
-#      輸入框:點了之後內容變了 = 那裡是候選不是翻頁鍵。
+#   2  **候選列右端那一顆是展開鍵,不是翻頁鍵。**
+#      §8.6.6.4:本頁還有畫不出來的候選時,⛔ 不得提供「下一頁」——
+#      按下去就是讓使用者跳過他從未看見的候選,而畫面完全正常。
+#      判準是**格線區有沒有大面積改變**(面板蓋上去了):翻頁只換候選列,
+#      格線區一個像素都不動。右端萬一還是翻頁鍵,這一關就會紅。
 #
-# ── 2026-08-13:同一個假綠燈,倒過來發生了一次 ────────────────────────────
+#   3  **翻頁搬進展開面板之後,第 2 頁仍然翻得到、選得下去。**
+#      搬走一個入口最容易發生的事是「搬過去就不見了」。面板裡那顆的座標
+#      從 keymap.json 算出來(面板高度 = 鍵盤高 − 最後一列 − row_spacing),
+#      不寫死。選下去是為了同時驗「索引沒錯位」——`rs_select_candidate`
+#      吃的是頁內索引,脫鉤時使用者點第二個會選到別的字而畫面完全正常。
 #
-#   `cand` 那一批把**展開鍵**加進候選列右端之後,這支腳本紅了一條,而紅的
-#   位置很有意思:
-#
-#       [PASS] 點了最右端那一點,沒有任何東西上屏(翻頁鍵的行為)   ← 正控照樣綠
-#       [FAIL] 點了下一頁再選第一個,拿到的還是「你好」
-#
-#   成因:`NEXT_X=$(( SCREEN_W - $(dp 20) ))` —— 「最右邊那顆 40dp 方塊的
-#   中心」。展開鍵搬進去之後,**那一點現在是展開鍵**。整輪點的都是展開鍵,
-#   而上面那道正控**照樣綠**,因為展開鍵也不上屏任何東西。
-#   鐵證:artifact 的檔名叫 `2-page2.png`,畫面上卻是第 1 頁的展開面板。
-#
-#   也就是說「點了不上屏」同時符合翻頁鍵**與**展開鍵 —— 檔頭警告過的那個
-#   假綠燈,倒過來又發生了一次。兩件事一起改:
-#
-#   甲、**座標用算的**,不再是「最右端」。scripts/lib/candbar_geom.py 從
-#       KeyboardView.kt 的 `CANDIDATE_BAR_BUTTON_DP` 與主題的
-#       `page_indicator` / `expand_button` 算出每一顆的中心 —— 連「第 1 頁
-#       不畫上一頁」「只有一頁時整組不畫」都算得出來。讀不到常數就報錯,
-#       不給預設值。
-#   乙、**正控要分得出翻頁鍵與展開鍵**。分得出來的不是輸入框(兩者都不上屏),
-#       是畫面:
-#         · 翻頁鍵  只換候選列的內容,**鍵盤格線區一個像素都不動**
-#         · 展開鍵  把一片面板蓋在格線區上,那一塊大面積改變
-#       所以第 2 關現在問三件事:輸入框沒變(不是候選)、格線區沒變
-#       (不是展開鍵)、**候選列真的變了**(不是點在一塊按不動的地方)。
-#       第 3 關再拿展開鍵當**反向對照**:同一個判準,格線區必須真的變 ——
-#       否則「格線區沒變」這句話只是因為那個判準什麼都量不到。
-#
-#      為什麼還要「選下去」:`rs_select_candidate` 吃的是**頁內索引**,
-#      翻頁之後畫面與索引一旦脫鉤,使用者點第二個會選到別的字 —— 而畫面
-#      完全正常。上屏的字是唯一能同時驗到「翻頁」與「索引沒錯位」的東西。
-#
-#      也刻意**不寫死**第 2 頁應該是哪幾個詞:那會隨詞庫與使用者詞典漂移,
-#      漂了之後紅的是這支腳本,不是產品。
+#   4  **密度:舊版翻頁鍵的位置,現在站著一個候選。**
+#      改動前右端是「翻頁 ＋ 展開」兩顆(80 dp),由右數來第二顆的中心是
+#      `SCREEN_W − 1.5 × 40dp`。改動後右端只剩一顆,那個位置落在第 6 個
+#      候選身上 —— 點下去必須**上屏一個字**。
+#      這一點同時驗到三件事,每一件單獨都能讓它紅:右端真的只剩一顆、
+#      一列真的排得下 6 個、那個位置真的點得到(min_width 沒把觸控目標弄丟)。
 #
 # ── 反向驗證 ────────────────────────────────────────────────────────────
 #   這一支沒有 --plant:它斷言的是 **APK 裡的行為**,植入要植在程式碼裡再重建。
-#     · 把 InlinePreedit.forDisplay 改成 `return preedit`  → 第 1 關必須紅
-#     · 把 Pager.state 的 show 改成 false                   → 第 2 關必須紅
+#     · 把 InlinePreedit.forDisplay 改成 `return preedit`      → 第 1 關必須紅
+#     · 把 CandidateDensity.rightEnd 的第二條改成永遠回 PAGER  → 第 2 關必須紅
+#     · 把 core/themes 的 item.padding_h 改回 10               → 第 4 關必須紅
 #   實測結果寫在 commit 訊息裡。
 #
 set -uo pipefail
@@ -249,6 +222,7 @@ python3 "$ROOT/scripts/layout_geom.py" --root "$ROOT" --layout "$LAYOUT" --theme
   --screen "$WM_SIZE" --density "$WM_DENS" --json > "$OUT_DIR/keymap.json" 2>"$OUT_DIR/geom.err" \
   || { echo "座標計算失敗,見 $OUT_DIR/geom.err" >&2; exit 2; }
 GRID_H="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['grid_height_px'])" "$OUT_DIR/keymap.json")"
+BAR_PX="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['bar_height_px'])" "$OUT_DIR/keymap.json")"
 
 # ⚠ 每一次點擊之前都要重讀:打第一個字之後 IME 視窗會長高,舊座標會落在隔壁列。
 read_frame() {
@@ -261,7 +235,13 @@ f = re.search(r"\bframe=\[(\d+),(\d+)\]\[(\d+),(\d+)\]", m.group(1))
 if f: print(f.group(2), f.group(4))
 ')
   [ -n "${FRAME_BOT:-}" ] || return 1
-  GRID_TOP=$((FRAME_BOT - GRID_H))
+  # ⚠ **不可以寫成 `FRAME_BOT - GRID_H`。** IME 視窗的下緣是螢幕下緣,而鍵盤
+  #   內容讓出了一段 `honor_bottom_inset`(手勢列),實測 66 px ——
+  #   從下緣往回推算出來的格線區頂端會低 66 px,每一次點擊都落在**下一列**上。
+  #   這支腳本一直是這樣算的,而它沒有紅過:九宮格的鍵有 123 px 高,
+  #   低 66 px 剛好還壓在同一顆鍵的下緣。底列那一排就沒這麼好運。
+  #   由上往下算沒有這個問題:候選列緊貼視窗頂端,格線區緊貼候選列。
+  GRID_TOP=$((FRAME_TOP + BAR_PX))
   BAR_MID=$(( (FRAME_TOP + GRID_TOP) / 2 ))
 }
 
@@ -289,31 +269,69 @@ type_nihao() {
   return 0
 }
 
-# 候選列右端那幾顆方鍵的座標。
+# 候選列右端**那一顆**方鍵的座標。
 #
 # ⚠ **不可以寫成「最右端」**(見檔頭 2026-08-13 那一節):展開鍵搬進來之後,
 #   最右端是展開鍵,而「點了不上屏」對兩者都成立 —— 於是整輪點錯地方而全綠。
 #   算的依據是 KeyboardView.kt 的 CANDIDATE_BAR_BUTTON_DP 與主題,不是這裡。
+#
+# ⚠ 2026-08-13 第二次改動:右端**最多一顆**(§8.6.6.4)。九宮格一頁 9 個、
+#   一列畫得出 6 個 → 右端是**展開鍵**,翻頁移進展開面板內部。
+#   所以這支腳本不再有「候選列上的翻頁鍵」這個東西可以點。
 dp() { python3 -c "print(int(round($1 * $WM_DENS / 160.0)))"; }
 GEOM="$HERE/lib/candbar_geom.py"
 [ -f "$GEOM" ] || { echo "找不到 $GEOM" >&2; exit 2; }
-candbar_x() {  # candbar_x <prev|next|expand> [頁次] [是不是最後一頁]
+# 引擎一頁幾個。`core/data/shared/default.yaml` 的 menu/page_size。
+PAGE_SIZE="${RIME_PAGE_SIZE:-9}"
+candbar_x() {  # candbar_x <prev|next|expand|visible> [頁次] [是不是最後一頁] [本頁幾個]
   python3 "$GEOM" --root "$ROOT" --theme "$THEME" \
     --screen "$WM_SIZE" --density "$WM_DENS" \
-    --page-no "${2:-0}" --last-page "${3:-0}" --which "$1"
+    --page-no "${2:-0}" --last-page "${3:-0}" --page-count "${4:-$PAGE_SIZE}" --which "$1"
 }
-# 第 1 頁(page_no=0、不是最後一頁)的下一頁鍵。算不出來就停 —— 那代表主題
-# 關掉了翻頁指示器,這一關沒有東西可驗,不可以當成通過。
-NEXT_X="$(candbar_x next 0 0)" || {
-  echo "算不出翻頁鍵的座標(主題 $THEME 關掉了 page_indicator?)—— 這一關沒有東西可驗" >&2
+VISIBLE="$(candbar_x visible 0 0)"
+info "算出來:這台機器一列畫得出 $VISIBLE 個候選(引擎一頁 $PAGE_SIZE 個)"
+
+# 展開鍵。本頁看不完時它必定存在;算不出來就是主題關掉了展開面板,
+# 那時候整支腳本沒有東西可驗 —— 不可以當成通過。
+EXPAND_X="$(candbar_x expand 0 0)" || {
+  echo "算不出展開鍵的座標(主題 $THEME 關掉了 scroll/expand_button?)—— 這一關沒有東西可驗" >&2
   exit 2
 }
-# 展開鍵。主題沒有它就是空字串,第 3 關會說明並跳過(那是主題的選擇,不是缺陷)。
-EXPAND_X="$(candbar_x expand 0 0 2>/dev/null || true)"
-info "候選列右端(算出來的):下一頁 x=$NEXT_X;展開 x=${EXPAND_X:-<這個主題沒有>}"
-[ "$NEXT_X" != "${EXPAND_X:-}" ] || {
-  echo "算出來的下一頁鍵與展開鍵是同一點 —— candbar_geom.py 壞了" >&2
+# ⛔ 本頁還有畫不出來的候選時,候選列上**不得**有翻頁鍵。
+# 這一條先問模型,再用畫面驗(第 2、4 關)。
+if BAD_NEXT="$(candbar_x next 0 0 2>/dev/null)"; then
+  echo "candbar_geom.py 說本頁看不完(畫得出 $VISIBLE、本頁 $PAGE_SIZE)時候選列上還有翻頁鍵" >&2
+  echo "  x=$BAD_NEXT —— 那就是讓使用者跳過他從未看見的候選(§8.6.6.4 第 2 條)" >&2
   exit 2
+fi
+info "候選列右端(算出來的):展開 x=$EXPAND_X;本頁看不完,所以候選列上沒有翻頁鍵"
+
+# 展開面板裡那顆翻頁鍵的座標。
+#
+# 面板是 `Box(align = TopStart)`,頂端貼著格線區頂端,高度 =
+# panelHeightLeavingBottomRow(鍵盤高 − 最後一列 − row_spacing − padding.bottom),
+# 底部那一條 `bar.height` 高的 Row 靠右放 PageArrows。
+# 這幾個數全部從 keymap.json 算出來,不寫死。
+# 展開面板裡那顆翻頁鍵的座標。
+#
+# 面板是 `Box(align = TopStart)`,頂端貼著格線區頂端,高度 =
+# panelHeightLeavingBottomRow(鍵盤高 − 最後一列 − row_spacing − padding.bottom),
+# 底部那一條 `bar.height` 高的 Row 靠右放 PageArrows(第 1 頁只有「›」,
+# 所以它在面板的最右端)。這幾個數全部從 keymap.json 算出來,不寫死。
+panel_next_xy() {
+  python3 - "$OUT_DIR/keymap.json" "$GRID_TOP" "$(dp 40)" <<'PY'
+import json, sys
+sol = json.load(open(sys.argv[1]))
+grid_top = int(sys.argv[2])
+button_px = int(sys.argv[3])
+scale = sol["scale"]
+last_row = max(k["row"] for k in sol["keys"])
+row_y = min(k["y"] for k in sol["keys"] if k["row"] == last_row)
+row_spacing = int(round(sol["row_spacing_dp"] * scale))
+panel_bot = grid_top + row_y - row_spacing
+bar_h = sol["bar_height_px"]
+print(sol["screen_px"][0] - button_px // 2, panel_bot - bar_h // 2)
+PY
 }
 
 # 兩塊區域的「變了多少」。單位是千分比,回傳值由呼叫端判讀。
@@ -323,17 +341,22 @@ region_permille() {  # region_permille <a.png> <b.png> <y0> <y1> [out.png]
     | awk '{print $3}'
 }
 # 判讀門檻。兩邊都留了一個數量級的餘裕(實測值寫在 commit 訊息裡):
-#   · 翻頁之後格線區實測 0‰;展開之後實測是數百‰。
-#   · 候選列換一頁實測是數十到數百‰。
+#   · 展開之後格線區實測是數百‰;面板內翻頁時格線區被面板蓋著,不看它。
+#   · 候選列/面板換一頁實測是數十到數百‰。
 QUIET_PERMILLE="${RIME_QUIET_PERMILLE:-20}"    # 「這一塊沒變」的上限
 CHANGED_PERMILLE="${RIME_CHANGED_PERMILLE:-5}" # 「這一塊真的變了」的下限
 
-# 高亮候選(引擎的第一個)在畫面上的中心。
+# 高亮候選(引擎的第一個)在畫面上的位置。
 #
 # ⚠ **不可以用固定的 x。** 候選列左端有沒有那一格組字串會讓所有候選整條位移,
 #   而寫死的座標在那時候會點在一塊按不動的文字上 —— 於是「翻頁沒用」與
-#   「點錯地方」在輸出上長得一模一樣(實測踩過)。改成在那條帶子裡找**高亮塊**:
-#   它是整條上唯一的飽和色塊(主題的 item.highlight_background)。
+#   「點錯地方」在輸出上長得一模一樣(實測踩過)。改成在那條帶子裡找**高亮**:
+#   它是整條上唯一的飽和色(主題的 item.highlight_background)。
+#
+# ⚠ 2026-08-13:高亮的預設畫法從**實心塊**換成**格底一條 2 dp 的底線**
+#   (§8.6.4.3 的 `item.highlight_style`)。飽和色的判準不變,只是命中的面積
+#   從整格變成一條線 —— 回傳的 y 因此落在候選文字的底部,仍然在那一格的
+#   可點範圍內。
 # `x0 y0 x1 y1 cx cy`;找不到就什麼都不印。
 highlight_box() {
   python3 "$HERE/lib/find_highlight.py" "$1" "$2" "$3"
@@ -362,13 +385,17 @@ info "打完 MGGAM,輸入框(組字中)=「$COMPOSING」"
 step "1. 候選列左端不印按鍵代碼"
 read -r HX0 HY0 HX1 HY1 HX HY <<<"$(highlight_box "$OUT_DIR/1-typed.png" "$BAR_TOP" "$BAR_BOT")"
 if [ -z "${HX0:-}" ]; then
-  # 找不到高亮塊 = 候選列上沒有候選。這不是「通過」,是這一關沒有東西可驗。
+  # 找不到高亮 = 候選列上沒有候選。這不是「通過」,是這一關沒有東西可驗。
   echo "候選列上找不到高亮候選(帶子 $BAR_TOP..$BAR_BOT)—— 沒有候選可驗,見 $OUT_DIR/1-typed.png" >&2
   exit 2
 fi
 info "高亮候選 x=$HX0..$HX1 y=$HY0..$HY1"
+# ⚠ y 範圍取**整條帶子**,不是高亮那幾列。底線式的高亮只有幾個像素高,
+#   拿它當 y 範圍的話這一關會退化成「那幾列上沒有東西」—— 而組字串畫在
+#   帶子的正中間,根本不在那幾列上。那會是一條永遠綠的檢查。
 read -r INK TOTAL <<<"$(python3 "$HERE/lib/count_ink.py" "$OUT_DIR/1-typed.png" \
-                        0 "$HY0" "$((HX0 - 4))" "$HY1" "$OUT_DIR/left-of-first.png")"
+                        0 "$((BAR_TOP + 2))" "$((HX0 - 4))" "$((BAR_BOT - 2))" \
+                        "$OUT_DIR/left-of-first.png")"
 info "第一個候選左邊:墨跡 $INK / $TOTAL 像素"
 if [ "${INK:-0}" -gt "$INK_TOLERANCE" ]; then
   EV=""
@@ -386,60 +413,96 @@ sleep 1.5
 T1="$(field_text)"
 info "第 1 頁選第一個 → 上屏「${T1:-<空>}」"
 
-# ═══════════ 第二輪:翻一頁再選第一個 ═══════════
-step "2. 翻得到第 2 頁,而且第 2 頁選得下去"
+# ═══════════ 第 2 關:右端那一顆是**展開鍵**,不是翻頁鍵 ═══════════
+#
+# §8.6.6.4:本頁還有畫不出來的候選(畫得出 $VISIBLE、本頁 $PAGE_SIZE)時,
+# 右端**不得**是翻頁鍵 —— 按下去就是跳過使用者從未看見的候選。
+#
+# ⚠ 「點了不上屏」對翻頁鍵與展開鍵**都成立**,分不出兩者(這支腳本 2026-08-13
+#   就是栽在這裡)。分得出來的是畫面:
+#     · 翻頁鍵  只換候選列的內容,鍵盤格線區一個像素都不動
+#     · 展開鍵  把一片面板蓋在格線區上,那一塊大面積改變
+#   所以這一關要求格線區**真的變了**。倒過來看:右端萬一還是翻頁鍵,
+#   格線區不會動,這一關就會紅 —— 這正是它守的東西。
+step "2. 候選列右端那一顆是展開鍵(而不是「跳過沒看過的候選」的翻頁鍵)"
 open_target
 sleep 2
 read_frame || { echo "讀不到 frame" >&2; exit 2; }
 type_nihao || { echo "點不到九宮格的鍵" >&2; exit 2; }
 read_frame || { echo "讀不到 frame" >&2; exit 2; }
 [ -n "$(field_text)" ] || { echo "第二輪打完之後輸入框是空的,按鍵沒進引擎" >&2; exit 2; }
-# ⚠ 點下去之前先記下輸入框**與畫面**。三件事一起看才分得出那一點是什麼:
-#   · 輸入框變了      → 那是**候選**(實測:拿掉翻頁鍵之後那一點打在第 4 個
-#                        候選上,上屏「米高」,而「T2 != T1」照樣成立)
-#   · 格線區變了      → 那是**展開鍵**(實測:cand 併進來之後整輪點的都是它,
-#                        而「點了不上屏」這道正控照樣綠)
-#   · 候選列沒變      → 那裡根本按不動,點在一塊死區上
-F_BEFORE="$(field_text)"
-adbs exec-out screencap -p > "$OUT_DIR/2-before-page.png" 2>/dev/null
+E_BEFORE="$(field_text)"
+adbs exec-out screencap -p > "$OUT_DIR/2-before-expand.png" 2>/dev/null
 BAR_TOP2="$FRAME_TOP"; BAR_BOT2="$GRID_TOP"
-adbs shell input tap "$NEXT_X" "$BAR_MID" >/dev/null 2>&1
+adbs shell input tap "$EXPAND_X" "$BAR_MID" >/dev/null 2>&1
 sleep 1
-F_AFTER="$(field_text)"
-adbs exec-out screencap -p > "$OUT_DIR/2-page2.png" 2>/dev/null
-if [ "$F_AFTER" != "$F_BEFORE" ]; then
-  fail "點算出來的翻頁鍵(x=$NEXT_X),輸入框從「$F_BEFORE」變成「$F_AFTER」—— " \
-       "那裡是候選,不是翻頁鍵。使用者永遠停在第 1 頁。"
+E_AFTER="$(field_text)"
+adbs exec-out screencap -p > "$OUT_DIR/2-expanded.png" 2>/dev/null
+
+if [ "$E_AFTER" != "$E_BEFORE" ]; then
+  fail "點算出來的右端那一顆(x=$EXPAND_X),輸入框從「$E_BEFORE」變成「$E_AFTER」—— " \
+       "那裡是候選,不是控制鍵。座標算錯了。"
 else
-  pass "點了翻頁鍵(x=$NEXT_X),沒有任何東西上屏"
+  pass "點了右端那一顆(x=$EXPAND_X),沒有任何東西上屏"
 fi
 
-GRID_MOVED="$(region_permille "$OUT_DIR/2-before-page.png" "$OUT_DIR/2-page2.png" \
-              "$GRID_TOP" "$FRAME_BOT" "$OUT_DIR/2-grid-diff.png")"
-info "翻頁之後鍵盤格線區變了 ${GRID_MOVED}‰"
-if [ "${GRID_MOVED:-0}" -gt "$QUIET_PERMILLE" ]; then
-  fail "點下去之後鍵盤格線區變了 ${GRID_MOVED}‰(上限 $QUIET_PERMILLE‰)—— " \
-       "那是**展開鍵**的行為,不是翻頁鍵:一片面板蓋在格線上了。" \
-       "翻頁鍵只換候選列。圖:$OUT_DIR/2-grid-diff.png"
+E_GRID="$(region_permille "$OUT_DIR/2-before-expand.png" "$OUT_DIR/2-expanded.png" \
+          "$GRID_TOP" "$FRAME_BOT" "$OUT_DIR/2-grid-diff.png")"
+info "點下去之後鍵盤格線區變了 ${E_GRID}‰"
+if [ "${E_GRID:-0}" -le "$QUIET_PERMILLE" ]; then
+  fail "點下去之後格線區只變了 ${E_GRID}‰(下限 $QUIET_PERMILLE‰)—— 面板沒有打開。" \
+       "那一顆是**翻頁鍵**(翻頁只換候選列,格線區不動),而本頁還有 " \
+       "$((PAGE_SIZE - VISIBLE)) 個畫不出來的候選:按下去就是跳過使用者沒看過的字。" \
+       "圖:$OUT_DIR/2-grid-diff.png"
 else
-  pass "格線區沒動(${GRID_MOVED}‰)—— 不是展開鍵"
+  pass "格線區變了 ${E_GRID}‰ —— 展開面板真的蓋上去了,那一顆是展開鍵"
 fi
 
-BAR_MOVED="$(region_permille "$OUT_DIR/2-before-page.png" "$OUT_DIR/2-page2.png" \
-             "$BAR_TOP2" "$BAR_BOT2" "$OUT_DIR/2-bar-diff.png")"
-info "翻頁之後候選列變了 ${BAR_MOVED}‰"
-if [ "${BAR_MOVED:-0}" -lt "$CHANGED_PERMILLE" ]; then
-  fail "點下去之後候選列一點都沒變(${BAR_MOVED}‰,下限 $CHANGED_PERMILLE‰)—— " \
-       "那一點按不動。圖:$OUT_DIR/2-bar-diff.png"
+# ═══════════ 第 3 關:翻頁在面板裡,而且翻得到、選得下去 ═══════════
+#
+# 翻頁鍵從候選列搬進展開面板(§8.6.6.4:面板裡使用者才真的看完了本頁)。
+# 搬過去之後它**還在不在、按不按得動**,只有這一關驗得到。
+#
+# 為什麼還要「選下去」:`rs_select_candidate` 吃的是**頁內索引**,翻頁之後
+# 畫面與索引一旦脫鉤,使用者點第二個會選到別的字 —— 而畫面完全正常。
+# 上屏的字是唯一能同時驗到「翻頁」與「索引沒錯位」的東西。
+# 也刻意**不寫死**第 2 頁應該是哪幾個詞:那會隨詞庫漂移,漂了之後紅的是腳本。
+step "3. 翻頁移進展開面板之後,第 2 頁翻得到、選得下去"
+read -r PN_X PN_Y <<<"$(panel_next_xy)"
+info "展開面板裡那顆下一頁鍵(算出來的):x=$PN_X y=$PN_Y"
+adbs shell input tap "$PN_X" "$PN_Y" >/dev/null 2>&1
+sleep 1.2
+P_AFTER="$(field_text)"
+adbs exec-out screencap -p > "$OUT_DIR/3-panel-page2.png" 2>/dev/null
+if [ "$P_AFTER" != "$E_BEFORE" ]; then
+  fail "點面板裡的翻頁鍵,輸入框從「$E_BEFORE」變成「$P_AFTER」—— 那裡是候選不是翻頁鍵"
 else
-  pass "候選列真的換了一頁(${BAR_MOVED}‰)"
+  pass "點了面板裡的翻頁鍵,沒有任何東西上屏"
 fi
-read -r _ _ _ _ HX2 HY2 <<<"$(highlight_box "$OUT_DIR/2-page2.png" "$FRAME_TOP" "$GRID_TOP")"
-if [ -z "${HX2:-}" ]; then
-  fail "翻頁之後候選列上沒有高亮候選 —— 翻到了一頁不存在的地方"
-  HX2="$NEXT_X"; HY2="$BAR_MID"
+PANEL_MOVED="$(region_permille "$OUT_DIR/2-expanded.png" "$OUT_DIR/3-panel-page2.png" \
+               "$GRID_TOP" "$FRAME_BOT" "$OUT_DIR/3-panel-diff.png")"
+info "翻頁之後面板內容變了 ${PANEL_MOVED}‰"
+if [ "${PANEL_MOVED:-0}" -lt "$CHANGED_PERMILLE" ]; then
+  fail "點下去之後面板一點都沒變(${PANEL_MOVED}‰,下限 $CHANGED_PERMILLE‰)—— " \
+       "翻頁鍵搬進面板之後按不動了。圖:$OUT_DIR/3-panel-diff.png"
+else
+  pass "面板真的換了一頁(${PANEL_MOVED}‰)"
 fi
-adbs shell input tap "$HX2" "$HY2" >/dev/null 2>&1
+
+# 面板裡的第一個候選:同樣找高亮,範圍改成**面板那一塊**。
+#
+# ⚠ 下界不可以用 $FRAME_BOT。面板是浮層,**底列的鍵仍然露出來** ——
+#   而底列的 Enter 鍵是 `style: action`,底色就是重點色。掃到螢幕底部的話,
+#   飽和色的聯集會從面板裡那條高亮底線一路跨到 Enter 鍵,中心落在兩者之間的
+#   死區:點下去什麼都不會發生,而輸出看起來像「翻頁之後選不出東西」。
+#   (實測踩過一次,症狀正是這樣。)
+PANEL_BOT=$((PN_Y - $(dp 22)))
+read -r _ _ _ _ PX PY <<<"$(highlight_box "$OUT_DIR/3-panel-page2.png" "$GRID_TOP" "$PANEL_BOT")"
+if [ -z "${PX:-}" ]; then
+  fail "翻頁之後面板上沒有高亮候選 —— 翻到了一頁不存在的地方"
+  PX="$PN_X"; PY="$PN_Y"
+fi
+adbs shell input tap "$PX" "$PY" >/dev/null 2>&1
 sleep 1.5
 T2="$(field_text)"
 info "第 2 頁選第一個 → 上屏「${T2:-<空>}」"
@@ -449,60 +512,53 @@ if [ -z "$T1" ]; then
 elif [ -z "$T2" ]; then
   fail "翻頁之後選不出東西(上屏是空的)"
 elif [ "$T2" = "$COMPOSING" ]; then
-  # 輸入框在組字中本來就顯示 preedit(`MG GAM`)。拿它當「上屏的詞」會讓
-  # 「根本沒選到字」看起來像「選到了別的字」—— 實測踩過。
+  # 輸入框在組字中本來就顯示 preedit。拿它當「上屏的詞」會讓「根本沒選到字」
+  # 看起來像「選到了別的字」—— 實測踩過。
   fail "翻頁之後那一下沒有選到任何候選(輸入框還是組字中的「$T2」)"
 elif [ "$T1" = "$T2" ]; then
-  fail "點了下一頁再選第一個,拿到的還是「$T1」—— 翻頁鍵不存在或按不動,使用者永遠停在第 1 頁"
+  fail "翻到第 2 頁再選第一個,拿到的還是「$T1」—— 翻頁鍵不存在或按不動,使用者永遠停在第 1 頁"
 else
   pass "第 2 頁的第一個候選是「$T2」,與第 1 頁的「$T1」不同"
 fi
 
-# ═══════════ 第三輪:反向對照 —— 展開鍵必須讓格線區真的變 ═══════════
+# ═══════════ 第 4 關:密度 —— 舊翻頁鍵那個位置現在站著一個候選 ═══════════
 #
-# 上面那條「格線區沒動 → 不是展開鍵」只有在**格線區真的量得到變化**時才
-# 有意義。量不到的話它永遠是綠的,而那正是這一支腳本這一次栽的跟頭的
-# 一般形式:一個什麼都分不出來的判準,長得跟通過一模一樣。
+# 這一關把「一列排得下幾個」變成**摸得到**的事實。
 #
-# 所以拿展開鍵跑同一個判準,要求它**紅的那一邊**成立。
-step "3. 反向對照:展開鍵會讓格線區大幅改變(所以第 2 關那條分得出兩者)"
-if [ -z "$EXPAND_X" ]; then
-  echo "  主題 $THEME 沒有展開鍵 —— 這一條沒有對照組可跑。" >&2
-  echo "  ⚠ 那也代表第 2 關「格線區沒動」這一條在這個主題下沒有被反向驗過。" >&2
+# 改動前,候選列右端是 翻頁 ＋ 展開兩顆(80 dp),而由右數來第二顆(翻頁鍵)
+# 的中心是 `SCREEN_W − 1.5 × 40dp`。改動後右端只剩一顆,那個位置落在
+# **第 6 個候選**身上 —— 點下去必須上屏一個字。
+#
+# 它同時驗到三件事,而且每一件單獨都能讓這一關紅:
+#   · 右端真的只剩一顆(還是兩顆的話,那一點仍是翻頁鍵,不上屏)
+#   · 一列真的排得下 6 個(只排得下 3 個的話,那一點是空白,不上屏)
+#   · 那個位置點得到(min_width / padding 沒把觸控目標弄丟)
+step "4. 密度:舊版翻頁鍵的位置,現在站著第 $VISIBLE 個候選"
+if [ "${VISIBLE:-0}" -lt 6 ]; then
+  fail "算出來一列只畫得出 $VISIBLE 個(這台機器 $WM_SIZE @${WM_DENS}dpi 應該 ≥ 6)"
 else
-  open_target
-  sleep 2
-  read_frame || { echo "讀不到 frame" >&2; exit 2; }
-  type_nihao || { echo "點不到九宮格的鍵" >&2; exit 2; }
-  read_frame || { echo "讀不到 frame" >&2; exit 2; }
-  [ -n "$(field_text)" ] || { echo "第三輪打完之後輸入框是空的,按鍵沒進引擎" >&2; exit 2; }
-  adbs exec-out screencap -p > "$OUT_DIR/3-before-expand.png" 2>/dev/null
-  E_BEFORE="$(field_text)"
-  adbs shell input tap "$EXPAND_X" "$BAR_MID" >/dev/null 2>&1
-  sleep 1
-  E_AFTER="$(field_text)"
-  adbs exec-out screencap -p > "$OUT_DIR/3-expanded.png" 2>/dev/null
-  E_GRID="$(region_permille "$OUT_DIR/3-before-expand.png" "$OUT_DIR/3-expanded.png" \
-            "$GRID_TOP" "$FRAME_BOT" "$OUT_DIR/3-grid-diff.png")"
-  info "展開之後鍵盤格線區變了 ${E_GRID}‰(翻頁那一次是 ${GRID_MOVED}‰)"
-  if [ "${E_GRID:-0}" -le "$QUIET_PERMILLE" ]; then
-    fail "點展開鍵(x=$EXPAND_X)之後格線區只變了 ${E_GRID}‰ —— " \
-         "那條判準什麼都分不出來,第 2 關的「格線區沒動」因此是一句空話。" \
-         "圖:$OUT_DIR/3-grid-diff.png"
-  elif [ "${GRID_MOVED:-0}" -gt "$QUIET_PERMILLE" ]; then
-    # 兩顆都讓格線區大幅改變 = 它們在畫面上是同一件事,最可能的解釋是
-    # NEXT_X 根本就落在展開鍵上(2026-08-13 那次就是這樣)。
-    fail "翻頁鍵那一下讓格線區變了 ${GRID_MOVED}‰,展開鍵是 ${E_GRID}‰ —— " \
-         "兩者在畫面上分不出來。x=$NEXT_X 很可能就是展開鍵,請看 candbar_geom.py 算的東西。"
-  else
-    pass "展開鍵讓格線區變了 ${E_GRID}‰,翻頁鍵是 ${GRID_MOVED}‰ —— 這條判準分得出兩者"
-  fi
-  # 順帶把「兩者都不上屏」這件事寫在輸出裡:那正是舊正控分不出來的原因。
-  if [ "$E_AFTER" = "$E_BEFORE" ]; then
-    info "(展開鍵同樣不上屏任何東西 —— 這就是舊的那道正控分不出兩者的原因)"
-  else
-    fail "點展開鍵竟然上屏了「$E_AFTER」—— 那裡不是展開鍵,座標算錯了"
-  fi
+  pass "算出來一列畫得出 $VISIBLE 個"
+fi
+open_target
+sleep 2
+read_frame || { echo "讀不到 frame" >&2; exit 2; }
+type_nihao || { echo "點不到九宮格的鍵" >&2; exit 2; }
+read_frame || { echo "讀不到 frame" >&2; exit 2; }
+D_BEFORE="$(field_text)"
+[ -n "$D_BEFORE" ] || { echo "第四輪打完之後輸入框是空的,按鍵沒進引擎" >&2; exit 2; }
+adbs exec-out screencap -p > "$OUT_DIR/4-dense.png" 2>/dev/null
+OLD_NEXT_X=$(( SCREEN_W - $(dp 60) ))   # 舊版右端第二顆(翻頁鍵)的中心
+info "舊版翻頁鍵的中心 x=$OLD_NEXT_X;現在右端只有展開鍵(x=$EXPAND_X)"
+adbs shell input tap "$OLD_NEXT_X" "$BAR_MID" >/dev/null 2>&1
+sleep 1.5
+D_AFTER="$(field_text)"
+adbs exec-out screencap -p > "$OUT_DIR/4-after-tap.png" 2>/dev/null
+if [ "$D_AFTER" = "$D_BEFORE" ]; then
+  fail "點 x=$OLD_NEXT_X(舊版翻頁鍵的位置)什麼都沒上屏 —— " \
+       "那裡不是候選。可能是右端仍然保留兩顆鍵,也可能是一列根本排不到那麼多個。" \
+       "圖:$OUT_DIR/4-after-tap.png"
+else
+  pass "點 x=$OLD_NEXT_X 上屏了「$D_AFTER」—— 那 40 dp 現在是候選,不是按鍵"
 fi
 
 echo
@@ -510,6 +566,6 @@ if [ "$FAILURES" -gt 0 ]; then
   echo "✗ $FAILURES 項沒過。artifact:$OUT_DIR"
   exit 1
 fi
-echo "✓ 候選列左端不印按鍵代碼;翻頁鍵(算出來的座標)真的是翻頁鍵而不是展開鍵,"
-echo "  第 2 頁翻得到、選得下去"
+echo "✓ 候選列左端不印按鍵代碼;右端那一顆是展開鍵而不是「跳過沒看過的候選」的翻頁鍵;"
+echo "  翻頁搬進面板之後第 2 頁仍然翻得到、選得下去;舊翻頁鍵的位置現在站著一個候選"
 echo "   artifact:$OUT_DIR"
