@@ -15,13 +15,14 @@
 #  10. 再截圖(含文字)
 #
 # 用法:
-#   ./scripts/verify_ime.sh                              # 用 Gboard 做冒煙測試
+#   ./scripts/verify_ime.sh --apk app.apk                # 驗**本產品**的輸入法
 #   ./scripts/verify_ime.sh --ime <pkg>/<service> --apk app.apk
 #   ./scripts/verify_ime.sh --ime ... --text "nihao" --target settings
 #
 # 選項:
 #   --ime <id>       要驗證的 IME id,格式 <package>/<service>
-#                    預設 com.google.android.inputmethod.latin/com.android.inputmethod.latin.LatinIME
+#                    預設 = scripts/lib/product.env 推導出來的本產品 IME id
+#                    (從前預設是 Gboard —— 見下面 IME_ID 那一行的註解)
 #   --apk <path>     驗證前先安裝這個 APK(可重複指定)
 #   --text <str>     要注入的文字(預設 hello.rime)
 #   --expect <str>   預期輸入框內容(預設等於 --text)
@@ -44,6 +45,8 @@ export ANDROID_HOME="$ANDROID_SDK_ROOT"
 ADB="$ANDROID_SDK_ROOT/platform-tools/adb"
 # shellcheck source=lib/device.sh
 . "$SCRIPT_DIR/lib/device.sh"
+# shellcheck source=lib/product.sh
+. "$SCRIPT_DIR/lib/product.sh"
 # ⛔ 這一支從前寫死 `emulator-${RIME_EMU_PORT:-5554}`,連 RIME_SERIAL 都不看,
 #   也沒有 --serial —— 帶了也沒用。
 #
@@ -59,7 +62,18 @@ SERIAL=""
 
 # --------------------------------------------------------------- 參數解析 ---
 
-IME_ID="com.google.android.inputmethod.latin/com.android.inputmethod.latin.LatinIME"
+# ⛔ 這裡的預設值從第一個 commit(723ea72)起就是 **Gboard**,而這一支是
+#   「輸入法真的能用」的守門。實測 2026-08-13:裝上我們的 APK → 把系統預設
+#   輸入法**設成 Gboard** → 用 `input text` 打字(走 commitText,繞過組字)
+#   → 12 關全 PASS → RC=0。三輪覆核都沒有人發現,因為輸出裡每一行都是綠的。
+#   更糟的是第 4 關會把**共用模擬器的預設輸入法換掉**,別條線接下來整輪都紅。
+#
+#   `input text` 走 commitText,連 librime 有沒有載入都驗不到 —— 拿它去驗
+#   Gboard,等於驗「Android 的 IMF 還會不會動」。
+#
+#   預設改成本產品的 IME id(唯一來源:scripts/lib/product.env)。
+#   真要拿 Gboard 當對照組,明著寫 `--ime com.google.android.inputmethod.latin/...`。
+IME_ID="$RS_ANDROID_IME_ID"
 INPUT_TEXT="hello.rime"
 EXPECT_TEXT=""
 TARGET="testapp"
@@ -144,9 +158,6 @@ fi
 "$EMU" status
 pass "模擬器開機完成"
 
-# 「這一輪跑在哪一台、量的是哪一份 APK」—— 沒有它,綠燈事後無法覆核。
-rs_write_device_stamp "$ADB" "$SERIAL" "$OUT_DIR/device.txt" "${APKS[0]:-}" "$IME_PKG"
-
 ORIG_IME="$(adbs shell settings get secure default_input_method 2>/dev/null | tr -d '\r')"
 
 cleanup() {
@@ -165,6 +176,14 @@ if [ "${#APKS[@]}" -gt 0 ]; then
 else
   step "2. 安裝待測 APK(未指定 --apk,略過)"
 fi
+
+# 「這一輪跑在哪一台、量的是哪一份 APK」—— 沒有它,綠燈事後無法覆核。
+#
+# ⛔ **裝完才寫。** 這一行從前在第 1 關(安裝之前),於是 `rs_write_device_stamp`
+#   靠 `pm path` ＋ 裝置端 sha256 量到的 `pkg_apk_sha256` 是**上一次裝的那一份**
+#   —— artifact 指著的是舊 APK,而這一輪量的是新的。eb3c588 的 commit 標題
+#   就是「device.txt 要裝完才寫」,漏了這一支。
+rs_write_device_stamp "$ADB" "$SERIAL" "$OUT_DIR/device.txt" "${APKS[0]:-}" "$IME_PKG"
 
 # --- 3. IME 是否被系統看見 ---------------------------------------------------
 step "3. 系統是否認得這個 IME"

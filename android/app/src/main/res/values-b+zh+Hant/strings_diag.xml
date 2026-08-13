@@ -85,4 +85,5 @@
     <string name="diag_kind_localized_string">一段文字（或每種語言各一段）</string>
 
     <string name="diag_syllables_slot_unknown">「%1$s」這一層把「%2$s」列為消歧格位，但這一層沒有這個 id 的鍵，該筆已丟棄。</string>
+    <string name="diag_bar_dead_end">主題「%1$s」把候選列變成死路（右端：%2$s）：還有候選看不到，而這裡走不出去。請把展開鍵或翻頁指示器打開。</string>
 </resources>

@@ -482,8 +482,16 @@ object ThemeParser {
             borderTopColor = c.child("border_top_color").color(ColorSpec.TRANSPARENT),
             // §8.6.4.2：以前寫死在渲染端的兩個數，現在是欄位。
             // 預設值就是渲染端本來寫死的那一個（4）與一顆控制鍵的寬度（40）。
-            paddingH = c.child("padding_h").length(4f, 0f, 32f),
-            reservedEnd = c.child("reserved_end").length(40f, 0f, 160f),
+            // ⛔ 上下界必須與 `docs/theme-format.md` §8.6.4 的表逐字相同
+            //   (`padding_h` length 0–48、`reserved_end` length 0–96)。
+            //   這兩個從前是 0–32 與 0–160 —— 一個比規範緊、一個比規範鬆,
+            //   於是同一份主題寫 `padding_h: 40` 在這一端被夾成 32 並產生
+            //   out_of_range,在照規範實作的那一端則原樣通過:**同一份檔案
+            //   四端的診斷不一致**,正是 §10 第 9 條在守的那件事。
+            //   對齊的方向是**照規範改實作**:規範是四端的合約,而另外三端
+            //   不在這一輪裡;隨附主題與單元測試都沒有用到超出規範的值。
+            paddingH = c.child("padding_h").length(4f, 0f, 48f),
+            reservedEnd = c.child("reserved_end").length(40f, 0f, 96f),
             maxVisible = c.child("max_visible").int(0, 0, 128),
             scroll = c.child("scroll").enumValue(ScrollMode.EXPANDABLE),
             expandButton = ExpandButton(

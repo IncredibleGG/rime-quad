@@ -253,3 +253,66 @@ internal class FixtureRepo : LayoutRepository {
         const val LOCALE = "zh-Hant-TW"
     }
 }
+
+/**
+ * §9.1.1 的自動命中：**兩份佈局同時命中同一個方案時，決勝必須是確定的。**
+ *
+ * ⛔ 從前這裡是 `repo.layoutIds().…firstOrNull { autoMatchesSchema }`，
+ * 而那份清單的順序來自 `File.listFiles()` —— 檔案系統不保證順序。
+ * 症狀是 `scripts/verify_selection_digit.sh` 一次紅一次綠，紅的那一次
+ * 裝置上載進去的根本不是它要驗的那一份佈局，而畫面完全正常。
+ *
+ * 這一組測試把「同一組佈局、不同的清單順序」釘成同一個答案，
+ * 並釘住「使用者目錄勝過隨附」。
+ */
+class LayoutAutoHitTieTest {
+
+    /** 兩份九宮格都宣告自動命中 `t9_pinyin`；`ids` 決定清單順序。 */
+    private class TieRepo(
+        private val ids: List<String>,
+        private val userDir: Set<String> = emptySet(),
+    ) : LayoutRepository {
+        override fun layoutIds(): List<String> = ids
+
+        override fun layoutIsUserProvided(id: String): Boolean = id in userDir
+
+        override fun loadLayout(id: String): LoadResult<KeyboardLayout> {
+            val r = LayoutLoader.load(id, RepoFixtures.layouts, Platform.ANDROID, locale = LOCALE)
+            val v = r.value ?: return r
+            // 兩份都自動命中 —— 那正是要測的那個平手。
+            return if (v.id.startsWith("cn-t9-pinyin")) {
+                LoadResult(v.copy(autoForSchema = listOf("t9_pinyin")), r.diagnostics)
+            } else {
+                r
+            }
+        }
+
+        override fun loadTheme(id: String): LoadResult<Theme> =
+            ThemeLoader.load(id, RepoFixtures.themes, Platform.ANDROID, locale = LOCALE)
+
+        override fun builtinFallbackTheme(): Theme =
+            loadTheme("default-light").value ?: error("夾具主題載不起來")
+    }
+
+    private val both = listOf("cn-t9-pinyin", "cn-t9-pinyin-numrow", "qwerty")
+
+    @Test
+    fun theWinnerIsTheSameWhicheverOrderTheFilesystemGivesThem() {
+        val forward = LayoutHost(TieRepo(both)).apply { applySchema("t9_pinyin") }.layout?.id
+        val backward = LayoutHost(TieRepo(both.reversed())).apply { applySchema("t9_pinyin") }
+            .layout?.id
+        assertEquals("清單順序不得決定答案", forward, backward)
+        assertEquals("同級用 id 字典序", "cn-t9-pinyin", forward)
+    }
+
+    @Test
+    fun theUserDirCopyWins() {
+        val h = LayoutHost(TieRepo(both, userDir = setOf("cn-t9-pinyin-numrow")))
+        h.applySchema("t9_pinyin")
+        assertEquals("cn-t9-pinyin-numrow", h.layout?.id)
+    }
+
+    private companion object {
+        const val LOCALE = "zh-Hant-TW"
+    }
+}

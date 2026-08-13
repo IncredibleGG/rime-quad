@@ -21,8 +21,13 @@ import org.luminakey.ime.theme.SendSpec
  * | 佈局 ＋ 方案 | 按 3 之後 |
  * |---|---|
  * | `cn-qwerty-numrow` ＋ `luna_pinyin_tw` | ✅ 上屏第 3 個 |
- * | `cn-t9-pinyin-numrow` ＋ `t9_pinyin` | ❌ 輸入框變成 `3⋯`，**原本打好的組字被毀掉** |
+ * | `cn-t9-pinyin-numrow` ＋ `t9_pinyin` | ✅ 上屏第 3 個（`MGGAM` → `你敢`） |
  * | `bopomofo-dachen` ＋ `bopomofo_tw` | ❌ 那顆鍵是注音字母，數字被 speller 吃掉 |
+ *
+ * ⚠ 第二列 2026-08-13 量到的是 ❌（輸入框變成 `3⋯`，**原本打好的組字被毀掉**）。
+ * 它翻面是因為工單 #99 把專用數字列的 `1`–`9` 攔在**門面層**
+ * （[SelectionDigitKeys.act]），不再交給引擎 —— 也就是說這張表量的是
+ * 「這一端整條路徑」的行為，不是 librime 單獨的行為。**不要拿它推論別端。**
  *
  * ── ⛔ 這份表不准用手寫 ────────────────────────────────────────────────
  * 手寫的那一刻它就開始腐爛：方案的 `speller/alphabet`、`recognizer/patterns`

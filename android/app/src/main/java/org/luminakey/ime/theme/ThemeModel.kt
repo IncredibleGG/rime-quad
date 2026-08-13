@@ -113,10 +113,17 @@ data class CommentStyle(
  * 不構成第二個通道），規範不提供一個做錯的選項。
  */
 enum class HighlightStyle {
-    /** `highlight_background` 鋪滿整格。iOS 系主題的視覺語彙。 */
+    /**
+     * `highlight_background` 鋪滿整格。iOS 系主題的視覺語彙。
+     *
+     * **這是預設**（`docs/theme-format.md` §8.6.4 的表與 [ThemeParser] 的
+     * `highlightStyle = HighlightStyle.FILL` 兩邊都是它）。
+     * ⚠ 從前 [UNDERLINE] 的 KDoc 寫著「預設」—— 那一句是錯的,而且是最貴的
+     * 那種註解:讀的人不會去查,他會照著寫測試。
+     */
     FILL,
 
-    /** 格底一條 2 dp、寬度等於**候選文字墨跡**的重點色橫條。預設。 */
+    /** 格底一條 2 dp、寬度等於**候選文字墨跡**的重點色橫條。 */
     UNDERLINE,
 
     /** `highlight_border_width` / `highlight_border_color` 描邊。 */

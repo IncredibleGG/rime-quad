@@ -90,4 +90,5 @@
     <string name="diag_kind_localized_string">a piece of text, or one per language</string>
 
     <string name="diag_syllables_slot_unknown">Layer ‘%1$s’ lists ‘%2$s’ as a syllable slot, but no key with that id is in this layer. That slot was dropped.</string>
+    <string name="diag_bar_dead_end">Theme ‘%1$s’ leaves the candidate bar with no way forward (right end: %2$s): there are candidates you cannot reach. Turn the expand button or the page indicator back on.</string>
 </resources>

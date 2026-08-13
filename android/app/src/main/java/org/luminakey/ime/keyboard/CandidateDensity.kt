@@ -318,7 +318,13 @@ object CandidateDensity {
      * |---|---|---|
      * | `bopomofo-dachen/bopomofo` | 畫 | ㄅ=1、ㄉ=2、ˇ=3… 那是**大千鍵位標示**，不是數字鍵 |
      * | `t9-pinyin/t9` | 畫 1..6 | 只有 `k1` 送得出 `1`，其餘八顆什麼都不送 |
-     * | `cn-t9-pinyin-numrow/t9` | 畫 | 數字鍵是真的，但引擎那一側收不到（見 [SelectionDigits]）|
+     * | `cn-t9-pinyin-numrow/t9` | 畫 | 數字鍵是真的，而且**按得到**（見下面那一段）|
+     *
+     * ⚠ 第三列 2026-08-13 寫的是「引擎那一側收不到」。工單 #99 之後那一格
+     * 由 [SelectionDigitKeys.act] 在門面層攔下,`core/selection-digit.tsv`
+     * 2026-08-14 重量的結果是 `yes` —— 這一條(`layerHasSelectionDigitRow`)
+     * 本來就擋不住它,擋不擋得住由 [SelectionDigits.works] 那一條決定,
+     * 而那一條現在說可以。兩條的分工沒有變。
      *
      * 前兩格靠「九顆全在」就擋掉：注音那一排湊得出 1..9 是因為它真的送那些
      * keysym（大千鍵位），這一條擋不住它 —— 擋它的是 [SelectionDigits]。

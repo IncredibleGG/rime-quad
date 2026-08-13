@@ -147,6 +147,15 @@ LEARN_PICK=(1 1 2)
 step "0. 準備"
 [ -x "$ADB" ] || fail "找不到 adb:$ADB"
 adbs get-state >/dev/null 2>&1 || fail "$SERIAL 不在線上(先跑 scripts/emu.sh start)"
+# ⚠ **從乾淨的資料開始。** `adb install -r` 會保留資料,於是「還沒教之前」
+# 的基準會是**上一次跑這支腳本學到的詞**,而第 6 步的反向控制組就會誤判成
+# 「沒清乾淨」。實際踩到過一次:基準拿到的是上一輪的 開房/郭嘉/逆號。
+#
+# ⚠ 閘搬到**安裝之前**:`install -r` 蓋掉的也是這一台上別條線的 app,
+#   而 `verify_device_hygiene.sh` 的規則 C 現在是**逐呼叫點**的 ——
+#   閘寫在下面那個 `fi` 之後,護不到 `fi` 裡的 `adbs install`。
+rs_assert_destructive_ok "$ADB" "$SERIAL" "install -r $PKG、pm clear $PKG" || exit 2
+
 if [ "$INSTALL" -eq 1 ]; then
   [ -f "$APK" ] || fail "找不到 APK:$APK"
 
@@ -190,10 +199,6 @@ exported 的廣播入口,見本檔檔頭)。這支腳本要的是 debug 那一�
   adbs install -r "$APK" >/dev/null 2>&1 || fail "安裝失敗(簽章不符?先 adb uninstall $PKG)"
   pass "已安裝 $(basename "$APK")"
 fi
-# ⚠ **從乾淨的資料開始。** `adb install -r` 會保留資料,於是「還沒教之前」
-# 的基準會是**上一次跑這支腳本學到的詞**,而第 6 步的反向控制組就會誤判成
-# 「沒清乾淨」。實際踩到過一次:基準拿到的是上一輪的 開房/郭嘉/逆號。
-rs_assert_destructive_ok "$ADB" "$SERIAL" "pm clear $PKG" || exit 2
 adbs shell pm clear "$PKG" >/dev/null 2>&1 || true
 
 # 開著設定畫面把行程釘住 —— 學習用的 session 要跨好幾次 broadcast 活著,

@@ -601,6 +601,19 @@ fi   # EMU_ONLY == 0
 
 if [ "$SKIP_EMU" -eq 0 ]; then
   # ⛔ 「抓第一台」= 永遠是 emulator-5554,而這一關會 uninstall。
+  #
+  # ⛔ **`SER` 是空字串的時候,一個 `adb -s "$SER"` 都不可以送出去。**
+  #    `rs_pick_serial` 失敗有三種:0 台在線、多台在線不猜、**指名的那一台不在線**。
+  #    三種都會落到 `SER=""`,而實測(2026-08-14,建置機上三台在線):
+  #
+  #        adb -s "" get-state     → error: more than one device/emulator
+  #        adb -s nosuch get-state → error: device 'nosuch' not found
+  #
+  #    兩句話不一樣 —— `adb` 把**空字串當成「沒有指定」**。於是「指名的那一台
+  #    不在線 ＋ 場上剛好一台」時,底下每一個 `adb -s "$SER"` 都會靜靜地打在
+  #    那一台上,包含 `uninstall` ——**解除安裝別條線的 app**。
+  #    (改動前是安全的:舊碼在挑不到時保留使用者指名的序號,adb 會回
+  #     「device not found」而不是換一台。)
   SER="$(rs_pick_serial "$ADB")" || SER=""
 
   step "5. 核心層對照基準（不經 UI）"
@@ -651,7 +664,11 @@ if [ "$SKIP_EMU" -eq 0 ]; then
   # 「無法啟動 dev.rime.imetest」失敗——而那個訊息看起來像輸入法壞了。
   # 這支腳本不該假設裝置上殘留著什麼，該自己把前置條件備齊。
   TESTAPP="$ROOT/build/imetest/rime-imetest.apk"
-  if "$ADB" -s "$SER" shell pm list packages 2>/dev/null | grep -q "dev.rime.imetest"; then
+  if [ -z "$SER" ]; then
+    # `adb -s ""` = 沒有指定 = 場上唯一那一台。裝測試靶到別條線的模擬器上
+    # 是看不見的污染,而且下面第 6 關會在那台上打字。
+    skip "沒有選定裝置,測試靶沒有裝(第 6/6b 關無處打字)"
+  elif "$ADB" -s "$SER" shell pm list packages 2>/dev/null | grep -q "dev.rime.imetest"; then
     ok "測試靶已在裝置上"
   else
     [ -f "$TESTAPP" ] || "$ROOT/scripts/build_testapp.sh" > "$OUT/testapp.log" 2>&1 || true
@@ -764,7 +781,12 @@ if [ "$SKIP_EMU" -eq 0 ]; then
   }
   PREV_PKG=""
   [ -n "$PREV" ] && PREV_PKG="$(pkg_of "$PREV")"
-  if [ -z "$PREV" ]; then
+  if [ -z "$SER" ]; then
+    # ⛔ 這一關會 uninstall 現行版、裝上前一版。`adb -s ""` 等於「沒有指定」,
+    #    場上剛好一台時它會打在那一台上 —— 別條線的 app 就這樣被移掉。
+    #    沒有選定裝置時唯一誠實的答案是「沒驗到」(--strict 下就是失敗)。
+    skip "沒有選定裝置（rs_pick_serial 沒過），升級路徑完全沒有驗到"
+  elif [ -z "$PREV" ]; then
     skip "release/ 下沒有前一版，升級路徑完全沒有驗到"
   elif [ -n "$PREV_PKG" ] && [ "$PREV_PKG" != "$PKG" ]; then
     # ⚠ 這一段刻意**不是**把關卡關掉。沒有明文宣告就當場失敗 ——
@@ -776,7 +798,11 @@ if [ "$SKIP_EMU" -eq 0 ]; then
       # 換套件之後「升級」在定義上不存在,所以改驗這一次真正該成立的事:
       # 新舊兩個 app 並存 —— 也就是使用者會看到兩個,必須自己移除舊的。
       # 這件事要被關卡驗到,而不是靠人記得在發布說明裡講。
-      if "$ADB" -s "$SER" install -r "$PREV" >/dev/null 2>&1; then
+      # 逐呼叫點過閘(verify_device_hygiene.sh 規則 C):裝一個**別的套件**
+      # 上去、待會再把它移掉,兩件都是破壞性的。
+      if ! rs_assert_destructive_ok "$ADB" "$SER" "install -r $PREV_PKG、uninstall $PREV_PKG"; then
+        skip "沒過裝置閘,已宣告的套件變更沒有驗到共存行為"
+      elif "$ADB" -s "$SER" install -r "$PREV" >/dev/null 2>&1; then
         PKGS="$("$ADB" -s "$SER" shell pm list packages 2>/dev/null | tr -d "\r")"
         if printf "%s\n" "$PKGS" | grep -qx "package:$PREV_PKG" \
            && printf "%s\n" "$PKGS" | grep -qx "package:$PKG"; then
@@ -784,7 +810,8 @@ if [ "$SKIP_EMU" -eq 0 ]; then
         else
           bad "宣告的套件變更下,新舊兩個套件沒有同時存在 —— 與預期不符"
         fi
-        "$ADB" -s "$SER" uninstall "$PREV_PKG" >/dev/null 2>&1 || true
+        rs_assert_destructive_ok "$ADB" "$SER" "uninstall $PREV_PKG(收尾)" \
+          && "$ADB" -s "$SER" uninstall "$PREV_PKG" >/dev/null 2>&1 || true
       else
         bad "宣告的舊套件裝不上去,無法驗證共存行為"
       fi
@@ -803,8 +830,13 @@ if [ "$SKIP_EMU" -eq 0 ]; then
     # 先移除，才能裝回舊簽章的版本 —— 第 6 步已經裝上新版了，
     # 直接 install -r 舊版會因為簽章不同（或降版）而失敗，
     # 於是升級測試被「略過」而不是被執行。那正好放過了要驗的東西。
-    "$ADB" -s "$SER" uninstall $PKG >/dev/null 2>&1 || true
-    if "$ADB" -s "$SER" install "$PREV" >/dev/null 2>&1; then
+    # 逐呼叫點過閘(verify_device_hygiene.sh 規則 C):移除現行版與裝回前一版
+    # 都是破壞性的,而且都會落在 `adb -s "$SER"` 上。第 5b 關那一處過了閘,
+    # **不代表這裡也過了** —— 那個 if 早在 150 行前就 `fi` 掉了。
+    if ! rs_assert_destructive_ok "$ADB" "$SER" "uninstall $PKG、install 前一版"; then
+      skip "沒過裝置閘,升級路徑沒有驗到"
+    elif { "$ADB" -s "$SER" uninstall $PKG >/dev/null 2>&1 || true; } &&
+         "$ADB" -s "$SER" install "$PREV" >/dev/null 2>&1; then
       # 讓它跑一次，把舊版的 user 資料種下去。
       # 固定 sleep 25 不夠：首次啟動要解壓 13MB 並編譯方案，模擬器上常超過一分鐘，
       # 而「資料還沒種下去就升級」會讓下面的保留檢查驗到一個空目錄——空的比對

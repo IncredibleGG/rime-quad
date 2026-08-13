@@ -382,16 +382,18 @@ if [ -n "$PLANT" ] && plant_is_source "$PLANT" && [ -n "$APK" ]; then
   echo "--plant $PLANT 會自己 patch 原始碼再建一份 APK,不可以同時給 --apk。" >&2
   exit 2
 fi
-# ⛔ `--serial` 也要算「指名」。閘從前只看環境變數,於是這一行帶 `--serial`
-#   就必死(RC=2,訊息說「是自動選來的」而那台正是命令列指名的)。
-#   `rs_select_device` 把來源(flag / env / auto)一起記下來給閘看。
-rs_select_device "$ADB" "$SERIAL" || exit 2
-SERIAL="$RS_SERIAL"
+# ⛔ 裝置的選擇**不在這裡**,在底下的「裝置準備」那一段。
+#
+# 這裡曾經寫著 `rs_select_device ... || exit 2`,而它擋在 `--check-ci` /
+# `--plant stale-schema` / `--plant narrow-scope` 這三條**只讀主機檔案**的
+# 派發之前。後果是 `.github/workflows/build.yml` 快車道那四次呼叫
+# (`--check-ci --self-test`、`--check-ci`、`--plant stale-schema`、
+# `--plant narrow-scope`)在 GitHub runner(0 台裝置)上全部 RC=2,
+# 訊息是「這台機器上有 0 台裝置在線,不猜」—— 而那四步一台裝置都不需要。
+# `publish` 的 `needs:` 掛著 `fast`,於是這一版根本發不出去。
+#
+# 判準:**要碰裝置的時候才選裝置**。順序見「裝置準備」。
 adbs() { "$ADB" -s "$SERIAL" "$@"; }
-rs_assert_destructive_ok "$ADB" "$SERIAL" "pm clear、uninstall、ime set" || exit 2
-# ⚠ 見 verify_candbar.sh 同一行的註解：不帶 --apk 時要靠 `pm path` ＋
-#   裝置端 sha256 記下「這一輪量的是哪一份」。
-rs_write_device_stamp "$ADB" "$SERIAL" "$OUT_DIR/device.txt" "${APK:-}" "$IME_PKG"
 info() { echo "[syllables] $*" >&2; }
 pass() { echo "  [PASS] $*"; }
 FAILURES=0
@@ -773,6 +775,15 @@ if [ -n "$PLANT" ] && plant_is_host_only "$PLANT"; then
 fi
 
 # ═══════════════════════ 裝置準備 ═══════════════════════
+# ⛔ `--serial` 也要算「指名」。閘從前只看環境變數,於是這一行帶 `--serial`
+#   就必死(RC=2,訊息說「是自動選來的」而那台正是命令列指名的)。
+#   `rs_select_device` 把來源(flag / env / auto)一起記下來給閘看。
+#
+# ⚠ 這一段**必須留在 host-only 派發之後**。搬到前面去,快車道那四次
+#   不需要裝置的呼叫就會在 0 裝置的 runner 上全部 RC=2。
+rs_select_device "$ADB" "$SERIAL" || exit 2
+SERIAL="$RS_SERIAL"
+rs_assert_destructive_ok "$ADB" "$SERIAL" "pm clear、uninstall、ime set" || exit 2
 # 原始碼植入的 APK 在這裡才建:第 0/1 關只讀主機上的檔案,先跑完它們,
 # 參數打錯、佈局掃不到的時候就不必白等一次 Gradle。
 if [ -n "$PLANT" ] && plant_is_source "$PLANT"; then
@@ -827,6 +838,11 @@ if [ -n "$APK" ]; then
     DEVICE_RESTORE_APK="$CLEAN_APK_PATH"
   fi
 fi
+# ⚠ 見 verify_candbar.sh 同一行的註解:不帶 --apk 時要靠 `pm path` ＋
+#   裝置端 sha256 記下「這一輪量的是哪一份」。
+# ⚠ **裝完才寫**(eb3c588 的題旨)。寫在安裝之前的話,`pkg_apk_sha256`
+#   記的是上一次裝的那一份。
+rs_write_device_stamp "$ADB" "$SERIAL" "$OUT_DIR/device.txt" "${APK:-}" "$IME_PKG"
 
 # ── 裝置上跑的是不是同一份 APK ────────────────────────────────────────────
 #

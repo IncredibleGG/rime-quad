@@ -277,6 +277,25 @@ for _row in "${ROW_LIST[@]}"; do
       -e "s/^auto_for_schema:.*/auto_for_schema: [\"$SCHEMA\"]/" \
       -e "s/^deprecated:.*/deprecated: false/" "$SRC_LAYOUT" \
     | adbs shell "run-as $IME_PKG sh -c 'cat > files/rime/user/layouts/$LAYOUT.yaml'" >/dev/null 2>&1
+  # ⛔ **競爭那一份也要處理。**
+  #   隨附的 `cn-t9-pinyin` 自己就寫著 `auto_for_schema: ["t9_pinyin"]`,於是
+  #   上面那一行做完之後,**有兩份佈局同時自動命中同一個方案**。裝置上載進去
+  #   哪一份,從前是 `File.listFiles()` 說了算 —— 而它不保證順序。
+  #   症狀正是這支腳本的「一次紅一次綠」:紅的那一次連 `cn-t9-pinyin-numrow`
+  #   都沒有載進去,而畫面完全正常。
+  #
+  #   產品端這一輪已經把決勝定死了(`LayoutPriority`:使用者目錄 > 隨附,
+  #   同級用 id 字典序),但那條規則解不掉這裡的平手 —— 兩份都會被寫進
+  #   使用者目錄的話,贏的會是 id 較小的 `cn-t9-pinyin`,而要驗的是另一份。
+  #   所以這裡把對手的自動命中清成 `[]`,讓要驗的那一份是**唯一**命中的。
+  for _other in "$ROOT"/core/layouts/*.yaml; do
+    _oid="$(basename "$_other" .yaml)"
+    [ "$_oid" = "$LAYOUT" ] && continue
+    grep -qE "^auto_for_schema:.*\"$SCHEMA\"" "$_other" || continue
+    info "  $_oid 也自動命中 $SCHEMA —— 在使用者目錄裡把它的 auto_for_schema 清成 []"
+    sed -e "s/^auto_for_schema:.*/auto_for_schema: []/" "$_other" \
+      | adbs shell "run-as $IME_PKG sh -c 'cat > files/rime/user/layouts/$_oid.yaml'" >/dev/null 2>&1
+  done
 
   IME_NOW=""
   for _ in $(seq 1 20); do

@@ -1,6 +1,7 @@
 package org.luminakey.ime.keyboard
 
 import android.content.res.Configuration
+import android.util.Log
 import android.view.HapticFeedbackConstants
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -85,6 +86,9 @@ import org.luminakey.ime.core.FeedbackPlan
 import org.luminakey.ime.prefs.LocalKeyBehavior
 import org.luminakey.ime.R
 import org.luminakey.ime.theme.SyllablePlacement
+import org.luminakey.ime.theme.Diagnostic
+import org.luminakey.ime.theme.DiagnosticCode
+import org.luminakey.ime.theme.DiagnosticText
 import org.luminakey.ime.theme.HighlightStyle
 import org.luminakey.ime.theme.HintPosition
 import org.luminakey.ime.theme.KeyGeometry
@@ -995,6 +999,45 @@ private fun CandidateBar(
                 panelOpen = expand.expanded,
             )
 
+            /* ── §10 第 41 條:死路 —— 只發診斷,不改畫面 ────────────────
+             *
+             * ⛔ [CandidateDensity.deadEnd] 從第三輪起就有整套單元測試,而
+             *   **產品碼一個呼叫端都沒有**。也就是說:隨附主題由測試守著,
+             *   而使用者自帶主題真的把兩條出口都關掉時,裝置上沒有任何東西
+             *   會叫 —— 他看到的是一列候選、按不到後面那些,沒有任何線索。
+             *
+             * ⚠ 這裡**刻意只發一則 §6.5 的 code + args 診斷**,不強制畫出
+             *   展開鍵。死路本身已經在第四輪結構性地封掉了
+             *   ([Pager.panelState] 型別上就沒有 show/kind),這一行只是讓它
+             *   被看見;加 UI 退路是會造出下一件新缺陷的那種改動。
+             */
+            val barDeadEnd = CandidateDensity.deadEnd(
+                layout = barLayout,
+                pageCandidateCount = shown.size,
+                morePages = !state.isLastPage,
+                panelPagerDrawable = CandidateDensity.panelPagerDrawable(
+                    pageNo = state.pageNo,
+                    isLastPage = state.isLastPage,
+                    shownCount = shown.size,
+                ),
+            )
+            // 每一格頁況只叫一次。少了 key,重組一次就多印一行,而洗版的日誌
+            // 與沒有日誌一樣沒有人看。
+            LaunchedEffect(barDeadEnd, theme.id, barLayout.rightEnd, state.pageNo) {
+                if (barDeadEnd) {
+                    Log.w(
+                        BAR_TAG,
+                        DiagnosticText.render(
+                            Diagnostic(
+                                DiagnosticCode.BAR_DEAD_END,
+                                listOf(theme.id, barLayout.rightEnd.name.lowercase()),
+                                "candidates.bar",
+                            )
+                        ),
+                    )
+                }
+            }
+
             // `shown` 由呼叫端算好，裡面是**引擎的頁內索引**，不是畫面位置 ——
             // 選字走 rs_select_candidate(index_on_page),兩者一旦脫鉤,使用者
             // 點第二個卻選到第五個,而畫面完全正常。見 [T9Syllables] 與 [Expander]。
@@ -1155,6 +1198,9 @@ private fun CandidateBar(
  * 腳本會**當場報錯**,不會安靜地算錯。
  */
 internal const val CANDIDATE_BAR_BUTTON_DP = 40
+
+/** 候選列的執行期診斷（§6.5）用的 logcat tag。 */
+private const val BAR_TAG = "CandidateBar"
 
 /**
  * 候選列右端的上一頁／下一頁。

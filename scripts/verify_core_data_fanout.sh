@@ -184,6 +184,104 @@ check_lane() {  # check_lane <workflow 檔名> <分支> <針…>
   return "$rc"
 }
 
+# ── 產生器「動到了沒有」:按**內容**判,不按檔名 ───────────────────────────
+#
+# ⛔ 2026-08-13 的 4a726e3 給 `scripts/collect_data.sh` 與
+#   `scripts/collect_charset_guard.sh` 各加了 9 行 `-h|--help` 的**唯讀出口**
+#   (`verify_script_readonly.sh` 要求每一支腳本的 `--help` 都 RC=0 且無副作用)。
+#   兩支都是產生器,於是這一關由綠轉紅、逐條點名三條車道跑不到 ——
+#   而那 18 行**一個位元組的產物都沒有改變**:`$1` 是輸出目錄,
+#   永遠不會等於 `-h`/`--help`,那個 case 對真正的呼叫恆為落空。
+#
+#   「把 --help 撤回」不是解:那會讓 verify_script_readonly.sh 轉紅,
+#   等於把紅燈從一支守門搬到另一支。所以改成問**產物相關的內容**變了沒有。
+#
+# 判準(刻意笨,而且 fail-closed):把兩版的原始碼各自正規化 ——
+#   1. 去掉整行註解與空行(註解不會被執行);
+#   2. 去掉**第一個**唯讀說明出口 `case "${1:-}" in … esac`,
+#      而且只有在它的每一行都是「印字或 exit 0」時才去掉。
+#      認不出形狀 → **不去掉**(於是算成動到了)。
+# 正規化之後兩版一樣 → 這一支沒有動到產物。
+#
+# ⚠ 這一條擋不住「改了註解裡的資料」這種事,但註解本來就不會被執行;
+#   而它**不會**放過任何一行真的程式碼 —— cand 那一批的
+#   `sed -i 's/page_size: 5/page_size: 9/'` 照樣算動到(自我測試釘住了)。
+gen_data_changed() {  # gen_data_changed <base-ref> <rel-path…>
+  python3 - "$ROOT" "$@" <<'PY'
+import re, subprocess, sys
+
+root, base, rels = sys.argv[1], sys.argv[2], sys.argv[3:]
+
+_CASE_HEAD = re.compile(r'^[ \t]*case[ \t]+"?\$\{1:-\}"?[ \t]+in[ \t]*$')
+_ESAC = re.compile(r'^[ \t]*esac[ \t]*$')
+# 區塊裡允許出現的形狀:說明的樣式分支、印字、以 0 結束。其餘一律不認。
+_OK_IN_BLOCK = re.compile(
+    r'^[ \t]*(?:'
+    r'(?:-h\|--help|--help\|-h|-h|--help)\)'      # 樣式分支
+    r'|(?:sed|echo|cat|printf|head|tail)\b'        # 印字
+    r'|exit[ \t]+0(?:[ \t]*;;)?[ \t]*$'            # 以 0 結束
+    r'|;;[ \t]*$'
+    r')'
+)
+
+
+def strip_help_block(text):
+    """去掉第一個「印完說明就 exit 0」的 case 區塊。認不出形狀就原樣回傳。"""
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if not _CASE_HEAD.match(line):
+            continue
+        for j in range(i + 1, len(lines)):
+            if _ESAC.match(lines[j]):
+                body = lines[i + 1:j]
+                clean = [b for b in body if b.strip() and not b.strip().startswith('#')]
+                if clean and all(_OK_IN_BLOCK.match(b) for b in clean):
+                    return '\n'.join(lines[:i] + lines[j + 1:])
+                return text          # 形狀不對 → 不去掉(fail-closed)
+            if _CASE_HEAD.match(lines[j]):
+                break                # 巢狀 case → 不碰
+        return text
+    return text
+
+
+def normalize(text):
+    out = []
+    for line in strip_help_block(text).splitlines():
+        s = line.strip()
+        if not s or s.startswith('#'):
+            continue
+        out.append(s)
+    return '\n'.join(out)
+
+
+# `--pair a b`:直接比兩個檔案(自我測試用的入口,走的是同一份 normalize)。
+if base == '--pair':
+    a, b = rels[0], rels[1]
+    with open(a, encoding='utf-8') as fa, open(b, encoding='utf-8') as fb:
+        sys.exit(0 if normalize(fa.read()) == normalize(fb.read()) else 1)
+
+
+def at_base(rel):
+    p = subprocess.run(['git', '-C', root, 'show', '%s:%s' % (base, rel)],
+                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+    if p.returncode != 0:
+        return None              # base 上還沒有這一支 = 新增的產生器 → 算動到
+    return p.stdout.decode('utf-8', 'replace')
+
+
+for rel in rels:
+    old = at_base(rel)
+    try:
+        with open('%s/%s' % (root, rel), 'r', encoding='utf-8', errors='replace') as fh:
+            new = fh.read()
+    except OSError:
+        print(rel)               # 讀不到 = 刪掉了 → 算動到
+        continue
+    if old is None or normalize(old) != normalize(new):
+        print(rel)
+PY
+}
+
 # ═══════════════════════════════════════════════════════════════════════════
 if [ "$SELF_TEST" -eq 1 ]; then
   log "自我測試:這支腳本分得出「接了線」與「沒接線」嗎"
@@ -239,6 +337,71 @@ if [ "$SELF_TEST" -eq 1 ]; then
   [ "$n_gen" -ge "${#GEN_MIN[@]}" ] \
     && ok "扣掉 SKIP 之後還有 $n_gen 支產生器" \
     || bad "扣掉 SKIP 之後只剩 $n_gen 支 —— SKIP 把該守的也扣掉了"
+
+  echo
+  log "自我測試:產生器「動到了沒有」按**內容**判(不按檔名)"
+  # 四份原始碼跑同一份 normalize:只加唯讀說明出口的不算動到,改到真的
+  # 程式碼的一定算,而認不出形狀的 case 區塊**寧可算動到**(fail-closed)。
+  _FT="$(mktemp -d)"
+  cat > "$_FT/base.sh" <<'FANOUT_ST'
+#!/usr/bin/env bash
+set -euo pipefail
+OUT="$ROOT/build/fanout-selftest/out"
+mkdir -p "$OUT"
+sed -i 's/page_size: 5/page_size: 9/' "$OUT/default.yaml"
+FANOUT_ST
+  cat > "$_FT/plus-help.sh" <<'FANOUT_ST'
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ⛔ 唯讀出口。
+case "${1:-}" in
+  -h|--help)
+    sed -n '2,/^set -[eu]/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    exit 0 ;;
+esac
+
+OUT="$ROOT/build/fanout-selftest/out"
+mkdir -p "$OUT"
+sed -i 's/page_size: 5/page_size: 9/' "$OUT/default.yaml"
+FANOUT_ST
+  cat > "$_FT/real-change.sh" <<'FANOUT_ST'
+#!/usr/bin/env bash
+set -euo pipefail
+OUT="$ROOT/build/fanout-selftest/out"
+mkdir -p "$OUT"
+sed -i 's/page_size: 5/page_size: 6/' "$OUT/default.yaml"
+FANOUT_ST
+  cat > "$_FT/sneaky-case.sh" <<'FANOUT_ST'
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-}" in
+  -h|--help)
+    rm -rf "$ROOT/build/fanout-selftest/out"
+    exit 0 ;;
+esac
+
+OUT="$ROOT/build/fanout-selftest/out"
+mkdir -p "$OUT"
+sed -i 's/page_size: 5/page_size: 9/' "$OUT/default.yaml"
+FANOUT_ST
+  if gen_data_changed --pair "$_FT/base.sh" "$_FT/plus-help.sh"; then
+    ok "只加一段唯讀「--help」出口 → **不算**動到產物(4a726e3 的那 18 行)"
+  else
+    bad "只加唯讀「--help」出口卻被判成動到產物 —— 這一關又會為了說明文字亮紅燈"
+  fi
+  if gen_data_changed --pair "$_FT/base.sh" "$_FT/real-change.sh"; then
+    bad "改了 page_size 卻被判成沒動到 —— 這一關變成裝飾品(cand 那一批的形狀)"
+  else
+    ok "改一行 page_size → 算動到產物"
+  fi
+  if gen_data_changed --pair "$_FT/base.sh" "$_FT/sneaky-case.sh"; then
+    bad "「--help」分支裡藏了 rm -rf 卻被當成唯讀出口略過 —— 判準不是 fail-closed"
+  else
+    ok "認不出形狀的 case 區塊(分支裡有 rm -rf)→ 算動到(fail-closed)"
+  fi
+  rm -rf "$_FT"
   echo
   echo "═══ core/data 擴散守門(自我測試):$PASS 過、$FAIL 失敗 ═══"
   [ "$FAIL" -eq 0 ] || exit 1
@@ -291,7 +454,8 @@ diff_paths() {  # diff_paths <pathspec…>
 }
 
 CHANGED_DATA="$(diff_paths core/data | sed '/^$/d' | sort -u)"
-CHANGED_GEN="$(diff_paths "${GEN[@]}" | sed '/^$/d' | sort -u)"
+# ⚠ 產生器**不按檔名判**,按內容 —— 見 gen_data_changed 的檔頭理由。
+CHANGED_GEN="$(gen_data_changed "$BASE" "${GEN[@]}" | sed '/^$/d' | sort -u)"
 CHANGED="$(printf '%s\n%s\n' "$CHANGED_DATA" "$CHANGED_GEN" | sed '/^$/d' | sort -u)"
 
 if [ -z "$CHANGED" ]; then

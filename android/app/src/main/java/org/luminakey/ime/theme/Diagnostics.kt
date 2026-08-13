@@ -137,6 +137,21 @@ enum class DiagnosticCode(
      * [org.luminakey.ime.keyboard.LayoutRemapValidator]（task #42 的範圍）。
      */
     USER_REMAP_UNAPPLICABLE("user_remap_unapplicable", 1..1, provisional = true),
+    /**
+     * §10 第 41 條：候選列走進了**死路** —— 還有候選使用者沒看到，而這一格
+     * 上沒有任何一條走得出去的路（右端什麼都不畫，或右端是展開鍵而面板裡的
+     * 翻頁列一顆都畫不出來）。
+     *
+     * ⛔ 這是**主題把出口關掉**造成的設計錯誤（`page_indicator.show: false`
+     * ＋ `expand_button.show: false`，或 `scroll: none`），不是一種頁況。
+     * 隨附主題不會踩到（`verify_audit_offline.sh` 與 `ThemeDensityTest` 各釘一道），
+     * 但**使用者自帶主題會**，而在這一則之前，裝置上沒有任何東西會叫 ——
+     * [org.luminakey.ime.keyboard.CandidateDensity.deadEnd] 有整套測試、
+     * 產品碼零呼叫端。
+     *
+     * args: `[theme-id, right-end]`（`right_end` 是 `none` / `pager` / `expand`）
+     */
+    BAR_DEAD_END("bar_dead_end", 2..2, provisional = true),
     ;
 
     /**

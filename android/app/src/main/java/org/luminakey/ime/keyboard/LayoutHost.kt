@@ -21,6 +21,15 @@ interface LayoutRepository {
     fun loadLayout(id: String): LoadResult<KeyboardLayout>
     fun loadTheme(id: String): LoadResult<Theme>
     fun builtinFallbackTheme(): Theme
+
+    /**
+     * 這個 id 是從**使用者目錄**讀到的嗎。
+     *
+     * 只有一個用途:兩份佈局同時自動命中同一個方案時的決勝（[LayoutPriority]）。
+     * 預設 `false` —— 測試用的假 repo 全部都是「隨附」,決勝就退回 id 字典序,
+     * 那仍然是**確定的**。
+     */
+    fun layoutIsUserProvided(id: String): Boolean = false
 }
 
 /**
@@ -184,10 +193,16 @@ class LayoutHost(private val repo: LayoutRepository) {
         // §9.1.1 第 1 步走的是 `auto_for_schema`，不是 `for_schema`。兩者拆開之後
         // 「可以用這份佈局」與「預設就用這份」不再互相綁架：`cn-t9-pinyin-numrow`
         // 可以老實宣告自己只給 t9_pinyin 用，同時把自動命中讓給 `cn-t9-pinyin`。
+        //
+        // ⛔ **不是「清單裡第一個命中的」。** 那份清單的順序來自
+        //   `File.listFiles()`,而檔案系統**不保證順序** —— 兩份佈局同時
+        //   自動命中同一個方案時,裝置上載進去的是哪一份因此是隨機的。
+        //   `scripts/verify_selection_digit.sh` 的「一次紅一次綠」就是它:
+        //   紅的那一次載進去的根本不是要驗的那一份,而畫面完全正常。
+        //   決勝規則見 [LayoutPriority]。
         val exact = repo.layoutIds()
-            .asSequence()
-            .mapNotNull { load(it) }
-            .firstOrNull { it.autoMatchesSchema(schemaId) }
+            .mapNotNull { id -> load(id)?.takeIf { it.autoMatchesSchema(schemaId) } }
+            .minByOrNull { LayoutPriority.rank(repo.layoutIsUserProvided(it.id), it.id) }
         if (exact != null) {
             // 已經在對的佈局上時仍要把層歸位。使用者明確重選一次方案，語義是
             // 「把鍵盤給我調回這個方案該有的樣子」，停在英數層上不算調回。
@@ -251,6 +266,9 @@ class LayoutHost(private val repo: LayoutRepository) {
                     letters = lettersOf(it),
                     deprecated = it.deprecated,
                     primary = it.primary,
+                    // 決勝用(見 [LayoutPriority])。選單第一項必須等於
+                    // 「什麼都不做會拿到的鍵盤」,所以兩邊問的是同一件事。
+                    userProvided = repo.layoutIsUserProvided(id),
                 )
             }
         }

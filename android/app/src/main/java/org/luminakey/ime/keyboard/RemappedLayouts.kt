@@ -35,6 +35,8 @@ class RemappingLayoutRepository(
 
     override fun layoutIds(): List<String> = base.layoutIds()
 
+    override fun layoutIsUserProvided(id: String): Boolean = base.layoutIsUserProvided(id)
+
     override fun loadTheme(id: String): LoadResult<Theme> = base.loadTheme(id)
 
     override fun builtinFallbackTheme(): Theme = base.builtinFallbackTheme()
@@ -83,6 +85,8 @@ class CachingLayoutRepository(private val base: LayoutRepository) : LayoutReposi
     private val ids: List<String> by lazy { base.layoutIds() }
 
     override fun layoutIds(): List<String> = ids
+
+    override fun layoutIsUserProvided(id: String): Boolean = base.layoutIsUserProvided(id)
 
     override fun loadLayout(id: String): LoadResult<KeyboardLayout> =
         layouts.getOrPut(id) { base.loadLayout(id) }

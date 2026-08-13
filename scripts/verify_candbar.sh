@@ -583,7 +583,26 @@ adbs shell input tap "$OLD_NEXT_X" "$BAR_MID" >/dev/null 2>&1
 sleep 1.5
 D_AFTER="$(field_text)"
 adbs exec-out screencap -p > "$OUT_DIR/4-after-tap.png" 2>/dev/null
-if [ "$D_AFTER" = "$D_BEFORE" ]; then
+# ⛔ 這裡的斷言曾經只有「變了沒有」(`[ "$D_AFTER" = "$D_BEFORE" ]`),
+#   而實跑拿到過 **`[PASS] 上屏了「」`** —— `field_text()` 回空字串時
+#   「變了」成立,於是「什麼都沒發生」被判成通過。
+#
+#   `field_text()` 把三件事混成同一個空字串:欄位真的空著、欄位顯示的是
+#   hint(text 屬性是空的)、`uiautomator dump` 這一次失敗(它會 `sys.exit(0)`)。
+#   三種裡沒有一種是「上屏了一個候選」。
+#
+#   修法是把**第 3 關已經有的那三道防線**照抄過來(不發明新的):
+#     空的 → 讀不到,不是上屏;等於組字串 → 還在組字,沒選到;沒變 → 沒發生。
+if [ -z "$D_AFTER" ]; then
+  fail "點 x=$OLD_NEXT_X 之後輸入框讀成**空的** —— 那不是「上屏了」。" \
+       "三種可能:欄位真的空了、欄位在顯示 hint、uiautomator dump 失敗。" \
+       "圖:$OUT_DIR/4-after-tap.png"
+elif [ "$D_AFTER" = "$COMPOSING" ]; then
+  # 輸入框在組字中本來就顯示 preedit。拿它當「上屏的詞」會讓「根本沒選到字」
+  # 看起來像「選到了別的字」——與第 3 關同一條理由。
+  fail "點 x=$OLD_NEXT_X 之後輸入框還是組字中的「$D_AFTER」—— 沒有選到任何候選。" \
+       "圖:$OUT_DIR/4-after-tap.png"
+elif [ "$D_AFTER" = "$D_BEFORE" ]; then
   fail "點 x=$OLD_NEXT_X(舊版翻頁鍵的位置)什麼都沒上屏 —— " \
        "那裡不是候選。可能是右端仍然保留兩顆鍵,也可能是一列根本排不到那麼多個。" \
        "圖:$OUT_DIR/4-after-tap.png"

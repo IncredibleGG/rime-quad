@@ -236,8 +236,14 @@ class KeyboardTypesTest {
             ),
         )
         val titles = groups.single().types.map { it.title }
+        // ⚠ 這兩份在本夾具裡**同時**自動命中 `t9_pinyin`（`brief()` 的預設是
+        //   `auto_for_schema = for_schema − "*"`）。從前第一項是
+        //   「t9-pinyin」——那只是因為它在傳進來的 `listOf` 裡排前面,
+        //   也就是這一輪要修的那條「清單順序決勝」。改成 [LayoutPriority]
+        //   之後,同級用 id 字典序:`cn-t9-pinyin` < `t9-pinyin`。
+        //   這一條測的是**撞名要看得出差別**,順序由上面那兩條專門的測試守。
         assertEquals(
-            listOf("九宮格拼音（t9-pinyin）", "九宮格拼音（cn-t9-pinyin）", "QWERTY 英數"),
+            listOf("九宮格拼音（cn-t9-pinyin）", "九宮格拼音（t9-pinyin）", "QWERTY 英數"),
             titles,
         )
     }
@@ -279,6 +285,58 @@ class KeyboardTypesTest {
             expected,
             offered,
         )
+    }
+
+    /* ── 兩份佈局同時自動命中：決勝必須是**確定的** ────────────────────── */
+
+    /**
+     * ⛔ 這條規則從前不存在。`declared.firstOrNull { it.autoForSchema… }`
+     * 拿的是清單順序，而那份清單來自 `File.listFiles()` —— **檔案系統不保證
+     * 順序**。症狀是 `scripts/verify_selection_digit.sh` 一次紅一次綠，
+     * 紅的那一次裝置上載進去的根本不是它要驗的那一份佈局。
+     *
+     * 這一條把「同一組輸入、不同的排列」釘成同一個答案。
+     */
+    @Test
+    fun theAutoHitWinnerDoesNotDependOnListOrder() {
+        val a = brief("cn-t9-pinyin", "九宮格拼音", LayoutKind.GRID, "t9_pinyin")
+        val b = brief("cn-t9-pinyin-numrow", "九宮格・數字列", LayoutKind.GRID, "t9_pinyin")
+        val qwerty = brief("qwerty", "QWERTY", forSchema = arrayOf("*"))
+
+        fun headOf(layouts: List<LayoutBrief>): String? =
+            KeyboardTypes.build(listOf(schema("t9_pinyin", "九宮格拼音")), layouts)[0]
+                .types[0].layoutId
+
+        assertEquals("id 字典序：cn-t9-pinyin 在前", "cn-t9-pinyin", headOf(listOf(a, b, qwerty)))
+        assertEquals(
+            "同一組佈局換個排列，第一項必須一模一樣",
+            headOf(listOf(a, b, qwerty)),
+            headOf(listOf(qwerty, b, a)),
+        )
+    }
+
+    /**
+     * 使用者自己放進 `files/rime/user/layouts/` 的那一份勝過隨附的同級對手。
+     * 那是他的明示意圖 —— 被隨附的蓋過去，等於他改了檔案卻什麼都沒發生。
+     */
+    @Test
+    fun aUserProvidedLayoutWinsTheAutoHit() {
+        val shipped = brief("cn-t9-pinyin", "九宮格拼音", LayoutKind.GRID, "t9_pinyin")
+        val mine = brief("cn-t9-pinyin-numrow", "九宮格・數字列", LayoutKind.GRID, "t9_pinyin")
+            .copy(userProvided = true)
+        val groups = KeyboardTypes.build(
+            listOf(schema("t9_pinyin", "九宮格拼音")),
+            listOf(shipped, mine),
+        )
+        assertEquals("cn-t9-pinyin-numrow", groups[0].types[0].layoutId)
+    }
+
+    /** 決勝規則本身：使用者目錄 > 隨附，同級 id 字典序。 */
+    @Test
+    fun layoutPriorityRanksUserDirAboveShipped() {
+        assertTrue(LayoutPriority.rank(true, "zzz") < LayoutPriority.rank(false, "aaa"))
+        assertTrue(LayoutPriority.rank(false, "aaa") < LayoutPriority.rank(false, "aab"))
+        assertTrue(LayoutPriority.rank(true, "aaa") < LayoutPriority.rank(true, "aab"))
     }
 
     /** 真檔讀出來的摘要。用的是 [RepoFixtures] 的目錄，不是複製品。 */

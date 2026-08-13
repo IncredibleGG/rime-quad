@@ -23,7 +23,12 @@
 #   B. source 了 lib/device.sh 就**必須真的呼叫** `rs_pick_serial`,
 #      而且必須把回傳值**接起來、後面真的用到**。
 #   C. 會做破壞性動作(`pm clear` / `uninstall` / `ime set` / `ime enable` /
-#      `settings put` / `shell rm -rf`)的檔案,必須呼叫 `rs_assert_destructive_ok`。
+#      `settings put` / `shell rm -rf`)的**每一個呼叫點**,都必須被
+#      `rs_assert_destructive_ok` 罩住。
+#      ⛔ 這一條從前是**檔案級**的(「檔案裡出現過 rs_assert_destructive_ok」)——
+#        一處過閘,全檔免疫。`release_check.sh` 就是這個形狀:閘在第 5b 關的
+#        `if [ -n "$SER" ]` 裡,而第 6c 關在 150 行之後又 uninstall 了兩次,
+#        那個 if 早就 `fi` 掉了 —— 而守門是綠的。判準見 `gate_covers()`。
 #   D. 用 adb 卻**不** source lib/device.sh 的檔案,必須列在下面的白名單裡
 #      並附理由。
 #   E. 白名單本身不得腐爛:列著的檔案必須存在、必須仍然用 adb、
@@ -153,6 +158,43 @@ def scan_files(root):
     return out
 
 
+def indent_of(text):
+    return len(text) - len(text.lstrip())
+
+
+def gate_covers(lines, idx):
+    """規則 C 的**逐呼叫點**判定:`lines[idx]` 那一行有沒有被閘罩住。
+
+    ⛔ 從前這一條是**檔案級**的:`"rs_assert_destructive_ok" not in body`。
+       一處過閘,全檔免疫 —— 而 `scripts/release_check.sh` 正是這個形狀:
+       閘在第 5b 關(`if [ -n "$SER" ]` 裡),而第 6c 關在 150 行之後又
+       `uninstall` 了兩次,那個 if 早就 `fi` 掉了。守門是綠的。
+
+    判準(縮排支配):從呼叫那一行往上走,
+      · 遇到 `rs_assert_destructive_ok` 而且它的縮排**不深於**目前的門檻
+        → 罩得住;
+      · 遇到縮排比門檻更淺的程式碼行 → 代表往上跨出了一層區塊,
+        把門檻降到那一層再繼續找。
+
+    於是「閘寫在一個已經關掉的 `if` 裡」會被判成沒罩住(那個 `fi` 的縮排
+    比閘更淺),而「閘就在同一個區塊、或在外層」照樣算數。
+
+    ⚠ 這一條刻意保守而且只看縮排:要判得準就得寫一個 shell 剖析器,
+      而一個看起來很聰明、偶爾判錯的守門會在第三次之後沒有人看。
+    """
+    threshold = indent_of(lines[idx][1])
+    for j in range(idx - 1, -1, -1):
+        text = lines[j][1]
+        if not text.strip():
+            continue
+        ind = indent_of(text)
+        if "rs_assert_destructive_ok" in text and ind <= threshold:
+            return True
+        if ind < threshold:
+            threshold = ind
+    return False
+
+
 def code_lines(path):
     """(行號, 內容) —— 去掉整行註解與 heredoc 之外的說明段。"""
     out = []
@@ -229,17 +271,19 @@ def check(root):
                         "旗標只寫進區域變數,破壞性動作的閘看不到它,於是帶 `--serial` "
                         "保證 RC=2(訊息還會說「那台是自動選來的」)。" % rel)
 
-            # ── C:破壞性動作要過閘 ────────────────────────────────────
-            hits = [(n, l) for n, l in lines
-                    if DESTRUCTIVE.search(l) and ADB_CALL.search(l)
-                    and not QUOTED_DEMO.match(l)]
-            if (hits and rel not in DESTRUCTIVE_ALLOW
-                    and "rs_assert_destructive_ok" not in body):
-                n, l = hits[0]
-                problems.append(
-                    "C %s:%d 會做破壞性動作卻沒有 `rs_assert_destructive_ok` ——"
-                    "打在別條線的模擬器上,那條線接下來整輪都是紅的而且查不出為什麼。\n"
-                    "     %s" % (rel, n, l.strip()))
+            # ── C:破壞性動作要過閘(**逐呼叫點**)──────────────────────
+            if rel not in DESTRUCTIVE_ALLOW:
+                for idx, (n, l) in enumerate(lines):
+                    if not (DESTRUCTIVE.search(l) and ADB_CALL.search(l)
+                            and not QUOTED_DEMO.match(l)):
+                        continue
+                    if gate_covers(lines, idx):
+                        continue
+                    problems.append(
+                        "C %s:%d 這一個呼叫點沒有被 `rs_assert_destructive_ok` 罩住 ——"
+                        "檔案裡別處過了閘不算數(那個區塊早就關掉了)。"
+                        "打在別條線的模擬器上,那條線接下來整輪都是紅的而且查不出為什麼。\n"
+                        "     %s" % (rel, n, l.strip()))
 
             # ── D:用 adb 卻不 source device.sh ────────────────────────
             if uses_adb and not sources_dev and rel not in ALLOW:
@@ -328,6 +372,17 @@ PLANTS = [
     ("C", "scripts/_plant_c.sh",
      '#!/usr/bin/env bash\n. "$HERE/lib/device.sh"\n'
      'SERIAL="$(rs_pick_serial "$ADB")"\n"$ADB" -s "$SERIAL" shell pm clear org.x\n'),
+    # C 是**逐呼叫點**的:第一處在閘的 if 裡(合格),第二處在那個 `fi`
+    # 之後(不合格)。檔案級的舊寫法對這一份說綠 —— 而它正是
+    # `release_check.sh` 第 5b/6c 兩關的形狀。
+    ("C", "scripts/_plant_c2.sh",
+     '#!/usr/bin/env bash\n. "$HERE/lib/device.sh"\n'
+     'SERIAL="$(rs_pick_serial "$ADB")"\n'
+     'if [ -n "$SERIAL" ]; then\n'
+     '  rs_assert_destructive_ok "$ADB" "$SERIAL" "pm clear" || exit 2\n'
+     '  "$ADB" -s "$SERIAL" shell pm clear org.a\n'
+     'fi\n'
+     '"$ADB" -s "$SERIAL" shell pm clear org.b\n'),
     ("D", "scripts/_plant_d.sh",
      '#!/usr/bin/env bash\nADB=adb\n"$ADB" -s "$X" shell true\n'),
     # 遞迴:違規檔放在**子目錄**裡也要抓得到(從前完全掃不到)。

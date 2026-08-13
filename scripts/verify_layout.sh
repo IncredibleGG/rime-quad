@@ -164,7 +164,6 @@ mkdir -p "$OUT_DIR"
 rs_select_device "$ADB" "$SERIAL" || exit 2
 SERIAL="$RS_SERIAL"
 adbs() { "$ADB" -s "$SERIAL" "$@"; }
-rs_write_device_stamp "$ADB" "$SERIAL" "$OUT_DIR/device.txt" "${APK:-}"
 GEOM="$PROJECT_ROOT/scripts/layout_geom.py"
 [ -f "$GEOM" ] || { echo "找不到 $GEOM" >&2; exit 2; }
 
@@ -212,6 +211,13 @@ if [ "$DO_INSTALL" -eq 1 ]; then
   [ -f "$TAPK" ] || { fail "測試靶建置失敗"; exit 2; }
   adbs install -r -g "$TAPK" >/dev/null 2>&1 || { fail "測試靶安裝失敗"; exit 2; }
 fi
+
+# ⛔ **裝完才寫。** 這一行從前在第 167 行(安裝在 209 行之後),於是
+#   `${APK:-}` 在那個時間點根本還沒被指派 —— device.txt 上寫的是
+#   `apk=<未指定 --apk>`,而這一輪明明裝了一份。第五個參數(套件名)也是這一輪
+#   補的:有了它才問得到「裝置上真的裝著的那一份」的 sha256。
+#   eb3c588 的 commit 標題就是「device.txt 要裝完才寫」,漏了這一支。
+rs_write_device_stamp "$ADB" "$SERIAL" "$OUT_DIR/device.txt" "${APK:-}" "$IME_PKG"
 
 if [ "$DO_CLEAR" -eq 1 ]; then
   # 為什麼一定要清：rime session 跨 app 重啟存活。上一輪留下的組字會出現在

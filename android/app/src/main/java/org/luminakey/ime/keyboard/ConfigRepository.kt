@@ -69,6 +69,18 @@ class ConfigRepository(context: Context) : LayoutRepository {
     /** 目前可見的所有佈局 id（三層搜尋路徑聯集，先出現者勝出）。 */
     override fun layoutIds(): List<String> = idsIn(LAYOUT_DIR)
 
+    /**
+     * 這個 id 的檔案在**使用者目錄**裡嗎。見 [LayoutPriority]。
+     *
+     * ⚠ 只問使用者目錄那一層。`shared` 與 assets 都是「隨附」—— 兩者對使用者
+     * 而言是同一件事(他沒有動過),而決勝要分的正是「他動過」與「他沒動過」。
+     */
+    override fun layoutIsUserProvided(id: String): Boolean {
+        val root = RimeRuntime.userDirOrNull ?: return false
+        val dir = File(root, LAYOUT_DIR)
+        return File(dir, id + SUFFIX).isFile || File(File(dir, id), id + SUFFIX).isFile
+    }
+
     fun themeIds(): List<String> = idsIn(THEME_DIR)
 
     private fun idsIn(kind: String): List<String> {
