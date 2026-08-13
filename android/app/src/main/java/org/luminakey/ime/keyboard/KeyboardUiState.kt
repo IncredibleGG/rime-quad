@@ -156,6 +156,13 @@ sealed interface KeyboardEvent {
     /** §9.5 的 action。 */
     data class Act(val action: KeyAction) : KeyboardEvent
 
+    /**
+     * 選第 [indexOnPage] 個候選 —— ⚠ **頁內相對索引**,不得攤平。
+     *
+     * 兩個來源:點候選列上那一格,或按專用數字列的 `1`–`9`
+     * (工單 #99,判準見 [SelectionDigitKeys])。兩者送同一個事件,
+     * 所以「按 3」與「點第 3 格」不可能分岔。
+     */
     data class Candidate(val indexOnPage: Int) : KeyboardEvent
     data class CandidateLongPress(val indexOnPage: Int) : KeyboardEvent
     data class Page(val backward: Boolean) : KeyboardEvent

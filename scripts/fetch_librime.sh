@@ -35,6 +35,15 @@
 #
 set -euo pipefail
 
+# ⛔ **唯讀出口。** `scripts/verify_script_readonly.sh` 會把每一支腳本的
+#   `--help` 跑一遍 —— 這一支從前沒有,於是 `--help` 會被當成一般啟動,
+#   一路跑下去(編譯／連網／推檔)。說明不得有任何副作用。
+case "${1:-}" in
+  -h|--help)
+    sed -n '2,/^set -[eu]/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    exit 0 ;;
+esac
+
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
 

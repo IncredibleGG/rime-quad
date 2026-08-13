@@ -71,7 +71,11 @@ while [ $# -gt 0 ]; do
 done
 
 [ -x "${ADB}" ] || { echo "找不到 adb:${ADB}" >&2; exit 2; }
-[ -n "${SERIAL}" ] || SERIAL="$(rs_pick_serial "${ADB}")" || exit 2
+# ⛔ `--serial` 也要算「指名」。閘從前只看環境變數,於是這一行帶 `--serial`
+#   就必死(RC=2,訊息說「是自動選來的」而那台正是命令列指名的)。
+#   `rs_select_device` 把來源(flag / env / auto)一起記下來給閘看。
+rs_select_device "${ADB}" "${SERIAL}" || exit 2
+SERIAL="${RS_SERIAL}"
 
 if [ -z "${NDK_DIR}" ]; then
   NDK_DIR="$(ls -d "${SDK}"/ndk/* 2>/dev/null | sort -V | tail -1 || true)"

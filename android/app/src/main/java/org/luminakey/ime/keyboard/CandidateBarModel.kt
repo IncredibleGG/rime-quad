@@ -198,6 +198,47 @@ object Pager {
     }
 
     /**
+     * ⛔ **展開面板裡那一列翻頁,是面板自己的唯一導覽 —— 不是候選列的
+     *    `page_indicator`,不該被同一個開關關掉。**
+     *
+     * 上一版兩處吃的是同一份 `style.pageIndicator`：
+     *
+     *   · 候選列右端的 `‹ ›`（`KeyboardView` 的 `PageArrows`）
+     *   · **展開面板底部**那一列翻頁
+     *
+     * 於是 `page_indicator.show: false` 這一個開關同時做了兩件事：把候選列的
+     * 翻頁鍵關掉（於是 [CandidateDensity.rightEnd] 只剩展開鍵這條路），
+     * **並且**把展開面板裡的翻頁列一顆都不畫。裝置實測（emulator-5558）：
+     *
+     *     page_indicator.show: false → 右端有 `∨` → 按下去面板打開
+     *     → 底部翻頁鍵一顆都沒有 → **第 2 頁永遠進不去**
+     *
+     * 而 [CandidateDensity.deadEnd] 只問「右端是不是 NONE」，這一格是
+     * `EXPAND`，**永遠不紅**。這是同一條死路第三次被修：第一次修候選密度、
+     * 第二次修右端不得空白、第三次它搬進了面板裡。
+     *
+     * 兩者是兩件事:
+     *
+     *   候選列的 `page_indicator`  主題可以關掉 —— 那一列右端還有展開鍵這條路。
+     *   面板裡的翻頁列              **不可以**關掉 —— 面板一片浮層蓋著鍵盤,
+     *                              關掉它等於「進得去、出不來、也翻不了頁」。
+     *
+     * 所以這一支:`show` 一律 true，`kind == NONE` 退回 `ARROWS`。
+     * 主題仍然管得到它長什麼樣（顏色、大小走同一份 `PageIndicatorStyle`），
+     * 管不到它**在不在**。
+     *
+     * @param shownCount 面板**真的畫出來的**那幾個(已經過 T9Syllables 篩選)。
+     */
+    fun panelState(pageNo: Int, isLastPage: Boolean, shownCount: Int): State =
+        state(
+            kind = PageIndicatorKind.ARROWS,
+            show = true,
+            pageNo = pageNo,
+            isLastPage = isLastPage,
+            candidateCount = shownCount,
+        )
+
+    /**
      * ⚠ `dots` 與 `text`（`n/m`）都需要**總頁數**，而 `rs_snapshot` 的
      * `menu` 只給得出 `page_no` 與 `is_last_page` —— 總頁數在 ABI 裡不存在。
      * 硬做出來的 `3/?` 或一排長度會跳動的點，比箭頭更難懂。

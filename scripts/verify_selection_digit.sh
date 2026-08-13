@@ -100,7 +100,11 @@ step() { echo; echo "── $* ──"; }
 [ -x "$ADB" ] || { echo "找不到 adb:$ADB" >&2; exit 2; }
 [ -f "$TABLE" ] || { echo "找不到 $TABLE" >&2; exit 2; }
 python3 -c "import PIL" >/dev/null 2>&1 || { echo "python3 缺 Pillow(數像素要用)" >&2; exit 2; }
-[ -n "$SERIAL" ] || SERIAL="$(rs_pick_serial "$ADB")" || exit 2
+# ⛔ `--serial` 也要算「指名」。閘從前只看環境變數,於是這一行帶 `--serial`
+#   就必死(RC=2,訊息說「是自動選來的」而那台正是命令列指名的)。
+#   `rs_select_device` 把來源(flag / env / auto)一起記下來給閘看。
+rs_select_device "$ADB" "$SERIAL" || exit 2
+SERIAL="$RS_SERIAL"
 adbs get-state >/dev/null 2>&1 || { echo "$SERIAL 不在線" >&2; exit 2; }
 rs_assert_destructive_ok "$ADB" "$SERIAL" "pm clear $IME_PKG / $TARGET_PKG、ime set" || exit 2
 rs_write_device_stamp "$ADB" "$SERIAL" "$OUT_DIR/device.txt" "$APK" "$IME_PKG"

@@ -28,6 +28,11 @@
 #      並附理由。
 #   E. 白名單本身不得腐爛:列著的檔案必須存在、必須仍然用 adb、
 #      而且必須仍然沒有 source lib/device.sh(補上了就要從白名單移除)。
+#   F. 有 `--serial` 旗標的腳本**必須**走 `rs_select_device`。旗標只寫進
+#      區域變數,閘看不到它 —— 帶了 `--serial` 反而保證失敗。
+#
+# ⚠ 掃描是**遞迴**的(`scripts/` 全樹)。從前寫死兩層,`scripts/schema_store/`
+#   底下那一支會 `adb shell rm -rf` 的檔案從沒被掃過,而守門照樣報「全部通過」。
 #
 # 用法
 #   scripts/verify_device_hygiene.sh              # 掃全樹
@@ -73,9 +78,28 @@ ALLOW = {
         "只讀 repo 裡的檔案比對 id;`adb` 出現在說明文字。",
     "scripts/lib/shared_data_writers.py":
         "只寫 host 端檔案,`adb` 出現在註解裡。",
+    "scripts/verify_script_readonly.sh":
+        "它**把 adb 換成 shim** —— 那正是它的斷言:唯讀路徑碰了外部工具就紅。"
+        "shim 是 mktemp 出來的假腳本,一個位元組都不會送到真的裝置上。",
+    "scripts/schema_store/verify.py":
+        "`--serial` 是 **required=True** 的參數 —— 它自己就是 fail-closed:"
+        "沒有人指名它連 argparse 都過不了,不可能落到「猜一台」。而破壞性動作"
+        "(`rm -rf /data/local/tmp/rimestore`)的閘在唯一的呼叫端 "
+        "`scripts/build_schema_store.sh`(rs_pick_serial ＋ rs_assert_destructive_ok)。"
+        "device.sh 是 bash,python 這一側 source 不進來。",
 }
 
-SCAN_DIRS = [("scripts", (".sh", ".py")), ("scripts/lib", (".sh", ".py"))]
+# ⛔ 這裡從前是
+#       SCAN_DIRS = [("scripts", ...), ("scripts/lib", ...)]
+#    —— 兩層寫死,於是 `scripts/schema_store/`、`scripts/lua_sandbox/`、
+#    `scripts/charset_guard/` 底下的檔案**一個都沒掃到**,而守門仍然報
+#    「全樹掃描:全部通過」。實測:違規檔放進 `scripts/schema_store/` 完全抓不到。
+#    真的漏掉的那一條:`scripts/schema_store/verify.py` 會
+#    `adb shell rm -rf /data/local/tmp/rimestore`。
+#    改成**遞迴**,新增子目錄自動納入。
+SCAN_ROOT = "scripts"
+SCAN_EXTS = (".sh", ".py")
+SCAN_SKIP_DIRS = {"__pycache__"}
 SKIP = {"scripts/lib/device.sh", "scripts/verify_device_hygiene.sh"}
 
 ADB_USE = re.compile(r'(\$\{?ADB\}?|(?<![\w-])adb(?![\w-]))')
@@ -93,6 +117,16 @@ DESTRUCTIVE = re.compile(
     r'|\bsettings\s+put\b|\brm\s+-rf\b'
 )
 
+# ── A 的豁免:`emulator-NNNN` 是**測試資料**,不是要打的機器 ──────────────
+#    ⚠ 只有一種理由成立:那個序號字串不會被送到真的 adb 上。
+HARD_SERIAL_ALLOW = {
+    "scripts/verify_device_lib.sh":
+        "`lib/device.sh` 的行為測試。序號是餵給**假 adb**(mktemp 出來的腳本,"
+        "`devices` 的輸出由 FAKE_DEVICES 決定)的測試資料 —— 要驗「指名的那一台"
+        "不在線就中止」「--serial 與環境變數指到不同機器就中止」,就非得寫出"
+        "具體的序號不可。全檔沒有一處碰真的 adb。",
+}
+
 # ── C 的豁免:自己就是「決定要打哪一台」的那一支 ────────────────────────
 DESTRUCTIVE_ALLOW = {
     "scripts/emu.sh":
@@ -100,6 +134,24 @@ DESTRUCTIVE_ALLOW = {
         "機器的狀態的,而它自己有 fail-closed(有裝置在線時要求明著給 "
         "RIME_EMU_PORT)。呼叫端(verify_ime.sh 等)在轉呼叫它之前已經過閘。",
 }
+
+def scan_files(root):
+    """`scripts/` 底下每一個 .sh/.py 的 repo 相對路徑(遞迴、排序、去重)。"""
+    out = []
+    base = os.path.join(root, SCAN_ROOT)
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = sorted(d for d in dirnames if d not in SCAN_SKIP_DIRS)
+        for name in sorted(filenames):
+            if not name.endswith(SCAN_EXTS):
+                continue
+            rel = os.path.relpath(os.path.join(dirpath, name), root).replace(os.sep, "/")
+            if rel in SKIP:
+                continue
+            if not os.path.isfile(os.path.join(root, rel)):
+                continue
+            out.append(rel)
+    return out
+
 
 def code_lines(path):
     """(行號, 內容) —— 去掉整行註解與 heredoc 之外的說明段。"""
@@ -113,21 +165,8 @@ def code_lines(path):
 
 def check(root):
     problems = []
-    seen = set()
-    for d, exts in SCAN_DIRS:
-        full = os.path.join(root, d)
-        if not os.path.isdir(full):
-            continue
-        for name in sorted(os.listdir(full)):
-            if not name.endswith(exts):
-                continue
-            rel = "%s/%s" % (d, name)
-            if rel in SKIP or rel in seen:
-                continue
-            seen.add(rel)
+    for rel in scan_files(root):
             path = os.path.join(root, rel)
-            if not os.path.isfile(path):
-                continue
             lines = code_lines(path)
             body = "\n".join(l for _, l in lines)
             uses_adb = bool(ADB_USE.search(body))
@@ -135,6 +174,8 @@ def check(root):
 
             # ── A:寫死 emulator-NNNN ──────────────────────────────────
             for n, l in lines:
+                if rel in HARD_SERIAL_ALLOW:
+                    break
                 if HARD_SERIAL.search(l):
                     problems.append(
                         "A %s:%d 寫死了 `%s` —— port 不是身分,這台機器上"
@@ -143,15 +184,16 @@ def check(root):
 
             # ── B:source 了就要真的呼叫,而且回傳值要用得到 ────────────
             if sources_dev:
-                calls = [(n, l) for n, l in lines if "rs_pick_serial" in l]
-                if not calls:
+                picks = [(n, l) for n, l in lines if "rs_pick_serial" in l]
+                selects = [(n, l) for n, l in lines if "rs_select_device" in l]
+                if not picks and not selects:
                     problems.append(
                         "B %s source 了 lib/device.sh,卻**一次都沒有呼叫** "
-                        "`rs_pick_serial` —— RIME_SERIAL 帶了也沒用,而症狀是"
-                        "`adb -s \"\" shell` 之下的靜默 RC=1。" % rel)
-                else:
+                        "`rs_pick_serial` / `rs_select_device` —— RIME_SERIAL 帶了也沒用,"
+                        "而症狀是 `adb -s \"\" shell` 之下的靜默 RC=1。" % rel)
+                if picks:
                     assigned = set()
-                    for n, l in calls:
+                    for n, l in picks:
                         m = re.search(r'(\w+)=\s*"?\$\(\s*rs_pick_serial', l)
                         if m:
                             assigned.add(m.group(1))
@@ -166,6 +208,26 @@ def check(root):
                             problems.append(
                                 "B %s 把 `rs_pick_serial` 的結果存進 `%s`,"
                                 "而 `%s` 後面**一次都沒被用到**。" % (rel, var, var))
+                if selects and not re.search(r'\$\{?RS_SERIAL\b', body):
+                    # `rs_select_device` **不印 stdout**,它設 RS_SERIAL。
+                    # 照 `rs_pick_serial` 的寫法套上去(命令替換)會拿到空字串。
+                    problems.append(
+                        "B %s 呼叫了 `rs_select_device`,卻**沒有讀 `$RS_SERIAL`** ——"
+                        "那一支不印 stdout,寫成 `X=\"$(rs_select_device ...)\"` 會拿到空字串。"
+                        % rel)
+
+            # ── F:有 `--serial` 就必須走 rs_select_device ──────────────
+            # ⛔ 2026-08-13 實測:七支腳本都有 `--serial`,而它只寫進區域變數,
+            #    `rs_assert_destructive_ok` 的閘只看環境變數 —— 於是
+            #    `--serial emulator-5558` 一律 RC=2,訊息說「那台是自動選來的」
+            #    而它正是命令列指名的那一台。守門查的是「有沒有呼叫」,
+            #    查不到「呼叫端指名的那一條路有沒有接上」。
+            if sources_dev and re.search(r'--serial\)', body):
+                if "rs_select_device" not in body:
+                    problems.append(
+                        "F %s 有 `--serial` 旗標,卻沒有走 `rs_select_device` ——"
+                        "旗標只寫進區域變數,破壞性動作的閘看不到它,於是帶 `--serial` "
+                        "保證 RC=2(訊息還會說「那台是自動選來的」)。" % rel)
 
             # ── C:破壞性動作要過閘 ────────────────────────────────────
             hits = [(n, l) for n, l in lines
@@ -200,6 +262,17 @@ def check(root):
                 "請刪掉那一筆。" % rel)
         if not why.strip():
             problems.append("E 破壞性動作白名單裡的 %s 沒有寫理由。" % rel)
+    for rel, why in sorted(HARD_SERIAL_ALLOW.items()):
+        path = os.path.join(root, rel)
+        if not os.path.isfile(path):
+            problems.append("E 寫死序號的白名單列著 %s,但那個檔案不存在了。" % rel)
+            continue
+        if not any(HARD_SERIAL.search(l) for _, l in code_lines(path)):
+            problems.append(
+                "E 寫死序號的白名單列著 %s,但它現在已經沒有寫死的序號了 ——"
+                "請刪掉那一筆。" % rel)
+        if not why.strip():
+            problems.append("E 寫死序號的白名單裡的 %s 沒有寫理由。" % rel)
     for rel, why in sorted(ALLOW.items()):
         path = os.path.join(root, rel)
         if not os.path.isfile(path):
@@ -257,6 +330,15 @@ PLANTS = [
      'SERIAL="$(rs_pick_serial "$ADB")"\n"$ADB" -s "$SERIAL" shell pm clear org.x\n'),
     ("D", "scripts/_plant_d.sh",
      '#!/usr/bin/env bash\nADB=adb\n"$ADB" -s "$X" shell true\n'),
+    # 遞迴:違規檔放在**子目錄**裡也要抓得到(從前完全掃不到)。
+    ("A", "scripts/schema_store/_plant_deep.sh",
+     '#!/usr/bin/env bash\n. "$HERE/lib/device.sh"\nSERIAL="emulator-5558"\n'
+     'SERIAL="$(rs_pick_serial "$ADB")"\n"$ADB" -s "$SERIAL" shell true\n'),
+    # F:有 --serial 卻沒走 rs_select_device。
+    ("F", "scripts/_plant_f.sh",
+     '#!/usr/bin/env bash\n. "$HERE/lib/device.sh"\nSERIAL=""\n'
+     'case "$1" in --serial) SERIAL="$2";; esac\n'
+     'SERIAL="$(rs_pick_serial "$ADB")"\n"$ADB" -s "$SERIAL" shell true\n'),
 ]
 for code, rel, content in PLANTS:
     tmp = tempfile.mkdtemp(prefix="rs-hygiene-")

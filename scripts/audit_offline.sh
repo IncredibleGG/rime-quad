@@ -81,6 +81,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --verbose) VERBOSE=1; shift ;;
     --strict)  STRICT=1; shift ;;
+    -h|--help) sed -n '2,/^set -[eu]/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "未知參數: $1" >&2; exit 2 ;;
   esac
 done

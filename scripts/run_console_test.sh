@@ -63,7 +63,14 @@ echo "  $(stat -c%s "$BIN") bytes"
 # 兩邊都莫名其妙，所以指名時一律嚴格檢查它真的在線。
 # shellcheck source=lib/device.sh
 . "$ROOT/scripts/lib/device.sh"
-if [ -z "${RIME_SERIAL:-${ANDROID_SERIAL:-}}" ] && ! "$ADB" devices | grep -q '	device$'; then
+# ⛔ 這裡從前是 `! "$ADB" devices | grep -q '\tdevice$'` —— `lib/device.sh:64`
+#   自己禁止的寫法:`set -o pipefail` 之下 `grep -q` 一命中就結束,上游還在寫
+#   就是 SIGPIPE(141),於是「有裝置」被判成「指令失敗」。`adb devices` 的輸出
+#   小到多半塞得進管線緩衝區,所以它**多數時候是對的** —— 而那正是這一類
+#   缺陷難抓的原因。改成先接進變數,不接管線。
+_devices="$("$ADB" devices 2>/dev/null || true)"
+if [ -z "${RIME_SERIAL:-${ANDROID_SERIAL:-}}" ] \
+   && ! printf '%s\n' "$_devices" | grep -q '	device$'; then
   "$ROOT/scripts/emu.sh" status >/dev/null 2>&1 || "$ROOT/scripts/emu.sh" start
 fi
 # ⛔ 「抓第一台」= 永遠是 emulator-5554,而這一支會 `rm -rf /data/local/tmp/rime`。

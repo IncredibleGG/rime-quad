@@ -90,12 +90,18 @@ while [ $# -gt 0 ]; do
     --apk)        APK="$2"; shift 2 ;;
     --no-install) INSTALL=0; shift ;;
     --out)        OUT_DIR="$2"; shift 2 ;;
+    --serial) SERIAL="$2"; shift 2 ;;
+    -h|--help) sed -n '2,/^set -[eu]/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "未知參數:$1" >&2; exit 2 ;;
   esac
 done
 
 mkdir -p "$OUT_DIR"
-[ -n "$SERIAL" ] || SERIAL="$(rs_pick_serial "$ADB")" || exit 2
+# ⛔ `--serial` 也要算「指名」。閘從前只看環境變數,於是這一行帶 `--serial`
+#   就必死(RC=2,訊息說「是自動選來的」而那台正是命令列指名的)。
+#   `rs_select_device` 把來源(flag / env / auto)一起記下來給閘看。
+rs_select_device "$ADB" "$SERIAL" || exit 2
+SERIAL="$RS_SERIAL"
 adbs() { "$ADB" -s "$SERIAL" "$@"; }
 
 FAILED=0

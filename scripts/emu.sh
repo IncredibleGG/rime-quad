@@ -17,8 +17,10 @@
 # 可用環境變數:
 #   ANDROID_SDK_ROOT  Android SDK 路徑(預設 $HOME/Android/Sdk)
 #   RIME_AVD          AVD 名稱(預設 rime_test)
-#   RIME_EMU_PORT     模擬器 console port(已經有裝置在線時**必填**;
+#   RIME_EMU_PORT     模擬器 console port(`start` 在已有裝置在線時**必填**;
 #                     port 不是身分,身分是 AVD 名 —— adb -s <serial> emu avd name)
+#   RIME_SERIAL       要打哪一台(與其餘每一支腳本同一個變數)。唯讀子命令
+#                     用它就夠了,不必再給 port。
 #   RIME_EMU_LOG      模擬器 stdout/stderr 日誌路徑
 #   RIME_BOOT_TIMEOUT 等待開機的秒數上限(預設 600)
 #   RIME_EMU_GPU      GPU 模式(預設 swiftshader_indirect)
@@ -35,30 +37,10 @@ export ANDROID_SDK_ROOT
 export ANDROID_HOME="$ANDROID_SDK_ROOT"
 
 AVD_NAME="${RIME_AVD:-rime_test}"
-# ⚠ **port 不是身分。** 這一支是**啟動者**,它有權決定 port;但它的預設值
-#   從前是所有驗證腳本「預設打 5554」的正當性來源,而這台機器上長期有
-#   三到四台模擬器在跑(rime_test/5554、lumina_test/5556、lumina_test2/5558),
-#   任何一台重開 port 就換人。所以:已經有模擬器在線時,**要求明著指定 port**。
-EMU_PORT="${RIME_EMU_PORT:-}"
-if [ -z "$EMU_PORT" ]; then
-  _online="$("${ANDROID_SDK_ROOT}/platform-tools/adb" devices 2>/dev/null | grep -cE '	device$' || true)"
-  if [ "${_online:-0}" -gt 0 ]; then
-    {
-      echo "[emu.sh] 這台機器上已經有 ${_online} 台裝置在線,不猜 port。"
-      echo "         明著寫:RIME_EMU_PORT=<port> RIME_AVD=<avd 名> $0 $*"
-      "${ANDROID_SDK_ROOT}/platform-tools/adb" devices | sed 's/^/    /'
-    } >&2
-    exit 2
-  fi
-  EMU_PORT=5554
-fi
-SERIAL="emulator-${EMU_PORT}"
 BOOT_TIMEOUT="${RIME_BOOT_TIMEOUT:-600}"
 EMU_GPU="${RIME_EMU_GPU:-swiftshader_indirect}"
 
 RUN_DIR="${RIME_RUN_DIR:-$PROJECT_ROOT/.emulator}"
-EMU_LOG="${RIME_EMU_LOG:-$RUN_DIR/emulator-${EMU_PORT}.log}"
-PID_FILE="$RUN_DIR/emulator-${EMU_PORT}.pid"
 
 ADB="$ANDROID_SDK_ROOT/platform-tools/adb"
 EMULATOR="$ANDROID_SDK_ROOT/emulator/emulator"
@@ -66,6 +48,80 @@ AVDMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/avdmanager"
 
 die()  { echo "[emu.sh] 錯誤: $*" >&2; exit 1; }
 info() { echo "[emu.sh] $*" >&2; }
+
+# ─────────────────────────────── 這一次打哪一台 ───────────────────────────────
+#
+# ⚠ **port 不是身分。** 這一支是**啟動者**,它有權決定 port;但它的預設值
+#   從前是所有驗證腳本「預設打 5554」的正當性來源,而這台機器上長期有
+#   三到四台模擬器在跑(rime_test/5554、lumina_test/5556、lumina_test2/5558),
+#   任何一台重開 port 就換人。所以:要啟動時**要求明著指定**。
+#
+# ⛔ 2026-08-13 的實測:上一版把這一段寫在**子命令派發之前**,於是
+#   `status` / `shot` / `logcat` / `shell` / `adb` / `install` / `ime-list`
+#   ——連 `--help` 與不帶參數的用法——在任何有裝置在線的機器上一律 exit 2。
+#   `scripts/build_schema_store.sh:118` 是
+#       emu.sh status >/dev/null 2>&1 || emu.sh start
+#   而該檔有 `set -euo pipefail` —— **方案市集的品質閘門因此必死**,
+#   訊息還指向 emu.sh、與方案無關。
+#
+# 現在:序號在**子命令要用到裝置時**才解析,而且 `RIME_SERIAL` /
+# `ANDROID_SERIAL`(其餘每一支腳本指名裝置的方式)算數 —— 唯讀子命令因此
+# 不必再指定 port。政策與 `lib/device.sh` 同一條:
+#
+#   RIME_EMU_PORT 有值            → 用它(這是啟動者專屬的指名方式)
+#   RIME_SERIAL / ANDROID_SERIAL  → 用它
+#   都沒有,而且恰好一台在線       → 用它(`start` 除外:啟動者不准用猜的)
+#   都沒有,而且一台都沒有         → port 5554(`start` 的預設;其餘子命令
+#                                  也用它,反正接下來一定報「未執行」)
+#   都沒有,而且不只一台在線       → **不猜**,中止並印出清單
+#
+EMU_PORT=""
+SERIAL=""
+EMU_LOG=""
+PID_FILE=""
+TARGET_SOURCE=""
+
+# $1 = 子命令名(只影響訊息與 start 的「不准用猜的」)
+resolve_target() {
+  local cmd="$1" want="${RIME_SERIAL:-${ANDROID_SERIAL:-}}" listed n
+  if [ -n "${RIME_EMU_PORT:-}" ]; then
+    if [ -n "$want" ] && [ "$want" != "emulator-${RIME_EMU_PORT}" ]; then
+      die "RIME_EMU_PORT=${RIME_EMU_PORT} 與 RIME_SERIAL/ANDROID_SERIAL=${want} 指到不同機器。"
+    fi
+    EMU_PORT="$RIME_EMU_PORT"; SERIAL="emulator-${EMU_PORT}"; TARGET_SOURCE="RIME_EMU_PORT"
+  elif [ -n "$want" ]; then
+    SERIAL="$want"; TARGET_SOURCE="RIME_SERIAL"
+    case "$SERIAL" in
+      emulator-*) EMU_PORT="${SERIAL#emulator-}" ;;
+      *) [ "$cmd" = "start" ] && die "RIME_SERIAL=$SERIAL 不是模擬器序號,起不動它。"
+         EMU_PORT="" ;;
+    esac
+  else
+    listed="$("$ADB" devices 2>/dev/null || true)"
+    n="$(printf '%s\n' "$listed" | grep -cE '	device$' || true)"
+    if [ "${n:-0}" -eq 0 ]; then
+      # ⚠ 序號由 port 推導,不寫死 —— 這一支是唯一有權決定 port 的檔案,
+      #   但「emulator-5554」這串字面本身仍然是 verify_device_hygiene.sh 規則 A
+      #   要抓的東西(port 不是身分)。
+      EMU_PORT=5554; SERIAL="emulator-${EMU_PORT}"; TARGET_SOURCE="預設(場上沒有裝置)"
+    elif [ "${n:-0}" -eq 1 ] && [ "$cmd" != "start" ]; then
+      SERIAL="$(printf '%s\n' "$listed" | awk '/	device$/{print $1; exit}')"
+      case "$SERIAL" in emulator-*) EMU_PORT="${SERIAL#emulator-}" ;; *) EMU_PORT="" ;; esac
+      TARGET_SOURCE="自動(只有一台在線)"
+    else
+      {
+        echo "[emu.sh] 這台機器上有 ${n} 台裝置在線,不猜要打哪一台。"
+        echo "         明著寫:RIME_SERIAL=emulator-XXXX $0 $cmd ..."
+        echo "         要啟動一台新的:RIME_EMU_PORT=<port> RIME_AVD=<avd 名> $0 start"
+        printf '%s\n' "$listed" | sed 's/^/    /'
+      } >&2
+      exit 2
+    fi
+  fi
+  local tag="${EMU_PORT:-$SERIAL}"
+  EMU_LOG="${RIME_EMU_LOG:-$RUN_DIR/emulator-${tag}.log}"
+  PID_FILE="$RUN_DIR/emulator-${tag}.pid"
+}
 
 check_tools() {
   [ -x "$ADB" ]      || die "找不到 adb:$ADB(請確認 ANDROID_SDK_ROOT 設定正確、已安裝 platform-tools)"
@@ -109,6 +165,7 @@ cmd_start() {
 
   check_tools
   check_avd
+  [ -n "$EMU_PORT" ] || die "起不動:沒有 port。明著寫 RIME_EMU_PORT=<port>。"
 
   if emu_online && boot_completed; then
     info "模擬器 ${SERIAL} 已在執行且開機完成,略過啟動。"
@@ -209,8 +266,17 @@ cmd_stop() {
 
 cmd_status() {
   check_tools
-  echo "AVD          : ${AVD_NAME}"
-  echo "Serial       : ${SERIAL}"
+  # ⚠ 印**這台裝置真的是哪個 AVD**,不是 $RIME_AVD 的預設值。序號由
+  #   RIME_SERIAL 指名時,`AVD_NAME` 還停在 `rime_test`,照著印等於騙人 ——
+  #   而「身分是 AVD 名不是 port」正是這一支自己寫在檔頭的那句話。
+  local avd_live=""
+  if emu_online; then
+    avd_live="$("$ADB" -s "$SERIAL" emu avd name 2>/dev/null | head -1 | tr -d '\r')"
+    case "$avd_live" in ''|OK|*error*) avd_live="" ;; esac
+    [ -n "$avd_live" ] || avd_live="$("$ADB" -s "$SERIAL" shell getprop ro.boot.qemu.avd_name 2>/dev/null | tr -d '\r')"
+  fi
+  echo "AVD          : ${avd_live:-${AVD_NAME}（\$RIME_AVD 的值,裝置未在線問不到)}"
+  echo "Serial       : ${SERIAL}  (來源:${TARGET_SOURCE})"
   echo "SDK          : ${ANDROID_SDK_ROOT}"
   echo "模擬器日誌   : ${EMU_LOG}"
   if emu_online; then
@@ -315,6 +381,13 @@ usage() {
 main() {
   local cmd="${1:-}"
   [ $# -gt 0 ] && shift || true
+  # ⚠ 說明與未知指令**不解析裝置**:它們一個字都不打在任何機器上,
+  #   而「連 --help 都 exit 2」正是上一版的形狀。
+  case "$cmd" in
+    ""|-h|--help|help) usage; return 0 ;;
+    start|stop|status|install|shot|ime-enable|ime-list|logcat|shell|adb) resolve_target "$cmd" ;;
+    *)           echo "未知指令:$cmd" >&2; echo >&2; usage >&2; exit 1 ;;
+  esac
   case "$cmd" in
     start)       cmd_start "$@" ;;
     stop)        cmd_stop "$@" ;;
@@ -326,8 +399,6 @@ main() {
     logcat)      cmd_logcat "$@" ;;
     shell)       check_tools; require_running; "$ADB" -s "$SERIAL" shell "$@" ;;
     adb)         check_tools; "$ADB" -s "$SERIAL" "$@" ;;
-    ""|-h|--help|help) usage ;;
-    *)           echo "未知指令:$cmd" >&2; echo >&2; usage >&2; exit 1 ;;
   esac
 }
 

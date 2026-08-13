@@ -34,6 +34,10 @@
 # 用法
 # ─────────────────────────────────────────────────────────────────────
 #     . "$HERE/lib/device.sh"
+#     # 有 --serial 的腳本(閘要看得到命令列指名):
+#     rs_select_device "$ADB" "$SERIAL_FROM_FLAG" || exit 2
+#     SERIAL="$RS_SERIAL"
+#     # 沒有 --serial 的腳本:
 #     SERIAL="$(rs_pick_serial "$ADB")" || exit 2
 #     ...
 #     rs_assert_destructive_ok "$ADB" "$SERIAL" "pm clear / ime set" || exit 2
@@ -53,11 +57,79 @@
 # 所以這一支同時記 `pkg_version` / `pkg_version_code` / `pkg_last_update`:
 # 那三個在「量的是不是我剛裝上去的那一份」這個問題上比雜湊好用。
 
+# ── 序號的**來源**:誰指名的 ────────────────────────────────────────────
+#
+# ⛔ 2026-08-13 的實測:`verify_input_matrix.sh --serial emulator-5558` 回 RC=2,
+#    訊息是「emulator-5558 是自動選來的,不是你指定的 —— 中止」,而那台正是
+#    使用者在命令列上**指名**的。原因是 `rs_assert_destructive_ok` 的閘只看
+#    環境變數 `RIME_SERIAL`/`ANDROID_SERIAL`,而 `--serial` 只寫進呼叫端腳本
+#    自己的區域變數 —— 閘看不到。七支腳本(verify_ime / verify_input_matrix /
+#    verify_layout / verify_selection_digit / verify_syllables / verify_candbar /
+#    verify_variant_persistence)因此**帶 `--serial` 保證失敗**,而
+#    `verify_variant_persistence.sh` 的用法區塊寫的就是 `--serial emulator-5558`。
+#
+# 修法:閘要判的是「**有沒有人指名**」,不是「是不是環境變數」。所以序號的
+# 來源被記下來:
+#
+#   flag  命令列 `--serial` 指名的
+#   env   RIME_SERIAL / ANDROID_SERIAL 指名的
+#   auto  兩者都沒有,場上恰好一台,腳本自己挑的  ← 只有這一種不准做破壞性動作
+#
+# ⚠ 為什麼要新增 `rs_select_device` 而不是讓 `rs_pick_serial` 設一個全域變數:
+#   每一個呼叫端都寫 `SERIAL="$(rs_pick_serial "$ADB")"`,**命令替換跑在子行程
+#   裡**,子行程設的變數一出來就沒了。設了也傳不回來的全域變數,長得跟有效的
+#   一模一樣 —— 正是本輪在修的那一類。所以改成一個**不經 stdout** 的入口。
+RS_SERIAL=""
+RS_SERIAL_SOURCE=""
+
+# 選一台裝置,並把**來源**一起記下來。
+#
+#   rs_select_device <adb> [命令列 --serial 的值]
+#
+# 成功時設定兩個變數(不印到 stdout,因此**不可以**用命令替換呼叫):
+#   RS_SERIAL         選定的序號
+#   RS_SERIAL_SOURCE  flag | env | auto
+#
+# 失敗回 2,訊息在 stderr。
+rs_select_device() {
+  local adb="${1:?rs_select_device 要 adb 路徑}" flag="${2:-}"
+  local env_want="${RIME_SERIAL:-${ANDROID_SERIAL:-}}" listed
+  # ⚠ 每一次都先清掉:殘留值 = 上一次的答案冒充這一次的,而閘會放行。
+  RS_SERIAL=""; RS_SERIAL_SOURCE=""
+  if [ -n "$flag" ]; then
+    # 兩邊都指名而且指到不同機器 —— 不猜哪一個才是本意。
+    if [ -n "$env_want" ] && [ "$env_want" != "$flag" ]; then
+      {
+        echo "--serial $flag 與環境變數 RIME_SERIAL/ANDROID_SERIAL=$env_want 指到不同機器 —— 中止。"
+        echo "(兩邊各打一台的話,輸出看起來一切正常。)"
+      } >&2
+      return 2
+    fi
+    listed="$("$adb" devices 2>/dev/null)"
+    if ! printf '%s\n' "$listed" | grep -q "^${flag}	device$"; then
+      {
+        echo "--serial 指定的 $flag 不在線。目前:"
+        printf '%s\n' "$listed" | sed 's/^/    /'
+      } >&2
+      return 2
+    fi
+    RS_SERIAL="$flag"; RS_SERIAL_SOURCE="flag"
+    echo "[device] $RS_SERIAL(來源:命令列 --serial)" >&2
+    return 0
+  fi
+  RS_SERIAL="$(rs_pick_serial "$adb")" || return 2
+  if [ -n "$env_want" ]; then RS_SERIAL_SOURCE="env"; else RS_SERIAL_SOURCE="auto"; fi
+  return 0
+}
+
 # 選一台裝置。成功時把序號印到 stdout(其餘一律到 stderr)。
 #
 #   RIME_SERIAL / ANDROID_SERIAL 有值 → 只用那一台,不在線就中止
 #   兩個都沒有,而且**恰好一台**在線  → 用它,並在 stderr 說出來
 #   兩個都沒有,而且不只一台在線      → **不猜**,中止並印出清單
+#
+# ⚠ 這一支**問不到 `--serial`**(它在呼叫端的區域變數裡)。有 `--serial` 的
+#   腳本要走 [rs_select_device];這一支留給沒有那個旗標的腳本。
 rs_pick_serial() {
   local adb="${1:?rs_pick_serial 要 adb 路徑}"
   local want="${RIME_SERIAL:-${ANDROID_SERIAL:-}}" listed n
@@ -106,13 +178,25 @@ rs_avd_name() {
 #      `release_check.sh` 已經有這個先例(「未指定 RIME_SERIAL,沒有清空 app 資料」)。
 #   2. 設了 RIME_AVD_EXPECT 的話,AVD 名字要對得上(port 會換人)。
 rs_assert_destructive_ok() {
-  local adb="${1:?}" serial="${2:?}" avd
+  local adb="${1:?}" serial="${2:?}" avd source
   shift 2
-  if [ -z "${RIME_SERIAL:-${ANDROID_SERIAL:-}}" ]; then
+  # 來源:走過 rs_select_device 的用它記下來的;沒走過的(沒有 --serial 的
+  # 腳本)退回只看環境變數 —— 對那些腳本來說「有沒有人指名」就等於「環境
+  # 變數有沒有值」。
+  source="${RS_SERIAL_SOURCE:-}"
+  if [ -n "$source" ] && [ -n "${RS_SERIAL:-}" ] && [ "$RS_SERIAL" != "$serial" ]; then
+    # 記下來的那一台與正要被動手的那一台不同 —— 那份「來源」證不了這一台。
+    echo "rs_select_device 選的是 $RS_SERIAL,而這裡要動 $serial —— 中止。" >&2
+    return 2
+  fi
+  if [ -z "$source" ]; then
+    if [ -n "${RIME_SERIAL:-${ANDROID_SERIAL:-}}" ]; then source="env"; else source="auto"; fi
+  fi
+  if [ "$source" = "auto" ]; then
     {
       echo "這一關會做破壞性動作($*)。"
       echo "$serial 是自動選來的,不是你指定的 —— 中止。"
-      echo "要跑就明著寫:RIME_SERIAL=$serial $0 ..."
+      echo "要跑就明著寫:RIME_SERIAL=$serial $0 ...(或 --serial $serial)"
     } >&2
     return 2
   fi
@@ -121,7 +205,7 @@ rs_assert_destructive_ok() {
     echo "$serial 現在是 avd=${avd:-<問不到>},不是你要的 $RIME_AVD_EXPECT —— 中止(port 會換人)。" >&2
     return 2
   fi
-  echo "[device] $serial (avd=${avd:-?}) — 即將:$*" >&2
+  echo "[device] $serial (avd=${avd:-?}, 來源:$source) — 即將:$*" >&2
   return 0
 }
 

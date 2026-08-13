@@ -33,7 +33,14 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SELF_TEST=0
-[ "${1:-}" = "--self-test" ] && SELF_TEST=1
+case "${1:-}" in
+  -h|--help)
+    sed -n '2,/^set -uo pipefail$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    exit 0 ;;
+  --self-test) SELF_TEST=1 ;;
+  "") ;;
+  *) echo "未知參數:$1" >&2; exit 2 ;;
+esac
 
 # 產生者:輸出大到會讓上游阻塞的那幾種。
 PRODUCERS='logcat|dumpsys'
@@ -59,7 +66,16 @@ scan_dir() {
     # 只看真的開了 pipefail 的檔案:沒開的話這個坑不存在。
     grep -q 'pipefail' "$f" || continue
     # 註解行不算 —— 這個專案好幾處**刻意**在註解裡寫出錯誤寫法當警告。
-    grep -nE "$BADPAT" "$f" | grep -vE '^[0-9]+:[[:space:]]*#' \
+    #
+    # ⛔ 2026-08-13 實測:**字串字面**也不算,而這一條從前沒有 ——
+    #   `verify_device_hygiene.sh` 的白名單理由裡有一句
+    #       "純 host 端探針(驗 `logcat | grep -q` 的 SIGPIPE 行為),不連裝置。"
+    #   它在 python heredoc 裡、開頭是 `"` 而不是 `#`,於是這一關在 HEAD 上
+    #   **本來就是紅的**(RC=1),而沒有任何東西會跑它,所以三輪沒有人發現。
+    #   判準:整行(去掉行首空白後)以引號開頭 = 那是一段文字,不是一條指令。
+    grep -nE "$BADPAT" "$f" \
+      | grep -vE '^[0-9]+:[[:space:]]*#' \
+      | grep -vE "^[0-9]+:[[:space:]]*[\"']" \
       | sed "s|^|${f#$ROOT/}:|"
   done <<< "$files"
 }

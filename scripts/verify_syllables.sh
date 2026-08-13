@@ -382,7 +382,11 @@ if [ -n "$PLANT" ] && plant_is_source "$PLANT" && [ -n "$APK" ]; then
   echo "--plant $PLANT 會自己 patch 原始碼再建一份 APK,不可以同時給 --apk。" >&2
   exit 2
 fi
-[ -n "$SERIAL" ] || SERIAL="$(rs_pick_serial "$ADB")" || exit 2
+# ⛔ `--serial` 也要算「指名」。閘從前只看環境變數,於是這一行帶 `--serial`
+#   就必死(RC=2,訊息說「是自動選來的」而那台正是命令列指名的)。
+#   `rs_select_device` 把來源(flag / env / auto)一起記下來給閘看。
+rs_select_device "$ADB" "$SERIAL" || exit 2
+SERIAL="$RS_SERIAL"
 adbs() { "$ADB" -s "$SERIAL" "$@"; }
 rs_assert_destructive_ok "$ADB" "$SERIAL" "pm clear、uninstall、ime set" || exit 2
 # ⚠ 見 verify_candbar.sh 同一行的註解：不帶 --apk 時要靠 `pm path` ＋

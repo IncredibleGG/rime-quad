@@ -115,14 +115,27 @@ if run_phase verify; then
     die "缺少 rime_console 執行檔，先跑 scripts/run_console_test.sh"
   [ -d "$ROOT/core/data/shared/opencc" ] || \
     die "缺少 core/data/shared/opencc，先跑 scripts/collect_data.sh"
-  "$ROOT/scripts/emu.sh" status >/dev/null 2>&1 || "$ROOT/scripts/emu.sh" start
-  # 這台機器上可能同時有多個模擬器（其他 agent 在用）。預設綁 emulator-5554，
-  # 需要時以 RIME_EMU_SERIAL 覆寫；只有它不在時才退而挑第一個可用的。
-  # ⛔ 這一段從前明著優先綁 emulator-5554,而那台是**別條線**的機器。
-  #   第三個變數名 RIME_EMU_SERIAL 也一併收斂到 RIME_SERIAL:同一件事三個名字,
-  #   帶對了一個而另外兩個不看,是「帶了也沒用」的另一種形狀。
-  SERIAL="$(rs_pick_serial "$ADB")" || SERIAL=""
-  [ -n "$SERIAL" ] || die "找不到模擬器"
+  # ⛔ 這一段從前是
+  #       "$ROOT/scripts/emu.sh" status >/dev/null 2>&1 || "$ROOT/scripts/emu.sh" start
+  #   而 emu.sh 在「已經有裝置在線」時對**所有**子命令(含 status)要求
+  #   RIME_EMU_PORT。本檔有 `set -euo pipefail` —— 於是方案市集的品質閘門
+  #   在任何有模擬器在線的機器上必死在這一行,訊息還指向 emu.sh、與方案無關。
+  #
+  #   順序改成:**先決定要打哪一台**(唯一的入口 rs_pick_serial),再對著
+  #   那一台問狀態。場上一台都沒有時才去起一台。
+  if ! SERIAL="$(rs_pick_serial "$ADB")"; then
+    if [ "$("$ADB" devices 2>/dev/null | grep -cE '	device$' || true)" -eq 0 ]; then
+      "$ROOT/scripts/emu.sh" start
+      SERIAL="$(rs_pick_serial "$ADB")" || die "起了模擬器仍然選不出裝置"
+    else
+      die "有多台裝置在線而沒有指名(見上面)。設 RIME_SERIAL=emulator-XXXX 再跑。"
+    fi
+  fi
+  RIME_SERIAL="$SERIAL" "$ROOT/scripts/emu.sh" status >/dev/null \
+    || die "$SERIAL 不在可用狀態"
+  # ⛔ `schema_store/verify.py:221` 會在裝置上做 `shell rm -rf /data/local/tmp/...`。
+  #   全檔從前**一次都沒有**過破壞性動作的閘 —— 這正是 R2 判 P0 的那條形狀。
+  rs_assert_destructive_ok "$ADB" "$SERIAL" "verify.py 在裝置上 rm -rf 驗證目錄" || exit 2
   echo "  裝置 $SERIAL，平行度 $JOBS"
   python3 "$LIB/verify.py" --work "$WORK" --adb "$ADB" --serial "$SERIAL" \
       --binary "$ROOT/third_party/build/rime_console.x86_64" \
@@ -222,7 +235,11 @@ fi
 
 echo
 echo "=== 完成 ==="
-[ -f "$DIST/index.json" ] && python3 - "$DIST/index.json" <<'PY'
+# ⚠ 寫成 `if` 而不是 `[ -f x ] && cmd`:這是**最後一行**,`&&` 在檔案不存在時
+#   整條回 1,於是一次成功的 `--phase verify` 以 RC=1 收場 —— 而呼叫者只看
+#   得到「非零」。同一個坑上面第 190 行已經踩過一次並寫了註解,這裡漏了。
+if [ -f "$DIST/index.json" ]; then
+python3 - "$DIST/index.json" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 cats = {}
@@ -234,3 +251,4 @@ for c in d["categories"]:
     print(f"  {c['name']}（{c['id']}）{len(ids)}: {' '.join(ids)}")
 print("base_url:", d["base_url"])
 PY
+fi

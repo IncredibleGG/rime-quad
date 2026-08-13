@@ -36,6 +36,15 @@
 #
 set -uo pipefail
 
+# ⛔ **唯讀出口。** `scripts/verify_script_readonly.sh` 會把每一支腳本的
+#   `--help` 跑一遍 —— 這一支從前沒有,於是 `--help` 會被當成一般啟動,
+#   一路跑下去(編譯／連網／推檔)。說明不得有任何副作用。
+case "${1:-}" in
+  -h|--help)
+    sed -n '2,/^set -[eu]/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    exit 0 ;;
+esac
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # 產品識別碼、以及 patches/ 裡那組沙盒符號名的唯一來源,見 scripts/lib/product.env。
 # shellcheck source=lib/product.sh

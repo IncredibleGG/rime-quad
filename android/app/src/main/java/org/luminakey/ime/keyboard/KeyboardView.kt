@@ -277,6 +277,7 @@ fun RimeKeyboard(
                 onEvent = onEvent,
                 slotCells = slotCells,
                 pinnedSyllable = pin,
+                selectableCandidates = remember(shownCandidates) { shownCandidates.toSet() },
                 onSlot = { cell ->
                     when (cell) {
                         // 再點一次同一個讀音 = 取消篩選。不另外做一顆「全部」鍵：
@@ -521,12 +522,14 @@ private fun BoxScope.CandidateExpandedPanel(
                     //   就寫著「這一頁畫得出來的候選數」,而這個呼叫端一直傳
                     //   整頁的數量 —— 上一輪只修好了候選列那一個呼叫端,
                     //   這一個原封不動。
-                    state = Pager.state(
-                        kind = style.pageIndicator.kind,
-                        show = style.pageIndicator.show,
+                    // ⛔ **不吃 `style.pageIndicator.show` / `.kind`。** 那個開關關的是
+                    //   候選列右端那一組;面板裡這一列是面板自己的唯一導覽,被同一個
+                    //   開關關掉的話,`rightEnd` 好不容易推過來的這條路就通不到第 2 頁,
+                    //   而 `deadEnd()` 只看右端、永遠不會紅。見 [Pager.panelState]。
+                    state = Pager.panelState(
                         pageNo = state.pageNo,
                         isLastPage = state.isLastPage,
-                        candidateCount = shown.size,
+                        shownCount = shown.size,
                     ),
                     style = style.pageIndicator,
                     scaler = scaler,
@@ -1469,6 +1472,13 @@ private fun KeyGrid(
     /** 組字中被消歧欄接管的格位（key.id → 要畫什麼）。空 map = 照佈局畫。 */
     slotCells: Map<String, T9Syllables.Cell> = emptyMap(),
     pinnedSyllable: String? = null,
+    /**
+     * 候選列上**真的畫得出序號**的那幾格（頁內索引）。工單 #99：
+     * 專用數字列的 `3` 要選的是「畫面上標著 3 的那一個」——
+     * T9 消歧欄篩掉的那幾格畫面上沒有序號，按下去選中一個看不見的候選
+     * 就是新的缺陷，所以那幾格按下去**什麼都不做**。
+     */
+    selectableCandidates: Set<Int> = emptySet(),
     onSlot: (T9Syllables.Cell) -> Unit = {},
 ) {
     val layout = state.layout
@@ -1517,6 +1527,9 @@ private fun KeyGrid(
         spacingDp = rowSpacing,
     )
     val rowWeights = KeyCells.weights(rowSizes, rowSpacing, outerTop, outerBottom)
+
+    // 「這一層有沒有專用數字列」是**整層**的性質,一層算一次(工單 #99)。
+    val digitRowActive = remember(layer) { SelectionDigitKeys.rowActive(layer) }
 
     BoxWithConstraints(
         modifier = Modifier
@@ -1589,6 +1602,19 @@ private fun KeyGrid(
                         // 行為」守著。
                         val slot =
                             T9Syllables.renderSlot(key, slotCells[key.id], pinnedSyllable)
+                        // ⚠ 整排 1–9 都在才算「專用數字列」;逐顆再問 label 與
+                        //   keysym 是不是同一個數字;最後再問「當下按下去要做
+                        //   什麼」。三層判準都在 [SelectionDigitKeys](純函式)。
+                        val digitAct =
+                            if (!digitRowActive) null
+                            else SelectionDigitKeys.digitOf(slot.key)?.let { d ->
+                                SelectionDigitKeys.act(
+                                    digit = d,
+                                    composing = state.preedit.isNotEmpty() &&
+                                        state.candidates.isNotEmpty(),
+                                    selectableIndices = selectableCandidates,
+                                )
+                            }
                         val shownKey = slot.key
                         val tapCell = slot.tapCell
                         val speaks = slot.speaks
@@ -1613,6 +1639,7 @@ private fun KeyGrid(
                                 } else {
                                     null
                                 },
+                                digitAct = digitAct,
                                 onPopup = { left, top, w ->
                                     // 長按盤一律走 slot.popup:被接管的格位沒有盤
                                     // （slotKey 清掉了）,沒被接管的格位**盤要還
@@ -1677,6 +1704,30 @@ private fun syllableDescription(cell: T9Syllables.Cell): String? = when (cell) {
     // 沒被接管的格位念的是它原本的名字（「，」「。」「？」），走 KeyA11y
     // 那一條，不會進來這裡；留著讓 when 維持窮盡。
     T9Syllables.Cell.Original -> null
+}
+
+/**
+ * 專用數字列那一顆鍵按下去（工單 #99）。
+ *
+ * 回 `Unit` = 這一顆由這裡處理掉了（含「刻意什麼都不做」）；
+ * 回 `null` = 不是數字鍵，呼叫端照 §9.6 的 tap → send → noop 走。
+ *
+ * ⚠ 兩個呼叫端（單擊、自動重複）**必須**都走這一支。兩處各寫一份的話，
+ *   長按數字鍵會走回那條把 keysym 丟給引擎、被 recognizer 收走、
+ *   毀掉組字的路，而單擊是對的 —— 而畫面上看不出差別。
+ */
+private fun fireDigit(
+    key: LayoutKey,
+    act: SelectionDigitKeys.Act?,
+    onEvent: (KeyboardEvent) -> Unit,
+): Unit? = when (act) {
+    null -> null
+    is SelectionDigitKeys.Act.Select -> onEvent(KeyboardEvent.Candidate(act.indexOnPage))
+    // 沒有在組字 —— 照常打一個數字。
+    SelectionDigitKeys.Act.SendDigit -> key.send?.let { onEvent(KeyboardEvent.Send(it)) } ?: Unit
+    // ⛔ 索引超過本頁候選數（或那一格被消歧欄篩掉）—— **什麼都不做**。
+    //    從前這一格是「送給引擎」，而那正是毀掉組字的那條路。
+    SelectionDigitKeys.Act.Ignore -> Unit
 }
 
 private fun dispatchSubKey(sub: SubKey, onEvent: (KeyboardEvent) -> Unit) {
@@ -1776,6 +1827,18 @@ private fun KeyView(
     descriptionOverride: String? = null,
     /** 同上，蓋掉 stateDescription（例如「已選取」）。 */
     stateOverride: String? = null,
+    /**
+     * 這一顆是「專用數字列」上的選字數字鍵的話，按下去要做什麼（工單 #99）。
+     * 不是數字鍵就是 null，一切照舊。
+     *
+     * 由呼叫端算：判準要看**整層**（整排 1–9 都在）、也要看**當下**
+     * （有沒有在組字、那一格畫不畫得出來），而 KeyView 兩者都看不到。
+     * 決定本身是純函式 [SelectionDigitKeys.act]，單元測試摸得到。
+     *
+     * ⛔ 非 null 時**不得**走 [KeyboardEvent.Send]：組字中把 keysym 丟給引擎
+     * 會被 `recognizer/patterns` 收走並**毀掉使用者已經打好的組字**。
+     */
+    digitAct: SelectionDigitKeys.Act? = null,
 ) {
     val view = LocalView.current
     val density = LocalDensity.current
@@ -1838,11 +1901,13 @@ private fun KeyView(
     /** §9.6 的點擊解析：tap → send → noop。 */
     fun fire() {
         haptic()
-        val tap = key.tap
-        val send = key.send
-        when {
-            tap != null -> currentOnEvent(KeyboardEvent.Act(tap))
-            send != null -> currentOnEvent(KeyboardEvent.Send(send))
+        fireDigit(key, digitAct, currentOnEvent) ?: run {
+            val tap = key.tap
+            val send = key.send
+            when {
+                tap != null -> currentOnEvent(KeyboardEvent.Act(tap))
+                send != null -> currentOnEvent(KeyboardEvent.Send(send))
+            }
         }
     }
 
@@ -1854,7 +1919,10 @@ private fun KeyView(
         LaunchedEffect(key, behavior) {
             delay(behavior.repeatDelayMs.toLong())
             while (true) {
-                key.send?.let { currentOnEvent(KeyboardEvent.Send(it)) }
+                // 自動重複走**同一條**解析 —— 兩處各寫一份的話,長按數字鍵
+                // 會走回那條毀掉組字的路,而單擊是對的。
+                fireDigit(key, digitAct, currentOnEvent)
+                    ?: key.send?.let { currentOnEvent(KeyboardEvent.Send(it)) }
                 delay(behavior.repeatIntervalMs.toLong())
             }
         }

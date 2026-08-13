@@ -1,8 +1,9 @@
 package org.luminakey.ime.keyboard
 
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import org.junit.Assert.assertFalse
 import org.luminakey.ime.theme.PageIndicatorKind
 import org.luminakey.ime.theme.Platform
 import org.luminakey.ime.theme.RepoFixtures
@@ -75,6 +76,62 @@ class ThemeDensityTest {
     }
 
     /**
+     * ⚠ **這一版的招牌成果在「消歧欄不活」那一格自動歸零 —— 把它量出來,
+     *    並且釘住,不要等使用者踩到。**
+     *
+     * 密度從 3 拉到 6,有 35.3% 來自「註解與消歧欄互斥」(§8.6.3.1):
+     * 消歧欄畫了讀音,註解就不必再畫第二份。而消歧欄那一側在兩種組態下
+     * **不活**,於是註解回來:
+     *
+     *   · 主題寫 `candidates.syllables.placement: none`
+     *   · 啟動探針判定方案改寫不動輸入串(`syllableRewriteReady == false`)
+     *
+     * 這一關把那一格的數字**量出來並釘住**。它刻意**不是**「≥ 6」——
+     * 那會逼人拿掉互斥規則或動別的東西來湊,而那一格本來就付得起
+     * 一格 98.6 dp:使用者在那個組態下拿到的是讀音,不是空氣。
+     * 釘的是「不得更差」＋「差多少要說得出來」。
+     */
+    @Test
+    fun `消歧欄不活時註解回來,密度掉多少要量得出來`() {
+        val 下界 = 3          // 411 dp 上的實測/模型值。掉到 2 就是新的缺陷。
+        val rows = ArrayList<String>()
+        val bad = ArrayList<String>()
+        for (id in RepoFixtures.themeIds) {
+            val b = bar(id)
+            val 活 = CandidateDensity.baselineVisible(
+                screenWidthDp = 411.43f, barPaddingH = b.paddingH, reservedEndDp = b.reservedEnd,
+                paddingH = b.style.item.paddingH, spacing = b.style.item.spacing,
+                minWidth = b.style.item.minWidth,
+            )
+            val 不活 = CandidateDensity.baselineVisibleWithComment(
+                screenWidthDp = 411.43f, barPaddingH = b.paddingH, reservedEndDp = b.reservedEnd,
+                paddingH = b.style.item.paddingH, spacing = b.style.item.spacing,
+                minWidth = b.style.item.minWidth,
+                commentSize = CandidateDensity.BASELINE_TEXT_SIZE * 0.6f,  // 12 sp
+            )
+            rows += "$id：消歧欄活 $活 個 → 不活 $不活 個"
+            if (不活 < 下界) bad += "$id：$不活 個(下界 $下界)"
+        }
+        assertTrue(
+            "消歧欄不活的那一格掉到下界以下了。\n  " + bad.joinToString("\n  ") +
+                "\n全部：\n  " + rows.joinToString("\n  "),
+            bad.isEmpty(),
+        )
+        // 反向:這一關必須真的分得出兩種組態 —— 兩邊一樣多的話它什麼都沒在守。
+        val 差 = CandidateDensity.itemWidthDp(
+            textChars = 2, textSize = CandidateDensity.BASELINE_TEXT_SIZE,
+            labelChars = 0, labelSize = 0f,
+            commentChars = CandidateDensity.BASELINE_COMMENT_CHARS, commentSize = 12f,
+            paddingH = 8f, minWidth = 48f,
+        ) - CandidateDensity.itemWidthDp(
+            textChars = 2, textSize = CandidateDensity.BASELINE_TEXT_SIZE,
+            labelChars = 0, labelSize = 0f, commentChars = 0, commentSize = 0f,
+            paddingH = 8f, minWidth = 48f,
+        )
+        assertEquals("一格的註解成本變了 —— 上面那個下界是照 42.6 dp 訂的", 42.6f, 差, 0.05f)
+    }
+
+    /**
      * ⚠ **每一份主題都必須留著展開面板這條路。**
      *
      * §8.6.6.4 第 2 條規定「本頁還有畫不出來的候選時不得提供下一頁」，
@@ -118,7 +175,9 @@ class ThemeDensityTest {
                 // 本頁 3 個(411 dp 上一定排得下)與 9 個(一定排不下)兩種。
                 for (count in listOf(3, 9)) {
                     val layout = layoutOf(id, count, page, last)
-                    if (CandidateDensity.deadEnd(layout, count, morePages = !last)) {
+                    val panelPager =
+                        CandidateDensity.panelPagerDrawable(page, last, shownCount = count)
+                    if (CandidateDensity.deadEnd(layout, count, !last, panelPager)) {
                         bad += "$id：第 ${page + 1} 頁、${if (last) "" else "不"}是最後一頁、" +
                             "本頁 $count 個 → 右端 ${layout.rightEnd}"
                     }
@@ -151,9 +210,16 @@ class ThemeDensityTest {
         )
         assertTrue(
             "兩條出口都關掉了而 deadEnd() 說沒事 —— 那上面那一關什麼都沒在守",
-            CandidateDensity.deadEnd(trapped, 3, morePages = true),
+            CandidateDensity.deadEnd(
+                trapped, 3, morePages = true,
+                panelPagerDrawable = CandidateDensity.panelPagerDrawable(0, false, 3),
+            ),
         )
-        // 只關掉翻頁指示器(展開鍵留著)**不是**死路 —— 判準不得寬到把它也判紅。
+        // 只關掉翻頁指示器(展開鍵留著)**不是**死路 —— 但這句話只有在
+        // **面板自己的翻頁列還畫得出來**的時候才成立。上一版這裡是
+        //     assertFalse(deadEnd(onlyPagerOff, 3, morePages = true))
+        // 註解寫著「這不是死路」,而實測是:右端有 `∨` → 面板打開 →
+        // 底部翻頁鍵一顆都沒有 → 第 2 頁永遠進不去。那一行把缺陷釘成了綠燈。
         val onlyPagerOff = CandidateDensity.barLayout(
             screenWidthDp = 411.43f, barPaddingH = 4f, reservedEnd = 40f, buttonDp = 40f,
             leadingDp = 0f, widths = List(3) { 56f }, spacing = 4f,
@@ -161,7 +227,168 @@ class ThemeDensityTest {
             pagerKind = PageIndicatorKind.ARROWS,
             pagerShow = false, expandAvailable = true, panelOpen = false,
         )
-        assertFalse(CandidateDensity.deadEnd(onlyPagerOff, 3, morePages = true))
+        assertEquals(CandidateDensity.RightEnd.EXPAND, onlyPagerOff.rightEnd)
+        // ⛔ **先斷言那條路真的通得到第 2 頁**,再說它不是死路。
+        assertTrue(
+            "候選列的 page_indicator 關掉了,而展開面板的翻頁列**必須**照畫 ——" +
+                "面板是這條路唯一的下一頁入口",
+            CandidateDensity.panelPagerDrawable(0, isLastPage = false, shownCount = 3),
+        )
+        assertFalse(
+            CandidateDensity.deadEnd(
+                onlyPagerOff, 3, morePages = true,
+                panelPagerDrawable = CandidateDensity.panelPagerDrawable(0, false, 3),
+            ),
+        )
+    }
+
+    /**
+     * ⛔ **面板的翻頁列不得跟著候選列的 `page_indicator` 一起被關掉。**
+     *
+     * 這一關釘的是 [Pager.panelState] 的**型別**:它沒有、也不准有
+     * `kind` / `show` 參數 —— 主題傳不進來,就不可能把它關掉。
+     * 舊規則(面板吃 `style.pageIndicator`)在這裡逐格重演一次,證明它真的是死路。
+     */
+    @Test
+    fun `舊規則(面板吃候選列的 page_indicator)在每一種關法上都是死路`() {
+        val 關法 = listOf(
+            "show: false" to Pair(false, PageIndicatorKind.ARROWS),
+            "style: none" to Pair(true, PageIndicatorKind.NONE),
+            "兩個都關" to Pair(false, PageIndicatorKind.NONE),
+        )
+        for ((名字, 設定) in 關法) {
+            val (show, kind) = 設定
+            // 舊規則:面板的翻頁列吃候選列那一份設定。
+            val 舊 = Pager.state(
+                kind = kind, show = show,
+                pageNo = 0, isLastPage = false, candidateCount = 3,
+            )
+            assertFalse(
+                "舊規則在「$名字」之下畫得出翻頁列 —— 那這一關重演的不是當初那個缺陷",
+                舊.show,
+            )
+            // 新規則:面板自己說了算。
+            assertTrue(
+                "「$名字」之下面板的翻頁列必須照畫",
+                CandidateDensity.panelPagerDrawable(0, isLastPage = false, shownCount = 3),
+            )
+        }
+    }
+
+    /**
+     * ⛔ **使用者能到達的每一種頁況 × 每一種主題開關組合,逐格回答
+     *    「他要怎麼看到下一個候選」。**
+     *
+     * 這條死路修過三次,每一次都只補了被指出的那一格:
+     *
+     *   第一次  候選密度(一列排得下幾個)
+     *   第二次  右端不得空白 → 補了 `pagerDrawable`
+     *   第三次  死路搬進面板裡 → 面板的翻頁列被同一個開關關掉
+     *
+     * 每一次都是「修好被指出的那一格」,所以每一次都留下了下一格。
+     * 這一關改成**列舉**:七個維度全展開,每一格算出使用者的出路,
+     * 然後斷言「走不出去的格子」**恰好**等於「主題把兩條出口都關掉」那一組。
+     * 不是「沒有死路」(那會被一個過寬的判準騙過),是**等於** ——
+     * 多一格少一格都紅。
+     *
+     * 不可到達的組合明著排除並說出理由,不是默默不列。
+     */
+    @Test
+    fun `每一種頁況乘每一種主題開關,逐格算得出出路`() {
+        data class Cell(
+            val pageNo: Int,
+            val isLastPage: Boolean,
+            val pageCount: Int,
+            val panelOpen: Boolean,
+            val pagerShow: Boolean,
+            val pagerKind: PageIndicatorKind,
+            val expandAvailable: Boolean,
+        )
+
+        val cells = ArrayList<Cell>()
+        for (pageNo in listOf(0, 1)) {
+            for (isLastPage in listOf(false, true)) {
+                // 3 = 411 dp 上一定排得下(visible == count)
+                // 9 = 一定排不下(visible < count,本頁就有沒看到的)
+                for (pageCount in listOf(3, 9)) {
+                    for (pagerShow in listOf(true, false)) {
+                        for (pagerKind in listOf(PageIndicatorKind.ARROWS, PageIndicatorKind.NONE)) {
+                            for (expandAvailable in listOf(true, false)) {
+                                for (panelOpen in listOf(false, true)) {
+                                    // ⛔ 不可到達:面板只能從展開鍵打開。展開鍵不存在時
+                                    //    `panelOpen` 這一格在產品裡不存在,列進來只會
+                                    //    讓這張表多一格假的答案。
+                                    if (panelOpen && !expandAvailable) continue
+                                    cells += Cell(
+                                        pageNo, isLastPage, pageCount, panelOpen,
+                                        pagerShow, pagerKind, expandAvailable,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // 2(頁) × 2(末頁) × 2(本頁排不排得下) × 2(show) × 2(kind) × 3(展開×面板)
+        assertEquals("列舉少了格子 —— 這張表就不是「每一種」了", 96, cells.size)
+
+        val table = StringBuilder()
+        val dead = ArrayList<String>()
+        val expectedDead = ArrayList<String>()
+        for (c in cells) {
+            val layout = CandidateDensity.barLayout(
+                screenWidthDp = 411.43f, barPaddingH = 4f, reservedEnd = 40f, buttonDp = 40f,
+                leadingDp = 0f, widths = List(c.pageCount) { 56f }, spacing = 4f,
+                pageCandidateCount = c.pageCount, pageNo = c.pageNo, isLastPage = c.isLastPage,
+                pagerKind = c.pagerKind, pagerShow = c.pagerShow,
+                expandAvailable = c.expandAvailable, panelOpen = c.panelOpen,
+            )
+            val panelPager =
+                CandidateDensity.panelPagerDrawable(c.pageNo, c.isLastPage, c.pageCount)
+            val morePages = !c.isLastPage
+            val unseenHere = layout.visible < c.pageCount
+            val unseen = unseenHere || morePages
+            val isDead = CandidateDensity.deadEnd(layout, c.pageCount, morePages, panelPager)
+
+            // 「翻頁那一組真的畫得出來嗎」—— 與 barLayout 內部同一條判準。
+            val barPager = Pager.state(
+                kind = c.pagerKind, show = c.pagerShow, pageNo = c.pageNo,
+                isLastPage = c.isLastPage, candidateCount = c.pageCount,
+            )
+            val pagerDrawable = barPager.show && (barPager.prevEnabled || barPager.nextEnabled)
+
+            val route = when {
+                !unseen -> "不必 —— 候選全在畫面上"
+                layout.rightEnd == CandidateDensity.RightEnd.PAGER -> "按 › 翻頁"
+                layout.rightEnd == CandidateDensity.RightEnd.EXPAND && c.panelOpen ->
+                    if (morePages && !panelPager) "✗ 面板開著而面板內翻不了頁"
+                    else "面板已開:本頁全在面板裡" + if (morePages) ",下一頁按面板底部的 ›" else ""
+                layout.rightEnd == CandidateDensity.RightEnd.EXPAND ->
+                    if (morePages && !panelPager) "✗ 面板打得開,但面板內翻不了頁"
+                    else "按 ∨ 開面板:本頁全在裡面" + if (morePages) ",下一頁按面板底部的 ›" else ""
+                else -> "✗ 右端一顆都畫不出來"
+            }
+            val key = "頁${c.pageNo + 1}/${if (c.isLastPage) "末頁" else "還有頁"}" +
+                "/本頁${c.pageCount}個/${if (c.panelOpen) "面板開" else "面板關"}" +
+                "/show=${c.pagerShow}/kind=${c.pagerKind}/展開=${c.expandAvailable}"
+            table.append("  ").append(key).append(" → ").append(layout.rightEnd)
+                .append(" | ").append(route).append('\n')
+
+            if (isDead) dead += key
+            // **應該**走不出去的,恰好是「還有東西沒看到,而兩條出口都畫不出來」。
+            if (unseen && !pagerDrawable && !c.expandAvailable) expectedDead += key
+        }
+
+        assertEquals(
+            "「走不出去的格子」與「兩條出口都關掉的格子」對不上。\n" +
+                "多出來的(判準太寬):${dead - expectedDead.toSet()}\n" +
+                "漏掉的(判準太窄,使用者真的鎖死了):${expectedDead - dead.toSet()}\n" +
+                "全表:\n$table",
+            expectedDead.toSet(), dead.toSet(),
+        )
+        // 死路必須真的存在幾格 —— 一個永遠算不出死路的判準,長得跟通過一模一樣。
+        assertTrue("這張表一格死路都算不出來 —— 判準在空轉", dead.isNotEmpty())
     }
 
     /** 用某一份主題真正的欄位值算出一格頁況的版面。 */

@@ -158,7 +158,11 @@ fi
 OUT_DIR="${OUT_DIR:-$PROJECT_ROOT/build/layoutverify/$LAYOUT}"
 mkdir -p "$OUT_DIR"
 
-[ -n "$SERIAL" ] || SERIAL="$(rs_pick_serial "$ADB")" || exit 2
+# ⛔ `--serial` 也要算「指名」。閘從前只看環境變數,於是這一行帶 `--serial`
+#   就必死(RC=2,訊息說「是自動選來的」而那台正是命令列指名的)。
+#   `rs_select_device` 把來源(flag / env / auto)一起記下來給閘看。
+rs_select_device "$ADB" "$SERIAL" || exit 2
+SERIAL="$RS_SERIAL"
 adbs() { "$ADB" -s "$SERIAL" "$@"; }
 rs_write_device_stamp "$ADB" "$SERIAL" "$OUT_DIR/device.txt" "${APK:-}"
 GEOM="$PROJECT_ROOT/scripts/layout_geom.py"

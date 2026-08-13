@@ -215,6 +215,54 @@ object CandidateDensity {
         return visibleCount(usable, List(64) { w }, spacing)
     }
 
+    /**
+     * 基準情境的**第二格**:消歧欄那一側**不活**,於是註解回來(§8.6.3.1)。
+     *
+     * ── 為什麼非得有第二個基準不可 ────────────────────────────────────────
+     * [baselineVisible] 量的是「消歧欄活著」那一格 —— 而這一版把候選從 3 個
+     * 拉到 6 個的**招牌成果,有 35% 來自把註解收起來**。註解收得起來的前提是
+     * 消歧欄那一側活著([commentVisible] 的 `syllableSideAlive`),而它在兩種
+     * 使用者真的會遇到的組態下是 false:
+     *
+     *   · 主題寫 `candidates.syllables.placement: none`
+     *   · 啟動探針判定這個方案改寫不動輸入串(`syllableRewriteReady == false`,
+     *     裝置上是舊的單編碼 `t9_pinyin` 就會這樣)
+     *
+     * 那兩格底下註解照畫,**而密度證據全是探針通過的情況下取的** ——
+     * 招牌成果在那個組態下自動歸零,沒有任何守門盯著它。
+     *
+     * 模型值(411.43 dp、`default-light`、兩字 CJK ＋ 讀音註解 `ni hao`):
+     * 一格 56.00 → **98.60 dp**(+42.60),一列 **6 → 3 個**。
+     *
+     * @param commentChars 註解字數。T9 兩字候選的讀音是 `ni hao` = 6。
+     */
+    fun baselineVisibleWithComment(
+        screenWidthDp: Float,
+        barPaddingH: Float,
+        reservedEndDp: Float,
+        paddingH: Float,
+        spacing: Float,
+        minWidth: Float,
+        commentSize: Float,
+        commentChars: Int = BASELINE_COMMENT_CHARS,
+        textSize: Float = BASELINE_TEXT_SIZE,
+    ): Int {
+        val w = itemWidthDp(
+            textChars = BASELINE_TEXT_CHARS,
+            textSize = textSize,
+            labelChars = 0,
+            labelSize = 0f,
+            commentChars = commentChars,
+            commentSize = commentSize,
+            paddingH = paddingH,
+            minWidth = minWidth,
+        )
+        return visibleCount(usableDp(screenWidthDp, barPaddingH, reservedEndDp), List(64) { w }, spacing)
+    }
+
+    /** 基準情境的註解字數:T9 兩字候選的讀音 `ni hao`。 */
+    const val BASELINE_COMMENT_CHARS = 6
+
     /* ═════════════════════ 註解：與消歧欄互斥 ═════════════════════ */
 
     /**
@@ -415,9 +463,18 @@ object CandidateDensity {
         // 本頁看得完 → 翻頁才是誠實的,而且它得真的畫得出來。
         pagerDrawable -> RightEnd.PAGER
         // 本頁看得完、後面還有頁,而翻頁那一組畫不出來（主題關掉了
-        // `page_indicator`）—— 展開鍵是剩下的唯一出口。展開面板畫的是
-        // **這一頁**,但它自己帶著翻頁列（`CandidateExpandedPanel`），
-        // 所以那條路走得到第 2 頁。
+        // `page_indicator`）—— 展開鍵是剩下的唯一出口。
+        //
+        // ⛔ 這一段的 KDoc 從前寫「面板自己帶著翻頁列,所以那條路走得到
+        //   第 2 頁」——**那是假的**。面板的翻頁列吃的是同一份
+        //   `style.pageIndicator`,而把 `rightEnd` 推進這一支的**唯一原因**
+        //   正是那份設定被關掉了。於是:右端有 `∨`、按下去面板打開、
+        //   底部翻頁鍵一顆都不畫、第 2 頁永遠進不去 —— 而 [deadEnd] 只問
+        //   「右端是不是 NONE」,這一格是 EXPAND,永遠不紅。
+        //
+        //   現在面板的翻頁列走 [Pager.panelState](恆 show、`kind` 恆 ARROWS),
+        //   與候選列的 `page_indicator` 脫鉤 —— 這句話才第一次成立。
+        //   [deadEnd] 也不再只看右端:它問「這條路到不到得了下一頁」。
         morePages && expandAvailable -> RightEnd.EXPAND
         // 後面沒有候選、本頁也看得完：右端本來就不必畫東西。
         // （上一版在這裡回 PAGER 而 `Pager.State.show` 是 false，畫出來的
@@ -426,21 +483,62 @@ object CandidateDensity {
     }
 
     /**
-     * ⛔ **死路偵測:後面還有候選,而右端一顆出口都畫不出來。**
+     * ⛔ **死路偵測:還有候選沒看到,而使用者從這一格走不出去。**
      *
-     * 這不是一種頁況,是主題把兩條出口同時關掉造成的**設計錯誤**
-     * （`page_indicator.show: false` ＋ `expand_button.show: false`，
+     * 這不是一種頁況,是主題把出口關掉造成的**設計錯誤**
+     * （`page_indicator.show: false` ＋ `expand_button.show: false`,
      * 或 `scroll: none`）。§10 第 41 條上一版只掃 `scroll` 與
-     * `expand_button.show`，**沒有看 `page_indicator`** —— 於是
-     * 「翻頁關掉、展開留著」那一半合法，而「翻頁關掉、展開也關掉」那一半
-     * 在執行期是一片空白的右端。這個函式讓那件事**測得到**。
+     * `expand_button.show`,**沒有看 `page_indicator`**;而上一版的這個函式
+     * 只問「右端是不是 [RightEnd.NONE]」—— 於是同一條死路第三次躲過去:
+     * 它搬進了面板裡(右端是 `EXPAND`,面板打得開,面板裡的翻頁列一顆不畫)。
+     *
+     * 所以判準改成問**那條路通不通得到下一頁**,而不是「右端有沒有東西」:
+     *
+     * | 右端 | 使用者要怎麼看到下一個候選 | 是死路嗎 |
+     * |---|---|---|
+     * | [RightEnd.NONE]   | 沒有東西可按                       | **是** |
+     * | [RightEnd.PAGER]  | 按 `›` 翻頁                        | 否 |
+     * | [RightEnd.EXPAND] | 按 `∨` 開面板 → 面板裡看完這一頁;   | 面板的翻頁列 |
+     * |                   | 下一頁靠**面板自己的翻頁列**        | 畫不出來就**是** |
      *
      * @param morePages `!isLastPage`。
+     * @param panelPagerDrawable 展開面板底部那一列翻頁,在這一格頁況下
+     *   真的會畫出至少一顆箭頭嗎（[panelPagerDrawable]）。它是 `EXPAND`
+     *   這條路**唯一**的下一頁入口 —— 面板畫的是這一頁。
      */
-    fun deadEnd(layout: BarLayout, pageCandidateCount: Int, morePages: Boolean): Boolean =
-        pageCandidateCount > 0 &&
-            (layout.visible < pageCandidateCount || morePages) &&
-            layout.rightEnd == RightEnd.NONE
+    fun deadEnd(
+        layout: BarLayout,
+        pageCandidateCount: Int,
+        morePages: Boolean,
+        panelPagerDrawable: Boolean,
+    ): Boolean {
+        if (pageCandidateCount <= 0) return false
+        val unseenOnThisPage = layout.visible < pageCandidateCount
+        if (!unseenOnThisPage && !morePages) return false
+        return when (layout.rightEnd) {
+            RightEnd.NONE -> true
+            // 翻頁鍵按得到下一頁。(它有可能跳過本頁畫不出來的那幾個 ——
+            //  那是 §8.6.6.4 第 2 條的問題,由 `每一份主題都留著展開面板`
+            //  那一關擋,不是死路。)
+            RightEnd.PAGER -> false
+            // 面板看得到**本頁**全部;還有下一頁的話,得靠面板自己的翻頁列。
+            RightEnd.EXPAND -> morePages && !panelPagerDrawable
+        }
+    }
+
+    /**
+     * 展開面板底部那一列翻頁,在這一格頁況下真的畫得出至少一顆箭頭嗎。
+     *
+     * 與 `KeyboardView` 裡那個呼叫端逐條同義（[Pager.panelState] ＋
+     * `PageArrows` 在 `!show` 時整組 return、按不動的那一顆不畫）——
+     * **同一份判準只有一份實作**,不然這裡說通、畫面上不通。
+     *
+     * @param shownCount 面板真的畫出來的那幾個（已過 `T9Syllables` 篩選）。
+     */
+    fun panelPagerDrawable(pageNo: Int, isLastPage: Boolean, shownCount: Int): Boolean =
+        Pager.panelState(pageNo, isLastPage, shownCount).let { st ->
+            st.show && (st.prevEnabled || st.nextEnabled)
+        }
 
     /**
      * 右端那一格畫的是什麼。**三選一，不可能同時兩顆** —— 這正是把它寫成

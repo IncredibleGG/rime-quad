@@ -88,9 +88,8 @@ APK=""
 # 但遠小於一個字元的墨跡量(`MG GAM` 在 1080 寬的螢幕上是數千個)。
 INK_TOLERANCE="${RIME_INK_TOLERANCE:-40}"
 RS_TESSERACT=""
-rs_find_tesseract 2>/dev/null || true
-TESSERACT="$RS_TESSERACT"
-TESSDATA="${TESSDATA_PREFIX:-}"
+TESSERACT=""
+TESSDATA=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -112,13 +111,25 @@ fail() { echo "  [FAIL] $*" >&2; FAILURES=$((FAILURES + 1)); }
 step() { echo; echo "── $* ──"; }
 
 [ -x "$ADB" ] || { echo "找不到 adb:$ADB" >&2; exit 2; }
-[ -n "$SERIAL" ] || SERIAL="$(rs_pick_serial "$ADB")" || exit 2
+# ⛔ `--serial` 也要算「指名」。閘從前只看環境變數,於是這一行帶 `--serial`
+#   就必死(RC=2,訊息說「是自動選來的」而那台正是命令列指名的)。
+#   `rs_select_device` 把來源(flag / env / auto)一起記下來給閘看。
+rs_select_device "$ADB" "$SERIAL" || exit 2
+SERIAL="$RS_SERIAL"
 adbs get-state >/dev/null 2>&1 || { echo "$SERIAL 不在線" >&2; exit 2; }
 # ⚠ Pillow 缺席必須在這裡就停:所有斷言都靠它數像素,缺了就等於沒驗
 #   ——「工具缺席 → 跳過」跳過的關卡與綠燈長得一模一樣。
 python3 -c "import PIL" >/dev/null 2>&1 || { echo "python3 缺 Pillow(數像素要用)" >&2; exit 2; }
 # tesseract **不是**必需的:它只在第 1 關紅了之後把那一塊 OCR 出來寫進訊息,
 #   讓看日誌的人知道印的是什麼。斷言本身是像素數,沒有它照樣成立、照樣會紅。
+#
+# ⚠ 這一段從前在**檔案作用域**(參數解析之前),於是 `--help` 也會去執行
+#   `tesseract --version` —— 說明路徑不得有副作用,見 scripts/verify_script_readonly.sh。
+#   `rs_find_tesseract` 走變數不走 stdout(它要 export LD_LIBRARY_PATH),
+#   所以不可以寫成 `T="$(rs_find_tesseract)"`。
+rs_find_tesseract 2>/dev/null || true
+TESSERACT="$RS_TESSERACT"
+TESSDATA="${TESSDATA_PREFIX:-}"
 [ -n "$TESSERACT" ] && [ -x "$TESSERACT" ] || info "沒有 tesseract,失敗訊息裡不會有 OCR 佐證(斷言不受影響)"
 
 SRC_LAYOUT="$ROOT/core/layouts/$LAYOUT.yaml"

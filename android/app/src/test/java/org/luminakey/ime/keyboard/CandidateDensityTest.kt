@@ -601,7 +601,10 @@ class CandidateDensityTest {
         assertNull("右端不畫翻頁時不該還交出一份 Pager.State", onlyPage.pager)
         assertFalse(
             "沒有更多候選,右端空著不是死路",
-            CandidateDensity.deadEnd(onlyPage, pageCandidateCount = 4, morePages = false),
+            CandidateDensity.deadEnd(
+                onlyPage, pageCandidateCount = 4, morePages = false,
+                panelPagerDrawable = CandidateDensity.panelPagerDrawable(0, true, 4),
+            ),
         )
 
         // 2) 第 2 頁、本頁看不完 → 右端是展開鍵**一顆**。上一版量測扣 80。
@@ -648,7 +651,10 @@ class CandidateDensityTest {
         assertEquals(CandidateDensity.RightEnd.EXPAND, noPager.rightEnd)
         assertEquals(40f, noPager.reservedDp, 0.001f)
         assertFalse(
-            CandidateDensity.deadEnd(noPager, pageCandidateCount = 3, morePages = true),
+            CandidateDensity.deadEnd(
+                noPager, pageCandidateCount = 3, morePages = true,
+                panelPagerDrawable = CandidateDensity.panelPagerDrawable(1, false, 3),
+            ),
         )
 
         // ⛔ 兩條出口同時關掉 = 死路。這不是一種要優雅處理的頁況,是設計錯誤,
@@ -660,7 +666,10 @@ class CandidateDensityTest {
         assertEquals(CandidateDensity.RightEnd.NONE, trapped.rightEnd)
         assertTrue(
             "翻頁與展開都畫不出來而後面還有候選 —— 這就是死路,deadEnd() 沒抓到",
-            CandidateDensity.deadEnd(trapped, pageCandidateCount = 3, morePages = true),
+            CandidateDensity.deadEnd(
+                trapped, pageCandidateCount = 3, morePages = true,
+                panelPagerDrawable = CandidateDensity.panelPagerDrawable(0, false, 3),
+            ),
         )
 
         // 翻頁關掉、展開留著,而本頁**看不完** —— 出口一樣是展開鍵(這一格
@@ -697,7 +706,12 @@ class CandidateDensityTest {
         // 沒有東西了 → 右端 `NONE`。上一版在這裡回 `PAGER` ＋ `show=false`,
         // 畫出來的結果一樣,但那是一個「畫不出來的答案」(見 rightEnd 的 KDoc)。
         assertEquals(CandidateDensity.RightEnd.NONE, at(6).rightEnd)
-        assertFalse(CandidateDensity.deadEnd(at(6), 6, morePages = false))
+        assertFalse(
+            CandidateDensity.deadEnd(
+                at(6), 6, morePages = false,
+                panelPagerDrawable = CandidateDensity.panelPagerDrawable(0, true, 6),
+            ),
+        )
         // 7 個就看不完了 → 出口是展開面板,不是翻頁。
         assertEquals(CandidateDensity.RightEnd.EXPAND, at(7).rightEnd)
 
@@ -742,8 +756,19 @@ class CandidateDensityTest {
             trapped.rightEnd,
         )
         assertEquals("展開鍵一顆 = 40 dp,量測要扣掉它", 40f, trapped.reservedDp, 0.001f)
+        // ⛔ 這一格正是「死路搬進面板裡」的那一格:右端是 `∨`,而面板的翻頁列
+        //    從前吃同一份 `page_indicator.show`(這裡是 false)—— 面板打得開、
+        //    底下一顆翻頁鍵都沒有、第 2 頁永遠進不去,而 deadEnd() 說沒事。
+        //    現在面板的翻頁列與它脫鉤([Pager.panelState]),這條路才真的通。
+        assertTrue(
+            "面板的翻頁列不得被候選列的 page_indicator 關掉",
+            CandidateDensity.panelPagerDrawable(0, isLastPage = false, shownCount = 3),
+        )
         assertFalse(
-            CandidateDensity.deadEnd(trapped, pageCandidateCount = 3, morePages = true),
+            CandidateDensity.deadEnd(
+                trapped, pageCandidateCount = 3, morePages = true,
+                panelPagerDrawable = CandidateDensity.panelPagerDrawable(0, false, 3),
+            ),
         )
     }
 
@@ -768,28 +793,41 @@ class CandidateDensityTest {
 
         // 本頁看得完、後面還有頁,兩條出口都關掉。
         val a = at(3, pagerShow = false, expandAvailable = false, isLastPage = false)
-        assertTrue(CandidateDensity.deadEnd(a, 3, morePages = true))
+        assertTrue(
+            CandidateDensity.deadEnd(
+                a, 3, morePages = true,
+                panelPagerDrawable = CandidateDensity.panelPagerDrawable(0, false, 3),
+            ),
+        )
 
         // 本頁**看不完**,兩條出口都關掉 —— 同一個死路的另一種形狀。
         val b = at(9, pagerShow = false, expandAvailable = false, isLastPage = true)
         assertEquals(CandidateDensity.RightEnd.NONE, b.rightEnd)
-        assertTrue(CandidateDensity.deadEnd(b, 9, morePages = false))
+        assertTrue(
+            CandidateDensity.deadEnd(
+                b, 9, morePages = false,
+                panelPagerDrawable = CandidateDensity.panelPagerDrawable(0, true, 9),
+            ),
+        )
 
         // 只要留一條就不是死路。
         assertFalse(
             CandidateDensity.deadEnd(
                 at(9, pagerShow = false, expandAvailable = true, isLastPage = true), 9, false,
+                panelPagerDrawable = CandidateDensity.panelPagerDrawable(0, true, 9),
             ),
         )
         assertFalse(
             CandidateDensity.deadEnd(
                 at(3, pagerShow = true, expandAvailable = false, isLastPage = false), 3, true,
+                panelPagerDrawable = CandidateDensity.panelPagerDrawable(0, false, 3),
             ),
         )
         // 沒有候選 = 候選列現在畫的是工具列,右端空著本來就對。
         assertFalse(
             CandidateDensity.deadEnd(
                 at(0, pagerShow = false, expandAvailable = false, isLastPage = true), 0, false,
+                panelPagerDrawable = CandidateDensity.panelPagerDrawable(0, true, 0),
             ),
         )
     }

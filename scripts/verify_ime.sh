@@ -88,7 +88,11 @@ done
 # --serial 優先;沒給就走唯一的那份實作(RIME_SERIAL / ANDROID_SERIAL,
 # 兩個都沒有而且**恰好一台**在線時才自動選)。
 [ -x "$ADB" ] || { echo "找不到 adb:$ADB" >&2; exit 2; }
-[ -n "$SERIAL" ] || SERIAL="$(rs_pick_serial "$ADB")" || exit 2
+# ⛔ `--serial` 也要算「指名」。閘從前只看環境變數,於是這一行帶 `--serial`
+#   就必死(RC=2,訊息說「是自動選來的」而那台正是命令列指名的)。
+#   `rs_select_device` 把來源(flag / env / auto)一起記下來給閘看。
+rs_select_device "$ADB" "$SERIAL" || exit 2
+SERIAL="$RS_SERIAL"
 
 # ⚠ 這一支不只用 adb,還會轉呼叫 `emu.sh`(start / status / install / shot /
 #   ime-enable),而 `emu.sh` 是**從 RIME_EMU_PORT 自己組序號**的。兩邊各自
