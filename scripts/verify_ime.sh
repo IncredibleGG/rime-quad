@@ -24,7 +24,8 @@
 #                    預設 = scripts/lib/product.env 推導出來的本產品 IME id
 #                    (從前預設是 Gboard —— 見下面 IME_ID 那一行的註解)
 #   --apk <path>     驗證前先安裝這個 APK(可重複指定)
-#   --text <str>     要注入的文字(預設 hello.rime)
+#   --text <str>     要注入的文字(預設 2024 —— 見下面 INPUT_TEXT 的註解:
+#                    預設 IME 換成本產品之後,拉丁字串會真的走進 librime)
 #   --expect <str>   預期輸入框內容(預設等於 --text)
 #   --target <t>     輸入目標:testapp(預設,本專案自建)| settings(系統設定搜尋框)
 #   --out <dir>      截圖與 artifact 輸出目錄(預設 <專案>/build/verify)
@@ -74,7 +75,20 @@ SERIAL=""
 #   預設改成本產品的 IME id(唯一來源:scripts/lib/product.env)。
 #   真要拿 Gboard 當對照組,明著寫 `--ime com.google.android.inputmethod.latin/...`。
 IME_ID="$RS_ANDROID_IME_ID"
-INPUT_TEXT="hello.rime"
+# ⛔ 預設的注入文字**跟著上面那一行一起改**。
+#   `hello.rime` 是給 Gboard(拉丁輸入法)寫的:一送一收、逐字相等。
+#   換成本產品之後,`adb shell input text` 送進來的按鍵會**真的走進 librime**,
+#   實測(emulator-5558/lumina_test2)輸入框拿到的是「和。ri me」——
+#   那不是缺陷,那正是一個中文輸入法該做的事;說謊的是預設的預期值。
+#
+#   所以預設改成 `2024`:沒有在組字時數字原樣上屏(實測逐字相等),
+#   於是這一支問的仍然是它檔頭寫的那件事 ——
+#   「系統認不認得它、鍵盤彈不彈得出來、送進去的字到不到得了宿主輸入框」。
+#
+# ⚠ **這一支驗不到組字。** `input text` 走的是按鍵注入,而「打 nihao 選第一個
+#   會不會上屏你好」由 `scripts/verify_rime_compose.sh` 回答
+#   (`release_check.sh` 第 6 關就是它,而且註解已經寫明不可以拿這一支代替)。
+INPUT_TEXT="2024"
 EXPECT_TEXT=""
 TARGET="testapp"
 OUT_DIR="$PROJECT_ROOT/build/verify"
