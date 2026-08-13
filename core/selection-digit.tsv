@@ -29,10 +29,10 @@
 #   measured_on  AVD 名 ＋ 日期。`-` = 還沒量過 → 一律當成 no
 #
 #layout	schema	verdict	compose	measured_on	note
-cn-qwerty-numrow	luna_pinyin_tw	yes	n i h a o	lumina_test2@2026-08-13	T1=你好 D1=你好 D3=利好
-cn-qwerty-numrow	luna_pinyin	yes	n i h a o	lumina_test2@2026-08-13	T1=你好 D1=你好 D3=利好
-cn-t9-pinyin-numrow	t9_pinyin	no	M G G A M	lumina_test2@2026-08-13	T1=你好 D1=1⋯ D3=3⋯
-bopomofo-dachen	bopomofo_tw	no	s u c l	lumina_test2@2026-08-13	T1=你好 D1=ㄋㄧ ㄏㄠ ㄅ D3=ㄋㄧ ㄏㄠˇ
+cn-qwerty-numrow	luna_pinyin_tw	yes	n i h a o	lumina_test2@2026-08-14	T1=你好 D1=你好 D3=利好
+cn-qwerty-numrow	luna_pinyin	yes	n i h a o	lumina_test2@2026-08-14	T1=你好 D1=你好 D3=利好
+cn-t9-pinyin-numrow	t9_pinyin	yes	M G G A M	lumina_test2@2026-08-14	T1=你好 D1=你好 D3=你敢
+bopomofo-dachen	bopomofo_tw	no	s u c l	lumina_test2@2026-08-14	T1=你好 D1=ㄋㄧ ㄏㄠ ㄅ D3=ㄋㄧ ㄏㄠˇ
 # bopomofo(原版,簡體字形)不在隨附的 schema_list 裡(core/data/user/default.custom.mobile.yaml
 # 只列 luna_pinyin_tw / bopomofo_tw / luna_pinyin / t9_pinyin),量不到就不列 ——
 # 沒有列到的組合一律不畫序號,那正是 fail-closed 該有的樣子。

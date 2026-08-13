@@ -107,8 +107,6 @@ rs_select_device "$ADB" "$SERIAL" || exit 2
 SERIAL="$RS_SERIAL"
 adbs get-state >/dev/null 2>&1 || { echo "$SERIAL 不在線" >&2; exit 2; }
 rs_assert_destructive_ok "$ADB" "$SERIAL" "pm clear $IME_PKG / $TARGET_PKG、ime set" || exit 2
-rs_write_device_stamp "$ADB" "$SERIAL" "$OUT_DIR/device.txt" "$APK" "$IME_PKG"
-
 AVD="$(rs_avd_name "$ADB" "$SERIAL")"
 TODAY="$(date +%F)"
 STAMP="${AVD:-unknown}@$TODAY"
@@ -117,6 +115,13 @@ if [ -n "$APK" ]; then
   info "安裝 $APK"
   adbs install -r -g -t "$APK" >/dev/null 2>&1 || { echo "安裝失敗" >&2; exit 2; }
 fi
+# ⛔ **裝完才寫 device.txt。** 這一行從前在 `install` **之前**,於是
+#   `pkg_version` / `pkg_apk_sha256` / `pkg_last_update` 記的是**上一份**
+#   APK —— 實測 2026-08-13 23:55 的那一輪,device.txt 寫著
+#   `pkg_version=0.1.0-dev+26081314.fbb68aa`(上一個 commit)而量的是新的那一份。
+#   `lib/device.sh` 檔頭自己寫著「量的是裝置上真的裝著的那一份,不是我打算裝
+#   上去的那一份」—— 順序錯了,那句話就不成立。
+rs_write_device_stamp "$ADB" "$SERIAL" "$OUT_DIR/device.txt" "$APK" "$IME_PKG"
 
 WM_SIZE="$(adbs shell wm size 2>/dev/null | tr -d '\r' | sed -n 's/.*: *\([0-9]*x[0-9]*\).*/\1/p' | tail -1)"
 WM_DENS="$(adbs shell wm density 2>/dev/null | tr -d '\r' | sed -n 's/.*: *\([0-9]*\).*/\1/p' | tail -1)"
