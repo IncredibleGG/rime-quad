@@ -385,7 +385,9 @@ fi
 [ -n "$SERIAL" ] || SERIAL="$(rs_pick_serial "$ADB")" || exit 2
 adbs() { "$ADB" -s "$SERIAL" "$@"; }
 rs_assert_destructive_ok "$ADB" "$SERIAL" "pm clear、uninstall、ime set" || exit 2
-rs_write_device_stamp "$ADB" "$SERIAL" "$OUT_DIR/device.txt" "${APK:-}"
+# ⚠ 見 verify_candbar.sh 同一行的註解：不帶 --apk 時要靠 `pm path` ＋
+#   裝置端 sha256 記下「這一輪量的是哪一份」。
+rs_write_device_stamp "$ADB" "$SERIAL" "$OUT_DIR/device.txt" "${APK:-}" "$IME_PKG"
 info() { echo "[syllables] $*" >&2; }
 pass() { echo "  [PASS] $*"; }
 FAILURES=0

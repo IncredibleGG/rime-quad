@@ -97,6 +97,11 @@ SERIAL="$(rs_pick_serial "$ADB")" || die "沒有選定裝置。先起模擬器�
 log "裝置 $SERIAL"
 
 if [ "$SKIP_PUSH" -eq 0 ]; then
+  # ⚠ `rm -rf /data/local/tmp/rime` 會把**別條線**正在用的那一份資料刪掉
+  #   (run_console_test.sh 早就有這個閘,這一支漏了)。
+  #   由 `scripts/verify_device_hygiene.sh` 規則 C 守著。
+  rs_assert_destructive_ok "$ADB" "$SERIAL" "rm -rf $DEV_DIR" \
+    || die "沒有明著指定 RIME_SERIAL(或 AVD 對不上),不推送資料"
   log "推送資料到 $DEV_DIR"
   "$ADB" -s "$SERIAL" shell rm -rf "$DEV_DIR" >/dev/null
   "$ADB" -s "$SERIAL" shell mkdir -p "$DEV_DIR" >/dev/null

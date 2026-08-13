@@ -103,7 +103,7 @@ python3 -c "import PIL" >/dev/null 2>&1 || { echo "python3 缺 Pillow(數像素�
 [ -n "$SERIAL" ] || SERIAL="$(rs_pick_serial "$ADB")" || exit 2
 adbs get-state >/dev/null 2>&1 || { echo "$SERIAL 不在線" >&2; exit 2; }
 rs_assert_destructive_ok "$ADB" "$SERIAL" "pm clear $IME_PKG / $TARGET_PKG、ime set" || exit 2
-rs_write_device_stamp "$ADB" "$SERIAL" "$OUT_DIR/device.txt" "$APK"
+rs_write_device_stamp "$ADB" "$SERIAL" "$OUT_DIR/device.txt" "$APK" "$IME_PKG"
 
 AVD="$(rs_avd_name "$ADB" "$SERIAL")"
 TODAY="$(date +%F)"
@@ -130,6 +130,62 @@ except Exception: sys.exit(0)
 for n in root.iter("node"):
     if n.get("content-desc") == "rime_matrix_input":
         print((n.get("text") or "").strip()); break
+'
+}
+# ⛔ **`field_text()` 讀的是 EditText 的 `text`,而空欄位時 uiautomator 回的是
+#    hint**(這台靶上是 `type here`)。於是「打完之後輸入框是空的 —— 那幾下
+#    沒有進到引擎」與「按 3 之後內容變了」這兩條斷言,在**遮罩 preedit 的
+#    佈局**(九宮格的 PGM 就是)上近乎恆真:組字中 `field_text()` 印的是
+#    `type here`,而它非空。方向仍然是 fail-closed(造不出假的 yes),
+#    但**守門訊息與它實際守的東西不是同一件事** —— 那種守門下一次就會
+#    被當成「它一直是綠的」而沒有人再看。
+#
+# 這一支改讀測試靶的**狀態鏡射**(`scripts/build_input_matrix_app.sh` 的
+# `rime_matrix_mirror`),格式是
+#
+#     STATE <field> |<text>| cs=<組字起> ce=<組字迄> sel=<a>,<b> len=<n>
+#
+# `cs`/`ce` 是 `InputConnection.setComposingRegion` 的實際範圍 —— 它**不是**
+# 畫面上的文字,hint 汙染不到它。空欄位時是 `cs=-1 ce=-1 len=0`。
+mirror_state() {
+  dump_ui | python3 -c '
+import sys, xml.etree.ElementTree as ET
+try: root = ET.fromstring(sys.stdin.read())
+except Exception: sys.exit(0)
+for n in root.iter("node"):
+    if n.get("content-desc") == "rime_matrix_mirror":
+        print((n.get("text") or "").strip()); break
+'
+}
+# 組字區的長度(`ce - cs`),沒有組字時是 0。⚠ 讀不到鏡射時回 `-1`
+# (「問不出來」與「沒有組字」必須分得開,不然又是一個恆真的斷言)。
+composing_len() {
+  mirror_state | python3 -c '
+import re, sys
+m = re.search(r"cs=(-?\d+) ce=(-?\d+)", sys.stdin.read())
+if not m:
+    print(-1)
+else:
+    cs, ce = int(m.group(1)), int(m.group(2))
+    print(max(0, ce - cs) if cs >= 0 and ce >= 0 else 0)
+'
+}
+# **已經上屏**的字數 = `len`(整個欄位)− 組字區長度。與 hint 無關。
+#
+# ⛔ 為什麼不是直接讀 `len`:`len` **含組字區**(qwerty 上打 `ni hao` 時
+#    `cs=0 ce=6 len=6`)。拿 `len > 0` 當「選到字了」,在「按 3 被 recognizer
+#    收走、組字變成 `3⋯`」那一格上也是真的 —— 又一個恆真的斷言。
+#    差別只有一個:被收走時多出來的那幾個字**還在組字區裡**。
+committed_len() {
+  mirror_state | python3 -c '
+import re, sys
+m = re.search(r"cs=(-?\d+) ce=(-?\d+) sel=\S+ len=(\d+)", sys.stdin.read())
+if not m:
+    print(-1)
+else:
+    cs, ce, ln = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    comp = max(0, ce - cs) if cs >= 0 and ce >= 0 else 0
+    print(max(0, ln - comp))
 '
 }
 field_xy() {
@@ -307,8 +363,21 @@ PYK
   open_target; read_frame || { fail "讀不到 frame"; continue; }
   type_compose || { fail "打不進去(點不到鍵)"; continue; }
   read_frame || { fail "讀不到 frame"; continue; }
+  # ⚠ 只當除錯資訊印出來。**不要拿它當斷言** —— 空欄位時它是 hint。
+  # ⚠ 只當除錯資訊。**不要拿它當斷言** —— 空欄位時它是 hint。
   COMPOSING="$(field_text)"
-  [ -n "$COMPOSING" ] || { fail "打完之後輸入框是空的 —— 那幾下沒有進到引擎"; continue; }
+  CLEN="$(composing_len)"
+  PRE_COMMITTED="$(committed_len)"
+  [ "$CLEN" != "-1" ] || { fail "$LAYOUT:讀不到 rime_matrix_mirror —— 靶 app 太舊?先跑 scripts/build_input_matrix_app.sh"; continue; }
+  # ⛔ **不可以拿「host 端有沒有組字區」當「那幾下有沒有進到引擎」。**
+  #    九宮格上 host 端的組字區**本來就是空的**:PGM 代碼刻意不送給宿主
+  #    (`InlinePreedit.forDisplay` 把整串代碼濾掉之後沒有東西剩下,
+  #    工單 #68),所以 `cs=-1 ce=-1 len=0` 是**正常**的。
+  #    這一支第一版的修法就踩到這裡,而它紅得很大聲 —— 那是對的。
+  #    「進到引擎了」的證據是**候選列上有高亮候選**(下面 find_highlight.py
+  #    那一段,找不到就 fail)。
+  [ "$PRE_COMMITTED" -eq 0 ] || { fail "$LAYOUT:還沒選字就已經有 $PRE_COMMITTED 字上屏 —— 輸入框沒清乾淨,後面的比對不算數"; continue; }
+  info "組字中:鏡射「$(mirror_state)」(組字區 $CLEN 字、已上屏 $PRE_COMMITTED 字);field_text 讀到「$COMPOSING」"
   adbs exec-out screencap -p > "$OUT_DIR/$LAYOUT-typed.png" 2>/dev/null
   read -r HX0 HY0 HX1 HY1 HX HY <<<"$(python3 "$HERE/lib/find_highlight.py" \
       "$OUT_DIR/$LAYOUT-typed.png" "$FRAME_TOP" "$GRID_TOP")"
@@ -320,7 +389,9 @@ PYK
   adbs shell input tap "$HX" "$HY" >/dev/null 2>&1
   sleep 1.5
   T1="$(field_text)"
-  info "點高亮那一格 → 上屏「${T1:-<空>}」;高亮塊寬 ${HIGHLIGHT_W}px"
+  # 「有沒有東西上屏」問鏡射(`len` − 組字區),不問 `field_text`(空欄位回 hint)。
+  T1LEN="$(committed_len)"
+  info "點高亮那一格 → 上屏「${T1:-<空>}」(已上屏 $T1LEN 字);高亮塊寬 ${HIGHLIGHT_W}px"
 
   # ── 2. 按送得出 `1` 的那顆鍵 ─────────────────────────────────────
   open_target; read_frame || { fail "讀不到 frame"; continue; }
@@ -334,14 +405,34 @@ PYK
   open_target; read_frame || { fail "讀不到 frame"; continue; }
   type_compose || { fail "第三輪打不進去"; continue; }
   COMPOSING3="$(field_text)"
+  CLEN3="$(composing_len)"
+  C3_PRE="$(committed_len)"
+  [ "$C3_PRE" -eq 0 ] || { fail "$LAYOUT:第三輪還沒按 3 就已經有 $C3_PRE 字上屏"; continue; }
   tap_key "$K3" || { fail "點不到送 3 的鍵($K3)"; continue; }
   sleep 1.2
   D3="$(field_text)"
-  info "按 3（鍵 $K3）→ 輸入框「${D3:-<空>}」（按之前組字中是「$COMPOSING3」）"
+  # ⛔ 「按 3 之後有沒有選到字」問的是**有沒有東西真的上屏**,
+  #    也就是 `len − 組字區長度` 有沒有從 0 變成正數:
+  #      選到字             → 組字收掉、上屏 N 字            (0 → N)
+  #      被 recognizer 吃掉 → 那個 `3` 附加到組字串裡,
+  #                           畫面上是 `3⋯` 而它**整段都還在組字區**(0 → 0)
+  #      被 speller 吃掉    → 同上(`ㄋㄧ ㄏㄠˇ` 全在組字區)
+  #    三種結局在 `field_text` 上難分(遮罩之下都是 hint 或都有字),
+  #    在這個數上一刀兩斷。
+  CLEN3_AFTER="$(composing_len)"
+  C3_POST="$(committed_len)"
+  info "按 3（鍵 $K3）→ 輸入框「${D3:-<空>}」;組字區 $CLEN3 → $CLEN3_AFTER 字、已上屏 $C3_PRE → $C3_POST 字"
+  info "     按完的鏡射:$(mirror_state)"
 
+  # ⛔ 三件事都要成立才算 `yes`(fail-closed):
+  #    (a) 點高亮那一格**真的上屏了東西**(鏡射的 len > 0,不是 hint);
+  #    (b) 按 `1` 上屏的詞**逐字等於**點高亮那一格上屏的詞;
+  #    (c) 按 `3` 之後**組字區變短或消失,而且輸入框裡多了東西** ——
+  #        被 recognizer 吃掉的那一格剛好相反:組字區**變長**(`MGGAM` →
+  #        `MGGAM3`)而輸入框仍然是空的。
   ENGINE=no
-  if [ -n "$T1" ] && [ "$T1" != "$COMPOSING" ] && [ "$D1" = "$T1" ] \
-     && [ -n "$D3" ] && [ "$D3" != "$COMPOSING3" ]; then
+  if [ "${T1LEN:-0}" -gt 0 ] && [ -n "$T1" ] && [ "$D1" = "$T1" ] \
+     && [ "${C3_POST:-0}" -gt "${C3_PRE:-0}" ]; then
     ENGINE=yes
   fi
   info "引擎側的答案:$ENGINE"

@@ -45,7 +45,16 @@ ADB="$ANDROID_SDK_ROOT/platform-tools/adb"
 # shellcheck source=lib/device.sh
 . "$SCRIPT_DIR/lib/device.sh"
 # ⛔ 這一支從前寫死 `emulator-${RIME_EMU_PORT:-5554}`,連 RIME_SERIAL 都不看,
-#   也沒有 --serial —— 帶了也沒用。現在三個入口都有,而且沒有預設 port。
+#   也沒有 --serial —— 帶了也沒用。
+#
+# ⛔⛔ 2026-08-13:上一版把這裡改成 `SERIAL=""` 並加了 `--serial`,註解寫著
+#     「現在三個入口都有」,而**全檔沒有一處呼叫 `rs_pick_serial`** ——
+#     `RIME_SERIAL` / `ANDROID_SERIAL` 依然被完全忽略。實測(帶齊
+#     `RIME_SERIAL=emulator-5558 RIME_EMU_PORT=5558 RIME_AVD=lumina_test2`
+#     跑 `--no-start`):第 1 關過,然後 `set -e` 在第一個 `adbs` 當場結束,
+#     RC=1 而**一個字都沒印** —— 因為送出去的是 `adb -s "" shell`。
+#     「加了旗標卻沒有人讀」與「完全沒加」在畫面上長得一模一樣。
+#     選序號的實作只有 lib/device.sh 那一份,下面那一行就是本檔唯一的入口。
 SERIAL=""
 
 # --------------------------------------------------------------- 參數解析 ---
@@ -76,6 +85,34 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$EXPECT_TEXT" ] || EXPECT_TEXT="$INPUT_TEXT"
 
+# --serial 優先;沒給就走唯一的那份實作(RIME_SERIAL / ANDROID_SERIAL,
+# 兩個都沒有而且**恰好一台**在線時才自動選)。
+[ -x "$ADB" ] || { echo "找不到 adb:$ADB" >&2; exit 2; }
+[ -n "$SERIAL" ] || SERIAL="$(rs_pick_serial "$ADB")" || exit 2
+
+# ⚠ 這一支不只用 adb,還會轉呼叫 `emu.sh`(start / status / install / shot /
+#   ime-enable),而 `emu.sh` 是**從 RIME_EMU_PORT 自己組序號**的。兩邊各自
+#   決定的話,`--serial emulator-5558` 配上環境裡殘留的 `RIME_EMU_PORT=5554`
+#   就會一半打在這台、一半打在那台,而輸出看起來一切正常。
+#   所以這裡把 port 由**選定的序號**推導出來並 export,兩邊只剩一個真相。
+case "$SERIAL" in
+  emulator-*)
+    _WANT_PORT="${SERIAL#emulator-}"
+    if [ -n "${RIME_EMU_PORT:-}" ] && [ "$RIME_EMU_PORT" != "$_WANT_PORT" ]; then
+      echo "RIME_EMU_PORT=$RIME_EMU_PORT 與選定的 $SERIAL 對不上 —— 中止(不要讓兩支腳本打不同的機器)。" >&2
+      exit 2
+    fi
+    export RIME_EMU_PORT="$_WANT_PORT"
+    ;;
+  *)
+    # 實體機:emu.sh 管不到它,所以這一支只能在 --no-start 之下跑。
+    if [ "$AUTO_START" -eq 1 ]; then
+      echo "$SERIAL 不是模擬器,emu.sh 起不動它。請加 --no-start。" >&2
+      exit 2
+    fi
+    ;;
+esac
+
 IME_PKG="${IME_ID%%/*}"
 
 STEP=0
@@ -102,6 +139,9 @@ else
 fi
 "$EMU" status
 pass "模擬器開機完成"
+
+# 「這一輪跑在哪一台、量的是哪一份 APK」—— 沒有它,綠燈事後無法覆核。
+rs_write_device_stamp "$ADB" "$SERIAL" "$OUT_DIR/device.txt" "${APKS[0]:-}" "$IME_PKG"
 
 ORIG_IME="$(adbs shell settings get secure default_input_method 2>/dev/null | tr -d '\r')"
 
@@ -133,6 +173,9 @@ pass "IME 已被 InputMethodManagerService 認得"
 
 # --- 4. 啟用並設為預設 -------------------------------------------------------
 step "4. 啟用並設為預設輸入法"
+# ⚠ `ime set` 會改掉這台機器的系統預設輸入法 —— 打在別條線的模擬器上,
+#   那條線接下來整輪都是紅的而且查不出為什麼。自動選來的那一台不准被改。
+rs_assert_destructive_ok "$ADB" "$SERIAL" "ime enable / ime set" || exit 2
 "$EMU" ime-enable "$IME_ID"
 CUR="$(adbs shell settings get secure default_input_method | tr -d '\r')"
 [ "$CUR" = "$IME_ID" ] || fail "預設輸入法設定失敗(目前是 $CUR)"

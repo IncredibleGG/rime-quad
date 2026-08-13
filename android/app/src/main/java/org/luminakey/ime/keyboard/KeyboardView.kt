@@ -205,6 +205,22 @@ fun RimeKeyboard(
         if (effectivePlacement == SyllablePlacement.KEYBOARD_SLOT) declaredSlots else emptyList()
     val showAboveRow =
         effectivePlacement == SyllablePlacement.ABOVE_CANDIDATES && hasReadings
+    /* ── 消歧欄那一側是**活的**嗎（§8.6.3.1）───────────────────────────────
+     *
+     * 候選列壓掉註解的正當性只有一條:同一份讀音消歧欄已經畫過了。
+     * 消歧欄畫不出來的時候壓註解 = 把讀音憑空刪掉,而沒有任何東西補上。
+     *
+     * ⚠ 這裡刻意**不含** `readings.size >= 2`（即不用 [hasReadings]）:
+     *   讀音從 2 收斂到 1 是使用者挑字的每一步都會發生的事,算進來就等於
+     *   「消歧欄收起來的同一瞬間整列候選重排」。門檻的不對稱是刻意的,
+     *   見 [CandidateDensity.commentVisible]。
+     *
+     * ⚠ 也刻意不看 `declaredSlots`:`keyboard_slot` 在格位不夠時會**退化成**
+     *   `above_candidates`（退化規則一）,那時候消歧欄照樣畫得出來。
+     *   看 [effectivePlacement] 而不是主題原文,兩者差的正是這一格。
+     */
+    val syllableSideAlive =
+        effectivePlacement != SyllablePlacement.NONE && state.syllableRewriteReady
     val shownReadings =
         if (syllableStyle.maxItems > 0) readings.take(syllableStyle.maxItems) else readings
     val disambiguating = slotIds.size >= T9Syllables.MIN_SLOTS && hasReadings
@@ -246,6 +262,7 @@ fun RimeKeyboard(
             onEvent = onEvent,
             shown = shownCandidates,
             expand = expand,
+            syllableSideAlive = syllableSideAlive,
             onToggleExpand = { candidatesExpanded = !candidatesExpanded },
         )
         // 面板一律是**浮層**，不是取代品：底下那一列鍵仍然露出來、仍然按得動。
@@ -784,6 +801,12 @@ private fun CandidateBar(
     shown: List<Int>,
     /** 展開鍵的狀態，見 [Expander]。 */
     expand: Expander.State,
+    /**
+     * 消歧欄那一側現在畫得出來嗎（`placement != none && syllableRewriteReady`）。
+     * 這是「壓掉註解」的**前提**：畫不出來就沒有第二份讀音，
+     * 壓掉等於刪掉。見 [CandidateDensity.commentVisible]。
+     */
+    syllableSideAlive: Boolean,
     onToggleExpand: () -> Unit,
 ) {
     val bar = theme.candidates.bar
@@ -905,7 +928,12 @@ private fun CandidateBar(
             val readings = remember(state.candidates) {
                 T9Syllables.readingsOf(state.candidates)
             }
-            val commentShown = CandidateDensity.commentVisible(style.comment.show, readings)
+            // ⚠ 壓掉註解的前提是**消歧欄那一側畫得出來**。上一版只看 readings,
+            //   於是 `placement: none` 與「啟動探針還沒回答」兩種狀態下讀音
+            //   一份都看不到 —— 那是把資訊憑空刪掉。見 [CandidateDensity.commentVisible]。
+            val commentShown = CandidateDensity.commentVisible(
+                style.comment.show, readings, syllableSideAlive
+            )
             // ⚠ 序號的判準吃**三個**東西：這一層、這一份佈局、現在的方案。
             //   少了後兩個就會做出「畫面上有 1 2 3、按 3 卻把使用者打好的組字
             //   毀掉」的序號（`cn-t9-pinyin-numrow` ＋ `t9_pinyin` 實測）。
@@ -1081,6 +1109,10 @@ private fun CandidateBar(
              * 表達得出來的狀態。
              */
             when (barLayout.rightEnd) {
+                // 什麼都不畫。兩種情形:本頁沒有候選(候選列現在是工具列);
+                // 或者「該畫的那一顆畫不出來」—— 後者只要還有沒看到的候選就是
+                // 死路,而擋它的是建置期的 [CandidateDensity.deadEnd] ＋
+                // `ThemeDensityTest`,不是這裡的執行期分支。
                 CandidateDensity.RightEnd.NONE -> Unit
 
                 // 本頁還有畫不出來的候選 → 出口是展開面板,翻頁在面板裡面。
@@ -1095,6 +1127,9 @@ private fun CandidateBar(
                 // ⚠ 這一份 Pager.State 是 [CandidateDensity.barLayout] **算量測寬度
                 //   時用的那一份**,不是這裡另外算的第二份。上一版的量測與繪製
                 //   各算一次,11 種頁況裡 5 種對不上(量測扣 80、實際畫 40)。
+                // ⚠ 走到這一支就代表 `PageArrows` **真的會畫出至少一顆**
+                //   ([CandidateDensity.barLayout] 的 `pagerDrawable`)。上一版
+                //   在這裡收到過 `show=false` 的狀態,於是右端整片空白。
                 CandidateDensity.RightEnd.PAGER -> PageArrows(
                     state = barLayout.pager ?: Pager.State(false, false, false),
                     style = style.pageIndicator,

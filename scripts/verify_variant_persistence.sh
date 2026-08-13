@@ -35,19 +35,27 @@
 # 看到的就不是「剛載入」的樣子,而是上一次跑剩下的狀態。
 #
 # 用法:
-#   scripts/verify_variant_persistence.sh                 # 用 emulator-5558
-#   scripts/verify_variant_persistence.sh --serial X       # 指定裝置
+#   RIME_SERIAL=emulator-5558 scripts/verify_variant_persistence.sh
+#   scripts/verify_variant_persistence.sh --serial emulator-5558
 #
 # ⚠ 不要 adb root。這支腳本只用 /data/local/tmp,不需要。
 #
+# ⛔ **這一支從前把 `SERIAL` 寫死成 `emulator-5558`**,不讀 RIME_SERIAL、
+#    不走 `rs_pick_serial`、也沒有過 `rs_assert_destructive_ok` —— 而它第 106
+#    行是 `adb -s "$SERIAL" shell rm -rf …`。這台機器上長期有三到四台模擬器,
+#    5558 哪天換成別條線的,這一支就會安靜地刪別人的目錄。
+#    上一輪宣稱「全樹再 grep 一次」而漏掉了它,所以現在有一支**跑得起來的**
+#    守門在掃:`scripts/verify_device_hygiene.sh`。
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
+# shellcheck source=lib/device.sh
+. "$HERE/lib/device.sh"
 SDK="${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}"
 ADB="$SDK/platform-tools/adb"
 NDK_DIR="${ANDROID_NDK_HOME:-}"
-SERIAL="emulator-5558"
+SERIAL=""
 ABI="x86_64"
 DEV_ROOT="/data/local/tmp/rime"
 KEEP=0
@@ -61,6 +69,9 @@ while [ $# -gt 0 ]; do
     *) echo "不認得的參數:$1" >&2; exit 2 ;;
   esac
 done
+
+[ -x "${ADB}" ] || { echo "找不到 adb:${ADB}" >&2; exit 2; }
+[ -n "${SERIAL}" ] || SERIAL="$(rs_pick_serial "${ADB}")" || exit 2
 
 if [ -z "${NDK_DIR}" ]; then
   NDK_DIR="$(ls -d "${SDK}"/ndk/* 2>/dev/null | sort -V | tail -1 || true)"
@@ -92,6 +103,11 @@ echo "==> 編譯探針(${ABI})"
   -Wl,--end-group -llog -lm -o "${OUT}/variant_probe"
 
 "${ADB}" -s "${SERIAL}" get-state >/dev/null
+
+# ⚠ 這一支會 `rm -rf` 裝置上的目錄(cleanup 那一段),而且會 push 執行檔。
+#   自動選來的那一台不准被動 —— 與 run_console_test.sh 同一條理由。
+rs_assert_destructive_ok "${ADB}" "${SERIAL}" "rm -rf ${DEV_ROOT}/user_variant_*" || exit 2
+rs_write_device_stamp "${ADB}" "${SERIAL}" "${OUT}/device.txt"
 
 if ! "${ADB}" -s "${SERIAL}" shell "[ -d ${DEV_ROOT}/shared ] && echo ok" | grep -q ok; then
   echo "裝置上沒有 ${DEV_ROOT}/shared —— 先跑 scripts/collect_data.sh 並推上去" >&2

@@ -107,7 +107,10 @@ export ANDROID_SDK_ROOT=$HOME/Android/Sdk
 
 `start` 的等待邏輯**不是固定 sleep**,而是依序輪詢:
 
-1. `emulator-5554` 出現在 `adb devices` 且狀態為 `device`
+1. `emulator-<RIME_EMU_PORT>` 出現在 `adb devices` 且狀態為 `device`
+   （⚠ 這一行從前寫著 `emulator-5554`，而 `emu.sh` **已經沒有預設 port** ——
+   已經有裝置在線時它會拒絕猜，見本節結尾那一段。照舊文字操作的人會
+   等一台永遠不會出現的機器。）
 2. `adb shell getprop sys.boot_completed` 等於 `1`
 3. `adb shell pm path android` 有回應(package manager 真的可用)
 

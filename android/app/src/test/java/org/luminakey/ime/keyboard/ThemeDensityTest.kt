@@ -2,6 +2,8 @@ package org.luminakey.ime.keyboard
 
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.Assert.assertFalse
+import org.luminakey.ime.theme.PageIndicatorKind
 import org.luminakey.ime.theme.Platform
 import org.luminakey.ime.theme.RepoFixtures
 import org.luminakey.ime.theme.ScrollMode
@@ -95,6 +97,101 @@ class ThemeDensityTest {
             bad.isEmpty(),
         )
     }
+
+    /**
+     * ⛔ **每一份主題、每一種頁況,右端都要留得住一條出口。**
+     *
+     * 上一條(`每一份主題都留著展開面板`)只看 `scroll` 與 `expand_button.show`,
+     * **沒有看 `page_indicator`**。而右端那一顆是三選一:翻頁畫不出來時
+     * 展開鍵是唯一的出口,展開鍵關掉時翻頁是唯一的出口,兩個都關掉就是
+     * **右端空白、使用者鎖死在第 1 頁** —— 而畫面完全正常。
+     *
+     * 所以這一條不是「檢查兩個欄位」,是把 [CandidateDensity.barLayout] 逐份
+     * 主題、逐種頁況跑一遍,問 [CandidateDensity.deadEnd]。判準因此永遠等於
+     * 產品真的會畫出來的東西,不會因為欄位改名或多一個開關而悄悄失效。
+     */
+    @Test
+    fun `每一份主題在每一種頁況下都留得住出口`() {
+        val bad = ArrayList<String>()
+        for (id in RepoFixtures.themeIds) {
+            for ((page, last) in listOf(0 to false, 0 to true, 1 to false, 1 to true)) {
+                // 本頁 3 個(411 dp 上一定排得下)與 9 個(一定排不下)兩種。
+                for (count in listOf(3, 9)) {
+                    val layout = layoutOf(id, count, page, last)
+                    if (CandidateDensity.deadEnd(layout, count, morePages = !last)) {
+                        bad += "$id：第 ${page + 1} 頁、${if (last) "" else "不"}是最後一頁、" +
+                            "本頁 $count 個 → 右端 ${layout.rightEnd}"
+                    }
+                }
+            }
+        }
+        assertTrue(
+            "這幾格「還有候選沒看到,而右端一顆都畫不出來」—— 使用者鎖死在這一頁：\n  " +
+                bad.joinToString("\n  "),
+            bad.isEmpty(),
+        )
+    }
+
+    /**
+     * 反向測試:把 `page_indicator` 與展開鍵**同時**關掉,上一條必須紅。
+     *
+     * 沒有它,上一條有可能只是因為隨附主題碰巧沒有人關過翻頁指示器 ——
+     * 而「一個什麼都分不出來的判準,長得跟通過一模一樣」正是本專案栽過的跟頭。
+     */
+    @Test
+    fun `兩條出口同時關掉時那一關會紅`() {
+        val trapped = CandidateDensity.barLayout(
+            screenWidthDp = 411.43f, barPaddingH = 4f, reservedEnd = 40f, buttonDp = 40f,
+            leadingDp = 0f, widths = List(3) { 56f }, spacing = 4f,
+            pageCandidateCount = 3, pageNo = 0, isLastPage = false,
+            pagerKind = PageIndicatorKind.ARROWS,
+            pagerShow = false,          // page_indicator.show: false
+            expandAvailable = false,    // expand_button.show: false
+            panelOpen = false,
+        )
+        assertTrue(
+            "兩條出口都關掉了而 deadEnd() 說沒事 —— 那上面那一關什麼都沒在守",
+            CandidateDensity.deadEnd(trapped, 3, morePages = true),
+        )
+        // 只關掉翻頁指示器(展開鍵留著)**不是**死路 —— 判準不得寬到把它也判紅。
+        val onlyPagerOff = CandidateDensity.barLayout(
+            screenWidthDp = 411.43f, barPaddingH = 4f, reservedEnd = 40f, buttonDp = 40f,
+            leadingDp = 0f, widths = List(3) { 56f }, spacing = 4f,
+            pageCandidateCount = 3, pageNo = 0, isLastPage = false,
+            pagerKind = PageIndicatorKind.ARROWS,
+            pagerShow = false, expandAvailable = true, panelOpen = false,
+        )
+        assertFalse(CandidateDensity.deadEnd(onlyPagerOff, 3, morePages = true))
+    }
+
+    /** 用某一份主題真正的欄位值算出一格頁況的版面。 */
+    private fun layoutOf(id: String, pageCount: Int, pageNo: Int, isLastPage: Boolean) =
+        bar(id).let { b ->
+            CandidateDensity.barLayout(
+                screenWidthDp = 411.43f,
+                barPaddingH = b.paddingH,
+                reservedEnd = b.reservedEnd,
+                buttonDp = 40f,
+                leadingDp = 0f,
+                widths = List(pageCount) {
+                    CandidateDensity.itemWidthDp(
+                        textChars = 2,
+                        textSize = CandidateDensity.BASELINE_TEXT_SIZE,
+                        labelChars = 0, labelSize = 0f, commentChars = 0, commentSize = 0f,
+                        paddingH = b.style.item.paddingH,
+                        minWidth = b.style.item.minWidth,
+                    )
+                },
+                spacing = b.style.item.spacing,
+                pageCandidateCount = pageCount,
+                pageNo = pageNo,
+                isLastPage = isLastPage,
+                pagerKind = b.style.pageIndicator.kind,
+                pagerShow = b.style.pageIndicator.show,
+                expandAvailable = b.expandButton.show && b.scroll == ScrollMode.EXPANDABLE,
+                panelOpen = false,
+            )
+        }
 
     /**
      * 反向測試：把基準情境換成**改動前**的那組數，這一關必須紅。

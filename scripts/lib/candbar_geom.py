@@ -228,13 +228,26 @@ def _reserved_dp(bar: dict, button_dp_v: int, count: int) -> float:
 
 def solve(bar: dict, screen_w_px: int, density: int, button_dp_v: int,
           page_no: int = 0, last_page: bool = False, page_count: int = 0,
-          has_candidates: bool = True):
+          has_candidates: bool = True, panel_open: bool = False):
     """一次算出「畫幾個、右端畫什麼、右端佔多寬」。
 
     ⚠ **這裡與 `keyboard/CandidateDensity.kt` 的 `barLayout()` 是同一個解法**,
       不是兩份各自為政的公式:量測扣掉的寬度必須就是實際會畫的那幾顆。
       上一版這裡逐字複製了 Kotlin 那邊的 `page_no > 0 → +button` 分支,
       而那個分支在 11 種頁況裡有 5 種與畫面對不上。
+
+    ⚠ 2026-08-13 第三次改動,兩件事:
+
+      (甲)**`panel_open` 從缺**。Kotlin 的 `rightEnd()` 有一支
+           `panelOpen && expandAvailable -> EXPAND`(面板自己沒有關閉鍵,
+           右端換成翻頁就等於把一片蓋住鍵盤的浮層留在畫面上而沒有出口),
+           而這支腳本的模型裡**根本沒有這個參數** —— 於是「面板開著又在
+           第 2 頁以後」那幾格,兩份實作對不上而沒有任何斷言涵蓋得到。
+
+      (乙)**判準改成「這一顆真的畫得出來」**。上一版在
+           `v_pager >= page_count` 時無條件回 `pager`,不看
+           `_pager_names()` 是不是空的。主題寫 `page_indicator.show: false`
+           時那一組一顆都不畫 → 右端空白、使用者鎖死在第 1 頁。
 
     回 (visible, right_end, reserved_dp, pager_names)。
     """
@@ -243,15 +256,45 @@ def solve(bar: dict, screen_w_px: int, density: int, button_dp_v: int,
 
     expand_available = bar['expand_show'] and bar['scroll'] == 'expandable'
     pager = _pager_names(bar, page_no, last_page, page_count)
+    pager_drawable = len(pager) > 0
     pager_dp = _reserved_dp(bar, button_dp_v, len(pager))
     expand_dp = _reserved_dp(bar, button_dp_v, 1)
 
+    def as_expand():
+        return _fits(bar, screen_w_px, density, expand_dp), 'expand', expand_dp, []
+
+    def as_none():
+        return _fits(bar, screen_w_px, density, 0.0), 'none', 0.0, []
+
+    # 面板開著 → 那一顆**必須**是收合鍵。
+    if panel_open and expand_available:
+        return as_expand()
+
     v_pager = _fits(bar, screen_w_px, density, pager_dp)
-    if v_pager >= page_count or not expand_available:
-        # 扣掉翻頁那幾顆之後本頁仍然看得完 → 翻頁是誠實的。
+    if v_pager < page_count:
+        # ⛔ 本頁還有畫不出來的候選 —— 不得提供翻頁。出口是展開面板;
+        #    主題關掉展開鍵時退回翻頁(鎖死在第 1 頁比跳過幾個候選更糟),
+        #    而退路自己也要畫得出來。
+        if expand_available:
+            return as_expand()
+        return (v_pager, 'pager', pager_dp, pager) if pager_drawable else as_none()
+    # 本頁看得完 → 翻頁才誠實,而且它得真的畫得出來。
+    if pager_drawable:
         return v_pager, 'pager', pager_dp, pager
-    # ⛔ 本頁還有畫不出來的候選 —— 不得提供翻頁。出口是展開面板。
-    return _fits(bar, screen_w_px, density, expand_dp), 'expand', expand_dp, []
+    # 翻頁那一組畫不出來而後面還有頁 → 展開鍵是剩下的唯一出口。
+    if (not last_page) and expand_available:
+        return as_expand()
+    return as_none()
+
+
+def dead_end(right_end: str, visible: int, page_count: int, last_page: bool) -> bool:
+    """⛔ 後面還有候選,而右端一顆出口都畫不出來 —— 設計錯誤,不是頁況。
+
+    與 `CandidateDensity.deadEnd()` 是同一條規則。
+    """
+    if page_count <= 0:
+        return False
+    return (visible < page_count or not last_page) and right_end == 'none'
 
 
 def visible_count(bar: dict, screen_w_px: int, density: int,
@@ -271,7 +314,8 @@ def visible_count(bar: dict, screen_w_px: int, density: int,
 
 def buttons(bar: dict, page_no: int, last_page: bool,
             has_candidates: bool = True, visible: int = 0, page_count: int = 0,
-            screen_w_px: int = 0, density: int = 0, button_dp_v: int = 0):
+            screen_w_px: int = 0, density: int = 0, button_dp_v: int = 0,
+            panel_open: bool = False):
     """
     由右而左列出會被畫出來的方鍵。回 [(名字, 由右數來第幾顆)]。
 
@@ -282,17 +326,24 @@ def buttons(bar: dict, page_no: int, last_page: bool,
         return []
     if screen_w_px and density and button_dp_v:
         _v, end, _dp, pager = solve(bar, screen_w_px, density, button_dp_v,
-                                    page_no, last_page, page_count, has_candidates)
+                                    page_no, last_page, page_count, has_candidates,
+                                    panel_open)
         if end == 'expand':
             return [('expand', 0)]
+        if end == 'none':
+            return []
         return [(name, i) for i, name in enumerate(pager)]
 
     # 沒有螢幕資訊時退回「呼叫端已經算好 visible」那條路(self-test 用)。
     expand_available = bar['expand_show'] and bar['scroll'] == 'expandable'
+    if panel_open and expand_available:
+        return [('expand', 0)]
+    names = _pager_names(bar, page_no, last_page, page_count)
     if visible < page_count and expand_available:
         return [('expand', 0)]
-    return [(name, i) for i, name in
-            enumerate(_pager_names(bar, page_no, last_page, page_count))]
+    if not names and (not last_page) and expand_available:
+        return [('expand', 0)]
+    return [(name, i) for i, name in enumerate(names)]
 
 
 def geometry(screen_w_px: int, density: int, dp: int, order):
@@ -360,24 +411,63 @@ def self_test(root: str) -> int:
     g4 = buttons(bar, page_no=0, last_page=True, visible=6, page_count=4)
     check('只有一頁又看得完時右端是空的', g4, [])
 
+    # 面板開著:右端**必須**是收合鍵,不管頁況(面板自己沒有關閉鍵)。
+    g5 = buttons(bar, page_no=1, last_page=False, visible=6, page_count=4,
+                 panel_open=True)
+    check('面板開著時右端是收合鍵', g5, [('expand', 0)])
+
     # ── ⛔ 量測扣掉的 == 畫出來的那幾顆 ────────────────────────────────
     # 上一版這裡逐字複製了 Kotlin 的 `page_no > 0 → +button` 分支,而那個
     # 分支在 11 種頁況裡有 5 種與畫面對不上(量測扣 80、實際畫 40)。
-    for page_no, last, count, want_end, want_dp in (
-            (0, True,  4, 'pager',  0.0),    # 翻頁整組不畫
-            (1, False, 9, 'expand', 40.0),   # 第 2 頁、本頁看不完
-            (1, True,  9, 'expand', 40.0),   # 第 2 頁又是最後一頁、看不完
-            (1, True,  3, 'pager',  40.0),   # 只有「上一頁」一顆
-            (1, False, 3, 'pager',  80.0),   # 上一頁＋下一頁
-            (0, False, 9, 'expand', 40.0),   # 第 1 頁、本頁看不完
+    #
+    # ⚠ `panel_open` 那一欄是 2026-08-13 補上的:Kotlin 的 `rightEnd()` 一直
+    #   有 `panelOpen && expandAvailable -> EXPAND` 這一支,而這裡的 `solve()`
+    #   參數表**根本沒有這個參數** —— 於是「面板開著又在第 2 頁以後」那幾格
+    #   一條斷言都涵蓋不到,而那正是缺陷 2 原本對不上的頁況之一。
+    for page_no, last, count, panel, want_end, want_dp in (
+            (0, True,  4, False, 'none',   0.0),   # 翻頁整組不畫,後面也沒東西
+            (1, False, 9, False, 'expand', 40.0),  # 第 2 頁、本頁看不完
+            (1, True,  9, False, 'expand', 40.0),  # 第 2 頁又是最後一頁、看不完
+            (1, True,  3, False, 'pager',  40.0),  # 只有「上一頁」一顆
+            (1, False, 3, False, 'pager',  80.0),  # 上一頁＋下一頁
+            (0, False, 9, False, 'expand', 40.0),  # 第 1 頁、本頁看不完
+            # ── 面板開著:右端**必定**是收合鍵一顆 ──────────────────────
+            (0, False, 9, True,  'expand', 40.0),  # 第 1 頁、看不完
+            (1, False, 9, True,  'expand', 40.0),  # 第 2 頁、看不完
+            (1, False, 3, True,  'expand', 40.0),  # 第 2 頁、**看得完**
+            (1, True,  3, True,  'expand', 40.0),  # 第 2 頁又是最後一頁、看得完
+            (0, True,  3, True,  'expand', 40.0),  # 只有一頁、看得完
     ):
-        _v, end, dp, names = solve(bar, 1080, 420, 40, page_no, last, count)
-        check('頁況(第 %d 頁,%s最後一頁,本頁 %d 個)的右端'
-              % (page_no + 1, '是' if last else '不是', count), end, want_end)
+        _v, end, dp, names = solve(bar, 1080, 420, 40, page_no, last, count,
+                                   True, panel)
+        check('頁況(第 %d 頁,%s最後一頁,本頁 %d 個,面板%s)的右端'
+              % (page_no + 1, '是' if last else '不是', count,
+                 '開著' if panel else '收著'), end, want_end)
         check('  同一格量測扣掉的寬度', dp, want_dp)
-        drawn = 1 if end == 'expand' else len(names)
+        drawn = 0 if end == 'none' else (1 if end == 'expand' else len(names))
         check('  量測扣的顆數 == 畫出來的顆數',
               dp, 0.0 if drawn == 0 else bar['reserved_end'] + (drawn - 1) * 40)
+        check('  這一格不是死路', dead_end(end, _v, count, last), False)
+
+    # ── ⛔ 主題關掉 page_indicator:右端不得變成空白 ─────────────────────
+    # 上一版在 `v_pager >= page_count` 時無條件回 'pager',不看那一組畫不畫得
+    # 出來。`PageArrows` 在 `show == false` 時直接 return —— 於是「本頁排得下、
+    # 後面還有頁」＋ `page_indicator.show: false` = 右端空白、鎖死在第 1 頁。
+    no_pi = dict(bar, indicator_show=False)
+    _v, end, dp, _n = solve(no_pi, 1080, 420, 40, 0, False, 3)
+    check('關掉 page_indicator 而本頁看得完時右端是展開鍵', end, 'expand')
+    check('  它真的佔一顆的寬度', dp, 40.0)
+    check('  這一格不是死路', dead_end(end, _v, 3, False), False)
+
+    # 兩條出口同時關掉 = 死路,必須看得見。
+    trapped = dict(bar, indicator_show=False, expand_show=False)
+    _v, end, dp, _n = solve(trapped, 1080, 420, 40, 0, False, 3)
+    check('兩條出口都關掉時右端是空的', end, 'none')
+    check('⛔ 而且那是死路(dead_end 必須抓到)', dead_end(end, _v, 3, False), True)
+    # style: none 與 show: false 是同一件事。
+    trapped2 = dict(bar, indicator_style='none', expand_show=False)
+    _v2, end2, _dp2, _n2 = solve(trapped2, 1080, 420, 40, 0, False, 3)
+    check('page_indicator.style: none 走同一條', dead_end(end2, _v2, 3, False), True)
 
     # 沒有候選時:整列畫的是工具列,什麼都不畫。
     check('沒有候選時一顆都不畫',
@@ -409,6 +499,8 @@ def main() -> int:
     ap.add_argument('--page-count', type=int, default=9,
                     help='本頁候選總數(引擎的 page_size)')
     ap.add_argument('--no-candidates', action='store_true')
+    ap.add_argument('--panel-open', action='store_true',
+                    help='展開面板現在開著(右端那一顆必須是收合鍵)')
     ap.add_argument('--which', default='')
     ap.add_argument('--item-width', type=int, default=0,
                     help='印出「N 字候選、無序號 / 有序號」兩種量測寬(dp),空白分隔')
@@ -426,19 +518,20 @@ def main() -> int:
         print('%.4f %.4f' % (item_width_dp(bar, args.item_width, 0),
                              item_width_dp(bar, args.item_width, 1)))
         return 0
-    vis = visible_count(bar, screen_w, args.density, dp, args.page_no,
-                        bool(args.last_page), args.page_count)
+    vis = solve(bar, screen_w, args.density, dp, args.page_no,
+                bool(args.last_page), args.page_count,
+                not args.no_candidates, args.panel_open)[0]
     if args.which == 'visible':
         print(vis)
         return 0
     if args.which == 'reserved':
         print(solve(bar, screen_w, args.density, dp, args.page_no,
                     bool(args.last_page), args.page_count,
-                    not args.no_candidates)[2])
+                    not args.no_candidates, args.panel_open)[2])
         return 0
     order = buttons(bar, args.page_no, bool(args.last_page),
                     not args.no_candidates, vis, args.page_count,
-                    screen_w, args.density, dp)
+                    screen_w, args.density, dp, args.panel_open)
     rows = geometry(screen_w, args.density, dp, order)
     if args.which:
         for name, _x0, _x1, cx in rows:

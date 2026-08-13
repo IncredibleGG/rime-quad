@@ -230,9 +230,32 @@ object CandidateDensity {
      *
      * ⚠ 桌面端的 `candidates.window` **不套用**本條：桌面端不畫消歧欄，
      * 關掉註解等於憑空少一份資訊、沒有任何東西補上。
+     *
+     * ── ⛔ 「消歧欄在畫」才准壓,不是「讀音解析得出來」才准壓 ────────────────
+     * 上一版的判準只有 `readings`,於是**消歧欄那一側根本不會畫出來**的三種
+     * 狀態下,讀音一份都看不到 —— 註解被壓掉,而補上它的那個東西不存在。
+     * 那是把資訊憑空刪掉,不是把重複的第二份收起來:
+     *
+     * | 狀態 | 消歧欄 | 註解(上一版) | 使用者看得到讀音嗎 |
+     * |---|---|---|---|
+     * | 主題寫 `syllables.placement: none` | 不畫 | **被壓掉** | **看不到** |
+     * | `syllableRewriteReady == false`(啟動探針還沒回答) | 不畫 | **被壓掉** | **看不到** |
+     * | 只有一個相異讀音 | 不畫(門檻 2) | 被壓掉 | 看不到 —— **刻意保留**,見下 |
+     *
+     * 前兩格這一版修掉了:[syllableSideAlive] 為 false 時註解照畫。
+     *
+     * @param syllableSideAlive 消歧欄那一側現在是**活的**嗎 ——
+     *   `placement != NONE && syllableRewriteReady`。⚠ 這裡刻意**不含**
+     *   「讀音數 ≥ 2」那一項:讀音從 2 收斂到 1 是使用者正在挑字的**每一步**
+     *   都會發生的事,把它算進來就是「消歧欄收起來的同一瞬間,每一格候選
+     *   同時變寬、整列在他眼前重排」。門檻維持不對稱(註解 1、消歧欄 2),
+     *   理由與本函式開頭那一段相同。
      */
-    fun commentVisible(commentShow: Boolean, readings: List<String>): Boolean =
-        commentShow && readings.isEmpty()
+    fun commentVisible(
+        commentShow: Boolean,
+        readings: List<String>,
+        syllableSideAlive: Boolean,
+    ): Boolean = commentShow && !(syllableSideAlive && readings.isNotEmpty())
 
     /* ═════════════════════ 序號：按得到才畫 ═════════════════════ */
 
@@ -342,16 +365,39 @@ object CandidateDensity {
      * 是同一份資訊的第二份 —— 與註解／消歧欄同一個病 —— 而它們一起吃掉
      * 候選列 19.4% 的寬度。
      *
+     * ── ⛔ 判準是「這一顆**真的會被畫出來**」,不是「照理說應該是這一顆」───
+     * 上一版在 `visible >= pageCandidateCount` 時**無條件**回 [RightEnd.PAGER],
+     * 完全不看翻頁鍵畫不畫得出來。而 `PageArrows` 在 `state.show == false` 時
+     * 直接 return —— 主題只要寫 `page_indicator.show: false`（或 `style: none`），
+     * 「本頁排得下、但後面還有頁」這一格就變成**右端空白、使用者鎖死在第 1 頁**：
+     * 沒有翻頁鍵、也沒有展開鍵（上一版的展開鍵只掛在 `EXPAND` 那一支），
+     * 而畫面完全正常、沒有任何東西會叫。隨附主題不會踩到，第三方主題踩到
+     * 就是死路。所以這裡改成吃 [pagerDrawable]：**畫不出來的那一顆不算數。**
+     *
+     * ── 「後面還有候選」時必須至少留一條出口 ────────────────────────────────
+     * 兩條出口（翻頁、展開）都畫不出來而後面還有候選 = **設計錯誤**，
+     * 不是一種要在執行期優雅處理的頁況。這裡誠實回 [RightEnd.NONE]
+     * （渲染端因此什麼都不畫，量測也不留寬度），而把它擋下來的是建置期的
+     * [deadEnd] ＋ `ThemeDensityTest`：隨附主題逐份、逐頁況掃過一遍。
+     *
      * @param visible [visibleCount] 的結果。
      * @param pageCandidateCount 本頁畫得出來**與畫不出來**的候選總數。
      * @param expandAvailable 主題的 `scroll == expandable && expand_button.show`。
      * @param panelOpen 展開面板現在開著嗎。
+     * @param pagerDrawable 翻頁那一組在這一格頁況下**真的會畫出至少一顆箭頭**嗎
+     *   （`Pager.state().show` 且 prev/next 至少一顆是活的 —— 與 `PageArrows`
+     *   逐條同義）。
+     * @param morePages 這一頁之後還有候選（`!isLastPage`）。它與
+     *   `visible < pageCandidateCount` 是「還有東西沒看到」的兩種形狀，
+     *   兩種都需要出口。
      */
     fun rightEnd(
         visible: Int,
         pageCandidateCount: Int,
         expandAvailable: Boolean,
-        panelOpen: Boolean = false,
+        panelOpen: Boolean,
+        pagerDrawable: Boolean,
+        morePages: Boolean,
     ): RightEnd = when {
         pageCandidateCount <= 0 -> RightEnd.NONE
         // 面板開著的時候那一顆**必須**是收合鍵：面板自己沒有關閉鍵,
@@ -362,9 +408,39 @@ object CandidateDensity {
             // 主題自己關掉展開鍵時退回翻頁：把使用者**鎖死在第 1 頁**比讓他
             // 跳過幾個候選更糟。這一格不該出現在隨附主題上，
             // `ThemeDensityTest` 逐份擋著（§8.6.6.4 第 4 條：捲動不得是唯一路徑）。
-            if (expandAvailable) RightEnd.EXPAND else RightEnd.PAGER
-        else -> RightEnd.PAGER
+            // ⚠ 退路自己也要畫得出來 —— 翻頁鍵不畫時退到它身上等於退到空白。
+            if (expandAvailable) RightEnd.EXPAND
+            else if (pagerDrawable) RightEnd.PAGER
+            else RightEnd.NONE
+        // 本頁看得完 → 翻頁才是誠實的,而且它得真的畫得出來。
+        pagerDrawable -> RightEnd.PAGER
+        // 本頁看得完、後面還有頁,而翻頁那一組畫不出來（主題關掉了
+        // `page_indicator`）—— 展開鍵是剩下的唯一出口。展開面板畫的是
+        // **這一頁**,但它自己帶著翻頁列（`CandidateExpandedPanel`），
+        // 所以那條路走得到第 2 頁。
+        morePages && expandAvailable -> RightEnd.EXPAND
+        // 後面沒有候選、本頁也看得完：右端本來就不必畫東西。
+        // （上一版在這裡回 PAGER 而 `Pager.State.show` 是 false，畫出來的
+        // 結果相同 —— 但「回一個畫不出來的答案」正是這一版要消滅的形狀。）
+        else -> RightEnd.NONE
     }
+
+    /**
+     * ⛔ **死路偵測:後面還有候選,而右端一顆出口都畫不出來。**
+     *
+     * 這不是一種頁況,是主題把兩條出口同時關掉造成的**設計錯誤**
+     * （`page_indicator.show: false` ＋ `expand_button.show: false`，
+     * 或 `scroll: none`）。§10 第 41 條上一版只掃 `scroll` 與
+     * `expand_button.show`，**沒有看 `page_indicator`** —— 於是
+     * 「翻頁關掉、展開留著」那一半合法，而「翻頁關掉、展開也關掉」那一半
+     * 在執行期是一片空白的右端。這個函式讓那件事**測得到**。
+     *
+     * @param morePages `!isLastPage`。
+     */
+    fun deadEnd(layout: BarLayout, pageCandidateCount: Int, morePages: Boolean): Boolean =
+        pageCandidateCount > 0 &&
+            (layout.visible < pageCandidateCount || morePages) &&
+            layout.rightEnd == RightEnd.NONE
 
     /**
      * 右端那一格畫的是什麼。**三選一，不可能同時兩顆** —— 這正是把它寫成
@@ -372,7 +448,11 @@ object CandidateDensity {
      * 而那就是現況的缺陷。
      */
     enum class RightEnd {
-        /** 什麼都不畫（沒有候選＝候選列現在是工具列）。 */
+        /**
+         * 什麼都不畫。兩種情形：沒有候選（候選列現在是工具列）；
+         * 或者「該畫的那一顆畫不出來」—— 後者若同時還有沒看到的候選，
+         * 就是 [deadEnd] 要擋下的設計錯誤。
+         */
         NONE,
 
         /** 展開 `∨`。翻頁在**展開面板內部**。 */
@@ -466,6 +546,10 @@ object CandidateDensity {
         val pagerButtons = if (!pagerState.show) 0 else {
             (if (pagerState.prevEnabled) 1 else 0) + (if (pagerState.nextEnabled) 1 else 0)
         }
+        // ⛔ 「翻頁鍵會不會被畫出來」與「right end 該是翻頁嗎」必須是同一個數。
+        //    `PageArrows` 在 `!show` 時整組 return、`!prevEnabled` / `!nextEnabled`
+        //    的那一顆各自不畫 —— 所以真的畫得出來 ⟺ 顆數 > 0。
+        val pagerDrawable = pagerButtons > 0
         val pagerDp = reservedDp(reservedEnd, buttonDp, pagerButtons)
         val expandDp = reservedDp(reservedEnd, buttonDp, 1)
 
@@ -473,7 +557,16 @@ object CandidateDensity {
         // 餵進去的 `visible` 是「假設走翻頁」算出來的：翻頁那幾顆扣掉之後
         // 本頁仍然看得完，翻頁才是誠實的。
         val vPager = fits(pagerDp)
-        return when (rightEnd(vPager, pageCandidateCount, expandAvailable, panelOpen)) {
+        return when (
+            rightEnd(
+                visible = vPager,
+                pageCandidateCount = pageCandidateCount,
+                expandAvailable = expandAvailable,
+                panelOpen = panelOpen,
+                pagerDrawable = pagerDrawable,
+                morePages = !isLastPage,
+            )
+        ) {
             RightEnd.NONE -> BarLayout(fits(0f), RightEnd.NONE, 0f, null)
             RightEnd.PAGER -> BarLayout(vPager, RightEnd.PAGER, pagerDp, pagerState)
             RightEnd.EXPAND -> BarLayout(fits(expandDp), RightEnd.EXPAND, expandDp, null)

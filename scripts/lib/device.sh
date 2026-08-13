@@ -37,7 +37,21 @@
 #     SERIAL="$(rs_pick_serial "$ADB")" || exit 2
 #     ...
 #     rs_assert_destructive_ok "$ADB" "$SERIAL" "pm clear / ime set" || exit 2
-#     rs_write_device_stamp "$ADB" "$SERIAL" "$OUT_DIR/device.txt" "$APK"
+#     rs_write_device_stamp "$ADB" "$SERIAL" "$OUT_DIR/device.txt" "$APK" "$IME_PKG"
+#
+# ── ⚠ sha256 能證什麼、不能證什麼 ────────────────────────────────────
+# 本專案的 debug APK **不是 reproducible build**:同一份原始碼重建兩次,
+# `apk_sha256` 不一樣(簽章時間戳、`BuildConfig` 的建置時間、dex 合併順序、
+# `versionCode` 由 `scripts/ci_version_code.sh` 依當下時間算)。所以這個雜湊
+#
+#   · **證得了**:「這一輪腳本量的就是這一份檔案」——
+#     artifact 裡的截圖與這個雜湊對得起來,事後覆核得動。
+#   · **證不了**:「我這一份與你報告裡那一份是同一份原始碼」。
+#     兩個人拿同一個 commit 各自建,雜湊必定不同 —— **不要拿它比對別人的報告**,
+#     那會得出「版本不一樣」這個假結論。要比原始碼就比 commit。
+#
+# 所以這一支同時記 `pkg_version` / `pkg_version_code` / `pkg_last_update`:
+# 那三個在「量的是不是我剛裝上去的那一份」這個問題上比雜湊好用。
 
 # 選一台裝置。成功時把序號印到 stdout(其餘一律到 stderr)。
 #
@@ -115,8 +129,14 @@ rs_assert_destructive_ok() {
 #
 # ⚠ 沒有這一步,「腳本綠了」在事後永遠無法覆核:這台機器上三台 AVD 全是
 #   1080×2400 @420dpi,**截圖本身分不出是哪一台**。
+# ⚠ 第 5 個參數 `pkg` 是 2026-08-13 補的。從前只有 `apk`,而 `verify_candbar.sh`
+#   / `verify_syllables.sh` **不帶 `--apk` 時什麼都不寫** —— 於是三份 gate
+#   artifact 有兩份不知道量的是哪一份 APK,正好違反本檔頭自己給的理由。
+#   現在改成:量的是**裝置上真的裝著的那一份**(`pm path` → 裝置端 sha256),
+#   不是「我打算裝上去的那一份」。兩者不同時,前者才是這一輪的事實。
 rs_write_device_stamp() {
-  local adb="${1:?}" serial="${2:?}" out="${3:?}" apk="${4:-}"
+  local adb="${1:?}" serial="${2:?}" out="${3:?}" apk="${4:-}" pkg="${5:-}"
+  local path sha
   {
     echo "serial=$serial"
     echo "avd=$(rs_avd_name "$adb" "$serial")"
@@ -126,6 +146,29 @@ rs_write_device_stamp() {
     if [ -n "$apk" ] && [ -f "$apk" ]; then
       echo "apk=$apk"
       echo "apk_sha256=$(sha256sum "$apk" 2>/dev/null | awk '{print $1}')"
+    else
+      # 沉默地少一行 = 事後看不出「是沒帶還是壞了」。明著寫出來。
+      echo "apk=<未指定 --apk>"
+      echo "apk_sha256=<未指定 --apk>"
+    fi
+    if [ -n "$pkg" ]; then
+      echo "pkg=$pkg"
+      path="$("$adb" -s "$serial" shell pm path "$pkg" 2>/dev/null \
+              | tr -d '\r' | sed -n 's/^package://p' | head -1)"
+      if [ -n "$path" ]; then
+        echo "pkg_apk=$path"
+        # ⚠ 在**裝置上**算。host 上那一份可能已經被下一次建置覆蓋掉了,
+        #   而這一關要回答的是「剛剛量的是哪一份」。
+        sha="$("$adb" -s "$serial" shell sha256sum "$path" 2>/dev/null \
+               | tr -d '\r' | awk '{print $1}' | head -1)"
+        echo "pkg_apk_sha256=${sha:-<裝置上算不出來>}"
+      else
+        echo "pkg_apk=<沒裝>"
+        echo "pkg_apk_sha256=<沒裝>"
+      fi
+      "$adb" -s "$serial" shell dumpsys package "$pkg" 2>/dev/null | tr -d '\r' \
+        | sed -n 's/^ *versionName=\(.*\)$/pkg_version=\1/p;s/^ *versionCode=\([0-9]*\).*/pkg_version_code=\1/p;s/^ *lastUpdateTime=\(.*\)$/pkg_last_update=\1/p' \
+        | sort -u
     fi
     echo "when=$(date -Iseconds)"
   } > "$out"

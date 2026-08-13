@@ -630,9 +630,17 @@ if [ "$SKIP_EMU" -eq 0 ]; then
     # 於是裝置上殘留的 versionCode 會擋下較低版本的安裝 —— 實際發生過：
     # 測試用的建置把 versionCode 調高到 26090100，正式建置 26080714 因此
     # 被 Android 當成降版拒絕，關卡失敗但產品沒問題。
-    "$ADB" -s "$SER" uninstall $PKG >/dev/null 2>&1 \
-      && ok "已移除舊安裝，接下來驗的是全新安裝的路徑" \
-      || echo "  [INFO] 無既有安裝可移除，繼續"
+    # ⚠ `uninstall` 是破壞性的,而 `SER` 可能是**自動選來的那一台**
+    #   (`rs_pick_serial` 在只有一台在線時會自動選)。閘沒過就跳過這一關,
+    #   而不是把別條線的 app 移掉 —— 與下面 `else` 那一支同一個處置。
+    #   由 `scripts/verify_device_hygiene.sh` 規則 C 守著。
+    if ! rs_assert_destructive_ok "$ADB" "$SER" "uninstall $PKG"; then
+      skip "未明著指定 RIME_SERIAL(或 AVD 對不上),沒有移除舊安裝 —— 驗的不是全新安裝的體驗"
+    elif "$ADB" -s "$SER" uninstall $PKG >/dev/null 2>&1; then
+      ok "已移除舊安裝，接下來驗的是全新安裝的路徑"
+    else
+      echo "  [INFO] 無既有安裝可移除，繼續"
+    fi
   else
     skip "未指定 RIME_SERIAL，沒有清空 app 資料 —— 驗的不是全新安裝的體驗"
   fi

@@ -133,7 +133,10 @@ fi
 # ⚠ pm clear 會把我們踢出「已啟用的輸入法」,系統當場退回別的鍵盤;
 #   而 force-stop 待測 IME 會把套件打進 stopped 狀態、再也回不來。
 rs_assert_destructive_ok "$ADB" "$SERIAL" "pm clear $IME_PKG / $TARGET_PKG、ime set" || exit 2
-rs_write_device_stamp "$ADB" "$SERIAL" "$OUT_DIR/device.txt" "$APK"
+# ⚠ 第 5 個參數是**裝置上真的裝著的那一份**的身分來源：不帶 --apk 時
+#   `apk=` / `apk_sha256=` 兩行從前整個消失，於是這份 gate artifact 事後
+#   無法覆核「腳本綠的時候量的是哪一份 APK」。見 lib/device.sh 檔頭。
+rs_write_device_stamp "$ADB" "$SERIAL" "$OUT_DIR/device.txt" "$APK" "$IME_PKG"
 adbs shell pm clear "$IME_PKG" >/dev/null 2>&1
 adbs shell pm clear "$TARGET_PKG" >/dev/null 2>&1
 sleep 3
@@ -248,10 +251,14 @@ if f: print(f.group(2), f.group(4))
 ')
   [ -n "${FRAME_BOT:-}" ] || return 1
   # ⚠ **不可以寫成 `FRAME_BOT - GRID_H`。** IME 視窗的下緣是螢幕下緣,而鍵盤
-  #   內容讓出了一段 `honor_bottom_inset`(手勢列),實測 66 px ——
-  #   從下緣往回推算出來的格線區頂端會低 66 px,每一次點擊都落在**下一列**上。
+  #   內容讓出了一段 `honor_bottom_inset`(手勢列)—— 從下緣往回推算出來的
+  #   格線區頂端會低掉那一整段,每一次點擊都落在**下一列**上。
   #   這支腳本一直是這樣算的,而它沒有紅過:九宮格的鍵有 123 px 高,
-  #   低 66 px 剛好還壓在同一顆鍵的下緣。底列那一排就沒這麼好運。
+  #   差那一段剛好還壓在同一顆鍵的下緣。底列那一排就沒這麼好運。
+  #   ⚠ **不要在這裡寫死那一段有多少 px。** 這裡從前寫著「實測 66 px」,
+  #   而 `verify_syllables.sh` 同一天量到的是 **63 px**(= 800 − 118 − 619)
+  #   —— 同一件事在兩支腳本的註解裡有兩個數字,而兩個都不是判準
+  #   (判準是由上往下算,根本不需要那個數)。
   #   由上往下算沒有這個問題:候選列緊貼視窗頂端,格線區緊貼候選列。
   GRID_TOP=$((FRAME_TOP + BAR_PX))
   BAR_MID=$(( (FRAME_TOP + GRID_TOP) / 2 ))

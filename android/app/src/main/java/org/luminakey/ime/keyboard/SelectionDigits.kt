@@ -84,8 +84,14 @@ object SelectionDigits {
     }
 
     /**
-     * TSV：`layout <TAB> schema <TAB> verdict <TAB> measured_on <TAB> note`。
+     * TSV **六欄**：
+     * `layout <TAB> schema <TAB> verdict <TAB> compose <TAB> measured_on <TAB> note`。
      * `#` 開頭與空行是註解。
+     *
+     * ⚠ 這一段從前少寫了 `compose`（那一欄記著量測時打的是哪一串按鍵，
+     *   `scripts/verify_selection_digit.sh` 讀它來重現）。本函式只讀前三欄，
+     *   所以少寫一欄不會壞掉 —— 但下一個照著 KDoc 產生表的人會少寫一欄，
+     *   而那支腳本會在解析時安靜地把 `measured_on` 當成 `compose`。
      *
      * @return （可用的 key 集合, 有效資料列數）
      */
