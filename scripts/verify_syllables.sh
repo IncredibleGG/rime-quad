@@ -1330,12 +1330,48 @@ PY
   ocr_candbar() {
     local png="$1" outtxt="$2"
     python3 - "$png" "$outtxt" "$GRID_TOP" "$FRAME_TOP" "$TESSERACT" "$TESSDATA" <<'PY'
-import os, re, subprocess, sys
+import os, re, statistics, subprocess, sys
 from PIL import Image, ImageOps
 png, outtxt, grid_top, frame_top, tess, tessdata = sys.argv[1:7]
 grid_top, frame_top = int(grid_top), int(frame_top)
+
+# ⚠ **不要裁到 grid_top。** grid_top 是 FRAME_BOT - grid_height_px,而實測
+#   它落在候選列底下約 50 px 的地方 —— 裁到那裡會把**第一排按鍵的頂端**
+#   一起裁進來,而 tesseract 是整塊一起讀的,那半排被切掉的大字會把整張圖
+#   讀成亂碼。
+#
+#   這不是假設,是 ship 這一輪 CI 上抓到的:同一次跑,三份九宮格佈局的
+#   候選列**逐像素完全相同**(cn-t9-pinyin 與 cn-t9-pinyin-numrow 的
+#   1600..1719 兩張圖差 0 個像素),而裁進來的那 62 px 差 30153 個像素 ——
+#   cn-t9-pinyin 那一份底下是半排「分詞 / abc / def」,讀出來是「ys y ae」;
+#   numrow 那一份底下是半排數字(0-9 不在 a-z 白名單裡,等於沒有東西),
+#   讀出來是「gppin qin gin y fyzaaqfi」,含 qin 就過了。
+#   **同樣的候選列,一個過一個不過,差別只在裁進來的那半排按鍵。**
+#
+#   所以改成從 grid_top **往上找**候選列與格線區之間那條安靜的縫。
+#   為什麼不從 frame_top 往下找:上方橫排那幾份佈局(t9-pinyin)的
+#   frame_top 是**橫排**的頂端,往下找會先撞到橫排與候選列之間那條縫,
+#   裁在那裡等於把候選列整條丟掉。
+_MIN_BAR_PX, _QUIET_SD, _QUIET_RUN = 40, 8, 4
+
+def _bar_bottom(im, frame_top, grid_top):
+    px = im.load()
+    xs = range(0, im.width, 7)
+    run = 0
+    for y in range(min(grid_top, im.height) - 1, frame_top + _MIN_BAR_PX - 1, -1):
+        if statistics.pstdev([px[x, y] for x in xs]) < _QUIET_SD:
+            run += 1
+            if run >= _QUIET_RUN:
+                return y + run - 1          # 那條縫最下面那一列
+        else:
+            run = 0
+    return grid_top                          # 找不到縫就退回舊行為,不會裁成空的
+
 im = Image.open(png).convert("L")
-box = (0, max(0, frame_top), im.width, max(0, min(im.height, grid_top)))
+_top = max(0, frame_top)
+_bot = _bar_bottom(im, _top, max(0, min(im.height, grid_top)))
+box = (0, _top, im.width, _bot)
+_trim = max(0, min(im.height, grid_top)) - _bot
 if box[3] - box[1] < 8:
     open(outtxt, "w").write("")
     print("BOX=%s TEXT= ERROR=候選列那一條的高度不合理(%d px)" % (box, box[3] - box[1]))
@@ -1362,7 +1398,8 @@ for psm in ("6", "11"):
         text = t
         break
 open(outtxt, "w").write(text)
-print("BOX=%s TEXT=%s" % (box, text))
+print("BOX=%s TRIM=%dpx%s TEXT=%s"
+      % (box, _trim, "" if _trim else "(沒找到候選列與格線區之間那條縫,退回裁到 grid_top)", text))
 PY
   }
 
