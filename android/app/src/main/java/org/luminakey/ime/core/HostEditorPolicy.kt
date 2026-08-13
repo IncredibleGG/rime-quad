@@ -53,12 +53,82 @@ object HostEditorPolicy {
      *   應用程式讀不到。所以在那種視窗形狀下我們會多進一次全螢幕。
      *   已知殘留，記在 docs/product-gaps.md。
      *
+     * ── 為什麼還要看尺寸（這一段是後來補的）────────────────────────────
+     * 上面那條規則挑「進全螢幕」的理由是一個**手機上的量測**（851/1080 = 79 %，
+     * 宿主排不下自己的輸入框）。在大螢幕上那個前提**不成立**，而規則裡沒有
+     * 任何一項在看尺寸 —— 於是平板／摺疊機展開後照樣進全螢幕。
+     *
+     * 實測（emulator-5558，`wm size 1600x2560` + `wm density 240`，轉橫屏
+     * → 2560×1600 px @1.5 = 1706×1066 dp）：
+     *   · `mFullscreenApplied=true mIsFullscreen=true` —— 照樣進。
+     *   · 鍵盤視窗要的高度只有 506 px = 337 dp，**佔螢幕高的 31 %**。
+     *   · 宿主被整片換掉，畫面中間留下約 700 dp 的空白。
+     *     截圖：`build/ship-evidence/before-tablet-land.png`
+     *
+     * 也就是說：宿主明明排得下，我們卻把它整個換成一條 extract 輸入條。
+     *
+     * AOSP 自家的 LatinIME 是用 `config_use_fullscreen_mode` 這個**隨螢幕大小
+     * 變**的資源在擋。這裡不抄那個做法（那是一個布林資源，判準藏在
+     * `values-*` 的目錄名裡，測不到），改成把真正的問句寫出來：
+     *
+     *     **扣掉鍵盤之後，宿主還剩不剩得下一個輸入框？**
+     *
+     * 那才是 extract 模式存在的理由。兩台裝置的實測值：
+     *
+     *   手機橫屏  411 dp − 324 dp = **87 dp**  → 排不下（宿主的 189 px 全被
+     *                                            它自己的標題列佔滿，
+     *                                            `uiautomator dump` 裡一個
+     *                                            輸入框節點都沒有）→ 要全螢幕
+     *   平板橫屏 1066 dp − 337 dp = **729 dp** → 綽綽有餘 → 不要全螢幕
+     *
+     * [MIN_HOST_HEIGHT_DP] 取 200 dp，落在 87 與 729 之間，而且它有意義：
+     * 一條 Material 的 app bar（56 dp）＋ 一個輸入框（約 48 dp）＋ 上下留白，
+     * 再加一點看得到自己在什麼脈絡裡的內容。往上或往下挪幾十 dp 都不會改變
+     * 這兩台的結論 —— 那正是門檻該有的樣子。
+     *
+     * ⚠ **鍵盤高度是參數,不是常數。** 使用者拖曳調過高度、主題換過、
+     *   佈局的 §9.2 覆寫，都會讓它變。呼叫端用既有的
+     *   `KeyGeometry.budget()` 算,所以這個判斷跟著使用者的設定走。
+     *
      * @param landscape 顯示器目前是不是橫向（`Configuration.ORIENTATION_LANDSCAPE`）
+     * @param screenHeightDp 目前這個方向上的螢幕高（`Configuration.screenHeightDp`）
+     * @param imeHeightDp 我們的視窗會佔掉多少高（鍵盤預算 ＋ 候選列）
      */
-    fun useFullscreen(imeOptions: Int, landscape: Boolean): Boolean {
+    fun useFullscreen(
+        imeOptions: Int,
+        landscape: Boolean,
+        screenHeightDp: Float,
+        imeHeightDp: Float,
+    ): Boolean {
         if (!landscape) return false
-        return !hostForbidsFullscreen(imeOptions)
+        if (hostForbidsFullscreen(imeOptions)) return false
+        return hostCannotFitEditor(screenHeightDp, imeHeightDp)
     }
+
+    /**
+     * 扣掉我們的視窗之後，宿主還剩不剩得下一個輸入框。
+     *
+     * 抽出來是為了測得到，也為了讓「量的是什麼」寫在名字上:
+     * 這不是「螢幕夠不夠大」,是「**宿主還看不看得見自己**」。
+     *
+     * ⚠ 兩個參數任一 ≤ 0 時回 `true`(＝照舊進全螢幕)。那是「還不知道」的
+     *   情形(主題還沒載入、`Configuration` 還沒到手),而在還不知道的時候,
+     *   走那條**看得見自己打什麼**的路是比較安全的一邊 —— 反過來猜錯的代價
+     *   是使用者完全看不到自己在打什麼。
+     */
+    fun hostCannotFitEditor(screenHeightDp: Float, imeHeightDp: Float): Boolean {
+        if (screenHeightDp <= 0f || imeHeightDp <= 0f) return true
+        return screenHeightDp - imeHeightDp < MIN_HOST_HEIGHT_DP
+    }
+
+    /**
+     * 宿主至少要剩這麼高，才算「還看得見自己在打什麼」。
+     *
+     * 一條 app bar（56 dp）＋ 一個輸入框（約 48 dp）＋ 留白與一點脈絡。
+     * 實測的兩個端點是 87 dp（手機橫屏，排不下）與 729 dp（平板橫屏，
+     * 綽綽有餘），這個門檻落在中間，而且離兩端都很遠。
+     */
+    const val MIN_HOST_HEIGHT_DP = 200f
 
     /** 宿主明說不要全螢幕（`EditorInfo.IME_FLAG_NO_FULLSCREEN`）。 */
     fun hostForbidsFullscreen(imeOptions: Int): Boolean =

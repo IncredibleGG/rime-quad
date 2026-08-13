@@ -354,12 +354,43 @@ class RimeInputMethodService : InputMethodService() {
      *   不下**（`uiautomator dump` 裡沒有那個節點）。使用者看不到自己在打
      *   什麼。現在改成讓它生效，而那一條輸入條由 [ThemedExtractView] 畫。
      */
-    override fun onEvaluateFullscreenMode(): Boolean =
-        HostEditorPolicy.useFullscreen(
+    override fun onEvaluateFullscreenMode(): Boolean {
+        val config = resources.configuration
+        return HostEditorPolicy.useFullscreen(
             imeOptions = currentInputEditorInfo?.imeOptions ?: 0,
-            landscape = resources.configuration.orientation ==
+            landscape = config.orientation ==
                 Configuration.ORIENTATION_LANDSCAPE,
+            screenHeightDp = config.screenHeightDp.toFloat(),
+            imeHeightDp = imeHeightDp(),
         )
+    }
+
+    /**
+     * 我們的視窗會佔掉多少高（dp）—— 鍵盤預算 ＋ 候選列。
+     *
+     * ⚠ 這是**估的**，而且刻意只估「常態」那一份：不算展開面板、不算快捷面板，
+     *   那些是使用者按出來的浮層，不是進不進全螢幕該考慮的事。
+     *
+     * 用的是與渲染器同一支 [KeyGeometry.budget]（§8.8.0 的高度預算），
+     * 所以主題、佈局的 §9.2 覆寫、以及使用者拖曳調過的高度都算得進去 ——
+     * 「大螢幕上把鍵盤拉得很高」那種情形因此仍然會進全螢幕。
+     *
+     * 主題還沒載入時回 0，[HostEditorPolicy.hostCannotFitEditor] 把 0 當成
+     * 「還不知道」，走進全螢幕那一邊（理由見那支的檔頭）。
+     */
+    private fun imeHeightDp(): Float {
+        val theme = effectiveTheme() ?: return 0f
+        val config = resources.configuration
+        val keyboard = theme.keyboard.geometry.budget(
+            widthDp = config.screenWidthDp.toFloat(),
+            availHeightDp = config.screenHeightDp.toFloat(),
+            landscape = config.orientation == Configuration.ORIENTATION_LANDSCAPE,
+            padding = theme.keyboard.padding,
+            keySpacing = theme.keyboard.keySpacing,
+            rowSpacing = theme.keyboard.rowSpacing,
+        )
+        return keyboard + theme.candidates.bar.height
+    }
 
     /**
      * extract 模式那一條輸入條 —— 換成我們自己的，理由見 [ThemedExtractView]。

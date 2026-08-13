@@ -22,28 +22,50 @@ class HostEditorPolicyTest {
 
     /* ─────────────── 1. 全螢幕 extract ─────────────── */
 
+    /**
+     * 兩台真的量過的裝置，判準的兩個端點。數字的出處見
+     * [HostEditorPolicy.useFullscreen] 的檔頭。
+     */
+    private object Measured {
+        /** 手機橫屏：1080×2400 @420dpi → 2400×1080 px @2.625 = 914×411 dp。 */
+        const val PHONE_LAND_H = 411f
+        const val PHONE_LAND_IME = 324f
+
+        /** 平板橫屏：`wm size 1600x2560` + density 240 → 2560×1600 px @1.5。 */
+        const val TABLET_LAND_H = 1066f
+        const val TABLET_LAND_IME = 337f
+    }
+
+    private fun phone(imeOptions: Int, landscape: Boolean) = HostEditorPolicy.useFullscreen(
+        imeOptions, landscape, Measured.PHONE_LAND_H, Measured.PHONE_LAND_IME,
+    )
+
     @Test
     fun `直屏一律不進全螢幕`() {
-        assertFalse(HostEditorPolicy.useFullscreen(0, landscape = false))
-        assertFalse(
-            HostEditorPolicy.useFullscreen(EditorInfo.IME_FLAG_NO_FULLSCREEN, landscape = false),
-        )
+        assertFalse(phone(0, landscape = false))
+        assertFalse(phone(EditorInfo.IME_FLAG_NO_FULLSCREEN, landscape = false))
         assertFalse(
             "直屏的宿主自己排得下，extract 只會多一條",
-            HostEditorPolicy.useFullscreen(EditorInfo.IME_ACTION_SEARCH, landscape = false),
+            phone(EditorInfo.IME_ACTION_SEARCH, landscape = false),
+        )
+        // 直屏就是直屏,螢幕再大也一樣 —— 尺寸那一項不可以把方向那一項蓋掉。
+        assertFalse(
+            HostEditorPolicy.useFullscreen(
+                0, landscape = false, Measured.PHONE_LAND_H, Measured.PHONE_LAND_IME,
+            ),
         )
     }
 
     @Test
     fun `橫屏預設要進全螢幕 —— 那是使用者唯一看得到自己在打什麼的路`() {
-        assertTrue(HostEditorPolicy.useFullscreen(0, landscape = true))
+        assertTrue(phone(0, landscape = true))
         assertTrue(
             "IME_FLAG_NO_EXTRACT_UI 不是「不要全螢幕」：AOSP 仍然進，只是把那一條藏起來，" +
                 "而宿主因此不會被縮排、照樣看得見自己",
-            HostEditorPolicy.useFullscreen(EditorInfo.IME_FLAG_NO_EXTRACT_UI, landscape = true),
+            phone(EditorInfo.IME_FLAG_NO_EXTRACT_UI, landscape = true),
         )
         assertTrue(
-            HostEditorPolicy.useFullscreen(
+            phone(
                 EditorInfo.IME_ACTION_SEARCH or EditorInfo.IME_FLAG_NO_ACCESSORY_ACTION,
                 landscape = true,
             ),
@@ -52,15 +74,82 @@ class HostEditorPolicyTest {
 
     @Test
     fun `宿主明說不要全螢幕時就不進`() {
-        assertFalse(
-            HostEditorPolicy.useFullscreen(EditorInfo.IME_FLAG_NO_FULLSCREEN, landscape = true),
-        )
+        assertFalse(phone(EditorInfo.IME_FLAG_NO_FULLSCREEN, landscape = true))
         assertFalse(
             "跟別的 imeOptions 一起帶也一樣",
-            HostEditorPolicy.useFullscreen(
+            phone(
                 EditorInfo.IME_ACTION_DONE or EditorInfo.IME_FLAG_NO_FULLSCREEN,
                 landscape = true,
             ),
+        )
+    }
+
+    /* ── 尺寸:大螢幕上宿主排得下,就不要把它整片換掉 ── */
+
+    /**
+     * **這一條就是那個缺陷的墓碑。**
+     *
+     * 判準原本只有「橫向 ＋ 宿主沒帶 NO_FULLSCREEN」,沒有任何一項在看尺寸,
+     * 而它挑這條路的理由是一個手機上的量測。實測平板橫屏
+     * (`wm size 1600x2560` / density 240)照樣 `mIsFullscreen=true`,宿主被
+     * 整片換掉,而鍵盤只用掉 31 % 的高度、中間留下約 700 dp 空白。
+     * 截圖:`build/ship-evidence/before-tablet-land.png`
+     *
+     * 把尺寸那一項拿掉就會紅。
+     */
+    @Test
+    fun `大螢幕橫屏不進全螢幕 —— 宿主自己排得下`() {
+        assertFalse(
+            "平板橫屏扣掉鍵盤還剩 ${Measured.TABLET_LAND_H - Measured.TABLET_LAND_IME} dp," +
+                "宿主排得下自己的輸入框,不該把它整片換成一條 extract",
+            HostEditorPolicy.useFullscreen(
+                0, landscape = true, Measured.TABLET_LAND_H, Measured.TABLET_LAND_IME,
+            ),
+        )
+    }
+
+    /**
+     * 判準是「宿主還剩不剩得下」,不是「螢幕大不大」——
+     * 所以鍵盤被調高到吃掉大螢幕時,一樣要進全螢幕。
+     */
+    @Test
+    fun `大螢幕但鍵盤被調得很高時仍然進全螢幕`() {
+        assertTrue(
+            HostEditorPolicy.useFullscreen(
+                0, landscape = true, Measured.TABLET_LAND_H, Measured.TABLET_LAND_H - 100f,
+            ),
+        )
+    }
+
+    @Test
+    fun `剩不剩得下是純函式,兩個實測值各在門檻的一邊`() {
+        assertTrue(
+            "手機橫屏只剩 ${Measured.PHONE_LAND_H - Measured.PHONE_LAND_IME} dp",
+            HostEditorPolicy.hostCannotFitEditor(Measured.PHONE_LAND_H, Measured.PHONE_LAND_IME),
+        )
+        assertFalse(
+            "平板橫屏剩 ${Measured.TABLET_LAND_H - Measured.TABLET_LAND_IME} dp",
+            HostEditorPolicy.hostCannotFitEditor(Measured.TABLET_LAND_H, Measured.TABLET_LAND_IME),
+        )
+        // 門檻本身:剛好等於不算「排不下」,少一點才算。
+        val t = HostEditorPolicy.MIN_HOST_HEIGHT_DP
+        assertFalse(HostEditorPolicy.hostCannotFitEditor(t + 100f, 100f))
+        assertTrue(HostEditorPolicy.hostCannotFitEditor(t + 100f - 1f, 100f))
+    }
+
+    /**
+     * 還不知道的時候走「看得見自己在打什麼」那一邊。
+     *
+     * 主題還沒載入、`Configuration` 還沒到手時高度是 0。猜錯的兩個代價不對稱:
+     * 多進一次全螢幕只是版面不好看,少進一次是使用者**完全看不到自己在打什麼**。
+     */
+    @Test
+    fun `高度還不知道的時候寧可進全螢幕`() {
+        assertTrue(HostEditorPolicy.hostCannotFitEditor(0f, 0f))
+        assertTrue(HostEditorPolicy.hostCannotFitEditor(1066f, 0f))
+        assertTrue(HostEditorPolicy.hostCannotFitEditor(0f, 337f))
+        assertTrue(
+            HostEditorPolicy.useFullscreen(0, landscape = true, 0f, 0f),
         )
     }
 
@@ -169,9 +258,25 @@ class HostEditorPolicyTest {
             //   它讓宿主的輸入框在橫屏被鍵盤 100 % 蓋住。
             "改回一律 false（上一版的做法，橫屏就看不到自己在打什麼）" to
                 src.replace(
-                    "landscape = resources.configuration.orientation ==\n" +
+                    "landscape = config.orientation ==\n" +
                         "                Configuration.ORIENTATION_LANDSCAPE,",
                     "landscape = false,",
+                ),
+            // ⚠ 這一條是**批 1 交出去的那一版**：判準只看方向，沒有任何尺寸項。
+            //   實測平板橫屏照樣進全螢幕，宿主被整片換掉而鍵盤只用掉三成高度。
+            "把尺寸那一項拿掉（批 1 的做法，平板上宿主會被整片換掉）" to
+                src.replace(
+                    "            screenHeightDp = config.screenHeightDp.toFloat(),\n" +
+                        "            imeHeightDp = imeHeightDp(),\n",
+                    "",
+                ),
+            // 尺寸有傳，但鍵盤高是一個從手機量來的常數 —— 那正是這一輪修的
+            // 缺陷的來源形狀（「一個裝置上的量測被當成普遍事實」）。
+            "鍵盤高寫死成手機上量到的 324dp" to
+                src.replace(
+                    "    private fun imeHeightDp(): Float {",
+                    "    private fun imeHeightDp(): Float {\n        return 324f\n    }\n" +
+                        "    private fun imeHeightDpDead(): Float {",
                 ),
             "刪掉 onCreateExtractTextView 的覆寫（那一條會變回系統畫的）" to
                 src.replace(
@@ -245,6 +350,28 @@ class HostEditorPolicyTest {
                     out += "onEvaluateFullscreenMode() 沒有把「現在是不是橫屏」讀進去 —— " +
                         "答案寫死的話橫屏就沒有 extract，宿主的輸入框會被鍵盤蓋掉 100%"
                 }
+                // ⚠ 同一個形狀的第二次:判準補上尺寸之後,「問了但尺寸寫死」
+                //   一樣會讓平板橫屏整片被換掉。所以守的是**兩個尺寸都真的
+                //   從當下量進去**,不是「有沒有傳參數」。
+                if (!fullscreen.contains("config.screenHeightDp")) {
+                    out += "onEvaluateFullscreenMode() 沒有把螢幕高讀進去 —— " +
+                        "沒有尺寸那一項的話,平板／摺疊機展開後照樣進全螢幕," +
+                        "宿主被整片換掉而鍵盤只用掉三成高度"
+                }
+                if (!fullscreen.contains("imeHeightDp()")) {
+                    out += "onEvaluateFullscreenMode() 沒有把鍵盤高讀進去 —— " +
+                        "判準是「宿主還剩不剩得下」,不是「螢幕大不大」;" +
+                        "少了這一項,使用者把鍵盤拉得很高時就不會進全螢幕了"
+                }
+            }
+
+            // 鍵盤高必須是**當下算出來的**,不是一個常數。
+            val imeHeight = bodyOf(src, "private fun imeHeightDp(): Float {")
+            if (imeHeight == null) {
+                out += "沒有 imeHeightDp() —— 全螢幕判準拿不到鍵盤高度"
+            } else if (!imeHeight.contains("geometry.budget(")) {
+                out += "imeHeightDp() 沒有走 KeyGeometry.budget() —— " +
+                    "寫死一個高度的話,換主題與使用者拖曳調高度都不會反映在判準上"
             }
 
             // extract 那一條必須是我們畫的（G46 抱怨的正是「那一條吃不到主題」），
