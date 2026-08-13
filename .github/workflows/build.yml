@@ -39,7 +39,11 @@ on:
     # 單行陣列 [main, a, b] 會讓每一條都改同一行 = 必然衝突。
     branches:
       - main
-      - ship  # TEMP-SHIP-WIRING 併回 main 前拿掉
+      # TEMP-SHIP-WIRING: 下一行併回 main 前拿掉。⚠ 註解要自己一行 ——
+      # verify_syllables.sh --check-ci --self-test 會用
+      #   sed -E "s|^([[:space:]]*)- ship$|…|"
+      # 備出「分支不在 branches: 裡」那一份來證明這一關會紅,行尾跟了註解就備不出來。
+      - ship
   pull_request:
     branches:
       - main

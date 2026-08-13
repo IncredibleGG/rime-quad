@@ -100,7 +100,16 @@ if ! grep -qE '^  page_size: 5$' "$OUT_SHARED/default.yaml"; then
 上游可能改了鍵名或預設值。確認之後再更新這一段 —— 不要直接拿掉這道檢查,
 拿掉的下場是候選數靜靜地退回上游的桌面預設。"
 fi
-sed -i 's/^  page_size: 5$/  page_size: 9/' "$OUT_SHARED/default.yaml"
+# ⚠ 不用 sed -i：GNU sed 的 -i 後綴是選用的，BSD/macOS sed 的**是必要的**。
+#   sed -i 's/…/' file 在 macOS 上會把指令碼當成備份後綴、把檔名當成指令碼，
+#   於是一個檔案運算元都不剩、改讀 stdin，死在：
+#       sed: -I or -i may not be used with stdin
+#   四端共用的腳本不能只在 Linux 上對 —— 這一條是 macOS 車道實際紅
+#   出來的（b1/cand 兩批在合進 ship 之前從沒有上過 macOS 車道）。
+#   寫暫存檔再換過去：兩種 sed 都吃得下，而且不必為 -i '' 分平台。
+_page_size_tmp="$OUT_SHARED/default.yaml.tmp.$$"
+sed 's/^  page_size: 5$/  page_size: 9/' "$OUT_SHARED/default.yaml" > "$_page_size_tmp"
+mv "$_page_size_tmp" "$OUT_SHARED/default.yaml"
 grep -qE '^  page_size: 9$' "$OUT_SHARED/default.yaml" || die "page_size 沒有改成 9"
 note "menu/page_size: 5 → 9（上游是桌面預設；9 = 序號還叫得出名字的上界，且量得出畫得完）"
 
