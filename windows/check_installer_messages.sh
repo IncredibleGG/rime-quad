@@ -31,11 +31,32 @@
 #    Inno 自己的翻譯守則第一條就是這個,而它壞掉的長相是
 #    「對話框裡少了一段、或多出一個 %2」—— 使用者會覺得軟體壞了。
 #
+# ══ 參考檔從哪裡來(2026-08-13 改) ══════════════════════════════════
+#
+# 覆核時實跑:
+#
+#     $ bash windows/check_installer_messages.sh              EXIT=1
+#     $ REFERENCE_ISL=/tmp/Default.isl bash …                 EXIT=0
+#
+# 也就是說「這一關是綠的」靠的是一個**不在版控裡、8/9 隨手放在 /tmp 的
+# 檔案** —— 換一台機器、或那台機器清一次 /tmp 就不成立,而且沒有人會知道。
+# 那是一種比紅燈更糟的狀態:看起來有守門,實際上守門的條件寫在某個人的
+# 記憶裡。
+#
+# 所以參考檔收進版控了(windows/third_party/inno/Default.isl,provenance 見
+# 同目錄的 README.md),而且**釘 sha256** —— 它是這一關的**對照答案**,
+# 刪掉裡面一句就等於讓那一句永遠不算「漏翻」。
+#
+# 優先序,由高到低:
+#   1. REFERENCE_ISL=<路徑>    明確指定,不動聲色地相信呼叫者(不驗 sha)
+#   2. ISCC 旁邊的那一份        **CI 走這條**。runner 真的拿去編譯的版本,
+#                               這一次才算數。
+#   3. 版控裡的那一份           沒有 ISCC 的機器(開發機)走這條,會明白說出
+#                               「用的是替身」,並驗 sha256。
+#
 # 用法:
-#   windows/check_installer_messages.sh                 (自己找 ISCC 的 Default.isl)
+#   windows/check_installer_messages.sh                 (照上面的優先序自己找)
 #   REFERENCE_ISL=<路徑> windows/check_installer_messages.sh
-#       ← 開發機(Linux)上用這個,拿一份下載回來的 Default.isl 對照。
-#         注意:那一份的版本不一定與 runner 上的相同,**CI 上的那一次才算數**。
 set -euo pipefail
 
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
@@ -55,33 +76,72 @@ SELF_CHECK=0
 [ "${1:-}" = "--self-check" ] && SELF_CHECK=1
 
 # ── 找 Default.isl ────────────────────────────────────────────────
+#
+# 版控裡那一份的 sha256(**去掉 CR 之後**才算)。
+# ⚠ 為什麼不是檔案原樣的 sha:那一份是 CRLF 的,而 git 的換行正規化只要
+#   在哪一台機器上被打開,原樣的 sha 就會變 —— 那時紅的是這一關,而
+#   安裝程式的翻譯一個字都沒動。要擋的是「有人動了對照答案」,不是換行。
+REF_ISL_VENDORED="${SCRIPT_DIR}/third_party/inno/Default.isl"
+REF_ISL_SHA256=14267c5b21dfeb33e1bc65455f7b59d8443132fea13f351e251a316b95b0178e
+
+# ⚠ 印的是「來源<TAB>路徑」,不是只有路徑。
+#   在函式裡設全域變數再由 `$(...)` 取路徑是行不通的 —— 命令替換跑在
+#   **子殼**裡,那個變數回不到這裡,而 case 會靜靜地一個分支都不match
+#   (實測第一版就是這樣:sha256 那一關整段沒跑,輸出看起來卻很正常)。
 find_isl() {
-  if [ -n "${REFERENCE_ISL:-}" ]; then echo "${REFERENCE_ISL}"; return; fi
+  if [ -n "${REFERENCE_ISL:-}" ]; then
+    printf 'REFERENCE_ISL\t%s\n' "${REFERENCE_ISL}"; return
+  fi
   local p
   for p in \
     "/c/Program Files (x86)/Inno Setup 6/Default.isl" \
     "/c/Program Files/Inno Setup 6/Default.isl" \
     "/c/ProgramData/chocolatey/lib/InnoSetup/tools/Default.isl"
   do
-    [ -f "${p}" ] && { echo "${p}"; return; }
+    [ -f "${p}" ] && { printf 'ISCC\t%s\n' "${p}"; return; }
   done
   # ISCC 在 PATH 上時,Default.isl 就在它旁邊。
   if command -v ISCC.exe >/dev/null 2>&1; then
     local d
     d="$(dirname "$(command -v ISCC.exe)")"
-    [ -f "${d}/Default.isl" ] && { echo "${d}/Default.isl"; return; }
+    [ -f "${d}/Default.isl" ] && { printf 'ISCC\t%s\n' "${d}/Default.isl"; return; }
   fi
-  echo ""
+  # 沒有 ISCC 的機器(開發機)。版控裡有一份,見 third_party/inno/README.md。
+  if [ -f "${REF_ISL_VENDORED}" ]; then
+    printf 'vendored\t%s\n' "${REF_ISL_VENDORED}"; return
+  fi
+  printf '\t\n'
 }
 
-ISL="$(find_isl)"
+IFS=$'\t' read -r ISL_SOURCE ISL <<< "$(find_isl)"
 # ⚠ 找不到就**明確地失敗**,不要安靜地通過。
 #   一支「找不到參考檔就說沒問題」的檢查,正是這個專案抓過最多次的
 #   那種失敗模式:測試是綠的,因為它沒在測。
+#   ——— 而現在版控裡就有一份,走到這裡等於那一份被刪了。
 [ -n "${ISL}" ] || die "找不到 Inno 的 Default.isl。
-  CI 上它在 ISCC 旁邊;開發機上請設 REFERENCE_ISL=<下載回來的 Default.isl>。
+  版控裡本來有一份:${REF_ISL_VENDORED}(見同目錄 README.md)—— 它不見了嗎?
+  CI 上用的是 ISCC 旁邊那一份;要指定別的請設 REFERENCE_ISL=<路徑>。
   **不要把這一步改成找不到就跳過** —— 那等於把一個沒有人在看的東西寫成綠燈。"
-log "參考:${ISL}"
+
+case "${ISL_SOURCE}" in
+  ISCC)
+    log "參考:${ISL}(ISCC 旁邊的那一份 —— 這一次算數)" ;;
+  REFERENCE_ISL)
+    log "參考:${ISL}(REFERENCE_ISL 指定)"
+    echo "     ⚠ 這是呼叫者指定的檔案,不驗 sha256。CI 上的那一次才算數。" >&2 ;;
+  vendored)
+    # 版控裡那一份是**對照答案**:少掉一句,那一句就永遠不算漏翻。
+    got="$(tr -d '\r' < "${ISL}" | sha256sum | cut -d' ' -f1)"
+    [ "${got}" = "${REF_ISL_SHA256}" ] || die "版控裡的參考檔被動過了:
+  ${ISL}
+  期望(去掉 CR 後)sha256 = ${REF_ISL_SHA256}
+  實際                    = ${got}
+  它是這一關的對照答案,刪掉裡面一句就等於讓那一句永遠不算漏翻。
+  真的要換版本的話,連同 REF_ISL_SHA256 與 third_party/inno/README.md 一起改。"
+    log "參考:${ISL}(版控裡的替身,sha256 對得上)"
+    echo "     這台機器沒有 ISCC,用的是版控裡那一份 Inno 6.5.0 的原文。" >&2
+    echo "     **CI 上對著 runner 自己的 Default.isl 跑的那一次才算數。**" >&2 ;;
+esac
 
 # ── 刻意不翻的 ────────────────────────────────────────────────────
 #
@@ -137,7 +197,13 @@ extract_ids "${ISL}" Messages | LC_ALL=C sort -u > "${tmp}/ref.txt"
 extract_ids "${ISS}" Messages | LC_ALL=C sort -u > "${tmp}/ours.txt"
 n_ref="$(wc -l < "${tmp}/ref.txt" | tr -d ' ')"
 n_ours="$(wc -l < "${tmp}/ours.txt" | tr -d ' ')"
-[ "${n_ref}" -gt 100 ] || die "只從 ${ISL} 抽出 ${n_ref} 個訊息 ID —— 解析壞了"
+# ⚠ 下界從 100 提到 250。參考檔**就是**這一關的對照答案:它少掉一段,
+#   那一段就不再算「漏翻」,而輸出仍然是一片綠字。100 這個數字擋得住
+#   「CRLF 沒處理好、抽出 0 個」,擋不住「參考檔被截掉一半」。
+#   Inno 6.5.0 是 281 句;真的哪天官方少於 250,連同這個數字一起改,
+#   而那時要改的人會被迫看一眼為什麼。
+[ "${n_ref}" -ge 250 ] || die "只從 ${ISL} 抽出 ${n_ref} 個訊息 ID(下界 250)——
+  要嘛解析壞了,要嘛這份參考檔不完整。參考檔不完整時這一關會安靜地變綠。"
 log "Default.isl ${n_ref} 句;我們覆蓋 ${n_ours} 句"
 
 fail=0
@@ -291,7 +357,23 @@ if [ "${SELF_CHECK}" -eq 1 ]; then
     die "訊息值裡植入了 Markdown,檢查竟然還通過"
   fi
   log "  ✓ 訊息值裡有 ** 會紅"
-  echo "  (註:上面那兩次是用改過的複本跑的,不影響版控裡那一份)"
+
+  # (c) 參考檔本身就是**對照答案** → 所以它必須釘 sha256
+  #
+  # 把同一句從 .iss 與參考檔裡**一起**刪掉:上面 (a) 是紅的,這裡必須變綠。
+  # 那正是「參考檔少一句 = 那一句永遠不算漏翻」的證據 —— 也就是為什麼
+  # 版控裡那一份要驗 sha256,而不是隨便一個 /tmp 裡的檔案都可以。
+  probe_isl="${tmp}/probe.isl"
+  grep -v '^ButtonYes=' "${ISL}" > "${probe_isl}"
+  grep -v '^ButtonYes=' "${ISS}" > "${probe}"
+  if ISS_OVERRIDE="${probe}" REFERENCE_ISL="${probe_isl}" \
+     bash "${BASH_SOURCE[0]}" >/dev/null 2>&1; then
+    log "  ✓ 參考檔裡也刪掉同一句,就不再算漏翻(所以那一份要釘 sha256)"
+  else
+    die "把參考檔與 .iss 裡的同一句一起刪掉,這一關竟然還是紅的 ——
+  這個反向測試沒有測到它想測的東西,參考檔的角色可能已經不是對照答案了。"
+  fi
+  echo "  (註:上面那三次都是用改過的複本跑的,不影響版控裡那一份)"
 fi
 
 echo

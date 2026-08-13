@@ -1,0 +1,3 @@
+# 這一份是 Inno 的英文原文,當對照表用(見 windows/third_party/inno/README.md)。
+# 它是 CRLF 的,而 check_installer_messages.sh 拿它當對照答案 —— 不要讓 git 動它的換行。
+windows/third_party/inno/Default.isl -text
