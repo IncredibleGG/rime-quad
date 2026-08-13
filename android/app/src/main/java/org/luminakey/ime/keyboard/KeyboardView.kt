@@ -314,7 +314,7 @@ private fun ExpandButton(
     Box(
         modifier = Modifier
             .fillMaxHeight()
-            .width(40.dp)
+            .width(CANDIDATE_BAR_BUTTON_DP.dp)
             .semantics(mergeDescendants = true) {
                 contentDescription = desc
                 role = Role.Button
@@ -946,6 +946,18 @@ private fun CandidateBar(
 }
 
 /**
+ * 候選列右端那幾顆方鍵（上一頁／下一頁／展開）的觸控目標寬度。
+ *
+ * ⚠ **這是唯一的一份,而且 scripts/verify_candbar.sh 讀它。** 那支腳本從前
+ * 把翻頁鍵寫成「螢幕最右端那一點」;展開鍵搬進候選列之後,那一點變成了
+ * 展開鍵 —— 於是它整輪點的都是展開鍵,而**照樣全綠**(artifact 的檔名叫
+ * 2-page2.png,畫面上卻是第 1 頁的展開面板)。現在它從這個常數與主題
+ * 算出座標。改這個數字,腳本會自動跟上;改成不是 `= 數字` 的形式,
+ * 腳本會**當場報錯**,不會安靜地算錯。
+ */
+internal const val CANDIDATE_BAR_BUTTON_DP = 40
+
+/**
  * 候選列右端的上一頁／下一頁。
  *
  * **按不動的那一顆不畫**，理由與實測值見 [Pager.State]：那 40 dp 是真的把
@@ -987,7 +999,7 @@ private fun PageArrow(
         modifier = Modifier
             .fillMaxHeight()
             // 觸控目標要夠大 —— 一個 14sp 的字元只有十幾 dp 寬,那是點不到的。
-            .width(40.dp)
+            .width(CANDIDATE_BAR_BUTTON_DP.dp)
             .semantics(mergeDescendants = true) {
                 contentDescription = description
                 role = Role.Button
