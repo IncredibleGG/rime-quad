@@ -132,7 +132,7 @@
 #                          什麼都不會發生。單元測試與掃原始碼的檢查都攔不住它。
 #   --plant tap-passthrough 一格的點擊一律走原鍵自己的 onEvent → **被接管**的
 #                          那幾格只剩 tap = ActionVerb.NOOP,點讀音沒有反應
-#                          → 第 4 關必須紅(點了 pin,候選列上還有 qin)。
+#                          → 第 4 關必須紅(點了 pin,候選列/消歧欄上還有 qin)。
 #                          ⚠ 覆核把這個植入描述成「鍵面寫著讀音,按下去打出標點」。
 #                            實測不是:T9Syllables.slotKey 把被接管那一格的 send
 #                            清成 null、tap 設成 NOOP,而 RimeInputMethodService
@@ -224,7 +224,7 @@ plant_expect_re() {
     narrow-scope) echo '少於下界' ;;
     bad-slot-ids) echo '消歧欄上讀不到 ni/mi' ;;
     tap-swallowed) echo '按下去什麼都不做的標點鍵' ;;
-    tap-passthrough) echo '候選列上還有 qin' ;;
+    tap-passthrough) echo '(候選列|消歧欄)上還有 qin' ;;
     *) echo '' ;;
   esac
 }
@@ -1629,9 +1629,30 @@ PY
   read_frame || { fail "$LAYOUT:第 4 關(點完)讀不到 IME 視窗 frame"; continue; }
   shot "$LOUT/4-picked-pin.png"
 
-  # ⛔ **先證明畫面真的動了,再問「還有沒有 qin」。**
-  #   「讀不到 qin」有兩種成因:一種是收斂了(要的),一種是那一塊根本沒東西
-  #   可讀(空字串永遠不含 qin)—— 而後者正是這一關最容易做出來的假綠燈。
+  # ⛔ **「還有沒有 qin」要排在「畫面動了沒有」前面。**
+  #
+  # 兩道防線都留著,只是順序反了會把這一關的牙齒拔掉:
+  # `--plant tap-passthrough` 植入之下,點讀音那一下**本來就不會有任何效果**
+  # —— 於是「畫面幾乎沒變」先踩紅並 continue,而這一關真正在守的那一條
+  # (「點了 pin,上面還有 qin」)永遠跑不到。實測 2026-08-14:MOVED=0‰ 先紅,
+  # 反向測試因此判成「紅的不是該紅的那一條」—— CI 的 emulator job 相對 main 由綠轉紅。
+  #
+  # 排好之後兩道各守各的:
+  #   還讀得到 qin → 那就是缺陷本身,不必先問畫面動了沒有(畫面沒動正是症狀)。
+  #   讀不到 qin   → 這時候才需要「畫面真的變了」當佐證:「讀不到 qin」有兩種成因,
+  #                   一種是收斂了(要的),一種是那一塊根本沒東西可讀(空字串永遠不含
+  #                   qin)—— 而後者正是這一關最容易做出來的假綠燈。
+  if [ -n "$SLOT_LINE" ]; then
+    OCR4="$(ocr_region "$LOUT/4-picked-pin.png" "$LOUT/4-candbar.txt" qin 2>&1)"; RC4=$?
+    WHERE4="消歧欄"
+  else
+    OCR4="$(ocr_candbar "$LOUT/4-picked-pin.png" "$LOUT/4-candbar.txt" 2>&1)"; RC4=$?
+    WHERE4="候選列"
+  fi
+  info "$OCR4"
+  # ⚠ 收斂之後消歧欄可能整條收起來(只剩一個讀音,門檻是 2)。那時候 ocr_region
+  #   會回非 0 或空字串 —— 兩者都表示「上面沒有 qin」,而那正是下面 MOVED 那一道要佐證的。
+  T4="$(cat "$LOUT/4-candbar.txt" 2>/dev/null || echo)"
   MOVED="$(python3 - "$LOUT/3-pgm.png" "$LOUT/4-picked-pin.png" "$FRAME_TOP" "$FRAME_BOT" <<'PYM'
 import sys
 from PIL import Image, ImageChops
@@ -1645,28 +1666,15 @@ print(int(round(n * 1000.0 / (d.size[0] * d.size[1]))))
 PYM
 )"
   info "$LAYOUT:點了 pin 之後 IME 視窗變了 ${MOVED}‰"
-  if [ "${MOVED:-0}" -lt 3 ]; then
-    fail "$LAYOUT:點了 pin 之後畫面幾乎沒變(${MOVED}‰)—— 那一下沒有落在 pin 上,"
-    fail "  或者改寫被判成失敗、輸入串被還原。這時候「讀不到 qin」不算數。"
-    continue
-  fi
-
-  if [ -n "$SLOT_LINE" ]; then
-    OCR4="$(ocr_region "$LOUT/4-picked-pin.png" "$LOUT/4-candbar.txt" qin 2>&1)"; RC4=$?
-    WHERE4="消歧欄"
-  else
-    OCR4="$(ocr_candbar "$LOUT/4-picked-pin.png" "$LOUT/4-candbar.txt" 2>&1)"; RC4=$?
-    WHERE4="候選列"
-  fi
-  info "$OCR4"
-  # ⚠ 收斂之後消歧欄可能整條收起來(只剩一個讀音,門檻是 2)。那時候 ocr_region
-  #   會回非 0 或空字串 —— 兩者都表示「上面沒有 qin」,而畫面真的變了這件事
-  #   已經由上面那一段證明過。
-  T4="$(cat "$LOUT/4-candbar.txt" 2>/dev/null || echo)"
   if echo "$T4" | grep -qw qin; then
-    fail "$LAYOUT:點了 pin,$WHERE4 上還有 qin(「$T4」)—— 候選沒有收斂。"
-    fail "  這就是真機回報的那一條:改寫被判成失敗、輸入串被還原,畫面一動也不動。"
+    fail "$LAYOUT:點了 pin,${WHERE4}上還有 qin(「$T4」)—— 候選沒有收斂。"
+    fail "  這就是真機回報的那一條:改寫被判成失敗、輸入串被還原,畫面只變了 ${MOVED}‰。"
     fail "  截圖 $LOUT/4-picked-pin.png"
+  elif [ "${MOVED:-0}" -lt 3 ]; then
+    fail "$LAYOUT:$WHERE4 上讀不到 qin,但點了 pin 之後畫面幾乎沒變(${MOVED}‰)——"
+    fail "  那一下沒有落在 pin 上,或者改寫被判成失敗、輸入串被還原。"
+    fail "  這時候「讀不到 qin」不算數。截圖 $LOUT/4-picked-pin.png"
+    continue
   else
     pass "$LAYOUT:點了 pin 之後 $WHERE4 上不再有 qin(\"$T4\",畫面變了 ${MOVED}‰)"
   fi

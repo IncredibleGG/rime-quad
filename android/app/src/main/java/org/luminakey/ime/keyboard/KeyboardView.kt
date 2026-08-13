@@ -1656,7 +1656,22 @@ private fun KeyGrid(
                             else SelectionDigitKeys.digitOf(slot.key)?.let { d ->
                                 SelectionDigitKeys.act(
                                     digit = d,
-                                    composing = state.preedit.isNotEmpty() &&
+                                    // ⛔ **問引擎有沒有輸入串,不要問顯示用的 preedit。**
+                                    //
+                                    // 這裡實際上問的是「點下去會不會毀掉使用者已經打好的東西」
+                                    // —— 而那件事只有引擎答得出來。`state.preedit` 是
+                                    // 畫面那一層的東西:九宮格是雙編碼,它拿到的是
+                                    // 代表字母串(`MG GAM`),而 #68 之後這串在宿主與候選列
+                                    // 上都被濾成空字串 —— 拿「畫不畫得出來」當「有沒有在組字」,
+                                    // 兩者不同步的那一刻就是把數字送回引擎、被
+                                    // `recognizer/patterns` 收走、組字變成 `3⋯` 的那一刻。
+                                    //
+                                    // ⊙ 候選非空是**充分**條件(有候選就一定在組字),
+                                    //   但不是必要條件:引擎在組字而**本頁一個候選都沒有**時,
+                                    //   [SelectionDigitKeys.act] 的答案是 `Ignore`(什麼都不做)——
+                                    //   而舊判準在那一格會答 `SendDigit`,也就是把數字送回引擎。
+                                    //   兩個答案差的正好是「毀不毀掉組字」。
+                                    composing = state.status.isComposing ||
                                         state.candidates.isNotEmpty(),
                                     selectableIndices = selectableCandidates,
                                 )
