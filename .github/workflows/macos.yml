@@ -17,7 +17,7 @@ name: macOS (核心 + 輸入法 + 設定介面)
 
 on:
   push:
-    branches: [main, ship]  # TEMP-SHIP-WIRING 併回 main 前改回 [main]
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:

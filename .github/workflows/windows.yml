@@ -34,7 +34,7 @@ name: Windows (核心驗證 + TSF)
 
 on:
   push:
-    branches: [main, ship]  # TEMP-SHIP-WIRING 併回 main 前改回 [main]
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:

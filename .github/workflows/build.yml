@@ -39,11 +39,6 @@ on:
     # 單行陣列 [main, a, b] 會讓每一條都改同一行 = 必然衝突。
     branches:
       - main
-      # TEMP-SHIP-WIRING: 下一行併回 main 前拿掉。⚠ 註解要自己一行 ——
-      # verify_syllables.sh --check-ci --self-test 會用
-      #   sed -E "s|^([[:space:]]*)- ship$|…|"
-      # 備出「分支不在 branches: 裡」那一份來證明這一關會紅,行尾跟了註解就備不出來。
-      - ship
   pull_request:
     branches:
       - main
@@ -417,12 +412,10 @@ jobs:
     #   不跑,而**被跳過的 job 在 checks 上是灰色的勾**,和跑過而且通過長得
     #   一模一樣。現在 verify_syllables.sh --check-ci 看得懂這兩道閘門了
     #   (scripts/ci_branch_gate.py),再漏一次會當場紅。
-    # TEMP-SHIP-WIRING: ship 那一行併回 main 前拿掉(連同上面 on: 的那一行)
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' &&
-       (github.ref == 'refs/heads/main' ||
-        github.ref == 'refs/heads/ship'))
+       github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
