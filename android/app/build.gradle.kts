@@ -42,6 +42,9 @@ val rimeUserData = rimeRepoRoot.dir("core/data/user")
 val rimeLayouts = rimeRepoRoot.dir("core/layouts")
 val rimeThemes = rimeRepoRoot.dir("core/themes")
 val rimeSchemaLanguages = rimeRepoRoot.file("core/schema-languages.json")
+// 「按數字鍵真的選得到第 N 個嗎」的實測表(§8.6.1.1)。與上面那一份一樣是
+// 宣告式資料,由 scripts/verify_selection_digit.sh 在真機上量出來。
+val rimeSelectionDigits = rimeRepoRoot.file("core/selection-digit.tsv")
 
 // 主題／佈局格式規範。不是建置的輸入，是**測試**的輸入：
 // DiagnosticCodeSpecTest 直接讀 §6.5.1 的碼表（見下方 tasks.withType<Test>）。
@@ -85,6 +88,7 @@ val syncRimeData = tasks.register<Sync>("syncRimeData") {
     // 方案 → BCP 47 語言標記的對照表（scripts/schema_store/languages.py 產生）。
     // 選單分組讀的是這一份加上索引裡的 language 欄位；兩者都沒有時才退回啟發式。
     from(rimeSchemaLanguages) { into("rime") }
+    from(rimeSelectionDigits) { into("rime") }
     doFirst {
         if (!rimeSharedData.asFile.isDirectory) {
             logger.warn(

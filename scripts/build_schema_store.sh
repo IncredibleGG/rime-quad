@@ -41,6 +41,8 @@ DIST="$ROOT/build/schema-store"          # 產物：zip 與 index.json
 WORK="$DIST/_work"                       # 中間產物：clone、staging、驗證結果
 SDK="${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}"
 ADB="$SDK/platform-tools/adb"
+# shellcheck source=lib/device.sh
+. "$ROOT/scripts/lib/device.sh"
 
 # R2 發布位置（見 /home/lc/R2-ACCESS.md）。我們只碰 rime/schemas/ 這條路徑。
 R2_REMOTE="r2:tgapk/rime/schemas"
@@ -116,15 +118,10 @@ if run_phase verify; then
   "$ROOT/scripts/emu.sh" status >/dev/null 2>&1 || "$ROOT/scripts/emu.sh" start
   # 這台機器上可能同時有多個模擬器（其他 agent 在用）。預設綁 emulator-5554，
   # 需要時以 RIME_EMU_SERIAL 覆寫；只有它不在時才退而挑第一個可用的。
-  SERIAL="${RIME_EMU_SERIAL:-}"
-  if [ -z "$SERIAL" ]; then
-    if "$ADB" devices | grep -q "^emulator-5554	device"; then
-      SERIAL=emulator-5554
-    else
-      SERIAL="$("$ADB" devices | awk '/emulator-[0-9]+\tdevice/{print $1; exit}')"
-      [ -n "$SERIAL" ] && echo "  [注意] emulator-5554 不在，改用 $SERIAL"
-    fi
-  fi
+  # ⛔ 這一段從前明著優先綁 emulator-5554,而那台是**別條線**的機器。
+  #   第三個變數名 RIME_EMU_SERIAL 也一併收斂到 RIME_SERIAL:同一件事三個名字,
+  #   帶對了一個而另外兩個不看,是「帶了也沒用」的另一種形狀。
+  SERIAL="$(rs_pick_serial "$ADB")" || SERIAL=""
   [ -n "$SERIAL" ] || die "找不到模擬器"
   echo "  裝置 $SERIAL，平行度 $JOBS"
   python3 "$LIB/verify.py" --work "$WORK" --adb "$ADB" --serial "$SERIAL" \

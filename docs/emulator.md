@@ -115,7 +115,10 @@ export ANDROID_SDK_ROOT=$HOME/Android/Sdk
 (讓截圖穩定)並解除鎖定畫面。
 
 可用環境變數:`ANDROID_SDK_ROOT`、`RIME_AVD`、`RIME_EMU_PORT`、`RIME_BOOT_TIMEOUT`、
-`RIME_EMU_GPU`、`RIME_RUN_DIR`。要同時跑多台模擬器就改 `RIME_EMU_PORT`(例如 5556)。
+`RIME_EMU_GPU`、`RIME_RUN_DIR`。
+
+⚠ **已經有裝置在線時 `RIME_EMU_PORT` 是必填的**(見第 7 節第 6 點):`emu.sh` 是
+唯一有權決定 port 的地方,而它從前的預設 5554 讓「5554 是大家的預設」變成一種信念。
 
 ### `scripts/build_testapp.sh` — 測試靶 APK
 
@@ -255,7 +258,30 @@ CI 裡建議 `verify_ime.sh` 不帶 `--no-start`(它會自己確保模擬器就�
    那條路徑需要模擬**實體按鍵事件**而不是 `input text`,見下一節。
 5. 模擬器日誌在 `.emulator/emulator-<port>.log`,驗證 artifact 在 `build/verify/`,
    兩者都已加入 `.gitignore`,不會進版控。
-6. 同時只跑一台模擬器時 serial 固定是 `emulator-5554`;要並行請用 `RIME_EMU_PORT`。
+6. ⛔ **port 不是身分。** 這一行從前寫的是「同時只跑一台模擬器時 serial 固定是
+   `emulator-5554`」,而這台機器上長期有三到四台在跑 —— 那句話從寫下的那天起就
+   不成立,而它正是所有驗證腳本把 5554 當預設的正當性來源。實測(2026-08-13):
+
+   ```
+   -avd rime_test    -port 5554   (Aug  8 起)
+   -avd lumina_test  (無 -port)   (Aug 11 起) → 落在 5556
+   -avd lumina_test2 -port 5558   (Aug 13 起)
+   ```
+
+   任何一台重開,port 就會換人。**身分是 AVD 名字**:
+
+   ```
+   adb -s emulator-5558 emu avd name                        → lumina_test2
+   adb -s emulator-5558 shell getprop ro.boot.qemu.avd_name  → lumina_test2
+   ```
+
+   所以:每一支裝置端腳本都走 `scripts/lib/device.sh` 的 `rs_pick_serial`,
+   **沒有預設 port**;不只一台在線而沒帶 `RIME_SERIAL` 就中止。做破壞性動作
+   (`pm clear`、`uninstall`、`ime set`、`settings put`)之前還要過
+   `rs_assert_destructive_ok`,而且可以用 `RIME_AVD_EXPECT=<avd 名>` 把身分釘住。
+   每一輪的 artifact 裡會有一份 `device.txt`(序號、AVD、fingerprint、APK 的 sha256)
+   —— 沒有它,「腳本綠了」事後無法覆核:這台機器上三台 AVD 全是 1080×2400 @420dpi,
+   **截圖本身分不出是哪一台**。
 7. 這台機器沒有 passwordless sudo,所有 Android 元件都只裝在 `~/Android/Sdk`,
    不需要 root 權限。安裝新的 SDK 套件請用 `sdkmanager`,並注意同一時間只能有一個
    `sdkmanager` 行程(會搶 SDK 鎖)。

@@ -42,7 +42,11 @@ ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}"
 export ANDROID_SDK_ROOT
 export ANDROID_HOME="$ANDROID_SDK_ROOT"
 ADB="$ANDROID_SDK_ROOT/platform-tools/adb"
-SERIAL="emulator-${RIME_EMU_PORT:-5554}"
+# shellcheck source=lib/device.sh
+. "$SCRIPT_DIR/lib/device.sh"
+# ⛔ 這一支從前寫死 `emulator-${RIME_EMU_PORT:-5554}`,連 RIME_SERIAL 都不看,
+#   也沒有 --serial —— 帶了也沒用。現在三個入口都有,而且沒有預設 port。
+SERIAL=""
 
 # --------------------------------------------------------------- 參數解析 ---
 
@@ -65,6 +69,7 @@ while [ $# -gt 0 ]; do
     --out)     OUT_DIR="$2"; shift 2 ;;
     --no-start)    AUTO_START=0; shift ;;
     --restore-ime) RESTORE_IME=1; shift ;;
+    --serial)  SERIAL="$2"; shift 2 ;;
     -h|--help) sed -n '2,45p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "未知選項:$1" >&2; exit 2 ;;
   esac

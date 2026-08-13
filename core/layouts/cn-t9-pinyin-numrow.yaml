@@ -145,9 +145,15 @@ layers:
           # ⚠ 沒有 `style`（＝ default，白色），與 cn-t9-pinyin 同步：分詞送的是
           # 音節分隔符，屬於打字而不是操作鍵盤，且它坐在中間 3×3 裡面。
           # 完整規則見 cn-t9-pinyin.yaml 檔頭「鍵的顏色代表什麼」。
-          - { id: "delim", label: "分詞", hint: "1", width: 2.2, send: { keysym: "apostrophe" } }
-          - { id: "k_abc", label: "abc", hint: "2", width: 2.2, send: { keysym: "A" } }
-          - { id: "k_def", label: "def", hint: "3", width: 2.2, send: { keysym: "D" } }
+          # ⚠ **這一層不放數字 hint。**
+          #  T9 的 1–9 標號是電話鍵盤的既有慣例,而這一份佈局**已經有一排真的
+          #  數字鍵**(上面那一列 n1–n9)。兩者並存的話,同一個數字在畫面上有兩份、
+          #  意義還不同:`n3` 送 `3`,而 `k_def` 的角落小字寫著 3 卻送 `D`。
+          #  這一份檔案自己在 `en` 層講過這條規矩(「換成真的鍵之後那排 hint
+          #  一併拿掉」),`t9` 層漏做 —— 上一輪加數字列時新造出來的九顆。
+          - { id: "delim", label: "分詞", width: 2.2, send: { keysym: "apostrophe" } }
+          - { id: "k_abc", label: "abc", width: 2.2, send: { keysym: "A" } }
+          - { id: "k_def", label: "def", width: 2.2, send: { keysym: "D" } }
           - id: "backspace"
             icon: backspace
             width: 1.7
@@ -168,9 +174,9 @@ layers:
                 - { label: "…", send: { text: "…" } }
                 - { label: "—", send: { text: "—" } }
                 - { label: "～", send: { text: "～" } }
-          - { id: "k_ghi", label: "ghi", hint: "4", width: 2.2, send: { keysym: "G" } }
-          - { id: "k_jkl", label: "jkl", hint: "5", width: 2.2, send: { keysym: "J" } }
-          - { id: "k_mno", label: "mno", hint: "6", width: 2.2, send: { keysym: "M" } }
+          - { id: "k_ghi", label: "ghi", width: 2.2, send: { keysym: "G" } }
+          - { id: "k_jkl", label: "jkl", width: 2.2, send: { keysym: "J" } }
+          - { id: "k_mno", label: "mno", width: 2.2, send: { keysym: "M" } }
           - { id: "clear", label: "重輸", width: 1.7, style: modifier, tap: "clear" }
 
       - weight: 1.0
@@ -186,9 +192,9 @@ layers:
                 - { label: "！", send: { keysym: "exclam" } }
                 - { label: "·", send: { text: "·" } }
                 - { label: "…", send: { text: "…" } }
-          - { id: "k_pqrs", label: "pqrs", hint: "7", width: 2.2, send: { keysym: "P" } }
-          - { id: "k_tuv",  label: "tuv",  hint: "8", width: 2.2, send: { keysym: "T" } }
-          - { id: "k_wxyz", label: "wxyz", hint: "9", width: 2.2, send: { keysym: "W" } }
+          - { id: "k_pqrs", label: "pqrs", width: 2.2, send: { keysym: "P" } }
+          - { id: "k_tuv",  label: "tuv",  width: 2.2, send: { keysym: "T" } }
+          - { id: "k_wxyz", label: "wxyz", width: 2.2, send: { keysym: "W" } }
           - { id: "d0", label: "0", width: 1.7, style: modifier, send: { keysym: "0" } }
 
       - weight: 1.0

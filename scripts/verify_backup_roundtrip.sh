@@ -61,7 +61,7 @@
 #   ./scripts/verify_backup_roundtrip.sh [--apk <path>] [--no-install]
 #
 # 環境變數:
-#   RIME_EMU_PORT   模擬器 console port(預設 5554)
+#   RIME_SERIAL     裝置序號(沒指定而且不只一台在線就中止 —— port 不是身分)
 #
 set -euo pipefail
 
@@ -70,10 +70,15 @@ ROOT="$(cd "$HERE/.." && pwd)"
 # 產品識別碼的唯一來源。
 # shellcheck source=lib/product.sh
 . "$HERE/lib/product.sh"
+# ⛔ 裝置選擇的唯一入口。沒有預設 port —— 這台機器上長期有三到四台在跑,
+#   而 `adb devices` 以 port 升冪列出,「預設 5554」與「抓第一台」都會
+#   落在同一台**別人的**機器上,然後 pm clear 它。
+# shellcheck source=lib/device.sh
+. "$HERE/lib/device.sh"
 
 SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}"
 ADB="$SDK/platform-tools/adb"
-SERIAL="emulator-${RIME_EMU_PORT:-5554}"
+SERIAL=""
 PKG="$RS_ANDROID_APP_ID"
 RECEIVER="$PKG/$PKG.devtools.BackupHarnessReceiver"
 APK="$ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
@@ -90,6 +95,7 @@ while [ $# -gt 0 ]; do
 done
 
 mkdir -p "$OUT_DIR"
+[ -n "$SERIAL" ] || SERIAL="$(rs_pick_serial "$ADB")" || exit 2
 adbs() { "$ADB" -s "$SERIAL" "$@"; }
 
 FAILED=0
@@ -181,6 +187,7 @@ fi
 # ⚠ **從乾淨的資料開始。** `adb install -r` 會保留資料,於是「還沒教之前」
 # 的基準會是**上一次跑這支腳本學到的詞**,而第 6 步的反向控制組就會誤判成
 # 「沒清乾淨」。實際踩到過一次:基準拿到的是上一輪的 開房/郭嘉/逆號。
+rs_assert_destructive_ok "$ADB" "$SERIAL" "pm clear $PKG" || exit 2
 adbs shell pm clear "$PKG" >/dev/null 2>&1 || true
 
 # 開著設定畫面把行程釘住 —— 學習用的 session 要跨好幾次 broadcast 活著,

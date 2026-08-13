@@ -70,6 +70,8 @@ ADB="$SDK/platform-tools/adb"
 # 產品識別碼的唯一來源,見 scripts/lib/product.env。
 # shellcheck source=lib/product.sh
 . "$HERE/lib/product.sh"
+# shellcheck source=lib/device.sh
+. "$HERE/lib/device.sh"
 # ⚠ 就緒判斷不可以寫成 `logcat | grep -q`:pipefail 之下命中會變成 141
 #   (grep -q 一命中就結束 → 上游 SIGPIPE),於是「有命中」被判成「沒命中」。
 #   改用 lib/logmatch.sh 的 log_has / log_matches —— 它們先收進變數再用內建比對。
@@ -127,11 +129,9 @@ dump_logcat_on_fail() {
 fail() { echo "  [FAIL] $*" >&2; dump_logcat_on_fail; echo >&2; echo "artifact 在:$OUT_DIR" >&2; exit 1; }
 step() { echo; echo "=== $* ==="; }
 
-SERIAL="${RIME_SERIAL:-${ANDROID_SERIAL:-}}"
-if [ -z "$SERIAL" ]; then
-  SERIAL="$("$ADB" devices | awk '/emulator-[0-9]+\tdevice/{print $1; exit}')"
-fi
-[ -n "$SERIAL" ] || fail "找不到已連線的模擬器(可用 RIME_SERIAL 指定)"
+# ⛔ 「抓第一台」= 永遠是 emulator-5554,而這一支會 ime set。改成不猜。
+SERIAL="$(rs_pick_serial "$ADB")" || exit 2
+rs_assert_destructive_ok "$ADB" "$SERIAL" "ime set" || exit 2
 adbs() { "$ADB" -s "$SERIAL" "$@"; }
 "$ADB" -s "$SERIAL" get-state >/dev/null 2>&1 || fail "裝置 $SERIAL 未連線"
 

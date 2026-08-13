@@ -24,7 +24,13 @@ import time
 from collections import Counter
 
 ADB = os.path.expanduser("~/Android/Sdk/platform-tools/adb")
-SERIAL = os.environ.get("RIME_SERIAL", "emulator-5574")
+# ⛔ 沒有預設序號。這一行從前寫死 `emulator-5574` —— 那台現在根本不存在,
+#    而「猜一個不存在的序號」的失敗訊息與「產品壞了」長得不一樣,
+#    「猜一個**存在但是別人的**序號」才是真正的危險。
+SERIAL = os.environ.get("RIME_SERIAL") or os.environ.get("ANDROID_SERIAL")
+if not SERIAL:
+    sys.stderr.write("要指定 RIME_SERIAL=emulator-XXXX —— 這台機器上不只一台模擬器,不猜。\n")
+    sys.exit(2)
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 W = int(os.environ.get("RIME_W", "1440"))
 H = int(os.environ.get("RIME_H", "3120"))

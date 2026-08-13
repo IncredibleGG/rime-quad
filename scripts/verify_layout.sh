@@ -52,7 +52,7 @@
 #   --expect <csv>    每一步之後編輯框應有的內容；'-' = 該步不檢查
 #   --theme <id>      主題（預設 default-light，座標會跟著主題的間距/高度變）
 #   --field <id>      測試靶的欄位型別（預設 text）
-#   --serial <s>      裝置（預設 $RIME_SERIAL，再退回 emulator-$RIME_EMU_PORT）
+#   --serial <s>      裝置（預設 $RIME_SERIAL；沒指定而且不只一台在線就中止）
 #   --no-install      不重新安裝 APK（沿用裝置上已有的）
 #   --no-clear        不做 pm clear（除錯用；正常不要關）
 #   --no-composing-check  不檢查組字區（驗純上屏的佈局，如 numeric-symbol）
@@ -72,10 +72,15 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #   (grep -q 一命中就結束 → 上游 SIGPIPE),於是「有命中」被判成「沒命中」。
 #   改用 lib/logmatch.sh 的 log_has / log_matches —— 它們先收進變數再用內建比對。
 . "$SCRIPT_DIR/lib/logmatch.sh"
+# ⛔ 裝置選擇的唯一入口。沒有預設 port —— 這台機器上長期有三到四台在跑,
+#   而 `adb devices` 以 port 升冪列出,「預設 5554」與「抓第一台」都會
+#   落在同一台**別人的**機器上,然後 pm clear 它。
+# shellcheck source=lib/device.sh
+. "$SCRIPT_DIR/lib/device.sh"
 
 ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}"
 ADB="$ANDROID_SDK_ROOT/platform-tools/adb"
-SERIAL="${RIME_SERIAL:-${ANDROID_SERIAL:-emulator-${RIME_EMU_PORT:-5554}}}"
+SERIAL=""
 
 IME_PKG="$RS_ANDROID_APP_ID"
 IME_ID="${RIME_IME_ID:-$RS_ANDROID_IME_ID}"
@@ -153,7 +158,9 @@ fi
 OUT_DIR="${OUT_DIR:-$PROJECT_ROOT/build/layoutverify/$LAYOUT}"
 mkdir -p "$OUT_DIR"
 
+[ -n "$SERIAL" ] || SERIAL="$(rs_pick_serial "$ADB")" || exit 2
 adbs() { "$ADB" -s "$SERIAL" "$@"; }
+rs_write_device_stamp "$ADB" "$SERIAL" "$OUT_DIR/device.txt" "${APK:-}"
 GEOM="$PROJECT_ROOT/scripts/layout_geom.py"
 [ -f "$GEOM" ] || { echo "找不到 $GEOM" >&2; exit 2; }
 
@@ -206,6 +213,7 @@ if [ "$DO_CLEAR" -eq 1 ]; then
   # 為什麼一定要清：rime session 跨 app 重啟存活。上一輪留下的組字會出現在
   # 這一輪的 preedit 裡（「打了沒打過的字」），驗證截圖因此是髒的，
   # 而且一旦組字沒清乾淨，第一鍵的預期內容就對不上，看起來像佈局壞了。
+  rs_assert_destructive_ok "$ADB" "$SERIAL" "pm clear、ime set" || exit 2
   info "pm clear（回到已知狀態）…"
   adbs shell pm clear "$IME_PKG" >/dev/null 2>&1
   adbs shell pm clear "$TARGET_PKG" >/dev/null 2>&1

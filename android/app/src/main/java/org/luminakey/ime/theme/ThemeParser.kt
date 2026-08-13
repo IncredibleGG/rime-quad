@@ -94,10 +94,16 @@ object ThemeDefaults {
             cornerRadius = m.cornerRadius, minWidth = 0f,
             background = ColorSpec.TRANSPARENT,
             highlightBackground = 0xFF3060C0.toInt(),
-            // §8.6.4.3：預設是**格底一條**，不是實心塊。實心塊的寬度成本是 0
-            // （實測墨跡逐 px 相同），它不是密度的成因 —— 但六個候選並排時，
-            // 一個大色塊會讓其餘五個看起來像背景，而且它正當化了寬內距。
-            highlightStyle = HighlightStyle.UNDERLINE,
+            // §8.6.4.3：預設是**實心塊**，`underline` / `outline` 是可選值。
+            //
+            // ⚠ 上一版把預設改成 `underline`，那是一個**沒有人要求、也買不到
+            //   密度**的外觀變更。使用者抱怨的是候選數量，而實心塊的寬度成本
+            //   實測是 **0**（把 `highlight_background` 換成 transparent 之後
+            //   每一段墨跡座標與原版逐 px 相同）—— 它不是密度的成因。
+            //   這一版把它退回來，讓這一輪畫面上的變化只剩「候選變多」與
+            //   「英文層列高對齊」兩件被要求過的事。
+            //   欄位保留：`intl-ios-*` 那一系日後要寫 `underline` 仍然寫得出來。
+            highlightStyle = HighlightStyle.FILL,
             borderWidth = 0f, borderColor = ColorSpec.TRANSPARENT,
             highlightBorderWidth = 0f, highlightBorderColor = ColorSpec.TRANSPARENT
         ),
@@ -165,10 +171,27 @@ object ThemeParser {
     private val COMMENT_KEYS = setOf("show", "position", "size", "color", "highlight_color")
     private val ITEM_KEYS = setOf(
         "padding_h", "padding_v", "spacing", "corner_radius", "min_width",
-        "background", "highlight_background", "highlight_style",
+        "background", "highlight_background",
         "border_width", "border_color",
         "highlight_border_width", "highlight_border_color"
     )
+
+    /**
+     * `candidates.bar.item` 才認得的欄位（§10 第 9 條的作用域）。
+     *
+     * `highlight_style` 一度放在共用的 [ITEM_KEYS] 裡，於是
+     * `candidates.item.highlight_style`（不限 bar 的那一層）在 Android 上被
+     * 靜靜接受、在 macOS 上是一則 `unknown_field` —— **四端診斷序列當場對不上**，
+     * 而那是最難查的一種紅。它本來就該住在 `bar` 底下：桌面端的候選窗沒有
+     * 「六個並排時大色塊會蓋掉其餘五個」這個問題，`docs/coordination.md` 那一則
+     * 交接也寫著這一批欄位「明文只限 `candidates.bar`，桌面端不受影響」。
+     * 住在共用區是失手，不是設計。
+     *
+     * 改在這一端而不是等 macOS 補：這是唯一不必等別人就成立的解 ——
+     * Windows 今天連主題解析器都沒有（工單 #47），「等四端到齊」在那條路上
+     * 短期內到不了，而中間任何一份第三方主題都會踩到。
+     */
+    private val BAR_ITEM_KEYS = ITEM_KEYS + "highlight_style"
     private val SEPARATOR_KEYS = setOf("show", "color", "width")
     private val PAGE_INDICATOR_KEYS = setOf("show", "style", "color", "disabled_color", "size")
     private val SHADOW_KEYS = setOf("show", "radius", "offset_x", "offset_y", "color")
@@ -360,7 +383,11 @@ object ThemeParser {
         return if (c.child(sourceKey).exists) resolvedSource else base
     }
 
-    private fun parseCandidateStyle(c: Cursor, base: CandidateStyle): CandidateStyle {
+    private fun parseCandidateStyle(
+        c: Cursor,
+        base: CandidateStyle,
+        itemKeys: Set<String> = ITEM_KEYS,
+    ): CandidateStyle {
         val orientation = c.child("orientation").enumValue(base.orientation)
 
         val l = c.mapping("label")
@@ -395,7 +422,7 @@ object ThemeParser {
         )
 
         val i = c.mapping("item")
-        i.warnUnknownKeys(ITEM_KEYS)
+        i.warnUnknownKeys(itemKeys)
         val item = ItemStyle(
             paddingH = i.child("padding_h").length(base.item.paddingH, 0f, 128f),
             paddingV = i.child("padding_v").length(base.item.paddingV, 0f, 128f),
@@ -404,7 +431,15 @@ object ThemeParser {
             minWidth = i.child("min_width").length(base.item.minWidth, 0f, 512f),
             background = i.child("background").color(base.item.background),
             highlightBackground = i.child("highlight_background").color(base.item.highlightBackground),
-            highlightStyle = i.child("highlight_style").enumValue(base.item.highlightStyle),
+            // 不在作用域裡的時候**連讀都不讀**:只發一則 unknown_field 而照樣
+            // 生效,等於 Android 的畫面與 macOS 的畫面不同、而診斷序列卻一致 ——
+            // 那比不一致更難查。
+            highlightStyle =
+                if ("highlight_style" in itemKeys) {
+                    i.child("highlight_style").enumValue(base.item.highlightStyle)
+                } else {
+                    base.item.highlightStyle
+                },
             borderWidth = i.child("border_width").length(base.item.borderWidth, 0f, 8f),
             borderColor = i.child("border_color").color(base.item.borderColor),
             highlightBorderWidth = i.child("highlight_border_width").length(base.item.highlightBorderWidth, 0f, 8f),
@@ -434,7 +469,8 @@ object ThemeParser {
     }
 
     private fun parseBar(c: Cursor, shared: CandidateStyle, ctx: ParseContext): CandidateBar {
-        val style = parseCandidateStyle(c, shared)
+        // 只有 bar 認得 `item.highlight_style`,見 [BAR_ITEM_KEYS]。
+        val style = parseCandidateStyle(c, shared, BAR_ITEM_KEYS)
         val e = c.mapping("expand_button")
         e.warnUnknownKeys(EXPAND_BUTTON_KEYS)
         return CandidateBar(

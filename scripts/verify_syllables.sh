@@ -193,10 +193,17 @@ ROOT="$(cd "$HERE/.." && pwd)"
 #   (grep -q 一命中就結束 → 上游 SIGPIPE),於是「有命中」被判成「沒命中」。
 #   改用 lib/logmatch.sh 的 log_has / log_matches —— 它們先收進變數再用內建比對。
 . "$HERE/lib/logmatch.sh"
+# ⛔ 裝置選擇的唯一入口。沒有預設 port —— 這台機器上長期有三到四台在跑,
+#   而 `adb devices` 以 port 升冪列出,「預設 5554」與「抓第一台」都會
+#   落在同一台**別人的**機器上,然後 pm clear 它。
+# shellcheck source=lib/device.sh
+. "$HERE/lib/device.sh"
+# shellcheck source=lib/ocr.sh
+. "$HERE/lib/ocr.sh"
 
 SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}"
 ADB="$SDK/platform-tools/adb"
-SERIAL="${RIME_SERIAL:-${ANDROID_SERIAL:-emulator-${RIME_EMU_PORT:-5554}}}"
+SERIAL=""
 IME_ID="${RIME_IME_ID:-$RS_ANDROID_IME_ID}"
 IME_PKG="${IME_ID%%/*}"
 TARGET_PKG=dev.rime.inputmatrix
@@ -375,7 +382,10 @@ if [ -n "$PLANT" ] && plant_is_source "$PLANT" && [ -n "$APK" ]; then
   echo "--plant $PLANT 會自己 patch 原始碼再建一份 APK,不可以同時給 --apk。" >&2
   exit 2
 fi
+[ -n "$SERIAL" ] || SERIAL="$(rs_pick_serial "$ADB")" || exit 2
 adbs() { "$ADB" -s "$SERIAL" "$@"; }
+rs_assert_destructive_ok "$ADB" "$SERIAL" "pm clear、uninstall、ime set" || exit 2
+rs_write_device_stamp "$ADB" "$SERIAL" "$OUT_DIR/device.txt" "${APK:-}"
 info() { echo "[syllables] $*" >&2; }
 pass() { echo "  [PASS] $*"; }
 FAILURES=0
@@ -427,9 +437,26 @@ step() { echo; echo "── $* ──"; }
 #   comment 本來就印著「ni hao」,於是 OCR 讀得到 ni,測試永遠綠。
 #   那是這支腳本最容易做出來的假綠燈(第一版就是這樣,實測抓到)。
 #
-# 格線區用**視窗底端**回推,不用 frame_top + bar_h:格線區永遠貼著視窗底部,
-# 而上方多不多一排會讓 frame_top + bar_h 差一整排的高度,按鍵高度只有一百多 px
-# —— 差一排就點到隔壁列。
+# ⛔ **格線區的頂端由上往下算,不從視窗底端回推。**
+#
+# 這裡從前寫的是 `GRID_TOP=$((FRAME_BOT - GRID_H))`,而 IME 視窗的下緣是螢幕
+# 下緣、鍵盤內容卻讓出了一段 `honor_bottom_inset`(手勢列)。實測 emulator-5558:
+# 視窗 frame 高 800 px、bar 118 px、格線區 619 px,兩條公式差
+# **63 px**(= 800 − 118 − 619,正是那段 inset)。九宮格的鍵有 123 px 高,
+# 低 63 px 剛好還壓在同一顆鍵的下緣 —— 所以它一直沒有紅過;底列那一排就沒這麼
+# 好運。這支腳本內部另外長出了兩段補償碼(`:1170` 與 `:1338`)就是為了繞過它。
+#
+# 由上往下算沒有這個問題:候選列緊貼視窗頂端,格線區緊貼候選列。這與
+# `verify_candbar.sh` / `verify_layout.sh` 現在用的是同一條公式 —— 三支腳本
+# 從前各自主張對方是錯的,這一輪收斂成一份。
+#
+# ⚠ 但也不可以寫成 `FRAME_TOP + BAR_PX`:上方橫排(消歧欄畫在候選列上方時)
+#   會讓視窗往上長一整排,而那一排在 `bar_height_px` 之外。
+#
+# 所以:**先在還沒打字的狀態量一次底部 inset**(視窗高 − 候選列 − 格線區),
+# 之後一律 `GRID_TOP = FRAME_BOT − inset − GRID_H`。上方多不多一排都不影響它,
+# 而它與 `verify_candbar.sh` / `verify_layout.sh` 的 `FRAME_TOP + BAR_H` 在
+# 沒有上方橫排時**逐 px 相同** —— 三支腳本從前各自主張對方是錯的,收斂成一份。
 read_frame() {
   read -r FRAME_TOP FRAME_BOT < <(adbs shell dumpsys window windows 2>/dev/null | tr -d '\r' | python3 -c '
 import sys, re
@@ -440,7 +467,21 @@ f = re.search(r"\bframe=\[(\d+),(\d+)\]\[(\d+),(\d+)\]", m.group(1))
 if f: print(f.group(2), f.group(4))
 ')
   [ -n "${FRAME_BOT:-}" ] || return 1
-  GRID_TOP=$((FRAME_BOT - GRID_H))
+  if [ -z "${BASE_INSET:-}" ]; then
+    # 第一次(還沒開始打字,上方橫排還沒出現)量出底部 inset:
+    #   視窗高 = 候選列 ＋ 格線區 ＋ inset
+    BASE_INSET=$(( (FRAME_BOT - FRAME_TOP) - BAR_PX - GRID_H ))
+    if [ "$BASE_INSET" -lt -8 ] || [ "$BASE_INSET" -gt 220 ]; then
+      echo "格線區幾何對不上:視窗 $FRAME_TOP..$FRAME_BOT、bar $BAR_PX、格線 $GRID_H" >&2
+      echo "  推得 honor_bottom_inset = $BASE_INSET px(合理範圍 0..220)—— 中止" >&2
+      echo "  拿一組錯的座標去點,症狀會是「點在隔壁列」而報告會說產品壞了。" >&2
+      BASE_INSET=""
+      return 1
+    fi
+    echo "[syllables] 底部 inset = $BASE_INSET px(視窗 $((FRAME_BOT - FRAME_TOP))、bar $BAR_PX、格線 $GRID_H)" >&2
+  fi
+  GRID_TOP=$((FRAME_BOT - BASE_INSET - GRID_H))
+  return 0
 }
 
 # 裝置與 OCR 的工具檢查。**依然不准跳過**,只是挪到真的要碰裝置之前才問 ——
@@ -449,11 +490,13 @@ if f: print(f.group(2), f.group(4))
 # 等於把這兩個反向測試永遠關在慢車道外面(它們至今一次都沒跑過)。
 require_device_tools() {
   [ -x "$ADB" ] || { echo "找不到 adb:$ADB" >&2; exit 2; }
-  if [ -z "$TESSERACT" ] || [ ! -x "$TESSERACT" ]; then
-    # ⚠ 不可以「找不到 OCR 就跳過」。跳過的關卡與綠燈長得一模一樣。
-    echo "找不到 tesseract。請安裝(apt-get install -y tesseract-ocr)或設 RIME_TESSERACT。" >&2
-    exit 2
-  fi
+  # ⚠ 不可以「找不到 OCR 就跳過」。跳過的關卡與綠燈長得一模一樣 ——
+  #   而這一關**整輪就是這樣沒跑過的**:掃描階段綠,然後 exit 2,
+  #   `build/verify-syllables/` 留下一個空目錄,沒有人發現。
+  #   `rs_find_tesseract` 會連解包安裝的那一份一起找,並且自證跑得動。
+  rs_find_tesseract || exit 2
+  TESSERACT="$RS_TESSERACT"
+  info "OCR:$TESSERACT(tessdata=${TESSDATA_PREFIX:-<預設>})"
   # ⚠ 同樣的道理,但這一條是**吃過的虧**:GitHub runner 上沒有 Pillow,
   #   裁切那段 python 每次都 ModuleNotFoundError,而腳本沒有 -e、
   #   `ocr_region` 的輸出檔就是空的 —— 於是三份佈局都報
@@ -986,6 +1029,8 @@ for n in root.iter("node"):
   fi
 
   GRID_H="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['grid_height_px'])" "$LOUT/keymap.json")"
+  BAR_PX="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['bar_height_px'])" "$LOUT/keymap.json")"
+  BASE_INSET=""   # 每一份佈局重量一次(列數不同,格線區高度也不同)
   read_frame || { fail "$LAYOUT:讀不到 IME 視窗 frame"; continue; }
 
   tap_key() {
@@ -1335,8 +1380,10 @@ from PIL import Image, ImageOps
 png, outtxt, grid_top, frame_top, tess, tessdata = sys.argv[1:7]
 grid_top, frame_top = int(grid_top), int(frame_top)
 
-# ⚠ **不要裁到 grid_top。** grid_top 是 FRAME_BOT - grid_height_px,而實測
-#   它落在候選列底下約 50 px 的地方 —— 裁到那裡會把**第一排按鍵的頂端**
+# ⚠ **不要裁到 grid_top。**(2026-08-13:grid_top 的公式已經修好了,不再是
+#   `FRAME_BOT - grid_height_px`;但這一段補償仍然要留著 —— 它擋的是
+#   「候選列與第一排按鍵之間那條縫」,那與公式對不對是兩件事。)實測
+#   舊公式算出來的線落在候選列底下約 50 px 的地方 —— 裁到那裡會把**第一排按鍵的頂端**
 #   一起裁進來,而 tesseract 是整塊一起讀的,那半排被切掉的大字會把整張圖
 #   讀成亂碼。
 #
@@ -1509,9 +1556,26 @@ PY
 
   read_frame || { fail "$LAYOUT:第 4 關讀不到 IME 視窗 frame"; continue; }
   shot "$LOUT/3-pgm.png"
-  # 正向對照 ①:候選列上必須讀得到 qin。裁歪了或 OCR 壞了都會讀出空字串,
-  # 而空字串「沒有 qin」—— 那正是這一關最容易做出來的假綠燈。
-  OCR3="$(ocr_candbar "$LOUT/3-pgm.png" "$LOUT/3-candbar.txt" 2>&1)"; RC3=$?
+
+  # ── 2026-08-13:正向對照從**候選列**改成**消歧欄** ────────────────────
+  #
+  # 這一關原本的對照組是「候選列上讀得到 qin」,靠的是候選旁的註解
+  # (`comment`)印著讀音。而註解與消歧欄**取自同一個 comment 欄位**,
+  # 上一版依 §8.6.3.1 把它關掉了(同一份讀音畫兩次,而只有註解要付寬度)——
+  # 於是這個對照組在 keyboard_slot 那兩份佈局上永遠不成立,而它一不成立
+  # 這一關就 `continue`,連帶把第 5 關也整個跳過。
+  #
+  # 對照組要問的東西沒有變:「畫面上此刻有沒有 qin」。它只是搬家了 ——
+  # 從候選列搬到消歧欄,而消歧欄正是這一關真正在測的那個東西。
+  # 上方橫排那一份(t9-pinyin)仍然走候選列那條路:它的讀音橫排就畫在
+  # 候選列上方的同一條帶子裡。
+  if [ -n "$SLOT_LINE" ]; then
+    OCR3="$(ocr_region "$LOUT/3-pgm.png" "$LOUT/3-candbar.txt" qin 2>&1)"; RC3=$?
+    WHERE3="消歧欄"
+  else
+    OCR3="$(ocr_candbar "$LOUT/3-pgm.png" "$LOUT/3-candbar.txt" 2>&1)"; RC3=$?
+    WHERE3="候選列"
+  fi
   info "$OCR3"
   if [ "$RC3" -ne 0 ]; then
     fail "$LAYOUT:第 4 關的裁切/OCR 自己失敗了(exit $RC3),不是畫面的問題:$OCR3"
@@ -1519,9 +1583,9 @@ PY
   fi
   T3="$(cat "$LOUT/3-candbar.txt" 2>/dev/null || echo)"
   if echo "$T3" | grep -qw qin; then
-    pass "$LAYOUT:打 PGM 之後,候選列上讀得到 qin(\"$T3\")"
+    pass "$LAYOUT:打 PGM 之後,$WHERE3 上讀得到 qin(\"$T3\")"
   else
-    fail "$LAYOUT:打 PGM 之後候選列上讀不到 qin(「$T3」)—— 對照組沒成立,"
+    fail "$LAYOUT:打 PGM 之後 $WHERE3 上讀不到 qin(「$T3」)—— 對照組沒成立,"
     fail "  在這之前不能斷言「點了 pin 就沒有 qin 了」。截圖 $LOUT/3-pgm.png"
     continue
   fi
@@ -1534,37 +1598,55 @@ PY
     fail "$LAYOUT:消歧欄上讀不到 pin(「$T3S」)。截圖 $LOUT/3-pgm.png"
     continue
   fi
-  if [ -n "$SLOT_LINE" ]; then
-    TAP4="$(cat "$LOUT/3-slots.txt.tap" 2>/dev/null || echo)"
-    if [ -z "$TAP4" ]; then fail "$LAYOUT:算不出 pin 那一格的座標"; continue; fi
-    # shellcheck disable=SC2086
-    adbs shell input tap $TAP4 >/dev/null 2>&1
-  else
-    # 上方橫排:讀音的順序就是引擎的順序(見 T9Syllables 檔頭),
-    # 而 PGM 的第一個候選讀音是 qin —— 所以 pin 不一定是第一個 chip。
-    # 用**OCR 讀到的那一段**的水平位置去點,不要靠序號猜。
-    TAP4="$(cat "$LOUT/3-slots.txt.tap" 2>/dev/null || echo)"
-    if [ -z "$TAP4" ]; then fail "$LAYOUT:算不出 pin 那一格的座標(上方橫排)"; continue; fi
-    # shellcheck disable=SC2086
-    adbs shell input tap $TAP4 >/dev/null 2>&1
-  fi
+  TAP4="$(cat "$LOUT/3-slots.txt.tap" 2>/dev/null || echo)"
+  if [ -z "$TAP4" ]; then fail "$LAYOUT:算不出 pin 那一格的座標"; continue; fi
+  # shellcheck disable=SC2086
+  adbs shell input tap $TAP4 >/dev/null 2>&1
   sleep 2
 
   read_frame || { fail "$LAYOUT:第 4 關(點完)讀不到 IME 視窗 frame"; continue; }
   shot "$LOUT/4-picked-pin.png"
-  OCR4="$(ocr_candbar "$LOUT/4-picked-pin.png" "$LOUT/4-candbar.txt" 2>&1)"; RC4=$?
-  info "$OCR4"
-  if [ "$RC4" -ne 0 ]; then
-    fail "$LAYOUT:第 4 關(點完)的裁切/OCR 自己失敗了(exit $RC4):$OCR4"
+
+  # ⛔ **先證明畫面真的動了,再問「還有沒有 qin」。**
+  #   「讀不到 qin」有兩種成因:一種是收斂了(要的),一種是那一塊根本沒東西
+  #   可讀(空字串永遠不含 qin)—— 而後者正是這一關最容易做出來的假綠燈。
+  MOVED="$(python3 - "$LOUT/3-pgm.png" "$LOUT/4-picked-pin.png" "$FRAME_TOP" "$FRAME_BOT" <<'PYM'
+import sys
+from PIL import Image, ImageChops
+a = Image.open(sys.argv[1]).convert("RGB")
+b = Image.open(sys.argv[2]).convert("RGB")
+y0, y1 = int(sys.argv[3]), int(sys.argv[4])
+box = (0, max(0, y0), a.width, min(a.height, y1))
+d = ImageChops.difference(a.crop(box), b.crop(box)).convert("L")
+n = sum(1 for p in d.getdata() if p > 24)
+print(int(round(n * 1000.0 / (d.size[0] * d.size[1]))))
+PYM
+)"
+  info "$LAYOUT:點了 pin 之後 IME 視窗變了 ${MOVED}‰"
+  if [ "${MOVED:-0}" -lt 3 ]; then
+    fail "$LAYOUT:點了 pin 之後畫面幾乎沒變(${MOVED}‰)—— 那一下沒有落在 pin 上,"
+    fail "  或者改寫被判成失敗、輸入串被還原。這時候「讀不到 qin」不算數。"
     continue
   fi
+
+  if [ -n "$SLOT_LINE" ]; then
+    OCR4="$(ocr_region "$LOUT/4-picked-pin.png" "$LOUT/4-candbar.txt" qin 2>&1)"; RC4=$?
+    WHERE4="消歧欄"
+  else
+    OCR4="$(ocr_candbar "$LOUT/4-picked-pin.png" "$LOUT/4-candbar.txt" 2>&1)"; RC4=$?
+    WHERE4="候選列"
+  fi
+  info "$OCR4"
+  # ⚠ 收斂之後消歧欄可能整條收起來(只剩一個讀音,門檻是 2)。那時候 ocr_region
+  #   會回非 0 或空字串 —— 兩者都表示「上面沒有 qin」,而畫面真的變了這件事
+  #   已經由上面那一段證明過。
   T4="$(cat "$LOUT/4-candbar.txt" 2>/dev/null || echo)"
   if echo "$T4" | grep -qw qin; then
-    fail "$LAYOUT:點了 pin,候選列上還有 qin(「$T4」)—— 候選沒有收斂。"
+    fail "$LAYOUT:點了 pin,$WHERE4 上還有 qin(「$T4」)—— 候選沒有收斂。"
     fail "  這就是真機回報的那一條:改寫被判成失敗、輸入串被還原,畫面一動也不動。"
     fail "  截圖 $LOUT/4-picked-pin.png"
   else
-    pass "$LAYOUT:點了 pin 之後候選列上不再有 qin(\"$T4\")"
+    pass "$LAYOUT:點了 pin 之後 $WHERE4 上不再有 qin(\"$T4\",畫面變了 ${MOVED}‰)"
   fi
   # ── 第 5 關:沒被接管的那一格 ────────────────────────────────────
   #
@@ -1632,8 +1714,14 @@ if len(rects) < 3:
     print("ERROR=宣告的格位在這一層找不到:%s" % ",".join(ids)); sys.exit(0)
 # x 用模型(欄的左右邊界是準的),y 一律靠像素 —— 錯的是模型的 y。
 x0 = min(r["x"] for r in rects); x1 = max(r["x"] + r["w"] for r in rects)
-lift = int(0.06 * max(0, im.height - grid_top))
-col = (max(0, x0), max(0, grid_top - lift), min(im.width, x1), im.height)
+# ⛔ **不要往 grid_top 上面撈。** 這裡從前寫的是 `grid_top - 6% × 格線區高`
+#    ≈ 41 px,那是為了容忍**舊的、算低了 63 px 的 grid_top**(見 read_frame
+#    的註解:`FRAME_BOT - GRID_H` 少扣了 honor_bottom_inset)。grid_top 修好
+#    之後那 41 px 撈到的是**候選列**:待機時那裡是工具列的地球圖示、組字時
+#    是高亮的候選,兩者都落在這一欄的 x 範圍內 —— 於是「左欄變了幾條橫帶」
+#    多數出一條,這一關報「三格都被接管」而其實第三格好好的。
+#    補償碼跟著錯誤公式長出來,錯誤公式修好之後補償碼就是新的錯誤。
+col = (max(0, x0), max(0, grid_top), min(im.width, x1), im.height)
 strip, b = im.crop(col), base.crop(col)
 sp, bp = strip.load(), b.load()
 rowink = [sum(1 for x in range(strip.width) if abs(sp[x, y] - bp[x, y]) > 24)

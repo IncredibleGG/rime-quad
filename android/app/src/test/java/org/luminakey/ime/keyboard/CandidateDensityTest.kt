@@ -17,12 +17,16 @@ import org.luminakey.ime.theme.LayoutKey
 import org.luminakey.ime.theme.LayoutLayer
 import org.luminakey.ime.theme.LayoutRow
 import org.luminakey.ime.theme.LocalizedString
+import org.luminakey.ime.theme.PageIndicatorKind
+import org.luminakey.ime.theme.Popup
+import org.luminakey.ime.theme.PopupLayout
 import org.luminakey.ime.theme.SendSpec
+import org.luminakey.ime.theme.SubKey
+import org.luminakey.ime.theme.SwipeDirection
 import org.luminakey.ime.theme.TextStyle
 
 /**
- * 候選列的密度與資訊架構（規範草稿 §8.6.1.1 / §8.6.3.1 / §8.6.4.2 /
- * §8.6.4.3 / §8.6.6.4，以及 §10 的第 40、42、43、44 條）。
+ * 候選列的密度與資訊架構（§8.6.1.1 / §8.6.3.1 / §8.6.4.2 / §8.6.4.3 / §8.6.6.4，以及 §10 的第 40、42、43、44、45 條）。
  *
  * ── 為什麼這一組非有不可 ────────────────────────────────────────────────
  * 使用者的原話是「**我們的候選詞太少了 因為空間被壓縮了**」，以及對我們上一輪
@@ -225,7 +229,7 @@ class CandidateDensityTest {
         assertFalse(CandidateDensity.commentVisible(commentShow = false, readings = emptyList()))
     }
 
-    /* ═══════════ §10 第 43 條：序號按得到才畫 ═══════════ */
+    /* ═══════════ §10 第 43 條：序號按得到才畫（fail-closed）═══════════ */
 
     private fun layer(id: String, vararg keysyms: String): LayoutLayer = LayoutLayer(
         id = id,
@@ -248,21 +252,74 @@ class CandidateDensityTest {
         ),
     )
 
+    private val NUMROW = layer("numrow", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0")
+
     @Test
     fun `沒有數字鍵的層不畫序號`() {
         val t9 = layer("t9", "A", "D", "G", "J", "M", "P", "T", "W", "0")
         assertFalse(
             "這一層送得出的只有代表字母與 0 —— 序號 1 2 3 在上面按不到",
-            CandidateDensity.labelVisible(true, CandidateDensity.layerSendsSelectionDigit(t9)),
+            CandidateDensity.layerHasSelectionDigitRow(t9),
+        )
+    }
+
+    /**
+     * **只有一顆數字鍵不算「按得到 1..9」。**
+     *
+     * `t9-pinyin/t9` 就是這個形狀：`k1` 送得出真的 `1`，`k2`…`k9` 只有 hint。
+     * 上一版的判準是「有沒有**任何一顆** send 落在 1..9」，於是那一層被判成
+     * 「畫序號」，畫出 1…6 而只有 `1` 送得出去。
+     */
+    @Test
+    fun `只有一顆數字鍵的層不算整排`() {
+        val onlyOne = layer("t9", "1", "A", "D", "G", "J", "M", "P", "T", "W")
+        assertFalse(
+            "一顆數字鍵就判成「按得到 1..9」—— 畫面上會出現 2..6 這幾個按不到的序號",
+            CandidateDensity.layerHasSelectionDigitRow(onlyOne),
+        )
+    }
+
+    /**
+     * ⛔ **有整排數字鍵**還不夠，那只是必要條件。
+     *
+     * `cn-t9-pinyin-numrow` 的數字列是真的（`send.keysym: "3"`），實測按 3 之後
+     * 輸入框變成 `3⋯`、原本打好的組字被毀掉 —— 數字被 `recognizer` 的
+     * `uppercase` 樣式收走了。所以第二個條件是「這一格量過而且是 yes」。
+     */
+    @Test
+    fun `有整排數字但這一格沒量過就不畫`() {
+        SelectionDigits.setForTest(emptyList())
+        assertTrue(CandidateDensity.layerHasSelectionDigitRow(NUMROW))
+        assertFalse(
+            "沒量過的 (佈局, 方案) 竟然畫了序號 —— fail-closed 是「證不出來就不畫」",
+            CandidateDensity.selectionDigitUsable(NUMROW, "cn-t9-pinyin-numrow", "t9_pinyin"),
         )
     }
 
     @Test
-    fun `有數字列的層畫序號`() {
-        val numrow = layer("t9", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0")
+    fun `量過而且按得到才畫`() {
+        SelectionDigits.setForTest(listOf("cn-qwerty-numrow" to "luna_pinyin_tw"))
         assertTrue(
-            CandidateDensity.labelVisible(true, CandidateDensity.layerSendsSelectionDigit(numrow)),
+            CandidateDensity.selectionDigitUsable(NUMROW, "cn-qwerty-numrow", "luna_pinyin_tw"),
         )
+        assertFalse(
+            "換一個方案就換一個答案 —— 判準不是 per-layout,也不是 per-schema",
+            CandidateDensity.selectionDigitUsable(NUMROW, "cn-qwerty-numrow", "t9_pinyin"),
+        )
+        assertFalse(
+            "這一格量到可用,但這一層根本沒有整排數字鍵",
+            CandidateDensity.selectionDigitUsable(
+                layer("lower", "q", "w", "e"), "cn-qwerty-numrow", "luna_pinyin_tw"
+            ),
+        )
+    }
+
+    /** 方案還沒回報（剛 attach、部署中）時不畫 —— fail-closed。 */
+    @Test
+    fun `方案還不知道是哪一個時不畫`() {
+        SelectionDigits.setForTest(listOf("cn-qwerty-numrow" to "luna_pinyin_tw"))
+        assertFalse(CandidateDensity.selectionDigitUsable(NUMROW, "cn-qwerty-numrow", ""))
+        assertFalse(CandidateDensity.selectionDigitUsable(NUMROW, null, "luna_pinyin_tw"))
     }
 
     /**
@@ -279,31 +336,70 @@ class CandidateDensityTest {
             rows = listOf(
                 LayoutRow(
                     weight = 1f,
-                    keys = listOf(
+                    keys = "1234567890".map { d ->
                         LayoutKey(
-                            id = "e_q", label = "q", hint = "1", icon = null,
+                            id = "e_$d", label = "q", hint = d.toString(), icon = null,
                             labelFrom = LabelSource.NONE, width = 1f, style = "default",
                             spacer = false, active = false, repeat = false,
                             send = SendSpec.Keysym("q", 0, 0),
                             tap = null, doubleTap = null, longPress = null,
                             popup = null, swipe = emptyMap(),
                         )
-                    ),
+                    },
                 )
             ),
         )
         assertFalse(
             "把 hint 當成「按得到數字」—— 那是看得到卻打不出來的那一類",
-            CandidateDensity.layerSendsSelectionDigit(hintOnly),
+            CandidateDensity.layerHasSelectionDigitRow(hintOnly),
+        )
+    }
+
+    /**
+     * **`popup` 裡的數字不算，`swipe` 更不算。**
+     *
+     * `qwerty/lower` 的 `q..p` 有 `swipe.up` 與 `popup` 都送得出 1..0。
+     * `swipe` 在本端**根本沒有實作**（`KeyboardView` 從頭到尾沒有讀 `key.swipe`），
+     * 照它判就是做出一個「上滑卻沒反應」的序號；`popup` 是活的，但序號 `3`
+     * 承諾的是「按 3」，不是「長按某顆鍵再從盤裡挑 3」。
+     */
+    @Test
+    fun `popup 與 swipe 裡的數字不算數`() {
+        val sub = SubKey(label = "1", hint = "", style = null, send = SendSpec.Keysym("1", 0, 0), tap = null)
+        val viaPopup = LayoutLayer(
+            id = "lower",
+            label = LocalizedString.EMPTY,
+            units = 10f,
+            rows = listOf(
+                LayoutRow(
+                    weight = 1f,
+                    keys = "123456789".map { d ->
+                        LayoutKey(
+                            id = "k_$d", label = "q", hint = d.toString(), icon = null,
+                            labelFrom = LabelSource.NONE, width = 1f, style = "default",
+                            spacer = false, active = false, repeat = false,
+                            send = SendSpec.Keysym("q", 0, 0),
+                            tap = null, doubleTap = null, longPress = null,
+                            popup = Popup(PopupLayout.GRID, 1, listOf(sub)),
+                            swipe = mapOf(SwipeDirection.UP to sub),
+                        )
+                    },
+                )
+            ),
+        )
+        assertFalse(
+            "popup／swipe 也算成「按得到數字」—— swipe 在本端根本沒有實作",
+            CandidateDensity.layerHasSelectionDigitRow(viaPopup),
         )
     }
 
     @Test
     fun `佈局還沒載進來時不畫序號`() {
-        assertFalse(CandidateDensity.layerSendsSelectionDigit(null))
+        assertFalse(CandidateDensity.layerHasSelectionDigitRow(null))
+        assertFalse(CandidateDensity.selectionDigitUsable(null, "x", "y"))
     }
 
-    /* ═══════════ §10 第 44 條：右端最多一顆 ═══════════ */
+    /* ═══════════ §10 第 45 條：右端最多一顆 ═══════════ */
 
     @Test
     fun `本頁還有畫不出來的候選時右端是展開鍵，不是翻頁`() {
@@ -365,28 +461,156 @@ class CandidateDensityTest {
         assertEquals(3, CandidateDensity.RightEnd.values().size)
     }
 
-    /** 第 2 頁以後翻頁會畫兩顆，量測時就要先扣掉 —— 否則最後一個會被切掉。 */
+    /* ═══════════ §10 第 45 條：量測扣掉的 == 畫出來的（單一真相）═══════════ */
+
+    /**
+     * `bar.reserved_end` 只在**真的畫得出東西**時才付出去。
+     */
     @Test
-    fun `第二頁的保留區要多算一顆`() {
-        assertEquals(
-            40f,
-            CandidateDensity.reservedForMeasure(40f, 40f, pageNo = 0, pageIndicatorShown = true),
-            0.001f,
-        )
-        assertEquals(
-            80f,
-            CandidateDensity.reservedForMeasure(40f, 40f, pageNo = 1, pageIndicatorShown = true),
-            0.001f,
-        )
-        assertEquals(
-            "主題關掉翻頁指示器時不該白留一顆的寬度",
-            40f,
-            CandidateDensity.reservedForMeasure(40f, 40f, pageNo = 3, pageIndicatorShown = false),
-            0.001f,
-        )
+    fun `一顆都不畫時右端不佔寬度`() {
+        assertEquals(0f, CandidateDensity.reservedDp(40f, 40f, 0), 0.001f)
+        assertEquals(40f, CandidateDensity.reservedDp(40f, 40f, 1), 0.001f)
+        assertEquals(80f, CandidateDensity.reservedDp(40f, 40f, 2), 0.001f)
     }
 
-    /* ═══════════ §8.6.4.3：高亮不得改變量測寬度 ═══════════ */
+    /**
+     * ⛔ **量測扣掉的寬度必須就是實際會畫出來的那幾顆。**
+     *
+     * 上一版把它拆成 `reservedForMeasure()`（量測）與 `rightEnd()` ＋
+     * `Pager.state()`（繪製）兩半，而兩半在 11 種頁況裡有 **5 種**對不上，
+     * 全部是「量測扣得比畫出來的多 40 dp」。這一條把 5 種全部釘住：
+     * 每一格都同時斷言「右端畫什麼」與「量測扣多少」，任何一邊漂掉都會紅。
+     *
+     * 實測對照（emulator-5558，1080×2400 @420dpi，主題 default-light）：
+     * 一格 56 dp、節距 60 dp、`reserved_end` 40、按鍵 40。
+     */
+    @Test
+    fun `量測扣掉的寬度就是畫出來的那幾顆`() {
+        fun layout(
+            pageNo: Int,
+            isLastPage: Boolean,
+            pageCount: Int,
+            expandAvailable: Boolean = true,
+            panelOpen: Boolean = false,
+            pagerShow: Boolean = true,
+        ) = CandidateDensity.barLayout(
+            screenWidthDp = 411.43f,
+            barPaddingH = BAR_PADDING_H,
+            reservedEnd = RESERVED_END,
+            buttonDp = 40f,
+            leadingDp = 0f,
+            widths = List(pageCount) { 56f },
+            spacing = SPACING,
+            pageCandidateCount = pageCount,
+            pageNo = pageNo,
+            isLastPage = isLastPage,
+            pagerKind = PageIndicatorKind.ARROWS,
+            pagerShow = pagerShow,
+            expandAvailable = expandAvailable,
+            panelOpen = panelOpen,
+        )
+
+        // ── 上一版對不上的五格 ────────────────────────────────────────────
+        // 1) 第 1 頁又是最後一頁：翻頁整組不畫（兩顆都是死的）→ 一顆都不畫。
+        //    上一版量測扣 40、實際畫 0。
+        val onlyPage = layout(pageNo = 0, isLastPage = true, pageCount = 4)
+        assertEquals(CandidateDensity.RightEnd.PAGER, onlyPage.rightEnd)
+        assertEquals("翻頁整組不畫,右端就不該佔寬度", 0f, onlyPage.reservedDp, 0.001f)
+        assertEquals(false, onlyPage.pager!!.show)
+
+        // 2) 第 2 頁、本頁看不完 → 右端是展開鍵**一顆**。上一版量測扣 80。
+        val p2Expand = layout(pageNo = 1, isLastPage = false, pageCount = 9)
+        assertEquals(CandidateDensity.RightEnd.EXPAND, p2Expand.rightEnd)
+        assertEquals(40f, p2Expand.reservedDp, 0.001f)
+
+        // 3) 第 2 頁又是最後一頁、本頁看不完 → 一樣是展開鍵一顆。
+        val p2Last = layout(pageNo = 1, isLastPage = true, pageCount = 9)
+        assertEquals(CandidateDensity.RightEnd.EXPAND, p2Last.rightEnd)
+        assertEquals(40f, p2Last.reservedDp, 0.001f)
+
+        // 4) 第 2 頁又是最後一頁、本頁看得完 → 只有「上一頁」一顆。
+        val p2LastFew = layout(pageNo = 1, isLastPage = true, pageCount = 3)
+        assertEquals(CandidateDensity.RightEnd.PAGER, p2LastFew.rightEnd)
+        assertEquals(40f, p2LastFew.reservedDp, 0.001f)
+        assertEquals(true, p2LastFew.pager!!.prevEnabled)
+        assertEquals(false, p2LastFew.pager!!.nextEnabled)
+
+        // 5) 面板開著、第 2 頁 → 右端必定是收合鍵一顆。上一版量測扣 80。
+        val panel = layout(pageNo = 1, isLastPage = false, pageCount = 9, panelOpen = true)
+        assertEquals(CandidateDensity.RightEnd.EXPAND, panel.rightEnd)
+        assertEquals(40f, panel.reservedDp, 0.001f)
+
+        // ── 本來就對得上的那幾格,一併釘住 ────────────────────────────────
+        val p1Expand = layout(pageNo = 0, isLastPage = false, pageCount = 9)
+        assertEquals(CandidateDensity.RightEnd.EXPAND, p1Expand.rightEnd)
+        assertEquals(40f, p1Expand.reservedDp, 0.001f)
+        assertEquals("411 dp 上扣一顆之後畫得出 6 個", 6, p1Expand.visible)
+
+        val p2Both = layout(pageNo = 1, isLastPage = false, pageCount = 3)
+        assertEquals(CandidateDensity.RightEnd.PAGER, p2Both.rightEnd)
+        assertEquals("上一頁＋下一頁兩顆", 80f, p2Both.reservedDp, 0.001f)
+
+        val none = layout(pageNo = 0, isLastPage = false, pageCount = 0)
+        assertEquals(CandidateDensity.RightEnd.NONE, none.rightEnd)
+        assertEquals(0f, none.reservedDp, 0.001f)
+
+        // 主題關掉翻頁指示器:那一組一顆都不畫,不該白留一顆的寬度。
+        val noPager = layout(pageNo = 1, isLastPage = false, pageCount = 3, pagerShow = false)
+        assertEquals(CandidateDensity.RightEnd.PAGER, noPager.rightEnd)
+        assertEquals(0f, noPager.reservedDp, 0.001f)
+    }
+
+    /**
+     * ⛔ 本頁還有畫不出來的候選時，**不得**出現翻頁鍵 —— 這一條在
+     * 「翻頁那一組剛好一顆都不畫」時最容易漏掉：翻頁扣 0 dp，候選拿到最多的
+     * 寬度，於是更容易「看得完」。這一格要的是**真的看得完**才給翻頁。
+     */
+    @Test
+    fun `扣掉翻頁那幾顆之後仍然看得完才給翻頁`() {
+        fun at(pageCount: Int) = CandidateDensity.barLayout(
+            screenWidthDp = 411.43f, barPaddingH = BAR_PADDING_H, reservedEnd = RESERVED_END,
+            buttonDp = 40f, leadingDp = 0f,
+            widths = List(pageCount) { 56f }, spacing = SPACING,
+            pageCandidateCount = pageCount, pageNo = 0, isLastPage = true,
+            pagerKind = PageIndicatorKind.ARROWS, pagerShow = true,
+            expandAvailable = true, panelOpen = false,
+        )
+        // 扣 0 dp 時 411.43 − 8 = 403.43 dp,節距 60 → 畫得出 6 個。
+        assertEquals(6, at(6).visible)
+        assertEquals(CandidateDensity.RightEnd.PAGER, at(6).rightEnd)
+        // 7 個就看不完了 → 出口是展開面板,不是翻頁。
+        assertEquals(CandidateDensity.RightEnd.EXPAND, at(7).rightEnd)
+    }
+
+    /**
+     * **行內組字串也是真的擠掉候選的。**
+     *
+     * 實測（411 dp、default-light、`luna_pinyin_tw` 打 `ni`）：組字串那一塊
+     * 33.7 dp，模型沒扣它時說得下 7 個、畫面只畫得出 6 個。方向是**估寬**，
+     * 而 [CandidateDensity.rightEnd] 正是拿這個數決定「本頁看完了沒」——
+     * 高估一個就等於給出一顆讓使用者跳過他沒看過的候選的翻頁鍵。
+     */
+    @Test
+    fun `行內組字串要先扣掉`() {
+        val widths = List(9) { 48f }   // 一字候選被 min_width 撐到 48，節距 52
+        fun v(leading: Float) = CandidateDensity.barLayout(
+            screenWidthDp = 411.43f, barPaddingH = BAR_PADDING_H, reservedEnd = RESERVED_END,
+            buttonDp = 40f, leadingDp = leading,
+            widths = widths, spacing = SPACING, pageCandidateCount = 9,
+            pageNo = 0, isLastPage = false,
+            pagerKind = PageIndicatorKind.ARROWS, pagerShow = true,
+            expandAvailable = true, panelOpen = false,
+        ).visible
+        assertEquals("沒有組字串時 411 − 8 − 40 = 363 dp,節距 52 → 7 個", 7, v(0f))
+        assertEquals("`ni` 的組字串實測 33.7 dp,扣掉之後就是畫面上的 6 個", 6, v(33.7f))
+
+        // 估寬公式本身：`ni` 兩個拉丁字元 ＋ 左右 10 dp 內距。
+        val dp = CandidateDensity.inlinePreeditDp("ni", 14f, 10f)
+        assertTrue("估出來的組字串寬度 $dp dp 不在實測的 33.7 dp 附近", dp in 25f..45f)
+        assertEquals("沒有組字串時不扣", 0f, CandidateDensity.inlinePreeditDp(null, 14f, 10f), 0.001f)
+    }
+
+    /* ═══════════ §10 第 44 條（§8.6.4.3）：高亮不得改變量測寬度 ═══════════ */
 
     private fun item(style: HighlightStyle) = ItemStyle(
         paddingH = 8f, paddingV = 6f, spacing = 4f, cornerRadius = 6f, minWidth = 48f,

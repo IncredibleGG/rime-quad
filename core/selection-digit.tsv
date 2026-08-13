@@ -1,0 +1,38 @@
+# selection-digit.tsv — 「按數字鍵真的選得到第 N 個候選嗎」的**實測**對照表
+#
+# 規範草稿 §8.6.1.1。行動端候選列的序號（1 2 3）只有一個用途:讓使用者按
+# 數字鍵選第 N 個。而「這一層送得出 3」與「按 3 會選第 3 個」是兩件事,中間
+# 隔著 librime 的兩層攔截,兩層都不在佈局檔裡、用今天的 rs_ API 也問不出來:
+#
+#   speller/alphabet      bopomofo 的 alphabet 含 0-9,數字是**字母**。
+#                         3 在「聲調還沒打」時被 speller 收走。
+#   recognizer/patterns   default.yaml 的 uppercase 樣式字元集含 0-9,而九宮格
+#                         刻意送大寫 A/D/G/J/M/P/T/W —— 整串組字永遠落在那個
+#                         樣式裡,數字被 recognizer 收走並附加到輸入串,
+#                         **把使用者已經打好的組字毀掉**(輸入框變成 `3⋯`)。
+#
+# ⛔ 這份表不准用手寫。手寫的那一刻它就開始腐爛,而腐爛的症狀是
+#    「畫面上有序號、按下去毀掉組字」。它由
+#
+#        scripts/verify_selection_digit.sh --bless
+#
+#    在真機上**按數字鍵**量出來;平常那支腳本拿它當斷言:量到的與表裡不同就紅,
+#    畫面上畫了序號而表說 no 也紅(它從高亮塊的寬度看得出序號畫了沒有)。
+#
+# fail-closed:**沒有列到的 (佈局, 方案) 一律不畫序號。** 少一段版面提示的
+# 代價是每格約 9.9 dp(關掉之後密度不變,仍是 6 個);畫錯的代價是使用者打好的
+# 組字被毀掉。
+#
+# 欄位:layout <TAB> schema <TAB> verdict <TAB> compose <TAB> measured_on <TAB> note
+#   verdict   yes = 實測按 1 上屏第 1 個、按 3 上屏第 3 個;其餘一律不畫
+#   compose   守門腳本要點哪幾顆鍵(空白分隔的 send.keysym 名稱,在預設層上找)
+#   measured_on  AVD 名 ＋ 日期。`-` = 還沒量過 → 一律當成 no
+#
+#layout	schema	verdict	compose	measured_on	note
+cn-qwerty-numrow	luna_pinyin_tw	yes	n i h a o	lumina_test2@2026-08-13	T1=你好 D1=你好 D3=利好
+cn-qwerty-numrow	luna_pinyin	yes	n i h a o	lumina_test2@2026-08-13	T1=你好 D1=你好 D3=利好
+cn-t9-pinyin-numrow	t9_pinyin	no	M G G A M	lumina_test2@2026-08-13	T1=你好 D1=1⋯ D3=3⋯
+bopomofo-dachen	bopomofo_tw	no	s u c l	lumina_test2@2026-08-13	T1=你好 D1=ㄋㄧ ㄏㄠ ㄅ D3=ㄋㄧ ㄏㄠˇ
+# bopomofo(原版,簡體字形)不在隨附的 schema_list 裡(core/data/user/default.custom.mobile.yaml
+# 只列 luna_pinyin_tw / bopomofo_tw / luna_pinyin / t9_pinyin),量不到就不列 ——
+# 沒有列到的組合一律不畫序號,那正是 fail-closed 該有的樣子。

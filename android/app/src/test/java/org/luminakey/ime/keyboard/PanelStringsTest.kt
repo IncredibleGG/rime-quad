@@ -184,6 +184,8 @@ class PanelStringsTest {
             "LayoutHost.kt" to 12,
             "RemappedLayouts.kt" to 2,
             "SchemaLanguages.kt" to 5,
+            // 與 SchemaLanguages.kt 同一種:兩句都是 Log,不上使用者畫面。
+            "SelectionDigits.kt" to 2,
         )
 
         /** §9.4 的鍵面。四端印同一份,不隨介面語言改。 */

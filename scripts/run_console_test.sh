@@ -61,15 +61,14 @@ echo "  $(stat -c%s "$BIN") bytes"
 # 這台機器上常同時有好幾個模擬器（多條線並行）。RIME_SERIAL 指名要用哪一台，
 # 沒指名才退回「挑第一個」。挑錯機器的症狀是資料推到別人的模擬器上，
 # 兩邊都莫名其妙，所以指名時一律嚴格檢查它真的在線。
-SERIAL="${RIME_SERIAL:-}"
-if [ -n "$SERIAL" ]; then
-  "$ADB" devices | grep -q "^${SERIAL}	device" \
-    || die "指定的 $SERIAL 不在線。目前: $("$ADB" devices | tr '\n' ' ')"
-else
+# shellcheck source=lib/device.sh
+. "$ROOT/scripts/lib/device.sh"
+if [ -z "${RIME_SERIAL:-${ANDROID_SERIAL:-}}" ] && ! "$ADB" devices | grep -q '	device$'; then
   "$ROOT/scripts/emu.sh" status >/dev/null 2>&1 || "$ROOT/scripts/emu.sh" start
-  SERIAL="$("$ADB" devices | awk '/emulator-[0-9]+\tdevice/{print $1; exit}')"
 fi
-[ -n "$SERIAL" ] || die "找不到模擬器"
+# ⛔ 「抓第一台」= 永遠是 emulator-5554,而這一支會 `rm -rf /data/local/tmp/rime`。
+SERIAL="$(rs_pick_serial "$ADB")" || die "沒有選定裝置"
+[ "$SKIP_PUSH" -eq 1 ] || rs_assert_destructive_ok "$ADB" "$SERIAL" "rm -rf $DEV_DIR" || die "沒有選定裝置"
 echo "=== 裝置 $SERIAL ==="
 
 if [ "$SKIP_PUSH" -eq 0 ]; then

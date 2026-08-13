@@ -44,6 +44,11 @@ class ConfigRepository(context: Context) : LayoutRepository {
         // 鍵盤類型選單的分組要用它（見 [SchemaLanguages]）。
         SchemaLanguages.loadShipped(assets)
 
+        // 「按數字鍵真的選得到第 N 個嗎」的實測表（§8.6.1.1）。同一條
+        // syncRimeData 放進 assets，理由與上面那一份完全相同。讀不到就是
+        // 一格都不畫序號 —— fail-closed，見 [SelectionDigits]。
+        SelectionDigits.loadShipped(assets)
+
         // 診斷的在地化樣板。解析層（theme/）刻意一行 android.* 都沒有 —— iOS 端
         // 要照抄的就是它 —— 所以「code → 當地語言的字」這條線在這裡接上。
         // App 與輸入法各自都會建一個 ConfigRepository，兩邊都會走到。

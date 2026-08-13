@@ -28,6 +28,8 @@ EMU="$HERE/emu.sh"
 # 讀進來是為了 logcat 的過濾字樣(拿產品名去撈 log 的那一行)。
 # shellcheck source=lib/product.sh
 . "$HERE/lib/product.sh"
+# shellcheck source=lib/device.sh
+. "$HERE/lib/device.sh"
 # 「把測試靶叫到前景並確認它真的有焦點」那一整套。檔頭寫了為什麼需要它。
 # shellcheck source=lib/testtarget.sh
 . "$HERE/lib/testtarget.sh"
@@ -207,18 +209,10 @@ fi
 # 不可以「抓第一台」。多條開發線並行時會互相搶裝置 —— 實測發生過 A 線的
 # 驗證抓到 B 線的模擬器，force-stop 掉 B 正在測的 app，兩邊結果都不可信。
 # 序號一律可指定，並在偵測到多台時明確警告。
-if [ -n "${RIME_SERIAL:-${ANDROID_SERIAL:-}}" ]; then
-  SERIAL="${RIME_SERIAL:-$ANDROID_SERIAL}"
-  "$ADB" -s "$SERIAL" get-state >/dev/null 2>&1 || fail "指定的裝置 $SERIAL 未連線"
-else
-  SERIAL="$("$ADB" devices | awk '/emulator-[0-9]+\tdevice/{print $1; exit}')"
-  NDEV="$("$ADB" devices | grep -cE 'emulator-[0-9]+' || true)"
-  if [ "${NDEV:-0}" -gt 1 ]; then
-    echo "  [警告] 偵測到 $NDEV 台模擬器，自動選了 $SERIAL。"
-    echo "         並行測試時請用 RIME_SERIAL=emulator-XXXX 指定，否則會互相干擾。"
-  fi
-fi
-[ -n "$SERIAL" ] || fail "找不到已連線的模擬器"
+# ⚠ 多台在線時**印警告然後照跑**等於沒有守門 —— 警告在幾百行輸出裡看不見,
+#   而 ime set 已經改掉別人那台的預設輸入法了。改成不猜。
+SERIAL="$(rs_pick_serial "$ADB")" || exit 2
+rs_assert_destructive_ok "$ADB" "$SERIAL" "ime set" || exit 2
 pass "模擬器 $SERIAL"
 
 # --- 2. 安裝 ----------------------------------------------------------------

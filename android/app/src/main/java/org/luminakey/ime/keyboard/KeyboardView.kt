@@ -94,7 +94,6 @@ import org.luminakey.ime.theme.LabelSource
 import org.luminakey.ime.theme.LayoutKey
 import org.luminakey.ime.theme.ExpandButton
 import org.luminakey.ime.theme.LayoutLayer
-import org.luminakey.ime.theme.PageIndicatorKind
 import org.luminakey.ime.theme.PageIndicatorStyle
 import org.luminakey.ime.theme.Popup
 import org.luminakey.ime.theme.PopupLayout
@@ -385,7 +384,7 @@ private fun BoxScope.CandidateExpandedPanel(
         //   估寬公式與渲染內容一旦分家,症狀就是「畫面莫名其妙少一格」。
         val labelShown = CandidateDensity.labelVisible(
             style.label.show,
-            CandidateDensity.layerSendsSelectionDigit(layer),
+            CandidateDensity.selectionDigitUsable(layer, layout?.id, state.status.schemaId),
         )
         val longest = shown.maxOfOrNull { i -> state.candidates[i].text.length } ?: 1
         val longestLabel = if (labelShown) {
@@ -499,12 +498,18 @@ private fun BoxScope.CandidateExpandedPanel(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 PageArrows(
+                    // ⚠ `candidateCount` 傳的是**面板真的畫出來的那幾個**
+                    //   (`shown`,已經過 T9Syllables.visibleIndices 篩選),不是
+                    //   未篩的整頁 `state.candidates`。那個參數的 KDoc 從第一天
+                    //   就寫著「這一頁畫得出來的候選數」,而這個呼叫端一直傳
+                    //   整頁的數量 —— 上一輪只修好了候選列那一個呼叫端,
+                    //   這一個原封不動。
                     state = Pager.state(
                         kind = style.pageIndicator.kind,
                         show = style.pageIndicator.show,
                         pageNo = state.pageNo,
                         isLastPage = state.isLastPage,
-                        candidateCount = state.candidates.size,
+                        candidateCount = shown.size,
                     ),
                     style = style.pageIndicator,
                     scaler = scaler,
@@ -901,10 +906,16 @@ private fun CandidateBar(
                 T9Syllables.readingsOf(state.candidates)
             }
             val commentShown = CandidateDensity.commentVisible(style.comment.show, readings)
-            val labelShown = remember(state.layer, style.label.show) {
+            // ⚠ 序號的判準吃**三個**東西：這一層、這一份佈局、現在的方案。
+            //   少了後兩個就會做出「畫面上有 1 2 3、按 3 卻把使用者打好的組字
+            //   毀掉」的序號（`cn-t9-pinyin-numrow` ＋ `t9_pinyin` 實測）。
+            //   fail-closed：查不到就不畫。見 [CandidateDensity.selectionDigitUsable]。
+            val labelShown = remember(state.layer, state.layout?.id, state.status.schemaId, style.label.show) {
                 CandidateDensity.labelVisible(
                     style.label.show,
-                    CandidateDensity.layerSendsSelectionDigit(state.layer),
+                    CandidateDensity.selectionDigitUsable(
+                        state.layer, state.layout?.id, state.status.schemaId
+                    ),
                 )
             }
 
@@ -917,16 +928,18 @@ private fun CandidateBar(
              * 而按下去跳過的正是那 6 個沒看過的候選。
              */
             val screenWidthDp = LocalConfiguration.current.screenWidthDp.toFloat()
-            val pageIndicatorShown =
-                style.pageIndicator.show && style.pageIndicator.kind != PageIndicatorKind.NONE
-            val reservedEnd = CandidateDensity.reservedForMeasure(
+            // ⚠ 行內組字串**也是**真的擠掉候選的。它與右端保留區一樣要先扣掉 ——
+            //   沒扣的那一版在 411 dp 的機器上打 `ni` 說得下 7 個、畫面只畫得出
+            //   6 個,而 `rightEnd` 正是拿這個數決定「本頁看完了沒」。
+            val leadingDp = CandidateDensity.inlinePreeditDp(
+                inlinePreedit, scaler.scaled(theme.preedit.size), theme.preedit.paddingH
+            )
+            val barLayout = CandidateDensity.barLayout(
+                screenWidthDp = screenWidthDp,
+                barPaddingH = bar.paddingH,
                 reservedEnd = bar.reservedEnd,
                 buttonDp = CANDIDATE_BAR_BUTTON_DP.toFloat(),
-                pageNo = state.pageNo,
-                pageIndicatorShown = pageIndicatorShown,
-            )
-            val visible = CandidateDensity.visibleCount(
-                usableDp = CandidateDensity.usableDp(screenWidthDp, bar.paddingH, reservedEnd),
+                leadingDp = leadingDp,
                 widths = shown.map { i ->
                     val c = state.candidates[i]
                     CandidateDensity.itemWidthDp(
@@ -942,10 +955,11 @@ private fun CandidateBar(
                     )
                 },
                 spacing = style.item.spacing,
-            )
-            val rightEnd = CandidateDensity.rightEnd(
-                visible = visible,
                 pageCandidateCount = shown.size,
+                pageNo = state.pageNo,
+                isLastPage = state.isLastPage,
+                pagerKind = style.pageIndicator.kind,
+                pagerShow = style.pageIndicator.show,
                 expandAvailable = expand.show,
                 panelOpen = expand.expanded,
             )
@@ -1066,7 +1080,7 @@ private fun CandidateBar(
              * 差一個候選)。寫成 `when` 而不是兩個 `if`,「都畫」就不再是一個
              * 表達得出來的狀態。
              */
-            when (rightEnd) {
+            when (barLayout.rightEnd) {
                 CandidateDensity.RightEnd.NONE -> Unit
 
                 // 本頁還有畫不出來的候選 → 出口是展開面板,翻頁在面板裡面。
@@ -1078,18 +1092,11 @@ private fun CandidateBar(
                 )
 
                 // 本頁全部畫得出來 = 本頁看完了,這時候翻頁才是誠實的。
-                // ⚠ candidateCount 傳的是 **visible**,不是 state.candidates.size:
-                //   那個參數的 KDoc 從第一天就寫著「這一頁畫得出來的候選數」,
-                //   而呼叫端一直傳整頁的數量 —— 那正是「按 › 跳過六個沒看過的
-                //   候選」的來源。
+                // ⚠ 這一份 Pager.State 是 [CandidateDensity.barLayout] **算量測寬度
+                //   時用的那一份**,不是這裡另外算的第二份。上一版的量測與繪製
+                //   各算一次,11 種頁況裡 5 種對不上(量測扣 80、實際畫 40)。
                 CandidateDensity.RightEnd.PAGER -> PageArrows(
-                    state = Pager.state(
-                        kind = style.pageIndicator.kind,
-                        show = style.pageIndicator.show,
-                        pageNo = state.pageNo,
-                        isLastPage = state.isLastPage,
-                        candidateCount = visible,
-                    ),
+                    state = barLayout.pager ?: Pager.State(false, false, false),
                     style = style.pageIndicator,
                     scaler = scaler,
                     onEvent = onEvent,

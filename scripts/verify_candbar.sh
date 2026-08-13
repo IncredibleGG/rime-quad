@@ -64,10 +64,17 @@ ROOT="$(cd "$HERE/.." && pwd)"
 # ⚠ 不可以寫成 `logcat | grep -q`:pipefail 之下命中會變成 141(上游 SIGPIPE),
 #   於是「有命中」被判成「沒命中」。
 . "$HERE/lib/logmatch.sh"
+# ⛔ 裝置選擇只有這一份實作,而且**沒有預設 port**。這支腳本從前的預設是
+#   `emulator-${RIME_EMU_PORT:-5554}`,而這台機器上長期有三到四台在跑 ——
+#   不帶 RIME_SERIAL 就會對 5554 做 pm clear,並且量到那台上的舊 APK。
+# shellcheck source=lib/device.sh
+. "$HERE/lib/device.sh"
+# shellcheck source=lib/ocr.sh
+. "$HERE/lib/ocr.sh"
 
 SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}"
 ADB="$SDK/platform-tools/adb"
-SERIAL="${RIME_SERIAL:-${ANDROID_SERIAL:-emulator-${RIME_EMU_PORT:-5554}}}"
+SERIAL=""
 IME_ID="${RIME_IME_ID:-$RS_ANDROID_IME_ID}"
 IME_PKG="${IME_ID%%/*}"
 TARGET_PKG=dev.rime.inputmatrix
@@ -80,7 +87,9 @@ APK=""
 # 抗鋸齒會在候選塊邊緣留下幾個灰像素,而裁切邊界就貼著它。留一點餘裕,
 # 但遠小於一個字元的墨跡量(`MG GAM` 在 1080 寬的螢幕上是數千個)。
 INK_TOLERANCE="${RIME_INK_TOLERANCE:-40}"
-TESSERACT="${RIME_TESSERACT:-$(command -v tesseract || true)}"
+RS_TESSERACT=""
+rs_find_tesseract 2>/dev/null || true
+TESSERACT="$RS_TESSERACT"
 TESSDATA="${TESSDATA_PREFIX:-}"
 
 while [ $# -gt 0 ]; do
@@ -103,6 +112,7 @@ fail() { echo "  [FAIL] $*" >&2; FAILURES=$((FAILURES + 1)); }
 step() { echo; echo "── $* ──"; }
 
 [ -x "$ADB" ] || { echo "找不到 adb:$ADB" >&2; exit 2; }
+[ -n "$SERIAL" ] || SERIAL="$(rs_pick_serial "$ADB")" || exit 2
 adbs get-state >/dev/null 2>&1 || { echo "$SERIAL 不在線" >&2; exit 2; }
 # ⚠ Pillow 缺席必須在這裡就停:所有斷言都靠它數像素,缺了就等於沒驗
 #   ——「工具缺席 → 跳過」跳過的關卡與綠燈長得一模一樣。
@@ -122,6 +132,8 @@ fi
 
 # ⚠ pm clear 會把我們踢出「已啟用的輸入法」,系統當場退回別的鍵盤;
 #   而 force-stop 待測 IME 會把套件打進 stopped 狀態、再也回不來。
+rs_assert_destructive_ok "$ADB" "$SERIAL" "pm clear $IME_PKG / $TARGET_PKG、ime set" || exit 2
+rs_write_device_stamp "$ADB" "$SERIAL" "$OUT_DIR/device.txt" "$APK"
 adbs shell pm clear "$IME_PKG" >/dev/null 2>&1
 adbs shell pm clear "$TARGET_PKG" >/dev/null 2>&1
 sleep 3

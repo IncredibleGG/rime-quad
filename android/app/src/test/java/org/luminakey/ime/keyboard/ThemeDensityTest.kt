@@ -8,7 +8,7 @@ import org.luminakey.ime.theme.ScrollMode
 import org.luminakey.ime.theme.ThemeLoader
 
 /**
- * `core/themes/` 底下**每一份**主題都要排得下（規範草稿 §10 第 41 條）。
+ * `core/themes/` 底下**每一份**主題都要排得下（§10 第 41 條）。
  *
  * ── 為什麼是掃目錄而不是列幾個 id ────────────────────────────────────────
  * 這個專案已經因為「清單寫死」漏檢過兩次：`LayoutEscapeTest` 的四份佈局清單

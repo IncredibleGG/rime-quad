@@ -50,6 +50,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # 產品識別碼一律從這裡來,不在腳本裡寫死。理由見 scripts/lib/product.env 檔頭。
 # shellcheck source=lib/product.sh
 . "$ROOT/scripts/lib/product.sh"
+# shellcheck source=lib/device.sh
+. "$ROOT/scripts/lib/device.sh"
 SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}"
 ADB="$SDK/platform-tools/adb"
 # $APK = **使用者拿到的那一份**。所有「這份東西能不能發」的判斷都問它。
@@ -598,10 +600,8 @@ fi   # EMU_ONLY == 0
 [ "$SKIP_EMU" -eq 1 ] && { step "略過模擬器驗證（--skip-emu）"; }
 
 if [ "$SKIP_EMU" -eq 0 ]; then
-  SER="${RIME_SERIAL:-${ANDROID_SERIAL:-}}"
-  if [ -z "$SER" ]; then
-    SER="$("$ADB" devices | awk '/emulator-[0-9]+\tdevice/{print $1; exit}')"
-  fi
+  # ⛔ 「抓第一台」= 永遠是 emulator-5554,而這一關會 uninstall。
+  SER="$(rs_pick_serial "$ADB")" || SER=""
 
   step "5. 核心層對照基準（不經 UI）"
   # `--skip-push` 只有在裝置上已經有那 13MB 資料時才成立。在本機重跑時它省下

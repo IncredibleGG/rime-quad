@@ -16,10 +16,10 @@
 #   ./scripts/verify_input_matrix.sh                      # 全矩陣 + 全情境
 #   ./scripts/verify_input_matrix.sh --fields text,number
 #   ./scripts/verify_input_matrix.sh --no-scenarios
-#   RIME_EMU_PORT=5556 ./scripts/verify_input_matrix.sh
+#   RIME_SERIAL=emulator-5556 ./scripts/verify_input_matrix.sh
 #
 # 選項
-#   --serial <s>    指定裝置(預設 emulator-$RIME_EMU_PORT,port 預設 5556)
+#   --serial <s>    指定裝置(沒指定而且不只一台在線就中止)
 #   --fields <csv>  只跑這些欄位(預設全部)
 #   --keys <str>    要逐鍵點的字母序列(預設 nihao)
 #   --expect <csv>  每一步的預期內容,逗號分隔;預設 n,ni,ni h,ni ha,ni hao
@@ -43,7 +43,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}"
 ADB="$ANDROID_SDK_ROOT/platform-tools/adb"
-SERIAL="${RIME_SERIAL:-${ANDROID_SERIAL:-emulator-${RIME_EMU_PORT:-5556}}}"
+SERIAL=""
 
 # 產品識別碼的唯一來源,見 scripts/lib/product.env。
 # shellcheck source=lib/product.sh
@@ -52,6 +52,11 @@ SERIAL="${RIME_SERIAL:-${ANDROID_SERIAL:-emulator-${RIME_EMU_PORT:-5556}}}"
 #   (grep -q 一命中就結束 → 上游 SIGPIPE),於是「有命中」被判成「沒命中」。
 #   改用 lib/logmatch.sh 的 log_has / log_matches —— 它們先收進變數再用內建比對。
 . "$SCRIPT_DIR/lib/logmatch.sh"
+# ⛔ 裝置選擇的唯一入口。沒有預設 port —— 這台機器上長期有三到四台在跑,
+#   而 `adb devices` 以 port 升冪列出,「預設 5554」與「抓第一台」都會
+#   落在同一台**別人的**機器上,然後 pm clear 它。
+# shellcheck source=lib/device.sh
+. "$SCRIPT_DIR/lib/device.sh"
 IME_ID="${RIME_IME_ID:-$RS_ANDROID_IME_ID}"
 IME_PKG="${IME_ID%%/*}"
 PKG="dev.rime.inputmatrix"
@@ -81,7 +86,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+[ -n "$SERIAL" ] || SERIAL="$(rs_pick_serial "$ADB")" || exit 2
 adbs() { "$ADB" -s "$SERIAL" "$@"; }
+rs_assert_destructive_ok "$ADB" "$SERIAL" "ime set、settings put system user_rotation" || exit 2
 
 mkdir -p "$OUT_DIR"
 RESULTS="$OUT_DIR/results.tsv"

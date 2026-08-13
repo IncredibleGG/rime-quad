@@ -90,12 +90,10 @@ L="$ROOT/third_party/prebuilt/$ABI/lib"
   -llog -lm -o "$BIN" || die "編譯失敗"
 
 # ---------------------------------------------------------------- 裝置 ---
-SERIAL="${RIME_SERIAL:-}"
-if [ -z "$SERIAL" ]; then
-  DEVS="$("$ADB" devices)"
-  SERIAL="$(printf '%s\n' "$DEVS" | awk '/device$/ && $1 != "List" {print $1; exit}')"
-fi
-[ -n "$SERIAL" ] || die "找不到裝置。先起模擬器（scripts/emu.sh start）或設 RIME_SERIAL="
+# shellcheck source=lib/device.sh
+. "$ROOT/scripts/lib/device.sh"
+# ⛔ 「抓第一台」= 永遠是 emulator-5554。
+SERIAL="$(rs_pick_serial "$ADB")" || die "沒有選定裝置。先起模擬器（scripts/emu.sh start）或設 RIME_SERIAL="
 log "裝置 $SERIAL"
 
 if [ "$SKIP_PUSH" -eq 0 ]; then

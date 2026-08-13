@@ -69,6 +69,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}"
 ADB="$SDK/platform-tools/adb"
+# shellcheck source=lib/device.sh
+. "$HERE/lib/device.sh"
 
 IME_ID=""
 APKS=()
@@ -106,14 +108,10 @@ dump_on_fail() {
 }
 fail() { echo "  [FAIL] $*" >&2; dump_on_fail; echo >&2; echo "artifact 在:$OUT_DIR" >&2; exit 1; }
 
-SERIAL="${RIME_SERIAL:-${ANDROID_SERIAL:-}}"
-if [ -z "$SERIAL" ]; then
-  # 為什麼不用管線接 grep:見 coordination.md §3,`set -o pipefail` 配
-  # 提前結束的下游會把成功變成失敗。先把輸出收進變數再處理。
-  devices="$("$ADB" devices)"
-  SERIAL="$(printf '%s\n' "$devices" | awk '/emulator-[0-9]+\tdevice/{print $1; exit}')"
-fi
-[ -n "$SERIAL" ] || fail "找不到已連線的模擬器(可用 RIME_SERIAL 指定)"
+# ⛔ 「抓第一台」是 fail-open:`adb devices` 以 port 升冪列出,第一台永遠是
+#   emulator-5554 —— 而這一支會 uninstall、會 ime set。改成不猜。
+SERIAL="$(rs_pick_serial "$ADB")" || exit 2
+rs_assert_destructive_ok "$ADB" "$SERIAL" "uninstall、ime enable/set" || exit 2
 adbs() { "$ADB" -s "$SERIAL" "$@"; }
 info "裝置:$SERIAL"
 

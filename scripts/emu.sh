@@ -17,7 +17,8 @@
 # 可用環境變數:
 #   ANDROID_SDK_ROOT  Android SDK 路徑(預設 $HOME/Android/Sdk)
 #   RIME_AVD          AVD 名稱(預設 rime_test)
-#   RIME_EMU_PORT     模擬器 console port(預設 5554,serial 為 emulator-<port>)
+#   RIME_EMU_PORT     模擬器 console port(已經有裝置在線時**必填**;
+#                     port 不是身分,身分是 AVD 名 —— adb -s <serial> emu avd name)
 #   RIME_EMU_LOG      模擬器 stdout/stderr 日誌路徑
 #   RIME_BOOT_TIMEOUT 等待開機的秒數上限(預設 600)
 #   RIME_EMU_GPU      GPU 模式(預設 swiftshader_indirect)
@@ -34,7 +35,23 @@ export ANDROID_SDK_ROOT
 export ANDROID_HOME="$ANDROID_SDK_ROOT"
 
 AVD_NAME="${RIME_AVD:-rime_test}"
-EMU_PORT="${RIME_EMU_PORT:-5554}"
+# ⚠ **port 不是身分。** 這一支是**啟動者**,它有權決定 port;但它的預設值
+#   從前是所有驗證腳本「預設打 5554」的正當性來源,而這台機器上長期有
+#   三到四台模擬器在跑(rime_test/5554、lumina_test/5556、lumina_test2/5558),
+#   任何一台重開 port 就換人。所以:已經有模擬器在線時,**要求明著指定 port**。
+EMU_PORT="${RIME_EMU_PORT:-}"
+if [ -z "$EMU_PORT" ]; then
+  _online="$("${ANDROID_SDK_ROOT}/platform-tools/adb" devices 2>/dev/null | grep -cE '	device$' || true)"
+  if [ "${_online:-0}" -gt 0 ]; then
+    {
+      echo "[emu.sh] 這台機器上已經有 ${_online} 台裝置在線,不猜 port。"
+      echo "         明著寫:RIME_EMU_PORT=<port> RIME_AVD=<avd 名> $0 $*"
+      "${ANDROID_SDK_ROOT}/platform-tools/adb" devices | sed 's/^/    /'
+    } >&2
+    exit 2
+  fi
+  EMU_PORT=5554
+fi
 SERIAL="emulator-${EMU_PORT}"
 BOOT_TIMEOUT="${RIME_BOOT_TIMEOUT:-600}"
 EMU_GPU="${RIME_EMU_GPU:-swiftshader_indirect}"
