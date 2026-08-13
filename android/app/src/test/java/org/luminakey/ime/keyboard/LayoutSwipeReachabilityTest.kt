@@ -98,6 +98,64 @@ class LayoutSwipeReachabilityTest {
         )
     }
 
+    /**
+     * §9.6 那段話裡的**數字**：12 份佈局裡有 11 份用到 swipe，共 119 條，
+     * 四類各 31 / 58 / 28 / 2。
+     *
+     * ⚠ 這一條寫下來的第一次就抓到一個：`docs/coordination.md` 2026-08-13
+     * 那一則的分項是「字母鍵上滑出數字 30」，實測 **31**（30+58+28+2=118，
+     * 而同一句話裡的總數寫的是 119 —— 分項自己就對不起來）。總數 119 是對的。
+     *
+     * ── 為什麼要把數字釘在這裡 ──────────────────────────────────────────
+     * 那幾個數字現在寫在三個地方（`docs/theme-format.md` §9.6、
+     * `docs/coordination.md` 2026-08-13 那一則、以及使用者讀到的那句
+     * 「119 條現在一條都觸發不到」），而**沒有任何東西在量它們**。
+     * §9.6 上一版寫的是「本 repo **三份**佈局皆已遵守」—— 那個數字從三份
+     * 長到十一份都沒有人改過，一路帶著讀者走了很久。同一件事會再發生一次：
+     * 加一份佈局、或在既有佈局上多寫一條 `swipe:`，文件裡的 119 就是假的，
+     * 而上面那兩條測試照樣全綠（它們只問「每一條有沒有落在四類裡」，
+     * 不問「有幾條」）。
+     *
+     * 所以這一條在數。它紅的時候要做的**不是**把數字改一改就算：先看是
+     * 哪一類多了或少了，再把 §9.6 與 coordination 那一則一起更新 ——
+     * 那幾句話是寫給使用者與另外三端看的。
+     */
+    @Test
+    fun `swipe 的條數與 §9-6 表上的數字對得上`() {
+        val repo = FixtureRepo()
+        val counted = mutableMapOf<String, Int>()
+        val layoutsWithSwipe = mutableListOf<String>()
+        var total = 0
+        for (id in RepoFixtures.layoutIds) {
+            val layout = repo.loadLayout(id).value ?: error("佈局 $id 載不起來,先修那個")
+            val sites = swipeSites(layout, id)
+            if (sites.isNotEmpty()) layoutsWithSwipe += id
+            total += sites.size
+            for (site in sites) {
+                val kind = classify(site) ?: continue
+                counted[kind] = (counted[kind] ?: 0) + 1
+            }
+        }
+        val hint = "\n§9.6 與 docs/coordination.md 2026-08-13 那一則都寫著這些數字，" +
+            "而使用者讀到的是「這 N 條現在一條都觸發不到」。改動之後三處要一起更新。"
+        assertEquals(
+            "用到 swipe 的佈局份數變了$hint\n實際：${layoutsWithSwipe.joinToString("、")}",
+            EXPECTED_LAYOUTS_WITH_SWIPE,
+            layoutsWithSwipe.size,
+        )
+        assertEquals(
+            "佈局總份數變了（§9.6 寫著「12 份佈局裡有 11 份」）$hint",
+            EXPECTED_LAYOUTS_TOTAL,
+            RepoFixtures.layoutIds.size,
+        )
+        assertEquals("每一類的條數變了$hint", EXPECTED_BY_KIND.toSortedMap(), counted.toSortedMap())
+        // 總數單獨再釘一次：分類器漏掉的那幾條(classify 回 null)不會進 counted，
+        // 只比對分類結果的話「多了一條沒人認得的 swipe」在這裡是看不見的。
+        // 上面第 2 條會抓到它，但這裡的數字仍然必須是**全部**，因為文件裡那個
+        // 119 講的是「一共有幾條按不到」，不是「有幾條分得出類」。
+        assertEquals("swipe 的總條數變了$hint", EXPECTED_TOTAL, total)
+    }
+
     /** 分類器本身要擋得住沒見過的東西，否則第 2 條永遠是綠的。 */
     @Test
     fun `分類器不認得的動作一律當成死路`() {
@@ -203,6 +261,20 @@ class LayoutSwipeReachabilityTest {
         const val KIND_CLEAR = "退格左滑清除"
         const val KIND_PAGE = "空白鍵上下滑翻頁"
         val KINDS = listOf(KIND_DIGIT, KIND_CURSOR, KIND_CLEAR, KIND_PAGE)
+
+        /**
+         * `docs/theme-format.md` §9.6 與 `docs/coordination.md` 2026-08-13
+         * 那一則寫著的實測值。改這裡就要改那兩處，反之亦然。
+         */
+        const val EXPECTED_LAYOUTS_TOTAL = 12
+        const val EXPECTED_LAYOUTS_WITH_SWIPE = 11
+        const val EXPECTED_TOTAL = 119
+        val EXPECTED_BY_KIND = mapOf(
+            KIND_DIGIT to 31,
+            KIND_CURSOR to 58,
+            KIND_CLEAR to 28,
+            KIND_PAGE to 2,
+        )
 
         /** Compose 裡做得出四向滑動的入口。有任何一個出現就代表前提變了。 */
         val DRAG_APIS = listOf(

@@ -15,10 +15,16 @@ name: Android
 #             使用者手上的 rime-latest.apk 被無意間覆蓋是災難,所以不做成
 #             push 就發。
 #
-# 拆成快慢兩條不是為了少驗東西:scripts/release_check.sh 的 16 項被
-# `--skip-emu` 與 `--emu-only` 切成兩半,兩條加起來仍是原本那 16 項,
+# 拆成快慢兩條不是為了少驗東西:scripts/release_check.sh 的每一關被
+# `--skip-emu` 與 `--emu-only` 切成兩半,兩條加起來仍是原本那些關,
 # 而且兩條都帶 `--strict`(略過一律算失敗)。publish 的 needs: 同時掛著兩條,
 # 所以「沒驗到就發出去」在結構上做不到。
+#
+# ⚠ 這裡**刻意不寫關卡的數目**。原本這一段寫著「16 項」,而實際是 17+7=24 ——
+#   那個數字是手抄的,關卡加了它不會跟著動,於是它靜靜地過期,而讀的人不會
+#   知道。真正的數字是 release_check.sh 裡的 `MIN_SKIP_EMU` / `MIN_EMU_ONLY`
+#   / `MIN_FULL`,而且那三個是**有守門的下界**:實跑的關卡數少於它們,
+#   release_check.sh 自己就會紅。要知道有幾關,去那裡看,不要看註解。
 #
 # ── 這個 workflow 為什麼看起來比一般 Android 專案複雜 ────────────────────
 # 這個 App 的 assets 裡有 13MB 的輸入方案資料(詞庫、語言模型、opencc 詞典),
