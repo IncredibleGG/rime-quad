@@ -379,7 +379,7 @@ esac
 # 的那一格的**上一格**:他切了一下輸入法,狀態欄整個不見了。
 #
 # 那一橫顯不顯示,服務端的判準等價於「至少有一條具名管道連線開著」
-# (service/status_bar.cc 的 clients_,由 pipe_server.cc 的 ClientTicket
+# (service/status_bar.cc 的那份註冊表,由 pipe_server.cc 的 ClientTicket
 # 一條連線一張票)。判準守得很滿 —— tests/test_bar_visibility.cc 九支,
 # 其中一支就是「第一個宿主連上來 → 立刻顯示」。
 #
@@ -404,7 +404,7 @@ if [ "${FULL}" -eq 0 ]; then
         echo "    (那一橫的訊號是**啟用**而不是**按鍵** —— #82 的另一半)"
       else
         note_fail "ActivateEx 過了,而服務端**一條連線都沒有**(${n_presence:-?})。
-     那一橫要等使用者按下第一顆鍵才會出現:clients_ 是 0,而唯一推得回去的
+     那一橫要等使用者按下第一顆鍵才會出現:服務端一筆註冊都沒有,而唯一開連線的
      IpcClient::EnsureReady() 三個呼叫點全部在按鍵路徑上。
      要補的是 tsf/text_service.cc 的 ActivateEx —— 見那裡的 PresenceLink。"
       fi ;;

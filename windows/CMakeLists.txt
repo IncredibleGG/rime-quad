@@ -155,6 +155,7 @@ add_library(rime_common STATIC
   # ⚠ 那一橫什麼時候該在(§12.10.6)。判準放這裡而不是 service/ 的理由與
   #   status_cells.cc 同一條:顯示時機的缺陷全部長成時序問題,而時序問題
   #   沒有測試就只能靠人肉試 —— 而 service/ 在開發機上編不起來。
+  common/bar_owner.cc
   common/bar_visibility.cc
   # ⚠ Ctrl+空白鍵。判斷只有這一份:瘦 DLL 與服務各要問一次,
   #   兩邊各寫一份就是兩份真相。走 PreserveKey,**不動 key_eat_policy**。
@@ -201,6 +202,7 @@ add_executable(rime_tests
   tests/test_sha256.cc
   tests/test_update_manifest.cc
   tests/test_update_flow.cc
+  tests/test_bar_owner.cc
   tests/test_bar_visibility.cc
   tests/test_proto_compat.cc
   tests/test_schema_list_patch.cc

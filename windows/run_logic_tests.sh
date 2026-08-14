@@ -64,6 +64,7 @@ SRCS=(
   "${SCRIPT_DIR}/common/hotkey_policy.cc"
   "${SCRIPT_DIR}/common/work_queue.cc"
   "${SCRIPT_DIR}/common/shift_tap.cc"
+  "${SCRIPT_DIR}/common/bar_owner.cc"
   "${SCRIPT_DIR}/common/bar_visibility.cc"
   "${SCRIPT_DIR}/tests/test_main.cc"
   "${SCRIPT_DIR}/tests/test_protocol.cc"
@@ -102,6 +103,7 @@ SRCS=(
   "${SCRIPT_DIR}/tests/test_callback_gate.cc"
   "${SCRIPT_DIR}/tests/test_status_line.cc"
   "${SCRIPT_DIR}/tests/test_shift_tap.cc"
+  "${SCRIPT_DIR}/tests/test_bar_owner.cc"
   "${SCRIPT_DIR}/tests/test_bar_visibility.cc"
 )
 

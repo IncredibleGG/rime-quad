@@ -606,22 +606,30 @@ print('   換方案的簡繁來源:設定檔 → OnDiskPref、引擎複本 → E
       '兩格都沒包反')
 PY_VARIANT_PICK_ARGS
 
-  # ── 規則 6:那一橫的「在場」訊號必須接在 activation 上 ─────────────
+  # ── 規則 6:那一橫的「我在用」訊號,四個邊一個都不准掉 ─────────────
   #
   # 守的是工單 #82 的另一半,而它與規則 4 是同一個形狀:**判準有人守,
-  # 訊號沒有。** 那一橫顯不顯示的判準是純函式(common/bar_visibility.cc,
-  # tests/test_bar_visibility.cc 九支測試),但判準吃的
-  # active_clients 從哪裡來 —— 也就是「使用者切回輸入法之後,服務端到底
-  # 有沒有多一條連線」—— 在這一條加進來之前**沒有任何東西看得到**:
+  # 訊號沒有。** 那一橫的兩層判準都是純函式(common/bar_owner.cc 收斂
+  # 13 個宿主、common/bar_visibility.cc 管遲滯,兩支都有單元測試),
+  # 而「使用者切到我們 / 切走」這件事怎麼進到服務端 —— 也就是在場連線
+  # 那四個邊 —— 只有這一條守得到。
   #
-  #   grep -rn "OnClientAttached|OnClientDetached|ClientTicket|
-  #             StartServiceInBackground" windows/**.sh windows/**.yml
-  #             .github/ 與所有測試   → 空的
+  # 四個邊,而且**每一個都對應一個使用者實機回報過的症狀**:
   #
-  # 症狀(使用者實機回報):切了一下輸入法,狀態欄整個不見了,再也不出現
-  # —— 因為 Deactivate 會 ipc_.Close()、OnActivated 也會關,而 ActivateEx
-  # 只 StartServiceInBackground(),不連線;唯一推得回去的 EnsureReady()
-  # 三個呼叫點全部在按鍵路徑上。
+  #   開 ActivateEx           切到我們(從別的輸入法)。少了它 = S1:
+  #                           切回來之後要打第一個字那一橫才出現。
+  #   開 OnActivated(啟用邊)  在我們自家三份 profile 之間切。三份共用
+  #                           一個 CLSID,所以 TSF **不會**重新 Activate
+  #                           —— 少了它,繁↔簡切一次那一橫就不見了。
+  #   關 Deactivate           切走 / 宿主收工。少了它 = #82:常駐。
+  #   關 OnActivated(非啟用邊) 使用者切到微軟拼音。⚠ **這是四個邊裡唯一
+  #                           在那一刻保證會來的**,而它以前被兩個早退
+  #                           整個丟掉 = S4:「我現在用其他的輸入法,
+  #                           但是他突然出現了」。
+  #
+  # ⚠ 所以這一條**不可以**只數 Start / Stop 的次數:兩個早退還在的時候
+  #   次數是對的,而 S4 照樣發生。要看的是 OnActivated 有沒有在讀
+  #   `flags` **之前**就 return 掉。
   #
   # ⚠ 這一條**不能**用 grep 名字了事:text_service.cc 的註解裡到處都是
   #   PresenceLink 這幾個字。與規則 4 同一個判準 —— 先遮掉註解與字串,
@@ -688,6 +696,14 @@ for p in (path, hdr_path):
         raise SystemExit(1)
 src = mask(open(path, encoding='utf-8').read())
 hdr = mask(open(hdr_path, encoding='utf-8').read())
+pipe_path = os.path.join(root, 'windows', 'service', 'pipe_server.cc')
+bar_path = os.path.join(root, 'windows', 'service', 'status_bar.cc')
+for p2 in (pipe_path, bar_path):
+    if not os.path.isfile(p2):
+        print('!! 找不到 %s —— 規則 6 沒有東西可守' % p2, file=sys.stderr)
+        raise SystemExit(1)
+pipe = mask(open(pipe_path, encoding='utf-8').read())
+bar = mask(open(bar_path, encoding='utf-8').read())
 
 funcs = []   # (名字, 簽章文字, 本體)
 for m in re.finditer(r'^[A-Za-z_][^\n;(){}]*TextService::(\w+)\(', src, re.M):
@@ -731,29 +747,44 @@ def body_of(name, what):
     return hits[0][2]
 
 
-START_RE = re.compile(r'\bPresenceLink\s*::\s*Start\s*\(\s*\)')
-STOP_RE = re.compile(r'\bpresence_\s*->\s*Stop\s*\(\s*\)')
+START_RE = re.compile(r'\bPresenceLink\s*::\s*Start\s*\(')
+STOP_RE = re.compile(r'\bpresence_\s*->\s*Stop\s*\(')
+OPEN_RE = re.compile(r'\bEnsurePresence\s*\(\s*\)')
+CLOSE_RE = re.compile(r'\bClosePresence\s*\(\s*\)')
 
 # ── 分母:從程式碼數出來的。掃到 0 個是紅,不是「0 個違規」──────────
 n_start = len(START_RE.findall(src))
 n_stop = len(STOP_RE.findall(src))
 if n_start != 1:
-    bad.append('text_service.cc 裡有 %d 處 PresenceLink::Start()(註解不算)'
-               ' —— 應該剛好 1 處。0 處 = 那一橫的訊號整條不存在:切回'
-               '輸入法之後 clients_ 是 0,使用者要按下第一顆鍵才看得到它。'
-               % n_start)
+    bad.append('text_service.cc 裡有 %d 處 PresenceLink::Start((註解不算)'
+               ' —— 應該剛好 1 處,而且在 EnsurePresence 裡。0 處 = 那一橫'
+               '的訊號整條不存在:切到我們之後服務端看不到這個宿主,'
+               '使用者要按下第一顆鍵才會有一條連線(S1)。' % n_start)
 if n_stop != 1:
-    bad.append('text_service.cc 裡有 %d 處 presence_->Stop()(註解不算)'
-               ' —— 應該剛好 1 處。0 處 = **#82 原缺陷復活**:切走輸入法'
-               '之後那條連線還開著,那一橫永遠藏不起來。' % n_stop)
+    bad.append('text_service.cc 裡有 %d 處 presence_->Stop((註解不算)'
+               ' —— 應該剛好 1 處,而且在 ClosePresence 裡。0 處 = **#82 原'
+               '缺陷復活**:切走輸入法之後那筆註冊還在,那一橫藏不起來。'
+               % n_stop)
 
-# ── 而且要在**該在的那兩個函式**裡 ────────────────────────────────
+# ⚠ 兩支包裝函式存在的理由是「各有兩個呼叫點」。Start/Stop 收在裡面,
+#   守門才有辦法分別檢查那四個邊,而不是只數總次數。
+ensure = body_of('EnsurePresence', 'TextService::EnsurePresence')
+if ensure is not None and len(START_RE.findall(ensure)) != 1:
+    bad.append('EnsurePresence 裡沒有 PresenceLink::Start( —— 那一橫的開場'
+               '訊號被搬走了,而 ActivateEx 與 profile sink 兩個呼叫點看'
+               '起來都還在。')
+closer = body_of('ClosePresence', 'TextService::ClosePresence')
+if closer is not None and len(STOP_RE.findall(closer)) != 1:
+    bad.append('ClosePresence 裡沒有 presence_->Stop( —— 收尾訊號被掏空,'
+               '而兩個呼叫點看起來都還在。')
+
+# ── 四個邊,一個一個看 ───────────────────────────────────────────
 act = body_of('ActivateEx', 'ITfTextInputProcessorEx::ActivateEx')
 if act is not None:
-    if len(START_RE.findall(act)) != 1:
-        bad.append('ActivateEx 裡沒有 PresenceLink::Start() —— 訊號沒有接在'
+    if len(OPEN_RE.findall(act)) != 1:
+        bad.append('ActivateEx 裡沒有 EnsurePresence() —— 訊號沒有接在'
                    '「使用者切到這個輸入法」這件事上。接在別的地方(例如'
-                   '第一顆按鍵)就是這個缺陷本身。')
+                   '第一顆按鍵)就是 S1 這個缺陷本身。')
     # ⚠ 最像對、而且**不可以**的那個修法。
     if re.search(r'\bEnsureReady\s*\(', act):
         bad.append('ActivateEx 裡出現了 EnsureReady( —— 開管道與握手會在'
@@ -762,15 +793,76 @@ if act is not None:
                    '檔頭:在場連線要走自己的背景執行緒。')
 
 deact = body_of('Deactivate', 'ITfTextInputProcessor::Deactivate')
-if deact is not None and len(STOP_RE.findall(deact)) != 1:
-    bad.append('Deactivate 裡沒有 presence_->Stop() —— 切走輸入法之後那條'
-               '在場連線還開著,服務端的 clients_ 不會歸零,那一橫**常駐'
+if deact is not None and len(CLOSE_RE.findall(deact)) != 1:
+    bad.append('Deactivate 裡沒有 ClosePresence() —— 切走輸入法之後那條'
+               '在場連線還開著,服務端那筆註冊不會消失,那一橫**常駐'
                '在螢幕上**。那正是使用者上一次回報的缺陷(#82)。')
+
+# ── ⭐ profile sink:S4 那兩個邊 ──────────────────────────────────
+onact = body_of('OnActivated', 'ITfInputProcessorProfileActivationSink::OnActivated')
+if onact is not None:
+    # ⚠ 這一格是這一輪的核心。舊版的形狀是:
+    #     if (!IsEqualCLSID(clsid, CLSID_RimeTextService)) return S_OK;
+    #     if (!(flags & TF_IPSINK_FLAG_ACTIVE)) return S_OK;
+    #   兩個早退把「使用者切到微軟拼音」那一刻**唯一會來的**兩則通知
+    #   整個丟掉。判準因此是位置式的:旗標要在第一個 return 之前被讀到。
+    iflag = onact.find('TF_IPSINK_FLAG_ACTIVE')
+    mret = re.search(r'\breturn\b', onact)
+    iret = mret.start() if mret else -1
+    if iflag < 0:
+        bad.append('OnActivated 裡讀不到 TF_IPSINK_FLAG_ACTIVE —— 分不出'
+                   '「被啟用」與「被停用」,而後者是使用者切到別的輸入法時'
+                   '唯一會來的東西(S4)。')
+    elif iret >= 0 and iret < iflag:
+        bad.append('OnActivated 在讀 flags **之前**就 return 了 —— 那正是'
+                   '舊版那兩個早退的形狀,而它丟掉的是使用者切到微軟拼音'
+                   '那一刻唯一會來的兩則通知。症狀是 S4:'
+                   '「我現在用其他的輸入法,但是他突然出現了」。')
+    if len(OPEN_RE.findall(onact)) != 1:
+        bad.append('OnActivated 裡沒有 EnsurePresence() —— 三份 profile 共用'
+                   '一個 CLSID,在自家繁↔簡之間切**不會**重新 ActivateEx,'
+                   '只有這一則會來。少了它,切一次字形那一橫就再也不回來。')
+    if len(CLOSE_RE.findall(onact)) != 1:
+        bad.append('OnActivated 裡沒有 ClosePresence() —— 使用者切到別的'
+                   '輸入法時服務端不會知道,那一橫會在他已經換了輸入法'
+                   '之後繼續冒出來(S4)。Deactivate 補不上這一格:'
+                   '背景執行緒上它延遲或永不會來。')
+
+# ── 這條連線報不報得出自己是誰 ───────────────────────────────────
+#
+# ⚠ 少了這一格,在場連線就退回「有一條 handle 開著」—— 一個沒有產品
+#   意義的量,而 12 個背景宿主每一條都算一票。
+if not re.search(r'\bh\.host_tid\s*=\s*host_tid_', src):
+    bad.append('PresenceLink 的 HELLO 沒有帶 host_tid —— 服務端只知道'
+               '「有一條連線」,不知道它是**哪一條執行緒**上的。輸入法在'
+               'Windows 上是 per-thread 的,少了 tid 那一橫在'
+               '「每個視窗各自的輸入法」模式下會再壞一次。')
+if not re.search(r'\bEncodeHello\s*\(', src):
+    bad.append('PresenceLink 不再握手 —— 沒握手的連線在服務端是'
+               'activated=false,一票都不投,那一橫永遠不會顯示。')
 
 # ── 成員宣告在不在 ───────────────────────────────────────────────
 if not re.search(r'PresenceLink\s*\*\s*presence_', hdr):
     bad.append('text_service.h 裡沒有 PresenceLink* presence_ —— 上面那兩格'
                '就沒有東西可守了')
+
+# ── 服務端:那筆註冊要真的收得到身分,而且要真的去問前景 ────────────
+if not re.search(
+        r'bar_->OnClientIdentified\(client_id,\s*h\.host_pid,\s*h\.host_tid\)',
+        pipe):
+    bad.append('pipe_server.cc 的 HELLO 分支沒有把 (pid, tid) 交給那一橫 —— '
+               '每一條連線於是又變回一張沒有身分的票,而那就是 S4。')
+if len(re.findall(r'\bDecideBarOwner\s*\(', bar)) != 1:
+    bad.append('status_bar.cc 沒有(或有多處)呼叫 DecideBarOwner( —— '
+               '收斂 13 個宿主的那一層被繞開了。判準本身有測試,'
+               '**被繞開**沒有任何測試看得到。')
+if not re.search(r'if\s*\(\s*!\s*owner\.os_unknown\s*\)', bar):
+    bad.append('status_bar.cc 沒有看 owner.os_unknown —— OS 答不出前景'
+               '(UAC 提示、安全桌面)時會被讀成「沒有人在用」,那一橫'
+               '在使用者只是被問了一次系統權限之後開始倒數消失。')
+if not re.search(r'\bReadForegroundOwner\s*\(\s*\)', bar):
+    bad.append('status_bar.cc 沒有去問 OS 前景是誰 —— 剩下的就只有'
+               '宿主自己的宣稱,而兩個宿主同時宣稱就退化回舊判準的 OR。')
 
 # ── 提權宿主那道閘只有一個入口 ───────────────────────────────────
 #
@@ -787,11 +879,14 @@ if n_launch != 1:
 for b in bad:
     print('!! ' + b, file=sys.stderr)
 if bad:
-    print('!! 那一橫的在場訊號稽核失敗:%d 項。判準在 common/bar_visibility.cc'
-          '(九支測試),訊號只有這一條與 verify_tsf.sh 的 --watch-presence '
-          '守得到。' % len(bad), file=sys.stderr)
+    print('!! 那一橫的在場訊號稽核失敗:%d 項。判準在 common/bar_owner.cc 與'
+          ' common/bar_visibility.cc(都有單元測試),**訊號**只有這一條與'
+          ' verify_tsf.sh 的 --watch-presence 守得到。' % len(bad),
+          file=sys.stderr)
     raise SystemExit(1)
-print('   那一橫的在場訊號:ActivateEx 起、Deactivate 收,各 1 處;'
+print('   那一橫的在場訊號:四個邊都在(ActivateEx / OnActivated 啟用邊 開,'
+      'Deactivate / OnActivated 非啟用邊 收);OnActivated 先讀 flags 才 return;'
+      'HELLO 帶得出 host_tid;服務端接得到身分、而且真的去問前景;'
       'ActivateEx 裡沒有 EnsureReady(;LaunchService( 仍然只有 1 個呼叫點')
 PY_BAR_PRESENCE_WIRING
 
@@ -815,11 +910,19 @@ if [ "${1:-}" = "--self-check" ]; then
                variant_pick_settings_always_unreadable \
                presence_no_start presence_never_closed \
                presence_ensure_ready_in_activate \
-               presence_launches_service; do
+               presence_launches_service \
+               profile_sink_drops_the_deactivate_edge \
+               presence_not_reopened_on_profile_switch \
+               presence_not_closed_on_profile_switch \
+               presence_never_says_who_it_is \
+               bar_takes_every_connection_as_a_vote \
+               bar_ignores_the_foreground \
+               bar_overwrites_state_when_os_cannot_answer; do
     tmp="$(mktemp -d)"
     mkdir -p "${tmp}/windows/service" "${tmp}/windows/tsf"
     cp "${ROOT_DEFAULT}/windows/service/main.cc" \
        "${ROOT_DEFAULT}/windows/service/pipe_server.cc" \
+       "${ROOT_DEFAULT}/windows/service/status_bar.cc" \
        "${ROOT_DEFAULT}/windows/service/engine.cc" "${tmp}/windows/service/"
     # ⚠ .h 也要複製:S4 那三格線路檢查(繼承 / QueryInterface / AdviseSink)
     #   其中一格看的是標頭。少了它,那一格會變成「找不到檔案」的紅,
@@ -902,11 +1005,72 @@ if [ "${1:-}" = "--self-check" ]; then
       #   少了 Stop  = 上一次回報的(#82:切走了還常駐)。
       #   兩個都是「編得過、九支純函式測試照樣全綠」。
       presence_no_start)
-        sed -i 's|^\([[:space:]]*\)presence_ = PresenceLink::Start();|\1// presence_ = PresenceLink::Start();|' \
-          "${tmp}/windows/tsf/text_service.cc" ;;
+        python3 - "${tmp}/windows/tsf/text_service.cc" <<'PY_NOSTART'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+old = """  presence_ = PresenceLink::Start(
+      static_cast<uint32_t>(::GetCurrentThreadId()));"""
+assert old in s, '植入對不上 EnsurePresence 的寫法了 —— 反向測試會變成假綠'
+open(p, 'w', encoding='utf-8').write(s.replace(old, '  presence_ = nullptr;', 1))
+PY_NOSTART
+        ;;
       presence_never_closed)
         sed -i '/^[[:space:]]*presence_->Stop();$/d' \
           "${tmp}/windows/tsf/text_service.cc" ;;
+      # ⭐ 這一個就是 S4 本身:把兩個早退加回 OnActivated 的最頂端。
+      #   加回去之後 Start / Stop 的次數一個都沒變、四個呼叫點也都還在,
+      #   而使用者切到微軟拼音時那一橫照樣冒出來。只數次數的守門抓不到。
+      profile_sink_drops_the_deactivate_edge)
+        python3 - "${tmp}/windows/tsf/text_service.cc" <<'PY_EARLYRET'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+anchor = '  const bool ours = IsEqualCLSID(clsid, CLSID_RimeTextService);'
+assert anchor in s, '植入對不上 OnActivated 的寫法了 —— 反向測試會變成假綠'
+early = ('  if (!IsEqualCLSID(clsid, CLSID_RimeTextService)) return S_OK;\n'
+         '  if (!(flags & TF_IPSINK_FLAG_ACTIVE)) return S_OK;\n')
+open(p, 'w', encoding='utf-8').write(s.replace(anchor, early + anchor, 1))
+PY_EARLYRET
+        ;;
+      presence_not_reopened_on_profile_switch)
+        python3 - "${tmp}/windows/tsf/text_service.cc" <<'PY_NOREOPEN'
+import re, sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+i = s.index('STDMETHODIMP TextService::OnActivated(')
+j = s.index('\n}\n', i)
+body = s[i:j]
+assert 'EnsurePresence();' in body, '植入對不上 —— 反向測試會變成假綠'
+open(p, 'w', encoding='utf-8').write(
+    s[:i] + body.replace('EnsurePresence();', '(void)0;', 1) + s[j:])
+PY_NOREOPEN
+        ;;
+      presence_not_closed_on_profile_switch)
+        python3 - "${tmp}/windows/tsf/text_service.cc" <<'PY_NOCLOSE'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+i = s.index('STDMETHODIMP TextService::OnActivated(')
+j = s.index('\n}\n', i)
+body = s[i:j]
+assert 'ClosePresence();' in body, '植入對不上 —— 反向測試會變成假綠'
+open(p, 'w', encoding='utf-8').write(
+    s[:i] + body.replace('ClosePresence();', '(void)0;', 1) + s[j:])
+PY_NOCLOSE
+        ;;
+      presence_never_says_who_it_is)
+        sed -i 's|^\([[:space:]]*\)h\.host_tid = host_tid_;|\1h.host_pid = 0;|' \
+          "${tmp}/windows/tsf/text_service.cc" ;;
+      bar_takes_every_connection_as_a_vote)
+        sed -i 's|if (bar_) bar_->OnClientIdentified(client_id, h.host_pid, h.host_tid);|(void)client_id;|' \
+          "${tmp}/windows/service/pipe_server.cc" ;;
+      bar_ignores_the_foreground)
+        sed -i 's|      DecideBarOwner(snapshot, ReadForegroundOwner());|      BarOwnerDecision();|' \
+          "${tmp}/windows/service/status_bar.cc" ;;
+      bar_overwrites_state_when_os_cannot_answer)
+        sed -i 's|  if (!owner.os_unknown) {|  if (true) {|' \
+          "${tmp}/windows/service/status_bar.cc" ;;
       # 最像對、而且**不可以**的那個修法:直接在 ActivateEx 上連線。
       # 它會過上面兩條(Start / Stop 都還在),而症狀是每一次切輸入法
       # 都在宿主的 UI 執行緒上等一次開管道 + 握手。

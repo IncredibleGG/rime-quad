@@ -110,35 +110,117 @@ const wchar_t* BarModeGlyph(bool ascii_mode) {
   return ascii_mode ? kGlyphAscii : kGlyphChinese;
 }
 
+// ── 前景是誰:唯一不依賴宿主誠實的那一層 ────────────────────────
+//
+// ⚠ 這裡只**取值**,一個判斷都不做 —— 判斷全在 common/bar_owner.cc
+//   (純函式,tests/test_bar_owner.cc 直接餵 13 個宿主)。這一段在
+//   Ubuntu 上驗不到,所以它必須薄到「看一眼就知道對不對」。
+namespace {
+
+// UWP:前景視窗屬於 ApplicationFrameHost.exe 的框,真正的宿主握著框
+// 底下那個 Windows.UI.Core.CoreWindow。少了這一層,「使用者正在 UWP
+// app 裡打字」會被判成沒有人在用,那一橫直接消失。
+BOOL CALLBACK FindCoreWindow(HWND child, LPARAM lp) {
+  wchar_t cls[64] = {0};
+  if (::GetClassNameW(child, cls, 63) <= 0) return TRUE;
+  if (::lstrcmpW(cls, L"Windows.UI.Core.CoreWindow") != 0) return TRUE;
+  *reinterpret_cast<HWND*>(lp) = child;
+  return FALSE;  // 找到就停
+}
+
+BarOwnerForeground ReadForegroundOwner() {
+  BarOwnerForeground fg;
+  const HWND top = ::GetForegroundWindow();
+  // ⚠ NULL 是真的會發生的:UAC 提示、鎖定畫面、切換桌面的那一瞬間。
+  //   known 維持 false → 裁決器回 os_unknown → 呼叫端維持現狀。
+  if (!top) return fg;
+  DWORD pid = 0;
+  const DWORD tid = ::GetWindowThreadProcessId(top, &pid);
+  if (!tid) return fg;
+  fg.known = true;
+  fg.pid = static_cast<uint32_t>(pid);
+  fg.tid = static_cast<uint32_t>(tid);
+
+  // ⚠ 只有前景真的是 UWP 的框視窗時才去列舉子視窗。每半秒對每一個
+  //   前景視窗列舉一次子視窗是白花的。
+  wchar_t cls[64] = {0};
+  if (::GetClassNameW(top, cls, 63) > 0 &&
+      ::lstrcmpW(cls, L"ApplicationFrameWindow") == 0) {
+    HWND core = nullptr;
+    ::EnumChildWindows(top, &FindCoreWindow, reinterpret_cast<LPARAM>(&core));
+    if (core) {
+      DWORD cpid = 0;
+      const DWORD ctid = ::GetWindowThreadProcessId(core, &cpid);
+      if (ctid && cpid != pid) {
+        fg.inner_known = true;
+        fg.inner_pid = static_cast<uint32_t>(cpid);
+        fg.inner_tid = static_cast<uint32_t>(ctid);
+      }
+    }
+  }
+  return fg;
+}
+
+}  // namespace
+
 void StatusBar::SetVisible(bool on) {
   if (thread_id_)
     ::PostThreadMessageW(thread_id_, WM_RIME_SHOW, on ? 1 : 0, 0);
 }
 
-// ⚠ 這三支從**連線執行緒**上被呼叫,所以只碰 atomic,不碰視窗。
-//   真正的顯示/隱藏由 UI 執行緒上的 kStateTimer 撿走(500 毫秒一次)——
-//   而「立刻顯示」那一條靠 PostThreadMessage 把計時器提前叫醒一次,
-//   不必等下一個 tick。
-void StatusBar::OnClientAttached() {
-  clients_.fetch_add(1);
-  // 立刻顯示是規範的一部分(§12.10.6):使用者切回來打第一個字之前,
-  // 那一橫就該在。等 500 毫秒的話他會先看到一個空位。
-  if (thread_id_) ::PostThreadMessageW(thread_id_, WM_RIME_REFRESH, 0, 0);
-}
-
-void StatusBar::OnClientDetached() {
-  // ⚠ 不可以掉到負數。連線執行緒有很多條,而 ServeClient 的頭尾配對
-  //   在例外路徑上不一定成立 —— 一個負數會讓那一橫再也不顯示,
-  //   而那種缺陷查起來只能靠人肉試。
-  int now = clients_.load();
-  while (now > 0 && !clients_.compare_exchange_weak(now, now - 1)) {
+// ⚠ 這四支從**連線執行緒**上被呼叫,所以只碰 regs_(自己的鎖),
+//   一個視窗 API 都不碰。真正的顯示/隱藏由 UI 執行緒上的 kStateTimer
+//   撿走(500 毫秒一次)—— 而「立刻」那一條靠 PostThreadMessage 把
+//   計時器提前叫醒一次,不必等下一個 tick。
+void StatusBar::OnClientAttached(uint64_t client_id) {
+  {
+    std::lock_guard<std::mutex> lock(reg_mu_);
+    BarOwnerClient c;
+    c.client_id = client_id;
+    // ⚠ activated 維持 false:這一刻我們連它是不是我們自己的 DLL 都
+    //   還不知道(ServeClient 在讀第一個位元組之前就建構了 ClientTicket)。
+    //   一條沒握手的連線**一票都不投** —— 把「有一條 handle 開著」
+    //   當成「有一個宿主在用我們」,就是上一版那個 active_clients。
+    regs_.push_back(c);
   }
+  // 不必叫醒:還沒握手的註冊改變不了任何答案。
+}
+
+void StatusBar::OnClientIdentified(uint64_t client_id, uint32_t host_pid,
+                                   uint32_t host_tid) {
+  {
+    std::lock_guard<std::mutex> lock(reg_mu_);
+    for (BarOwnerClient& c : regs_) {
+      if (c.client_id != client_id) continue;
+      c.host_pid = host_pid;
+      c.host_tid = host_tid;
+      c.activated = true;
+      break;
+    }
+  }
+  // 立刻顯示是規範的一部分(§12.10.6):使用者切過來、還沒打第一個字
+  // 之前那一橫就該在。等 500 毫秒的話他會先看到一個空位。
   if (thread_id_) ::PostThreadMessageW(thread_id_, WM_RIME_REFRESH, 0, 0);
 }
 
-void StatusBar::OnHostFocus(bool focused) {
-  focus_known_.store(true);
-  any_focused_.store(focused);
+void StatusBar::OnClientSession(uint64_t client_id, uint64_t session) {
+  std::lock_guard<std::mutex> lock(reg_mu_);
+  for (BarOwnerClient& c : regs_) {
+    if (c.client_id != client_id) continue;
+    c.session = session;
+    break;
+  }
+}
+
+void StatusBar::OnClientDetached(uint64_t client_id) {
+  {
+    std::lock_guard<std::mutex> lock(reg_mu_);
+    for (size_t i = 0; i < regs_.size(); ++i) {
+      if (regs_[i].client_id != client_id) continue;
+      regs_.erase(regs_.begin() + static_cast<long>(i));
+      break;
+    }
+  }
   if (thread_id_) ::PostThreadMessageW(thread_id_, WM_RIME_REFRESH, 0, 0);
 }
 
@@ -146,17 +228,47 @@ void StatusBar::OnHostFocus(bool focused) {
 //   與既有的 SetAsciiModeAll 同一個風險類別,不引入新的)。
 void StatusBar::RefreshFromEngine() {
   if (!engine_) return;
-  const Engine::StatusReadback rb = engine_->ReadBackStatus();
-  // ⚠ 一個活著的 session 都沒有 → **什麼都不改**。在這裡塞一份預設值
-  //   等於宣稱「現在是中文、繁體」,而那又是一次沒有證據的宣稱。
-  if (!rb.ok) return;
+  // ⚠ 問的是**使用者此刻正在打字的那一個 session**,不是隨便挑一個。
+  //   舊版是引擎裡的 sessions_.begin() —— 13 個宿主各有自己的
+  //   ascii_mode(方案自己的按鍵、ascii_composer 都會單獨翻某一個),
+  //   挑第一個等於擲骰子,而那正是使用者回報的
+  //   「點那一格中英不切換,而那一格始終顯示『中』」。
+  const Engine::StatusReadback rb = engine_->ReadBackStatus(focused_session_);
+
+  // ── ⛔ 中英那一格**不准**停在一個已知過期的值上 ──────────────
+  //
+  //   舊版在 rb.ok 為假時整支返回,於是那一格會一直畫著上一次讀到的
+  //   東西 —— 使用者實機回報的正是「引擎已經切成英數(完全打不出中文)
+  //   而那一格還說『中』」。
+  //
+  //   而修法**不是**在這裡塞一份預設值(那是另一次沒有證據的宣稱),
+  //   也不是替它發明一個「不知道」的第三態 —— 中英這一格有一個
+  //   **行程層級、而且永遠答得出來**的來源:Engine::AsciiMode()。
+  //   那正是 ClickCell 決定往哪一邊切時讀的同一格。
+  //
+  // ⚠ **畫面與方向必須同一個來源。** 兩邊分岔的樣子就是「點了沒反應」:
+  //   畫面說中(某個 session)、方向從行程層級算(已經是 En)→ 再點
+  //   一次送的還是同一個值。所以讀到 session 的答案時,順手把它記回
+  //   行程層級 —— 它是使用者正在用的那一個,本來就該是行程層級的現況。
+  bool ascii;
+  if (rb.ok) {
+    ascii = (rb.status_flags & kStAsciiMode) != 0;
+    engine_->NoteAsciiModeFromSession(ascii);
+  } else {
+    ascii = engine_->AsciiMode();
+  }
+
   bool changed = false;
   {
     std::lock_guard<std::mutex> lock(mu_);
-    const bool a = (rb.status_flags & kStAsciiMode) != 0;
+    const bool a = ascii;
+    // 簡繁沒有行程層級的等價物(見 common/status_cells.h:那組 radio
+    // 有沒有被宣告,只有 session 答得出來)。所以回讀失敗時這一格
+    // **維持不動** —— 它已經有一個誠實的第三態 kHidden,不需要猜。
     const VariantCell v =
-        VariantCellFrom((rb.status_flags & kStVariantKnown) != 0,
-                        (rb.status_flags & kStSimplified) != 0);
+        rb.ok ? VariantCellFrom((rb.status_flags & kStVariantKnown) != 0,
+                                (rb.status_flags & kStSimplified) != 0)
+              : variant_;
     if (a != ascii_mode_ || v != variant_) {
       ascii_mode_ = a;
       variant_ = v;
@@ -174,11 +286,29 @@ void StatusBar::RefreshFromEngine() {
 
 void StatusBar::EvaluateVisibility() {
   if (!hwnd_) return;
+  // ── 誰是這一刻的擁有者 ────────────────────────────────────
+  //
+  // 宿主提案(每一條註冊)、服務裁決(DecideBarOwner)、系統打平手
+  // (ReadForegroundOwner)。⚠ 前景**只能**由 OS 回答:讓 13 個宿主
+  //   各自宣稱「我是前景」的話,兩個同時說 true 就退化回舊判準的 OR。
+  std::vector<BarOwnerClient> snapshot;
+  {
+    std::lock_guard<std::mutex> lock(reg_mu_);
+    snapshot = regs_;
+  }
+  const BarOwnerDecision owner =
+      DecideBarOwner(snapshot, ReadForegroundOwner());
+  // ⚠ OS 答不出前景(UAC 提示 / 安全桌面)→ **維持現狀**。在那裡把
+  //   in_use_ 打成 false,使用者只是被問了一次系統權限,那一橫就開始
+  //   倒數消失,而他什麼都沒做。
+  if (!owner.os_unknown) {
+    in_use_ = owner.in_use;
+    focused_session_ = owner.focused_session;
+  }
+
   BarVisibilityInputs in;
   in.user_enabled = user_enabled_;
-  in.active_clients = clients_.load();
-  in.focus_known = focus_known_.load();
-  in.any_focused = any_focused_.load();
+  in.in_use = in_use_;
   in.now_ms = ::GetTickCount64();  // ⚠ 單調時鐘,不是牆上時鐘
   const BarAction act = visibility_.Feed(in);
   if (act == BarAction::kPending) return;  // 遲滯還沒到期,維持現狀
@@ -659,6 +789,26 @@ void StatusBar::ClickCell(int cell) {
                                                        : kPageSchemas);
     return;
   }
+  // ── ⚠ 在上一次「切一下」落地**之前**產生的點擊一律丟掉 ──────
+  //
+  //   回讀是阻塞的(它排在引擎佇列上,而佇列可以被部署或一顆慢按鍵
+  //   佔住好幾秒 —— #93 / #103)。那段期間這條 UI 執行緒停著,使用者
+  //   會再點、再點,而那些訊息在解除阻塞之後**一次全部**送進來。
+  //   一下一次翻轉,N 下就是 N 次翻轉 —— 奇數次結束時引擎在 ASCII,
+  //   而使用者只按了他以為的「一下」。使用者實機回報:
+  //   「連點幾次之後變成完全打不出中文」。
+  //
+  //   ⚠ 冪等的對象是**意圖**,不是「點擊」:比的是訊息**產生**的時刻
+  //     (GetMessageTime,與 GetTickCount 同一個時間基準),不是處理的
+  //     時刻。使用者看到那一格變了之後再按,時間戳一定在後面,照常生效。
+  //   ⚠ 只擋這兩格。方案選單與設定那兩格不碰引擎,擋它們只會讓那一橫
+  //     在部署期間看起來壞掉。
+  if (cell == kCellMode || cell == kCellVariant) {
+    if (static_cast<LONG>(::GetMessageTime()) -
+            static_cast<LONG>(toggle_settled_ms_) <
+        0)
+      return;
+  }
   switch (cell) {
     case kCellMode: {
       // ⚠ 這一格是這一輪最重要的一顆鍵。在它之前,Windows 使用者
@@ -672,6 +822,7 @@ void StatusBar::ClickCell(int cell) {
       engine_->SetAsciiModeAll(!engine_->AsciiMode());
       // ⚠ **不樂觀寫入。** 立刻回讀,由引擎說現在是什麼。
       RefreshFromEngine();
+      toggle_settled_ms_ = ::GetTickCount();
       return;
     }
     case kCellVariant: {
@@ -717,6 +868,7 @@ void StatusBar::ClickCell(int cell) {
         settings_->SetVariantPref(now_simplified ? VariantPref::kTraditional
                                                  : VariantPref::kSimplified);
       RefreshFromEngine();
+      toggle_settled_ms_ = ::GetTickCount();
       return;
     }
     case kCellSchema:

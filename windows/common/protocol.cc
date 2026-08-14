@@ -177,6 +177,8 @@ std::string EncodeHello(uint32_t seq, const Hello& m) {
     PutU32(&s, m.input_langid);
     PutStr(&s, m.profile_guid);
   }
+  // ⚠ 同一條規矩再套一次:v2 的位元組佈局到上面為止,一個位元都不動。
+  if (m.proto >= 3) PutU32(&s, m.host_tid);
   return s;
 }
 
@@ -284,6 +286,12 @@ bool DecodeHello(const std::string& p, uint32_t* seq, Hello* out) {
   } else {
     out->input_langid = 0;
     out->profile_guid.clear();
+  }
+  // 同上:讀不讀由訊息自己宣告的版本決定,不是「有剩就讀」。
+  if (out->proto >= 3) {
+    if (!c.U32(&out->host_tid)) return false;
+  } else {
+    out->host_tid = 0;
   }
   return c.AtEnd();
 }

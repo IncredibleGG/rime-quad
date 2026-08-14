@@ -64,6 +64,7 @@
 #include <vector>
 
 #include "../common/protocol.h"
+#include "../common/bar_owner.h"
 #include "../common/bar_visibility.h"
 #include "../common/status_cells.h"
 #include "../common/service_state.h"
@@ -121,18 +122,27 @@ class StatusBar {
 
   // ── 那一橫該不該在(§12.10.6)────────────────────────────────
   //
-  // ⚠ 判準本身在 common/bar_visibility.h(純函式,Ubuntu 上測得到)。
-  //   這裡只負責把三個輸入餵給它,以及把結果變成 ShowWindow。
+  // ⚠ 兩層都是純函式,而且兩層在 Ubuntu 上都測得到:
+  //     · **誰是這一刻的擁有者** → common/bar_owner.h(收斂 13 個宿主)
+  //     · **要不要現在改可見性** → common/bar_visibility.h(遲滯)
+  //   這裡只負責去問 OS 前景是誰、把兩層串起來、把結果變成 ShowWindow。
   //
-  // ⚠ 用**連線生死**當主要訊號,而不是只用焦點:ipc_client.cc 的
-  //   `if (!MayEatKey()) return;` —— 焦點訊號在使用者打第一個字之前
-  //   根本不送。連線生死沒有這道閘。
+  // ⚠ 上一版的訊號是「有幾條連線」,而那是一個沒有產品意義的量:
+  //   12 個背景宿主每一條都算一票 —— 使用者切到微軟拼音之後那一橫
+  //   照樣自己冒出來(S4)。現在每一條連線只是**一筆註冊**,
+  //   投不投票由 bar_owner 拿前景那條執行緒去比。
   //
-  // 這兩支從**連線執行緒**上呼叫(PipeServer::ServeClient 的頭尾)。
-  void OnClientAttached();
-  void OnClientDetached();
-  // 宿主說焦點來了/走了。從連線執行緒上呼叫(Op::kFocus)。
-  void OnHostFocus(bool focused);
+  // 下面四支都從**連線執行緒**上呼叫(PipeServer::ServeClient)。
+  //   Attached   ServeClient 最頂端。此刻我們**還不知道它是誰**,
+  //              所以這筆註冊 activated=false,一票都不投。
+  //   Identified HELLO 之後。這時才有 pid / tid,才算一筆有效的提案。
+  //   Session    SESSION_NEW 之後。那一橫回讀中英狀態時要問這一個。
+  //   Detached   ServeClient 離開時(RAII)。
+  void OnClientAttached(uint64_t client_id);
+  void OnClientIdentified(uint64_t client_id, uint32_t host_pid,
+                          uint32_t host_tid);
+  void OnClientSession(uint64_t client_id, uint64_t session);
+  void OnClientDetached(uint64_t client_id);
 
  private:
   static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l);
@@ -232,13 +242,30 @@ class StatusBar {
   bool shown_ = false;
   BarVisibility visibility_;
 
-  // 目前握著連線的宿主數。連線執行緒寫、UI 執行緒讀,所以是 atomic。
-  // ⚠ **不是**「有幾個輸入框」。同一支程式裡跳輸入框不會動到它,
-  //   而那正是我們要的:那種時候那一橫不該閃。
-  std::atomic<int> clients_{0};
-  // 收到過任何焦點訊息沒有。為假時**不看** any_focused_(fail-visible)。
-  std::atomic<bool> focus_known_{false};
-  std::atomic<bool> any_focused_{false};
+  // ── 每一條連線一筆註冊(**不是**一張票)────────────────────
+  //
+  // 連線執行緒寫、UI 執行緒讀,所以要鎖。⚠ 與 mu_ 分開:mu_ 護的是
+  // 畫面上那幾個字,而這一份在每一條連線的頭尾都會被碰,兩者混用等於
+  // 讓繪製去等連線執行緒。
+  std::mutex reg_mu_;
+  std::vector<BarOwnerClient> regs_;
+
+  // ── 只在那一橫自己的 UI 執行緒上碰 ──────────────────────────
+  //
+  // 上一次裁決的結果。⚠ OS 答不出前景時(UAC 提示、安全桌面)
+  //   **維持這個值** —— 見 bar_owner.h 的 os_unknown。
+  bool in_use_ = false;
+  // 使用者此刻正在打字的那個 session。0 = 他還沒打過字(切過來而已),
+  // 或前景那條執行緒不是我們的。回讀中英狀態時問這一個,**不是**
+  // sessions_.begin() —— 13 個宿主各有自己的 ascii_mode,挑第一個
+  // 等於擲骰子,而那正是使用者回報的「點了那一格沒反應」。
+  uint64_t focused_session_ = 0;
+  // 上一次「切一下」真正落地的時刻(GetTickCount)。⚠ 在它之前**產生**
+  //   的滑鼠訊息一律丟掉 —— 回讀會擋住這條 UI 執行緒(引擎佇列可以被
+  //   佔住好幾秒,見 #93 / #103),那段期間使用者會一直點,而每一下都
+  //   是一次翻轉。N 下 = N 次翻轉,奇數次結束時引擎在 ASCII。
+  //   冪等的對象是**意圖**,不是「點擊」。
+  DWORD toggle_settled_ms_ = 0;
 
   // 拖動。⚠ 不用 WM_NCHITTEST 回 HTCAPTION —— 那會讓整條都變成拖動區,
   //   四格就點不到了;留一小塊「握把」又要使用者去找它。

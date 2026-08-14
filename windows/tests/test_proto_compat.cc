@@ -78,8 +78,8 @@ bool DecodeHelloAsV1Only(const std::string& p, uint32_t* seq, uint32_t* proto) {
 
 }  // namespace
 
-TEST(Proto_v2_is_the_current_version_and_v1_is_still_accepted) {
-  CHECK_INT(kProtocolVersion, 2);
+TEST(Proto_v3_is_the_current_version_and_v1_is_still_accepted) {
+  CHECK_INT(kProtocolVersion, 3);
   CHECK_INT(kMinProtocolVersion, 1);
   CHECK(kMinProtocolVersion <= kProtocolVersion);
 }
@@ -109,6 +109,7 @@ TEST(Proto_v1_encoder_output_is_byte_identical_to_the_old_layout) {
   h.host_exe = "C:\\a\\notepad.exe";
   h.input_langid = 0x0804;      // 設了也不該被寫出去
   h.profile_guid = "{ABC}";     // 同上
+  h.host_tid = 4343;            // 同上(v3 的尾巴)
   const std::string got = EncodeHello(7, h);
   CHECK_STR(got, HandWrittenV1Hello(7, 1, 4242, "C:\\a\\notepad.exe"));
 }
@@ -134,6 +135,55 @@ TEST(Proto_old_service_rejects_a_v2_hello_cleanly) {
   CHECK(!DecodeHelloAsV1Only(v2, &seq, &proto));
   // 而且它比 v1 長:欄位真的加上去了(否則上面那條會因為別的理由通過)。
   CHECK(v2.size() > HandWrittenV1Hello(9, 1, 1, "x").size());
+}
+
+// ── v3:tid 真的上線路,而且 v2 的解碼器整則丟掉 ────────────────
+TEST(Proto_v3_hello_carries_the_activating_thread) {
+  Hello h;
+  h.proto = 3;
+  h.shell_abi = 1;
+  h.host_pid = 4242;
+  h.host_exe = "C:\\a\\notepad.exe";
+  h.input_langid = 0x0404;
+  h.profile_guid = "{C6B736EB-38E3-4041-B59B-ECF91AD8E28A}";
+  h.host_tid = 4343;
+  uint32_t seq = 0;
+  Hello back;
+  const std::string wire = EncodeHello(5, h);
+  CHECK(DecodeHello(wire, &seq, &back));
+  CHECK_INT(back.proto, 3);
+  // ⚠ 這一格就是那一橫的作用域。少了它,判準只剩 pid,而輸入法是
+  //   per-thread 的 —— 同一支程式的另一個視窗上使用者用的是別的輸入法。
+  CHECK_INT(back.host_tid, 4343);
+
+  // 同一份內容宣告成 v2 就**不該**帶 tid(降級重試靠的是這件事)。
+  Hello as_v2 = h;
+  as_v2.proto = 2;
+  const std::string v2 = EncodeHello(5, as_v2);
+  CHECK(v2.size() + 4 == wire.size());
+  Hello back2;
+  CHECK(DecodeHello(v2, &seq, &back2));
+  CHECK_INT(back2.host_tid, 0);  // 0 = 報不出來,不是「執行緒 0」
+}
+
+// 宣告 v3 卻少了尾巴 → 整則丟掉,不是半讀半猜。
+TEST(Proto_truncated_v3_hello_is_rejected_not_half_read) {
+  Hello h;
+  h.proto = 3;
+  h.shell_abi = 1;
+  h.host_pid = 1;
+  h.host_exe = "x";
+  h.input_langid = 0x0404;
+  h.host_tid = 9;
+  const std::string full = EncodeHello(1, h);
+  int seen = 0;
+  for (size_t cut = 1; cut < full.size(); ++cut) {
+    uint32_t seq = 0;
+    Hello back;
+    CHECK(!DecodeHello(full.substr(0, cut), &seq, &back));
+    ++seen;
+  }
+  CHECK(seen > 20);
 }
 
 TEST(Proto_v2_hello_roundtrip) {

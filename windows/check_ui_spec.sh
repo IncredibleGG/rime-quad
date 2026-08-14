@@ -937,6 +937,20 @@ for name, send, optimistic in cells:
         out.append('NOREADBACK=' + name)
     elif iread < isend:
         out.append('READBACK_BEFORE_SEND=' + name)
+    # 回讀落地之後要記下時刻 —— 在它之前**產生**的點擊要被丟掉。
+    isettle = code.find('toggle_settled_ms_ = ')
+    if isettle < 0 or (iread >= 0 and isettle < iread):
+        out.append('NOSETTLE=' + name)
+
+# ── 連點:冪等的對象是「意圖」,不是「點擊」──────────────────────
+#
+# 回讀是阻塞的(排在引擎佇列上,而佇列可以被部署或一顆慢按鍵佔住好幾秒)。
+# 那段期間這條 UI 執行緒停著,使用者會一直點,而那些訊息在解除阻塞之後
+# 一次全部進來 —— 一下一次翻轉。使用者實機回報:「連點幾次之後變成
+# 完全打不出中文」。⚠ 要比的是訊息**產生**的時刻(GetMessageTime),
+# 不是處理的時刻 —— 用處理時刻的話那些訊息都是「剛剛才到的」,擋不掉。
+if '::GetMessageTime()' not in body:
+    out.append('NO_INTENT_GATE')
 
 # 回讀那一支本身要真的去問引擎,而且要重畫 —— 定義留著、身體空掉
 # 一樣是綠的,那正是上一輪被拆掉的形狀。
@@ -945,8 +959,18 @@ if not r:
     out.append('NOREFRESHDEF')
 else:
     rb = r.group(1)
-    if 'ReadBackStatus()' not in rb:
+    if 'ReadBackStatus(' not in rb:
         out.append('REFRESH_NOT_ASKING')
+    # ⚠ 要問**使用者此刻正在打字的那一個** session。13 個宿主各有自己的
+    #   ascii_mode(方案自己的按鍵、ascii_composer 都只翻其中一個),
+    #   隨便挑一個等於擲骰子 —— 那一格會畫著別的宿主的狀態。
+    if 'ReadBackStatus(focused_session_)' not in rb:
+        out.append('READBACK_ASKS_ANYONE')
+    # ⚠ 回讀失敗(沒有 session)時,中英那一格**不准**停在舊值上:
+    #   那正是「引擎已經切成英數而畫面還說中」。它有一個行程層級、
+    #   永遠答得出來的來源,而且那是 ClickCell 決定方向時讀的同一格。
+    if 'engine_->AsciiMode()' not in rb:
+        out.append('REFRESH_CAN_LIE')
     if 'Relayout();' not in rb or '::InvalidateRect(' not in rb:
         out.append('REFRESH_NOT_REPAINTING')
 
@@ -996,6 +1020,26 @@ ${w26c}" ;;
         w26msg "${l26#NOREADBACK=} 那一格送出去之後沒有 RefreshFromEngine() ——
      **那一格要等使用者真的打一個字才會變**,而使用者會以為沒點到,
      然後再點一次(於是切回去了)。" ;;
+      NOSETTLE=*)
+        w26msg "${l26#NOSETTLE=} 那一格回讀完之後沒有記下 toggle_settled_ms_ ——
+     回讀會擋住那一橫的 UI 執行緒(引擎佇列可以被佔住好幾秒),那段期間
+     使用者會一直點,而那些點擊在解除阻塞之後**一次全部**送進來:
+     一下一次翻轉。使用者實機回報「連點幾次之後變成完全打不出中文」。" ;;
+      NO_INTENT_GATE)
+        w26msg "ClickCell 沒有用 ::GetMessageTime() 擋掉過期的點擊 ——
+     冪等的對象必須是**意圖**,不是「點擊」。比處理時刻的話那些擠在
+     佇列裡的點擊都是「剛剛才到的」,一個都擋不掉。" ;;
+      READBACK_ASKS_ANYONE)
+        w26msg "RefreshFromEngine 沒有問 focused_session_ —— 13 個宿主各有
+     自己的 ascii_mode(方案自己的按鍵、ascii_composer 都只翻其中一個),
+     隨便挑一個等於擲骰子。那一格會畫著**別的程式**的狀態,
+     而使用者看到的是「點了那一格沒反應」。" ;;
+      REFRESH_CAN_LIE)
+        w26msg "RefreshFromEngine 在回讀不到 session 時讓中英那一格停在舊值 ——
+     ⛔ 那正是使用者今晚踩到的那一格:引擎已經切成英數(完全打不出中文)
+     而那一格還說「中」。它有一個行程層級、永遠答得出來的來源
+     (engine_->AsciiMode()),而且那是 ClickCell 決定方向時讀的**同一格**
+     —— 畫面與方向必須同一個來源,分岔的樣子就是「點了沒反應」。" ;;
       READBACK_BEFORE_SEND=*)
         w26msg "${l26#READBACK_BEFORE_SEND=} 那一格先回讀才送出去 —— 讀到的是舊值,
      那一格會停在點下去之前的樣子" ;;
@@ -1024,7 +1068,7 @@ ${w26c}" ;;
   #   `variant_ = ` / `ascii_mode_ = `,通過的意思是「沒有樂觀寫入」。
   #   讀守門輸出的人會照這句話去理解程式碼該長什麼樣子,說反了就是
   #   叫下一個人把缺陷寫回來。
-  [ "${w26bad}" -eq 0 ] && ok "W26 狀態列寬度一變就重走 PlaceStatusBar,而且 中/En 與 简/繁 兩格都**不**樂觀寫入 —— 送出去之後立刻向引擎回讀,畫面上那個字是引擎說的"
+  [ "${w26bad}" -eq 0 ] && ok "W26 狀態列寬度一變就重走 PlaceStatusBar;中/En 與 简/繁 兩格都**不**樂觀寫入(送出去之後立刻回讀);回讀問的是使用者正在打字的那一個 session;回讀不到時中英那一格退回行程層級的來源(**不准**停在舊值上);而且過期的連點會被丟掉"
 
   # ── W27:三種處境三句話,而且那三句話真的流到畫面上 ─────────────
   #
@@ -3445,12 +3489,16 @@ self_check() {
 "W25 拿掉滾輪|service/settings_window.cc|s=s.replace('case WM_MOUSEWHEEL:','case WM_NULL + 4242:',1)"
 "W25b 又把高度丟掉|common/ui_layout.cc|s=s.replace('int ScrollMaxDip(int page, int window_w_dip, int window_h_dip,','int ScrollMaxDipRemoved(int page, int window_w_dip, int window_h_dip,',1)"
 "W26 狀態列不重擺|service/status_bar.cc|s=s.replace('  ApplyPlacement(MulDivRound(total_w, 96, static_cast<int>(dpi_)));','',1)"
-"W26b 简繁點完不回讀|service/status_bar.cc|s=s.replace('      RefreshFromEngine();\n      return;\n    }\n    case kCellSchema:','      return;\n    }\n    case kCellSchema:',1)"
-"W26c 回讀不問引擎|service/status_bar.cc|s=s.replace('  const Engine::StatusReadback rb = engine_->ReadBackStatus();','  Engine::StatusReadback rb;',1)"
+"W26b 简繁點完不回讀|service/status_bar.cc|s=s.replace('      RefreshFromEngine();\n      toggle_settled_ms_ = ::GetTickCount();\n      return;\n    }\n    case kCellSchema:','      return;\n    }\n    case kCellSchema:',1)"
+"W26c 回讀不問引擎|service/status_bar.cc|s=s.replace('  const Engine::StatusReadback rb = engine_->ReadBackStatus(focused_session_);','  Engine::StatusReadback rb;',1)"
 "W26d 中英又樂觀寫入|service/status_bar.cc|s=s.replace('      engine_->SetAsciiModeAll(!engine_->AsciiMode());','      { std::lock_guard<std::mutex> lk(mu_); ascii_mode_ = !ascii_mode_; }\n      engine_->SetAsciiModeAll(!engine_->AsciiMode());',1)"
 "W26f 空的那一格又佔位置|service/status_bar.cc|s=s.replace('    if (c.text.empty()) {','    if (false) {',1)"
 "W26g 零寬的那一格又點得到|service/status_bar.cc|s=s.replace('    if (r.right <= r.left) continue;','',1)"
 "W26e 回讀之後不重畫|service/status_bar.cc|s=s.replace('  if (changed) {\n    Relayout();\n    ::InvalidateRect(hwnd_, nullptr, TRUE);\n','  if (changed) {\n',1)"
+"W26h 回讀又問隨便一個 session|service/status_bar.cc|s=s.replace('engine_->ReadBackStatus(focused_session_)','engine_->ReadBackStatus()',1)"
+"W26i 回讀不到就讓那一格繼續說謊(使用者今晚踩到的那一格)|service/status_bar.cc|s=s.replace('  } else {\n    ascii = engine_->AsciiMode();\n  }','  } else {\n    return;\n  }',1)"
+"W26j 連點又變成 N 次翻轉(比的是處理時刻,不是產生時刻)|service/status_bar.cc|s=s.replace('static_cast<LONG>(::GetMessageTime()) -','static_cast<LONG>(::GetTickCount()) -',1)"
+"W26k 回讀落地了卻不記時刻|service/status_bar.cc|s=s.replace('      toggle_settled_ms_ = ::GetTickCount();\n','',1)"
 "W27a Relayout 不再問狀態|service/status_bar.cc|s=s.replace('  service_state_ = CurrentServiceState();','  service_state_ = ServiceState::kReady;',1)"
 "W27b 那一橫的字寫死一句|service/status_bar.cc|s=s.replace('    c.text = UiText(StatusTextFor(service_state_));','    c.text = UiText(UiString::kBarNotRunning);',1)"
 "W27c 不讀線路上的旗標|service/status_bar.cc|s=s.replace('SnapshotSaysNotReady(snap.status_flags)','false',1)"

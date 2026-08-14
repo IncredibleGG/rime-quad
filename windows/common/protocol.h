@@ -55,7 +55,25 @@ namespace rimewin {
 // 編解碼由 Hello::proto 自己決定要不要讀尾巴,所以格式是自描述的:
 // 拿 v1 的解碼器去解 v2 的訊息會在「剛好用完」那一關失敗,而不是
 // 讀到半截當成有效資料。
-inline constexpr uint32_t kProtocolVersion = 2;
+// ── v3 加了什麼 ──────────────────────────────────────────────────
+//
+// v3 的 HELLO 多帶一個欄位:**啟用我們的那一條 TSF 執行緒的 tid**。
+// 服務端拿它跟 GetForegroundWindow() 那一條執行緒比,才答得出
+// 「使用者此刻正在用的那一個輸入位置上,啟用中的是不是我們」——
+// 也就是懸浮那一橫該不該顯示(common/bar_owner.h)。
+//
+// ⚠ 為什麼是 tid 不是 pid:輸入法在 Windows 上是 **per-thread** 的
+//   (系統設定裡「讓我為每個應用程式視窗使用不同的輸入法」把這件事做成
+//   使用者看得見的事實)。用 pid 的話,同一支程式的另一個視窗上使用者
+//   正在用微軟拼音,我們照樣會顯示 —— 那正是這一輪在修的錯,只是
+//   作用域小一階。
+//
+// ⚠ 相容性與 v2 那一段一模一樣:舊服務收到 v3 會在「剛好用完」那一關
+//   整則丟掉,而新 DLL 會降級重試(ipc_client.cc 的 Handshake);
+//   新服務收到 v1 / v2 就照它宣告的版本解,host_tid 留 0。
+//   **0 必須等於「報不出來」**,而 bar_owner.h 對報不出 tid 的用戶端
+//   退回去比 pid —— 精確度差一階,但不會讓舊 DLL 的使用者失去那一橫。
+inline constexpr uint32_t kProtocolVersion = 3;
 
 // 服務端仍然接受的最舊版本。降到這個以下就真的不相容了。
 inline constexpr uint32_t kMinProtocolVersion = 1;
@@ -114,6 +132,13 @@ struct Hello {
   // 但三份 profile 各有自己的 GUID,日後要分辨「同一個語言底下的哪一份」
   // 時線路上已經有這個值,不必再動一次協議。
   std::string profile_guid;
+
+  // ── proto >= 3 才在線路上 ────────────────────────────────────
+  //
+  // 啟用我們的那一條 TSF 執行緒。**不是**宿主的主執行緒,也不是送這則
+  // HELLO 的那條背景執行緒 —— 是呼叫 ActivateEx 的那一條。
+  // 0 = 報不出來(v1 / v2 的 DLL)。見上面 v3 那一段。
+  uint32_t host_tid = 0;
 };
 
 struct HelloOk {

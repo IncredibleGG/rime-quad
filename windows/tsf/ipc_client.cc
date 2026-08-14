@@ -429,6 +429,11 @@ bool IpcClient::Handshake(uint32_t proto) {
   // 一個位元組都不會上線路,舊服務因此解得開。
   h.input_langid = langid_;
   h.profile_guid = profile_guid_;
+  // ⚠ **啟用我們的那一條 TSF 執行緒**。這一支只在宿主的 UI 執行緒上被
+  //   呼叫(EnsureReady 的三個呼叫點都在按鍵路徑上),所以
+  //   GetCurrentThreadId() 就是答案。服務端拿它跟前景那條執行緒比,
+  //   決定那一橫該不該顯示(common/bar_owner.h)。
+  h.host_tid = static_cast<uint32_t>(::GetCurrentThreadId());
   {
     wchar_t path[MAX_PATH] = {0};
     ::GetModuleFileNameW(nullptr, path, MAX_PATH);

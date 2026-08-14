@@ -9,6 +9,8 @@
 #include "../common/ime_policy.h"
 #include "../common/hotkey_policy.h"
 #include "../common/key_eat_policy.h"
+#include "../common/protocol.h"
+#include "rime_shell.h"
 #include "../winshared/winutil.h"
 #include "guids.h"
 #include "lang_bar.h"
@@ -194,27 +196,36 @@ HRESULT RunSyncSession(ITfContext* ctx, TfClientId id, FnEditSession::Fn fn) {
 
 }  // namespace
 
-// ── 那一橫的「在場」連線(工單 #82 的另一半)────────────────────────
+// ── 那一橫的「我在用」連線(工單 #82 / S1 / S4)──────────────────────
 //
-// ══ 缺的是哪一條訊號 ═══════════════════════════════════════════════
+// ══ 這條連線到底在回答什麼 ═════════════════════════════════════════
 //
-// 服務端決定那一橫顯不顯示的唯一出口是 service/status_bar.cc:190 的
-// ShowWindow,而它的輸入是 EvaluateVisibility() 餵給 BarVisibility::Feed()
-// 的 active_clients —— 也就是 StatusBar::clients_。clients_ 全樹只有兩支
-// 寫入(OnClientAttached / OnClientDetached),而呼叫它們的只有
-// service/pipe_server.cc 的 ClientTicket:**一條具名管道連線一張票**。
+// 那一橫的判準只有一句:**使用者此刻輸入焦點所在的那一條宿主執行緒上,
+// 啟用中的 TSF profile 是不是我們。**(收斂規則在 common/bar_owner.h。)
 //
-// 也就是說判準等價於「至少有一條連線開著」。而在這個檔案裡,連線的訊號
-// 一直是**不對稱**的:
+// 而那句話的前半段 —— 「這條執行緒上啟用中的是不是我們」—— **只有宿主
+// 自己知道**:服務端問不到別的進程的 TSF 狀態(ITfInputProcessorProfileMgr
+// 是 per-thread、per-process 的),GetKeyboardLayout 對 TSF TIP 給的是合成
+// 的 HKL,跨進程對不回我們的 CLSID。所以宿主必須自己說,而它說的方式
+// 就是**這條連線的生死**:啟用時開、不再是我們時關。
+//
+// 後半段(誰是前景)由服務端自己問 OS —— 不接受宿主宣稱,因為兩個宿主
+// 同時宣稱「我是前景」就退化回「有沒有人」那個舊判準。
+//
+// ══ 這個檔案裡的訊號一直是不對稱的 ═════════════════════════════════
 //
 //   切走輸入法            Deactivate()  → ipc_.Close()        關掉
 //   在兩份 profile 之間切  OnActivated() → ipc_.SetProfile()   也關掉
 //   切回來                ActivateEx()  → 什麼都不連          不開
 //
-// 唯一能把 clients_ 推回 1 的是 IpcClient::EnsureReady(),而它全樹只有
-// 三個呼叫點,**三個都在按鍵路徑上**。結果:使用者切回輸入法之後,
+// 唯一能開出一條連線的是 IpcClient::EnsureReady(),而它全樹只有三個
+// 呼叫點,**三個都在按鍵路徑上**。結果:使用者切回輸入法之後,
 // 那一橫要等他按下第一顆鍵才出現 —— 而他回報的是
-// 「切換了一下輸入法,狀態欄整個不見了,再也不出現」。
+// 「切換了一下輸入法,狀態欄整個不見了,再也不出現」(S1)。
+//
+// ⚠ 而**開了不關**是另一個方向,一樣真實:使用者切到微軟拼音之後那一橫
+//   自己冒出來(S4)。所以四個邊一個都不能少,見 EnsurePresence /
+//   ClosePresence 的兩組呼叫點,以及 audit_single_source.sh 規則 6。
 //
 // ══ 為什麼不是把 EnsureReady() 搬進 ActivateEx ═════════════════════
 //
@@ -238,16 +249,24 @@ HRESULT RunSyncSession(ITfContext* ctx, TfClientId id, FnEditSession::Fn fn) {
 //    CreateInstance() 用 PIPE_UNLIMITED_INSTANCES,ListenLoop 每接到一條
 //    就 emplace 一條 ServeClient 執行緒、然後立刻再建一個實例;
 //    整支伺服器沒有任何一處以宿主進程做識別或去重。
-//    打字時 clients_ 會是 2(在場一條 + 按鍵一條)—— 判準是 > 0,沒差,
-//    而 clients_ 全樹只有 EvaluateVisibility 一個消費者。
+//    打字時同一條執行緒上會有兩條連線(在場一條 + 按鍵一條),而兩條
+//    報的 (pid, tid) 一樣 —— common/bar_owner.h 的收斂規則會挑
+//    **有 session 的那一條**,因為那一橫要回讀的就是它。
 //
-// 2. **這條連線不必建 session,也不必握手。** ServeClient 的第一個敘述
-//    就是 ClientTicket 的建構(pipe_server.cc:464),那在讀第一個位元組
-//    之前 —— 連上就已經加一了。伺服器也不會把閒著的連線踢掉:
-//    那裡的讀是 WaitOverlapped(..., INFINITE),只有停止事件與連線本身
-//    斷掉叫得醒它;「HELLO 之前不接受任何其他訊息」那道閘要**收到訊息**
-//    才會動,而我們一則都不送。
-//    省下來的不只是麻煩:SESSION_NEW 要跑引擎佇列(量到 442~753 毫秒)。
+// 2. **這條連線要握手,但不建 session。**
+//
+//    ⚠ 上一版這裡寫的是「不必握手」,而那是這一輪要改的那一句。
+//      不握手 = 服務端只知道「有一條管道 handle 開著」,而那是一個
+//      沒有產品意義的量:12 個背景宿主每一條都算一票,使用者切到
+//      微軟拼音之後那一橫照樣自己冒出來(他實機回報過)。
+//      服務端要答的是「**使用者此刻正在用的那一條執行緒**上啟用中的
+//      是不是我們」,而那需要這條連線報得出自己是誰 ——
+//      host_pid 與**啟用我們的那一條 TSF 執行緒**的 tid(線路 v3)。
+//
+//    查證過成本:HELLO **不進引擎佇列**(pipe_server.cc 的 Op::kHello
+//    分支只呼叫 rs_abi_version(),沒有 Post),真正貴的是 SESSION_NEW
+//    的 442~753 毫秒。所以:補 HELLO,不補 SESSION_NEW。而且整段仍然
+//    跑在這條背景執行緒上 —— ActivateEx 一個位元組的 I/O 都不等。
 //
 // ⚠ **這條路不可以啟動服務。** 啟動走 StartServiceInBackground(),
 //   提權宿主那道閘(common/elevation_policy.h 的 MayStartUserService)
@@ -264,9 +283,14 @@ HRESULT RunSyncSession(ITfContext* ctx, TfClientId id, FnEditSession::Fn fn) {
 class PresenceLink {
  public:
   // 回 nullptr = 起不來。呼叫端不必處理,那只是退回這一版之前的行為。
-  static PresenceLink* Start() {
+  //
+  // ⚠ host_tid 是**呼叫端那條執行緒**的 id(ActivateEx / OnActivated 都
+  //   跑在啟用我們的那條 TSF 執行緒上),不是這條背景執行緒的 id。
+  //   拿錯的話服務端會拿一條沒有人在上面打字的執行緒去跟前景比。
+  static PresenceLink* Start(uint32_t host_tid) {
     PresenceLink* p = new (std::nothrow) PresenceLink();
     if (!p) return nullptr;
+    p->host_tid_ = host_tid;
     p->stop_ = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!p->stop_) {
       delete p;
@@ -335,6 +359,10 @@ class PresenceLink {
                                   0, nullptr, OPEN_EXISTING,
                                   FILE_FLAG_OVERLAPPED, nullptr);
       if (pipe == INVALID_HANDLE_VALUE) {
+        // ⚠ 服務不在 = 它可能正被更新程式換掉(工單 #73 的形狀)。
+        //   回到最新的線路版本重試 —— 否則一次降版會跟著這個宿主
+        //   進程一輩子,而使用者永遠不知道自己少了 per-thread 的精確度。
+        proto_ = kProtocolVersion;
         // ⚠ 有預算。連不上是常態(服務還在部署),而每一行都是磁碟寫入。
         if (traced < 2) {
           ++traced;
@@ -352,6 +380,21 @@ class PresenceLink {
       //   (另一個是 tests/tsf_host_main.cc 的 --watch-presence,
       //   它從**服務端**數)。
       Trace("在場連線:已連上 —— 那一橫從現在起看得到這個宿主");
+      // ⚠ 握手失敗有兩種,而它們要做的事**不一樣**:
+      //     · 對面不認得我們宣告的版本(舊服務 + 新 DLL):它的
+      //       DecodeHello 在「剛好用完」那一關整則丟掉,然後關掉連線。
+      //       → 降一版重試。降到最後仍然報得出 pid,只是報不出 tid,
+      //         而 bar_owner.h 對報不出 tid 的用戶端退回去比 pid。
+      //     · 只是慢(服務正在部署,那條執行緒被佔住)→ **不可以降版**。
+      //       降了就永久失去 tid,而那是一個沒有人查得出來的降級。
+      HandshakeResult hs = SendHello(pipe, io);
+      if (hs != HandshakeResult::kOk) {
+        if (hs == HandshakeResult::kRejected && proto_ > kMinProtocolVersion)
+          --proto_;
+        ::CloseHandle(pipe);
+        if (::WaitForSingleObject(stop_, kRetryFastMs) == WAIT_OBJECT_0) break;
+        continue;
+      }
       WaitUntilBroken(pipe, io);
       // ⚠ 這一行就是 #82 的「切走之後那一橫必須消失」:關掉 →
       //   服務端那條 ServeClient 讀到 0 位元組 → ClientTicket 解構
@@ -362,11 +405,119 @@ class PresenceLink {
     if (io) ::CloseHandle(io);
   }
 
+  // 一次 overlapped 讀。回傳實際讀到幾個位元組;0 = 連線沒了或被叫停。
+  //
+  // ⚠ ov 在堆疊上,所以取消之後**一定**要 GetOverlappedResult(..., TRUE)
+  //   等它真的結束 —— 提早返回等於讓核心寫一塊已經不存在的記憶體。
+  //   與 pipe_server.cc 的 WaitOverlapped 同一條理由。
+  // ⚠ timed_out 一定要分出來:「等了 3 秒沒回」與「對面把連線關了」
+  //   在回傳值上都是 0,而它們**要做的事完全相反**(前者重試同一版,
+  //   後者降版)。少了這一格,一次服務忙碌就會讓這個宿主永久降到 v1。
+  DWORD ReadOnce(HANDLE pipe, HANDLE io, char* buf, DWORD cap, DWORD wait_ms,
+                 bool* timed_out) {
+    if (timed_out) *timed_out = false;
+    OVERLAPPED ov;
+    ::ZeroMemory(&ov, sizeof(ov));
+    ov.hEvent = io;
+    ::ResetEvent(io);
+    DWORD got = 0;
+    if (::ReadFile(pipe, buf, cap, &got, &ov)) return got;
+    if (::GetLastError() != ERROR_IO_PENDING) return 0;
+    HANDLE waits[2] = {io, stop_};
+    const DWORD w = ::WaitForMultipleObjects(2, waits, FALSE, wait_ms);
+    if (w != WAIT_OBJECT_0) ::CancelIoEx(pipe, &ov);
+    if (w == WAIT_TIMEOUT && timed_out) *timed_out = true;
+    if (!::GetOverlappedResult(pipe, &ov, &got, TRUE)) return 0;
+    return w == WAIT_OBJECT_0 ? got : 0;
+  }
+
+  bool WriteAll(HANDLE pipe, HANDLE io, const std::string& data) {
+    size_t sent = 0;
+    while (sent < data.size()) {
+      OVERLAPPED ov;
+      ::ZeroMemory(&ov, sizeof(ov));
+      ov.hEvent = io;
+      ::ResetEvent(io);
+      DWORD wrote = 0;
+      if (!::WriteFile(pipe, data.data() + sent,
+                       static_cast<DWORD>(data.size() - sent), &wrote, &ov)) {
+        if (::GetLastError() != ERROR_IO_PENDING) return false;
+        HANDLE waits[2] = {io, stop_};
+        const DWORD w = ::WaitForMultipleObjects(2, waits, FALSE, kIoTimeoutMs);
+        if (w != WAIT_OBJECT_0) ::CancelIoEx(pipe, &ov);
+        if (!::GetOverlappedResult(pipe, &ov, &wrote, TRUE)) return false;
+        if (w != WAIT_OBJECT_0) return false;
+      }
+      if (wrote == 0) return false;
+      sent += wrote;
+    }
+    return true;
+  }
+
+  // ── 這條連線是誰 ────────────────────────────────────────────
+  //
+  // 服務端要的只有兩格:host_pid 與**啟用我們的那一條執行緒**的 tid。
+  // 有了它們,「使用者此刻正在用的那條執行緒上啟用中的是不是我們」
+  // 才答得出來(common/bar_owner.h)。不建 session,不碰引擎佇列。
+  enum class HandshakeResult { kOk, kRejected, kIoError };
+
+  HandshakeResult SendHello(HANDLE pipe, HANDLE io) {
+    // ⚠ 事件建不出來(整個進程的 handle 用光了)。這裡回 kIoError 而不是
+    //   kOk:沒握手的連線在服務端 activated=false,一票都不投,所以那一橫
+    //   本來就不會替這個宿主顯示 —— 假裝成功只會多一條永遠不會被用到的
+    //   連線。回 kIoError 會讓外層以一秒一次的節奏重試,而 io 是整條執行緒
+    //   共用的一個 handle,建不出來就是建不出來 —— 節奏由 kRetryFastMs 壓著,
+    //   不會變成忙等。
+    if (!io) return HandshakeResult::kIoError;
+    Hello h;
+    h.proto = proto_;
+    h.shell_abi = static_cast<uint32_t>(RIME_SHELL_ABI_VERSION);
+    h.host_pid = ::GetCurrentProcessId();
+    h.host_tid = host_tid_;
+    {
+      wchar_t path[MAX_PATH] = {0};
+      ::GetModuleFileNameW(nullptr, path, MAX_PATH);
+      h.host_exe = WideToUtf8(path);
+    }
+    if (!WriteAll(pipe, io, Frame(EncodeHello(1, h))))
+      return HandshakeResult::kIoError;
+    // 回覆一定要讀:不讀的話「服務端不認得這個版本」與「一切正常」
+    // 在這條執行緒上長得一模一樣,而前者要降版重試。
+    FrameReader reader;
+    char buf[512];
+    for (int spin = 0; spin < 8; ++spin) {
+      bool timed_out = false;
+      const DWORD got =
+          ReadOnce(pipe, io, buf, sizeof(buf), kIoTimeoutMs, &timed_out);
+      if (got == 0) {
+        // 逾時 = 對面只是慢。對面把連線關了 = 它不認得這個版本
+        // (它的 DecodeHello 在「剛好用完」那一關整則丟掉)。
+        return timed_out ? HandshakeResult::kIoError
+                         : HandshakeResult::kRejected;
+      }
+      if (!reader.Feed(buf, got)) return HandshakeResult::kIoError;
+      std::string payload;
+      if (!reader.Next(&payload)) continue;
+      uint32_t seq = 0;
+      HelloOk ok;
+      if (!DecodeHelloOk(payload, &seq, &ok))
+        return HandshakeResult::kRejected;
+      if (ok.proto != proto_) return HandshakeResult::kRejected;
+      Trace("在場連線:握手完成 proto=%u tid=%lu",
+            static_cast<unsigned>(ok.proto),
+            static_cast<unsigned long>(host_tid_));
+      return HandshakeResult::kOk;
+    }
+    return HandshakeResult::kIoError;
+  }
+
   // 掛一個讀,等到連線斷掉、或有人要求停止。
   //
-  // ⚠ 服務端在這條連線上**永遠不會主動送東西**:pipe_server.cc 的 send
-  //   是 ServeClient 的區域 lambda,只在回覆請求時用,而我們一則請求
-  //   都不送。所以這個讀完成 = 連線沒了,那正是我們要等的事件。
+  // ⚠ 服務端在這條連線上握完手之後**不會再主動送東西**:pipe_server.cc
+  //   的 send 是 ServeClient 的區域 lambda,只在回覆請求時用,而我們
+  //   握完手之後一則請求都不送。所以這個讀完成 0 位元組 = 連線沒了。
+  //   ⚠ 但仍然要用迴圈:萬一將來服務端多送了什麼,一次讀就返回會被
+  //     誤判成斷線,然後這條執行緒開始重連迴圈。
   void WaitUntilBroken(HANDLE pipe, HANDLE io) {
     if (!io) {
       // 事件建不出來的退路:那就只等停止訊號。連線斷掉會慢一點被發現,
@@ -374,24 +525,20 @@ class PresenceLink {
       ::WaitForSingleObject(stop_, INFINITE);
       return;
     }
-    OVERLAPPED ov;
-    ::ZeroMemory(&ov, sizeof(ov));
-    ov.hEvent = io;
-    ::ResetEvent(io);
-    char scratch = 0;
-    DWORD got = 0;
-    if (::ReadFile(pipe, &scratch, 1, &got, &ov)) return;
-    if (::GetLastError() != ERROR_IO_PENDING) return;
-    HANDLE waits[2] = {io, stop_};
-    if (::WaitForMultipleObjects(2, waits, FALSE, INFINITE) != WAIT_OBJECT_0)
-      ::CancelIoEx(pipe, &ov);
-    // ⚠ 一定要等它真的結束:ov 在堆疊上,提早返回等於讓核心寫一塊
-    //   已經不存在的記憶體。與 pipe_server.cc 的 WaitOverlapped 同一條理由。
-    ::GetOverlappedResult(pipe, &ov, &got, TRUE);
+    char scratch[256];
+    while (::WaitForSingleObject(stop_, 0) != WAIT_OBJECT_0) {
+      if (ReadOnce(pipe, io, scratch, sizeof(scratch), INFINITE, nullptr) == 0)
+        return;
+    }
   }
+
+  static const DWORD kIoTimeoutMs = 3000;
 
   HANDLE stop_ = nullptr;
   LONG refs_ = 0;
+  uint32_t host_tid_ = 0;
+  // 這條連線宣告的線路版本。握手被拒就降一版重試(見 Run)。
+  uint32_t proto_ = kProtocolVersion;
 };
 
 TextService::TextService() {
@@ -662,8 +809,8 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* mgr, TfClientId id,
   //
   // ⚠ 這一行在 ActivateEx 上的成本只有一次 CreateEventW + 一次
   //   CreateThread,與上面那一行同一個等級:**沒有任何 I/O 等待**。
-  //   開管道發生在那條背景執行緒上。見 PresenceLink 的檔頭。
-  presence_ = PresenceLink::Start();
+  //   開管道、握手都發生在那條背景執行緒上。見 PresenceLink 的檔頭。
+  EnsurePresence();
 
   // ⚠ 焦點**可能已經在那裡了**。使用者是在一個已經有輸入框有焦點的視窗裡
   //   切換輸入法的,而 ITfThreadMgrEventSink::OnSetFocus 只在焦點**改變**時
@@ -714,12 +861,13 @@ STDMETHODIMP TextService::Deactivate() {
   // session 沒收乾淨的話,服務端會留著一個永遠不會再被用到的 librime session。
   ipc_.Close();
   // 在場連線也要收,而且這一行就是 #82 的「切走之後那一橫必須消失」:
-  // 關掉之後服務端的 ClientTicket 解構 → clients_ 減一 → 遲滯到期後隱藏。
+  // 關掉之後服務端那筆註冊消失 → 前景那條執行緒對不上任何一筆 → 隱藏。
   // ⚠ **不等那條執行緒**(這裡是宿主的 UI 執行緒)。
-  if (presence_) {
-    presence_->Stop();
-    presence_ = nullptr;
-  }
+  // ⚠ Deactivate 不是唯一的收尾邊,而且它**不保證會來**:背景宿主延遲
+  //   或永不、宿主被終止時來不及。真正在「使用者切到微軟拼音」那一刻
+  //   一定會來的是 OnActivated 的非啟用邊,見 ClosePresence 的另一個
+  //   呼叫點。
+  ClosePresence();
 
   if (thread_mgr_) {
     ITfKeystrokeMgr* keystroke = nullptr;
@@ -1573,19 +1721,70 @@ STDMETHODIMP TextService::OnActivated(DWORD /*profile_type*/, LANGID langid,
                                       REFGUID guid_profile, HKL /*hkl*/,
                                       DWORD flags) {
   RIME_GUARD_BEGIN
-  // 只理會**我們自己**被啟用的那一則。別的輸入法被啟用時我們什麼都不做:
-  // 那時使用者根本沒在用這個輸入法,改自己的狀態沒有意義,
-  // 而且會讓「他上次用哪個方案」被別人的切換覆蓋掉。
-  if (!IsEqualCLSID(clsid, CLSID_RimeTextService)) return S_OK;
-  if (!(flags & TF_IPSINK_FLAG_ACTIVE)) return S_OK;
-  // 這條通知是「使用者從繁體切到簡體」唯一的管道(三份設定檔共用一個 CLSID,
-  // 所以 TSF 不會重新 Activate)。在這之前它整條是紙上的。
-  Trace("profile sink:啟用 langid=0x%04X", static_cast<unsigned>(langid));
-  ipc_.SetProfile(static_cast<uint32_t>(langid), GuidToUtf8(guid_profile));
-  // 語言列按鈕上的字跟著這一份語言設定檔走(見 lang_bar.cc 的說明)。
-  SetUiLang(ResolveUiLang("system", static_cast<uint32_t>(langid)));
+  // ⚠ **旗標一定要先讀。** 這裡以前是兩個早退:
+  //
+  //     if (!IsEqualCLSID(clsid, CLSID_RimeTextService)) return S_OK;
+  //     if (!(flags & TF_IPSINK_FLAG_ACTIVE)) return S_OK;
+  //
+  //   那兩行丟掉的正是**使用者切到別的輸入法時唯一會來的那兩個邊**:
+  //   我們的 clsid 帶著 ACTIVE 被清除,或別人的 clsid 帶著 ACTIVE 被設立。
+  //   丟掉的後果是使用者實機回報的 S4:「我現在用其他的輸入法,
+  //   但是他突然出現了」—— 在場連線還開著,而服務端沒有任何辦法知道
+  //   這條執行緒上啟用中的已經不是我們了。
+  const bool ours = IsEqualCLSID(clsid, CLSID_RimeTextService);
+  const bool active = (flags & TF_IPSINK_FLAG_ACTIVE) != 0;
+
+  if (ours && active) {
+    // 這條通知是「使用者從繁體切到簡體」唯一的管道(三份設定檔共用一個
+    // CLSID,所以 TSF 不會重新 Activate)。在這之前它整條是紙上的。
+    Trace("profile sink:啟用 langid=0x%04X", static_cast<unsigned>(langid));
+    ipc_.SetProfile(static_cast<uint32_t>(langid), GuidToUtf8(guid_profile));
+    // 語言列按鈕上的字跟著這一份語言設定檔走(見 lang_bar.cc 的說明)。
+    SetUiLang(ResolveUiLang("system", static_cast<uint32_t>(langid)));
+    // ⚠ 在自家 profile 之間切的時候**沒有** ActivateEx,所以在場連線
+    //   要在這裡接回來 —— 上面那個分支剛剛才把它收掉。
+    EnsurePresence();
+    return S_OK;
+  }
+
+  if ((ours && !active) || (!ours && active)) {
+    // 這條執行緒上啟用中的不再是我們。⚠ 這兩個邊是這一輪的核心:
+    //   · ours && !active  = 我們這一份被停用
+    //   · !ours && active  = 別人(微軟拼音…)在這條執行緒上被啟用
+    // 兩者都必須讓服務端**立刻**看不到這個宿主,否則那一橫會在使用者
+    // 已經換了輸入法之後繼續冒出來。
+    Trace("profile sink:停用(我們的=%d 帶ACTIVE=%d)—— 收在場連線與 session",
+          ours ? 1 : 0, active ? 1 : 0);
+    ipc_.Close();
+    ClosePresence();
+    return S_OK;
+  }
+
+  // 剩下的是「別人被停用」。與我們無關 —— 接下來多半就輪到我們被啟用,
+  // 而那一則會自己來。這裡什麼都不做,尤其**不可以**把在場連線收掉。
   return S_OK;
   RIME_GUARD_END_HR
+}
+
+// ── 在場連線:唯一的開關與唯一的收尾 ──────────────────────────
+//
+// ⚠ 這兩支存在的理由是「各有兩個呼叫點」:ActivateEx 與 profile sink 的
+//   啟用邊都要開,Deactivate 與 profile sink 的非啟用邊都要收。把
+//   PresenceLink::Start() / presence_->Stop() 各自收在**一處**,守門才
+//   守得住「那兩個邊都還在」而不是只數呼叫次數
+//   (audit_single_source.sh 規則 6)。
+void TextService::EnsurePresence() {
+  if (presence_) return;  // 已經有一條了 —— 不重複開
+  // ⚠ 傳的是**現在這條執行緒**的 id。ActivateEx 與 OnActivated 都跑在
+  //   啟用我們的那條 TSF 執行緒上,而那正是服務端要拿去跟前景比的東西。
+  presence_ = PresenceLink::Start(
+      static_cast<uint32_t>(::GetCurrentThreadId()));
+}
+
+void TextService::ClosePresence() {
+  if (!presence_) return;
+  presence_->Stop();
+  presence_ = nullptr;
 }
 
 void TextService::RefreshProfile() {

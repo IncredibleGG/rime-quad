@@ -195,6 +195,18 @@ class TextService : public ITfTextInputProcessorEx,
   // nullptr = 沒起來(建不出事件或執行緒)。那時行為退回這一版之前:
   //   那一橫要等使用者按下第一顆鍵才出現。不是致命的,所以不吵。
   PresenceLink* presence_ = nullptr;
+  // ── 在場連線的唯一開關與唯一收尾 ────────────────────────────
+  //
+  // ⚠ 兩支都有**兩個**呼叫點,而那正是這一輪修的東西:
+  //     開:ActivateEx(切到我們)+ OnActivated 的「我們被啟用」那一邊
+  //         —— 三份 profile 共用一個 CLSID,在自家 profile 之間切
+  //         **不會**重新 ActivateEx,只有 profile sink 會來。
+  //     關:Deactivate + OnActivated 的「不再是我們」那一邊
+  //         —— 使用者切到微軟拼音時,唯一保證會來的就是後者。
+  //   所以 Start() / Stop() 各自只准出現一次,而且只准出現在這兩支裡面
+  //   (audit_single_source.sh 規則 6 守著)。
+  void EnsurePresence();
+  void ClosePresence();
   // 服務執行檔的完整路徑(與 DLL 同目錄)。空字串 = 算不出來。
   std::wstring service_path_;
   // 每個 HKL 一個 oracle。使用者切換鍵盤佈局時重建。

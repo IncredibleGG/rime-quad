@@ -175,20 +175,19 @@ void Pump(DWORD ms) {
 //
 // ══ 補的是哪一個洞 ═════════════════════════════════════════════════
 //
-// 那一橫顯不顯示,服務端的判準等價於「至少有一條具名管道連線開著」:
-// service/status_bar.cc 的 EvaluateVisibility() 讀 clients_,而 clients_
-// 只由 service/pipe_server.cc 的 ClientTicket 加減 —— 一條連線一張票。
+// 那一橫顯不顯示,服務端要答的是「使用者此刻正在用的那一條執行緒上,
+// 啟用中的是不是我們」(common/bar_owner.h)。而那句話的前半段只有宿主
+// 自己知道,它表達的方式就是**在場連線的生死**:ActivateEx / profile
+// sink 的啟用邊開,Deactivate / profile sink 的非啟用邊關。
 //
-// 判準本身守得很滿:tests/test_bar_visibility.cc 九支,其中一支就是
-// 「第一個宿主連上來 → 立刻顯示」。⚠ **但沒有任何東西守那條訊號。**
-// 掃遍 windows/**.sh、windows/**.yml、.github/ 與所有測試,
-// OnClientAttached / OnClientDetached / ClientTicket /
-// StartServiceInBackground 一次都沒有出現過;verify_tsf.sh 走到
-// 「ActivateEx 被呼叫了」就停手,**沒有問過 activation 會不會開出一條連線**。
+// 判準本身守得很滿(tests/test_bar_owner.cc 十二支 + test_bar_visibility.cc
+// 九支)。⚠ **這一格守的是訊號有沒有真的到服務端。**
+// verify_tsf.sh 以前走到「ActivateEx 被呼叫了」就停手,
+// **沒有問過 activation 會不會開出一條連線**。
 //
 // 而使用者實機回報的正是那一格:切回輸入法之後那一橫不見了,
-// 按下第一顆鍵才回來 —— 因為在那之前,能把 clients_ 推回 1 的
-// 只有按鍵路徑上的 EnsureReady()。
+// 按下第一顆鍵才回來 —— 因為在那之前,唯一會開連線的
+// EnsureReady() 全部在按鍵路徑上。
 //
 // ══ 這個類別做什麼 ═════════════════════════════════════════════════
 //
@@ -196,11 +195,17 @@ void Pump(DWORD ms) {
 // 連進來。也就是說它站在**服務端**那一格上問問題,而不是問 DLL
 // 「你有沒有想連」——後者是「訊號有沒有送出去」,前者才是「訊號有沒有到」。
 //
-//   · 不握手、不回話、**一條連線都不關**。關掉的話 DLL 那一側會重連,
-//     計數就失真。
-//   · 它**不是** rime_service.exe 的替身,只是那條管道的接線員。
-//     這個 job 沒有 librime,也不需要:ClientTicket 建構在讀第一個位元組
-//     之前(pipe_server.cc:464),所以「連上了」就是這一格要驗的全部。
+//   · 不回話、**一條連線都不關**。它**不是** rime_service.exe 的替身,
+//     只是那條管道的接線員;這個 job 沒有 librime,也不需要。
+//   · ⚠ **在場連線現在會送一則 HELLO**(它要報出 host_pid / host_tid,
+//     否則服務端只知道「有一條 handle 開著」,而那是一個沒有產品意義的
+//     量 —— 見 common/bar_owner.h)。這個接線員不回那則 HELLO,所以
+//     DLL 那一側會在握手逾時之後自己重連 —— 也就是說底下數到的
+//     `accepted` **不再等於「有幾個宿主」**,只等於「訊號到了幾次」。
+//     這一格要驗的仍然是同一件事:第一顆按鍵之前有沒有到過。
+//   · ⏳ 讓這個接線員真的回一則 HELLO_OK(於是 Windows CI 會實際跑過
+//     proto v3 與 host_tid 上線路那一段),只有 Windows runner 驗得到,
+//     已記進 #48。**這一輪沒有做**,不要把 accepted>0 讀成「握手過了」。
 //
 // ⚠ FIRST_PIPE_INSTANCE 是刻意的:那個名字已經被一支**真的**服務佔著時,
 //   我們要失敗並說出來,而不是接手 —— 接手的話數到的連線是誰的說不準,
