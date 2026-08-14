@@ -677,12 +677,62 @@ struct ScrolledPlacement {
   //   呼叫端必須把這個欄位接到 ShowWindow 的引數上(而不是寫死
   //   SW_SHOW/SW_HIDE),這樣「藏起來」才會是一個測得到的行為改變。
   bool visible = true;
+  // ── ⚠ **真的送進 SetWindowPos 的那一個矩形**(視窗座標)────────
+  //
+  // 2026-08-15:在它之前,呼叫端拿的是 `y_dip` + `clip_h_dip` 兩個值,
+  // 而「一個像素都不畫」是靠 `SetWindowRgn()` 給那顆控制項套一個空區域
+  // 達成的。那個作法有一個結構性的問題:**區域不在版面模型裡**。
+  // 版面說「這顆在 y=507」,而 y=507 已經壓在底部固定列(H−48=512)上;
+  // 畫面上它到底有沒有被畫出來,取決於一個沒有任何純函式看得到的
+  // Win32 呼叫。實機截圖(796×599)量到的就是這個:外觀頁的
+  // 「標準」那一列被畫在 y=507..543,把「關閉」鈕蓋掉只剩右緣十幾個
+  // 像素;文字頁的區段說明被畫在 y=521..553,壓在同一條列上。
+  //
+  // 所以現在「不畫」是一個**尺寸**,不是一個區域:w = h = 0。
+  // 空矩形畫不出任何東西是幾何,不是 Win32 的某一條語意 ——
+  // 而且 `RectI::empty()` 讓它在版面模型上**量得到**
+  // (見 DrawnRectsDip 與 test_ui_layout.cc 的
+  //  nothing_is_ever_drawn_on_the_bottom_fixed_bar)。
+  //
+  // ⚠ 位置(x/y)仍然是真的位置,不是把它挪到畫面外:控制項還在
+  //   Tab 順序上,焦點一到 EnsureFocusVisible() 就會捲到它 ——
+  //   那條路徑讀的是**內容座標**,不是這裡的 rect。
+  RectI rect;
 };
 // ⚠ 第三個引數是**裁切線**(ContentClipLineDip()),不是可視高度。
 //   兩者在「還有更多」的時候差 kScrollFadeH -- 傳可視高度進去的話,
 //   控制項會畫進淡出區裡,而字上面蓋一層淡出看起來像那一列被停用了。
 ScrolledPlacement ScrollPlaceControlDip(const RectI& content_rect,
                                         int scroll_dip, int clip_line_dip);
+
+// ── 畫面上**真的畫得出來**的每一塊(視窗座標)────────────────────
+//
+// ⚠ 這一支存在的理由是一次量錯的宣告。上一輪的報告說摺線那一段修好了,
+//   而十張實機截圖(796×599)量出來的是:外觀頁與文字頁的底部固定列
+//   仍然被蓋掉 —— 「關閉」鈕只剩右緣十幾個像素,而 SetStatus() 寫的
+//   「已套用」「正在套用…」那一行完全看不到。
+//
+//   成因不是那一段裁切沒寫,是**沒有人量得到它**:卡片裁在父視窗的
+//   DC 上(IntersectClipRect),控制項裁在 SetWindowRgn 上,兩者都是
+//   Win32 的呼叫,而版面模型只認得「這顆在 y=507」。y=507 + 高 36
+//   壓在 H−kBottomBarH=512 那一列上,所以只要那一個 Win32 呼叫沒有
+//   生效(或者像截圖那條路徑一樣看不見它),畫面就是壞的,
+//   而每一條純函式的測試都是綠的。
+//
+//   這一支把「畫得出來的是哪些矩形」變成一個**算得出來的東西**:
+//   卡片照 OnPaint 的裁切線裁,控制項照 ScrollPlaceControlDip() 的
+//   結果取,兩者合起來就是畫面。test_ui_layout.cc 的
+//   nothing_is_ever_drawn_on_the_bottom_fixed_bar 對五頁 ×
+//   每一個捲動位置斷言:**底部固定列那一帶不得有任何一塊**。
+struct DrawnRect {
+  int id = 0;            // 控制項 id;卡片是 0
+  bool is_card = false;
+  const char* what = "";  // 診斷用,永遠英文(§4.11)
+  RectI rect;             // 視窗座標(已經減過捲動量、已經裁過)
+};
+std::vector<DrawnRect> DrawnRectsDip(int page, int window_w_dip,
+                                     int window_h_dip, int scroll_dip,
+                                     PageState state);
 
 // ── 「預設」徽章擺哪裡(§12.14.6.5)─────────────────────────────
 //

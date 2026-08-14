@@ -781,9 +781,16 @@ else:
     #   而它決定「淡出區裡有沒有字」，也就是 B 那一條看起來像不像壞掉。
     if not re.search(r'const int clip_line =\s*ContentClipLineDip\(H, scroll_, scroll_max_\);', lu):
         out.append('CLIPLINE_NOT_FROM_FN')
-    if not re.search(r'place\(id, RectI\{p->rect\.x, sp\.y_dip,', lu):
-        out.append('Y_NOT_FROM_FN')
-    if not re.search(r'ClipToViewport\(i, c, p->rect\.w, sp\.clip_h_dip\)', lu):
+    # ⚠ **位置與尺寸都要從 sp.rect 來。** 舊版只驗 y(place(id, RectI{
+    #   p->rect.x, sp.y_dip, p->rect.w, p->rect.h}))—— 尺寸是自己拼的,
+    #   於是跨過裁切線的控制項仍然被擺成滿尺寸,只靠 SetWindowRgn()
+    #   把它變不見。那個區域不在版面模型裡,沒有純函式量得到 ——
+    #   而實機截圖量到的就是它壓在底部固定列上。
+    if not re.search(r'place\(id, sp\.rect\);', lu):
+        out.append('RECT_NOT_FROM_FN')
+    if re.search(r'place\(id, RectI\{p->rect', lu):
+        out.append('RECT_HANDROLLED')
+    if not re.search(r'ClipToViewport\(i, c, sp\.rect\.w, sp\.clip_h_dip\)', lu):
         out.append('CLIP_NOT_FROM_FN')
     if not re.search(r'::ShowWindow\(c, sp\.visible \? SW_SHOW : SW_HIDE\);', lu):
         out.append('SHOW_NOT_FROM_FN')
@@ -841,9 +848,14 @@ ${w25out}" ;;
       NO_SCROLL_ARG)
         w25msg "LayoutUi 沒有把 **scroll_** 送進 ScrollPlaceControlDip() ——
      捲軸拖得動、內容一動也不動。這正是上一輪被實測拆掉而全綠的那一行。" ;;
-      Y_NOT_FROM_FN)
-        w25msg "控制項的 y **不是**從 ScrollPlaceControlDip() 的回傳值來的(預期
-     place(id, RectI{p->rect.x, sp.y_dip, ...}))—— 寫成 p->rect.y 就是不捲了" ;;
+      RECT_NOT_FROM_FN)
+        w25msg "控制項的矩形**不是** ScrollPlaceControlDip() 給的(預期 place(id, sp.rect);)
+     —— y 寫成 p->rect.y 就是不捲了;尺寸自己拼的話,跨過裁切線的控制項
+     會被擺成滿尺寸壓在底部固定列上,而那一列寫的是「已套用」「正在套用…」" ;;
+      RECT_HANDROLLED)
+        w25msg "LayoutUi 裡還有一個自己拼的 place(id, RectI{...}) —— 只要尺寸不是
+     sp.rect 給的,「不畫」就又變成一個只有 SetWindowRgn 知道的事實,
+     而版面模型量不到它(這正是 2026-08-15 那十張截圖上的缺陷)" ;;
       CLIP_NOT_FROM_FN)
         w25msg "裁切高度不是從 ScrollPlaceControlDip() 來的(預期
      ClipToViewport(i, c, p->rect.w, sp.clip_h_dip))" ;;
@@ -3803,19 +3815,40 @@ PYSCRIPT
   done <<< "${w48out}"
   [ "${w48bad}" -eq 0 ] && ok "W48 每一顆按鈕的寬度都是從它自己畫面上那一句算的(SettingsButtonLabel 與 kControls 逐顆對得上)"
 
-  # ── W49:開關列的字由**我們**畫 ─────────────────────────────────
+  # ── W49:畫面上**每一個字**的顏色都必須是我們挑的 ────────────────
   #
-  # ⚠ 這一條是這一輪覆核第 6 條的守門,而它守的是一個**結構性的洞**:
-  #   §12.14.1 那三道對比守門跑的是 `Palette` —— 我們自己挑的顏色。
-  #   BS_AUTOCHECKBOX 的字在啟用視覺樣式後是 uxtheme 用 BUTTON 這個
-  #   theme class 畫的,`WM_CTLCOLOR*` 的 SetTextColor 對它沒有作用。
-  #   於是深色下畫出來的是淺色佈景的近黑字:#000000 對 #171B1D =
-  #   **1.21:1**,比 disabledText 的 2.51:1 還低,而三道守門一個都不會響
-  #   —— 它們量的是我們挑的 kOnSurface(14.99:1),那個顏色沒有上過螢幕。
+  # ⚠ **這一條這一輪換了形狀,而換形狀的理由是它上一版是綠的、
+  #    而畫面上的字讀不到。**
   #
-  #   **一道跑在自己色票上的守門,對一個不屬於自己的顏色是結構性地
-  #   看不見的。** 所以修法是把顏色搬回我們手上(NM_CUSTOMDRAW 重畫
-  #   那一列的字),而這一條驗的就是「它還在我們手上」。
+  #   上一版守的是:「kControls 裡每一顆 BS_AUTOCHECKBOX 都在
+  #   IsSwitchRow() 裡」。它守的是一個**判準**(哪幾顆算開關列),
+  #   不是一個**結果**(畫面上的字讀不讀得到)。於是:
+  #     · 四顆核取方塊補齊了 → 綠;
+  #     · 而深色下讀不到字的那三頁(外觀 / 文字 / 進階)上,
+  #       出問題的 26 顆全是 BS_AUTORADIOBUTTON —— 一顆都不在它的
+  #       定義域裡。實機截圖量出來仍然是 **1.21:1**,守門不動如山。
+  #
+  #   新版守的是結果的取材面:**kControls 裡每一顆會顯示文字的控制項,
+  #   它的字色是誰畫的?** 每一顆都要落進一個**封閉的**分類:
+  #
+  #     ctlcolor  STATIC / 唯讀 EDIT   → WM_CTLCOLORSTATIC 的 SetTextColor
+  #     wedraw    核取方塊 / 單選鈕     → NM_CUSTOMDRAW(DrawRowButtonText)
+  #                                       ⚠ 底是我們畫的、字是系統畫的,
+  #                                         所以**必須**把字搶回來
+  #     ownerdraw BS_OWNERDRAW          → WM_DRAWITEM(DrawDangerButton)
+  #     push      BS_PUSHBUTTON         → uxtheme 畫**整顆**(底也是它的),
+  #                                       字與底一致、讀得到 —— 這一格是
+  #                                       明文的例外,而且樣式必須剛好是
+  #                                       `BS_PUSHBUTTON | WS_TABSTOP`
+  #     list      ListView              → NM_CUSTOMDRAW(逐列自繪)
+  #
+  #   **落不進去的就是紅的。** 這一句回答的正是「下一次有人加一種新的
+  #   控制項而忘了重畫它的字,這條守門會不會紅」:會 —— 一顆 COMBOBOX、
+  #   一顆帶圖的按鈕、一顆 SS_OWNERDRAW 的 STATIC,全都是第六類。
+  #   (反向測試 W49f/W49g 各植入一次,要求它真的紅。)
+  #
+  # ⚠ 為什麼分類要從**樣式位元**推,不從第二份名單推:名單會與 kControls
+  #   漂開,而漂開的樣子就是這一次的缺陷。樣式位元是同一份事實。
   check
   local w49out; w49out="$("${PY}" - "${sw}" <<'PYSCRIPT'
 import sys as _s
@@ -3824,49 +3857,131 @@ import re, sys
 sw = open(sys.argv[1], encoding='utf-8', errors='replace').read()
 out = []
 
-# kControls 裡每一顆 BS_AUTOCHECKBOX 的 id。
-checks = set()
-for cm in re.finditer(r'\{(IDC_[A-Z0-9_]+),\s*L"BUTTON",\s*\n?\s*([^,]*BS_AUTOCHECKBOX[^,]*),',
-                      sw):
-    checks.add(cm.group(1))
-if len(checks) < 3:
-    out.append('SCOPE_TOO_SMALL=%d' % len(checks))
+def body_of(head, endpat='\n}\n'):
+    i = sw.find(head)
+    if i < 0:
+        return None
+    j = sw.find(endpat, i)
+    return sw[i:j] if j > 0 else sw[i:]
 
-m = re.search(r'bool IsSwitchRow\(int id\) \{(.*?)\n\}', sw, re.S)
+# ── kControls 的每一顆:id / 類別 / 樣式 ────────────────────────
+macros = dict(re.findall(r'^#define (\w+) (\([^\n]*\))$', sw, re.M))
+i = sw.find('const ControlDef kControls[] = {')
+entries = []
+if i < 0:
+    out.append('NO_TABLE')
+else:
+    j = sw.find('\n};', i)
+    body = re.sub(r'//[^\n]*', '',
+                  sw[i + len('const ControlDef kControls[] = {'):j])
+    depth = 0
+    cur = ''
+    for ch in body:
+        if ch == '{':
+            depth += 1
+            if depth == 1:
+                cur = ''
+                continue
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                entries.append(cur)
+                continue
+        if depth >= 1:
+            cur += ch
+
+kinds = {}
+counts = {'ctlcolor': 0, 'wedraw': 0, 'ownerdraw': 0, 'push': 0, 'list': 0}
+for e in entries:
+    parts = [' '.join(x.split()) for x in e.split(',')]
+    if len(parts) != 4:
+        out.append('BAD_ENTRY=' + (parts[0] if parts else '?'))
+        continue
+    cid, cls, style, label = parts
+    for k, v in macros.items():
+        style = re.sub(r'\b' + k + r'\b', v, style)
+    toks = set(t.strip(' ()') for t in style.split('|') if t.strip(' ()'))
+    kind = None
+    if cls == 'L"STATIC"':
+        # SS_OWNERDRAW / SS_BITMAP… 都不是「系統照 DC 的文字色畫」的那一種。
+        kind = 'ctlcolor' if toks == {'SS_LEFT', 'SS_NOPREFIX'} else None
+    elif cls == 'L"EDIT"':
+        kind = 'ctlcolor' if 'ES_READONLY' in toks else None
+    elif cls == 'WC_LISTVIEWW':
+        kind = 'list'
+    elif cls == 'L"BUTTON"':
+        if 'BS_OWNERDRAW' in toks:
+            kind = 'ownerdraw'
+        elif 'BS_AUTOCHECKBOX' in toks or 'BS_AUTORADIOBUTTON' in toks:
+            kind = 'wedraw'
+        elif toks == {'BS_PUSHBUTTON', 'WS_TABSTOP'}:
+            kind = 'push'
+    if kind is None:
+        out.append('UNKNOWN_KIND=%s|%s|%s' % (cid, cls, '|'.join(sorted(toks))))
+        continue
+    kinds[cid] = kind
+    counts[kind] += 1
+
+# ⚠ 掃描範圍太小 = 正規表示式沒對上 = 這一條等於沒跑。
+for kind, floor in (('ctlcolor', 40), ('wedraw', 25), ('push', 8),
+                    ('ownerdraw', 2), ('list', 2)):
+    if counts[kind] < floor:
+        out.append('SCOPE_TOO_SMALL=%s:%d<%d' % (kind, counts[kind], floor))
+
+# ── wedraw 那一類:名單要與樣式位元對得起來(兩個方向)──────────
+m = re.search(r'bool WeDrawTheText\(int id\) \{(.*?)\n\}', sw, re.S)
 if not m:
     out.append('NO_LIST')
 else:
     listed = set(re.findall(r'(IDC_[A-Z0-9_]+)', m.group(1)))
-    for cid in sorted(checks - listed):
+    want = set(k for k, v in kinds.items() if v == 'wedraw')
+    for cid in sorted(want - listed):
         out.append('NOT_LISTED=' + cid)
-    for cid in sorted(listed - checks):
-        out.append('NOT_A_CHECKBOX=' + cid)
+    for cid in sorted(listed - want):
+        out.append('NOT_A_ROW_BUTTON=' + cid)
 
-# 通知要真的接出去。
-if not re.search(r'if \(IsSwitchRow\(static_cast<int>\(nm->idFrom\)\) &&\s*\n?\s*'
-                 r'nm->code == NM_CUSTOMDRAW\) \{\s*\n\s*\*result = DrawSwitchRowText\(',
+# ── 通知要真的接出去 ────────────────────────────────────────────
+if not re.search(r'if \(WeDrawTheText\(static_cast<int>\(nm->idFrom\)\) &&\s*\n?\s*'
+                 r'nm->code == NM_CUSTOMDRAW\) \{\s*\n\s*\*result = DrawRowButtonText\(',
                  sw):
     out.append('NOT_WIRED')
 
-body = None
-i = sw.find('LRESULT SettingsWindow::DrawSwitchRowText(NMCUSTOMDRAW* cd) {')
-if i < 0:
+# ── 每一類的字色都必須從 theme_ 來 ──────────────────────────────
+draw = body_of('LRESULT SettingsWindow::DrawRowButtonText(NMCUSTOMDRAW* cd) {')
+if draw is None:
     out.append('NO_DRAWFN')
 else:
-    j = sw.find('\n}\n', i)
-    body = sw[i:j]
-    # 顏色必須來自我們的色票,而且必須真的把字畫出來、真的接管繪製。
-    if 'theme_.Color(disabled ? kDisabledText : kOnSurface)' not in body:
+    if 'theme_.Color(disabled ? kDisabledText : kOnSurface)' not in draw:
         out.append('NOT_OUR_COLOR')
-    if '::DrawTextW(' not in body:
+    if '::DrawTextW(' not in draw:
         out.append('NO_TEXT_DRAWN')
-    if 'CDRF_NOTIFYPOSTPAINT' not in body:
+    if 'CDRF_NOTIFYPOSTPAINT' not in draw:
         out.append('NO_POSTPAINT')
-    # 接管是「系統畫完之後把那一欄擦掉重畫」,所以那一下 FillRect
-    # 與 DrawTextW 一樣是必要的 —— 少了它,系統畫的那份近黑字還在,
-    # 我們的字疊在上面。
-    if '::FillRect(cd->hdc, &text,' not in body:
+    if '::FillRect(cd->hdc, &text,' not in draw:
         out.append('NOT_ERASED')
+    # ⚠ **兩邊都要**。方塊在右(BS_RIGHTBUTTON)與方塊在左(單選鈕)
+    #   要擦的是相反的一欄;只做一邊的話,另一邊擦掉的是方塊、
+    #   留下的是系統畫的字 —— 也就是這一輪覆核量到的 1.21:1。
+    if not ('BS_RIGHTBUTTON' in draw and 'GWL_STYLE' in draw):
+        out.append('ONE_GLYPH_SIDE_ONLY')
+
+ctl = body_of('    case WM_CTLCOLORBTN: {', '\n    case ')
+if ctl is not None and 'case WM_CTLCOLORSTATIC:' not in sw:
+    out.append('NO_CTLCOLOR')
+if ctl is None:
+    out.append('NO_CTLCOLOR')
+elif not re.search(r'::SetTextColor\(hdc, self->theme_\.Color\(', ctl):
+    out.append('CTLCOLOR_NOT_OUR_COLOR')
+
+for fn, code in (('void SettingsWindow::DrawDangerButton(', 'OWNERDRAW'),
+                 ('LRESULT SettingsWindow::DrawSidebar(', 'LIST_SIDEBAR'),
+                 ('LRESULT SettingsWindow::DrawSchemaList(', 'LIST_SCHEMA'),
+                 ('LRESULT SettingsWindow::DrawNetLogList(', 'LIST_NETLOG')):
+    b = body_of(fn)
+    if b is None:
+        out.append('NO_FN=' + code)
+    elif not re.search(r'::SetTextColor\([^;]*theme_\.Color\(', b):
+        out.append('NOT_OUR_COLOR_' + code)
 
 print('SCOPE_OK')
 for line in out:
@@ -3877,27 +3992,53 @@ PYSCRIPT
   w49msg() { red "W49:$*"; w49bad=1; }
   case "${w49out}" in *SCOPE_OK*) ;; *) w49msg "掃描沒有跑起來(python 掛了?)" ;; esac
   while IFS= read -r line; do
+    line="${line%$'\r'}"
     case "${line}" in
       ''|SCOPE_OK) continue ;;
-      SCOPE_TOO_SMALL=*) w49msg "只認出 ${line#SCOPE_TOO_SMALL=} 顆 BS_AUTOCHECKBOX ——
+      NO_TABLE) w49msg "找不到 kControls[] —— 掃描範圍錯了,這一條等於沒跑" ;;
+      BAD_ENTRY=*) w49msg "kControls 裡有一筆解不開的項目(${line#BAD_ENTRY=})——
+     解不開就分不了類,而分不了類的那一顆的字色沒有人在管" ;;
+      SCOPE_TOO_SMALL=*) w49msg "只認出 ${line#SCOPE_TOO_SMALL=} 顆 ——
      正規表示式沒對上,這一條等於沒跑" ;;
-      NO_LIST) w49msg "settings_window.cc 沒有 IsSwitchRow() —— 沒有人說得出哪幾列是開關" ;;
-      NOT_LISTED=*) w49msg "${line#NOT_LISTED=} 是 BS_AUTOCHECKBOX 但不在 IsSwitchRow() 裡 ——
-     那一列的字會回去給 uxtheme 畫,而深色下那是 1.21:1" ;;
-      NOT_A_CHECKBOX=*) w49msg "IsSwitchRow() 列了 ${line#NOT_A_CHECKBOX=},但它不是 BS_AUTOCHECKBOX" ;;
-      NOT_WIRED) w49msg "NM_CUSTOMDRAW 沒有接到 DrawSwitchRowText() —— 函式在,沒有人叫它" ;;
-      NO_DRAWFN) w49msg "找不到 DrawSwitchRowText 的定義" ;;
-      NOT_OUR_COLOR) w49msg "開關列的字色不是從 theme_ 來的 —— 那正是缺陷本身
+      UNKNOWN_KIND=*) w49msg "kControls 裡出現了一種**沒有人說得出字色從哪來**的控制項:
+     ${line#UNKNOWN_KIND=}
+     每一顆會顯示文字的控制項都必須落進五類其中一類:
+       STATIC(SS_LEFT|SS_NOPREFIX)/ 唯讀 EDIT → WM_CTLCOLORSTATIC;
+       BS_AUTOCHECKBOX / BS_AUTORADIOBUTTON   → DrawRowButtonText;
+       BS_OWNERDRAW                            → DrawDangerButton;
+       BS_PUSHBUTTON|WS_TABSTOP                → uxtheme 畫整顆(明文例外);
+       ListView                                → 逐列自繪。
+     落不進去代表它的字是系統用**淺色佈景**畫的,而底是我們的深色卡片
+     —— 深色下那是 1.21:1,比停用文字還低,而三道對比守門看不見它
+     (它們量的是我們的色票,那個顏色不在裡面)。" ;;
+      NO_LIST) w49msg "settings_window.cc 沒有 WeDrawTheText() —— 沒有人說得出哪幾顆的字由我們畫" ;;
+      NOT_LISTED=*) w49msg "${line#NOT_LISTED=} 是核取方塊/單選鈕,但不在 WeDrawTheText() 裡 ——
+     那一顆的字會回去給 uxtheme 畫,而深色下那是 1.21:1
+     (上一輪就是這樣漏掉 26 顆單選鈕的)" ;;
+      NOT_A_ROW_BUTTON=*) w49msg "WeDrawTheText() 列了 ${line#NOT_A_ROW_BUTTON=},
+     但它不是 BS_AUTOCHECKBOX 也不是 BS_AUTORADIOBUTTON" ;;
+      NOT_WIRED) w49msg "NM_CUSTOMDRAW 沒有接到 DrawRowButtonText() —— 函式在,沒有人叫它" ;;
+      NO_DRAWFN) w49msg "找不到 DrawRowButtonText 的定義" ;;
+      NOT_OUR_COLOR) w49msg "那一列的字色不是從 theme_ 來的 —— 那正是缺陷本身
      (畫面上的顏色不在我們的色票裡,所以 §12.14.1 的三道守門看不見它)" ;;
-      NO_TEXT_DRAWN) w49msg "DrawSwitchRowText 沒有真的畫字(缺 DrawTextW)——
+      NO_TEXT_DRAWN) w49msg "DrawRowButtonText 沒有真的畫字(缺 DrawTextW)——
      擦掉了卻不畫,那一列會變成空白" ;;
       NO_POSTPAINT) w49msg "沒有回 CDRF_NOTIFYPOSTPAINT —— POSTPAINT 那一段永遠走不到" ;;
       NOT_ERASED) w49msg "沒有先把那一欄擦掉(缺 FillRect)—— 系統畫的那份近黑字
      還在,我們的字只是疊在它上面" ;;
+      ONE_GLYPH_SIDE_ONLY) w49msg "DrawRowButtonText 沒有從樣式位元(GWL_STYLE / BS_RIGHTBUTTON)
+     判斷方塊在哪一邊 —— 開關列的方塊在右、單選鈕的在左,要擦的是相反
+     的一欄。只做一邊的話,另一邊擦掉的是方塊、留下的是系統畫的字,
+     而那正是 2026-08-15 截圖上量到的 1.21:1" ;;
+      NO_CTLCOLOR) w49msg "找不到 WM_CTLCOLORSTATIC 分支 —— 掃描範圍錯了" ;;
+      CTLCOLOR_NOT_OUR_COLOR) w49msg "WM_CTLCOLORSTATIC 沒有用 theme_ 設文字色 ——
+     那是 59 顆 STATIC 與唯讀 EDIT 的字色唯一的出處" ;;
+      NO_FN=*) w49msg "找不到 ${line#NO_FN=} 那一支自繪函式 —— 掃描範圍錯了" ;;
+      NOT_OUR_COLOR_*) w49msg "${line#NOT_OUR_COLOR_} 的字色不是從 theme_ 來的" ;;
       *) w49msg "未知的回報:${line}" ;;
     esac
   done <<< "${w49out}"
-  [ "${w49bad}" -eq 0 ] && ok "W49 每一列 BS_AUTOCHECKBOX 的字都由我們畫(顏色進得了 §12.14.1 的守門),而且系統畫的那一份會先被擦掉"
+  [ "${w49bad}" -eq 0 ] && ok "W49 kControls 裡每一顆會顯示文字的控制項都落進五類其中一類,而每一類的字色都指得出一個用 theme_ 的出處(第六類是紅的)"
 }
 
 # ────────────────────────────────────────────────────────────────
@@ -4006,23 +4147,29 @@ self_check() {
 "W27j 側欄三種合併回同一句|common/service_state.cc|s=s.replace('      return UiString::kNavStatusPreparing;','      return UiString::kNavStatusNotRunning;',1)"
 "W12a 設定視窗不跟著系統換深淺(整檔 grep 抓不到)|service/settings_window.cc|s=s.replace('Theme::IsColorSetChange(l) ||','false ||',1)"
 "W12b 比對的字面值被換掉|service/ui_theme.cc|s=s.replace('L'+chr(34)+'ImmersiveColorSet'+chr(34),'L'+chr(34)+'SomethingElse'+chr(34),1)"
-"W25a 捲動量沒套到控制項(覆核者實測的拆法)|service/settings_window.cc|s=s.replace('place(id, RectI{p->rect.x, sp.y_dip, p->rect.w, p->rect.h});','place(id, RectI{p->rect.x, p->rect.y, p->rect.w, p->rect.h});',1)"
+"W25a 捲動量沒套到控制項(覆核者實測的拆法)|service/settings_window.cc|s=s.replace('    place(id, sp.rect);','    place(id, RectI{p->rect.x, p->rect.y, p->rect.w, p->rect.h});',1)"
+"W25k 尺寸自己拼回滿尺寸(2026-08-15 截圖上的缺陷本身)|service/settings_window.cc|s=s.replace('    place(id, sp.rect);','    place(id, RectI{p->rect.x, sp.y_dip, p->rect.w, p->rect.h});',1)"
 "W25b 捲動量沒送進純函式|service/settings_window.cc|s=s.replace('ScrollPlaceControlDip(p->rect, scroll_, clip_line)','ScrollPlaceControlDip(p->rect, 0, clip_line)',1)"
 "W25i 裁切線自己算(那個數字就沒有人量得到了)|service/settings_window.cc|s=s.replace('const int clip_line = ContentClipLineDip(H, scroll_, scroll_max_);','const int clip_line = viewport_h;',1)"
 "W25j 裁切線的純函式從 common/ 消失|common/ui_layout.cc|s=s.replace('int ContentClipLineDip(','int ContentClipLineDipGone(',1)"
 "W48a 按鈕的寬度照另一句算(畫面上寫的是別句)|common/ui_layout.cc|s=s.replace('case IDC_RESET:             return UiString::kResetButton;','case IDC_RESET:             return UiString::kCancel;',1)"
 "W48b 少一顆按鈕沒有表態(寬度掉到下界 80)|common/ui_layout.cc|s=s.replace('    case IDC_OPEN_USER_DIR:     return UiString::kOpenUserDir;','',1)"
 "W48c 那張表整個不見|common/ui_layout.cc|s=s.replace('UiString SettingsButtonLabel(int id) {','UiString SettingsButtonLabelGone(int id) {',1)"
-"W49a 少一列開關沒進名單(那一列的字回去給 uxtheme 畫)|service/settings_window.cc|s=s.replace('  return id == IDC_FOLLOW_MODE || id == IDC_BAR_SHOW ||','  return id == IDC_BAR_SHOW ||',1)"
+"W49a 少一顆核取方塊沒進名單(那一列的字回去給 uxtheme 畫)|service/settings_window.cc|s=s.replace('      id == IDC_FOLLOW_MODE || id == IDC_BAR_SHOW ||','      id == IDC_BAR_SHOW ||',1)"
+"W49a2 少一顆**單選鈕**沒進名單(這一輪覆核抓到的缺陷本身)|service/settings_window.cc|s=s.replace('      id == IDC_SCALE_0 || id == IDC_SCALE_1 || id == IDC_SCALE_2 ||','      id == IDC_SCALE_0 || id == IDC_SCALE_1 ||',1)"
 "W49b 開關列的字色不是我們的(缺陷本身)|service/settings_window.cc|s=s.replace('theme_.Color(disabled ? kDisabledText : kOnSurface));','::GetSysColor(COLOR_BTNTEXT));',1)"
-"W49c NM_CUSTOMDRAW 沒接出去(函式在,沒有人叫它)|service/settings_window.cc|s=s.replace('    *result = DrawSwitchRowText(reinterpret_cast<NMCUSTOMDRAW*>(nm));','    *result = CDRF_DODEFAULT;',1)"
+"W49c NM_CUSTOMDRAW 沒接出去(函式在,沒有人叫它)|service/settings_window.cc|s=s.replace('    *result = DrawRowButtonText(reinterpret_cast<NMCUSTOMDRAW*>(nm));','    *result = CDRF_DODEFAULT;',1)"
 "W49d 不先擦就畫(系統那份近黑字還在底下)|service/settings_window.cc|s=s.replace('  ::FillRect(cd->hdc, &text, theme_.Brush(bg));','  (void)bg;',1)"
 "W49e PREPAINT 不要求回 POSTPAINT(那一段永遠走不到)|service/settings_window.cc|s=s.replace('    return CDRF_NOTIFYPOSTPAINT;','    return CDRF_DODEFAULT;',1)"
+"W49f 加一種**新的控制項**而沒有人說得出它的字色從哪來(下一次的形狀)|service/settings_window.cc|s=s.replace('    {IDC_STATUS, L\"STATIC\", ST, kNoText},','    {IDC_STATUS, L\"STATIC\", ST, kNoText},' + chr(10) + '    {IDC_CLOSE, L\"COMBOBOX\", CBS_DROPDOWNLIST | WS_TABSTOP, UiString::kClose},',1)"
+"W49g 加一顆新的單選鈕卻忘了重畫它的字(下一次的形狀)|service/settings_window.cc|s=s.replace('    {IDC_SHAPE_2, L\"BUTTON\", RADIO, UiString::kShapeFull},','    {IDC_SHAPE_2, L\"BUTTON\", RADIO, UiString::kShapeFull},' + chr(10) + '    {IDC_SHAPE_3, L\"BUTTON\", RADIO, UiString::kShapeFull},',1)"
+"W49h 只擦一邊(單選鈕的方塊在左,擦錯邊就等於沒修)|service/settings_window.cc|s=s.replace('  const bool glyph_right = (style & BS_RIGHTBUTTON) != 0;','  const bool glyph_right = true;',1)"
+"W49i STATIC 換成 SS_OWNERDRAW(字色又變成系統的)|service/settings_window.cc|s=s.replace('#define ST (SS_LEFT | SS_NOPREFIX)','#define ST (SS_OWNERDRAW | SS_NOPREFIX)',1)"
 "W25c 捲出可視範圍就藏起來(覆核者實測的拆法)|service/settings_window.cc|s=s.replace('::ShowWindow(c, sp.visible ? SW_SHOW : SW_HIDE);','::ShowWindow(c, SW_HIDE);',1)"
 "W25d 主視窗的捲軸拿掉(覆核者實測的拆法)|service/settings_window.cc|s=s.replace('WS_THICKFRAME | WS_VSCROLL | WS_CLIPCHILDREN','WS_THICKFRAME | WS_CLIPCHILDREN',1)"
 "W25e 訊息迴圈裡的焦點呼叫刪掉、定義留著(覆核者實測的拆法)|service/settings_window.cc|s=s.replace('        EnsureFocusVisible();','        (void)0;',1)"
 "W25f 滾輪分支在但什麼都不做|service/settings_window.cc|s=s.replace('      if (self) self->OnMouseWheel(GET_WHEEL_DELTA_WPARAM(w));','',1)"
-"W25g 裁切高度不從純函式來|service/settings_window.cc|s=s.replace('ClipToViewport(i, c, p->rect.w, sp.clip_h_dip);','ClipToViewport(i, c, p->rect.w, -1);',1)"
+"W25g 裁切高度不從純函式來|service/settings_window.cc|s=s.replace('ClipToViewport(i, c, sp.rect.w, sp.clip_h_dip);','ClipToViewport(i, c, sp.rect.w, -1);',1)"
 "W25h 純函式從 common/ 消失|common/ui_layout.cc|s=s.replace('ScrolledPlacement ScrollPlaceControlDip(','ScrolledPlacement ScrollPlaceControlDipGone(',1)"
 "W29a 開關的狀態讀錯地方|service/settings_window.cc|s=s.replace('const bool on = net_gate_.Enabled();','const bool on = settings_.NetworkEnabled();',1)"
 "W29b 開關底下那句話寫死一條|service/settings_window.cc|s=s.replace('SetText(hwnd_, IDC_NET_STATE, UiText(NetSwitchSummary(on)));','SetText(hwnd_, IDC_NET_STATE, UiText(UiString::kNetworkOffSummary));',1)"

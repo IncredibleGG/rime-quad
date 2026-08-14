@@ -127,14 +127,54 @@ constexpr UiString kNoText = UiString::kUiStringCount;
 //   對調,而深色下那個錯誤看起來只像「顏色怪怪的」。
 inline COLORREF RgbToColorRef(Rgb c) { return RGB(c.r, c.g, c.b); }
 
-// 這一顆是 BS_AUTOCHECKBOX 的「開關列」嗎(§12.5.2)。
-// ⚠ **唯一的一份名單。** 少一顆的樣子是「那一列的字在深色下
-//   看不見」,而那正是這一輪覆核抓到的東西 —— 所以
-//   check_ui_spec.sh 的 W36 拿 kControls 裡帶 BS_AUTOCHECKBOX 的
-//   每一顆來對帳,多一顆少一顆都紅。
-bool IsSwitchRow(int id) {
-  return id == IDC_FOLLOW_MODE || id == IDC_BAR_SHOW ||
-         id == IDC_SHIFTTAP_SWITCH || id == IDC_NET_SWITCH;
+// 這一顆的**字**由我們畫嗎(§12.5.2 / §12.14.6.6)。
+//
+// ⚠ **這是唯一的一份名單,而且它涵蓋核取方塊與單選鈕兩種。**
+//
+//   啟用視覺樣式之後,BUTTON 這個 theme class 底下的核取方塊與單選鈕,
+//   **字**是 uxtheme 畫的:`WM_CTLCOLOR*` 的 SetTextColor 對它沒有作用。
+//   而它們的**底**是我們畫的(WM_CTLCOLORBTN 回卡片色)。一半我們的、
+//   一半系統的,深色下的結果是近黑字壓在 #171B1D 的卡片上 = **1.21:1**,
+//   比 kDisabledText 的 2.51:1 還低。
+//
+// ⚠ 上一輪只補了核取方塊,而**讀不到字的那三頁全是單選鈕**:
+//   一次顯示幾個字(IDC_COUNT_*)、那個小窗的字大小(IDC_SCALE_*)、
+//   打出繁體字還是簡體字(IDC_VARIANT_*)、這個視窗的語言(IDC_LANG_*)。
+//   實機截圖量出來的三個點(p1/p2 的 y=205、p4 的 y=397)一個都不是
+//   核取方塊。所以判準不是「是不是開關列」,是
+//   **「它的底是我們畫的、字卻是系統畫的」** —— 而那正好等於
+//   「BS_AUTOCHECKBOX 或 BS_AUTORADIOBUTTON」這一組。
+//
+// ⚠ push button 不在這裡,而那是有理由的、不是漏掉:push button 的
+//   **底也是 uxtheme 畫的**(整顆按鈕都是它的),所以字與底一致、讀得到。
+//   危險鍵是 BS_OWNERDRAW,字與底都是我們的。這三類把 kControls 蓋滿,
+//   而 check_ui_spec.sh 的 W49 逐顆對帳:出現第四類就紅。
+//
+// ⚠ 每一顆 id 都**寫出來**,不用 `first + i` 的範圍判斷 —— 理由與
+//   ui_layout.cc 的 radios() 一樣:守門逐字比對這裡與 kControls,
+//   而範圍寫法讓一半的 id 在文字上不存在。
+// 方塊(核取方塊/單選鈕的字形)佔掉的那一欄有多寬(DIP)。
+// ⚠ 兩個數字不一樣的理由寫在 DrawRowButtonText 的檔頭 ——
+//   一邊只要「夠寬」,另一邊必須「不多不少」。
+constexpr int kGlyphColRightDip = 24;          // BS_RIGHTBUTTON:方塊在右
+constexpr int kGlyphColLeftDip = space::s6;    // 預設:方塊在左(16)
+
+bool WeDrawTheText(int id) {
+  return
+      // BS_AUTOCHECKBOX(開關列)
+      id == IDC_FOLLOW_MODE || id == IDC_BAR_SHOW ||
+      id == IDC_SHIFTTAP_SWITCH || id == IDC_NET_SWITCH ||
+      // BS_AUTORADIOBUTTON(單選群組)
+      id == IDC_COUNT_0 || id == IDC_COUNT_1 || id == IDC_COUNT_2 ||
+      id == IDC_COUNT_3 || id == IDC_COUNT_4 ||
+      id == IDC_SCALE_0 || id == IDC_SCALE_1 || id == IDC_SCALE_2 ||
+      id == IDC_SCALE_3 || id == IDC_SCALE_4 ||
+      id == IDC_THEME_0 || id == IDC_THEME_1 || id == IDC_THEME_2 ||
+      id == IDC_VARIANT_0 || id == IDC_VARIANT_1 || id == IDC_VARIANT_2 ||
+      id == IDC_PUNCT_0 || id == IDC_PUNCT_1 || id == IDC_PUNCT_2 ||
+      id == IDC_SHAPE_0 || id == IDC_SHAPE_1 || id == IDC_SHAPE_2 ||
+      id == IDC_LANG_0 || id == IDC_LANG_1 || id == IDC_LANG_2 ||
+      id == IDC_LANG_3;
 }
 
 #define ST (SS_LEFT | SS_NOPREFIX)
@@ -1044,8 +1084,22 @@ void SettingsWindow::LayoutUi() {
     //   驗的就是這三條。
     const ScrolledPlacement sp =
         ScrollPlaceControlDip(p->rect, scroll_, clip_line);
-    place(id, RectI{p->rect.x, sp.y_dip, p->rect.w, p->rect.h});
-    ClipToViewport(i, c, p->rect.w, sp.clip_h_dip);
+    // ⚠ **位置與尺寸都是 sp.rect,一個字都不自己拼。**
+    //   2026-08-15 之前這裡寫的是
+    //     place(id, RectI{p->rect.x, sp.y_dip, p->rect.w, p->rect.h});
+    //   也就是「位置聽純函式的、尺寸自己給」。於是跨過裁切線的控制項
+    //   仍然被擺成**滿尺寸**,只靠下面那一句 SetWindowRgn() 把它變不見
+    //   —— 而區域不在版面模型裡,沒有任何純函式量得到它。實機截圖上
+    //   量到的就是這個:外觀頁的「標準」那一列畫在 y=507..543,
+    //   壓在底部固定列(H−48=512)上,把「關閉」鈕蓋掉只剩右緣十幾點。
+    //   現在「不畫」是 sp.rect 的 w = h = 0,而空矩形畫不出東西是幾何。
+    //   守門:test_ui_layout.cc 的
+    //   nothing_is_ever_drawn_on_the_bottom_fixed_bar(五頁 × 每一個
+    //   捲動位置 × 四種視窗尺寸)。
+    place(id, sp.rect);
+    // ⚠ SetWindowRgn 留著,而且是**第二道**:尺寸已經是 0 了,這一道
+    //   只是不讓「有人把 sp.rect 換回滿尺寸」變成一次靜悄悄的回歸。
+    ClipToViewport(i, c, sp.rect.w, sp.clip_h_dip);
     // 捲出可視範圍的控制項**不隱藏**,只裁成空的(sp.visible
     // 永遠是 true,而那是被單元測試釘住的規定)。隱藏會讓它退出
     // Tab 順序,於是鍵盤使用者再也捲不到它 —— 而捲動的存在正是
@@ -2681,9 +2735,9 @@ void SettingsWindow::OnNotify(NMHDR* nm, LRESULT* result) {
     *result = DrawNetLogList(reinterpret_cast<NMLVCUSTOMDRAW*>(nm));
     return;
   }
-  if (IsSwitchRow(static_cast<int>(nm->idFrom)) &&
+  if (WeDrawTheText(static_cast<int>(nm->idFrom)) &&
       nm->code == NM_CUSTOMDRAW) {
-    *result = DrawSwitchRowText(reinterpret_cast<NMCUSTOMDRAW*>(nm));
+    *result = DrawRowButtonText(reinterpret_cast<NMCUSTOMDRAW*>(nm));
     return;
   }
 }
@@ -2723,9 +2777,37 @@ void SettingsWindow::OnNotify(NMHDR* nm, LRESULT* result) {
 //   所以無障礙角色、自動勾選、鍵盤操作全部原封不動。
 //
 // ⚠ 為什麼只重畫**字**、不碰方塊:方塊要跟系統 accent 走
-//   (§12.14.6.6),那是刻意的。我們擦掉的是右邊那一欄以外的區域,
-//   而 BS_RIGHTBUTTON 把方塊推到右緣 —— 兩者不重疊。
-LRESULT SettingsWindow::DrawSwitchRowText(NMCUSTOMDRAW* cd) {
+//   (§12.14.6.6),那是刻意的。我們擦掉的是方塊那一欄以外的區域。
+//
+// ── ⚠ 方塊在左邊還是右邊,由**控制項自己的樣式位元**回答 ──────────
+//
+//   開關列帶 BS_RIGHTBUTTON(§4.1「開關在右、標題說明在左」),
+//   單選鈕不帶(§4.2 的群組,方塊在左)。這兩件事以前只有前者被處理,
+//   而**深色下讀不到字的三頁全是單選鈕**。
+//
+//   ⚠ 這裡**不再**開第二份名單說「哪幾顆的方塊在左邊」——
+//     那種名單會與 kControls 漂開,而漂開的樣子正好是這一次的缺陷:
+//     一顆控制項的字回去給 uxtheme 畫,而沒有人發現。樣式位元是
+//     **同一份事實**:kControls 建它的時候寫的就是這一個。
+//
+// ── ⚠ 那一欄有多寬:兩邊的數字不一樣,而那不是疏忽 ────────────
+//
+//   · 方塊在右(BS_RIGHTBUTTON):字在左、方塊在右。擦寬一點只是多擦
+//     一塊本來就是卡片底色的地方,所以取**寬鬆的那一邊** 24 DIP。
+//   · 方塊在左:字**在方塊右邊**,而它從哪裡開始是 comctl32 決定的
+//     —— 方塊 13 DIP 寬,加上 BUTTON 這個 theme class 的內容內距
+//     (約 3 DIP),字大約從 16 DIP 開始。所以這一邊**不可以**取 24:
+//     取 24 的話,系統畫的那份字最左邊那 7、8 個像素會留在下面,
+//     而深色下那是一小截近黑的殘影 —— 覆核者掃描線量到的就會是它。
+//     取 space::s6(16)是為了對上同一個數字:方塊(≤16)完整保留,
+//     字(≥16)整段被擦掉,而我們自己的字也從 16 開始畫,
+//     所以左緣與系統原本的位置一致。
+//
+//   ⚠ 這一格是這一輪**我最沒有把握**的數字:它是從 comctl32 的行為
+//     推出來的,不是量出來的(這台機器沒有 Windows)。量得到的判準
+//     寫在報告的預測表裡:深色下那一列的**最暗像素必須是卡片底
+//     #171B1D**,不得再出現接近 #000000 的像素。
+LRESULT SettingsWindow::DrawRowButtonText(NMCUSTOMDRAW* cd) {
   if (!cd) return CDRF_DODEFAULT;
   // 先讓系統畫完(方塊、焦點、hot/pressed 的底),再把字換掉。
   if (cd->dwDrawStage == CDDS_PREPAINT) {
@@ -2742,12 +2824,14 @@ LRESULT SettingsWindow::DrawSwitchRowText(NMCUSTOMDRAW* cd) {
   HWND ctl = cd->hdr.hwndFrom;
   if (!ctl) return CDRF_DODEFAULT;
 
-  // 方塊那一欄:BS_RIGHTBUTTON 把它推到右緣。核取方塊的字形在 96 DPI
-  // 上是 13 DIP,comctl32 另外留一點內距 —— 這裡取 24 DIP,**寬鬆的
-  // 那一邊**:擦太窄會留下系統畫的那份字(兩份疊在一起),
-  // 擦太寬只是多擦一塊本來就是卡片底色的地方。
-  const int glyph_col = Dip(24, dpi_);
-  RECT text{cd->rc.left, cd->rc.top, cd->rc.right - glyph_col, cd->rc.bottom};
+  // 方塊在哪一邊 —— 見上面那一段。**唯一的來源是樣式位元。**
+  const LONG style = ::GetWindowLongW(ctl, GWL_STYLE);
+  const bool glyph_right = (style & BS_RIGHTBUTTON) != 0;
+  RECT text = cd->rc;
+  if (glyph_right)
+    text.right -= Dip(kGlyphColRightDip, dpi_);
+  else
+    text.left += Dip(kGlyphColLeftDip, dpi_);
   if (text.right <= text.left) return CDRF_DODEFAULT;
 
   // 底:卡片裡是 surface。⚠ 與 WM_CTLCOLOR* 走**同一份** in_card_,
@@ -2765,7 +2849,9 @@ LRESULT SettingsWindow::DrawSwitchRowText(NMCUSTOMDRAW* cd) {
     ::SetTextColor(cd->hdc,
                    theme_.Color(disabled ? kDisabledText : kOnSurface));
     HGDIOBJ oldf = ::SelectObject(cd->hdc, fonts_.Get(text_size::t3));
-    // §12.14.6.6:整列高 36、字級 t3、文字左緣 = 控制項左緣。
+    // §12.14.6.6:整列高 36、字級 t3。文字左緣 = 擦除區的左緣 ——
+    // 方塊在右時那就是控制項左緣,方塊在左時是方塊那一欄的右緣
+    // (也就是 comctl32 自己會用的那個位置)。
     ::DrawTextW(cd->hdc, buf, n, &text,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
                     DT_NOPREFIX);

@@ -754,6 +754,96 @@ TEST(ui_layout_scrolled_out_controls_stay_in_the_tab_order) {
   CHECK_INT(hidden, 0);    // 而且沒有一顆是藏起來的
 }
 
+// ── 底部固定列那一帶:畫面上不得有任何一塊 ──────────────────────
+//
+// ⚠ **這一條是拿實機截圖上量到的東西寫回來的。**
+//
+//   十張截圖(796×599,client 763×560)逐像素量出來:
+//     · settings-p1-light,y=559(client 528):x287..734 一整條
+//       (255,255,255)= 淺色的 kSurface,把「關閉」鈕蓋掉只剩右緣十幾點;
+//     · settings-p2-light,同一條掃描線:多段 (69,79,81)
+//       = 淺色的 kOnSurfaceVariant,也就是區段說明的字,壓在同一列上。
+//   對回版面:外觀頁的 IDC_SCALE_2 在 y=507..543、文字頁的
+//   IDC_SHAPE_BLURB 在 y=521..553,而底部固定列從 H−kBottomBarH=512
+//   開始。**兩顆都在固定列上面。**
+//
+// ⚠ 這一列不是裝飾:SetStatus() / SetTransientStatus() 寫的
+//   「已套用」「正在套用…」「重新整理字詞跑了幾秒」「複製好了」
+//   全在那一行。被蓋住 = 使用者改完設定得不到任何回饋。
+//
+// ⚠ 為什麼舊的守門沒有響:「不畫」以前是靠 SetWindowRgn() 給控制項
+//   套一個空區域達成的,而**區域不在版面模型裡**。純函式只看得到
+//   「這顆在 y=507」,看不到那一個 Win32 呼叫有沒有生效 ——
+//   所以這一條改成量 DrawnRectsDip():畫得出來的是哪些矩形。
+//   下一次有人把裁切拆掉,矩形就會回到固定列上,這一條就紅。
+TEST(nothing_is_ever_drawn_on_the_bottom_fixed_bar) {
+  // 三種視窗:預設(捲軸吃掉 17 DIP 的那一份)、最小、很高的那一個。
+  const int sizes[][2] = {{kWindowDefaultW - 17, kWindowDefaultH},
+                          {kWindowDefaultW, kWindowDefaultH},
+                          {kWindowMinW, kWindowMinH},
+                          {kWindowDefaultW, 900}};
+  int scanned = 0, scrolled_pages = 0;
+  for (const auto& wh : sizes) {
+    const int W = wh[0], H = wh[1];
+    const int bar_top = H - kBottomBarH;
+    for (int page = 0; page < kPageCount; ++page) {
+      const int smax = ScrollMaxDip(page, W, H, PageState{});
+      if (smax > 0) ++scrolled_pages;
+      for (int scroll = 0; scroll <= smax; ++scroll) {
+        const int clip = ContentClipLineDip(H, scroll, smax);
+        for (const DrawnRect& d :
+             DrawnRectsDip(page, W, H, scroll, PageState{})) {
+          ++scanned;
+          const std::string where =
+              std::string(d.what) + " id=" + std::to_string(d.id) +
+              " page=" + std::to_string(page) + " scroll=" +
+              std::to_string(scroll) + " y=" + std::to_string(d.rect.y) +
+              ".." + std::to_string(d.rect.bottom());
+          // 1. 固定列那一帶不得有任何一塊(控制項或卡片)。
+          // ⚠ CHECK_MSG 的第二個引數只在**失敗時**才求值,所以上面那一句
+          //   字串是白花的 —— 但它讓紅字說得出是哪一頁、哪一顆、
+          //   在哪一個捲動位置,而查不出來的紅字會被當成雜訊然後被關掉。
+          CHECK_MSG(d.rect.bottom() <= bar_top,
+                    "畫在底部固定列上:" + where + "(固定列從 " +
+                        std::to_string(bar_top) + " 開始)");
+          // 2. 摺線上不得有被攔腰切開的**控制項**。
+          //    (卡片是刻意跨過去的 —— 淡出區把它接起來,見 kScrollFadeH。)
+          CHECK_MSG(d.is_card || d.rect.y >= clip || d.rect.bottom() <= clip,
+                    "被裁切線攔腰切開:" + where + "(裁切線 " +
+                        std::to_string(clip) + ")");
+        }
+      }
+    }
+  }
+  // ⚠ 掃描範圍不得是空的:上面那一圈一顆都沒走過的話,這一條會安靜地
+  //   全綠 —— 而那正是這一輪要消滅的形狀。
+  CHECK(scanned > 1000);
+  CHECK(scrolled_pages > 0);
+}
+
+// ── 那一條真的抓得到嗎:同一個版面,把裁切拿掉就必須紅 ──────────
+//
+// ⚠ 上面那一條斷言的是「沒有東西在固定列上」。一條**永遠不會紅**的
+//   斷言與一條守得住的斷言在 CI 上長得一模一樣,所以這裡把缺陷本身
+//   造出來:不裁,直接把每一顆控制項擺在 y − scroll 上(那正是
+//   2026-08-15 之前畫面上發生的事),然後要求它真的落在固定列上。
+TEST(the_bottom_bar_check_would_actually_catch_the_regression) {
+  const int W = kWindowDefaultW - 17, H = kWindowDefaultH;
+  const int bar_top = H - kBottomBarH;
+  int would_hit = 0;
+  for (int page = 0; page < kPageCount; ++page) {
+    const PageLayout pl = LayoutSettingsPageDip(page, W, PageState{});
+    for (const PlacedControl& p : pl.items) {
+      if (p.rect.empty()) continue;
+      // 不裁的那一版:rect 直接就是 {x, y - scroll, w, h}。
+      const RectI raw{p.rect.x, p.rect.y, p.rect.w, p.rect.h};
+      if (raw.y < H && raw.bottom() > bar_top) ++would_hit;
+    }
+  }
+  // 外觀頁的 IDC_SCALE_2、文字頁的 IDC_SHAPE_BLURB…… 至少兩顆。
+  CHECK(would_hit >= 2);
+}
+
 // ── W26:側欄清單與底部狀態區不可以重疊,兩行文字要放得下 ──────────
 //
 // 使用者實機回報:側欄底部那兩行「可以打字」「離線」是斷的,第一行被

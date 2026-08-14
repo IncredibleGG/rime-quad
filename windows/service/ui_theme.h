@@ -19,10 +19,25 @@
 //   對比守門一個都不會響,因為它們跑的是我們自己的 Palette,
 //   而那個顏色不在裡面。
 //
-//   開關列(BS_AUTOCHECKBOX)這一輪改成由我們用 NM_CUSTOMDRAW 重畫
-//   那一列的字(見 settings_window.cc 的 DrawSwitchRowText,
-//   守門是 check_ui_spec.sh 的 W49)。**單選鈕還沒有**,
-//   見 docs/ui-design.md §12.14.6.6 末段。
+//   ⚠ **2026-08-15 第二次更正:上一輪只補了核取方塊。**
+//     實機截圖(796×599)量出來,深色下讀不到字的那三個點
+//     (p1/p2 的 y=205、p4 的 y=397)**一個都不是核取方塊** ——
+//     它們是「一次顯示幾個字」「那個小窗的字大小」「打出繁體字還是
+//     簡體字」「這個視窗的語言」,全是 BS_AUTORADIOBUTTON 的群組,
+//     而它們的字色量出來仍然是 1.21:1。
+//
+//   現在核取方塊**與單選鈕**都由我們用 NM_CUSTOMDRAW 重畫那一列的字
+//   (見 settings_window.cc 的 WeDrawTheText / DrawRowButtonText)。
+//   判準不是「是不是開關列」,是**「底是我們畫的、字卻是系統畫的」**
+//   —— 那一組正好等於 BS_AUTOCHECKBOX ∪ BS_AUTORADIOBUTTON。
+//   push button 不在裡面而且不是漏掉:整顆按鈕(含底)都是 uxtheme
+//   畫的,字與底一致、讀得到。
+//
+//   守門是 check_ui_spec.sh 的 W49,而它這一輪也改了形狀:
+//   舊版守的是「每一顆 BS_AUTOCHECKBOX 都在名單裡」——**守判準**;
+//   新版把 kControls 裡每一顆會顯示文字的控制項分類,要求每一類的
+//   字色都有一個指得出來的、用 theme_ 的出處,而**第四類是紅的**。
+//   也就是說:下一次有人加一種新的控制項而忘了重畫它的字,它會紅。
 //
 // ⚠ **裁決:禁止使用 uxtheme.dll 的未公開序數 API**
 //   (SetPreferredAppMode / AllowDarkModeForWindow / ShouldAppsUseDarkMode /

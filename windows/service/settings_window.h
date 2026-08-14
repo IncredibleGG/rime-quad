@@ -179,9 +179,10 @@ class SettingsWindow {
   LRESULT DrawSidebar(NMLVCUSTOMDRAW* cd);
   LRESULT DrawSchemaList(NMLVCUSTOMDRAW* cd);
   LRESULT DrawNetLogList(NMLVCUSTOMDRAW* cd);
-  // 開關列(BS_AUTOCHECKBOX)的**字**由我們畫 —— uxtheme 畫的那一份
-  // 在深色下是 1.21:1。見 .cc 檔裡那一段。
-  LRESULT DrawSwitchRowText(NMCUSTOMDRAW* cd);
+  // 核取方塊(BS_AUTOCHECKBOX)**與單選鈕**(BS_AUTORADIOBUTTON)的
+  // **字**由我們畫 —— uxtheme 畫的那一份在深色下是 1.21:1,
+  // 而讀不到字的那三頁全是單選鈕。見 .cc 檔裡那一段。
+  LRESULT DrawRowButtonText(NMCUSTOMDRAW* cd);
   void DrawDangerButton(DRAWITEMSTRUCT* di);
 
   // ── §12.14.4:自己畫的每一塊都是圓角 ────────────────────────

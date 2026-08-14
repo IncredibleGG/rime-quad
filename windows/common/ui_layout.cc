@@ -442,11 +442,21 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
     card_top = -1;
   };
 
-  // ── 頁首與區段標題**不在卡片裡** ──────────────────────────────
+  // ── 頁標題在卡片外,區段標題在卡片**裡** ──────────────────────
   //
-  // Win11 的設定介面就是這個形狀:區段標題坐在卡片群組的上面,不在裡面。
-  // 它也讓說明文字拿到整個內容欄的寬度 —— 塞進卡片的話,每一段說明都會
-  // 少 32 DIP,而少的那一格會變成多一行,再變成一顆碰不到的按鈕(#76)。
+  // ⚠ 2026-08-15:區段標題以前浮在卡片**上面**。而 §12.14.6.9 的
+  //   action_card(進階頁的「重新整理字詞」與「檔案」、連網頁的
+  //   「清除紀錄」)這一輪已經把標題搬進卡片的左欄了 —— 於是同一個
+  //   視窗上出現兩種版面語言:三張卡的標題在裡面、另外十張浮在外面。
+  //   使用者的原話:「同一個視窗兩種語言。」
+  //
+  //   現在只剩一種:**區段標題一律在卡片裡**;卡片外面只有頁標題與
+  //   頁副標(那一格 Win11 也是這樣)。
+  //
+  // ⚠ 代價要說清楚:說明文字的量測寬度從 cw 變成 inner_w(少 32 DIP),
+  //   所以有幾段會多一行。#76 的根因**不是**這件事,而是「每一段各自
+  //   寫死行數」—— 行數現在是從字算出來的(EstimateTextLinesDip),
+  //   多一行會誠實地反映在 content_h_dip 與捲動範圍上。
   auto title_block = [&](int title_id, int sub_id, UiString sub) {
     // ⚠ 從 `t1 + s3`(28)改成 TextLineBoxDip(t1)(31)。§12.14.0 第 4 條:
     //   STATIC 是 SS_LEFT(頂端對齊)並且會裁切,短的那 3 DIP 是
@@ -456,21 +466,26 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
     emit(sub_id, st.Push(text_h(sub), space::s7), false, "page_subtitle",
          text_size::t5, lines_of(sub, cw), false);
   };
-  auto heading = [&](int head_id, int blurb_id, UiString blurb) {
+  // ⚠ **卡片裡的**區段標題。要在 card_begin() 之後、卡內第一列之前叫。
+  auto card_heading = [&](int head_id, int blurb_id, UiString blurb) {
     // ⚠ 同上:`t2 + s2`(19)→ TextLineBoxDip(t2)(22)。
-    emit(head_id, st.Push(TextLineBoxDip(text_size::t2), space::s1), false,
-         "section_heading", text_size::t2, 1, false);
-    if (blurb_id)
-      emit(blurb_id, st.Push(text_h(blurb), space::s3), false, "section_blurb",
-           text_size::t5, lines_of(blurb, cw), false);
+    emit(head_id, card_block(TextLineBoxDip(text_size::t2), space::s1), false,
+         "section_heading", text_size::t2, 1, true);
+    if (blurb_id) {
+      const int nl = lines_of(blurb, inner_w);
+      emit(blurb_id, card_block(nl * t5h, space::s3), false, "section_blurb",
+           text_size::t5, nl, true);
+    }
   };
   // 單選群組:一列一個(桌面欄的密度)。
   // ⚠ 每一顆的 id 都**寫出來**,不用 `first + i`。理由是守門:
   //   check_ui_spec.sh 的 W24 逐字比對這裡與 settings_window.cc 的
   //   kControls,而 `first + i` 讓一半的 id 在文字上不存在。
   // ⚠ 整列高從 kMinTarget(28)改成 kRowH(36)——§12.14.6.6 的表。
-  auto radios = [&](std::initializer_list<int> ids, const char* what) {
+  auto radios = [&](int head_id, int blurb_id, UiString blurb,
+                    std::initializer_list<int> ids, const char* what) {
     card_begin();
+    card_heading(head_id, blurb_id, blurb);
     int i = 0;
     const int n = static_cast<int>(ids.size());
     for (int id : ids) {
@@ -568,10 +583,10 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
     case kPageSchemas: {
       title_block(IDC_SCHEMAS_TITLE, IDC_SCHEMAS_SUB,
                   UiString::kSchemasSubtitle);
-      heading(IDC_SCHEMAS_LIST_HEAD, IDC_SCHEMAS_LIST_BLURB,
-              UiString::kSchemasListBlurb);
       const int list_h = 4 * metric::kRowH + space::s3;
       card_begin();
+      card_heading(IDC_SCHEMAS_LIST_HEAD, IDC_SCHEMAS_LIST_BLURB,
+                   UiString::kSchemasListBlurb);
       if (state.schema_list_empty) {
         hide(IDC_SCHEMA_LIST);
         hide(IDC_UP);
@@ -616,16 +631,16 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
     case kPageAppearance: {
       title_block(IDC_APPEAR_TITLE, IDC_APPEAR_SUB,
                   UiString::kAppearanceSubtitle);
-      heading(IDC_COUNT_HEAD, IDC_COUNT_BLURB, UiString::kCountBlurb);
-      radios({IDC_COUNT_0, IDC_COUNT_1, IDC_COUNT_2, IDC_COUNT_3, IDC_COUNT_4},
+      radios(IDC_COUNT_HEAD, IDC_COUNT_BLURB, UiString::kCountBlurb,
+             {IDC_COUNT_0, IDC_COUNT_1, IDC_COUNT_2, IDC_COUNT_3, IDC_COUNT_4},
              "cand_count_radio");
-      heading(IDC_SCALE_HEAD, IDC_SCALE_BLURB, UiString::kScaleBlurb);
-      radios({IDC_SCALE_0, IDC_SCALE_1, IDC_SCALE_2, IDC_SCALE_3, IDC_SCALE_4},
+      radios(IDC_SCALE_HEAD, IDC_SCALE_BLURB, UiString::kScaleBlurb,
+             {IDC_SCALE_0, IDC_SCALE_1, IDC_SCALE_2, IDC_SCALE_3, IDC_SCALE_4},
              "cand_scale_radio");
-      heading(IDC_THEME_HEAD, IDC_THEME_BLURB, UiString::kThemeBlurb);
-      radios({IDC_THEME_0, IDC_THEME_1, IDC_THEME_2}, "appearance_radio");
-      heading(IDC_BAR_HEAD, IDC_BAR_BLURB, UiString::kStatusBarBlurb);
+      radios(IDC_THEME_HEAD, IDC_THEME_BLURB, UiString::kThemeBlurb,
+             {IDC_THEME_0, IDC_THEME_1, IDC_THEME_2}, "appearance_radio");
       card_begin();
+      card_heading(IDC_BAR_HEAD, IDC_BAR_BLURB, UiString::kStatusBarBlurb);
       emit(IDC_BAR_SHOW, card_row(metric::kRowH, 0), true, "status_bar_switch",
            text_size::t3, 1, true);
       card_end(space::s7);
@@ -636,16 +651,17 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
     }
     case kPageText: {
       title_block(IDC_TEXT_TITLE, IDC_TEXT_SUB, UiString::kTextSubtitle);
-      heading(IDC_VARIANT_HEAD, IDC_VARIANT_BLURB, UiString::kVariantBlurb);
-      radios({IDC_VARIANT_0, IDC_VARIANT_1, IDC_VARIANT_2}, "variant_radio");
-      heading(IDC_PUNCT_HEAD, IDC_PUNCT_BLURB, UiString::kPunctBlurb);
-      radios({IDC_PUNCT_0, IDC_PUNCT_1, IDC_PUNCT_2}, "punct_radio");
+      radios(IDC_VARIANT_HEAD, IDC_VARIANT_BLURB, UiString::kVariantBlurb,
+             {IDC_VARIANT_0, IDC_VARIANT_1, IDC_VARIANT_2}, "variant_radio");
+      radios(IDC_PUNCT_HEAD, IDC_PUNCT_BLURB, UiString::kPunctBlurb,
+             {IDC_PUNCT_0, IDC_PUNCT_1, IDC_PUNCT_2}, "punct_radio");
       // 全／半形(G70)。⚠ 擺在標點**後面**、輕點 Shift 前面。
-      heading(IDC_SHAPE_HEAD, IDC_SHAPE_BLURB, UiString::kShapeBlurb);
-      radios({IDC_SHAPE_0, IDC_SHAPE_1, IDC_SHAPE_2}, "shape_radio");
+      radios(IDC_SHAPE_HEAD, IDC_SHAPE_BLURB, UiString::kShapeBlurb,
+             {IDC_SHAPE_0, IDC_SHAPE_1, IDC_SHAPE_2}, "shape_radio");
       // 輕點 Shift 切中英(#89)。
-      heading(IDC_SHIFTTAP_HEAD, IDC_SHIFTTAP_BLURB, UiString::kShiftTapBlurb);
       card_begin();
+      card_heading(IDC_SHIFTTAP_HEAD, IDC_SHIFTTAP_BLURB,
+                   UiString::kShiftTapBlurb);
       emit(IDC_SHIFTTAP_SWITCH, card_row(metric::kRowH, 0), true,
            "shift_tap_switch", text_size::t3, 1, true);
       card_end(space::s7);
@@ -677,8 +693,8 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
       // ── 更新 ──────────────────────────────────────────────
       //
       // ⚠ IDC_UPDATE_TRUST(沒有數位簽章那一句)排在**按鈕之前**。
-      heading(IDC_UPDATE_HEAD, IDC_UPDATE_BLURB, UiString::kUpdateBlurb);
       card_begin();
+      card_heading(IDC_UPDATE_HEAD, IDC_UPDATE_BLURB, UiString::kUpdateBlurb);
       {
         const int nl = lines_of(UiString::kUpdateTrustAnchor, inner_w);
         emit(IDC_UPDATE_TRUST, card_block(nl * t5h, space::s3), false,
@@ -699,12 +715,12 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
                    0);
       card_end(space::s7);
 
-      heading(IDC_NETLOG_HEAD, IDC_NETLOG_BLURB, UiString::kNetLogBlurb);
       if (state.net_log_empty) {
         hide(IDC_NETLOG_SUMMARY);
         hide(IDC_NETLOG_COLS);
         hide(IDC_NETLOG_LIST);
         card_begin();
+        card_heading(IDC_NETLOG_HEAD, IDC_NETLOG_BLURB, UiString::kNetLogBlurb);
         // §4.7 的空狀態:為什麼是空的、這是不是正常。
         emit(IDC_NETLOG_EMPTY, card_block(t5h * 4, space::s3), false,
              "empty_state", text_size::t5, 4, true);
@@ -721,6 +737,7 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
       } else {
         hide(IDC_NETLOG_EMPTY);
         card_begin();
+        card_heading(IDC_NETLOG_HEAD, IDC_NETLOG_BLURB, UiString::kNetLogBlurb);
         emit(IDC_NETLOG_SUMMARY, card_block(t5h, space::s3), false, "log_count",
              text_size::t5, 1, true);
         emit(IDC_NETLOG_COLS, card_block(t5h, space::s2), false, "log_columns",
@@ -752,11 +769,11 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
                   {{IDC_OPEN_USER_DIR, "open_user_dir"},
                    {IDC_OPEN_SETTINGS_FILE, "open_settings_file"}},
                   space::s7);
-      heading(IDC_LANG_HEAD, IDC_LANG_BLURB, UiString::kLanguageBlurb);
-      radios({IDC_LANG_0, IDC_LANG_1, IDC_LANG_2, IDC_LANG_3},
+      radios(IDC_LANG_HEAD, IDC_LANG_BLURB, UiString::kLanguageBlurb,
+             {IDC_LANG_0, IDC_LANG_1, IDC_LANG_2, IDC_LANG_3},
              "ui_language_radio");
-      heading(IDC_DIAG_HEAD, IDC_DIAG_NOTE, UiString::kDiagnosticsNote);
       card_begin();
+      card_heading(IDC_DIAG_HEAD, IDC_DIAG_NOTE, UiString::kDiagnosticsNote);
       emit(IDC_DIAG, card_block(t5h * 6, space::s3), true, "diagnostics_edit",
            0, 0, true);
       card_buttons({{IDC_DIAG_COPY, "diagnostics_copy"}}, 0);
@@ -815,7 +832,46 @@ ScrolledPlacement ScrollPlaceControlDip(const RectI& content_rect,
   //   而「還有更多」由淡出區(kScrollFadeH)與捲軸去說。
   if (!content_rect.empty() && p.y_dip + content_rect.h > clip_line_dip)
     p.clip_h_dip = 0;
+  // ⚠ 「不畫」是一個**尺寸**,不是一個 Win32 區域。見 ui_layout.h 的
+  //   ScrolledPlacement::rect:空矩形畫不出東西是幾何,而幾何量得到。
+  p.rect = RectI{content_rect.x, p.y_dip,
+                 p.clip_h_dip == 0 ? 0 : content_rect.w,
+                 p.clip_h_dip == 0 ? 0 : content_rect.h};
   return p;
+}
+
+// ── 畫面上真的畫得出來的每一塊 ──────────────────────────────────
+std::vector<DrawnRect> DrawnRectsDip(int page, int window_w_dip,
+                                     int window_h_dip, int scroll_dip,
+                                     PageState state) {
+  std::vector<DrawnRect> out;
+  const PageLayout pl = LayoutSettingsPageDip(page, window_w_dip, state);
+  const int vp = ContentViewportHeightDip(window_h_dip);
+  const int smax = std::max(0, pl.content_h_dip - vp);
+  int scroll = scroll_dip;
+  if (scroll > smax) scroll = smax;
+  if (scroll < 0) scroll = 0;
+  const int clip = ContentClipLineDip(window_h_dip, scroll, smax);
+
+  // 卡片:父視窗自己畫,裁在可視高度上。⚠ 這一句與
+  //   service/settings_window.cc::OnPaint() 的
+  //   `IntersectClipRect(hdc, sb, 0, W, viewport_h)` 是**同一件事**;
+  //   寫在這裡是為了讓它量得到。
+  for (const CardRect& c : pl.cards) {
+    const int top = std::max(0, c.rect.y - scroll);
+    const int bot = std::min(c.rect.y - scroll + c.rect.h, vp);
+    if (bot <= top) continue;
+    out.push_back(DrawnRect{0, true, "card",
+                            RectI{c.rect.x, top, c.rect.w, bot - top}});
+  }
+  // 控制項:子視窗,由 ScrollPlaceControlDip() 決定畫不畫。
+  for (const PlacedControl& p : pl.items) {
+    if (p.rect.empty()) continue;
+    const ScrolledPlacement sp = ScrollPlaceControlDip(p.rect, scroll, clip);
+    if (sp.rect.empty()) continue;
+    out.push_back(DrawnRect{p.id, false, p.what, sp.rect});
+  }
+  return out;
 }
 
 std::vector<HitTarget> ClickableTargetsDip(int window_w_dip, int window_h_dip,
