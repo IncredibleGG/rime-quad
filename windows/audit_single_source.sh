@@ -606,6 +606,195 @@ print('   換方案的簡繁來源:設定檔 → OnDiskPref、引擎複本 → E
       '兩格都沒包反')
 PY_VARIANT_PICK_ARGS
 
+  # ── 規則 6:那一橫的「在場」訊號必須接在 activation 上 ─────────────
+  #
+  # 守的是工單 #82 的另一半,而它與規則 4 是同一個形狀:**判準有人守,
+  # 訊號沒有。** 那一橫顯不顯示的判準是純函式(common/bar_visibility.cc,
+  # tests/test_bar_visibility.cc 九支測試),但判準吃的
+  # active_clients 從哪裡來 —— 也就是「使用者切回輸入法之後,服務端到底
+  # 有沒有多一條連線」—— 在這一條加進來之前**沒有任何東西看得到**:
+  #
+  #   grep -rn "OnClientAttached|OnClientDetached|ClientTicket|
+  #             StartServiceInBackground" windows/**.sh windows/**.yml
+  #             .github/ 與所有測試   → 空的
+  #
+  # 症狀(使用者實機回報):切了一下輸入法,狀態欄整個不見了,再也不出現
+  # —— 因為 Deactivate 會 ipc_.Close()、OnActivated 也會關,而 ActivateEx
+  # 只 StartServiceInBackground(),不連線;唯一推得回去的 EnsureReady()
+  # 三個呼叫點全部在按鍵路徑上。
+  #
+  # ⚠ 這一條**不能**用 grep 名字了事:text_service.cc 的註解裡到處都是
+  #   PresenceLink 這幾個字。與規則 4 同一個判準 —— 先遮掉註解與字串,
+  #   再**分函式**看。
+  #
+  # ⚠ 為什麼連「ActivateEx 裡不可以有 EnsureReady(」也守:那是最像對的
+  #   修法,而它會把開管道與握手搬到**宿主的 UI 執行緒**上等
+  #   (text_service.cc 那一段註解拒絕它的理由),症狀是每一次
+  #   Win+空白鍵切輸入法都卡一下。編得過、測試全綠、沒有任何訊號。
+  if ! python3 - "${root}" <<'PY_BAR_PRESENCE_WIRING'; then bad=1; fi
+import os
+import re
+import sys
+
+root = sys.argv[1]
+path = os.path.join(root, 'windows', 'tsf', 'text_service.cc')
+hdr_path = os.path.join(root, 'windows', 'tsf', 'text_service.h')
+
+
+def mask(s):
+    """把註解與字串字面值換成空白(長度不變,行號還對得上)。"""
+    out = list(s)
+    i, n = 0, len(s)
+    while i < n:
+        c = s[i]
+        if c == '/' and i + 1 < n and s[i + 1] == '/':
+            while i < n and s[i] != '\n':
+                out[i] = ' '
+                i += 1
+            continue
+        if c == '/' and i + 1 < n and s[i + 1] == '*':
+            while i + 1 < n and not (s[i] == '*' and s[i + 1] == '/'):
+                if s[i] != '\n':
+                    out[i] = ' '
+                i += 1
+            for _ in range(2):
+                if i < n:
+                    out[i] = ' '
+                    i += 1
+            continue
+        if c == '"' or c == "'":
+            q = c
+            i += 1
+            while i < n:
+                if s[i] == '\\' and i + 1 < n:
+                    out[i] = out[i + 1] = ' '
+                    i += 2
+                    continue
+                if s[i] == q:
+                    i += 1
+                    break
+                if s[i] != '\n':
+                    out[i] = ' '
+                i += 1
+            continue
+        i += 1
+    return ''.join(out)
+
+
+bad = []
+for p in (path, hdr_path):
+    if not os.path.isfile(p):
+        print('!! 找不到 %s —— 規則 6 沒有東西可守' % p, file=sys.stderr)
+        raise SystemExit(1)
+src = mask(open(path, encoding='utf-8').read())
+hdr = mask(open(hdr_path, encoding='utf-8').read())
+
+funcs = []   # (名字, 簽章文字, 本體)
+for m in re.finditer(r'^[A-Za-z_][^\n;(){}]*TextService::(\w+)\(', src, re.M):
+    i = src.index('(', m.end() - 1)
+    depth = 0
+    while i < len(src):
+        if src[i] == '(':
+            depth += 1
+        elif src[i] == ')':
+            depth -= 1
+            if depth == 0:
+                break
+        i += 1
+    b = src.find('{', i)
+    if b < 0:
+        continue
+    depth = 0
+    j = b
+    while j < len(src):
+        if src[j] == '{':
+            depth += 1
+        elif src[j] == '}':
+            depth -= 1
+            if depth == 0:
+                break
+        j += 1
+    funcs.append((m.group(1), src[m.start():b], src[b:j + 1]))
+
+if not funcs:
+    print('!! text_service.cc 裡一個 TextService:: 函式都沒切出來 —— '
+          '規則 6 的切法壞了,不當成通過', file=sys.stderr)
+    raise SystemExit(2)
+
+
+def body_of(name, what):
+    hits = [f for f in funcs if f[0] == name]
+    if len(hits) != 1:
+        bad.append('找不到(或找到 %d 個)%s —— 規則 6 對不上這一格了,'
+                   '不是「沒有違規」' % (len(hits), what))
+        return None
+    return hits[0][2]
+
+
+START_RE = re.compile(r'\bPresenceLink\s*::\s*Start\s*\(\s*\)')
+STOP_RE = re.compile(r'\bpresence_\s*->\s*Stop\s*\(\s*\)')
+
+# ── 分母:從程式碼數出來的。掃到 0 個是紅,不是「0 個違規」──────────
+n_start = len(START_RE.findall(src))
+n_stop = len(STOP_RE.findall(src))
+if n_start != 1:
+    bad.append('text_service.cc 裡有 %d 處 PresenceLink::Start()(註解不算)'
+               ' —— 應該剛好 1 處。0 處 = 那一橫的訊號整條不存在:切回'
+               '輸入法之後 clients_ 是 0,使用者要按下第一顆鍵才看得到它。'
+               % n_start)
+if n_stop != 1:
+    bad.append('text_service.cc 裡有 %d 處 presence_->Stop()(註解不算)'
+               ' —— 應該剛好 1 處。0 處 = **#82 原缺陷復活**:切走輸入法'
+               '之後那條連線還開著,那一橫永遠藏不起來。' % n_stop)
+
+# ── 而且要在**該在的那兩個函式**裡 ────────────────────────────────
+act = body_of('ActivateEx', 'ITfTextInputProcessorEx::ActivateEx')
+if act is not None:
+    if len(START_RE.findall(act)) != 1:
+        bad.append('ActivateEx 裡沒有 PresenceLink::Start() —— 訊號沒有接在'
+                   '「使用者切到這個輸入法」這件事上。接在別的地方(例如'
+                   '第一顆按鍵)就是這個缺陷本身。')
+    # ⚠ 最像對、而且**不可以**的那個修法。
+    if re.search(r'\bEnsureReady\s*\(', act):
+        bad.append('ActivateEx 裡出現了 EnsureReady( —— 開管道與握手會在'
+                   '**宿主的 UI 執行緒**上等,每一次 Win+空白鍵切輸入法都會'
+                   '卡一下。理由見 ActivateEx 裡那一段註解與 PresenceLink 的'
+                   '檔頭:在場連線要走自己的背景執行緒。')
+
+deact = body_of('Deactivate', 'ITfTextInputProcessor::Deactivate')
+if deact is not None and len(STOP_RE.findall(deact)) != 1:
+    bad.append('Deactivate 裡沒有 presence_->Stop() —— 切走輸入法之後那條'
+               '在場連線還開著,服務端的 clients_ 不會歸零,那一橫**常駐'
+               '在螢幕上**。那正是使用者上一次回報的缺陷(#82)。')
+
+# ── 成員宣告在不在 ───────────────────────────────────────────────
+if not re.search(r'PresenceLink\s*\*\s*presence_', hdr):
+    bad.append('text_service.h 裡沒有 PresenceLink* presence_ —— 上面那兩格'
+               '就沒有東西可守了')
+
+# ── 提權宿主那道閘只有一個入口 ───────────────────────────────────
+#
+# ⚠ 在場連線那條路**只准 CreateFileW,不准啟動服務**:啟動會產生一支
+#   與使用者日常身分不同的服務(common/elevation_policy.h),而那道閘
+#   住在 LaunchService() 裡。這裡守的是「它沒有長出第二個呼叫點」。
+n_launch = len(re.findall(r'\bLaunchService\s*\(', src))
+if n_launch != 1:
+    bad.append('text_service.cc 裡有 %d 處 LaunchService((註解不算)—— '
+               '應該剛好 1 處,而且是 ServiceStarterThread 那一處。'
+               '在場連線那條路只准連,不准啟動:提權宿主那道閘'
+               '(MayStartUserService)在 LaunchService 裡。' % n_launch)
+
+for b in bad:
+    print('!! ' + b, file=sys.stderr)
+if bad:
+    print('!! 那一橫的在場訊號稽核失敗:%d 項。判準在 common/bar_visibility.cc'
+          '(九支測試),訊號只有這一條與 verify_tsf.sh 的 --watch-presence '
+          '守得到。' % len(bad), file=sys.stderr)
+    raise SystemExit(1)
+print('   那一橫的在場訊號:ActivateEx 起、Deactivate 收,各 1 處;'
+      'ActivateEx 裡沒有 EnsureReady(;LaunchService( 仍然只有 1 個呼叫點')
+PY_BAR_PRESENCE_WIRING
+
   return "${bad}"
 }
 
@@ -623,7 +812,10 @@ if [ "${1:-}" = "--self-check" ]; then
                shift_tap_no_edit_sink_advise \
                shift_tap_edit_sink_never_attached \
                variant_pick_swapped_sources \
-               variant_pick_settings_always_unreadable; do
+               variant_pick_settings_always_unreadable \
+               presence_no_start presence_never_closed \
+               presence_ensure_ready_in_activate \
+               presence_launches_service; do
     tmp="$(mktemp -d)"
     mkdir -p "${tmp}/windows/service" "${tmp}/windows/tsf"
     cp "${ROOT_DEFAULT}/windows/service/main.cc" \
@@ -702,6 +894,29 @@ if [ "${1:-}" = "--self-check" ]; then
         sed -i -e 's|^\([[:space:]]\+\)WatchFocusedContext();|\1// WatchFocusedContext();|' \
                -e 's|^\([[:space:]]\+\)WatchContextOf(|\1// WatchContextOf(|' \
           "${tmp}/windows/tsf/text_service.cc" ;;
+
+      # ── 規則 6 的四個(那一橫的訊號)───────────────────────────
+      #
+      # ⚠ 前兩個是這一輪那個缺陷的**兩個方向**,而且兩邊都真的發生過:
+      #   少了 Start = 使用者這一次回報的(切回來那一橫不見了);
+      #   少了 Stop  = 上一次回報的(#82:切走了還常駐)。
+      #   兩個都是「編得過、九支純函式測試照樣全綠」。
+      presence_no_start)
+        sed -i 's|^\([[:space:]]*\)presence_ = PresenceLink::Start();|\1// presence_ = PresenceLink::Start();|' \
+          "${tmp}/windows/tsf/text_service.cc" ;;
+      presence_never_closed)
+        sed -i '/^[[:space:]]*presence_->Stop();$/d' \
+          "${tmp}/windows/tsf/text_service.cc" ;;
+      # 最像對、而且**不可以**的那個修法:直接在 ActivateEx 上連線。
+      # 它會過上面兩條(Start / Stop 都還在),而症狀是每一次切輸入法
+      # 都在宿主的 UI 執行緒上等一次開管道 + 握手。
+      presence_ensure_ready_in_activate)
+        sed -i 's|^\([[:space:]]*\)StartServiceInBackground(service_path_);|\1StartServiceInBackground(service_path_);\n\1ipc_.EnsureReady();|' \
+          "${tmp}/windows/tsf/text_service.cc" ;;
+      # 在場連線那條路自己去啟動服務 = 繞過提權宿主那道閘。
+      presence_launches_service)
+        echo 'static bool oops() { return rimewin::LaunchService(L"x"); }' \
+          >> "${tmp}/windows/tsf/text_service.cc" ;;
 
       # ── 規則 5 的兩個 ──────────────────────────────────────────
       #

@@ -248,6 +248,11 @@ else
   # 沒有服務與詞庫的環境。仍然送按鍵,因為**送了才驗得到 keysym 那一段**
   # (使用者撞到的正是它);只是不要求被吃掉。
   HOST_ARGS+=(--keys ni)
+  # ⚠ 那一橫的「在場」訊號 —— 只在這一邊。--full 那一邊有一支**真的**
+  #   服務佔著同一條具名管道,假宿主的 FIRST_PIPE_INSTANCE 會被
+  #   ACCESS_DENIED 擋掉,而那是環境的事、不是產品的事。
+  #   這裡沒有服務,所以這支假宿主就是那條管道唯一的伺服器。
+  HOST_ARGS+=(--watch-presence)
 fi
 set +e
 "${HOST}" "${HOST_ARGS[@]}" > "${WORK}/host-after.log" 2>&1
@@ -367,6 +372,54 @@ case "${after}" in
     ok "ActivateEx 被呼叫了(這一格從本輪之前一直是紙上的)" ;;
   *) note_fail "ActivateEx **沒有**被呼叫" ;;
 esac
+
+# ── ⚠ ActivateEx 之後、**任何按鍵之前**,服務端有沒有連線 ──────────
+#
+# 上面那一條走到「ActivateEx 被呼叫了」就停手,而那正是這一輪使用者撞到
+# 的那一格的**上一格**:他切了一下輸入法,狀態欄整個不見了。
+#
+# 那一橫顯不顯示,服務端的判準等價於「至少有一條具名管道連線開著」
+# (service/status_bar.cc 的 clients_,由 pipe_server.cc 的 ClientTicket
+# 一條連線一張票)。判準守得很滿 —— tests/test_bar_visibility.cc 九支,
+# 其中一支就是「第一個宿主連上來 → 立刻顯示」。
+#
+# ⚠ **守的是判準,不是訊號。**
+#     grep -rn "OnClientAttached|OnClientDetached|ClientTicket|
+#               StartServiceInBackground" windows/**.sh windows/**.yml
+#               .github/ 與所有測試
+#   在這一條加進來之前回傳的是**空的**。也就是說「activation 會不會開出
+#   一條連線」從來沒有被任何自動化問過,而那一格斷掉的長相就是使用者
+#   回報的那一句。
+#
+# rime_tsf_host 的 --watch-presence 在 ActivateProfile **之前**自己把那條
+# 具名管道接管,然後在送出第一顆按鍵之前數連線數。⚠ 位置就是斷言本身:
+# 第一顆按鍵的 EnsureReady() 本來就會開一條,放到按鍵之後數等於什麼都沒問。
+if [ "${FULL}" -eq 0 ]; then
+  case "${after}" in
+    *"PRESENCE_STUB=ok"*)
+      n_presence="$(printf '%s\n' "${after}" \
+                    | sed -n 's/^ *PRESENCE_CLIENTS_BEFORE_KEYS=//p' | head -1)"
+      if [ "${n_presence:-0}" -ge 1 ] 2>/dev/null; then
+        ok "ActivateEx 之後、第一顆按鍵之前,服務端已經有 ${n_presence} 條連線"
+        echo "    (那一橫的訊號是**啟用**而不是**按鍵** —— #82 的另一半)"
+      else
+        note_fail "ActivateEx 過了,而服務端**一條連線都沒有**(${n_presence:-?})。
+     那一橫要等使用者按下第一顆鍵才會出現:clients_ 是 0,而唯一推得回去的
+     IpcClient::EnsureReady() 三個呼叫點全部在按鍵路徑上。
+     要補的是 tsf/text_service.cc 的 ActivateEx —— 見那裡的 PresenceLink。"
+      fi ;;
+    *"PRESENCE_STUB=unavailable"*)
+      note_fail "假宿主架不起那條具名管道,這一格什麼都沒驗到。
+     err=5(ACCESS_DENIED)= 這台機器上有一支**真的**服務佔著同一個名字;
+     快速 job 裡不該有服務(logic 那一組刻意不產 rime_service.exe)。" ;;
+    *)
+      note_fail "rime_tsf_host 沒有印 PRESENCE_STUB= —— 它不認得 --watch-presence,
+     或那一段根本沒被走到。這不是「沒有違規」,是**這一條沒有在驗**。" ;;
+  esac
+else
+  echo "  · --full:那條具名管道由**真的**服務佔著,假宿主接管不了 ——"
+  echo "    在場連線這一條只在快速 job 那一邊驗(見上面 HOST_ARGS 的 ⚠)。"
+fi
 
 # ── keysym 那一段 ────────────────────────────────────────────────
 #

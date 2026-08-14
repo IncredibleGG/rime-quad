@@ -28,6 +28,10 @@
 namespace rimewin {
 
 class LangBarButton;
+// 那一橫的「在場」連線。實作整個住在 text_service.cc(它要 g_rime_dll_refs,
+// 而那個符號只存在於 rime_tsf.dll —— ipc_client.cc 還被 rime_ime_setup 與
+// rime_probe 連結,把它放進去會讓那兩支連不起來)。
+class PresenceLink;
 
 class TextService : public ITfTextInputProcessorEx,
                     public ITfThreadMgrEventSink,
@@ -182,6 +186,15 @@ class TextService : public ITfTextInputProcessorEx,
   bool engine_composing_ = false;
 
   IpcClient ipc_;
+  // 「這個文字服務現在是啟用中的」那一條會維持的訊號(工單 #82 的另一半)。
+  //
+  // ⚠ 它**不是** ipc_ 的第二個用途:它有自己的執行緒、自己的管道 handle,
+  //   一個位元都不碰 ipc_。ipc_ 仍然只由宿主的 UI 執行緒碰,沒有鎖 ——
+  //   那是 ipc_client.h 檔頭那條規矩,這一輪一個字都沒有動它。
+  //
+  // nullptr = 沒起來(建不出事件或執行緒)。那時行為退回這一版之前:
+  //   那一橫要等使用者按下第一顆鍵才出現。不是致命的,所以不吵。
+  PresenceLink* presence_ = nullptr;
   // 服務執行檔的完整路徑(與 DLL 同目錄)。空字串 = 算不出來。
   std::wstring service_path_;
   // 每個 HKL 一個 oracle。使用者切換鍵盤佈局時重建。

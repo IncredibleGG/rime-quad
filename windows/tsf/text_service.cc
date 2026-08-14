@@ -194,6 +194,206 @@ HRESULT RunSyncSession(ITfContext* ctx, TfClientId id, FnEditSession::Fn fn) {
 
 }  // namespace
 
+// ── 那一橫的「在場」連線(工單 #82 的另一半)────────────────────────
+//
+// ══ 缺的是哪一條訊號 ═══════════════════════════════════════════════
+//
+// 服務端決定那一橫顯不顯示的唯一出口是 service/status_bar.cc:190 的
+// ShowWindow,而它的輸入是 EvaluateVisibility() 餵給 BarVisibility::Feed()
+// 的 active_clients —— 也就是 StatusBar::clients_。clients_ 全樹只有兩支
+// 寫入(OnClientAttached / OnClientDetached),而呼叫它們的只有
+// service/pipe_server.cc 的 ClientTicket:**一條具名管道連線一張票**。
+//
+// 也就是說判準等價於「至少有一條連線開著」。而在這個檔案裡,連線的訊號
+// 一直是**不對稱**的:
+//
+//   切走輸入法            Deactivate()  → ipc_.Close()        關掉
+//   在兩份 profile 之間切  OnActivated() → ipc_.SetProfile()   也關掉
+//   切回來                ActivateEx()  → 什麼都不連          不開
+//
+// 唯一能把 clients_ 推回 1 的是 IpcClient::EnsureReady(),而它全樹只有
+// 三個呼叫點,**三個都在按鍵路徑上**。結果:使用者切回輸入法之後,
+// 那一橫要等他按下第一顆鍵才出現 —— 而他回報的是
+// 「切換了一下輸入法,狀態欄整個不見了,再也不出現」。
+//
+// ══ 為什麼不是把 EnsureReady() 搬進 ActivateEx ═════════════════════
+//
+// 見 ActivateEx 裡那一段:開管道與握手要在**宿主的 UI 執行緒**上等,
+// 那會讓切換輸入法卡住。那個理由今天仍然成立,這一輪一個字都沒有動它。
+//
+// ══ 這裡的做法(四條出路裡的丁)═══════════════════════════════════
+//
+// 一條**專用的、只為了在場**的連線:自己的背景執行緒、自己的管道 handle,
+// 從 ActivateEx 開到 Deactivate 才關。
+//
+//   · 按鍵那條熱路徑一個字都不用動。ipc_ 仍然只被宿主的 UI 執行緒碰,
+//     **不需要鎖**(甲)、**不需要交棒**(乙)。#93 正在講按鍵的等待
+//     沒有上限,往那條路上再加一把鎖是往反方向走。
+//   · 連線**一直開著**,不是短連一次就關(丙)—— 丙只會讓 clients_
+//     走 0→1→0,三秒之後那一橫又不見了。
+//
+// ══ 動手之前確認過的兩件事 ═════════════════════════════════════════
+//
+// 1. **同一個宿主可以有多條並行連線。** service/pipe_server.cc 的
+//    CreateInstance() 用 PIPE_UNLIMITED_INSTANCES,ListenLoop 每接到一條
+//    就 emplace 一條 ServeClient 執行緒、然後立刻再建一個實例;
+//    整支伺服器沒有任何一處以宿主進程做識別或去重。
+//    打字時 clients_ 會是 2(在場一條 + 按鍵一條)—— 判準是 > 0,沒差,
+//    而 clients_ 全樹只有 EvaluateVisibility 一個消費者。
+//
+// 2. **這條連線不必建 session,也不必握手。** ServeClient 的第一個敘述
+//    就是 ClientTicket 的建構(pipe_server.cc:464),那在讀第一個位元組
+//    之前 —— 連上就已經加一了。伺服器也不會把閒著的連線踢掉:
+//    那裡的讀是 WaitOverlapped(..., INFINITE),只有停止事件與連線本身
+//    斷掉叫得醒它;「HELLO 之前不接受任何其他訊息」那道閘要**收到訊息**
+//    才會動,而我們一則都不送。
+//    省下來的不只是麻煩:SESSION_NEW 要跑引擎佇列(量到 442~753 毫秒)。
+//
+// ⚠ **這條路不可以啟動服務。** 啟動走 StartServiceInBackground(),
+//   提權宿主那道閘(common/elevation_policy.h 的 MayStartUserService)
+//   在那裡。這裡從頭到尾只有 CreateFileW:服務不在就連不上,連不上就等。
+//
+// ⚠ 生命週期:Deactivate() **不等**這條執行緒(它跑在宿主的 UI 執行緒上)。
+//   物件自己數參考 —— Stop() 設事件並放掉一份,執行緒退出時放掉另一份,
+//   後放的那個負責釋放自己。整段期間抓著 g_rime_dll_refs,
+//   理由與上面 ServiceStarterThread 那一段完全相同。
+//
+// ⚠ 因此 Stop() 回來之後,那條連線還可能活著幾毫秒(執行緒要先醒過來)。
+//   那沒有問題:隱藏本來就有 3000 毫秒的遲滯(common/bar_visibility.h),
+//   而 CancelIoEx 讓「醒過來」是立刻的事。
+class PresenceLink {
+ public:
+  // 回 nullptr = 起不來。呼叫端不必處理,那只是退回這一版之前的行為。
+  static PresenceLink* Start() {
+    PresenceLink* p = new (std::nothrow) PresenceLink();
+    if (!p) return nullptr;
+    p->stop_ = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!p->stop_) {
+      delete p;
+      return nullptr;
+    }
+    p->refs_ = 2;  // 一份給呼叫端,一份給執行緒
+    ::InterlockedIncrement(&g_rime_dll_refs);
+    HANDLE th = ::CreateThread(nullptr, 0, &PresenceLink::ThreadMain, p, 0,
+                               nullptr);
+    if (!th) {
+      ::InterlockedDecrement(&g_rime_dll_refs);
+      p->refs_ = 1;
+      p->Release();
+      return nullptr;
+    }
+    ::CloseHandle(th);
+    return p;
+  }
+
+  // ⚠ **不等執行緒。** 這是在宿主的 UI 執行緒上被呼叫的。
+  void Stop() {
+    ::SetEvent(stop_);
+    Release();
+  }
+
+ private:
+  // 連不上時的兩段式重試。
+  //
+  // 前 30 次一秒一次:使用者剛切過來,服務可能正被 StartServiceInBackground
+  // 拉起來,早一秒連上就是早一秒看得到那一橫。之後放慢到五秒 ——
+  // 首次部署要編詞庫,那是好幾分鐘,這條執行緒在那段期間應該安靜。
+  // ⚠ 沒有上限:服務被更新程式重啟過之後也要自己接回來(工單 #73 的形狀)。
+  static const DWORD kRetryFastMs = 1000;
+  static const DWORD kRetrySlowMs = 5000;
+  static const int kFastTries = 30;
+
+  PresenceLink() = default;
+  ~PresenceLink() {
+    if (stop_) ::CloseHandle(stop_);
+  }
+
+  PresenceLink(const PresenceLink&) = delete;
+  PresenceLink& operator=(const PresenceLink&) = delete;
+
+  void Release() {
+    if (::InterlockedDecrement(&refs_) == 0) delete this;
+  }
+
+  static DWORD WINAPI ThreadMain(LPVOID param) {
+    PresenceLink* self = static_cast<PresenceLink*>(param);
+    self->Run();
+    self->Release();
+    ::InterlockedDecrement(&g_rime_dll_refs);
+    return 0;
+  }
+
+  void Run() {
+    const std::wstring name = RimePipeName();
+    // overlapped 的事件整條執行緒共用一個:一次只掛一個 I/O。
+    HANDLE io = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    int misses = 0;
+    int traced = 0;
+    while (::WaitForSingleObject(stop_, 0) != WAIT_OBJECT_0) {
+      // ⚠ 只連,不啟動 —— 見上面那一段 ⚠。
+      HANDLE pipe = ::CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE,
+                                  0, nullptr, OPEN_EXISTING,
+                                  FILE_FLAG_OVERLAPPED, nullptr);
+      if (pipe == INVALID_HANDLE_VALUE) {
+        // ⚠ 有預算。連不上是常態(服務還在部署),而每一行都是磁碟寫入。
+        if (traced < 2) {
+          ++traced;
+          Trace("在場連線:連不上(err=%lu)—— 等服務出現",
+                static_cast<unsigned long>(::GetLastError()));
+        }
+        ++misses;
+        const DWORD pause = misses <= kFastTries ? kRetryFastMs : kRetrySlowMs;
+        if (::WaitForSingleObject(stop_, pause) == WAIT_OBJECT_0) break;
+        continue;
+      }
+      misses = 0;
+      traced = 0;
+      // ⚠ 這一行是 CI 唯一看得到「在場連線真的建立了」的地方之一
+      //   (另一個是 tests/tsf_host_main.cc 的 --watch-presence,
+      //   它從**服務端**數)。
+      Trace("在場連線:已連上 —— 那一橫從現在起看得到這個宿主");
+      WaitUntilBroken(pipe, io);
+      // ⚠ 這一行就是 #82 的「切走之後那一橫必須消失」:關掉 →
+      //   服務端那條 ServeClient 讀到 0 位元組 → ClientTicket 解構
+      //   → OnClientDetached → clients_ 減一。
+      ::CloseHandle(pipe);
+      Trace("在場連線:已關閉");
+    }
+    if (io) ::CloseHandle(io);
+  }
+
+  // 掛一個讀,等到連線斷掉、或有人要求停止。
+  //
+  // ⚠ 服務端在這條連線上**永遠不會主動送東西**:pipe_server.cc 的 send
+  //   是 ServeClient 的區域 lambda,只在回覆請求時用,而我們一則請求
+  //   都不送。所以這個讀完成 = 連線沒了,那正是我們要等的事件。
+  void WaitUntilBroken(HANDLE pipe, HANDLE io) {
+    if (!io) {
+      // 事件建不出來的退路:那就只等停止訊號。連線斷掉會慢一點被發現,
+      // 但**絕不可以**在這裡忙等 —— 那是一條 100% CPU 的迴圈。
+      ::WaitForSingleObject(stop_, INFINITE);
+      return;
+    }
+    OVERLAPPED ov;
+    ::ZeroMemory(&ov, sizeof(ov));
+    ov.hEvent = io;
+    ::ResetEvent(io);
+    char scratch = 0;
+    DWORD got = 0;
+    if (::ReadFile(pipe, &scratch, 1, &got, &ov)) return;
+    if (::GetLastError() != ERROR_IO_PENDING) return;
+    HANDLE waits[2] = {io, stop_};
+    if (::WaitForMultipleObjects(2, waits, FALSE, INFINITE) != WAIT_OBJECT_0)
+      ::CancelIoEx(pipe, &ov);
+    // ⚠ 一定要等它真的結束:ov 在堆疊上,提早返回等於讓核心寫一塊
+    //   已經不存在的記憶體。與 pipe_server.cc 的 WaitOverlapped 同一條理由。
+    ::GetOverlappedResult(pipe, &ov, &got, TRUE);
+  }
+
+  HANDLE stop_ = nullptr;
+  LONG refs_ = 0;
+};
+
 TextService::TextService() {
   ::InterlockedIncrement(&g_rime_dll_refs);
   const std::wstring dir = ModuleDirectory(g_rime_module);
@@ -453,6 +653,18 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* mgr, TfClientId id,
   // StartServiceInBackground 的說明。
   StartServiceInBackground(service_path_);
 
+  // ⚠ 上面那一段仍然成立,而且這一行**沒有推翻它**:按鍵那條連線
+  //   (ipc_)仍然不在這裡建立。這裡建立的是另一條 ——
+  //   「這個文字服務現在是啟用中的」那一條**會維持**的訊號。
+  //
+  //   少了它,服務端的 clients_ 在使用者切回輸入法之後是 0,而唯一
+  //   能推回 1 的是按鍵 —— 那一橫要等他打第一個字才出現(工單 #82)。
+  //
+  // ⚠ 這一行在 ActivateEx 上的成本只有一次 CreateEventW + 一次
+  //   CreateThread,與上面那一行同一個等級:**沒有任何 I/O 等待**。
+  //   開管道發生在那條背景執行緒上。見 PresenceLink 的檔頭。
+  presence_ = PresenceLink::Start();
+
   // ⚠ 焦點**可能已經在那裡了**。使用者是在一個已經有輸入框有焦點的視窗裡
   //   切換輸入法的,而 ITfThreadMgrEventSink::OnSetFocus 只在焦點**改變**時
   //   才來 —— 不在這裡主動掛一次的話,他切過來之後的第一個輸入框
@@ -501,6 +713,13 @@ STDMETHODIMP TextService::Deactivate() {
   }
   // session 沒收乾淨的話,服務端會留著一個永遠不會再被用到的 librime session。
   ipc_.Close();
+  // 在場連線也要收,而且這一行就是 #82 的「切走之後那一橫必須消失」:
+  // 關掉之後服務端的 ClientTicket 解構 → clients_ 減一 → 遲滯到期後隱藏。
+  // ⚠ **不等那條執行緒**(這裡是宿主的 UI 執行緒)。
+  if (presence_) {
+    presence_->Stop();
+    presence_ = nullptr;
+  }
 
   if (thread_mgr_) {
     ITfKeystrokeMgr* keystroke = nullptr;
