@@ -58,6 +58,14 @@
     <string name="step_2_state_pending">Not set yet</string>
     <string name="step_2_state_waiting">Waiting for the step above</string>
     <string name="step_2_action">Switch</string>
+    <!--
+        走查 A2:Android 會問兩次,退掉第二次就靜默失敗,而 app 從頭到尾沒預告。
+        這三句必須在**按下去之前**就在畫面上（step_1_heads_up）,
+        以及回來之後（*_did_not_take）。
+    -->
+    <string name="step_1_heads_up">Android will ask you two questions. The first one says a keyboard can collect everything you type, including passwords — Android says that about every keyboard, this one included; what we do with it is on the first screen, and you can check it. Answer OK to both: cancelling the second question quietly undoes the first.</string>
+    <string name="step_1_did_not_take">That did not take. Android asks twice and both need an OK — if you cancelled the second one, nothing was turned on.</string>
+    <string name="step_2_did_not_take">Still not switched. Tap Switch again and pick this keyboard from Android\'s list.</string>
 
     <string name="deploy_line_title">Sorting out words</string>
     <string name="deploy_line_once">Only ever happens once</string>
@@ -174,6 +182,8 @@
     <string name="feel_intro">These four can only be judged by actually pressing, so there is a box below to press into.</string>
     <string name="feel_sound">Key sound</string>
     <string name="feel_timbre">Which sound</string>
+    <!-- 按鍵音＝關的時候接在音色底下。不灰掉那一排的理由見 SettingsPages。 -->
+    <string name="feel_timbre_sound_off">Sound is off right now. Pick one and it turns the sound on, quietly, so you can hear it.</string>
     <string name="feel_haptic_note">Vibration needs the Vibrate permission. It is granted when you install and it is not a way out: nothing can leave the phone through a motor. If you have turned vibration or haptic feedback off in system settings, the keyboard stays quiet too.</string>
     <string name="feel_haptic_flat">The motor in this phone cannot do soft and strong — the four steps will feel much the same here. Vibration still needs the Vibrate permission, granted when you install; nothing can leave the phone through a motor, and the system settings still win.</string>
     <string name="feel_vibration">Vibration</string>
@@ -418,7 +428,7 @@
     <string name="advanced_reset_sub">Throw away every setting and go back to the values it shipped with</string>
     <string name="advanced_updates">Updates</string>
     <string name="advanced_report">When reporting a problem, attach this</string>
-    <string name="advanced_report_sub">These numbers are for us. You do not need to understand them.</string>
+    <string name="advanced_report_sub">These numbers are for us. You do not need to understand them \u2014 just copy them into your report.</string>
     <string name="advanced_copy">Copy this</string>
     <string name="advanced_copied">Copied</string>
 
@@ -528,9 +538,12 @@
       的中文，而預設語系是英文 —— 全世界的使用者都會在鍵盤上看到中文。
       %1$d = 預期秒數，來自 core/DeployEstimate.kt。
     -->
-    <string name="ime_notice_preparing">Getting the keyboard data ready…</string>
-    <string name="ime_notice_deploying">First time: sorting out words, about %1$d seconds…</string>
+    <string name="ime_notice_preparing">Keys are off for a moment — getting the keyboard data ready.</string>
+    <string name="ime_notice_deploying">Keys are off for about %1$d seconds — first time, we are sorting out the words.</string>
     <string name="ime_notice_failed">The keyboard could not start</string>
+    <!-- 切完簡繁之後那句「現在打的是什麼」。兩秒後自己消失,見 flashNotice。 -->
+    <string name="ime_notice_now_traditional">Now typing traditional characters</string>
+    <string name="ime_notice_now_simplified">Now typing simplified characters</string>
 
 
     <!-- ─────────────────────── 無障礙朗讀名稱 ─────────────────────── -->

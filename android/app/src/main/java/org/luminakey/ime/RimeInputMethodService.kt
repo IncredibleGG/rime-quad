@@ -16,6 +16,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalViewConfiguration
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.launchIn
@@ -24,6 +26,7 @@ import kotlinx.coroutines.launch
 import org.luminakey.ime.core.AndroidKeyMap
 import org.luminakey.ime.core.DeployEstimate
 import org.luminakey.ime.core.HostEditorPolicy
+import org.luminakey.ime.core.InputReadiness
 import org.luminakey.ime.core.RimeCore
 import org.luminakey.ime.core.RimeRuntime
 import org.luminakey.ime.core.VariantPlan
@@ -98,6 +101,17 @@ class RimeInputMethodService : InputMethodService() {
 
         /** 這一組配色等於「沒有指定主題」，見 buildThemeChoices。 */
         const val DEFAULT_THEME_FAMILY = "default"
+
+        /**
+         * 那句「剛剛發生了什麼」留在畫面上多久（毫秒）。
+         *
+         * 值取得剛好夠讀完一句短句,又短到不會擋住下一次輸入 —— 使用者切完
+         * 簡繁通常會馬上打字,而那時候他要看的是候選,不是這句話。
+         *
+         * ⚠ 不要在註解或文案裡把這個長度寫成數字:`DeployEstimateTest` 會把
+         * 「數字＋秒」一律當成有人又抄了一份「整理字詞要多久」。
+         */
+        const val TRANSIENT_NOTICE_MS = 2_000L
     }
 
     private var session: Long = RimeCore.INVALID_SESSION
@@ -182,6 +196,9 @@ class RimeInputMethodService : InputMethodService() {
 
     /** onKeyDown 消費掉的 keycode，onKeyUp 要對應吃掉，否則宿主會收到落單的 up。 */
     private val consumedKeys = HashSet<Int>()
+
+    /** [flashNotice] 的收尾計時器。再按一次要接上新的,不要兩句話互相蓋。 */
+    private var noticeJob: Job? = null
 
     /**
      * 方案市集的帳本。IME 只讀它一件事：方案 id → recommended_layout。
@@ -618,6 +635,7 @@ class RimeInputMethodService : InputMethodService() {
             -> uiState = uiState.copy(
                 busyMessage = getString(R.string.ime_notice_preparing),
                 fatalMessage = null,
+                engineReady = false,
             )
 
             RimeRuntime.Phase.DEPLOYING ->
@@ -627,12 +645,14 @@ class RimeInputMethodService : InputMethodService() {
                         DeployEstimate.TYPICAL_SECONDS,
                     ),
                     fatalMessage = null,
+                    engineReady = false,
                 )
 
             RimeRuntime.Phase.READY -> {
                 uiState = uiState.copy(
                     busyMessage = null,
                     fatalMessage = null,
+                    engineReady = true,
                     schemas = RimeCore.schemaList(),
                 )
                 // 市集可能剛裝了新方案，帳本變了。
@@ -649,6 +669,7 @@ class RimeInputMethodService : InputMethodService() {
             RimeRuntime.Phase.FAILED ->
                 uiState = uiState.copy(
                     busyMessage = null,
+                    engineReady = false,
                     // initError 本身刻意是英文的故障載荷（見 RimeRuntime 的註解）；
                     // 它沒有值的時候要回落到一句使用者讀得懂的話。
                     fatalMessage = RimeRuntime.initError
@@ -656,6 +677,27 @@ class RimeInputMethodService : InputMethodService() {
                 )
         }
         Log.i(TAG, "phase=$phase session=$session")
+    }
+
+    /**
+     * 候選列上那一句「剛剛發生了什麼」,講完自己走。
+     *
+     * ── 為什麼不是 Toast ────────────────────────────────────────────────
+     * Toast 從 API 30 起在**背景**受限,而輸入法叫得出 Toast 的那一刻使用者
+     * 正在別的 app 裡打字;而且它蓋在宿主的畫面上,位置與鍵盤無關。
+     * 候選列就在使用者的視線上,而且是我們自己畫的 —— 它就是行動端的
+     * snackbar。
+     *
+     * ⚠ 用 [prefsScope]（`Dispatchers.Main.immediate`）而不是另開一條:
+     * `uiState` 是 Compose 狀態,只能在主執行緒寫。
+     */
+    private fun flashNotice(text: String) {
+        noticeJob?.cancel()
+        uiState = uiState.copy(transientNotice = text)
+        noticeJob = prefsScope.launch {
+            delay(TRANSIENT_NOTICE_MS)
+            uiState = uiState.copy(transientNotice = null)
+        }
     }
 
     private fun rebuildSession() {
@@ -1156,6 +1198,38 @@ class RimeInputMethodService : InputMethodService() {
                     Log.w(TAG, "keysym '${spec.name}' 無法解析，該鍵視為 noop")
                     return
                 }
+                // ⛔ 工單 #105:引擎還沒好的時候,**不要收下這顆鍵**。
+                //
+                // 位置很要緊:必須在**所有**會把東西送進宿主的路徑之前 ——
+                // 底下的空白鍵分支、`processKey`、`fallbackKey` 三條都在後面。
+                // 少了這一段,`processKey` 因為沒有 session 而回 false,
+                // `fallbackKey(code)` 就把 `n` 原樣 commit 進宿主 —— 實測全新
+                // 安裝之後打 `nihao`,宿主輸入框拿到的就是 `nihao`。
+                // 判準與它為什麼放行退格／換行見 [InputReadiness]。
+                when (InputReadiness.decide(RimeRuntime.isReady, bypassRime, code)) {
+                    InputReadiness.Decision.HOLD -> {
+                        Log.i(TAG, "引擎尚未就緒（phase=${RimeRuntime.phase}），按鍵 $code 不送出")
+                        // 擋鍵一定要配一個看得見的理由,那一半在 KeyboardView 的
+                        // [NotReadyVeil]:鍵區蓋一層、候選列用高對比講一句話。
+                        return
+                    }
+
+                    // 密碼框（bypassRime）與退格／換行走這一條:字面上屏。
+                    //
+                    // ⚠ 收尾用 [syncConfigToUi] 而不是 [refreshFromRime]:這條路
+                    // 上引擎不是沒被問到就是根本不在,去取一份快照沒有意義;但
+                    // `afterKeySent()` 可能剛把上檔層退回小寫層,那個變化非同步到
+                    // UI 不可 —— 少了它,使用者按完一個大寫字母,鍵面停在上檔層。
+                    // 這與 §9.4.1 字面文字（SendSpec.Text）那條路的收尾一致。
+                    InputReadiness.Decision.LITERAL -> {
+                        fallbackKey(code)
+                        layoutHost.afterKeySent()
+                        syncConfigToUi()
+                        return
+                    }
+
+                    InputReadiness.Decision.ENGINE -> Unit
+                }
                 // ⚠ 規範缺口:「組字中按空白鍵要做什麼」在主題與佈局格式裡
                 // 都沒有欄位可以描述,佈局只能寫 send: { keysym: "space" }。
                 // 偏好選「一律送空白」時,先把組字沖出去再送半形空白 ——
@@ -1181,8 +1255,7 @@ class RimeInputMethodService : InputMethodService() {
                     syncConfigToUi()
                     return
                 }
-                // bypassRime 時完全不問 librime，直接走字面上屏那條路。
-                val consumed = !bypassRime && RimeCore.processKey(session, code, spec.modifiers)
+                val consumed = RimeCore.processKey(session, code, spec.modifiers)
                 if (!consumed) fallbackKey(code)
                 layoutHost.afterKeySent()
                 refreshFromRime()
@@ -1272,6 +1345,16 @@ class RimeInputMethodService : InputMethodService() {
                 //   工具列上的「繁/簡」是**同一個缺陷的第二個入口**。
                 if (opt == OPT_SIMPLIFICATION) {
                     applyVariant(next)
+                    // 走查 A3:切完之後畫面上唯一的變化是那一個字翻面,沒有
+                    // 任何一句話。而那個字本身也講不清楚它是「現在的狀態」
+                    // 還是「按下去會變成的狀態」——所以這裡把現在的狀態
+                    // 用一句完整的話講出來。
+                    flashNotice(
+                        getString(
+                            if (next) R.string.ime_notice_now_simplified
+                            else R.string.ime_notice_now_traditional
+                        )
+                    )
                 } else {
                     RimeCore.setOption(session, opt, next)
                 }

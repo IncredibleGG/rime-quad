@@ -1,4 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.LuminaKey" parent="android:Theme.Material.NoActionBar" />
+    <style name="Theme.LuminaKey" parent="android:Theme.Material.NoActionBar">
+        <!--
+            深色模式的底是 `#0D1012`，狀態列圖示要維持**淺色**。
+            值與 `values/themes.xml` 相反，由 `StatusBarAppearanceTest` 釘住 ——
+            兩份寫成一樣的話，其中一種模式必定看不見。
+        -->
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
 </resources>

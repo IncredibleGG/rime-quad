@@ -318,9 +318,69 @@ fun RimeKeyboard(
             if (state.panel != PanelRoute.NONE) {
                 KeyboardPanelHost(state = state, theme = theme, scaler = scaler, onEvent = onEvent)
             }
+            // 引擎還沒好的那十幾秒：鍵區蓋一層，並把原因寫在**手指所在的地方**。
+            if (!state.engineReady) {
+                NotReadyVeil(
+                    theme = theme,
+                    scaler = scaler,
+                    message = state.fatalMessage ?: state.busyMessage,
+                )
+            }
         }
     }
 }
+
+/**
+ * 「鍵盤還沒好」蓋在鍵區上的那一層（工單 #105 的**看得見**那一半）。
+ *
+ * ── 為什麼光有候選列那一行不夠 ──────────────────────────────────────────
+ * 走查實測：那一行灰字在候選列上，而使用者的眼睛與手指都在鍵區。他看到的是
+ * 「鍵盤出來了」，於是開始打字 —— 而那正是出事的時刻。狀態要出現在**動作
+ * 發生的地方**，不是在一條他不會讀的狀態列上。
+ *
+ * ── 為什麼刻意**不**攔截觸控 ────────────────────────────────────────────
+ * 這一層沒有 `clickable`、沒有 `pointerInput`，所以它只是畫上去的，不吃事件。
+ * 真正不讓鍵送出去的是服務層的 [org.luminakey.ime.core.InputReadiness]，
+ * 而它放行退格、換行；工具列的 🌐（換輸入法）與 ⚙（設定）也仍然按得到。
+ * 用一層透明遮罩去擋事件會把這些出口一起擋死，違反本檔一路守著的
+ * 「出口永遠看得見、按得到」（見 [PanelRoute] 的檔頭）。
+ *
+ * 底色取自主題的候選列底色而不是寫死的灰：深色主題上一層淺灰遮罩會變成
+ * 一塊比鍵還亮的板子。文字取候選文字色（這條列上對比最高的前景色）。
+ */
+@Composable
+private fun BoxScope.NotReadyVeil(
+    theme: Theme,
+    scaler: Scaler,
+    message: String?,
+) {
+    val bar = theme.candidates.bar
+    Box(
+        modifier = Modifier
+            .matchParentSize()
+            .background(Color(bar.background).copy(alpha = NOT_READY_VEIL_ALPHA)),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (message != null) {
+            Text(
+                text = message,
+                fontSize = scaler.sp(theme.preedit.size),
+                color = Color(bar.style.text.color),
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 24.dp),
+            )
+        }
+    }
+}
+
+/**
+ * 遮罩的不透明度。
+ *
+ * 0.88 而不是 1.0：鍵盤的形狀要仍然看得出來（使用者才知道自己在等的是什麼），
+ * 但每一顆鍵都必須明顯地「不是現在能用的樣子」。也不能太低 —— 底下那些鍵是
+ * 高對比的白底黑字，遮得不夠的話字會透出來，變成一層看起來像髒污的東西。
+ */
+private const val NOT_READY_VEIL_ALPHA = 0.88f
 
 /**
  * 候選列右端的展開／收合鍵（§8.6.6 的 `expand_button`）。
@@ -846,17 +906,37 @@ private fun CandidateBar(
             modifier = Modifier.fillMaxWidth().height(bar.height.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            val notice = state.fatalMessage
-                ?: state.busyMessage
-                ?: state.configProblem
-                ?: if (state.isStub) stringResource(R.string.keyboard_stub_notice) else null
+            // ⚠ 引擎沒好的時候（fatal / busy）這一行**刻意留白**：同一句話已經由
+            // 鍵區上的 [NotReadyVeil] 講了，而那裡才是使用者的手指所在的地方。
+            // 實測（工單 #105 修完的第一版）兩處同時畫，等於把同一段兩行文字
+            // 在一個畫面上印兩次 —— 讀者會以為那是兩件不同的事。
+            //
+            // 主題還沒載入時走的是本檔最上面那條早退路徑，那裡仍然印 busyMessage，
+            // 所以「什麼都沒說」不可能發生。
+            val notice = if (!state.engineReady) {
+                null
+            } else {
+                // ⚠ `takeIf { candidates.isEmpty() }` 不能省:這一段是 `return@Row`,
+                // 也就是**取代**候選。少了它,切換簡繁之後那一小段時間內使用者
+                // 打的字會看不到候選 —— 為了補一句回饋而把主要功能蓋掉。
+                state.transientNotice?.takeIf { state.candidates.isEmpty() }
+                    ?: state.configProblem
+                    ?: if (state.isStub) stringResource(R.string.keyboard_stub_notice) else null
+            }
 
             if (notice != null) {
                 Text(
                     text = notice,
                     fontSize = scaler.sp(theme.preedit.size * 0.8f),
                     maxLines = 2,
-                    color = Color(style.label.color),
+                    // ⚠ 這裡原本是 `style.label.color`（候選**序號**的顏色）。
+                    // 序號是次要資訊，所以那個色票刻意很淡：隨附主題用的是
+                    // `$muted`，實測對候選列底色只有 4.48:1 —— 而這一行講的是
+                    // 「鍵盤現在不會出字」，是這個畫面上最要緊的一句話。
+                    // 改用候選文字本身的顏色（`$fg`），它是這條列上對比最高的
+                    // 前景色。`CandidateNoticeContrastTest` 對每一份隨附主題
+                    // 逐一算過，門檻 4.5:1（WCAG AA 內文）。
+                    color = Color(style.text.color),
                     modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
                 )
                 return@Row
@@ -1308,7 +1388,12 @@ private fun Toolbar(
     // 規範的忠實表示,四端要拿它互相對照;「Android 這一版剛好還沒做」是本端的
     // 事實,不該混進去。同理也不從 core/themes/*.yaml 裡把 emoji 刪掉 ——
     // 桌面端做出表情面板時不必反過來把主題改回來。
-    val items = toolbar.items.filter { VerbSupport.isImplemented(it.tap.verb) }
+    val items = toolbar.items
+        .filter { VerbSupport.isImplemented(it.tap.verb) }
+        // 引擎還沒好的那十幾秒，需要問引擎的那幾顆按下去什麼都不會發生。
+        // 不畫它們，只留 🌐 與 ⚙ —— 那是使用者在這段時間裡唯二的出路。
+        // 判準見 [VerbSupport.needsEngine]。
+        .filter { state.engineReady || !VerbSupport.needsEngine(it.tap.verb) }
     if (!toolbar.show || items.isEmpty()) {
         Spacer(modifier)
         return
@@ -2246,7 +2331,13 @@ internal fun faceOf(
         LabelSource.INPUT_MODE_PAIR -> INPUT_MODE_PAIR_TEXT
         LabelSource.SHAPE -> if (status.isFullShape) "全" else "半"
         LabelSource.VARIANT -> if (status.isSimplified) "简" else "繁"
-        LabelSource.SCHEMA_NAME -> status.schemaName.ifEmpty { null }
+        // ⚠ 不是原樣印方案名。方案名裡的「臺灣正體」宣告的是這個方案的
+        // **預設**字集,而簡繁開關是使用者的覆寫 —— 兩件事,而走查抓到它們
+        // 同時出現在一個畫面上(候選列在吐簡體,空白鍵寫著臺灣正體)。
+        // 只有在真的矛盾時才換字,判準與三種情形見 [SchemaVariantLabel]。
+        LabelSource.SCHEMA_NAME ->
+            status.schemaName.ifEmpty { null }
+                ?.let { SchemaVariantLabel.display(it, status.isSimplified) }
         LabelSource.SCHEMA_ID -> status.schemaId.ifEmpty { null }
     }
     if (fromStatus != null) return fromStatus

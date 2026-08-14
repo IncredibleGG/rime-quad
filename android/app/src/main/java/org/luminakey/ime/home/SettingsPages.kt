@@ -160,7 +160,11 @@ fun rememberHomeSummary(prefs: UserPrefs): HomeSummary {
         }
     }
     return HomeSummary(
-        keyboard = describeKeyboard(current),
+        // ⚠ 方案名要先經過 [SchemaVariantLabel]。少了它,首頁上「打字方式
+        // 注音·臺灣正體」與它正下方那一列「打出來的字 簡體」會自己打自己 ——
+        // 兩句話講的是不同的東西（方案的預設字集 vs 使用者的覆寫）,而使用者
+        // 沒有義務知道這件事。判準與「什麼時候不該動」見那支的檔頭。
+        keyboard = describeKeyboard(current, prefs.simplification),
         appearance = appearance,
         feel = feel,
         text = text,
@@ -577,6 +581,18 @@ fun FeelPage(onBack: () -> Unit) {
             onSelect = { i ->
                 editAndTry { p -> PrefLevels.withTimbre(p, i, soundLevel) }
             },
+            // ⚠ 走查說「按鍵音＝關的時候這一列該灰而沒灰」。**刻意不灰**，
+            //   理由就在上面那一段：灰掉會變成一個死控制項，使用者得先開音量
+            //   再回來選音色（兩次操作），而現在點一下就同時做完兩件事。
+            //
+            //   但走查指出的困惑是真的：關著的時候，這一排看起來像沒有作用。
+            //   所以補的是**一句話**而不是一層灰 —— 說出點下去會發生什麼。
+            //   （這是刻意偏離工單字面的一條，見報告。）
+            footnote = if (soundLevel == 0) {
+                stringResource(R.string.feel_timbre_sound_off)
+            } else {
+                null
+            },
         )
         SettingGroup(
             label = stringResource(R.string.feel_vibration),
@@ -802,21 +818,34 @@ fun AdvancedPage(controller: StoreController, onBack: () -> Unit) {
 
         Spacer(Modifier.height(Space.s7))
         SectionLabel(stringResource(R.string.advanced_report))
-        Text(
-            text = stringResource(R.string.advanced_report_sub),
-            fontSize = TypeScale.t5,
-            lineHeight = TypeScale.t5Line,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(bottom = Space.s3),
-        )
         val report = diagnosticsText(context, controller)
+        // ⚠ 那句「這些數字是給我們看的」**在框裡面**，就在傾印的正上方。
+        //
+        // 走查 A5 抓到的是這一段的位置，不是它的存在：這片傾印（schema、
+        // deploy、patch、ABI、路徑、方案 id）在 1080×2400 上超過一個螢幕高，
+        // 而說明擺在框外的上方 —— 使用者捲到傾印本身時，那句話早就滾出畫面了。
+        // 於是他在「出事時被引導去的那一頁」上，看到的是一整片沒有人解釋的
+        // 開發者輸出。Windows 端（windows/common/ui_strings.cc 的
+        // kDiagnosticsNote）之所以不算外漏，就是因為那句話跟著那片東西。
+        //
+        // 同一句話還缺了後半段的**出口**：Windows 寫的是「你不用懂 ——
+        // 回報問題時複製過去就好」。少了後半句，讀者知道「這不是給我看的」
+        // 卻不知道該拿它做什麼。三種語言都補齊了。
         PlainCard {
-            Text(
-                text = report,
-                fontSize = TypeScale.t6,
-                fontFamily = FontFamily.Monospace,
-                modifier = Modifier.padding(Space.s5),
-            )
+            Column(Modifier.padding(Space.s5)) {
+                Text(
+                    text = stringResource(R.string.advanced_report_sub),
+                    fontSize = TypeScale.t5,
+                    lineHeight = TypeScale.t5Line,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = Space.s4),
+                )
+                Text(
+                    text = report,
+                    fontSize = TypeScale.t6,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
         }
         Spacer(Modifier.height(Space.s4))
         // 本頁唯一的實心按鈕（A1）。破壞性的那一顆在最底下，而且是外框（C1）。

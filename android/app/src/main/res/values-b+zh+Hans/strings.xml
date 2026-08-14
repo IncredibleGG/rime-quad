@@ -40,6 +40,9 @@
     <string name="step_2_state_pending">还没设置</string>
     <string name="step_2_state_waiting">等上一步完成</string>
     <string name="step_2_action">切换</string>
+    <string name="step_1_heads_up">Android 会问你两个问题。第一个会说输入法可能收集你打的所有文字、包括密码 —— 那句话 Android 对每一个输入法都会说,包括我们;我们拿它做什么在第一屏讲过了,而且你查得到。两题都要按确定:第二题按取消的话,第一题也会静静地不算数。</string>
+    <string name="step_1_did_not_take">刚才那一趟没有成功。Android 会问两次,两次都要按确定 —— 第二次按了取消的话,等于什么都没开。</string>
+    <string name="step_2_did_not_take">还没有切过来。再按一次「切换」,然后在 Android 的列表里选这个键盘。</string>
 
     <string name="deploy_line_title">正在整理词条</string>
     <string name="deploy_line_once">只有第一次要做</string>
@@ -135,6 +138,7 @@
     <string name="feel_intro">这四项只有真的按下去才判断得出来，所以下面留了一格给你按。</string>
     <string name="feel_sound">按键音</string>
     <string name="feel_timbre">哪一种声音</string>
+    <string name="feel_timbre_sound_off">现在按键音是关的。挑一个，它会顺手把声音打开，让你听得到。</string>
     <string name="feel_haptic_note">振动需要「振动」权限。它在安装时就给了，而且它不是一条出路：没有东西能透过马达离开这台手机。你若在系统设置里把振动或触觉反馈关掉，这个键盘也跟着不振。</string>
     <string name="feel_haptic_flat">这台手机的马达分不出轻重，四个档位在这里感觉会差不多。振动仍然需要「振动」权限，安装时就给了；没有东西能透过马达离开这台手机，而且系统设置关掉就是关掉。</string>
     <string name="feel_vibration">振动</string>
@@ -342,7 +346,7 @@
     <string name="advanced_reset_sub">把所有设置删掉，回到随附的值</string>
     <string name="advanced_updates">更新</string>
     <string name="advanced_report">反馈问题时，把这段一起附上</string>
-    <string name="advanced_report_sub">这些数字是给我们看的，你不用懂。</string>
+    <string name="advanced_report_sub">这些数字是给我们看的，你不用懂 — 回报问题时复制过去就好。</string>
     <string name="advanced_copy">复制这段</string>
     <string name="advanced_copied">已复制</string>
 
@@ -441,9 +445,11 @@
     <string name="keyboard_no_schema">尚无可用方案（rs_schema_list 返回空）</string>
     <string name="keyboard_layout_not_loaded">布局尚未载入</string>
 
-    <string name="ime_notice_preparing">正在准备输入法数据…</string>
-    <string name="ime_notice_deploying">第一次启动：正在整理词条，大约 %1$d 秒…</string>
+    <string name="ime_notice_preparing">按键暂时不会出字 —— 正在准备输入法数据。</string>
+    <string name="ime_notice_deploying">按键大约 %1$d 秒内不会出字 —— 第一次启动，正在整理词条。</string>
     <string name="ime_notice_failed">输入法没能启动</string>
+    <string name="ime_notice_now_traditional">现在打的是繁体字</string>
+    <string name="ime_notice_now_simplified">现在打的是简体字</string>
 
 
     <!-- ─────────────────────── 無障礙朗讀名稱 ─────────────────────── -->

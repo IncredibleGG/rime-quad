@@ -184,6 +184,14 @@ class PanelStringsTest {
             "LayoutHost.kt" to 12,
             "RemappedLayouts.kt" to 2,
             "SchemaLanguages.kt" to 5,
+            // 與 SchemaLanguages.kt 完全同一種,而且**終點就是這個數字**,不是 0:
+            //   · 兩條是 §9.4 的**鍵面**（`繁體` / `简体`）—— 空白鍵上接在方案名
+            //     後面的那一段。方案名本身是中文的,把它後面那一截翻成
+            //     `Simplified` 會產生「朙月拼音·Simplified」這種半中半英的東西。
+            //   · 其餘是**比對用的關鍵字**:方案名尾段宣告的字集（`臺灣正體`、
+            //     `简化字` …）。它們比對的是 schema.yaml 裡寫死的中文,翻了就對不上。
+            // 兩種都在本測試檔頭的第 2、4 類裡。鎖住數字,只是不讓它長回來。
+            "SchemaVariantLabel.kt" to 18,
             // 與 SchemaLanguages.kt 同一種:兩句都是 Log,不上使用者畫面。
             "SelectionDigits.kt" to 2,
         )

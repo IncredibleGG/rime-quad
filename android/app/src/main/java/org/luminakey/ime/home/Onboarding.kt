@@ -236,6 +236,13 @@ private fun ColumnScope.TwoStepBody(stage: SetupStage, system: ImeSystemState) {
     val context = LocalContext.current
     val enabled = stage != SetupStage.NOT_ENABLED
 
+    // 「他自己按過那顆按鈕了嗎」——這不是系統答得出來的事實，只能自己記。
+    // `rememberSaveable` 而不是 DataStore：記錯的代價只是多一句提示，
+    // 而不是把人困在某一步（見 ImeSetupState 的 SetupNudge）。
+    var triedStep1 by rememberSaveable { mutableStateOf(false) }
+    var triedStep2 by rememberSaveable { mutableStateOf(false) }
+    val nudge = nudgeOf(stage, triedStep1, triedStep2)
+
     Text(
         text = stringResource(
             if (enabled) R.string.onboarding_last_step_title
@@ -269,10 +276,16 @@ private fun ColumnScope.TwoStepBody(stage: SetupStage, system: ImeSystemState) {
                 if (enabled) R.string.step_1_title_done else R.string.step_1_title
             ),
             state = if (enabled) null else stringResource(R.string.step_1_state_off),
+            alert = nudgeBodyRes(nudge)
+                ?.takeIf { nudge == SetupNudge.STEP_1_DID_NOT_TAKE }
+                ?.let { stringResource(it) },
             // 畫面上任何時候**只有一顆實心按鈕** —— 不必讀字也知道該點哪裡。
             action = if (enabled) null else stringResource(R.string.step_1_action),
             primary = !enabled,
-            onClick = { openImeSettings(context) },
+            onClick = {
+                triedStep1 = true
+                openImeSettings(context)
+            },
         )
         RowDivider()
         StepRow(
@@ -282,12 +295,40 @@ private fun ColumnScope.TwoStepBody(stage: SetupStage, system: ImeSystemState) {
             state = stringResource(
                 if (enabled) R.string.step_2_state_pending else R.string.step_2_state_waiting
             ),
+            alert = nudgeBodyRes(nudge)
+                ?.takeIf { nudge == SetupNudge.STEP_2_DID_NOT_TAKE }
+                ?.let { stringResource(it) },
             action = stringResource(R.string.step_2_action),
             primary = enabled,
             // 第 2 步在第 1 步完成之前是停用的 —— 那個順序是 Android 強制的，
             // 提早給一顆按得動的按鈕，只會讓人按了沒反應。
             enabled = enabled,
-            onClick = { showImePicker(context) },
+            onClick = {
+                triedStep2 = true
+                showImePicker(context)
+            },
+        )
+    }
+
+    // ── 預告 Android 會問什麼（走查 A2）────────────────────────────────
+    //
+    // 這一段在他**按下去之前**就在畫面上。理由不是禮貌，是實測：Android 的
+    // 第一道對話框寫著「這個輸入法可能會蒐集你打的所有文字，包括密碼與
+    // 信用卡號」——對一個主打離線、主打「你查得到我們沒連網」的產品來說，
+    // 那是使用者最可能當場放棄的一刻，而上一版在那一刻什麼都沒說。
+    //
+    // 兩件事必須講，而且都不能含糊：
+    //   1. 那句話 Android 對**每一個**輸入法都會說，包括我們；我們拿它做什麼
+    //      在第一屏已經講過（而且做得到查證）。
+    //   2. 它會問**兩次**，而第二次按取消會把第一次一起作廢 —— 那正是
+    //      走查踩到的那條路，也是它靜默失敗的地方。
+    if (!enabled) {
+        Spacer(Modifier.height(Space.s4))
+        Text(
+            text = stringResource(R.string.step_1_heads_up),
+            fontSize = TypeScale.t5,
+            lineHeight = TypeScale.t5Line,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 
@@ -311,6 +352,12 @@ private fun StepRow(
     action: String?,
     primary: Boolean,
     enabled: Boolean = true,
+    /**
+     * 「剛才那一趟沒有成功」。用 error 色而不是灰色：它與 [state] 講的不是
+     * 同一種事 —— [state] 是「現在是什麼狀態」，這一句是「你剛做的那件事
+     * 沒有生效」。兩句話用同一個外觀，等於沒說。
+     */
+    alert: String? = null,
     onClick: () -> Unit,
 ) {
     Row(
@@ -352,6 +399,15 @@ private fun StepRow(
                     text = state,
                     fontSize = TypeScale.t5,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (alert != null) {
+                Text(
+                    text = alert,
+                    fontSize = TypeScale.t5,
+                    lineHeight = TypeScale.t5Line,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = Space.s2),
                 )
             }
         }

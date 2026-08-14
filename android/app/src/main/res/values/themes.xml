@@ -2,6 +2,31 @@
 <resources>
     <!-- 刻意只用平台主題，不引入 com.google.android.material，
          UI 全部交給 Compose 畫。 -->
-    <style name="Theme.LuminaKey" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.LuminaKey" parent="android:Theme.Material.Light.NoActionBar">
+        <!--
+            ⚠ 系統狀態列的**圖示顏色**，不是背景色。少了這一行的下場是實測到的
+            這個數字：底 `#F4F6F5`（`LightColors.background`）、時間與 Wi-Fi／
+            電量圖示 `#FFFFFF`，對比 **1.09:1** —— 淺色模式下 app 的每一頁上，
+            使用者都看不見自己手機的時間和電量。
+
+            成因不是有人挑錯顏色，是**沒有人挑**：targetSdk 35 強制 edge-to-edge，
+            狀態列變成透明並疊在 app 的內容上，圖示該深該淺於是完全由 app 決定；
+            而 `android:Theme.Material.Light.NoActionBar` 這個屬性的預設值是
+            false（＝淺色圖示，給深色背景用的）。「沒有宣告」與「宣告成 false」
+            在畫面上是同一件事，所以它靜靜地錯了很久。
+
+            ⚠ 為什麼放在**資源**而不是用 WindowInsetsController 在程式裡設：
+            `ui/Theme.kt` 的 `RimeTheme` 跟著 `isSystemInDarkTheme()` 走，而那個
+            訊號與 `-night` 這個資源限定詞是同一個東西。放在資源裡，深淺兩份
+            就不可能與 Compose 的色票分岔；寫在程式裡則多一條要自己維持同步的線。
+            （鍵盤的「固定淺色／固定深色」偏好只作用在鍵盤上，不改 app 畫面，
+            見 ui/Theme.kt 的檔頭。）
+
+            兩份的值必須相反，由 `StatusBarAppearanceTest` 釘住。
+        -->
+        <item name="android:windowLightStatusBar">true</item>
+        <!-- 手勢列那一條的顏色，同一個理由。API 27 起有效。 -->
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
     <color name="ic_launcher_background">#0E3A5F</color>
 </resources>

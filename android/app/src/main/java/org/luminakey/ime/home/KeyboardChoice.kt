@@ -40,6 +40,7 @@ import org.luminakey.ime.keyboard.KeyboardTypes
 import org.luminakey.ime.keyboard.LanguageTable
 import org.luminakey.ime.keyboard.LayoutHost
 import org.luminakey.ime.keyboard.SchemaLanguages
+import org.luminakey.ime.keyboard.SchemaVariantLabel
 import org.luminakey.ime.prefs.PrefsStore
 import org.luminakey.ime.prefs.UserPrefs
 import org.luminakey.ime.store.SchemaListPatch
@@ -266,9 +267,17 @@ fun currentKeyboardOf(context: Context, all: List<KeyboardType>): KeyboardType? 
  * §4.9 在地化欄位自己解析。這裡在地化的只有「兩者之間怎麼接」與「還沒選」。
  */
 @Composable
-fun describeKeyboard(type: KeyboardType?): String =
+fun describeKeyboard(type: KeyboardType?, simplified: Boolean? = null): String =
     if (type == null) stringResource(R.string.summary_no_keyboard_yet)
-    else stringResource(R.string.summary_keyboard, type.title, type.subtitle)
+    else stringResource(
+        R.string.summary_keyboard,
+        type.title,
+        // 方案名裡的「臺灣正體」是這個方案的**預設**字集,不是現在生效的那一個。
+        // 使用者覆寫過(simplified != null)而且兩者矛盾時,這裡改印現在生效的 ——
+        // 否則同一個畫面會出現「注音·臺灣正體」與「簡體」上下排。
+        // 見 [org.luminakey.ime.keyboard.SchemaVariantLabel]。
+        SchemaVariantLabel.display(type.subtitle, simplified),
+    )
 
 /**
  * 使用者挑了一種鍵盤。

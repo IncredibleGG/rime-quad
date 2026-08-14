@@ -201,6 +201,59 @@ fun failedBodyRes(failure: RimeRuntime.Failure): Int = when (failure) {
     RimeRuntime.Failure.NONE -> R.string.not_ready_failed_restart
 }
 
+/**
+ * 使用者去系統那一趟**回來了,而事情沒有成立**。
+ *
+ * ── 走查 A2 實測到的那一條路 ────────────────────────────────────────────
+ * 按「開啟」→ 系統的「螢幕小鍵盤」頁 → 打開我們那個開關 → Android 連問兩次:
+ *   ①「This input method may be able to collect all the text you type,
+ *      including personal data like passwords and credit card numbers.」
+ *   ②「Note: After a reboot, this app can't start until you unlock your phone」
+ * **第二道按取消** → `enabled_input_methods` 裡沒有我們(實測 `settings get`
+ * 確認)→ 回到 app,畫面與去之前**逐位元組相同**:步驟一還是「Not on yet」,
+ * 而沒有任何一句話說剛才那一趟沒成功。
+ *
+ * 使用者做了一整串正確的動作,得到一個看起來像「沒點到」的畫面。
+ * 他會再走一次、再取消一次 —— 因為沒有人告訴他問題出在第二道對話框。
+ *
+ * ── 為什麼這是純函式,而不是 Composable 裡的一個 if ─────────────────────
+ * 與 [actionOf] 同一個理由,而且是同一個教訓:上一版「失敗態有沒有出路」
+ * 就是寫在 Composable 裡的一行 if,沒有任何測試看得見它。
+ *
+ * ── 「試過了」是什麼意思 ────────────────────────────────────────────────
+ * 只有**使用者自己按過那顆按鈕**才算。這不是從系統問得到的事實,所以它是
+ * 這個檔案裡唯一一個「記旗標」的東西 —— 而記錯的代價是多一句提示,
+ * 不是被困在某一步出不來（`rememberSaveable`,不進 DataStore）。
+ */
+enum class SetupNudge {
+    /** 沒什麼好說的。 */
+    NONE,
+
+    /** 去過系統設定了,而我們仍然不在啟用清單裡 —— 多半是退掉了第二道對話框。 */
+    STEP_1_DID_NOT_TAKE,
+
+    /** 叫過輸入法選擇器了,而預設仍然不是我們。 */
+    STEP_2_DID_NOT_TAKE,
+}
+
+/**
+ * @param triedStep1 使用者按過「開啟」(第 1 步那顆)。
+ * @param triedStep2 使用者按過「切換」(第 2 步那顆)。
+ */
+fun nudgeOf(stage: SetupStage, triedStep1: Boolean, triedStep2: Boolean): SetupNudge = when {
+    // 順序與 [stageOf] 一致:前置條件沒成立就先講前置條件。
+    stage == SetupStage.NOT_ENABLED && triedStep1 -> SetupNudge.STEP_1_DID_NOT_TAKE
+    stage == SetupStage.ENABLED_NOT_DEFAULT && triedStep2 -> SetupNudge.STEP_2_DID_NOT_TAKE
+    else -> SetupNudge.NONE
+}
+
+/** 那句話的資源 id;[SetupNudge.NONE] 沒有。 */
+fun nudgeBodyRes(nudge: SetupNudge): Int? = when (nudge) {
+    SetupNudge.NONE -> null
+    SetupNudge.STEP_1_DID_NOT_TAKE -> R.string.step_1_did_not_take
+    SetupNudge.STEP_2_DID_NOT_TAKE -> R.string.step_2_did_not_take
+}
+
 /* ───────────────────────── Android 查詢 ───────────────────────── */
 
 fun readImeSystemState(context: Context): ImeSystemState {

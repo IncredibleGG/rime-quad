@@ -37,6 +37,61 @@ import org.luminakey.ime.theme.ActionVerb
 object VerbSupport {
 
     /**
+     * 引擎還沒好的時候，這個動詞**做得到事嗎**。
+     *
+     * ── 為什麼需要它（工單 #105 的第二半）──────────────────────────────
+     * 首次部署那十幾秒，`RimeCore` 沒有 session：`setOption` / `selectSchema` /
+     * `schemaList` 全部是空轉。而工具列照樣把「中/En」與「繁」畫出來，按下去
+     * **什麼都不會發生** —— 那正是這個專案抓過六次的
+     * 「念得出名字、按下去沒反應」的鍵。
+     *
+     * 修 #105 的過程本身差點又做出一個：把候選列那行提示搬到鍵區之後，
+     * 工具列整排回來了（那是好事，走查抱怨過它整排消失），
+     * 但其中兩顆在那十幾秒裡是死的。
+     *
+     * ── 判準：這個動作需不需要問引擎 ──────────────────────────────────
+     * 需要 → 引擎不在時**不畫**。看不到比按不動好：按不動的鍵會讓人以為
+     *        自己按錯了，或者這個 app 壞了。
+     * 不需要 → 照畫。🌐（換輸入法）與 ⚙（設定）尤其重要 ——
+     *        它們是使用者在這十幾秒裡唯一的兩條出路，
+     *        「出口永遠看得見」在這一格也成立。
+     */
+    fun needsEngine(verb: ActionVerb): Boolean = when (verb) {
+        // 都要問 librime 的狀態或改它的開關。
+        ActionVerb.TOGGLE_OPTION,
+        ActionVerb.SET_OPTION,
+        ActionVerb.SCHEMA_NEXT,
+        ActionVerb.SCHEMA_PREV,
+        ActionVerb.SCHEMA_PICKER,
+        ActionVerb.SCHEMA_SELECT,
+        ActionVerb.CANDIDATE_SELECT,
+        ActionVerb.CANDIDATE_DELETE,
+        ActionVerb.CANDIDATE_NEXT_PAGE,
+        ActionVerb.CANDIDATE_PREV_PAGE,
+        ActionVerb.CANDIDATE_NEXT,
+        ActionVerb.CANDIDATE_PREV,
+        ActionVerb.CLEAR,
+        ActionVerb.INPUT_MODE_TOGGLE,
+        -> true
+
+        // 完全不碰引擎：換層、換佈局、移游標、收鍵盤、開設定。
+        ActionVerb.NOOP,
+        ActionVerb.LAYER,
+        ActionVerb.LAYER_ONCE,
+        ActionVerb.LAYER_LOCK,
+        ActionVerb.SWITCH_LAYOUT,
+        ActionVerb.CURSOR_LEFT,
+        ActionVerb.CURSOR_RIGHT,
+        ActionVerb.CURSOR_HOME,
+        ActionVerb.CURSOR_END,
+        ActionVerb.HIDE_KEYBOARD,
+        ActionVerb.SETTINGS,
+        ActionVerb.EMOJI,
+        -> false
+    }
+
+
+    /**
      * 順序無意義,但每一項都必須寫清楚**為什麼**還沒有 —— 沒有理由的項目下一個
      * 讀到的人不知道能不能刪。
      */

@@ -1,6 +1,7 @@
 package org.luminakey.ime.home
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -292,6 +293,21 @@ fun <T> Segmented(
                     .background(
                         if (on) MaterialTheme.colorScheme.surface
                         else MaterialTheme.colorScheme.surfaceVariant
+                    )
+                    // 這一圈才是「我現在選的是哪一個」真正看得見的那個訊號。
+                    // 白膠囊對底槽只有 1.10:1（深色 1.05:1），而 WCAG 1.4.11
+                    // 對狀態指示要求 3:1。理由與量到的數字見 Dimens.selectedBorder，
+                    // 兩種模式的實際比值由 SegmentedContrastTest 算出來。
+                    .then(
+                        if (on) {
+                            Modifier.border(
+                                width = Dimens.selectedBorder,
+                                color = MaterialTheme.colorScheme.primary,
+                                shape = RoundedCornerShape(Radius.mediumInner),
+                            )
+                        } else {
+                            Modifier
+                        }
                     )
                     .selectable(
                         selected = on,
