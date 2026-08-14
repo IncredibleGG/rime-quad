@@ -432,21 +432,51 @@ adbs() { "$ADB" -s "$SERIAL" "$@"; }
 #   ("scripts/ 底下沒有寫死的識別碼")會抓。與 verify_backup_roundtrip.sh:83 同一個寫法。
 RIME_STATE_RECEIVER="$IME_PKG/$IME_PKG.devtools.BackupHarnessReceiver"
 
-# 問一次。印出 `ready=… phase=… …` 那一行(問不到就什麼都不印,RC=1)。
+# 問一次。**三種結果不可以長成同一個空字串** —— 它們的處置完全不同:
+#   RC=0 → $RS_ONCE_LINE 是 `ready=… phase=… …` 那一行(app 答了)
+#   RC=1 → 廣播送得出去,但這一次沒等到答案(app 沒答)
+#   RC=2 → **adb / am 這一層就失敗了**(裝置掉線、adb server 被重啟……),
+#          理由在 $RS_ONCE_ERR。這一種與「app 沒答」是兩件事。
+#
+# ⛔ 舊寫法把 `am broadcast` 的退出碼 `>/dev/null 2>&1` 丟掉、把 `adb logcat -d`
+#   的失敗 `|| true` 吞掉,於是「adb 掉線」「am 送不出去」「app 真的沒答」
+#   在輸出上都是同一個空字串,呼叫端只能猜 —— 而它猜錯了。
+# ⚠ 答案走全域變數,不走 stdout:呼叫端若寫成 `x="$(rime_state_once)"`,
+#   命令替換是子殼,$RS_ONCE_ERR 傳不回去(那正是舊寫法只能吞掉它的原因)。
+# ⚠ 實測(emulator-5558,2026-08-14):`am broadcast -n` 打到**不存在的元件**
+#   照樣回「Broadcast completed: result=0」、RC=0。所以 RC=2 認得出 adb 這一層,
+#   認不出「這一份 APK 沒有 harness」—— 後者由 check_apk_identity 的 sha256 回答。
+RS_ONCE_LINE=""
+RS_ONCE_ERR=""
 rime_state_once() {
-  local nonce out tail
+  local nonce out tail rc i
+  RS_ONCE_LINE=""
+  RS_ONCE_ERR=""
   nonce="rs$(date +%s%N)"
-  adbs shell am broadcast -n "$RIME_STATE_RECEIVER" --es op state --es path "$nonce" \
-    >/dev/null 2>&1
-  local i
+  out="$(adbs shell am broadcast -n "$RIME_STATE_RECEIVER" --es op state --es path "$nonce" 2>&1)"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    RS_ONCE_ERR="am broadcast RC=$rc:$(printf '%s' "$out" | tr -d '\r' | tr '\n' ' ' | cut -c1-140)"
+    return 2
+  fi
+  case "$out" in
+    *"Broadcast completed"*) ;;
+    *) RS_ONCE_ERR="am 沒有回 Broadcast completed:$(printf '%s' "$out" | tr -d '\r' | tr '\n' ' ' | cut -c1-140)"
+       return 2 ;;
+  esac
   for i in $(seq 1 20); do
-    out="$(adbs logcat -d -s BACKUPRT 2>/dev/null || true)"
+    out="$(adbs logcat -d -s BACKUPRT 2>/dev/null)"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+      RS_ONCE_ERR="adb logcat RC=$rc(讀不到日誌,不是 app 沒答)"
+      return 2
+    fi
     # 只看**這一次**提問之後印出來的東西:nonce 是我們自己帶進去的,
     # 它出現在 `begin op=state path=<nonce>` 那一行。
     case "$out" in *"$nonce"*) tail="${out##*"$nonce"}" ;; *) tail="" ;; esac
     case "$tail" in
       *"ready="*)
-        printf '%s\n' "$tail" | sed -n 's/.*\(ready=.*\)$/\1/p' | head -1
+        RS_ONCE_LINE="$(printf '%s\n' "$tail" | sed -n 's/.*\(ready=.*\)$/\1/p' | head -1)"
         return 0 ;;
     esac
     sleep 0.5
@@ -454,18 +484,81 @@ rime_state_once() {
   return 1
 }
 
-# 等到 ready=true(或超時)。RC=0 = 好了;RC=1 = 沒好,理由印在 stdout。
+# 等到 ready=true(或超時)。RC=0 = 好了;RC=1 = 沒好,**一行判定**印在 stdout,
+# 開頭是一個方括號標籤,呼叫端據它決定接下來要多說什麼。
+# 第二個參數給了就把逐圈的時間軸寫進那個檔 —— 紅的時候 artifact 才有東西可看。
+#
+# ⛔ 舊寫法是
+#       line="$(rime_state_once || true)"      # ← 每一圈覆蓋掉上一圈
+#       ...
+#       printf '%s' "${line:-<harness 沒有回應>}"
+#   印出來的只是**最後一次**提問的結果。於是
+#     「問 10 次答到 9 次,只有最後那十幾秒落空」
+#   與「120 秒從頭到尾沒有人接」印出來是同一句 `<harness 沒有回應>`。
+#   2026-08-14 `cn-t9-pinyin-numrow` 那次紅,交接就是從這一句推論出
+#   「那一刻輸入法行程是死的」—— 這句話撐不起那個結論,它分不出這兩件事,
+#   而下一步該做什麼(查 app v.s. 查守門)完全取決於分得出來。
+#
+# ✅ 現在**累積**:問幾次、答到幾次、第一次答到在第幾秒、最後答什麼、
+#   adb 層失敗幾次。而且每一圈**另外**用 `pidof` 問一次行程在不在 ——
+#   那條路不經過 app 自己(實測:套件沒跑時 pidof 印空、RC=1,不需要 root),
+#   所以**行程沒起來的時候這裡自己答得出來**,不必等 app 回話。
 rime_wait_ready() {
-  local deadline=$((SECONDS + ${1:-120})) line=""
+  local budget="${1:-120}" plog="${2:-}"
+  local t0="$SECONDS"
+  local deadline=$((SECONDS + budget))
+  local asks=0 answers=0 adberrs=0 nopid=0 first=-1
+  local last="" lasterr="" pids="" t rc pid tag verdict pidsum firstsum
+  [ -n "$plog" ] && : > "$plog"
   while [ "$SECONDS" -lt "$deadline" ]; do
-    line="$(rime_state_once || true)"
-    case "$line" in
-      *"ready=true"*) return 0 ;;
-      "") ;;                    # 沒人接廣播 —— 下面會分辨這一種
+    t=$((SECONDS - t0))
+    # ⚠ 這一問**不經過 app**:它是「行程在不在」的獨立答案。少了它,
+    #   「沒有人回話」只能用猜的,而猜出來的那個答案上一輪是錯的。
+    pid="$(adbs shell pidof "$IME_PKG" 2>/dev/null | tr -d '\r' | awk '{print $1}')"
+    if [ -n "$pid" ]; then
+      case " $pids " in *" $pid "*) ;; *) pids="${pids:+$pids }$pid" ;; esac
+    else
+      nopid=$((nopid + 1))
+    fi
+    asks=$((asks + 1))
+    rime_state_once
+    rc=$?
+    case "$rc" in
+      0) answers=$((answers + 1)); last="$RS_ONCE_LINE"
+         if [ "$first" -lt 0 ]; then first="$t"; fi ;;
+      2) adberrs=$((adberrs + 1)); lasterr="$RS_ONCE_ERR" ;;
+    esac
+    if [ -n "$plog" ]; then
+      printf '%4ds pid=%-8s rc=%s %s\n' "$t" "${pid:-<無>}" "$rc" \
+        "${RS_ONCE_LINE:-${RS_ONCE_ERR:-<沒有回答>}}" >> "$plog"
+    fi
+    case "$RS_ONCE_LINE" in
+      *"ready=true"*)
+        info "引擎 READY:第 $t 秒(問了 $asks 次/答到 $answers 次,行程 pid=${pids:-<無>})"
+        return 0 ;;
     esac
     sleep 2
   done
-  printf '%s' "${line:-<harness 沒有回應>}"
+  if [ -n "$pids" ]; then
+    pidsum="行程 pid=${pids% }($asks 圈裡有 $nopid 圈問不到)"
+  else
+    pidsum="行程 $asks 圈全部問不到(pidof 印空)"
+  fi
+  firstsum="一次都沒答到"
+  [ "$first" -ge 0 ] && firstsum="第一次答到在第 $first 秒"
+  if [ "$answers" -gt 0 ]; then
+    tag="[部署未完成]"
+  elif [ "$adberrs" -ge "$asks" ]; then
+    tag="[adb 層失敗]"
+  elif [ -z "$pids" ]; then
+    tag="[行程沒起來]"
+  else
+    tag="[行程活著但沒回話]"
+  fi
+  verdict="$tag ${budget}秒內問了 $asks 次/答到 $answers 次/adb 層失敗 $adberrs 次,$firstsum;$pidsum;最後一次答「${last:-<沒有>}」"
+  [ -n "$lasterr" ] && verdict="$verdict;最後一則 adb 錯誤:$lasterr"
+  [ -n "$plog" ] && printf '%s\n' "$verdict" >> "$plog"
+  printf '%s' "$verdict"
   return 1
 }
 info() { echo "[syllables] $*" >&2; }
@@ -1068,7 +1161,7 @@ for n in root.iter("node"):
   [ -n "$FIELD_XY" ] && adbs shell input tap $FIELD_XY >/dev/null 2>&1
   READY=0
   READY_WHY=""
-  if READY_WHY="$(rime_wait_ready 120)"; then READY=1; fi
+  if READY_WHY="$(rime_wait_ready 120 "$LOUT/ready-probe.txt")"; then READY=1; fi
   sleep 3
 
   # ⚠ 在這一段以前,**三種完全不同的失敗**都長成同一句
@@ -1080,21 +1173,38 @@ for n in root.iter("node"):
   #   所以先把前兩個問清楚,問清楚了才輪到第三個。
   check_apk_identity "$LAYOUT" || continue
   if [ "$READY" -ne 1 ]; then
-    DEPLOY_ERR="$(adbs shell "run-as $IME_PKG cat files/rime/log/rime.android.ERROR" 2>/dev/null \
-      | tr -d '\r' | grep '^E' | head -3 | tr '\n' ' ')"
-    fail "$LAYOUT:引擎沒有準備好(問 harness 得到:${READY_WHY:-<沒有回應>})。"
-    if [ "${READY_WHY:-}" = "<harness 沒有回應>" ]; then
-      fail "  ⚠ **沒有人接那個廣播**。最可能的原因是裝置上這一份不是 debug 建置"
-      fail "    ($RIME_STATE_RECEIVER 只存在於 src/debug/),而不是引擎起不來。"
-      fail "    兩件事的處置完全不同,所以這裡分開講。"
-    else
-      fail "  phase 不是 READY —— **librime 部署沒成功**,不是佈局的問題。"
-    fi
-    fail "  librime 的 ERROR log:${DEPLOY_ERR:-<空>}"
-    fail "  最常見的成因是 worktree 少了 core/data/user(裡面只有一個"
-    fail "  default.custom.yaml,它把 schema_list 收斂成本專案實際打包的那幾個)。"
-    fail "  缺了它 librime 會去找 cangjie5 / quick5,部署整個失敗:"
-    fail "    ln -sfn /home/lc/rime/core/data/user <worktree>/core/data/user"
+    # ⚠ 這一段以前只撈 librime 的 ERROR log,別的一項都不撈,而這一輪的第一張
+    #   截圖寫在 READY 通過**之後** —— 於是走這條路徑時 artifact 目錄裡一個檔案
+    #   都沒有,事後回答不了「App 掛了,還是守門急了」。26081408 就是這樣卡住的。
+    #   時間軸檔在 rime_wait_ready 裡就寫了(不管綠紅),這裡再補現場。
+    fail "$LAYOUT:引擎沒有準備好。$READY_WHY"
+    fail "  逐圈的時間軸(每一圈的 pid / rc / 答案):$LOUT/ready-probe.txt"
+    adbs exec-out screencap -p > "$LOUT/fail-notready.png" 2>/dev/null
+    case "$READY_WHY" in
+      "[adb 層失敗]"*)
+        fail "  ⚠ 紅的是 adb/am 這一層,**不是產品**:裝置掉線、adb server 被重啟,"
+        fail "    或 --serial 指到一台已經不在的機器。先修環境,不要改 app。"
+        ;;
+      "[行程沒起來]"*|"[行程活著但沒回話]"*)
+        CRASH="$(adbs logcat -b crash -d 2>/dev/null | tr -d '\r' | grep -F "$IME_PKG" \
+          | tail -3 | tr '\n' ' ')"
+        fail "  crash buffer 裡這個套件的最後幾行:${CRASH:-<一行都沒有>}"
+        fail "  ⚠ 上面那兩件事是**直接問行程本身**得來的(pidof / crash buffer),"
+        fail "    不是從「沒有人回話」推出來的 —— 那個推論撐不起這個結論。"
+        fail "  ⚠ 走得到這裡表示 check_apk_identity 剛比對過 sha256:裝置上這一份"
+        fail "    就是要驗的那個 debug APK,所以「沒有 harness」不是候選解釋。"
+        ;;
+      *)
+        DEPLOY_ERR="$(adbs shell "run-as $IME_PKG cat files/rime/log/rime.android.ERROR" 2>/dev/null \
+          | tr -d '\r' | grep '^E' | head -3 | tr '\n' ' ')"
+        fail "  harness 答得出來、phase 卻沒到 READY —— **librime 部署沒成功**,不是佈局的問題。"
+        fail "  librime 的 ERROR log:${DEPLOY_ERR:-<空>}"
+        fail "  最常見的成因是 worktree 少了 core/data/user(裡面只有一個"
+        fail "  default.custom.yaml,它把 schema_list 收斂成本專案實際打包的那幾個)。"
+        fail "  缺了它 librime 會去找 cangjie5 / quick5,部署整個失敗:"
+        fail "    ln -sfn /home/lc/rime/core/data/user <worktree>/core/data/user"
+        ;;
+    esac
     continue
   fi
 
