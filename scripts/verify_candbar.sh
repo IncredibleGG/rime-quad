@@ -48,6 +48,38 @@
 #      這一點同時驗到三件事,每一件單獨都能讓它紅:右端真的只剩一顆、
 #      一列真的排得下 6 個、那個位置真的點得到(min_width 沒把觸控目標弄丟)。
 #
+# ── 環境 vs 缺陷:這一支必須分得出來(2026-08-14 補) ────────────────────
+#
+#   CI 的慢車道連三輪紅(edd0db2 / c8d9b4e / 562bd43),每一輪紅在不同的一關,
+#   而三輪的截圖是同一件事:**IME 視窗那一塊整片空白,鍵盤根本沒畫出來**。
+#   在同一台建置機的 emulator-5558 上,同一份 APK 連跑三次全綠、逐項數字相同。
+#
+#   為什麼三次都被報成產品缺陷:這支腳本從前**沒有任何一道判準看得見鍵盤在不在**。
+#     · `read_frame` 讀的 `Window{… InputMethod}` 紀錄在 IME 收起來之後照樣存在,
+#       frame 一個位元都不差 → 它永遠成功,腳本在一片空白上照常算座標、照常點。
+#     · `field_text()` 從前讀 EditText 的 `text` 屬性,而那在欄位空著時回的是
+#       **hint**,靶的 hint 正好是 `type here` → 「按鍵沒進引擎」那道護欄永遠不觸發,
+#       而 `$D_AFTER = $COMPOSING`(兩邊都是 hint)成立 → 印出
+#       「還是組字中的『type here』—— 沒有選到任何候選」。
+#   兩個洞疊起來,「鍵盤不在畫面上」就長成了「候選列第 6 格點不到」。
+#
+#   ⚠ 查這一條的時候順手挖出第三件事,而它讓上面第二點比看起來更嚴重:
+#     **這一層組字中根本不上屏**(task #68:宿主不得顯示九宮格代碼)。所以
+#     `$COMPOSING` 在**綠燈的那一輪**也是 hint,不是 preedit —— CI 綠的那一輪
+#     自己印著 `打完 MGGAM,輸入框(組字中)=「type here」`。也就是說,
+#     三道 `[ -n "$(field_text)" ] || exit 2「按鍵沒進引擎」` 護欄
+#     **從第一天起就是恆真的**,一次都沒守到過東西。
+#     它們現在改問「候選列上有沒有候選」(assert_bar_has_candidates)——
+#     那才是「那幾下有沒有進引擎」的真憑據。
+#
+#   補法(都不是新腳本,用的是這支自己已經有的東西):
+#     · `assert_ime_painted` —— 點之前先數 IME 視窗那一塊的像素。
+#       實測 emulator-5558:正常 ~308‰、空白 3‰(只剩導覽列),差兩個數量級。
+#     · 第 4 關點下去之前,在**那張會被當成證物的截圖上**確認候選列真的有高亮。
+#     · `field_text()` 改讀測試靶的狀態鏡射,並且「讀不到」與「空的」分開回報。
+#   看不到的時候它以 2 結束,第一句話是「環境:這一台的畫面與預期不符」——
+#   不是綠燈,也不是產品缺陷。
+#
 # ── 反向驗證 ────────────────────────────────────────────────────────────
 #   這一支沒有 --plant:它斷言的是 **APK 裡的行為**,植入要植在程式碼裡再重建。
 #     · 把 InlinePreedit.forDisplay 改成 `return preedit`      → 第 1 關必須紅
@@ -181,16 +213,52 @@ dump_ui() {
 
 # 待測輸入框裡目前的文字。IME 視窗不在 uiautomator 的樹上（實測),
 # 但**宿主 app 的輸入框在** —— 上屏的結果讀得到,那正是這一關要的東西。
+#
+# ⛔ **不可以讀 `rime_matrix_input` 的 `text` 屬性。** 那個屬性在欄位**空著**
+#   的時候回的是 **hint**,而這支靶的 hint 正好是 `type here`
+#   (`build_input_matrix_app.sh:408  edit.setHint("type here")`)。
+#   實測(emulator-5558,2026-08-14):欄位空的時候那個節點是
+#       class='android.widget.EditText'  text='type here'
+#   而且**整棵樹上沒有 `hint` / `hintText` 屬性**(平台的 `uiautomator dump`
+#   不輸出它)—— 所以「空欄位」與「真的有 type here 這四個字」在這裡分不開。
+#
+#   後果不是理論的,是這支腳本紅過的那一次:
+#     · 第 4 關的護欄 `[ -n "$D_BEFORE" ] || …「按鍵沒進引擎」` **永遠不觸發**,
+#       因為 hint 非空;
+#     · 於是鍵盤根本沒畫出來的那一輪,一路走到
+#       `[ "$D_AFTER" = "$COMPOSING" ]`(兩邊都是 hint「type here」),
+#       印出「還是組字中的「type here」—— 沒有選到任何候選」。
+#       那句話把「鍵盤不在畫面上」講成「第 6 格點不到」。
+#
+#   改讀測試靶自己的**狀態鏡射**(content-desc `rime_matrix_mirror`):
+#       STATE <field> |<text>| cs=<組字起> ce=<組字迄> sel=<a>,<b> len=<n>
+#   `|…|` 中間是 `Editable.toString()`,空欄位時就是空的,hint 汙染不到它。
+#   這不是新發明:`verify_selection_digit.sh:188` 與 `verify_input_matrix.sh:346`
+#   早就這樣讀了,只有這一支與 `verify_syllables.sh` 還在讀會被 hint 汙染的
+#   那個屬性。
+#
+# ⚠ 讀不到鏡射時**不可以**回空字串 —— 那會和「欄位真的空著」混在一起。
+#   回 `<讀不到鏡射>` 這個不可能與真實內容相等的哨符,呼叫端的斷言會因此紅,
+#   而不是靜靜通過。
+FIELD_UNREADABLE='<讀不到鏡射>'
 field_text() {
-  dump_ui | python3 -c '
+  local out
+  out="$(dump_ui | python3 -c '
 import sys, re, xml.etree.ElementTree as ET
+# ⚠ dump 壞掉要走「讀不到」那條路,**不可以** sys.exit(0) —— 那會讓
+#   「uiautomator 這次沒吐出東西」長得和「欄位是空的」一模一樣。
 try: root = ET.fromstring(sys.stdin.read())
-except Exception: sys.exit(0)
+except Exception: sys.exit(3)
 for n in root.iter("node"):
-    if n.get("content-desc") == "rime_matrix_input":
-        print((n.get("text") or "").strip())
-        break
-'
+    if n.get("content-desc") == "rime_matrix_mirror":
+        # 貪婪的 .* 讓內容裡本身有 `|` 也切得對(結尾錨在 `| cs=<數>`)。
+        m = re.match(r"^STATE \S+ \|(.*)\| cs=-?\d+ ", n.get("text") or "")
+        if m:
+            sys.stdout.write(m.group(1))
+            sys.exit(0)
+sys.exit(3)
+')" || { printf '%s' "$FIELD_UNREADABLE"; return 0; }
+  printf '%s' "$out"
 }
 
 field_xy() {
@@ -251,6 +319,15 @@ GRID_H="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['grid_h
 BAR_PX="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['bar_height_px'])" "$OUT_DIR/keymap.json")"
 
 # ⚠ 每一次點擊之前都要重讀:打第一個字之後 IME 視窗會長高,舊座標會落在隔壁列。
+#
+# ⛔ **`read_frame` 成功 ≠ 鍵盤在畫面上。** 它讀的是 `dumpsys window windows`
+#   裡那筆 `Window{… InputMethod}` 的 `frame=`,而**那筆紀錄在 IME 收起來之後
+#   照樣存在、照樣有一模一樣的 frame**。實測(emulator-5558,2026-08-14):
+#       鍵盤在      frame_top=1600 frame_bot=2400   y1600..2400 墨跡 531870
+#       按 BACK 收掉 frame_top=1600 frame_bot=2400   y1600..2400 墨跡   2828
+#   兩邊的 frame 一個位元都不差。所以 `read_frame` 永遠成功,腳本會在一片
+#   空白上照常算座標、照常點下去,而每一關都紅在「點不到」——
+#   見下面 `assert_ime_painted` 的註解。
 read_frame() {
   read -r FRAME_TOP FRAME_BOT < <(adbs shell dumpsys window windows 2>/dev/null | tr -d '\r' | python3 -c '
 import sys, re
@@ -273,6 +350,129 @@ if f: print(f.group(2), f.group(4))
   #   由上往下算沒有這個問題:候選列緊貼視窗頂端,格線區緊貼候選列。
   GRID_TOP=$((FRAME_TOP + BAR_PX))
   BAR_MID=$(( (FRAME_TOP + GRID_TOP) / 2 ))
+}
+
+# 鍵盤**真的畫在畫面上**了沒有 —— 問的是像素,不是狀態旗標。
+#
+# ── 為什麼要有這一段 ──────────────────────────────────────────────────
+# CI 的慢車道連三輪紅(edd0db2 / c8d9b4e / 562bd43),每一輪紅在不同的一關,
+# 而三輪的截圖是同一件事:**IME 視窗那一塊整片空白**。
+#   /home/lc/ciprobe-dl/562bd43/verify-candbar/4-dense.png   44 254 B
+#   /home/lc/ciprobe-dl/30e8a2f/verify-candbar/4-dense.png  126 336 B(綠)
+# 量出來(y1600..2400,1080x2400 @420):
+#   紅  墨跡   2 828 / 864 000  =    3‰      ← 只剩系統導覽列
+#   綠  墨跡 266 064 / 864 000  =  308‰
+# 相差兩個數量級,中間沒有灰色地帶,所以門檻不需要調校。
+#
+# 而在這一段補上之前,**沒有任何一道判準看得見這件事**:
+#   · `read_frame` 照樣成功(見它上面的註解:frame 在 IME 收起後仍然存在);
+#   · `field_text()` 從前讀 hint,空欄位回「type here」而不是空字串,
+#     於是「按鍵沒進引擎」那道護欄永遠不觸發(見 field_text 的註解);
+#   · 於是第 4 關把「鍵盤不在畫面上」印成「點 x=922 沒有選到任何候選」,
+#     而那句話會把下一個人送去查候選列的程式碼。
+#
+# ⛔ **不要改用 `dumpsys input_method` 的 `mIsInputViewShown`。**
+#   `verify_input_matrix.sh:384` 與 `verify_longpress.sh:319` 等的是它,而它
+#   在這台機器上**是黏住的**。實測(emulator-5558,2026-08-14,同一支探針
+#   連續五個狀態):
+#       IME 剛被 force-stop   mIsInputViewShown=false  墨跡 703617(桌布)
+#       開靶、鍵盤上來        mIsInputViewShown=true   墨跡 531870
+#       按 BACK 收掉鍵盤      mIsInputViewShown=true   墨跡   2828  ← 還是 true
+#       再點欄位              mIsInputViewShown=true   墨跡   2828  ← 還是 true
+#   它一旦為真就只有在 IME 行程被殺掉時才回到假 —— 拿它當「鍵盤現在在不在」
+#   會**在正是要擋的那一格上放行**。同一份 dumpsys 裡真的會跟著變的是
+#   `mInputShown`,但那仍然只是「系統認為它該顯示」;這一關要的是
+#   「使用者看得到」,而那件事只有像素回答得了。所以這裡數像素。
+#
+# ⛔ 這也**不是**「等久一點」或「多重試幾次」。原本這裡是 open_target() 尾巴
+#   一個無條件的 `sleep 2`;現在總預算沒有變長(仍是 open_target 的 4 + 2 秒),
+#   只是把那 2 秒從「盲等」換成「等到看得見為止,看不見就指名說出來並停」。
+#   等不到的時候它**不會**變綠,也不會被當成產品缺陷 —— 它以 2 結束,
+#   訊息第一句就是「這一台的畫面與預期不符」。真的產品缺陷(鍵盤永遠畫不出來)
+#   在這裡一樣紅,而且紅得更早、更準。
+IME_PAINT_PERMILLE="${RIME_IME_PAINT_PERMILLE:-50}"   # 綠 308‰ / 紅 3‰,取中間
+ime_paint_permille() {  # ime_paint_permille <png> → 千分比
+  python3 "$HERE/lib/count_ink.py" "$1" 0 "$FRAME_TOP" "$SCREEN_W" "$FRAME_BOT" \
+    "$OUT_DIR/paint-probe.png" \
+    | awk '{ if ($2 > 0) printf "%d\n", ($1 * 1000) / $2; else print 0 }'
+}
+# 「鍵盤不在畫面上」這句話只寫一次,四個呼叫端共用 —— 訊息分岔的話,
+# 下一個人會以為那是四種不同的病。
+env_no_keyboard() {  # env_no_keyboard <這是哪一步> <千分比> <截圖>
+  echo "" >&2
+  echo "⚠ 環境:這一台的畫面與預期不符 —— 鍵盤沒有畫在畫面上($1)。" >&2
+  echo "  IME 視窗 frame=[0,$FRAME_TOP]..[${SCREEN_W},$FRAME_BOT]," >&2
+  echo "  但那一整塊只有 ${2}‰ 的墨跡(下限 $IME_PAINT_PERMILLE‰;" >&2
+  echo "  這台機器正常時實測 300‰ 上下,空白時 3‰)。" >&2
+  echo "  也就是說 IME 視窗**登記著**卻沒有內容 —— 這幾關要點的候選、" >&2
+  echo "  展開鍵、九宮格,沒有一個在畫面上。" >&2
+  echo "  ⛔ 這**不是**候選列的缺陷,也還不能證明產品有問題:繼續點下去," >&2
+  echo "     每一關都會紅在「點不到」,而那些訊息會指向不相干的程式碼。" >&2
+  echo "  現場:$3(整張截圖)、$OUT_DIR/paint-probe.png(量的那一塊)" >&2
+  echo "  IME 行程:$(adbs shell pidof "$IME_PKG" 2>/dev/null | tr -d '\r' | sed 's/^$/<不在了>/')" >&2
+  echo "  前景視窗:$(adbs shell dumpsys window 2>/dev/null | tr -d '\r' \
+                     | sed -n 's/.*mCurrentFocus=\(.*\)/\1/p' | head -1)" >&2
+  exit 2
+}
+assert_ime_painted() {  # assert_ime_painted <這是哪一步>
+  local tag="$1" i pm shot="$OUT_DIR/painted-$1.png"
+  # 6 圈 × 1 秒。open_target 原本的盲等就是 2 秒,這裡連同 dumpsys 的往返
+  # 仍在同一個量級,不是把時間拉長來掩蓋偶發。
+  for i in $(seq 1 6); do
+    read_frame || { sleep 1; continue; }
+    adbs exec-out screencap -p > "$shot" 2>/dev/null
+    pm="$(ime_paint_permille "$shot")"
+    [ "${pm:-0}" -ge "$IME_PAINT_PERMILLE" ] && { info "鍵盤畫出來了($tag:$pm‰)"; return 0; }
+    sleep 1
+  done
+  env_no_keyboard "$tag" "${pm:-0}" "$shot"
+}
+# 「點完之後什麼都沒上屏」的時候問一次:鍵盤**現在**還在不在?
+# 在 → 那確實是選字這條路的問題,呼叫端照常紅。
+# 不在 → 那一下是點在空氣上,說成產品缺陷就是誣告。
+#
+# ⚠ 這不是重試,也不會讓任何斷言變綠:它只在**已經失敗**的那條路上跑一次,
+#   決定那句紅字要說什麼。
+assert_still_painted() {  # assert_still_painted <這是哪一步>
+  local tag="$1" pm shot="$OUT_DIR/painted-$1.png"
+  read_frame || return 0
+  adbs exec-out screencap -p > "$shot" 2>/dev/null
+  pm="$(ime_paint_permille "$shot")"
+  [ "${pm:-0}" -ge "$IME_PAINT_PERMILLE" ] && return 0
+  env_no_keyboard "$tag" "${pm:-0}" "$shot"
+}
+
+# 「那幾下真的進了引擎嗎」 —— 問的是候選列上有沒有候選,不是問輸入框。
+#
+# ⛔ **不可以用「輸入框非空」來問這件事。** 這一層的九宮格**刻意不把組字串送進
+#   宿主輸入框**(task #68:宿主不得顯示九宮格代碼)。也就是說:組字中的時候
+#   `cn-t9-pinyin` 的輸入框**本來就是空的**,那是正確行為,不是故障。
+#   證據是 CI 綠的那一輪自己印的(run 31765500254,30e8a2f):
+#       [candbar] 打完 MGGAM,輸入框(組字中)=「type here」
+#       [candbar] 高亮候選 x=12..158 y=1608..1714      ← 同一時刻候選是有的
+#   那句「type here」是 **hint**,不是內容 —— 舊的 `field_text()` 讀 EditText 的
+#   `text` 屬性,而空欄位回的就是 hint。於是從前那三道
+#   `[ -n "$(field_text)" ] || exit 2 "按鍵沒進引擎"` 護欄**每一輪都恆真**,
+#   一次都沒有守到東西;而 `field_text()` 改讀狀態鏡射(回真正的空字串)之後,
+#   同一道護欄會變成**每一輪都誤報**。兩個方向都錯,因為問錯了問題。
+#
+#   對的問題是「候選列上有沒有候選」——引擎收到那幾下才會有候選。
+#   判準用第 1 關就在用的 `highlight_box`,沒有新東西。
+#
+# 兩種失敗分開講,因為它們該送去查的地方完全不同:
+#   · 整塊鍵盤沒畫出來 → 環境(CI 連三輪紅就是這個)
+#   · 鍵盤在、候選列空 → 那幾下沒進引擎(佈局還沒換過來、鍵位算錯…)
+assert_bar_has_candidates() {  # assert_bar_has_candidates <png> <這是哪一步>
+  local shot="$1" tag="$2" pm
+  [ -n "$(highlight_box "$shot" "$FRAME_TOP" "$GRID_TOP")" ] && return 0
+  pm="$(ime_paint_permille "$shot")"
+  [ "${pm:-0}" -lt "$IME_PAINT_PERMILLE" ] && env_no_keyboard "$tag" "${pm:-0}" "$shot"
+  echo "" >&2
+  echo "鍵盤有畫出來(${pm}‰),但候選列($FRAME_TOP..$GRID_TOP)上找不到高亮候選($tag)。" >&2
+  echo "  也就是那幾下沒有進到引擎 —— 佈局可能還不是 $LAYOUT,或鍵座標算錯了。" >&2
+  echo "  (⚠ 這一層組字中輸入框本來就是空的,見 task #68;所以不能拿輸入框來問這件事。)" >&2
+  echo "  現場:$shot" >&2
+  exit 2
 }
 
 tap_key() {
@@ -393,6 +593,9 @@ highlight_box() {
 }
 
 read_frame || { echo "讀不到 IME 視窗 frame" >&2; exit 2; }
+# ⚠ 第一次真的要點鍵盤之前。c8d9b4e 那一輪紅在這裡:`1-typed.png` 44 026 B、
+#   整片空白,於是第 1 關報「候選列上找不到高亮候選」而其實是鍵盤不在。
+assert_ime_painted "第一輪打字前"
 
 # ═══════════ 第一輪:不翻頁,直接選第一個 ═══════════
 step "第一輪:第 1 頁的第一個候選"
@@ -404,19 +607,31 @@ BAR_TOP="$FRAME_TOP"; BAR_BOT="$GRID_TOP"
 # ⚠ 先確認那五下真的進了引擎。打不進去的話後面每一關都會紅,而紅的理由
 #   會指向產品 —— 實際上是「鍵盤還沒換成九宮格就開始打」(CI 上踩過:
 #   IME 剛 attach 時畫的是 qwerty,拿九宮格的座標打上去會打出 jddyj)。
+#
+# ⚠ 2026-08-14:問法從「輸入框非空」改成「候選列上有候選」。理由見
+#   `assert_bar_has_candidates` 的註解 —— 這一層組字中輸入框**本來就是空的**
+#   (task #68),舊問法讀到的非空字串是 hint,那道護欄從來沒有守到過東西。
+#   c8d9b4e 那一輪 CI 紅在這裡,而它的 1-typed.png 是 44 026 B 的一片空白。
+assert_bar_has_candidates "$OUT_DIR/1-typed.png" "第一輪打完MGGAM之後"
+
 COMPOSING="$(field_text)"
-[ -n "$COMPOSING" ] || {
-  echo "打完之後輸入框是空的 —— 那五下沒有進到引擎(鍵盤可能還不是 $LAYOUT)" >&2
+if [ "$COMPOSING" = "$FIELD_UNREADABLE" ]; then
+  echo "打完之後讀不到測試靶的狀態鏡射 —— 後面每一關都要拿它比對,問不出來就不能往下走。" >&2
+  echo "  多半是 uiautomator dump 失敗或靶 app 太舊(先跑 scripts/build_input_matrix_app.sh)。" >&2
   exit 2
-}
-info "打完 MGGAM,輸入框(組字中)=「$COMPOSING」"
+fi
+# ⚠ 這裡**期待它是空的**:組字中不上屏(task #68)。留著這個變數是給下面幾關
+#   當「還沒有東西上屏」的基準用 —— 它不再是「preedit 的內容」。
+info "打完 MGGAM,已上屏的內容=「$COMPOSING」(組字中不上屏,所以空的才對)"
 
 # ── 第 1 關:第一個候選左邊不准有東西 ────────────────────────────────
 step "1. 候選列左端不印按鍵代碼"
 read -r HX0 HY0 HX1 HY1 HX HY <<<"$(highlight_box "$OUT_DIR/1-typed.png" "$BAR_TOP" "$BAR_BOT")"
+# 上面 assert_bar_has_candidates 已經確認過高亮存在(而且是同一張圖、同一個
+# 判準),所以這裡讀不到就是 BAR_TOP/BAR_BOT 這一組邊界自己算錯了 —— 指名說出來。
 if [ -z "${HX0:-}" ]; then
-  # 找不到高亮 = 候選列上沒有候選。這不是「通過」,是這一關沒有東西可驗。
-  echo "候選列上找不到高亮候選(帶子 $BAR_TOP..$BAR_BOT)—— 沒有候選可驗,見 $OUT_DIR/1-typed.png" >&2
+  echo "候選列邊界算錯了:整條 IME 視窗($FRAME_TOP..$GRID_TOP)上找得到高亮," >&2
+  echo "  但用第 1 關的帶子($BAR_TOP..$BAR_BOT)去找卻找不到。見 $OUT_DIR/1-typed.png" >&2
   exit 2
 fi
 info "高亮候選 x=$HX0..$HX1 y=$HY0..$HY1"
@@ -456,13 +671,17 @@ info "第 1 頁選第一個 → 上屏「${T1:-<空>}」"
 #   格線區不會動,這一關就會紅 —— 這正是它守的東西。
 step "2. 候選列右端那一顆是展開鍵(而不是「跳過沒看過的候選」的翻頁鍵)"
 open_target
-sleep 2
+# ⚠ 原本這裡是一個無條件的 `sleep 2`。換成「等到鍵盤真的畫出來」——
+#   時間預算沒變,但看不到的時候會指名說出來而不是往下點。
+assert_ime_painted "第2關開靶後"
 read_frame || { echo "讀不到 frame" >&2; exit 2; }
 type_nihao || { echo "點不到九宮格的鍵" >&2; exit 2; }
 read_frame || { echo "讀不到 frame" >&2; exit 2; }
-[ -n "$(field_text)" ] || { echo "第二輪打完之後輸入框是空的,按鍵沒進引擎" >&2; exit 2; }
 E_BEFORE="$(field_text)"
 adbs exec-out screencap -p > "$OUT_DIR/2-before-expand.png" 2>/dev/null
+# ⚠ 從前這裡是 `[ -n "$(field_text)" ] || exit 2 "按鍵沒進引擎"` —— 恆真的護欄
+#   (讀到的非空字串是 hint)。改問候選列,而且問的是剛拍下來的那張證物。
+assert_bar_has_candidates "$OUT_DIR/2-before-expand.png" "第二輪打完MGGAM之後"
 BAR_TOP2="$FRAME_TOP"; BAR_BOT2="$GRID_TOP"
 adbs shell input tap "$EXPAND_X" "$BAR_MID" >/dev/null 2>&1
 sleep 1
@@ -537,14 +756,20 @@ sleep 1.5
 T2="$(field_text)"
 info "第 2 頁選第一個 → 上屏「${T2:-<空>}」"
 
-if [ -z "$T1" ]; then
-  fail "第一輪就沒有上屏 —— 選字這條路本身壞了,後面比不出東西"
+if [ "$T1" = "$FIELD_UNREADABLE" ] || [ "$T2" = "$FIELD_UNREADABLE" ]; then
+  fail "讀不到測試靶的狀態鏡射(第 1 頁「$T1」/ 第 2 頁「$T2」)—— 有沒有上屏無從得知。" \
+       "不是產品的結論:多半是 uiautomator dump 失敗,或靶 app 太舊。"
+elif [ -z "$T1" ]; then
+  # 點完之後什麼都沒上屏 → 先問「鍵盤還在不在」,不在就是環境(它會 exit 2)。
+  assert_still_painted "第1頁選完之後"
+  fail "第一輪就沒有上屏 —— 選字這條路本身壞了,後面比不出東西(鍵盤仍在畫面上)"
 elif [ -z "$T2" ]; then
-  fail "翻頁之後選不出東西(上屏是空的)"
-elif [ "$T2" = "$COMPOSING" ]; then
-  # 輸入框在組字中本來就顯示 preedit。拿它當「上屏的詞」會讓「根本沒選到字」
-  # 看起來像「選到了別的字」—— 實測踩過。
-  fail "翻頁之後那一下沒有選到任何候選(輸入框還是組字中的「$T2」)"
+  # ⚠ 從前這裡下面還有一支 `[ "$T2" = "$COMPOSING" ]`「還在組字中」。
+  #   `field_text()` 改讀狀態鏡射之後那一支**恆假**:這一層組字中不上屏
+  #   (task #68),`$COMPOSING` 就是空字串,已經被這一支收掉了。
+  #   留著它只會是一條永遠走不到、卻看起來像在守的死碼。
+  assert_still_painted "第2頁選完之後"
+  fail "翻頁之後選不出東西(上屏是空的)—— 那一下沒有選到任何候選(鍵盤仍在畫面上)"
 elif [ "$T1" = "$T2" ]; then
   fail "翻到第 2 頁再選第一個,拿到的還是「$T1」—— 翻頁鍵不存在或按不動,使用者永遠停在第 1 頁"
 else
@@ -570,15 +795,30 @@ else
   pass "算出來一列畫得出 $VISIBLE 個"
 fi
 open_target
-sleep 2
+# ⚠ 562bd43 那一輪 CI 紅在這裡:`4-dense.png` 44 254 B、整片空白。原本這一行
+#   是無條件的 `sleep 2`,於是空白照樣往下走。
+assert_ime_painted "第4關開靶後"
 read_frame || { echo "讀不到 frame" >&2; exit 2; }
 type_nihao || { echo "點不到九宮格的鍵" >&2; exit 2; }
 read_frame || { echo "讀不到 frame" >&2; exit 2; }
 D_BEFORE="$(field_text)"
-[ -n "$D_BEFORE" ] || { echo "第四輪打完之後輸入框是空的,按鍵沒進引擎" >&2; exit 2; }
 adbs exec-out screencap -p > "$OUT_DIR/4-dense.png" 2>/dev/null
 OLD_NEXT_X=$(( SCREEN_W - $(dp 60) ))   # 舊版右端第二顆(翻頁鍵)的中心
 info "舊版翻頁鍵的中心 x=$OLD_NEXT_X;現在右端只有展開鍵(x=$EXPAND_X)"
+
+# ⛔ **點之前先確認要點的東西真的在那裡** —— 而且是在**這一張、等一下會被
+#   當成證物貼進失敗訊息的截圖**上確認,不是在別的時刻確認。
+#   (從前這裡是 `[ -n "$D_BEFORE" ] || exit 2 "按鍵沒進引擎"`,而那道護欄
+#    讀到的非空字串是 hint,一次都沒有守到過東西。)
+#
+#   拿 CI 自己的產物實跑過(2026-08-14,scripts/lib/find_highlight.py 原樣):
+#     30e8a2f/verify-candbar/4-dense.png(綠)→ 12 1608 158 1714 85 1661,307‰
+#     562bd43/verify-candbar/4-dense.png(紅)→ <什麼都沒有>,3‰
+#     c8d/verify-candbar/1-typed.png    (紅)→ <什麼都沒有>,3‰
+#   也就是說:這一段補上之後,CI 那兩輪會停在這裡並說「鍵盤不在畫面上」,
+#   而不是走到下面印出「點 x=922 沒有選到任何候選」。
+assert_bar_has_candidates "$OUT_DIR/4-dense.png" "第四輪打完MGGAM之後"
+
 adbs shell input tap "$OLD_NEXT_X" "$BAR_MID" >/dev/null 2>&1
 sleep 1.5
 D_AFTER="$(field_text)"
@@ -593,18 +833,25 @@ adbs exec-out screencap -p > "$OUT_DIR/4-after-tap.png" 2>/dev/null
 #
 #   修法是把**第 3 關已經有的那三道防線**照抄過來(不發明新的):
 #     空的 → 讀不到,不是上屏;等於組字串 → 還在組字,沒選到;沒變 → 沒發生。
-if [ -z "$D_AFTER" ]; then
-  fail "點 x=$OLD_NEXT_X 之後輸入框讀成**空的** —— 那不是「上屏了」。" \
-       "三種可能:欄位真的空了、欄位在顯示 hint、uiautomator dump 失敗。" \
-       "圖:$OUT_DIR/4-after-tap.png"
-elif [ "$D_AFTER" = "$COMPOSING" ]; then
-  # 輸入框在組字中本來就顯示 preedit。拿它當「上屏的詞」會讓「根本沒選到字」
-  # 看起來像「選到了別的字」——與第 3 關同一條理由。
-  fail "點 x=$OLD_NEXT_X 之後輸入框還是組字中的「$D_AFTER」—— 沒有選到任何候選。" \
-       "圖:$OUT_DIR/4-after-tap.png"
+#
+#   ⚠ 2026-08-14:`field_text()` 改讀狀態鏡射之後,這三道防線塌成兩道,而且
+#   意思更準了:
+#     · 「讀不到」有自己的哨符 `$FIELD_UNREADABLE`,不再混進空字串;
+#     · 「還在組字」與「什麼都沒上屏」在這一層**是同一件事** —— 組字中不上屏
+#       (task #68),所以 `$COMPOSING`、`$D_BEFORE` 都是空的。從前那兩支之所以
+#       看起來不同,只是因為前者比的是 hint「type here」。
+#   所以留兩支:讀不到 / 沒變。不留一支永遠走不到的死碼冒充防線。
+if [ "$D_AFTER" = "$FIELD_UNREADABLE" ]; then
+  fail "點 x=$OLD_NEXT_X 之後**讀不到測試靶的狀態鏡射** —— 這一下有沒有上屏無從得知。" \
+       "不是產品的結論:多半是 uiautomator dump 這次失敗,或靶 app 太舊(先跑" \
+       "scripts/build_input_matrix_app.sh)。圖:$OUT_DIR/4-after-tap.png"
 elif [ "$D_AFTER" = "$D_BEFORE" ]; then
-  fail "點 x=$OLD_NEXT_X(舊版翻頁鍵的位置)什麼都沒上屏 —— " \
+  # 點完之後什麼都沒上屏 → 先問「鍵盤還在不在」,不在就是環境(它會 exit 2)。
+  assert_still_painted "第4關點完之後"
+  fail "點 x=$OLD_NEXT_X(舊版翻頁鍵的位置)什麼都沒上屏(前後都是「$D_BEFORE」)—— " \
        "那裡不是候選。可能是右端仍然保留兩顆鍵,也可能是一列根本排不到那麼多個。" \
+       "(這一句有前提:點之前已經量過鍵盤畫出來了(≥$IME_PAINT_PERMILLE‰)、" \
+       "而且那一列上有高亮候選 —— 所以不是「畫面上沒東西」。)" \
        "圖:$OUT_DIR/4-after-tap.png"
 else
   pass "點 x=$OLD_NEXT_X 上屏了「$D_AFTER」—— 那 40 dp 現在是候選,不是按鍵"

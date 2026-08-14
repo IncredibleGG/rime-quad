@@ -1973,17 +1973,41 @@ PYM
 
   # 宿主輸入框現在的文字。**問輸入框,不要問 OCR**:「有沒有上屏」這件事只有
   # 輸入框知道,而候選列上印著什麼與上屏了什麼是兩回事(第 4 關吃過這個虧)。
+  #
+  # ⛔ **不可以讀 `rime_matrix_input` 的 `text` 屬性。** 欄位空著時那個屬性回的
+  #   是 **hint**,而這支靶的 hint 是 `type here`
+  #   (`build_input_matrix_app.sh:408  edit.setHint("type here")`)。
+  #   實測(emulator-5558,2026-08-14):空欄位那個節點是
+  #       class='android.widget.EditText'  text='type here'
+  #   而且平台的 `uiautomator dump` **不輸出 hint / hintText 屬性**,
+  #   所以在這一層分不出「空的」與「真的有那四個字」。
+  #   後果:5b 的 `[ "$FT1" = "$FT0" ]` 在鍵盤根本沒畫出來的那一輪也成立
+  #   (前後都是 hint),而底下那句紅字會斷定 onSlot 對 Cell.Original 是 Unit
+  #   —— 憑空指認一個不存在的產品缺陷。
+  #
+  #   改讀測試靶自己的狀態鏡射(content-desc `rime_matrix_mirror`):
+  #       STATE <field> |<text>| cs=<組字起> ce=<組字迄> sel=<a>,<b> len=<n>
+  #   `|…|` 中間是 `Editable.toString()`,hint 汙染不到它。
+  #   `verify_selection_digit.sh:188` 與 `verify_input_matrix.sh:346` 早就這樣讀。
+  #
+  # ⚠ 讀不到鏡射時回哨符而不是空字串 —— 「問不出來」與「欄位是空的」必須分得開。
+  FIELD_UNREADABLE='<讀不到鏡射>'
   field_text() {
-    adbs shell "uiautomator dump /sdcard/s5.xml >/dev/null 2>&1; cat /sdcard/s5.xml" 2>/dev/null \
+    local out
+    out="$(adbs shell "uiautomator dump /sdcard/s5.xml >/dev/null 2>&1; cat /sdcard/s5.xml" 2>/dev/null \
       | tr -d '\r' | python3 -c '
-import sys, xml.etree.ElementTree as ET
+import sys, re, xml.etree.ElementTree as ET
 try: root = ET.fromstring(sys.stdin.read())
-except Exception: sys.exit(0)
+except Exception: sys.exit(3)
 for n in root.iter("node"):
-    if n.get("content-desc") == "rime_matrix_input":
-        sys.stdout.write(n.get("text", ""))
-        break
-'
+    if n.get("content-desc") == "rime_matrix_mirror":
+        m = re.match(r"^STATE \S+ \|(.*)\| cs=-?\d+ ", n.get("text") or "")
+        if m:
+            sys.stdout.write(m.group(1))
+            sys.exit(0)
+sys.exit(3)
+')" || { printf '%s' "$FIELD_UNREADABLE"; return 0; }
+    printf '%s' "$out"
   }
 
   # 「沒被接管的那一格」在畫面上的位置,以及它在打字前後變了幾個像素。
@@ -2081,8 +2105,26 @@ PY
   fi
   case "$U5" in
     *ERROR=*)
-      fail "$LAYOUT:第 5 關量不出「沒被接管的那一格」在哪裡:${U5#*ERROR=}"
-      fail "  截圖 $LOUT/5-pgm.png,底圖 $LOUT/0-idle.png"
+      # ⚠ 先回答「鍵盤到底在不在畫面上」,再談消歧欄。
+      #   「0 條橫帶」有兩個很不一樣的成因:消歧欄真的沒畫(產品),
+      #   或者**整塊鍵盤都不在畫面上**(環境)—— 後者在 CI 的慢車道上
+      #   實際發生過三次(見 verify_candbar.sh 的 assert_ime_painted 註解:
+      #   同一台機器上正常 300‰、空白 3‰,差兩個數量級)。
+      #   兩者印同一句話的話,調查會被帶去查消歧欄的程式碼。
+      PM5="$(python3 "$HERE/lib/count_ink.py" "$LOUT/5-pgm.png" \
+             0 "$FRAME_TOP" "${WM_SIZE%%x*}" "$FRAME_BOT" "$LOUT/5-paint.png" 2>/dev/null \
+             | awk '{ if ($2 > 0) printf "%d\n", ($1 * 1000) / $2; else print 0 }')"
+      if [ "${PM5:-0}" -lt "${RIME_IME_PAINT_PERMILLE:-50}" ]; then
+        fail "$LAYOUT:第 5 關 —— ⚠ 環境:這一台的畫面與預期不符,**鍵盤不在畫面上**。"
+        fail "  IME 視窗 frame 登記在 y=$FRAME_TOP..$FRAME_BOT,那一整塊卻只有 ${PM5}‰ 的墨跡"
+        fail "  (下限 ${RIME_IME_PAINT_PERMILLE:-50}‰;這台機器正常時 300‰ 上下)。"
+        fail "  ⛔ 這不是消歧欄的缺陷 —— 消歧欄連同整個九宮格一起沒有畫出來。"
+        fail "  截圖 $LOUT/5-pgm.png(整張)、$LOUT/5-paint.png(量的那一塊)"
+      else
+        fail "$LAYOUT:第 5 關量不出「沒被接管的那一格」在哪裡:${U5#*ERROR=}"
+        fail "  (鍵盤有畫出來,${PM5}‰ —— 所以這一條不是「畫面空的」。)"
+        fail "  截圖 $LOUT/5-pgm.png,底圖 $LOUT/0-idle.png"
+      fi
       continue ;;
   esac
   GATE5_RAN=$((GATE5_RAN + 1))
@@ -2110,15 +2152,41 @@ PY
   fi
 
   # 5b 行為:點下去,宿主輸入框真的多出那個標點。
+  #
+  # 先把「鍵盤在不在畫面上」量成一個數字。5a 走到這裡代表左欄量出了兩條橫帶,
+  # 所以鍵盤幾乎一定在;量它是為了讓**失敗訊息帶著事實**,而不是讓下一個人
+  # 從一句斷言出發去查程式碼(見下面那一支的註解)。
+  PM5B="$(python3 "$HERE/lib/count_ink.py" "$LOUT/5-pgm.png" \
+          0 "$FRAME_TOP" "${WM_SIZE%%x*}" "$FRAME_BOT" "$LOUT/5-paint.png" 2>/dev/null \
+          | awk '{ if ($2 > 0) printf "%d\n", ($1 * 1000) / $2; else print 0 }')"
   FT0="$(field_text)"
   adbs shell input tap "$CX5" "$CY5" >/dev/null 2>&1
   sleep 2
   FT1="$(field_text)"
-  if [ "$FT1" = "$FT0" ]; then
+  if [ "$FT0" = "$FIELD_UNREADABLE" ] || [ "$FT1" = "$FIELD_UNREADABLE" ]; then
+    # 「問不出來」不是「沒反應」。從前這兩件事都會走進下面那一支,
+    # 而下面那一支會斷定 onSlot 有缺陷。
+    fail "$LAYOUT:第 5 關 —— 讀不到測試靶的狀態鏡射(前=「$FT0」後=「$FT1」),"
+    fail "  這一下有沒有上屏無從得知。不是產品的結論:多半是 uiautomator dump 失敗,"
+    fail "  或靶 app 太舊(先跑 scripts/build_input_matrix_app.sh)。"
+  elif [ "$FT1" = "$FT0" ]; then
+    # ⛔ 這一段從前**無條件**斷定「點擊被導進 onSlot,而 onSlot 對 Cell.Original
+    #   是 Unit」。腳本量到的其實只有「輸入框前後沒變」—— 植入版下那句話是對的,
+    #   而環境壞掉(鍵盤沒畫出來 / 焦點不在靶上)時它會憑空指認一個不存在的缺陷。
+    #   工單 #104 那一輪的調查就是被這句話帶進 KeyboardView 的。
+    #   所以:先把**量到的事實**攤開,再把成因寫成待查的候選,而不是判決。
     fail "$LAYOUT:第 5 關 —— 點下沒被接管的那一格($SLOT3_ID,鍵面「$SLOT3_LABEL」),"
     fail "  宿主輸入框一個字都沒多出來(前後都是「$FT0」)。"
-    fail "  那是一顆畫得對、按下去什麼都不做的標點鍵:點擊被導進 onSlot,"
-    fail "  而 onSlot 對 Cell.Original 是 Unit(task #78 的形狀,鍵面與幾何完全正常)。"
+    fail "  量到的事實只有這些:點在 x=$CX5 y=$CY5;那一格在組字前後變了 $CH5/$AR5 px;"
+    fail "  5-pgm.png 的 IME 視窗那一塊有 ${PM5B:-?}‰ 墨跡(下限 ${RIME_IME_PAINT_PERMILLE:-50}‰)。"
+    fail "  可能的成因(**還沒有分辨出是哪一個**,不要當成結論):"
+    # ⚠ 下面這一行含「按下去什麼都不做的標點鍵」—— `plant_expect_re tap-swallowed`
+    #   指名的就是這句話。改字的話那個反向測試會變成「紅的不是該紅的那一條」。
+    fail "    · 產品:那是一顆畫得對、按下去什麼都不做的標點鍵 —— 點擊被導進 onSlot,"
+    fail "      而 onSlot 對 Cell.Original 是 Unit(task #78 / --plant tap-swallowed 的形狀)"
+    fail "    · 環境:座標雖然在畫面上,但那一下沒有被系統送到 IME(靶失去焦點、動畫中…)"
+    fail "  要分辨的話:看 $LOUT/5-pgm.png 那一格畫的是不是「$SLOT3_LABEL」,"
+    fail "  再看 logcat 有沒有那一下的 KeyboardEvent。"
     fail "  截圖 $LOUT/5-pgm.png"
   elif [ "${FT1%"$SLOT3_LABEL"}" = "$FT1" ]; then
     fail "$LAYOUT:第 5 關 —— 點下 $SLOT3_ID 之後輸入框變成「$FT1」,結尾不是它鍵面上"
