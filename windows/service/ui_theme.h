@@ -4,12 +4,25 @@
 //
 // 這個檔案把「做得到」與「做不到」分開:
 //
-//   做得到:標題列(DwmSetWindowAttribute)、視窗底色、STATIC/核取方塊/
-//           單選鈕/唯讀 EDIT 的**文字與底**(WM_CTLCOLORSTATIC)、
+//   做得到:標題列(DwmSetWindowAttribute)、視窗底色、STATIC 與唯讀 EDIT
+//           的**文字與底**(WM_CTLCOLORSTATIC)、核取方塊與單選鈕的**底**、
 //           以及我們自己畫的每一塊。
 //   做不到:核取方塊與單選鈕的**方塊字形**、ListView 與 EDIT 的**捲軸**、
-//           ComboBox 的下拉鈕與外框。它們在啟用視覺樣式後由 uxtheme 畫,
-//           `WM_CTLCOLOR*` 只影響文字與底。
+//           ComboBox 的下拉鈕與外框。它們在啟用視覺樣式後由 uxtheme 畫。
+//
+// ⚠ **2026-08-15 更正:上面那一格以前把核取方塊與單選鈕的「文字」
+//   列在做得到那一欄,而那是錯的。** 啟用視覺樣式之後,它們的字是
+//   uxtheme 用 BUTTON 這個 theme class 畫的,`WM_CTLCOLOR*` 裡的
+//   SetTextColor 對它沒有作用(§12.5.3 對 push button 記了同一件事)。
+//   深色下畫出來的是淺色佈景的近黑字:#000000 對卡片底 #171B1D =
+//   **1.21:1**,比 kDisabledText 的 2.51:1 還低 —— 而 §12.14.1 的三道
+//   對比守門一個都不會響,因為它們跑的是我們自己的 Palette,
+//   而那個顏色不在裡面。
+//
+//   開關列(BS_AUTOCHECKBOX)這一輪改成由我們用 NM_CUSTOMDRAW 重畫
+//   那一列的字(見 settings_window.cc 的 DrawSwitchRowText,
+//   守門是 check_ui_spec.sh 的 W49)。**單選鈕還沒有**,
+//   見 docs/ui-design.md §12.14.6.6 末段。
 //
 // ⚠ **裁決:禁止使用 uxtheme.dll 的未公開序數 API**
 //   (SetPreferredAppMode / AllowDarkModeForWindow / ShouldAppsUseDarkMode /

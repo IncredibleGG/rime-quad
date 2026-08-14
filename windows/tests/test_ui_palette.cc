@@ -302,3 +302,67 @@ TEST(accent_yellow_indicator_really_needed_the_gate) {
   CHECK(ContrastRatio(p[kAccentIndicator], p[kSurface]) >= 3.0);
   CHECK(ContrastRatio(p[kAccentIndicator], p[kBackground]) >= 3.0);
 }
+
+// ── 摺線上方那一段淡出區的顏色(§12.14.6.10)────────────────────
+//
+// ⚠ 它在 WM_PAINT 的路徑上,而那條路在 Ubuntu 上編不起來 —— 所以混色
+//   寫成純函式,測得到的是這裡。
+
+TEST(scroll_fade_starts_at_the_card_and_ends_at_the_page) {
+  const Palette p = PaletteFor(Mode::kDark, AccentFallbackSeed());
+  const Rgb from = p[kSurface];
+  const Rgb to = p[kBackground];
+  const int n = 16;
+  // 兩端**必須**剛好落在端點上:第一帶差一點就是卡片與淡出區之間
+  // 一條看得出來的接縫,最後一帶差一點就是摺線上一條殘留的橫線。
+  const Rgb a = ScrollFadeMix(from, to, 0, n);
+  CHECK_INT(a.r, from.r);
+  CHECK_INT(a.g, from.g);
+  CHECK_INT(a.b, from.b);
+  const Rgb z = ScrollFadeMix(from, to, n, n);
+  CHECK_INT(z.r, to.r);
+  CHECK_INT(z.g, to.g);
+  CHECK_INT(z.b, to.b);
+}
+
+TEST(scroll_fade_is_monotone_and_never_overshoots) {
+  // 深淺兩份都走一次,而且順逆兩個方向都走(卡片底比頁底亮的是淺色,
+  // 暗的是深色 —— 混色不可以只在其中一個方向上成立)。
+  for (int m = 0; m < 2; ++m) {
+    const Palette p = PaletteFor(m ? Mode::kDark : Mode::kLight,
+                                 AccentFallbackSeed());
+    const Rgb pairs[][2] = {{p[kSurface], p[kBackground]},
+                            {p[kBackground], p[kSurface]},
+                            {p[kControlBorder], p[kBackground]}};
+    for (const auto& pr : pairs) {
+      const int n = 16;
+      int prev = -1;
+      for (int i = 0; i <= n; ++i) {
+        const Rgb c = ScrollFadeMix(pr[0], pr[1], i, n);
+        // 不可以衝出兩個端點之外。
+        const int lo = pr[0].r < pr[1].r ? pr[0].r : pr[1].r;
+        const int hi = pr[0].r < pr[1].r ? pr[1].r : pr[0].r;
+        CHECK(c.r >= lo && c.r <= hi);
+        // 單調:一帶一帶往同一個方向走,不可以來回。
+        const int cur = pr[0].r <= pr[1].r ? c.r : 255 - c.r;
+        CHECK(cur >= prev);
+        prev = cur;
+      }
+    }
+  }
+}
+
+TEST(scroll_fade_bad_arguments_do_not_paint_something_random) {
+  // ⚠ 它在 WM_PAINT 的路徑上。引數不合理的時候要回一個**確定**的顏色,
+  //   不是一個算出來的隨機值 —— 隨機的那個在畫面上只像「配色怪怪的」。
+  const Rgb a{0x10, 0x20, 0x30};
+  const Rgb b{0xF0, 0xE0, 0xD0};
+  for (int bands : {0, -1, -100}) {
+    const Rgb c = ScrollFadeMix(a, b, 3, bands);
+    CHECK_INT(c.r, b.r);
+  }
+  const Rgb neg = ScrollFadeMix(a, b, -5, 16);
+  CHECK_INT(neg.r, a.r);
+  const Rgb over = ScrollFadeMix(a, b, 99, 16);
+  CHECK_INT(over.r, b.r);
+}

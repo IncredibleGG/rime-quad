@@ -122,6 +122,21 @@ struct ControlDef {
 
 constexpr UiString kNoText = UiString::kUiStringCount;
 
+// 色票的 Rgb → GDI 的 COLORREF。⚠ RGB() 的參數順序與 Rgb 的欄位
+//   順序一樣,但 COLORREF 內部是 BGR —— 自己拼位元的話會把紅藍
+//   對調,而深色下那個錯誤看起來只像「顏色怪怪的」。
+inline COLORREF RgbToColorRef(Rgb c) { return RGB(c.r, c.g, c.b); }
+
+// 這一顆是 BS_AUTOCHECKBOX 的「開關列」嗎(§12.5.2)。
+// ⚠ **唯一的一份名單。** 少一顆的樣子是「那一列的字在深色下
+//   看不見」,而那正是這一輪覆核抓到的東西 —— 所以
+//   check_ui_spec.sh 的 W36 拿 kControls 裡帶 BS_AUTOCHECKBOX 的
+//   每一顆來對帳,多一顆少一顆都紅。
+bool IsSwitchRow(int id) {
+  return id == IDC_FOLLOW_MODE || id == IDC_BAR_SHOW ||
+         id == IDC_SHIFTTAP_SWITCH || id == IDC_NET_SWITCH;
+}
+
 #define ST (SS_LEFT | SS_NOPREFIX)
 #define BTN (BS_PUSHBUTTON | WS_TABSTOP)
 #define RADIO (BS_AUTORADIOBUTTON | WS_TABSTOP)
@@ -426,6 +441,28 @@ void SettingsWindow::ThreadMain() {
   // ⚠ nullptr,不是 COLOR_BTNFACE + 1:底由我們自己在 WM_ERASEBKGND 畫。
   //   用系統色的話,深色模式下每次重畫都會先閃一片淺灰。
   wc.hbrBackground = nullptr;
+  // ── D:標題列左上角那一格(§12.14.6 沒有寫,因為沒有人想到它是空的)──
+  //
+  // ⚠ 不填 hIcon / hIconSm 的後果**不是**「沒有圖示」,是
+  //   Win32 給一個系統預設的方塊 —— 而系統匣那一顆是我們自己畫的。
+  //   同一支程式的兩個入口長得不一樣,而標題列那一格是使用者
+  //   在工作列上、在 Alt-Tab 上、在視窗左上角看到的那一顆。
+  //
+  // ⚠ **拿同一份**:tray_icon.cc 的那一支。全 repo 沒有 .rc / .ico
+  //   (見 tray_icon.h 的檔頭),所以「拿同一份」在這裡的意思是
+  //   同一個繪製函式,不是同一個資源 id。
+  //
+  // ⚠ 字面固定用中文模式那一個,**不跟著中英模式變**:
+  //   系統匣那一顆是狀態指示(它就是要跟著變),標題列那一顆是身分。
+  //   跟著變的話,使用者在別的視窗打字時,設定視窗在工作列上的圖示
+  //   會自己跳動。
+  //
+  // ⚠ 這兩顆**不 DestroyIcon**:視窗類別在整個進程生命週期裡
+  //   註冊一次、不註銷,類別活多久它們就要活多久。放掉的樣子是
+  //   「某一次重畫之後標題列的圖示變成空白」。
+  wc.hIcon = MakeModeIconPx(BarModeGlyph(false), ::GetSystemMetrics(SM_CXICON));
+  wc.hIconSm =
+      MakeModeIconPx(BarModeGlyph(false), ::GetSystemMetrics(SM_CXSMICON));
   wc.lpszClassName = kClass;
   ::RegisterClassExW(&wc);
 
@@ -915,6 +952,13 @@ void SettingsWindow::LayoutUi() {
   W = MulDivRound(rc.right - rc.left, 96, static_cast<int>(dpi_));
   H = MulDivRound(rc.bottom - rc.top, 96, static_cast<int>(dpi_));
   viewport_h = ContentViewportHeightDip(H);
+  // ⚠ 控制項裁在**裁切線**上,不是可視高度上。底下還有內容的時候
+  //   兩者差 kScrollFadeH —— 那一段是淡出區,而淡出區裡不可以有字:
+  //   字上面蓋一層淡出看起來像那一列被停用了(這是 §12.14.6.3 的
+  //   「停用時必須有一句話說明為什麼」正好擋不住的那一種誤讀)。
+  //   算式在 common/ui_layout.cc(純函式,單元測試看得到)——
+  //   寫在這裡的話它又會變成一個沒有人量得到的數字。
+  const int clip_line = ContentClipLineDip(H, scroll_, scroll_max_);
   const int dpi = static_cast<int>(dpi_);
 
   auto place = [&](int id, const RectI& r) {
@@ -999,7 +1043,7 @@ void SettingsWindow::LayoutUi() {
     //   不得是字面的 SW_SHOW/SW_HIDE)—— check_ui_spec.sh 的 W25
     //   驗的就是這三條。
     const ScrolledPlacement sp =
-        ScrollPlaceControlDip(p->rect, scroll_, viewport_h);
+        ScrollPlaceControlDip(p->rect, scroll_, clip_line);
     place(id, RectI{p->rect.x, sp.y_dip, p->rect.w, p->rect.h});
     ClipToViewport(i, c, p->rect.w, sp.clip_h_dip);
     // 捲出可視範圍的控制項**不隱藏**,只裁成空的(sp.visible
@@ -1779,6 +1823,73 @@ void SettingsWindow::OnPaint(HDC hdc) {
                 cr.right - Dip(space::s6, dpi_),
                 py + Dip(metric::kHairline, dpi_)};
         ::FillRect(hdc, &dl, theme_.Brush(kOutline));
+      }
+    }
+    // ── 摺線上方那一段:淡出區(B)────────────────────────────
+    //
+    // ⚠ **這一段存在的理由是十張截圖上看得到的那件事。**
+    //   摺線是一條**視窗內部**的硬邊:視窗邊緣把東西切斷沒有人覺得
+    //   奇怪,視窗中間一條線把一張有 1 DIP 外框的圓角卡片切斷,
+    //   看起來是畫錯了 —— 卡片的左右兩條外框直直撞上摺線就沒了,
+    //   沒有下緣也沒有下圓角,空白比較多的那一側只剩一小截豎線。
+    //   使用者的原話:「那不像『還有內容可以捲』,像畫錯了。」
+    //
+    // ⚠ 淡出是「還有更多」全世界都認得的訊號,而且它把那截
+    //   沒畫完的外框一起吃掉。GDI 的 FillRect 不做 alpha
+    //   (§12.14.2 開頭:狀態層是**預先算好的不透明色**),所以這是
+    //   一疊實色橫帶,顏色由 common/ui_palette.cc 的 ScrollFadeMix()
+    //   算 —— 純函式,單元測試看得到。
+    //
+    // ⚠ 實色行得通的**前提**是:淡出區裡只有卡片的底與外框,
+    //   沒有字。那是 ContentClipLineDip() 保證的(控制項裁在淡出區的
+    //   上緣)。少了那個前提,實色就變成「把一行字塗掉」。
+    //
+    // ⚠ 捲到底(或者根本不用捲)的時候 clip_line == vp,
+    //   這一整段不執行 —— 下面沒有東西了還畫一層淡出等於騙人。
+    {
+      const int clip_line = ContentClipLineDip(Hdip, scroll_, scroll_max_);
+      const int vp_dip = ContentViewportHeightDip(Hdip);
+      const int bands = vp_dip - clip_line;
+      if (bands > 0) {
+        auto role_rgb = [&](Role r) {
+          const COLORREF c = theme_.Color(r);
+          return Rgb{GetRValue(c), GetGValue(c), GetBValue(c)};
+        };
+        const Rgb to = role_rgb(kBackground);
+        const Rgb card_from = role_rgb(kSurface);
+        const Rgb border_from = role_rgb(kControlBorder);
+        const int hair = Dip(metric::kHairline, dpi_);
+        // 先把整條抹成頁面底色 —— 卡片的外框與底都畫過了,
+        // 沒有這一下的話卡片以外那幾格會留著上一次的東西。
+        // ⚠ 左緣從側欄那條 hairline 的**右邊**開始。從 sb 開始的話
+        //   會把那條分隔線在這 16 DIP 裡擦掉一截,而症狀是
+        //   「側欄與內容之間那條線在靠近底部的地方斷了」。
+        RECT strip{sb + hair, Dip(clip_line, dpi_), W, viewport_h};
+        ::FillRect(hdc, &strip, theme_.Brush(kBackground));
+        for (int i = 0; i < bands; ++i) {
+          const int y0 = Dip(clip_line + i, dpi_);
+          const int y1 = Dip(clip_line + i + 1, dpi_);
+          if (y1 <= y0) continue;
+          HBRUSH fill = ::CreateSolidBrush(
+              RgbToColorRef(ScrollFadeMix(card_from, to, i, bands)));
+          HBRUSH edge = ::CreateSolidBrush(
+              RgbToColorRef(ScrollFadeMix(border_from, to, i, bands)));
+          for (const CardRect& c : cards_) {
+            const int top = c.rect.y - scroll_;
+            const int bot = top + c.rect.h;
+            if (clip_line + i < top || clip_line + i >= bot) continue;
+            const int l = Dip(c.rect.x, dpi_);
+            const int r = Dip(c.rect.x + c.rect.w, dpi_);
+            RECT band{l, y0, r, y1};
+            ::FillRect(hdc, &band, fill);
+            RECT le{l, y0, l + hair, y1};
+            RECT re{r - hair, y0, r, y1};
+            ::FillRect(hdc, &le, edge);
+            ::FillRect(hdc, &re, edge);
+          }
+          ::DeleteObject(fill);
+          ::DeleteObject(edge);
+        }
       }
     }
     // 裁切區還原 —— 底下那條 hairline 畫在摺線**上**,留著會被裁掉。
@@ -2570,6 +2681,105 @@ void SettingsWindow::OnNotify(NMHDR* nm, LRESULT* result) {
     *result = DrawNetLogList(reinterpret_cast<NMLVCUSTOMDRAW*>(nm));
     return;
   }
+  if (IsSwitchRow(static_cast<int>(nm->idFrom)) &&
+      nm->code == NM_CUSTOMDRAW) {
+    *result = DrawSwitchRowText(reinterpret_cast<NMCUSTOMDRAW*>(nm));
+    return;
+  }
+}
+
+// ── 開關列的**字**由我們自己畫(C)────────────────────────────────
+//
+// ⚠ **這一支存在的理由是一個算得出來的數字:1.21:1。**
+//
+//   覆核者在深色截圖上看到「輸入方案」頁第二張卡的標題
+//   (「跟著我選的輸入法語言,自動挑一種」)暗到看起來像停用,
+//   而**同一張卡的說明文字反而比它清楚**。那一句是決定性的:
+//   說明走的是 kOnSurfaceVariant(深色下 9.62:1),標題走的應該是
+//   kOnSurface(14.99:1)—— 標題比說明暗,代表它根本不是 kOnSurface。
+//   它也不是 kDisabledText:那一顆從來沒有被 EnableWindow(FALSE) 過
+//   (整個檔案裡碰 EnableWindow 的只有 IDC_REDEPLOY / IDC_APPLY_ORDER /
+//    更新那三顆)。**所以它的顏色根本不是從我們的色票來的。**
+//
+//   啟用視覺樣式之後,BS_AUTOCHECKBOX 的字是 uxtheme 用 BUTTON 這個
+//   theme class 畫的,而 WM_CTLCOLORSTATIC/BTN 的 SetTextColor 對它
+//   **沒有作用**(§12.5.3 對 push button 記了同一件事,而
+//   ui_theme.h 的檔頭把核取方塊的「文字」列在**做得到**那一欄 ——
+//   那一格是錯的,這一輪一起改掉)。系統畫出來的是淺色佈景的近黑字:
+//   #000000 對深色卡片底 #171B1D = **1.21:1**,比 kDisabledText 的
+//   2.51:1 還低。「看起來像停用」是客氣的說法。
+//
+// ⚠ **為什麼 §12.14.1 那三道對比守門沒有擋住它。**
+//   那三道跑的是 `Palette` —— 也就是**我們挑的**顏色,而它們每一個都
+//   合格(kOnSurface/kSurface 深色 14.99、淺色 17.87)。畫面上那個
+//   顏色是 uxtheme 挑的,不在 Palette 裡。**一道跑在自己色票上的守門,
+//   對一個不屬於自己的顏色是結構性地看不見的。** 修法因此不是
+//   「再加一個色票配對」,是**把那個顏色搬回我們手上**——
+//   搬回來之後它才進得了守門的定義域。
+//
+// ⚠ 為什麼不 owner-draw:BS_OWNERDRAW 與 BS_AUTOCHECKBOX 互斥
+//   (共用 BS_TYPEMASK 的低 4 位元),自繪之後螢幕閱讀器會念成「按鈕」
+//   而不是「核取方塊,已勾選」。NM_CUSTOMDRAW **不動樣式位元**,
+//   所以無障礙角色、自動勾選、鍵盤操作全部原封不動。
+//
+// ⚠ 為什麼只重畫**字**、不碰方塊:方塊要跟系統 accent 走
+//   (§12.14.6.6),那是刻意的。我們擦掉的是右邊那一欄以外的區域,
+//   而 BS_RIGHTBUTTON 把方塊推到右緣 —— 兩者不重疊。
+LRESULT SettingsWindow::DrawSwitchRowText(NMCUSTOMDRAW* cd) {
+  if (!cd) return CDRF_DODEFAULT;
+  // 先讓系統畫完(方塊、焦點、hot/pressed 的底),再把字換掉。
+  if (cd->dwDrawStage == CDDS_PREPAINT) {
+    // ⚠ 這一句在**舊版的假設下**就是修法本身。留著它是因為
+    //   它零成本:comctl32 若真的採用 DC 的文字色,下面那一段畫出來的
+    //   位置與顏色與它一致,看不出差別;若不採用(這正是缺陷),
+    //   下面那一段才是真正生效的那一份。
+    ::SetTextColor(cd->hdc, theme_.Color(kOnSurface));
+    return CDRF_NOTIFYPOSTPAINT;
+  }
+  if (cd->dwDrawStage != CDDS_POSTPAINT) return CDRF_DODEFAULT;
+
+  const int id = static_cast<int>(cd->hdr.idFrom);
+  HWND ctl = cd->hdr.hwndFrom;
+  if (!ctl) return CDRF_DODEFAULT;
+
+  // 方塊那一欄:BS_RIGHTBUTTON 把它推到右緣。核取方塊的字形在 96 DPI
+  // 上是 13 DIP,comctl32 另外留一點內距 —— 這裡取 24 DIP,**寬鬆的
+  // 那一邊**:擦太窄會留下系統畫的那份字(兩份疊在一起),
+  // 擦太寬只是多擦一塊本來就是卡片底色的地方。
+  const int glyph_col = Dip(24, dpi_);
+  RECT text{cd->rc.left, cd->rc.top, cd->rc.right - glyph_col, cd->rc.bottom};
+  if (text.right <= text.left) return CDRF_DODEFAULT;
+
+  // 底:卡片裡是 surface。⚠ 與 WM_CTLCOLOR* 走**同一份** in_card_,
+  //   兩邊各判一次的話會出現「字的底比卡片淺一階」的方塊。
+  auto it = in_card_.find(id);
+  const bool in_card = it != in_card_.end() && it->second;
+  const Role bg = in_card ? kSurface : kBackground;
+  ::FillRect(cd->hdc, &text, theme_.Brush(bg));
+
+  wchar_t buf[512];
+  const int n = ::GetWindowTextW(ctl, buf, 512);
+  if (n > 0) {
+    const bool disabled = ::IsWindowEnabled(ctl) == FALSE;
+    ::SetBkMode(cd->hdc, TRANSPARENT);
+    ::SetTextColor(cd->hdc,
+                   theme_.Color(disabled ? kDisabledText : kOnSurface));
+    HGDIOBJ oldf = ::SelectObject(cd->hdc, fonts_.Get(text_size::t3));
+    // §12.14.6.6:整列高 36、字級 t3、文字左緣 = 控制項左緣。
+    ::DrawTextW(cd->hdc, buf, n, &text,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                    DT_NOPREFIX);
+    ::SelectObject(cd->hdc, oldf);
+  }
+  // 焦點環:擦掉的那一塊裡本來有系統畫的點線框。§12.6.4 第 2 條不准用
+  // DrawFocusRect(它是 XOR 的),所以補我們自己那一圈。
+  if (cd->uItemState & CDIS_FOCUS)
+    DrawFocusRing(cd->hdc, text, Dip(radius::kControl, dpi_));
+  // ⚠ POSTPAINT 的回傳值系統不看(它已經畫完了)。
+  //   接管是靠 PREPAINT 回 CDRF_NOTIFYPOSTPAINT + 這裡把那一欄
+  //   擦掉重畫 —— 不是靠 CDRF_SKIPDEFAULT。寫成 SKIPDEFAULT 的話
+  //   下一個人會以為系統沒有畫過,然後把上面那一句 FillRect 拿掉。
+  return CDRF_DODEFAULT;
 }
 
 void SettingsWindow::OnCommand(int id, int code) {

@@ -229,6 +229,49 @@ int EstimateTextBoxHeightDip(const wchar_t* text, int size_dip, int w_dip) {
   return EstimateTextLinesDip(text, size, w_dip) * TextLineBoxDip(size);
 }
 
+int EstimateTextWidthDip(const wchar_t* text, int size_dip) {
+  if (!text || !*text || size_dip <= 0) return 0;
+  long w100 = 0;
+  for (const wchar_t* p = text; *p; ++p) {
+    const unsigned int c = static_cast<unsigned int>(*p);
+    // 換行字元在這裡不換行:按鈕上的字是一行(見標頭)。
+    if (c == 0x0Du || c == 0x0Au) continue;
+    w100 += static_cast<long>(size_dip) * (IsWideCodePoint(c) ? 100 : 60);
+  }
+  // 餘裕:0.6 是拉丁字母的**平均**寬,不是上界(大寫 W、M 接近 0.9)。
+  // 與 EstimateTextLinesDip 的 kWidthSlack 是同一個 1/16,方向相反 ——
+  // 那一支縮欄寬,這一支撐字寬,兩邊都往「字比較寬」的一側錯。
+  w100 = w100 * kWidthSlackDen / kWidthSlackNum;
+  return static_cast<int>((w100 + 99) / 100);  // 無條件進位到整 DIP
+}
+
+int ButtonWidthDip(UiString label) {
+  const int text_w = EstimateTextWidthDip(UiText(label), text_size::t4);
+  // §12.14.6.2:左右內距 s5(12),最小寬 80。
+  return std::max(metric::kButtonMinW, text_w + 2 * space::s5);
+}
+
+UiString SettingsButtonLabel(int id) {
+  switch (id) {
+    case IDC_UP:                return UiString::kSchemasMoveUp;
+    case IDC_DOWN:              return UiString::kSchemasMoveDown;
+    case IDC_APPLY_ORDER:       return UiString::kSchemasApplyOrder;
+    case IDC_UPDATE_CHECK:      return UiString::kUpdateCheckButton;
+    // ⚠ 這一顆的字是執行期換的(下載 / 安裝 / 重試),而版面要一個
+    //   固定的寬。取**最長的那一句**:短的那幾句擺進去只是左右多一點
+    //   內距,而反過來是字被截尾。
+    case IDC_UPDATE_ACTION:     return UiString::kUpdateInstallButton;
+    case IDC_UPDATE_PAGE:       return UiString::kUpdateOpenPageButton;
+    case IDC_NETLOG_CLEAR:      return UiString::kNetLogClearButton;
+    case IDC_REDEPLOY:          return UiString::kRedeployButton;
+    case IDC_OPEN_USER_DIR:     return UiString::kOpenUserDir;
+    case IDC_OPEN_SETTINGS_FILE: return UiString::kOpenSettingsFile;
+    case IDC_DIAG_COPY:         return UiString::kDiagnosticsCopy;
+    case IDC_RESET:             return UiString::kResetButton;
+    default:                    return UiString::kUiStringCount;
+  }
+}
+
 SchemaNoteText SchemaNoteLines(int note) {
   switch (note) {
     case kSchemaNoteLoading:
@@ -438,11 +481,87 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
     }
     card_end(space::s7);
   };
-  // 固定寬度的按鈕(在卡片裡)。⚠ **一定要推進堆疊**。
+  // ── 一列按鈕:**依內容寬**,由左往右,彼此 s3 ────────────────
+  //
+  // ⚠ 舊版是 `bw = (inner_w - 2*s3) / 3`,也就是把整個內容欄平均切開。
+  //   那不是工具列,是對話框的按鈕列 —— 而且視窗一拉寬,「上移」這兩個
+  //   字底下的按鈕就跟著長到 300 DIP。§12.14.6.2/.3 的「左右內距 s5、
+  //   最小寬 80」在那個算式底下從來沒有機會生效。
+  struct Btn {
+    int id;
+    const char* what;
+  };
+  // 這一列按鈕排在 (x0, y),回傳整列的總寬。
+  auto place_buttons = [&](int x0, int y, std::initializer_list<Btn> bs) {
+    int x = x0;
+    for (const Btn& b : bs) {
+      const int bw = ButtonWidthDip(SettingsButtonLabel(b.id));
+      emit(b.id, RectI{x, y, bw, btn_h}, true, b.what, 0, 0, true);
+      x += bw + space::s3;
+    }
+    return bs.size() ? x - space::s3 - x0 : 0;
+  };
+  // 這一列按鈕要多寬(還沒擺之前就要知道,靠右對齊時要用)。
+  auto buttons_width = [&](std::initializer_list<Btn> bs) {
+    int w = 0;
+    for (const Btn& b : bs) w += ButtonWidthDip(SettingsButtonLabel(b.id));
+    if (bs.size() > 1) w += (static_cast<int>(bs.size()) - 1) * space::s3;
+    return w;
+  };
+  // 卡片裡靠左的一列按鈕。⚠ **一定要推進堆疊**。
   // ⚠ card_block 而不是 card_row:按鈕不吃 36 的下限（見 btn_h 那一段）。
-  auto card_button = [&](int id, int w, const char* what) {
-    const RectI row = card_block(btn_h, 0);
-    emit(id, RectI{row.x, row.y, w, row.h}, true, what, 0, 0, true);
+  auto card_buttons = [&](std::initializer_list<Btn> bs, int gap_after) {
+    const RectI row = card_block(btn_h, gap_after);
+    place_buttons(row.x, row.y, bs);
+  };
+
+  // ── §12.14.6.9:「標籤在左、按鈕在右」的一張卡 ────────────────
+  //
+  // ⚠ **這一支取代了「heading() 在卡片外面 + 卡片裡只放一顆按鈕」。**
+  //   舊版那張卡是一個整行寬的空盒:進階頁的「重新整理字詞」是
+  //   540×52,而按鈕只佔左邊 180 —— 右邊 360 DIP 全是空白,
+  //   而「這個畫面看起來沒做完」最大的單一來源就是它。
+  //   對照組(Win11 設定)在同一塊空間裡放的是**標籤 + 一排按鈕**,
+  //   而我們的標籤本來就有:它是原本浮在卡片上面的那個區段標題。
+  //   所以修法不是「發明一個新標籤」,是**把區段標題與說明搬進卡片的左欄**
+  //   —— 順便消掉「一個標題浮在一個空盒上面」那個形狀。
+  //
+  // ⚠ 兩種排法,由**寬度**決定,不是由頁決定:
+  //     · 標籤欄 >= 按鈕欄  → 左右並排(對照組的樣子);
+  //     · 否則              → 上下堆疊(標籤整行寬,按鈕自己一列靠左)。
+  //   判準寫成「標籤欄不得比按鈕欄窄」而不是一個新的常數:窄過頭的時候
+  //   那一段說明會被擠成七八行,卡片會比原本那個空盒還高 ——
+  //   也就是修完比修之前難看。660 的最小視窗、以及英文介面(按鈕字比較長)
+  //   都會走到堆疊那一支,兩支都有測試走過。
+  auto action_card = [&](int head_id, int blurb_id, UiString blurb,
+                         std::initializer_list<Btn> bs, int gap_after) {
+    const int head_h = TextLineBoxDip(text_size::t2);
+    const int btn_w = buttons_width(bs);
+    const int label_w = inner_w - btn_w - space::s6;
+    card_begin();
+    if (label_w >= btn_w && label_w > 0) {
+      const int nl = lines_of(blurb, label_w);
+      const int label_h = head_h + space::s1 + nl * t5h;
+      const int row_h = std::max(label_h, btn_h);
+      const RectI row = card_block(row_h, 0);
+      emit(head_id, RectI{row.x, row.y, label_w, head_h}, false,
+           "section_heading", text_size::t2, 1, true);
+      emit(blurb_id,
+           RectI{row.x, row.y + head_h + space::s1, label_w, nl * t5h}, false,
+           "section_blurb", text_size::t5, nl, true);
+      // 按鈕靠右、垂直置中。⚠ 靠右對齊的右緣是**卡片內寬的右緣**,
+      //   不是內容欄的右緣 —— 兩者差 s6,而差那 16 DIP 的樣子是
+      //   「按鈕比卡片還往外凸一點」。
+      place_buttons(row.x + inner_w - btn_w, row.y + (row_h - btn_h) / 2, bs);
+    } else {
+      emit(head_id, card_block(head_h, space::s1), false, "section_heading",
+           text_size::t2, 1, true);
+      const int nl = lines_of(blurb, inner_w);
+      emit(blurb_id, card_block(nl * t5h, space::s3), false, "section_blurb",
+           text_size::t5, nl, true);
+      card_buttons(bs, 0);
+    }
+    card_end(gap_after);
   };
 
   switch (page) {
@@ -471,15 +590,13 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
         hide(IDC_SCHEMAS_EMPTY);
         emit(IDC_SCHEMA_LIST, card_block(list_h, space::s3), true,
              "schema_list", 0, 0, true);
-        const RectI row = card_block(btn_h, space::s3);
-        const int bw = (inner_w - 2 * space::s3) / 3;
-        emit(IDC_UP, RectI{row.x, row.y, bw, row.h}, true, "move_up", 0, 0,
-             true);
-        emit(IDC_DOWN, RectI{row.x + bw + space::s3, row.y, bw, row.h}, true,
-             "move_down", 0, 0, true);
-        emit(IDC_APPLY_ORDER,
-             RectI{row.x + 2 * (bw + space::s3), row.y, bw, row.h}, true,
-             "apply_order", 0, 0, true);
+        // ⚠ 清單底下的一排工具列按鈕:**靠左、依內容寬**。
+        //   舊版把它們平均切成三份各 165 DIP,而那正是「像對話框」
+        //   的樣子 —— 工具列的按鈕跟著字走,不跟著容器走。
+        card_buttons({{IDC_UP, "move_up"},
+                      {IDC_DOWN, "move_down"},
+                      {IDC_APPLY_ORDER, "apply_order"}},
+                     space::s3);
         emit(IDC_SCHEMAS_DEFAULT_LINE, card_block(t5h, 0), false,
              "default_line", text_size::t5, 1, true);
       }
@@ -576,17 +693,10 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
       //   所以仍然是固定行數,而且抓最長的那一種還要再寬一點。
       emit(IDC_UPDATE_STATUS, card_block(t5h * 3, space::s3), false,
            "update_status", text_size::t5, 3, true);
-      {
-        const RectI row = card_block(btn_h, 0);
-        const int bw = (inner_w - 2 * space::s3) / 3;
-        emit(IDC_UPDATE_CHECK, RectI{row.x, row.y, bw, row.h}, true,
-             "update_check", 0, 0, true);
-        emit(IDC_UPDATE_ACTION, RectI{row.x + bw + space::s3, row.y, bw, row.h},
-             true, "update_action", 0, 0, true);
-        emit(IDC_UPDATE_PAGE,
-             RectI{row.x + 2 * (bw + space::s3), row.y, bw, row.h}, true,
-             "update_page", 0, 0, true);
-      }
+      card_buttons({{IDC_UPDATE_CHECK, "update_check"},
+                    {IDC_UPDATE_ACTION, "update_action"},
+                    {IDC_UPDATE_PAGE, "update_page"}},
+                   0);
       card_end(space::s7);
 
       heading(IDC_NETLOG_HEAD, IDC_NETLOG_BLURB, UiString::kNetLogBlurb);
@@ -627,32 +737,21 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
         // ⚠ 危險操作一律是該頁最後一個區塊,上面隔一條 hairline + s7
         //   (§4.9 / §2-C2)。
         st.PushDivider();
-        heading(IDC_NETLOG_CLEAR_HEAD, IDC_NETLOG_CLEAR_BLURB,
-                UiString::kNetLogClearBlurb);
-        card_begin();
-        card_button(IDC_NETLOG_CLEAR, 220, "clear_log_button");
-        card_end(0);
+        action_card(IDC_NETLOG_CLEAR_HEAD, IDC_NETLOG_CLEAR_BLURB,
+                    UiString::kNetLogClearBlurb,
+                    {{IDC_NETLOG_CLEAR, "clear_log_button"}}, 0);
       }
       break;
     }
     case kPageAdvanced: {
       title_block(IDC_ADV_TITLE, IDC_ADV_SUB, UiString::kAdvancedSubtitle);
-      heading(IDC_REDEPLOY_HEAD, IDC_REDEPLOY_BLURB, UiString::kRedeployBlurb);
-      card_begin();
-      card_button(IDC_REDEPLOY, 180, "redeploy_button");
-      card_end(space::s7);
-      heading(IDC_FILES_HEAD, IDC_FILES_BLURB, UiString::kFilesBlurb);
-      card_begin();
-      {
-        const RectI row = card_block(btn_h, 0);
-        const int bw = (inner_w - space::s3) / 2;
-        emit(IDC_OPEN_USER_DIR, RectI{row.x, row.y, bw, row.h}, true,
-             "open_user_dir", 0, 0, true);
-        emit(IDC_OPEN_SETTINGS_FILE,
-             RectI{row.x + bw + space::s3, row.y, bw, row.h}, true,
-             "open_settings_file", 0, 0, true);
-      }
-      card_end(space::s7);
+      action_card(IDC_REDEPLOY_HEAD, IDC_REDEPLOY_BLURB,
+                  UiString::kRedeployBlurb,
+                  {{IDC_REDEPLOY, "redeploy_button"}}, space::s7);
+      action_card(IDC_FILES_HEAD, IDC_FILES_BLURB, UiString::kFilesBlurb,
+                  {{IDC_OPEN_USER_DIR, "open_user_dir"},
+                   {IDC_OPEN_SETTINGS_FILE, "open_settings_file"}},
+                  space::s7);
       heading(IDC_LANG_HEAD, IDC_LANG_BLURB, UiString::kLanguageBlurb);
       radios({IDC_LANG_0, IDC_LANG_1, IDC_LANG_2, IDC_LANG_3},
              "ui_language_radio");
@@ -660,14 +759,12 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
       card_begin();
       emit(IDC_DIAG, card_block(t5h * 6, space::s3), true, "diagnostics_edit",
            0, 0, true);
-      card_button(IDC_DIAG_COPY, 120, "diagnostics_copy");
+      card_buttons({{IDC_DIAG_COPY, "diagnostics_copy"}}, 0);
       card_end(0);
       // ⚠ 危險操作一律是該頁最後一個區塊,上面隔一條 hairline + s7。
       st.PushDivider();
-      heading(IDC_RESET_HEAD, IDC_RESET_BLURB, UiString::kResetBlurb);
-      card_begin();
-      card_button(IDC_RESET, 220, "reset_button");
-      card_end(0);
+      action_card(IDC_RESET_HEAD, IDC_RESET_BLURB, UiString::kResetBlurb,
+                  {{IDC_RESET, "reset_button"}}, 0);
       break;
     }
     default:
@@ -682,6 +779,17 @@ int ContentViewportHeightDip(int window_h_dip) {
   return std::max(0, window_h_dip - kBottomStripH);
 }
 
+int ContentClipLineDip(int window_h_dip, int scroll_dip, int scroll_max_dip) {
+  const int vp = ContentViewportHeightDip(window_h_dip);
+  // 已經捲到底、或者根本不用捲 → 沒有淡出區,裁在可視高度上。
+  // ⚠ `>=` 不是 `==`:呼叫端的 scroll_ 可能因為換頁/換 DPI 暫時超出
+  //   上限,而那一格不該讓淡出區憑空出現一次又消失。
+  if (scroll_max_dip <= 0 || scroll_dip >= scroll_max_dip) return vp;
+  // 視窗矮到淡出區比可視高度還高的時候不能回負數 —— 那會讓每一顆
+  // 控制項都被判成「跨過裁切線」而整頁空白。
+  return std::max(0, vp - kScrollFadeH);
+}
+
 int ScrollMaxDip(int page, int window_w_dip, int window_h_dip,
                  PageState state) {
   const PageLayout pl = LayoutSettingsPageDip(page, window_w_dip, state);
@@ -689,7 +797,7 @@ int ScrollMaxDip(int page, int window_w_dip, int window_h_dip,
 }
 
 ScrolledPlacement ScrollPlaceControlDip(const RectI& content_rect,
-                                        int scroll_dip, int viewport_h_dip) {
+                                        int scroll_dip, int clip_line_dip) {
   ScrolledPlacement p;
   p.y_dip = content_rect.y - scroll_dip;
   // ⚠ 只裁不藏。這一行就是整個捲動能不能給鍵盤使用者用的分界。
@@ -698,8 +806,15 @@ ScrolledPlacement ScrollPlaceControlDip(const RectI& content_rect,
   // 子視窗本來就會被父視窗的 client 矩形裁掉,所以**上方**不必處理。
   // 要處理的只有下方那 54 DIP:底部固定列與它上面那條 hairline ——
   // 那一塊仍然在 client 裡面,捲到一半的控制項會畫在「關閉」鈕上面。
-  if (!content_rect.empty() && p.y_dip + content_rect.h > viewport_h_dip)
-    p.clip_h_dip = std::max(0, viewport_h_dip - p.y_dip);
+  //
+  // ⚠ **全有或全無。** 舊版回的是 `max(0, clip_line - y)`,也就是
+  //   半顆控制項:預設尺寸下文字頁的「全形/半形」區段標題在 y=497、
+  //   高 22,裁切線 506 —— 它被畫成 9 DIP 高,從字的中間橫著切過去。
+  //   那是使用者說的「摺線那裡看起來像壞掉」。半個字沒有任何辦法
+  //   被讀成「還有東西可以捲」,所以現在跨線的控制項整顆不畫,
+  //   而「還有更多」由淡出區(kScrollFadeH)與捲軸去說。
+  if (!content_rect.empty() && p.y_dip + content_rect.h > clip_line_dip)
+    p.clip_h_dip = 0;
   return p;
 }
 

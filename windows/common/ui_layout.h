@@ -86,6 +86,17 @@ constexpr int kButtonH = 32;     // §12.14.6.2:按鈕高;懸浮狀態列整條�
 //   「借了側欄的常數」,下一個人會想拆成兩個,然後兩個會漂開。
 constexpr int kRowH = 36;
 constexpr int kSidebarStatusH = 64;
+// §12.14.6.2/.3:按鈕的**下界**寬,不是它的寬。
+//
+// ⚠ 這個常數是這一輪新加的,而它的存在本身就是那個缺陷的名字:
+//   在它之前,一列按鈕的寬度是「內容欄減掉間距再除以顆數」——
+//   也就是**每一顆都跟著視窗變寬**。進階頁那張「重新整理字詞」的卡
+//   因此是 540×52 而按鈕只佔左邊 180,右邊 360 DIP 整片空白;
+//   輸入方案頁的上移/下移/套用這個順序各被拉成 165 寬,
+//   讀起來是一列對話框按鈕,不是一排工具列按鈕。
+//   現在寬度由**字**決定(ButtonWidthDip),而這一格是它的地板:
+//   「確定」「複製」這種兩個字的按鈕不可以縮成一顆藥丸。
+constexpr int kButtonMinW = 80;
 constexpr int kSidebarW = 200;   // §5.1「不可拖曳」→ 固定,不是 splitter
 }  // namespace metric
 
@@ -247,6 +258,42 @@ int EstimateTextLinesDip(const wchar_t* text, int size_dip, int w_dip);
 //   消失,而且沒有任何錯誤)。現在不合法的字級一律當成 t5 ——
 //   **回傳保證 >= TextLineBoxDip(text_size::t5)**。
 int EstimateTextBoxHeightDip(const wchar_t* text, int size_dip, int w_dip);
+
+// ── 一段文字畫出來大約多寬(DIP)────────────────────────────────
+//
+// ⚠ **估算,不是量測** —— 同 EstimateTextLinesDip,而且刻意用**同一個**
+//   字寬模型(全形算一個字級,其餘算 0.6 個)。兩支各用一套模型的話,
+//   「這一行放得下」與「這顆按鈕要多寬」會給出互相矛盾的答案。
+//
+// ⚠ 錯的方向也一樣:往**寬**的一邊。少算的後果是按鈕上的字被系統
+//   截尾(使用者看到「重新整理字…」);多算的後果是按鈕寬幾個 DIP。
+//   兩者不對稱,所以再留 1/16 的餘裕(0.6 是拉丁字母的平均寬,
+//   不是上界)。
+// ⚠ 換行字元在這裡**不換行** —— 這一支回的是「排成一行」的寬度,
+//   按鈕上的字本來就只有一行。
+int EstimateTextWidthDip(const wchar_t* text, int size_dip);
+
+// ── 一顆按鈕要多寬(§12.14.6.2/.3)──────────────────────────────
+//
+// = t4 的字寬 + 左右各 `s5`,下界 `metric::kButtonMinW`。
+//
+// ⚠ **這一支存在的理由是版面在用「填滿寬度」思考。** 舊版一列按鈕的
+//   寬是 `(inner_w - 2*s3) / 3` —— 三顆各 165 DIP,橫跨整個內容欄
+//   平均分配。那不是工具列,是對話框的按鈕列;而且視窗一拉寬,
+//   「上移」這兩個字底下的按鈕就跟著長到 300 DIP。
+//
+// ⚠ 寬度從**顯示的那一句**算,所以它跟著介面語言變 —— 與說明段的
+//   高度(EstimateTextBoxHeightDip)同一條路。
+int ButtonWidthDip(UiString label);
+
+// ── 這一顆按鈕上寫的是哪一句 ────────────────────────────────────
+//
+// ⚠ 這是「寬度從哪一句算」的唯一來源。字本身是
+//   service/settings_window.cc 的 kControls 填的,兩邊必須是同一句 ——
+//   不然按鈕會照 A 句的寬度畫、上面寫 B 句,而 B 句比較長的時候
+//   使用者看到的是被截尾的字。check_ui_spec.sh 的 W35 逐顆比對這兩份。
+// ⚠ 不是按鈕的 id 回 UiString::kUiStringCount。
+UiString SettingsButtonLabel(int id);
 
 // ── 內容區的直向堆疊 ────────────────────────────────────────────
 //
@@ -441,6 +488,29 @@ constexpr int kContentTopDip = space::s8;
 // 內容底端留白:最後一個控制項與那條 hairline 之間。
 constexpr int kContentPadBottomDip = space::s7;
 
+// ── 摺線那一段:「下面還有東西」要看起來像還有東西 ──────────────
+//
+// 摺線 = 內容區的下緣,也就是底部固定列上面那條 hairline。它是一條
+// **視窗內部**的硬邊,而那正是問題:視窗邊緣把東西切斷沒有人覺得奇怪,
+// 視窗**中間**一條線把一張有外框的圓角卡片切斷,看起來是畫錯了。
+//
+// 實機截圖(796×599,client 763×560,摺線在 y=506)上看得到的兩件事:
+//   1. 卡片的左右兩條 1 DIP 外框直直撞上摺線就沒了,沒有下緣、沒有下圓角
+//      —— 空白比較多的那一側(右邊)只剩一小截豎線,像沒畫完;
+//   2. 剛好跨過摺線的控制項被**攔腰切開**:文字頁的「全形/半形」那個區段
+//      標題在 y=497、高 22,可視高度 506 —— 它被裁成 9 DIP,
+//      也就是從字的中間切過去。
+//
+// 這裡的兩個常數把那兩件事分開處理:
+//   · kScrollFadeH:摺線上方這一段是**淡出區**。卡片在這一段裡由
+//     surface 一階一階混到 background(GDI 沒有 alpha,所以是實色分帶,
+//     顏色由 ScrollFadeMix() 算 —— 純函式,測得到)。淡出是「還有更多」
+//     全世界都認得的訊號,而且它把那截沒畫完的外框一起吃掉。
+//   · ContentClipLineDip():**控制項**裁在淡出區的上緣,不是摺線上。
+//     所以淡出區裡永遠只有卡片的底色與外框,沒有字 —— 字上面蓋一層
+//     淡出會變成「這一列是不是停用了」,那是另一個缺陷。
+constexpr int kScrollFadeH = space::s6;
+
 // 一顆被擺好的控制項。⚠ y 是**內容座標**(捲動量 0 時等於視窗座標),
 // 呼叫端自己減掉捲動量。
 struct PlacedControl {
@@ -555,6 +625,17 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip, PageState state);
 // 內容區的可視高度。⚠ 視窗矮於底部固定列時回 0,不回負數。
 int ContentViewportHeightDip(int window_h_dip);
 
+// ── 控制項裁在哪一條線上 ────────────────────────────────────────
+//
+// 底下**還有內容**(scroll_dip < scroll_max_dip)時,控制項裁在
+// 可視高度再往上 kScrollFadeH 的地方 —— 那一段留給淡出區。
+// 已經捲到底(或者根本不用捲)時沒有淡出區,裁在可視高度上。
+//
+// ⚠ 這一支是純函式,理由與 ScrollPlaceControlDip() 一樣:它以前**不存在**,
+//   而「裁在哪」是寫在 service/settings_window.cc 裡的一個算式 ——
+//   那個檔案在 Ubuntu 上編不起來,所以那個算式沒有任何測試看得到。
+int ContentClipLineDip(int window_h_dip, int scroll_dip, int scroll_max_dip);
+
 // 捲動上限(DIP)。內容放得下時是 0。
 // ⚠ 這一支**必須**吃 window_h_dip —— 舊版的 ClickableTargetsDip 把它
 //   `(void)` 掉,於是「排到視窗底部以外」對測試而言不存在。
@@ -577,8 +658,18 @@ struct ScrolledPlacement {
   // 視窗座標 = 內容座標 - 捲動量。**捲動量一定要參與**,
   // 否則捲軸會動而內容不動。
   int y_dip = 0;
-  // <0 = 不裁;>=0 = 只露出這麼高。0 = 一個像素都看不到 ——
-  // 但**仍然存在、仍然在 Tab 順序上**(見 visible)。
+  // ── ⚠ 只有兩個值:-1(整顆都畫)或 0(一個像素都不畫)──────────
+  //
+  // 舊版回的是「露出這麼高」,也就是**半顆控制項**:預設尺寸下文字頁的
+  // 「全形/半形」區段標題在 y=497、高 22,可視高度 506 —— 它被裁成 9,
+  // 從字的中間橫著切過去。使用者回報的是「摺線那裡看起來像壞掉」,
+  // 而那正是它:被攔腰切開的字沒有任何辦法讀成「還有東西可以捲」。
+  //
+  // 現在一顆控制項要嘛整顆在裁切線以上,要嘛完全不畫。摺線因此永遠
+  // 落在**空白**上(卡片的內距或頁面底色),而「還有更多」交給
+  // 淡出區(kScrollFadeH)與捲軸去說 —— 它們說得清楚,半個字說不清楚。
+  //
+  // ⚠ 0 **不等於**隱藏:控制項仍然存在、仍然在 Tab 順序上(見 visible)。
   int clip_h_dip = -1;
   // ⚠ 永遠 true,而且**這是規定,不是實作細節**:捲出可視範圍的控制項
   //   只裁不藏。ShowWindow(SW_HIDE) 會讓它退出 Tab 順序,於是鍵盤
@@ -587,8 +678,11 @@ struct ScrolledPlacement {
   //   SW_SHOW/SW_HIDE),這樣「藏起來」才會是一個測得到的行為改變。
   bool visible = true;
 };
+// ⚠ 第三個引數是**裁切線**(ContentClipLineDip()),不是可視高度。
+//   兩者在「還有更多」的時候差 kScrollFadeH -- 傳可視高度進去的話,
+//   控制項會畫進淡出區裡,而字上面蓋一層淡出看起來像那一列被停用了。
 ScrolledPlacement ScrollPlaceControlDip(const RectI& content_rect,
-                                        int scroll_dip, int viewport_h_dip);
+                                        int scroll_dip, int clip_line_dip);
 
 // ── 「預設」徽章擺哪裡(§12.14.6.5)─────────────────────────────
 //

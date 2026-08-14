@@ -2287,7 +2287,7 @@ capture_settings_ui() {
   # 設定檔的格式是 `鍵 = 值`(見 common/settings.cc 的 Parse)。
   # ⚠ 直接寫死深淺,**不跟系統** —— 見上面那一段。
   mkdir -p "${USER_DIR}"
-  printf 'appearance.appearance = %s\n' "${mode}" > "${USER_DIR}/luminakey.settings"
+  printf 'appearance.appearance = %s\n' "${mode}" > "${USER_DIR}/${RS_WIN_SETTINGS_FILE}"
   "${INSTALL_DIR}/rime_service.exe" --settings --quit-after 90 \
     > "${WORK}/settings-shot-${mode}.log" 2>&1 &
   local pid=$!
@@ -2335,12 +2335,12 @@ capture_settings_ui() {
 
 log "  12s. 設定視窗五頁 × 深淺兩份截圖(只拍;判準在 check_ui_shots.sh)"
 settings_backup=""
-if [ -f "${USER_DIR}/luminakey.settings" ]; then
+if [ -f "${USER_DIR}/${RS_WIN_SETTINGS_FILE}" ]; then
   # ⚠ 備份**不要**放進 ${WORK} —— 那整個目錄會被 upload-artifact 傳上去。
   #   使用者的設定檔在 CI 上無所謂,但「凡是寫進 WORK 的都會公開」
   #   這條規則要一直成立,不然下一次有人往那裡放的東西就不會被想過。
   settings_backup="$(mktemp)"
-  cp "${USER_DIR}/luminakey.settings" "${settings_backup}" 2>/dev/null || true
+  cp "${USER_DIR}/${RS_WIN_SETTINGS_FILE}" "${settings_backup}" 2>/dev/null || true
 fi
 taskkill //IM rime_service.exe //F >/dev/null 2>&1 || true
 sleep 2
@@ -2349,10 +2349,10 @@ capture_settings_ui dark
 # 把使用者的設定放回去 —— 這支腳本後面還有「解除安裝之後要乾淨」那幾條,
 # 而我們剛剛在使用者資料夾裡寫過檔。
 if [ -n "${settings_backup}" ] && [ -f "${settings_backup}" ]; then
-  cp "${settings_backup}" "${USER_DIR}/luminakey.settings" 2>/dev/null || true
+  cp "${settings_backup}" "${USER_DIR}/${RS_WIN_SETTINGS_FILE}" 2>/dev/null || true
   rm -f "${settings_backup}"
 else
-  rm -f "${USER_DIR}/luminakey.settings" 2>/dev/null || true
+  rm -f "${USER_DIR}/${RS_WIN_SETTINGS_FILE}" 2>/dev/null || true
 fi
 shot_count="$(ls -1 "${WORK}"/settings-p*.bmp 2>/dev/null | wc -l | tr -d ' ')"
 log "  截圖:${shot_count} 張寫進 $(basename "$(dirname "${WORK}")")/$(basename "${WORK}")/"

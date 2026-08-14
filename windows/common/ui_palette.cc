@@ -212,4 +212,17 @@ double ContrastRatio(Rgb a, Rgb b) {
   return (hi + 0.05) / (lo + 0.05);
 }
 
+Rgb ScrollFadeMix(Rgb from, Rgb to, int band, int bands) {
+  if (bands <= 0 || band >= bands) return to;
+  if (band <= 0) return from;
+  // ⚠ 在 8 位元的分量上做整數內插,四捨五入 —— 截斷的話深色下每一帶
+  //   都往暗的一邊偏一格,而八帶累積起來看得出一條階梯。
+  auto mix = [&](uint8_t a, uint8_t b) {
+    const int num = static_cast<int>(a) * (bands - band) +
+                    static_cast<int>(b) * band;
+    return static_cast<uint8_t>((num + bands / 2) / bands);
+  };
+  return Rgb{mix(from.r, to.r), mix(from.g, to.g), mix(from.b, to.b)};
+}
+
 }  // namespace rimewin

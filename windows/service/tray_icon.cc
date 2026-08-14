@@ -19,9 +19,15 @@ int IconSizeForDpi(UINT dpi) {
 }  // namespace
 
 HICON MakeModeTrayIcon(const wchar_t* text, UINT dpi) {
+  return MakeModeIconPx(text, IconSizeForDpi(dpi ? dpi : 96));
+}
+
+HICON MakeModeIconPx(const wchar_t* text, int px) {
   if (!text || !*text) return nullptr;
   const int len = static_cast<int>(::lstrlenW(text));
-  const int n = IconSizeForDpi(dpi ? dpi : 96);
+  // ⚠ 下界不是潔癖:n <= 0 會讓 CreateDIBSection 拿到 0 寬,
+  //   而它會**成功**回一個不能畫的東西,症狀是一顆看不見的圖示。
+  const int n = px >= 8 ? px : 16;
 
   HDC screen = ::GetDC(nullptr);
   if (!screen) return nullptr;
@@ -83,11 +89,14 @@ HICON MakeModeTrayIcon(const wchar_t* text, UINT dpi) {
   //   而挑錯字體的症狀是畫出一個豆腐方塊,那與「認不出來的圖示」是同一
   //   個問題。
   //
-  // ⚠ FontSet 吃的是 DIP,而 h 是像素。
+  // ⚠ FontSet 吃的是 DIP + DPI,而這一支收到的是**像素**。
+  //   固定用 96:在 96 DPI 底下 DIP 與像素是 1:1,所以 `h` 直接就是
+  //   要的字高。原本這裡先把像素換成 DIP 再讓 FontSet 換回像素,
+  //   兩次 MulDiv 抵銷 —— 少一趟捨入,也少一個「這裡的 dpi 是哪一個
+  //   螢幕的」的問題(視窗類別的圖示根本不屬於任何一個螢幕)。
   FontSet fonts;
-  fonts.Reset(dpi ? dpi : 96, Script::kHant);
-  const int size_dip = MulDiv(h, 96, static_cast<int>(dpi ? dpi : 96));
-  HFONT font = fonts.Get(size_dip > 0 ? size_dip : 1, /*semibold=*/true);
+  fonts.Reset(96, Script::kHant);
+  HFONT font = fonts.Get(h > 0 ? h : 1, /*semibold=*/true);
   HGDIOBJ old_font = font ? ::SelectObject(mem, font) : nullptr;
 
   ::SetBkMode(mem, TRANSPARENT);
@@ -107,10 +116,10 @@ HICON MakeModeTrayIcon(const wchar_t* text, UINT dpi) {
   //
   //   判準是「這個像素不是我們一開始清成的全 0」—— 圓底是 0x333333、
   //   字是 0xFFFFFF,兩者都不是 0。
-  unsigned char* px = static_cast<unsigned char*>(bits);
+  unsigned char* pixels = static_cast<unsigned char*>(bits);
   const size_t count = static_cast<size_t>(n) * static_cast<size_t>(n);
   for (size_t i = 0; i < count; ++i) {
-    unsigned char* p = px + i * 4;
+    unsigned char* p = pixels + i * 4;
     if (p[0] || p[1] || p[2]) p[3] = 0xFF;
   }
 

@@ -116,6 +116,21 @@ int SysColorFor(Role role);
 double RelativeLuminance(Rgb c);
 double ContrastRatio(Rgb a, Rgb b);
 
+// ── 摺線上方那一段淡出區的第 band 帶要填什麼顏色 ─────────────────
+//
+// GDI 的 FillRect 不做 alpha 混色(§12.14.2 開頭那一句:狀態層是
+// **預先算好的不透明色**),所以「淡出」只能是一疊實色的橫帶。
+// 這一支就是那一疊的顏色:band = 0 完全是 from,band = bands 完全是 to。
+//
+// ⚠ 為什麼它可以是實色而不失真:淡出區裡**只有卡片的底與外框**,
+//   沒有字也沒有控制項(控制項裁在淡出區的上緣,見
+//   ui_layout.h 的 ContentClipLineDip)。底下是什麼顏色我們自己知道,
+//   所以不需要 alpha —— 需要 alpha 的是「蓋在不知道什麼東西上面」。
+//
+// ⚠ 邊界:band <= 0 回 from、band >= bands 回 to、bands <= 0 回 to。
+//   它在 WM_PAINT 的路徑上,不可以因為引數不合理就畫出隨機的顏色。
+Rgb ScrollFadeMix(Rgb from, Rgb to, int band, int bands);
+
 }  // namespace rimewin
 
 #endif  // RIMEWIN_UI_PALETTE_H_
