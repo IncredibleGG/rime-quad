@@ -317,12 +317,26 @@ class PresenceLink {
   }
 
  private:
-  // 連不上時的兩段式重試。
+  // 這一圈沒有成果時的兩段式退避。
   //
   // 前 30 次一秒一次:使用者剛切過來,服務可能正被 StartServiceInBackground
   // 拉起來,早一秒連上就是早一秒看得到那一橫。之後放慢到五秒 ——
   // 首次部署要編詞庫,那是好幾分鐘,這條執行緒在那段期間應該安靜。
   // ⚠ 沒有上限:服務被更新程式重啟過之後也要自己接回來(工單 #73 的形狀)。
+  //
+  // ⚠ 「這一圈沒有成果」有**三種**,而只有第一種是顯而易見的:
+  //     1. CreateFileW 就連不上(服務不在)。
+  //     2. 連上了,但**握手沒成功**。服務在、管道在,只是它此刻答不出
+  //        HELLO_OK(正在部署、佇列被佔住、或它是舊版而我們還沒降到
+  //        它認得的線路版本)。⚠ 這一種以前固定等 1000 毫秒重連,
+  //        **永遠進不了五秒的慢車道** —— 每個宿主每秒開一條新連線、
+  //        服務端每秒起一條新的 ServeClient 執行緒,而使用者機器上有
+  //        13 個宿主。一個以「離線為預設、經得起審計」為定位的產品,
+  //        它的背景行為要解釋得出來。
+  //     3. 握完手,但連線**立刻**就斷了(服務正在收工 / 正被更新程式
+  //        換掉)。那一圈是零等待的 —— 比第 2 種更快。
+  //   所以退避的歸零點是「**這一圈真的當了一段時間的在場連線**」,
+  //   不是「CreateFileW 回來了」。
   static const DWORD kRetryFastMs = 1000;
   static const DWORD kRetrySlowMs = 5000;
   static const int kFastTries = 30;
@@ -347,12 +361,22 @@ class PresenceLink {
     return 0;
   }
 
+  // 這一圈沒有成果 —— 等一下再來。回 false = 被叫停,外層要 break。
+  //
+  // ⚠ 三條路徑共用這一支就是重點:以前只有「連不上」那一條會慢下來。
+  bool Backoff(int* misses) {
+    ++*misses;
+    const DWORD pause = *misses <= kFastTries ? kRetryFastMs : kRetrySlowMs;
+    return ::WaitForSingleObject(stop_, pause) != WAIT_OBJECT_0;
+  }
+
   void Run() {
     const std::wstring name = RimePipeName();
     // overlapped 的事件整條執行緒共用一個:一次只掛一個 I/O。
     HANDLE io = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
     int misses = 0;
-    int traced = 0;
+    int traced = 0;        // 「連不上」寫了幾行(連上就歸零)
+    int linked_traced = 0;  // 「已連上」寫了幾行(握手成功才歸零)
     while (::WaitForSingleObject(stop_, 0) != WAIT_OBJECT_0) {
       // ⚠ 只連,不啟動 —— 見上面那一段 ⚠。
       HANDLE pipe = ::CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE,
@@ -369,17 +393,20 @@ class PresenceLink {
           Trace("在場連線:連不上(err=%lu)—— 等服務出現",
                 static_cast<unsigned long>(::GetLastError()));
         }
-        ++misses;
-        const DWORD pause = misses <= kFastTries ? kRetryFastMs : kRetrySlowMs;
-        if (::WaitForSingleObject(stop_, pause) == WAIT_OBJECT_0) break;
+        if (!Backoff(&misses)) break;
         continue;
       }
-      misses = 0;
       traced = 0;
       // ⚠ 這一行是 CI 唯一看得到「在場連線真的建立了」的地方之一
       //   (另一個是 tests/tsf_host_main.cc 的 --watch-presence,
-      //   它從**服務端**數)。
-      Trace("在場連線:已連上 —— 那一橫從現在起看得到這個宿主");
+      //   它從**服務端**數)。⚠ 它也有預算:握手一直失敗的話,這個
+      //   迴圈每一圈都會走到這裡,而沒有預算的話它就是一行一行的磁碟寫入。
+      bool traced_link = false;
+      if (linked_traced < 2) {
+        ++linked_traced;
+        traced_link = true;
+        Trace("在場連線:已連上 —— 那一橫從現在起看得到這個宿主");
+      }
       // ⚠ 握手失敗有兩種,而它們要做的事**不一樣**:
       //     · 對面不認得我們宣告的版本(舊服務 + 新 DLL):它的
       //       DecodeHello 在「剛好用完」那一關整則丟掉,然後關掉連線。
@@ -387,20 +414,37 @@ class PresenceLink {
       //         而 bar_owner.h 對報不出 tid 的用戶端退回去比 pid。
       //     · 只是慢(服務正在部署,那條執行緒被佔住)→ **不可以降版**。
       //       降了就永久失去 tid,而那是一個沒有人查得出來的降級。
+      const DWORD linked_at = ::GetTickCount();
       HandshakeResult hs = SendHello(pipe, io);
       if (hs != HandshakeResult::kOk) {
         if (hs == HandshakeResult::kRejected && proto_ > kMinProtocolVersion)
           --proto_;
         ::CloseHandle(pipe);
-        if (::WaitForSingleObject(stop_, kRetryFastMs) == WAIT_OBJECT_0) break;
+        // ⚠ **這裡以前是固定的 kRetryFastMs。** 服務在、而握手一直不成
+        //   的時候,那等於每個宿主每秒開一條新連線、服務端每秒起一條新
+        //   執行緒,×13,永遠 —— 而且永遠進不了慢車道。
+        if (!Backoff(&misses)) break;
         continue;
       }
       WaitUntilBroken(pipe, io);
       // ⚠ 這一行就是 #82 的「切走之後那一橫必須消失」:關掉 →
       //   服務端那條 ServeClient 讀到 0 位元組 → ClientTicket 解構
-      //   → OnClientDetached → clients_ 減一。
+      //   → OnClientDetached → 那筆註冊消失。
       ::CloseHandle(pipe);
-      Trace("在場連線:已關閉");
+      // ⚠ 與上面那一行**成對**:握完手立刻被關掉的迴圈裡,兩行都要一起
+      //   閉嘴,否則「已連上」有預算而「已關閉」沒有,磁碟照樣一直寫。
+      if (traced_link) Trace("在場連線:已關閉");
+      // ⚠ 退避**只在這裡**歸零 —— 判準是「這一圈真的當了一段時間的
+      //   在場連線」,不是「CreateFileW 回來了」。握完手立刻被關掉
+      //   (服務正在收工 / 正被更新程式換掉)的那一圈是零等待的,
+      //   把它算成成功就是一條 100% CPU 的重連迴圈。
+      //   ⚠ 無號相減:GetTickCount 是 49.7 天翻轉的 32 位元計數器。
+      if (::GetTickCount() - linked_at < kRetryFastMs) {
+        if (!Backoff(&misses)) break;
+        continue;
+      }
+      misses = 0;
+      linked_traced = 0;
     }
     if (io) ::CloseHandle(io);
   }

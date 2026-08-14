@@ -130,9 +130,15 @@ BOOL CALLBACK FindCoreWindow(HWND child, LPARAM lp) {
 
 BarOwnerForeground ReadForegroundOwner() {
   BarOwnerForeground fg;
+  // ⚠ 這一行不是判斷,是**取值**:「前景是服務自己 → 維持現狀」那個
+  //   判斷在 common/bar_owner.cc,那裡在 Ubuntu 上測得到(O13)。
+  //   少了這一行:使用者從那一橫點「設定」→ 設定視窗成為前景 →
+  //   它是服務自己的進程、自己的執行緒,13 個宿主一筆都對不上 →
+  //   in_use 變 false → 3000 毫秒後那一橫在他眼前消失。
+  fg.service_pid = static_cast<uint32_t>(::GetCurrentProcessId());
   const HWND top = ::GetForegroundWindow();
   // ⚠ NULL 是真的會發生的:UAC 提示、鎖定畫面、切換桌面的那一瞬間。
-  //   known 維持 false → 裁決器回 os_unknown → 呼叫端維持現狀。
+  //   known 維持 false → 裁決器回 undecidable → 呼叫端維持現狀。
   if (!top) return fg;
   DWORD pid = 0;
   const DWORD tid = ::GetWindowThreadProcessId(top, &pid);
@@ -298,10 +304,12 @@ void StatusBar::EvaluateVisibility() {
   }
   const BarOwnerDecision owner =
       DecideBarOwner(snapshot, ReadForegroundOwner());
-  // ⚠ OS 答不出前景(UAC 提示 / 安全桌面)→ **維持現狀**。在那裡把
-  //   in_use_ 打成 false,使用者只是被問了一次系統權限,那一橫就開始
-  //   倒數消失,而他什麼都沒做。
-  if (!owner.os_unknown) {
+  // ⚠ 前景回答不了這個問題時 → **維持現狀**。兩個原因:OS 答不出來
+  //   (UAC 提示 / 安全桌面),或前景是**服務自己的視窗**(設定視窗 /
+  //   托盤選單 / 那一橫自己的彈出選單)。在那裡把 in_use_ 打成 false,
+  //   使用者只是被問了一次系統權限、或只是從那一橫點開了設定,
+  //   那一橫就開始倒數消失。
+  if (!owner.undecidable) {
     in_use_ = owner.in_use;
     focused_session_ = owner.focused_session;
   }
@@ -804,10 +812,13 @@ void StatusBar::ClickCell(int cell) {
   //   ⚠ 只擋這兩格。方案選單與設定那兩格不碰引擎,擋它們只會讓那一橫
   //     在部署期間看起來壞掉。
   if (cell == kCellMode || cell == kCellVariant) {
-    if (static_cast<LONG>(::GetMessageTime()) -
-            static_cast<LONG>(toggle_settled_ms_) <
-        0)
-      return;
+    // ⚠ **無號相減,再轉有號。** 兩個都是 49.7 天翻轉的 32 位元計數器
+    //   (GetMessageTime 與 GetTickCount 同一個時間基準)。先各自轉成
+    //   有號再相減的話,跨過翻轉點的那一次是**有號溢位**(UB);
+    //   在無號那一側相減是明文定義的環繞,轉回有號才得到帶正負號的差。
+    //   實務上碰得到的機率趨近於零,而這個 codebase 的標準是把它寫下來。
+    const DWORD produced = static_cast<DWORD>(::GetMessageTime());
+    if (static_cast<LONG>(produced - toggle_settled_ms_) < 0) return;
   }
   switch (cell) {
     case kCellMode: {

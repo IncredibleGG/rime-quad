@@ -65,8 +65,9 @@ TEST(bar_visibility_user_switch_wins_over_everything) {
 //   保護變成漏洞 —— 它的意思是「不知道的時候顯示」,而使用者回報的
 //   S4(切到微軟拼音之後那一橫還自己冒出來)正是「不知道」。
 //
-// ⚠ 「OS 這一刻答不出前景」不走這裡:那由呼叫端**維持現狀**處理
-//   (common/bar_owner.h 的 os_unknown),不是在判準裡多開一個分支。
+// ⚠ 「這一刻的前景答不了這個問題」不走這裡(OS 答不出前景,或前景是
+//   **服務自己的設定視窗**):那由呼叫端**維持現狀**處理
+//   (common/bar_owner.h 的 undecidable),不是在判準裡多開一個分支。
 TEST(bar_visibility_not_in_use_hides_there_is_no_third_answer) {
   BarVisibility v;
   CHECK(v.Feed(Using(0)) == BarAction::kShow);

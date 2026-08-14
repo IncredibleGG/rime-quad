@@ -60,7 +60,28 @@ BarOwnerDecision DecideBarOwner(const std::vector<BarOwnerClient>& clients,
   //   跳出來的那一秒那一橫會開始倒數隱藏,而使用者什麼都沒做。
   //   tid 為 0 也算問不出來:那是 GetWindowThreadProcessId 失敗的樣子。
   if (!fg.known || fg.tid == 0) {
-    out.os_unknown = true;
+    out.undecidable = true;
+    return out;
+  }
+  // ── 前景是**服務自己**:設定視窗 / 托盤選單 / 那一橫的彈出選單 ──
+  //
+  // ⚠ 這一格是「使用者從那一橫點了設定」。設定視窗是服務自己的進程、
+  //   自己的執行緒,13 個宿主的註冊**一筆都對不上** —— 底下那個迴圈
+  //   會誠實地算出 in_use=false,而那不是事實:他沒有切走輸入法,
+  //   他只是打開了設定。少了這一格的樣子是「視窗開起來,3000 毫秒後
+  //   那一橫自己不見了」。
+  //
+  // ⚠ 為什麼是「維持現狀」而不是「顯示」:他也可能是從**系統匣圖示**
+  //   打開設定的(切走輸入法之後唯一的入口,見 ui-design §12.10.6)。
+  //   那時候那一橫本來就該是藏著的,強制顯示等於把 S4 換個地方放回去。
+  //
+  // ⚠ service_pid 為 0 = 呼叫端沒填。那時候這一格不比 —— 否則一份
+  //   預設建構的 BarOwnerForeground 會讓「前景 pid 是 0」變成我們自己。
+  //   status_bar.cc 那一行由 audit_single_source.sh 規則 6 守著。
+  if (fg.service_pid != 0 &&
+      (fg.pid == fg.service_pid ||
+       (fg.inner_known && fg.inner_pid == fg.service_pid))) {
+    out.undecidable = true;
     return out;
   }
 

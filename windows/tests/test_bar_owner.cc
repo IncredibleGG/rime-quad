@@ -52,7 +52,7 @@ TEST(bar_owner_twelve_zombies_plus_one_foreground_shows_the_foreground_one) {
   cs.push_back(Host(99, 4242, 4343));
 
   const BarOwnerDecision d = DecideBarOwner(cs, Fg(4242, 4343));
-  CHECK(!d.os_unknown);
+  CHECK(!d.undecidable);
   CHECK(d.in_use);
   CHECK_INT(d.focused_client, 99);
   CHECK_INT(cs.size(), 13);  // 掃描範圍非空
@@ -65,7 +65,7 @@ TEST(bar_owner_thirteen_background_hosts_alone_must_hide) {
     cs.push_back(Host(i, 1000 + i, 2000 + i));
   // 前景是一個完全沒有載入我們的程式(或載入了但用的是微軟拼音)。
   const BarOwnerDecision d = DecideBarOwner(cs, Fg(777, 888));
-  CHECK(!d.os_unknown);
+  CHECK(!d.undecidable);
   // ⚠ 舊判準在這裡是 `active_clients == 13 > 0` → 顯示。
   //   使用者的原話:「你看他隨機出現 我現在用其他的輸入法。但是他突然出現了」。
   CHECK(!d.in_use);
@@ -147,9 +147,9 @@ TEST(bar_owner_unknown_foreground_keeps_the_caller_from_changing_anything) {
   std::vector<BarOwnerClient> cs{Host(1, 4242, 4343)};
   BarOwnerForeground none;  // known = false(UAC 提示 / 安全桌面)
   const BarOwnerDecision d = DecideBarOwner(cs, none);
-  CHECK(d.os_unknown);
+  CHECK(d.undecidable);
   // ⚠ 呼叫端**不可以**把 in_use 讀成答案。這裡順手把它釘成 false,
-  //   讓「忘了看 os_unknown」在真機上是「那一橫不見了」而不是隨機。
+  //   讓「忘了看 undecidable」在真機上是「那一橫不見了」而不是隨機。
   CHECK(!d.in_use);
 
   // tid 問不出來(GetWindowThreadProcessId 失敗)也算問不出來。
@@ -157,7 +157,7 @@ TEST(bar_owner_unknown_foreground_keeps_the_caller_from_changing_anything) {
   half.known = true;
   half.pid = 4242;
   half.tid = 0;
-  CHECK(DecideBarOwner(cs, half).os_unknown);
+  CHECK(DecideBarOwner(cs, half).undecidable);
 }
 
 // ── O8:UWP —— 前景是 ApplicationFrameHost,宿主在 CoreWindow 那一層 ──
@@ -209,7 +209,7 @@ TEST(bar_owner_prefers_the_connection_that_actually_has_a_session) {
 TEST(bar_owner_no_clients_at_all_is_simply_hidden) {
   std::vector<BarOwnerClient> none;
   const BarOwnerDecision d = DecideBarOwner(none, Fg(4242, 4343));
-  CHECK(!d.os_unknown);
+  CHECK(!d.undecidable);
   CHECK(!d.in_use);
   CHECK_INT(d.focused_session, 0);
 }
@@ -229,4 +229,49 @@ TEST(bar_owner_exact_thread_match_wins_over_a_mere_process_match) {
   //   才是使用者正在打字的那一條。
   CHECK_INT(d.focused_client, 2);
   CHECK_INT(d.focused_session, 22);
+}
+
+// ── O13:前景是**服務自己的視窗**(設定 / 托盤選單)→ 維持現狀 ────────
+//
+// ⚠ 這一支是這一輪新造的那個缺陷。使用者從那一橫點「設定」,設定視窗
+//   是**服務自己的進程、自己的執行緒** —— 13 個宿主的註冊一筆都對不上。
+//   在這裡回 in_use=false 的話,3000 毫秒之後那一橫在他眼前消失,而他
+//   做的事只是打開設定。他今晚已經被「它又不見了」耽誤過三次。
+TEST(bar_owner_our_own_settings_window_is_not_an_answer) {
+  const uint32_t kServicePid = 31337;
+  std::vector<BarOwnerClient> cs;
+  for (uint32_t i = 1; i <= 12; ++i) cs.push_back(Host(i, 1000 + i, 2000 + i));
+  cs.push_back(Host(99, 4242, 4343));  // 他剛剛在打字的那一個
+  cs.back().session = 55;
+
+  // 服務自己的設定視窗成為前景:pid 是服務的,tid 是設定視窗那條執行緒。
+  BarOwnerForeground gui = Fg(kServicePid, 555);
+  gui.service_pid = kServicePid;
+  const BarOwnerDecision d = DecideBarOwner(cs, gui);
+  CHECK(d.undecidable);
+  // ⚠ 而且釘成 false —— 「忘了看 undecidable」在真機上要是「那一橫
+  //   不見了」這種一眼看得出來的樣子,不是隨機。
+  CHECK(!d.in_use);
+  CHECK_INT(d.focused_session, 0);
+
+  // ⚠ 只有**服務自己**這樣。別人的前景照常裁決,否則這一條會變成
+  //   「誰都不算」—— 那是把 S4 用另一個方向放回去。
+  BarOwnerForeground host = Fg(4242, 4343);
+  host.service_pid = kServicePid;
+  CHECK(!DecideBarOwner(cs, host).undecidable);
+  CHECK(DecideBarOwner(cs, host).in_use);
+  CHECK_INT(DecideBarOwner(cs, host).focused_session, 55);
+
+  // ⚠ 沒填 service_pid(0)不可以變成「前景 pid 是 0 就對上了」。
+  BarOwnerForeground unset = Fg(0, 4343);
+  CHECK(!DecideBarOwner(cs, unset).undecidable);
+
+  // UWP 那一層也要擋:框是 ApplicationFrameHost、CoreWindow 是我們自己。
+  // 這一格在今天的 Win32 服務上到不了,但收斂規則不該只擋得住一個方向。
+  BarOwnerForeground uwp = Fg(900, 901);
+  uwp.service_pid = kServicePid;
+  uwp.inner_known = true;
+  uwp.inner_pid = kServicePid;
+  uwp.inner_tid = 902;
+  CHECK(DecideBarOwner(cs, uwp).undecidable);
 }

@@ -76,7 +76,7 @@ struct BarOwnerClient {
 // OS 這一刻說前景是誰。由服務端自己去問,不接受宿主宣稱。
 struct BarOwnerForeground {
   // ⚠ 假 = **問不出來**(安全桌面 / UAC 提示時 GetForegroundWindow()
-  //   回 NULL)。那時候**不要改狀態** —— 見 BarOwnerDecision::os_unknown。
+  //   回 NULL)。那時候**不要改狀態** —— 見 BarOwnerDecision::undecidable。
   bool known = false;
   uint32_t pid = 0;
   uint32_t tid = 0;
@@ -89,13 +89,36 @@ struct BarOwnerForeground {
   bool inner_known = false;
   uint32_t inner_pid = 0;
   uint32_t inner_tid = 0;
+  // ── 服務**自己**的 pid ──────────────────────────────────────
+  //
+  // ⚠ 由呼叫端填(status_bar.cc 的 ReadForegroundOwner 一行
+  //   ::GetCurrentProcessId()),不是在這裡去問 —— 這一支是純函式,
+  //   而「誰是我們自己」必須餵得進來才測得到。0 = 沒填,那一格就不比。
+  //
+  // 為什麼要有這一格:服務自己也有視窗(設定視窗、托盤選單、那一橫
+  // 自己的方案彈出選單)。使用者從那一橫點「設定」,前景就變成**服務
+  // 自己的進程、自己的執行緒** —— 13 個宿主一筆都對不上。少了這一格,
+  // 那等於「沒有人在用」:3000 毫秒之後那一橫在他眼前消失,而他做的
+  // 事只是打開設定。見 BarOwnerDecision::undecidable 的第二個原因。
+  uint32_t service_pid = 0;
 };
 
 struct BarOwnerDecision {
-  // ⚠ 真 = OS 答不出前景。呼叫端**維持現狀**,不要把它當成「沒有人在用」
-  //   —— UAC 提示跳出來的那一秒不該讓那一橫消失,而 3000 毫秒的遲滯
-  //   (common/bar_visibility.h)本來就壓得住這種空窗。
-  bool os_unknown = false;
+  // ⚠ 真 = **這一刻的前景回答不了「那一橫該不該顯示」這個問題**。
+  //   呼叫端**維持現狀** —— 不要把它讀成「沒有人在用」。
+  //
+  //   兩個原因,而兩個都是使用者看得到的事:
+  //     1. **OS 答不出前景**(UAC 提示、安全桌面、切換桌面的那一瞬)。
+  //        他只是被問了一次系統權限,那一橫不該開始倒數消失,
+  //        而 3000 毫秒的遲滯(common/bar_visibility.h)本來就壓得住。
+  //     2. **前景是服務自己的視窗**(設定視窗、托盤選單、那一橫自己
+  //        的彈出選單)。服務不是一個宿主,它答不了「使用者在哪一個
+  //        宿主裡打字」這個問題。使用者從那一橫點「設定」→ 視窗開
+  //        起來 → 3000 毫秒後那一橫不見,就是少了這一格的樣子。
+  //
+  //   ⚠ 名字不叫 os_unknown:第 2 個原因底下 OS 答得完全正確,
+  //     而這個 codebase 已經吃過好幾次「名字說的比實際窄一階」的虧。
+  bool undecidable = false;
   // 使用者此刻正在用的那條執行緒上,啟用中的是不是我們。
   bool in_use = false;
   // 那一條連線是誰。0 = 沒有。
@@ -106,7 +129,9 @@ struct BarOwnerDecision {
 
 // ── 收斂規則(逐條,而且每一條都有一支測試)────────────────────
 //
-//   · OS 答不出前景          → os_unknown,呼叫端維持現狀
+//   · OS 答不出前景          → undecidable,呼叫端維持現狀
+//   · 前景是**服務自己**      → 同上。設定視窗不是一個宿主,
+//     (設定視窗 / 托盤選單)     那一刻不代表「沒有人在用」
 //   · 沒握手的連線            → 一票都不投
 //   · 報得出 tid 的連線       → **只**比 tid。報得出來卻退回去比 pid,
 //                              等於在 per-app-window 模式下再壞一次

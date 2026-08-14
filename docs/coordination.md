@@ -1661,18 +1661,51 @@ Windows 端本來有四個裸的 `rs_select_schema`，其中三個之後沒有�
 
 ### 3. `ui-design.md` §12.10.6：懸浮狀態列的可見性（四端一致）
 
-新增一節，規範文字在那裡。摘要：跟著「這個輸入法目前有沒有被宿主使用」
-走（macOS = 至少一個 input client;Android = IME 被系統選中且輸入視窗
-存在），條件消失後 3000 毫秒才隱藏，恢復時**取消**待隱藏，重新出現時回到
-使用者拖過的同一個位置。焦點只是加強條件，**拿不到時一律視為「有」**。
+⚠ **2026-08-14 大改，下面這一段是現行版本。** 這一節原本的摘要
+（「跟著有沒有被宿主使用走」＋「焦點只是加強條件，拿不到時一律視為
+『有』」＋「判準是純函式 `bar_visibility.{h,cc}`，九支測試」）**已經被
+使用者的實機回報推翻**。照舊版做的話會做出剛被推翻的模型 —— 請以
+`ui-design.md` §12.10.6 的現行文字為準。
+
+新的判準只有一句：**這一橫只在「使用者此刻輸入焦點所在的那一條宿主
+執行緒上，啟用中的輸入法是我們」的時候顯示。** 不是「有沒有人連著我們」，
+不是「有幾個宿主載入了我們」。條件消失後 3000 毫秒才隱藏，恢復時**取消**
+待隱藏，重新出現時回到使用者拖過的同一個位置。
 
 ⚠ 自動隱藏**不是**關閉：它不改變使用者的總開關，條件恢復時自己回來。
 ⚠ 每一端都必須有一個與那一橫無關、而且在這個輸入法沒被使用時仍然存在的
 入口通往設定。macOS 的 `NSStatusItem` 天生就有「只在該輸入法啟用時出現」
 的行為，兩端在這裡會對齊。
 
-Windows 端的實作：判準是純函式（`windows/common/bar_visibility.{h,cc}`，
-九支測試），service 只負責接線。§12.10.2 那一節也整節重寫了 —— 它原本的
+被推翻的三句，以及它們在使用者機器上的樣子（Windows 11，13 個進程載入了
+我們的 DLL）：
+
+1. ⛔ 「至少一條連線活著」→ **S4**：他切到微軟拼音了，那一橫還自己冒出來。
+   12 條殭屍連線（凍結的、來不及送 deactivation 就被砍掉的）每一條都算一票。
+2. ⛔ 「焦點只是加強條件，拿不到時一律視為『有』」（fail-visible）→
+   那句話的理由是「焦點訊號在第一個字之前根本不送」，而在場訊號補上之後
+   前提消失。留著它就變成「不知道的時候顯示」，而 S4 正是不知道。
+   ⚠ 焦點**不是**加強條件，它**就是作用域** —— 輸入法在 Windows 上是
+   per-thread 的，「有沒有被使用」這個問題沒有全域的答案。
+3. ⛔ 「判準是純函式 `bar_visibility.{h,cc}`，九支測試」→ 那一支只管**遲滯**。
+   收斂 N 個宿主的那一層是新的 `common/bar_owner.{h,cc}`（十三支測試）。
+
+⚠ **給 macOS / Android 的兩格，兩格都不是 Windows 專有的：**
+
+* **提案必須帶得出作用域的識別。** macOS 的 input client、Android 的
+  `InputConnection` 都要能對回「使用者此刻在哪一個」。收斂規則是
+  「作用域對上才算」，逐宿主 OR 是單調沾黏的。
+* **「答不出來」是第三種答案，不是「沒有人在用」。** 而它有一個四端都會
+  踩到的來源：**前景是輸入法自己的設定視窗**。使用者從那一橫點「設定」→
+  視窗開起來 → 3000 毫秒後那一橫在他眼前消失。每一端的設定介面都跑在
+  自己的進程裡，而它不是一個宿主。這一格 Windows 這一輪實際踩到了
+  （`common/bar_owner.cc` 的 `service_pid`，測試 O13）。
+
+Windows 端的實作：判準是**兩支**純函式 —— `common/bar_owner.{h,cc}`
+（收斂 13 個宿主 + 「答不出來」，十三支測試）與
+`common/bar_visibility.{h,cc}`（遲滯，九支測試）;service 只負責接線，
+而接線由 `windows/audit_single_source.sh` 規則 6 守著（判準有測試、訊號
+沒有，是這裡反覆吃虧的形狀）。§12.10.2 那一節也整節重寫了 —— 它原本的
 論證是「這一橫是中英切換唯一的家」，而那個前提在 fix4-winkey 註冊
 `PreserveKey{VK_SPACE, TF_MOD_CONTROL}` 之後就已經過期。
 
@@ -1896,3 +1929,4 @@ Windows 端的實作：判準是純函式（`windows/common/bar_visibility.{h,cc
 - `[2026-08-14] [honest/Android+macOS] ⛔ **「數字攔截活著卻不畫序號」比工單寫的嚴重,而且我這一輪**放掉了它**(說明如下)。** 工單點名的 `bopomofo-dachen/alpha` **不是**「攔截活著卻不畫序號」的實例,但**理由不是原本寫的那個** —— ⚠ 原本這裡寫著「`ascii_mode` 會清掉組字,所以數字照常打出來」,**覆核實測相反:組字活著(注音串變成拉丁字母,例如 `sucl`),而且整排數字鍵按下去沒有任何反應。** 也就是它是另一個缺陷(見 2026-08-14 那則「沒在組字時按 1/3/9 什麼都不會發生」),不是這一則講的那個。請以實測為準,不要照原句定調。**真正活的實例在預設設定上**:`qwerty` × `luna_pinyin_tw` 打 `ni` → 按 `?123` 進 `numeric-symbol/numeric` → 候選列**沒有畫任何序號**,而按數字盤的 `3` **上屏了第 3 個候選「里」**(實測 emulator-5558,截圖在報告裡)。使用者去數字盤是要打數字的。**為什麼沒有照工單修**:兩個判準要一致有兩個方向,兩個都會弄壞別的東西 ——(甲)`rowActive()` 也問 `works()`:`cn-t9-pinyin/num`、`cn-symbols/num` 這兩層不在 `core/selection-digit.tsv` 裡(表是 `(佈局, 方案)` 為鍵、而且只量得到**預設層**),於是攔截被關掉、數字回到引擎、被 `recognizer/patterns.uppercase` 收走 —— **工單 #99 當場復發**;(乙)`labelVisible()` 不再問 `works()`:那等於讓那張實測表對「畫不畫」失效,而 §8.6.1.1.1 明文要求 iOS「量不出來就一格都不畫」—— 規範所有權在 macOS,而本輪的「明確不做」已經把這整套機制交接給 macOS。**根因是那張表的鍵少一欄:答案隨「層」而不同,而表以 `(佈局, 方案)` 為鍵。** 請 macOS 連同上一則的 `platform` 欄一起定調。`
 - `[2026-08-14] [honest/Android] ℹ️ **展開面板的候選格量出來是 79.2 dp,沒有低於 48 dp 的下界。** 工單說「面板裡可點寬度只有文字寬 + 內距」,那一句對不上程式:面板每一格是 `Modifier.weight(1f)`,而 `perRow = Expander.perRow(maxWidth, itemDp)`、`itemDp ≥ item.min_width + spacing`,平分之後必然 ≥ `min_width`。實測 1080×2400@420dpi:候選**列**的一字候選 126 px = **48.0 dp**(正好是 `bar.item.min_width`),展開**面板**的候選格 208 px = **79.2 dp**。`widthIn(min = …)` 還是補上了,但它只在第三方主題把 `candidates.bar.item.min_width` 設成 0 時才咬得到 —— 程式碼註解已寫明,免得下一個人以為它在做事。`
 - `[2026-08-14] [winbar-signal/Windows → 全體(尤其 macOS 的狀態指示器)] ⛔ **「那一橫該不該顯示」的訊號原本只接在按鍵上,沒有接在 activation 上。** 使用者實機回報:切了一下輸入法,狀態欄整個不見了、再也不出現。機制:服務端的判準等價於「至少有一條具名管道連線開著」(`service/status_bar.cc` 的 `clients_`,由 `service/pipe_server.cc` 的 `ClientTicket` 一條連線一張票),而 DLL 這一側 `Deactivate()` 會 `ipc_.Close()`、`OnActivated()`(繁↔简)也會關,**只有 `ActivateEx()` 什麼都不連** —— 唯一推得回去的 `IpcClient::EnsureReady()` 三個呼叫點全部在按鍵路徑上。**修法**:一條專用的「在場」連線,自己的背景執行緒、自己的管道 handle,從 `ActivateEx` 開到 `Deactivate` 才關(`tsf/text_service.cc` 的 `PresenceLink`)。⚠ **刻意不握手、不建 session**:`ServeClient` 的第一個敘述就是 `ClientTicket` 的建構,在讀第一個位元組之前;而伺服器的讀是 `WaitOverlapped(..., INFINITE)`,不會踢掉閒著的連線。⚠ **刻意不把 `EnsureReady()` 搬進 `ActivateEx`**:開管道與握手會在宿主的 UI 執行緒上等,那是切輸入法的路徑。⚠ 這條路**不啟動服務**(提權宿主那道閘在 `LaunchService()` 裡),只 `CreateFileW`。**給其他三端的那一句**:這一格的形狀是「判準有九支測試,訊號一條都沒有」—— `grep -rn "OnClientAttached|OnClientDetached|ClientTicket|StartServiceInBackground"` 掃遍所有 `.sh` / `.yml` / 測試,在這一輪之前回傳的是**空的**。任何一端只要把「指示器顯不顯示」抽成純函式,就會長出同一個洞:守到的是 `Feed()` 的真值表,守不到「有沒有人餵、什麼時候餵」。守法補在既有守門上(`windows/verify_tsf.sh` 的 `--watch-presence`:假宿主自己接管那條具名管道,在 `ActivateEx` 之後、**第一顆按鍵之前**數服務端連線數;`windows/audit_single_source.sh` 規則 6:原始碼層面守 `ActivateEx` 起、`Deactivate` 收)。⚠ **誠實標明**:Windows 真機沒有驗過(工單 #48);規則 6 的「先紅後綠」是實跑的(四個反向植入),`verify_tsf.sh` 那一條只有 shell 判準在 Linux 上跑過兩個方向,C++ 那一半(假宿主真的去數連線)要 Windows runner 才跑得到。`
+- `[2026-08-14] [winbar-fg/Windows → 全體(尤其 macOS / Android 的狀態指示器)] ⛔ **上一則(winbar-signal)那句「判準等價於至少有一條具名管道連線開著,一條連線一張票」已經在同一天被推翻了 —— 請不要照它做。** 已登記成 `docs/refuted-claims.tsv` 的 RC-004,`windows/check_refuted_claims.sh` 從現在起會擋。**現行判準只有一句**:那一橫只在「使用者此刻輸入焦點所在的那一條宿主**執行緒**上,啟用中的輸入法是我們」的時候顯示。收斂 N 個宿主的那一層是新的 `windows/common/bar_owner.{h,cc}`(十三支測試);`bar_visibility.{h,cc}`(九支)只管遲滯。⚠ **fail-visible 退場**:它的理由是「焦點訊號在第一個字之前根本不送」,而在場連線補上之後前提消失,留著它等於「不知道的時候顯示」,而 S4 正是不知道。⚠ **這一輪新造、而且使用者當場會撞到的那一格,四端都會撞**:**前景是輸入法自己的設定視窗時,不可以判成「沒有人在用」。** 使用者從那一橫點「設定」→ 視窗開起來 → 它是服務自己的進程/執行緒,N 個宿主一筆都對不上 → 3000 毫秒後那一橫**在他眼前消失**。修法是把「答不出來」做成第三種答案(維持現狀),與 UAC 提示同一格 —— 而**不是**「強制顯示」:他也可能是從系統匣/選單列(規範要求的、與那一橫無關的入口)打開設定的,那時候它本來就該藏著。Windows 的做法:`BarOwnerForeground.service_pid` 由呼叫端填 `::GetCurrentProcessId()`,判斷留在純函式裡(測試 O13),接線由 `audit_single_source.sh` 規則 6 守。⚠ **給四端的一句方法論**:這一輪的三個缺陷(S3 甲的 session、設定視窗、握手退避)全部是「判準有測試、**餵給判準的那一格**沒有人守」—— 覆核者實測:拿掉 `OnClientSession(client_id, ok.session)` 並把 `focused_session_` 釘成 0,**三支守門全部照樣綠**。抽純函式的同時要抽守門守它的**入口**。⚠ **誠實標明**:Windows 真機仍然沒有驗過(工單 #48)。這一輪實跑過的是單元測試的先紅後綠、`audit_single_source.sh --self-check` 的 32 個反向植入、以及 mingw `-fsyntax-only`。`ReadForegroundOwner()` 在真機上回什麼,Linux 上一個位元都驗不到。`

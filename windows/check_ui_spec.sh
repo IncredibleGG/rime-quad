@@ -3497,7 +3497,7 @@ self_check() {
 "W26e 回讀之後不重畫|service/status_bar.cc|s=s.replace('  if (changed) {\n    Relayout();\n    ::InvalidateRect(hwnd_, nullptr, TRUE);\n','  if (changed) {\n',1)"
 "W26h 回讀又問隨便一個 session|service/status_bar.cc|s=s.replace('engine_->ReadBackStatus(focused_session_)','engine_->ReadBackStatus()',1)"
 "W26i 回讀不到就讓那一格繼續說謊(使用者今晚踩到的那一格)|service/status_bar.cc|s=s.replace('  } else {\n    ascii = engine_->AsciiMode();\n  }','  } else {\n    return;\n  }',1)"
-"W26j 連點又變成 N 次翻轉(比的是處理時刻,不是產生時刻)|service/status_bar.cc|s=s.replace('static_cast<LONG>(::GetMessageTime()) -','static_cast<LONG>(::GetTickCount()) -',1)"
+"W26j 連點又變成 N 次翻轉(比的是處理時刻,不是產生時刻)|service/status_bar.cc|s=s.replace('const DWORD produced = static_cast<DWORD>(::GetMessageTime());','const DWORD produced = ::GetTickCount();',1)"
 "W26k 回讀落地了卻不記時刻|service/status_bar.cc|s=s.replace('      toggle_settled_ms_ = ::GetTickCount();\n','',1)"
 "W27a Relayout 不再問狀態|service/status_bar.cc|s=s.replace('  service_state_ = CurrentServiceState();','  service_state_ = ServiceState::kReady;',1)"
 "W27b 那一橫的字寫死一句|service/status_bar.cc|s=s.replace('    c.text = UiText(StatusTextFor(service_state_));','    c.text = UiText(UiString::kBarNotRunning);',1)"
