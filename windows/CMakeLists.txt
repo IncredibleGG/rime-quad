@@ -131,8 +131,10 @@ add_library(rime_common STATIC
   #   (docs/ui-design.md §12.12 的 W18/W19/W20/W22 靠這條)。
   #   「畫出來好不好看」仍然只有人驗得到,但「算得對不對」不必等 CI。
   common/ui_palette.cc
+  common/ui_accent.cc
   common/ui_layout.cc
   common/statusbar_place.cc
+  common/statusbar_layout.cc
   # ⚠ 使用者看得到的每一個字。`windows/` 底下只有這一個檔案可以有
   #   使用者可見字串(W7),而它同時被 DLL、服務、安裝工具連結 ——
   #   語言列的按鈕與提權政策的說明也是使用者讀得到的字。
@@ -218,6 +220,7 @@ add_executable(rime_tests
   tests/test_ui_layout.cc
   tests/test_ui_palette.cc
   tests/test_statusbar_place.cc
+  tests/test_statusbar_layout.cc
   tests/test_ui_strings.cc
   tests/test_service_state.cc
   tests/test_redeploy_flow.cc

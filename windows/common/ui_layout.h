@@ -58,19 +58,33 @@ constexpr int s7 = 20;
 constexpr int s8 = 32;
 }  // namespace space
 
-// ── §3.3 圓角(桌面欄)。按鈕不在這裡 —— 它跟平台走。
+// ── §12.14.4 圓角:Windows 端**只有兩個值** ─────────────────────
+//
+// ⚠ §3.3 的桌面欄(10/7/6/5)在 Windows 端**不使用**。理由是 §3.3 自己
+//   那一條:「按鈕的圓角跟平台走,不跟我們走」。在 Win11 上,**所有**
+//   控制項的圓角都是平台給的,不只按鈕 —— 一個 7 DIP 圓角的清單列擺在
+//   4 DIP 圓角的系統核取方塊旁邊,看起來是兩套東西拼起來的。
+//
+//   膠囊(徽章)= 高度 ÷ 2,不是自由參數,所以不在這裡。
+//   焦點環 = 元件圓角 + 2,同理。
 namespace radius {
-constexpr int kLarge = 10;
-constexpr int kMedium = 7;
-constexpr int kMediumInner = 6;
-constexpr int kSmall = 5;
+constexpr int kControl = 4;  // 卡片、側欄項、清單列、按鈕、狀態列每一格
+constexpr int kWindow = 8;   // 懸浮狀態列、方案彈出清單、確認對話框、候選窗
 }  // namespace radius
 
 // ── §3.6 / §12.4.2 元件尺寸 ─────────────────────────────────────
 namespace metric {
 constexpr int kHairline = 1;
-constexpr int kMinTarget = 28;   // 桌面點擊目標最小 28×28
-constexpr int kSidebarItemH = 36;
+constexpr int kFocusRingW = 2;   // §12.14.2:焦點環外圈
+constexpr int kIndicatorW = 3;   // §12.14.6.1:側欄選中項左緣指示條的寬
+constexpr int kIndicatorH = 16;  // 同上的高
+constexpr int kMinTarget = 28;   // 桌面點擊目標最小 28×28;狀態列每一格的高
+constexpr int kButtonH = 32;     // §12.14.6.2:按鈕高;懸浮狀態列整條的高
+// ⚠ 舊名 kSidebarItemH。§12.14.5:36 有**兩個**意思(側欄項高、清單列高),
+//   而那是刻意的 —— 兩者是同一種東西(一列可點的、放一行 t3 的東西),
+//   值一樣才對。名字叫 kSidebarItemH 的時候,方案清單用它看起來像
+//   「借了側欄的常數」,下一個人會想拆成兩個,然後兩個會漂開。
+constexpr int kRowH = 36;
 constexpr int kSidebarStatusH = 64;
 constexpr int kSidebarW = 200;   // §5.1「不可拖曳」→ 固定,不是 splitter
 }  // namespace metric
@@ -125,11 +139,11 @@ int ContentXDip(int window_w_dip);
 // 側欄是一個真的 SysListView32(LVS_REPORT + 自繪),而 comctl32 排列的
 // 方式是固定的:第一列從清單的 client 頂端開始,之後每一列往下**列高**,
 // **列與列之間沒有間隔**。列高由 SetRowListRowHeight() 釘成
-// metric::kSidebarItemH。
+// metric::kRowH。
 //
 // 舊版這裡多加了一個 space::s2 的列距:
 //
-//     r.y = space::s5 + index * (metric::kSidebarItemH + space::s2);
+//     r.y = space::s5 + index * (metric::kRowH + space::s2);
 //
 // 那個 +4 在畫面上不存在 —— 沒有任何東西畫得出它,comctl32 也不認得它。
 // 它只存在於**我們以為列在哪裡**的那一份裡,而命中判定用的正是那一份:
@@ -150,6 +164,16 @@ RectI SidebarItemDip(int index);
 //   底比列窄是視覺,不是命中範圍。使用者按在底左邊那 12 DIP 上仍然要換頁,
 //   不然那一條會變成一道看不見的死區。
 RectI SidebarItemFillDip(int index);
+// 側欄選中項左緣那條指示條(§12.14.6.1)。**只有選中的那一項有。**
+//
+// ⚠ 它不是裝飾:§3.4 第 2 條要求「不得只用顏色傳達資訊」,而「現在是
+//   哪一頁」的第一個訊號是底色。指示條是**形狀**,色覺障礙下也在。
+//
+// ⚠ 它與底色、圓角**必須從同一個矩形算**(SidebarItemFillDip)。
+//   分開算的樣子是「指示條與底色的圓角對不齊」—— 差一兩個 DIP,
+//   看起來只是「做得不精緻」,不像 bug,所以永遠不會有人回報。
+RectI SidebarIndicatorDip(int index);
+
 // 側欄底部的狀態區(兩行 t5:「可以打字」/「離線」)。
 RectI SidebarStatusDip(int window_h_dip);
 
@@ -424,10 +448,44 @@ struct PlacedControl {
   RectI rect;          // 空矩形 = 這一頁上不出現(呼叫端 ShowWindow(SW_HIDE))
   bool clickable = false;
   const char* what = "";  // 診斷用,永遠英文(§4.11)
+  // ── ⚠ 這兩格是 W31' 的取材面(§12.15)────────────────────────
+  //
+  // 「這個矩形放得下它要放的字嗎」這件事,測試沒辦法從 rect 自己看出來
+  // —— 它得知道那是幾級的字、幾行。以前那個知識只存在於
+  // LayoutSettingsPageDip() 的區域變數裡,所以 §12.14.0 第 4 條那四處
+  // (頁標題 28 < 31、區段標題 19 < 22)**沒有任何自動化看得到**。
+  //
+  // 0 = 這一顆不放文字(清單、EDIT、按鈕的框由控制項自己畫)。
+  int text_size_dip = 0;
+  int text_lines = 0;
+  // 這一顆坐在卡片裡嗎。⚠ 它決定 WM_CTLCOLOR* 要回 surface 還是
+  //   background —— 沒有這一格的話,卡片裡的每一顆 STATIC 都會帶著
+  //   一塊 background 色的底,而卡片是 surface 色:畫面上是一張卡片
+  //   上面浮著幾塊顏色不一樣的長方形。這比沒有卡片還難看。
+  bool in_card = false;
+};
+
+// ── 卡片(§12.14.5,這一輪視覺上最大的一個改動)────────────────
+//
+// Win11 的設定介面**每一個區塊都是一張卡片**,而那正是「看起來像真的
+// 軟體」與「看起來像對話框」的分界。現況內容區是「標題 → 說明 → 控制項」
+// 一路往下攤平,沒有容器。
+//
+// ⚠ 卡片**不是**新的控制項:它畫在父視窗的 WM_PAINT 裡,所以不涉及
+//   無障礙。卡片內部控制項的位置**照舊由 LayoutSettingsPageDip() 算**,
+//   卡片只是多一個「把某幾顆控制項的矩形聯集起來再往外撐 padding」的輸出。
+//   這樣 W18 / W31' 量的還是同一批矩形。
+struct CardRect {
+  RectI rect;
+  // 卡內列與列之間的分隔線 y(內容座標)。⚠ 要縮排 s6,不縮排的話
+  //   它會碰到卡片的圓角,看起來像裂縫(§12.14.6.7)。
+  std::vector<int> divider_ys;
 };
 
 struct PageLayout {
   std::vector<PlacedControl> items;
+  // 這一頁上的卡片。⚠ 順序 = 由上而下。
+  std::vector<CardRect> cards;
   // 內容總高(含底部留白)。**捲動範圍唯一的來源** ——
   // 所以任何一顆沒有推進堆疊的控制項都會落在捲動範圍以外。
   int content_h_dip = 0;
@@ -531,6 +589,33 @@ struct ScrolledPlacement {
 };
 ScrolledPlacement ScrollPlaceControlDip(const RectI& content_rect,
                                         int scroll_dip, int viewport_h_dip);
+
+// ── 「預設」徽章擺哪裡(§12.14.6.5)─────────────────────────────
+//
+// ⚠ **這一支存在的理由是 §12.14.0 第 3 條**:徽章的位置以前從**列矩形**
+//   往回推,而列矩形會被 RowRect() 撐到 GetClientRect 的寬度。清單帶
+//   WS_BORDER、沒有 LVS_NOSCROLL,所以項目一多就出現直捲軸,client 變窄
+//   而欄寬沒跟著變窄 —— 那一列比看得見的範圍寬,徽章被排到可視區外面,
+//   被 DC 的裁剪切掉。使用者實機回報過:「清單右上角那個徽章畫壞了」。
+//
+//   修法與那個因果對不對無關:**位置不該從列矩形往回推**。這裡用控制項
+//   自己的寬度,而且**明確扣掉捲軸寬** —— 這樣它在有沒有捲軸兩種情況下
+//   都是對的,也才測得到。
+//
+// ⚠ has_vscroll 要從 `GetWindowLongW(list, GWL_STYLE) & WS_VSCROLL` 來,
+//   **不要**用「項目數 > 可視列數」自己推 —— 那會在捲軸剛出現的那一幀算錯。
+//
+// badge_text_w_dip 是量出來的字寬(GetTextExtentPoint32W)。純函式量不了字,
+// 所以它是**輸入** —— 測試餵合成的寬度,不假裝量得到。
+struct BadgePlacement {
+  RectI badge;      // 膠囊本體(相對清單控制項的 client 座標)
+  int radius_dip;   // = 高 ÷ 2。膠囊不是自由參數
+  int name_right;   // 名稱截尾的右界 —— 與徽章左緣**同一個算式**
+};
+BadgePlacement BadgePlacementDip(int list_w_dip, int row_top_dip,
+                                 int row_h_dip, int badge_text_w_dip,
+                                 int border_dip, int scrollbar_w_dip,
+                                 bool has_vscroll);
 
 // ── W18 的取材面 ────────────────────────────────────────────────
 //

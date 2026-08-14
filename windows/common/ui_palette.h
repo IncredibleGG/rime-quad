@@ -1,4 +1,4 @@
-// windows/common/ui_palette.h — 色票(§3.4 + §12.6)
+// windows/common/ui_palette.h — 色票(§3.4 + §12.6 + §12.14.2)
 //
 // ── 為什麼是一個 enum 索引的陣列,而不是三個具名結構 ────────────────
 //
@@ -12,6 +12,19 @@
 //
 // 版面拿到的是 `const Palette&`,它不知道自己是哪一份 —— 所以
 // 「深色模式只換色票,不動版面」不是一條紀律,是型別上唯一做得到的事。
+//
+// ── ⚠ 2026-08-14:九個角色不再是常數(§12.14.2 B)──────────────
+//
+// accent 由**使用者**在系統設定裡選,所以 primary / primaryHover /
+// primaryPressed / onPrimary / accentText / accentIndicator /
+// primaryContainer{,Hover,Pressed} 九格是**執行期算的**,不是表裡的常數。
+// 因此 `PaletteFor()` 現在吃一個 accent 種子並**回傳一份值**,
+// 不再回傳指向靜態表的指標。
+//
+// 常數表裡那九格寫的是一個大聲的哨兵色(洋紅),而
+// `palette_no_role_is_left_as_sentinel` 這個測試會抓到任何一個
+// 忘了填的角色 —— 忘了填的樣子本來是「那一塊變成別的顏色」,
+// 在畫面上看起來只是「配色怪」,不像壞掉。
 //
 // ── 高對比是第三份色票,不是深色的一種(§12.7.4)────────────────
 //
@@ -31,12 +44,10 @@ struct Rgb {
   uint8_t r = 0, g = 0, b = 0;
 };
 
-// §3.4 的 11 個語意角色 + §12.6 的狀態層。
+// §3.4 的 11 個語意角色 + §12.6 的狀態層 + §12.14.2 的 11 個新角色。
 //
 // ⚠ 狀態層是**預先算好的不透明色**,不是「疊 8% 的黑」:
 //   GDI 的 FillRect 不做 alpha 混色,寫成不透明色是唯一畫得出來的形式。
-//   產生它們的公式留在 §12.6(淺 hover 8%/pressed 12%、深 10%/16%),
-//   日後改色票時照那個公式重算。
 enum Role : int {
   // §3.4
   kBackground = 0,
@@ -53,20 +64,44 @@ enum Role : int {
   // §12.6 狀態層
   kRowHover,
   kRowPressed,
-  kRowSelectedHover,
-  kRowSelectedPressed,
+  // ⚠ 舊名 kRowSelectedHover / kRowSelectedPressed。改名是因為
+  //   §12.14.2 把它們定義成 mix(primaryContainer, onSurface, 6%/10%)
+  //   —— 它們是「選中底」的狀態層,不是「列」的狀態層,
+  //   而側欄與清單以外的地方(將來的卡片內列)也會用到。
+  kPrimaryContainerHover,
+  kPrimaryContainerPressed,
   kDisabledText,
   kDangerHover,
   kDangerPressed,
+  // ── §12.14.2 新增的 11 個 ────────────────────────────────────
+  kPrimaryHover,       // accent 衍生
+  kPrimaryPressed,     // accent 衍生
+  kAccentText,         // accent 衍生
+  kAccentIndicator,    // accent 衍生:側欄選中項左緣那條 3×16
+  kControlFill,        // 中性:次要按鈕、唯讀 EDIT、輸入框的底
+  kControlFillHover,
+  kControlFillPressed,
+  kControlBorder,      // 中性:控制項與卡片的 1 DIP 外框
+  kBadgeFill,          // 中性:「預設」徽章的底
+  kFocusOuter,         // 中性:焦點環外圈 2 DIP
+  kFocusInner,         // 中性:焦點環內圈 1 DIP
   kRoleCount,
 };
 
-using Palette = Rgb[kRoleCount];
+// ⚠ 回傳的是**一份值**,不是指標 —— 見標頭:九個角色是算出來的。
+struct Palette {
+  Rgb role[kRoleCount];
+  const Rgb& operator[](int i) const { return role[i]; }
+  const Rgb& operator[](Role r) const { return role[static_cast<int>(r)]; }
+};
 
 enum class Mode { kLight, kDark, kHighContrast };
 
 // 淺色／深色兩份。高對比那一份由 SysColorFor 決定,見檔頭。
-const Rgb* PaletteFor(Mode m);
+//
+// `accent_seed` 是系統 accent(或 AccentFallbackSeed())。
+// ⚠ 種子**不是** primary:primary 是種子走過階梯與三道守門之後的結果。
+Palette PaletteFor(Mode m, Rgb accent_seed);
 
 // 高對比模式下,這個角色該讀哪一個 `GetSysColor()` 索引。
 // 回傳的是 COLOR_* 的**數值**(本檔不 include windows.h,所以不能用巨集名)。

@@ -182,9 +182,9 @@ Harness Build(bool with_ext) {
 
   // 側欄在 96 DPI 下的實際尺寸:寬 kSidebarW,列高 kSidebarItemH。
   ::SetWindowPos(hn.list, nullptr, 0, 0, metric::kSidebarW,
-                 kPageRows * metric::kSidebarItemH + 8, SWP_NOZORDER);
+                 kPageRows * metric::kRowH + 8, SWP_NOZORDER);
   SyncRowListColumn(hn.list);
-  SetRowListRowHeight(hn.list, metric::kSidebarItemH);
+  SetRowListRowHeight(hn.list, metric::kRowH);
 
   g_sidebar = hn.list;
   ::ShowWindow(hn.parent, SW_SHOWNA);
@@ -334,7 +334,7 @@ TEST(sidebar_every_pixel_of_a_drawn_row_is_clickable) {
     CHECK(::SendMessageW(hn.list, LVM_GETITEMRECT, static_cast<WPARAM>(i),
                          reinterpret_cast<LPARAM>(&r)) != 0);
     // 列高真的被釘成 36 了(SetRowListRowHeight 是產品碼)。
-    CHECK_INT(static_cast<int>(r.bottom - r.top), metric::kSidebarItemH);
+    CHECK_INT(static_cast<int>(r.bottom - r.top), metric::kRowH);
     const int cx = (r.left + r.right) / 2;
     const int cy = (r.top + r.bottom) / 2;
     const int pts[5][2] = {{static_cast<int>(r.left) + 1, cy},

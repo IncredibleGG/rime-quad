@@ -200,16 +200,30 @@ run_checks() {
     red "W3:找不到 common/ui_layout.h —— 掃描範圍錯了"
   else
     local sp; sp="$(grep -o 'constexpr int s[0-9] = [0-9]*' "${lay}" | grep -o '[0-9]*$' | sort -n | tr '\n' ' ')"
-    local ra; ra="$(grep -o 'constexpr int k[A-Za-z]* = [0-9]*' "${lay}" | sed -n '/kLarge\|kMedium\|kMediumInner\|kSmall/p' | grep -o '[0-9]*$' | sort -n | tr '\n' ' ')"
+    # ⚠ §12.15 的 W3 修訂:圓角集合從 {5,6,7,10} 改成 **{4,8}**。
+    #   §3.3 的桌面欄在 Windows 端不使用 —— 在 Win11 上**所有**控制項的
+    #   圓角都是平台給的,一個 7 DIP 圓角的清單列擺在 4 DIP 圓角的系統
+    #   核取方塊旁邊,看起來是兩套東西拼起來的(§12.14.4)。
+    # ⚠ 用 **namespace 範圍**抓,不是靠名字前綴 —— `kWindowDefaultW` /
+    #   `kWindowMinH` 這幾個視窗尺寸也叫 kWindow*,靠前綴會把 460/560/
+    #   660/780 一起抓進圓角集合,而那條檢查會變成「永遠紅」→ 被關掉。
+    local ra; ra="$(sed -n '/^namespace radius {/,/^}/p' "${lay}" | grep -o 'constexpr int k[A-Za-z]* = [0-9]*' | grep -o '[0-9]*$' | sort -n | tr '\n' ' ')"
+    # ⚠ **元件尺寸那一組以前根本沒被檢查。** W3 的 ok 訊息說「三個集合都
+    #   落在階梯上」,而程式只比對了 sp(間距)與 ra(圓角) ——
+    #   metric:: 那一組從來沒有進過任何一個 if。這正是 §2-G 說的那種
+    #   「訊息比程式做的多」的守門:它每一次都綠,而它什麼都沒驗。
+    local me; me="$(sed -n '/^namespace metric {/,/^}/p' "${lay}" | grep -o 'constexpr int k[A-Za-z]* = [0-9]*' | grep -o '[0-9]*$' | sort -n | tr '\n' ' ')"
     local ts; ts="$(grep -o 'constexpr int t[0-9] = [0-9]*' "${lay}" | grep -o '[0-9]*$' | sort -n | tr '\n' ' ')"
     local nlit; nlit="$(num "$(grep -c 'constexpr int' "${lay}" || true)")"
     need_scope "W3" "${nlit}" 20 || true
     if [ "${sp}" != "2 4 6 10 12 16 20 32 " ]; then
       red "W3:間距階梯不是 §3.1 桌面欄的八階(得到:${sp})"
-    elif [ "${ra}" != "5 6 7 10 " ]; then
-      red "W3:圓角不是 §3.3 桌面欄的四個值(得到:${ra})"
+    elif [ "${ra}" != "4 8 " ]; then
+      red "W3:圓角不是 §12.14.4 的兩個值 {4,8}(得到:${ra})"
+    elif [ "${me}" != "1 2 3 16 28 32 36 64 200 " ]; then
+      red "W3:元件尺寸不是 §12.14.5 的九個值 {1,2,3,16,28,32,36,64,200}(得到:${me})"
     else
-      ok "W3 間距/圓角/尺寸三個集合都落在階梯上"
+      ok "W3 間距/圓角/尺寸三個集合都落在階梯上(圓角 {4,8};尺寸那一組這一輪才**真的**被比對)"
     fi
     # ── W4:字級落在 §3.2 桌面欄 ──
     check
@@ -316,7 +330,10 @@ run_checks() {
       "test_ui_layout.cc:ui_layout_every_control_belongs_to_exactly_one_page" \
       "test_statusbar_place.cc:statusbar_falls_back_when_the_monitor_disappears" \
       "test_statusbar_place.cc:statusbar_growing_wider_stays_inside_the_work_area" \
-      "test_ui_palette.cc:palette_every_pair_meets_its_threshold_in_both_modes" \
+      "test_ui_palette.cc:palette_every_neutral_pair_meets_its_threshold_in_both_modes" \
+      "test_ui_palette.cc:accent_derived_roles_meet_thresholds_for_every_accent" \
+      "test_statusbar_layout.cc:statusbar_cells_are_at_least_28_by_28" \
+      "test_ui_layout.cc:every_text_rect_is_at_least_its_line_box_times_lines" \
       "test_status_cells.cc:status_cells_input_mode_shows_exactly_one_label" \
       "test_status_cells.cc:status_cells_mode_and_variant_speak_the_same_way" \
       "test_ui_layout.cc:ui_layout_sidebar_list_never_covers_the_status_lines" \
@@ -3437,6 +3454,268 @@ PYSCRIPT
   [ "${w40bad}" -eq 0 ] && ok "W40 簡繁快捷鍵整條鏈都接著:GUID → PreserveKey{'F', Ctrl|Shift} → OnPreservedKey 認得 → VariantToggleKeysym 的正規形式 → hotkey_policy 分類 → pipe_server 走 ToggleVariantTarget(單一來源)+ 向引擎回讀 + SetVariantPref → 回的是真快照不是空的,而且 main.cc 真的把設定視窗交出去、Deactivate 真的還鍵"
 }
 
+check_w41_to_w47() {
+  info "§12.14 視覺規格的機器檢查(W41–W47)"
+
+  # ── W41(規格的 W29):視窗級圓角走 DWM **或** region,不得同時 ──────
+  #
+  # ⚠ 兩條同時走的結果是雙重圓角(DWM 圓一次、region 再切一次),
+  #   邊緣會出現鋸齒的月牙 —— 而那看起來像「顯示卡的問題」,不像我們的。
+  # ⚠ CreateRoundRectRgn 的右下角是**排他的**,所以引數必須是 w+1, h+1。
+  #   少了那個 +1,右邊與下面各少一像素,症狀是「外框在右下角斷掉」。
+  check
+  local corner_src="${CODE_DIR}/service/status_bar.cc"
+  local w41bad=0
+  if [ ! -f "${corner_src}" ]; then
+    red "W41:找不到 service/status_bar.cc —— 掃描範圍錯了"
+    w41bad=1
+  else
+    local nsetrgn ndwm33
+    nsetrgn="$(num "$(grep -c 'SetWindowRgn' "${corner_src}" || true)")"
+    ndwm33="$(num "$(grep -c 'DWMWA_WINDOW_CORNER_PREFERENCE\|, 33,' "${corner_src}" || true)")"
+    need_scope "W41" "$((nsetrgn + ndwm33))" 2 || w41bad=1
+    # 圓角那一支必須是**一支**:同一個函式裡先試 DWM、成功就 return。
+    local body
+    body="$(sed -n '/^void StatusBar::ApplyWindowCorners/,/^}/p' "${corner_src}")"
+    if [ -z "${body}" ]; then
+      red "W41:找不到 StatusBar::ApplyWindowCorners 的本體 —— 圓角沒有單一入口,兩條路遲早會同時走"
+      w41bad=1
+    else
+      # ⚠ 判準不是「這支函式裡有沒有 return;」—— 開頭那句
+      #   `if (!hwnd || w_px <= 0 ...) return;` 本身就是一個 return,
+      #   所以那種寫法在把 DWM 成功之後那一個 return 拿掉之後照樣綠。
+      #   要問的是:**DWM 成功那一塊裡面**有沒有收手。
+      local dwmblk
+      dwmblk="$(printf '%s\n' "${body}" | sed -n '/if (SUCCEEDED(fn(hwnd, 33/,/^    }/p')"
+      case "${dwmblk}" in
+        *"return;"*) : ;;
+        *) red "W41:DWM 設定成功之後沒有 return —— 接著會再切一次 region,那是雙重圓角(邊緣會出現鋸齒的月牙,而那看起來像顯示卡的問題)"; w41bad=1 ;;
+      esac
+      case "${body}" in
+        *"w_px + 1, h_px + 1"*) : ;;
+        *) red "W41:CreateRoundRectRgn 的引數不是 w+1, h+1 —— 右下角會斷一像素(那個 +1 是排他座標,不是保險)"; w41bad=1 ;;
+      esac
+    fi
+  fi
+  [ "${w41bad}" -eq 0 ] && ok "W41 視窗級圓角只有一條路:DWM 33 成功就 return,失敗才 SetWindowRgn(而且是 w+1/h+1)"
+
+  # ── W42(規格的 W30):accent 的解析與衍生是純函式,而且過門檻 ────────
+  check
+  local acc="${CODE_DIR}/common/ui_accent.cc"
+  local acct="${CODE_DIR}/tests/test_ui_palette.cc"
+  local w42bad=0
+  if [ ! -f "${acc}" ] || [ ! -f "${acct}" ]; then
+    red "W42:找不到 common/ui_accent.cc 或 tests/test_ui_palette.cc —— 掃描範圍錯了"
+    w42bad=1
+  else
+    # ⚠ 純函式那一半:ui_accent.cc **不得** include windows.h。
+    #   一旦它 include 了,整支就在 Ubuntu 上編不起來,而 W42 的單元測試
+    #   會靜靜地從 run_logic_tests.sh 裡消失。
+    if grep -q '#include <windows.h>' "${acc}"; then
+      red "W42:common/ui_accent.cc include 了 windows.h —— 它就再也不是 Ubuntu 上測得到的東西了"
+      w42bad=1
+    fi
+    # 測試資料的規模:accent 數 ≥ 8、每個 accent 的配對數 ≥ 9。
+    local nseed npair
+    # ⚠ 一行上寫兩個 seed,所以要數**出現次數**不是命中行數。
+    #   grep -c 數的是行 —— 八個 accent 會被數成四個,而那讓一條
+    #   「範圍夠不夠大」的斷言在範圍其實夠大時報紅。
+    nseed="$(num "$(sed -n '/^const Seed kSeeds\[\]/,/};/p' "${acct}" | grep -o '0x' | wc -l)")"
+    npair="$(num "$(sed -n '/^const Pair kAccentPairs\[\]/,/};/p' "${acct}" | grep -o '{"' | wc -l)")"
+    need_scope "W42 accent 數" "${nseed}" 8 || w42bad=1
+    need_scope "W42 每個 accent 的配對數" "${npair}" 9 || w42bad=1
+    # 三道守門都要在。
+    for fn in PushForContrast PushForContrastTwo DeriveAccentRoles; do
+      grep -q "${fn}" "${acc}" || { red "W42:common/ui_accent.cc 少了 ${fn}"; w42bad=1; }
+    done
+    # ⚠ 對**兩個底**都算,不是只算一個 —— §3.4.1 記著那次事故。
+    # ⚠ 光 grep 'bg_a' / 'bg_b' 會被**參數名**滿足:把
+    #   `ContrastRatio(c, bg_b) >= want` 整段拿掉之後,兩個名字仍然在
+    #   函式簽章上。要看的是那兩個底**真的被拿去算**。
+    grep -q 'ContrastRatio(c, bg_a)' "${acc}" &&
+      grep -q 'ContrastRatio(c, bg_b)' "${acc}" || {
+      red "W42:守門只對一個底算 —— §3.4.1 那次「只驗一半就宣告過關」的事故就是這個形狀"
+      w42bad=1
+    }
+  fi
+  [ "${w42bad}" -eq 0 ] && ok "W42 accent 的解析與衍生是純函式(不碰 windows.h),八個 accent × 十組配對都在測試資料裡,而且對 surface 與 background 兩個底都算"
+
+  # ── W43(規格的 W31):文字矩形高度 ≥ 行盒 × 行數 ────────────────────
+  check
+  local lay_cc="${CODE_DIR}/common/ui_layout.cc"
+  local lay_h="${CODE_DIR}/common/ui_layout.h"
+  local lay_t="${CODE_DIR}/tests/test_ui_layout.cc"
+  local w43bad=0
+  if [ ! -f "${lay_h}" ] || [ ! -f "${lay_t}" ]; then
+    red "W43:找不到 ui_layout.h 或 test_ui_layout.cc —— 掃描範圍錯了"
+    w43bad=1
+  else
+    # 版面必須**回報**「這一顆是哪一級、幾行」,否則測試量不到。
+    # ⚠ `int text_size_dip` 是 `int text_size_dip_removed` 的**前綴** ——
+    #   改名之後舊判準照樣綠。要連後面那個 `=` 一起比。
+    grep -qE 'int text_size_dip *=' "${lay_h}" &&
+      grep -qE 'int text_lines *=' "${lay_h}" || {
+      red "W43:PlacedControl 沒有 text_size_dip / text_lines —— 「這個矩形放得下它要放的字嗎」就沒有取材面了"
+      w43bad=1
+    }
+    grep -q 'every_text_rect_is_at_least_its_line_box_times_lines' "${lay_t}" || {
+      red "W43:少了走過每一頁版面的那個單元測試"
+      w43bad=1
+    }
+    # ⚠ 頁標題與區段標題**不得**再用 `字級 + 間距` 湊高度。
+    #   §12.14.0 第 4 條:t1 給 28(要 31)、t2 給 19(要 22),
+    #   而 STATIC 是頂端對齊並且會裁切 —— 短的那幾 DIP 是**每一個標題的
+    #   下緣被削掉一條**,看起來像字型沒調好,不像 bug。
+    if grep -q 'text_size::t1 + space::s3' "${lay_cc}" ||
+       grep -q 'text_size::t2 + space::s2' "${lay_cc}"; then
+      red "W43:頁標題/區段標題的盒高又用 `字級 + 間距` 湊 —— 行盒只有一個來源:TextLineBoxDip()"
+      w43bad=1
+    fi
+  fi
+  [ "${w43bad}" -eq 0 ] && ok "W43 版面回報級距與行數,單元測試走過每一頁逐一比對,而且標題不再用「字級 + 間距」湊盒高"
+
+  # ── W44(規格的 W32):lfWeight 只准兩個值 ──────────────────────────
+  check
+  local w44
+  w44="$(hits 'lfWeight *=' | grep -v '^\s*//' || true)"
+  local n44; n44="$(num "$(printf '%s\n' "${w44}" | grep -c 'lfWeight' || true)")"
+  local w44bad=0
+  need_scope "W44" "${n44}" 1 || w44bad=1
+  # 賦值點必須全部在 ui_font.cc 裡 —— 散出去就管不住了。
+  if printf '%s\n' "${w44}" | grep -q -v 'ui_font\.cc'; then
+    red "W44:lfWeight 的賦值點跑到 ui_font.cc 以外:$(printf '%s\n' "${w44}" | grep -v 'ui_font\.cc' | head -3)"
+    w44bad=1
+  fi
+  # ⚠ ≥ 700 一律禁止:字體沒有粗體時 GDI 會**合成**粗體(把字形往旁邊
+  #   多塗一次),在漢字上是一團糊。我們永遠不知道使用者機器上有沒有
+  #   那個字重,所以永遠不要要求它。
+  if printf '%s\n' "${w44}" | grep -q 'FW_BOLD\|FW_HEAVY\|FW_BLACK\|= *[789][0-9][0-9]'; then
+    red "W44:lfWeight 出現 700 以上的字重 —— 字體沒有粗體時 GDI 會合成,漢字上是一團糊"
+    w44bad=1
+  fi
+  if printf '%s\n' "${w44}" | grep -q 'FW_MEDIUM\|= *500'; then
+    red "W44:lfWeight 出現 500 —— Segoe UI 與 Microsoft JhengHei UI 都沒有它,GDI 會挑到 400,而版面會照 500 排"
+    w44bad=1
+  fi
+  [ "${w44bad}" -eq 0 ] && ok "W44 lfWeight 只出現 FW_NORMAL 與 FW_SEMIBOLD,而且賦值點全部在 ui_font.cc 裡"
+
+  # ── W45(規格的 W33):可執行檔宣告 comctl32 6.0.0.0 ────────────────
+  #
+  # ⚠ 規格說這一條「三種寫法擇一」。今天成立的是 .manifest 那一種
+  #   (windows/res/app.manifest + CMakeLists 的 /MANIFEST:EMBED)。
+  #   ⚠ **windows.yml 已經有一步在 Windows 上驗執行檔真的內嵌了它**
+  #     (含負對照),所以這裡驗的是**原始碼層面**:那份 manifest 還在、
+  #     還被掛上去。兩者不重複 —— CI 那一步驗二進位,這裡驗來源。
+  check
+  local w45bad=0
+  local nsrc; nsrc="$(num "$(find "${WIN}" \( -name '*.cc' -o -name '*.h' -o -name '*.manifest' \) 2>/dev/null | wc -l)")"
+  need_scope "W45" "${nsrc}" 20 || w45bad=1
+  # ⚠ **在真的 windows/ 上找,不是在去註解的那棵樹上。**
+  #   CODE_DIR 只收 .cc/.h(見 sources()),.manifest 根本不在那裡 ——
+  #   在那裡找的結果永遠是「一種都沒有」,而那是一條恆紅的檢查,
+  #   下場是被人關掉(#84 記過同一件事)。
+  local decl=""
+  if [ -f "${WIN}/res/app.manifest" ]; then decl="${WIN}/res/app.manifest"; fi
+  if [ -z "${decl}" ]; then
+    decl="$(grep -rl 'manifestdependency' "${WIN}" --include='*.cc' --include='*.rc' 2>/dev/null | head -1 || true)"
+  fi
+  if [ -z "${decl}" ]; then
+    red "W45:三種宣告方式(.manifest / .rc / #pragma comment)一種都沒有 —— InitCommonControlsEx 啟動的會是系統目錄裡的 comctl32 **v5**,整個畫面會回到 Windows 95 的樣子"
+    w45bad=1
+  else
+    grep -q 'Microsoft.Windows.Common-Controls' "${decl}" || {
+      red "W45:${decl#${WIN}/} 裡沒有 Microsoft.Windows.Common-Controls"; w45bad=1; }
+    # ⚠ 要比對的是真正的 assemblyIdentity,不是檔頭那段說明 ——
+    #   說明裡也寫著「Microsoft.Windows.Common-Controls 6.0.0.0」,
+    #   整檔 grep 會被它滿足,而那時執行檔裡宣告的可能是別的版本。
+    grep -q 'version="6\.0\.0\.0"' "${decl}" || {
+      red "W45:${decl#${WIN}/} 的 assemblyIdentity 不是 version=\"6.0.0.0\"(檔頭那段說明不算)"; w45bad=1; }
+    grep -q 'MANIFESTINPUT\|manifestdependency\|RT_MANIFEST' "${WIN}/CMakeLists.txt" || {
+      red "W45:那份 manifest 沒有被掛到任何一個目標上 —— 檔案在,而執行檔裡沒有"; w45bad=1; }
+  fi
+  [ "${w45bad}" -eq 0 ] && ok "W45 comctl32 6.0.0.0 的相依宣告還在,而且還掛在執行檔上(二進位那一半由 windows.yml 在 Windows 上驗)"
+
+  # ── W46(規格的 W34):狀態列每格 ≥ 28×28、整條 ≤ 320 ────────────────
+  check
+  local barl="${CODE_DIR}/common/statusbar_layout.cc"
+  local bart="${CODE_DIR}/tests/test_statusbar_layout.cc"
+  local w46bad=0
+  if [ ! -f "${barl}" ] || [ ! -f "${bart}" ]; then
+    red "W46:格的矩形還住在 service/status_bar.cc 裡(Ubuntu 上編不起來)—— 「每一格只有 26 DIP 高」這件事就沒有任何自動化看得到"
+    w46bad=1
+  else
+    grep -q 'LayoutStatusBarCellsDip' "${barl}" || {
+      red "W46:common/statusbar_layout.cc 裡沒有 LayoutStatusBarCellsDip"; w46bad=1; }
+    # ⚠ status_bar.cc **不得**再自己算格子的矩形。
+    if grep -q 'c.rc = RECT{x,' "${CODE_DIR}/service/status_bar.cc"; then
+      red "W46:service/status_bar.cc 又自己算格子的矩形 —— 那是第二份真相,而且是 Ubuntu 上看不到的那一份"
+      w46bad=1
+    fi
+    local ncase; ncase="$(num "$(grep -c '^TEST(' "${bart}" || true)")"
+    need_scope "W46" "${ncase}" 5 || w46bad=1
+    grep -q 'statusbar_cells_are_at_least_28_by_28' "${bart}" || {
+      red "W46:少了「每一格 ≥ 28×28」那一條"; w46bad=1; }
+    grep -q 'statusbar_total_never_exceeds_320' "${bart}" || {
+      red "W46:少了「整條 ≤ 320」那一條"; w46bad=1; }
+    # ── ⚠ 「測試檔在、測試名也在」證明不了值是對的 ────────────────
+    #
+    #   把上下內縮改回 kBarBorder(也就是 §12.14.0 第 5 條那個 26 DIP)
+    #   之後,上面那幾條 grep **全部照樣綠** —— 紅的是 run_logic_tests.sh,
+    #   不是這裡。而 §2-G 要求的是「這一條檢查自己有反向測試」。
+    #   所以兩個真正會被改掉的常數在這裡也各釘一次。
+    local barh="${CODE_DIR}/common/statusbar_layout.h"
+    grep -q 'kInsetV = space::s1' "${barh}" || {
+      red "W46:狀態列上下內縮不是 s1(2)—— 每一格會回到 26 DIP 高,低於 §3.6 的 28,而它在畫面上看起來只是「那一橫有點扁」"
+      w46bad=1; }
+    grep -q 'barmetric::kInsetV' "${barl}" || {
+      red "W46:common/statusbar_layout.cc 沒有用 kInsetV 算上下內縮"; w46bad=1; }
+    grep -q 'kSchemaContentMaxW = 120' "${barh}" || {
+      red "W46:第 3 格的內容寬上限不是 120"; w46bad=1; }
+    # ⚠ kSchemaContentMaxW 在這個檔案裡出現兩次(第 3 格的上限、以及
+    #   壓縮時的下界),所以「這個名字有出現」證明不了上限還在。
+    #   要比對的是**哪一格有上限**那一句。
+    grep -q 'index == 2 ? barmetric::kSchemaContentMaxW' "${barl}" || {
+      red "W46:第 3 格(方案名)沒有 120 DIP 的內容寬上限 —— 整條會超過 320,而超出去的那一截在螢幕外面"
+      w46bad=1; }
+    grep -q 'kBarMaxW = 320' "${barh}" || {
+      red "W46:整條的寬上限不是 320"; w46bad=1; }
+  fi
+  [ "${w46bad}" -eq 0 ] && ok "W46 狀態列的格矩形住在 common/(Ubuntu 上測得到),每格 ≥ 28×28、整條 ≤ 320 都有單元測試"
+
+  # ── W47(規格的 W35):焦點環不得用 kPrimary ────────────────────────
+  #
+  # ⚠ 理由不是配色:accent 是**使用者選的**。一個淺黃色的焦點環畫在白底
+  #   的清單列上是看不見的,而焦點看不見就是鍵盤使用者走不下去。
+  #   改用 Win11 自己的雙色環:外圈 focusOuter + 內圈 focusInner,
+  #   兩圈互為反色,所以不管底下是什麼顏色一定有一圈看得見。
+  check
+  local sw="${CODE_DIR}/service/settings_window.cc"
+  local w47bad=0
+  if [ ! -f "${sw}" ]; then
+    red "W47:找不到 service/settings_window.cc —— 掃描範圍錯了"
+    w47bad=1
+  else
+    local nfocus
+    nfocus="$(num "$(grep -c 'DrawFocusRing(' "${sw}" || true)")"
+    # 自繪的焦點分支 ≥ 4(側欄、方案清單、連網紀錄、危險鍵)+ 定義本身。
+    need_scope "W47" "${nfocus}" 5 || w47bad=1
+    # kPrimary 不得出現在任何一個焦點分支上。
+    if grep -n 'Pen(kPrimary' "${sw}" >/dev/null 2>&1; then
+      red "W47:焦點環還在用 kPrimary:$(grep -n 'Pen(kPrimary' "${sw}" | head -3)"
+      w47bad=1
+    fi
+    grep -q 'kFocusOuter' "${sw}" && grep -q 'kFocusInner' "${sw}" || {
+      red "W47:找不到 kFocusOuter / kFocusInner —— 雙色環沒有落地"; w47bad=1; }
+    # ⚠ 也不准回去用 DrawFocusRect:它是 XOR 的點線框,在我們的色票上
+    #   會變成不可預測的顏色(§12.6.4 第 2 條)。
+    if grep -q '::DrawFocusRect' "${sw}"; then
+      red "W47:又用了 ::DrawFocusRect —— XOR 的點線框在我們的色票上是不可預測的顏色"
+      w47bad=1
+    fi
+  fi
+  [ "${w47bad}" -eq 0 ] && ok "W47 四個自繪焦點分支都走雙色環(focusOuter/focusInner),沒有一處用 kPrimary,也沒有 DrawFocusRect"
+}
+
 # ────────────────────────────────────────────────────────────────
 # 反向測試:每一條都真的植入一次違規,要求它變紅。
 # ────────────────────────────────────────────────────────────────
@@ -3558,6 +3837,20 @@ self_check() {
 "W29e 問了開關但問在 CreateThread 之後(位置式判準)|service/settings_window.cc|blk='  if (!net_gate_.Enabled()) {' + chr(10) + '    update_failure_ = UpdateFailure::kSwitchOff;' + chr(10) + '    update_stage_ = UpdateStage::kIdle;' + chr(10) + '    RefreshNetworkAndUpdateCard();' + chr(10) + '    return;' + chr(10) + '  }' + chr(10); ct='  update_thread_ = ::CreateThread(nullptr, 0, &UpdateWorkerEntry, this, 0,' + chr(10) + '                                  nullptr);' + chr(10); s=s.replace(blk,'',1); s=s.replace(ct,ct+blk,1)"
 "W29m 問了開關卻不收手(那個分支沒有 return)|service/settings_window.cc|s=s.replace('    update_stage_ = UpdateStage::kIdle;' + chr(10) + '    RefreshNetworkAndUpdateCard();' + chr(10) + '    return;' + chr(10) + '  }','    update_stage_ = UpdateStage::kIdle;' + chr(10) + '    RefreshNetworkAndUpdateCard();' + chr(10) + '  }',1)"
 "W29n 擋下的理由說成別的(不是 kSwitchOff)|service/settings_window.cc|s=s.replace('    update_failure_ = UpdateFailure::kSwitchOff;' + chr(10) + '    update_stage_ = UpdateStage::kIdle;','    update_failure_ = UpdateFailure::kUnreachable;' + chr(10) + '    update_stage_ = UpdateStage::kIdle;',1)"
+"W3r 圓角回到桌面欄的 {5,6,7,10}|common/ui_layout.h|s=s.replace('constexpr int kControl = 4;','constexpr int kControl = 5;',1)"
+"W3m 元件尺寸偷加一個不在階梯上的值|common/ui_layout.h|s=s.replace('constexpr int kIndicatorW = 3;','constexpr int kIndicatorW = 5;',1)"
+"W41a DWM 成功之後又切一次 region(雙重圓角)|service/status_bar.cc|s=s.replace('      ::SetWindowRgn(hwnd, nullptr, FALSE);' + chr(10) + '      return;','      ::SetWindowRgn(hwnd, nullptr, FALSE);',1)"
+"W41b CreateRoundRectRgn 少了那個 +1(右下角斷一像素)|service/status_bar.cc|s=s.replace('w_px + 1, h_px + 1','w_px, h_px',1)"
+"W42a accent 的守門只對一個底算(§3.4.1 那次事故的形狀)|common/ui_accent.cc|s=s.replace('    return ContrastRatio(c, bg_a) >= want && ContrastRatio(c, bg_b) >= want;','    return ContrastRatio(c, bg_a) >= want;',1)"
+"W42b 測試資料少掉最難的那幾個 accent|tests/test_ui_palette.cc|s=s.replace('    {\"yellow (hardest)\", 0xFFB900},   {\"bright green\", 0x00CC6A},','',1).replace('    {\"purple\", 0x8764B8},             {\"red\", 0xE81123},','',1)"
+"W43a 頁標題的盒高改回 t1 + s3(§12.14.0 第 4 條)|common/ui_layout.cc|s=s.replace('emit(title_id, st.Push(TextLineBoxDip(text_size::t1), space::s1), false,','emit(title_id, st.Push(text_size::t1 + space::s3, space::s1), false,',1)"
+"W43b 版面不再回報級距與行數|common/ui_layout.h|s=s.replace('  int text_size_dip = 0;','  int text_size_dip_removed = 0;',1)"
+"W44a 塞一個 FW_BOLD|service/ui_font.cc|s=s.replace('lf.lfWeight = semibold ? FW_SEMIBOLD : FW_NORMAL;','lf.lfWeight = semibold ? FW_BOLD : FW_NORMAL;',1)"
+"W45a 把 comctl32 的版本改掉(只改真正宣告的那一行,檔頭的說明留著)|res/app.manifest|s=s.replace(chr(34)+'6.0.0.0'+chr(34), chr(34)+'5.0.0.0'+chr(34))"
+"W46a 上下內縮改回 kBarBorder(回到現況的 26 DIP)|common/statusbar_layout.cc|s=s.replace('  const int top = barmetric::kInsetV;','  const int top = metric::kHairline;',1).replace('  const int cell_h = barmetric::kBarH - 2 * barmetric::kInsetV;  // 28','  const int cell_h = barmetric::kBarH - 2 * metric::kHairline;',1)"
+"W46b 第 3 格的 120 上限拿掉(整條會超過 320)|common/statusbar_layout.cc|s=s.replace('  return index == 2 ? barmetric::kSchemaContentMaxW : -1;','  return -1;',1)"
+"W47a 焦點環改回 kPrimary 單圈|service/settings_window.cc|s=s.replace('      if (focused) DrawFocusRing(hdc, r, rad);','      if (focused) { HPEN p = theme_.Pen(kPrimary, Dip(2, dpi_)); HGDIOBJ o = ::SelectObject(hdc, p); ::Rectangle(hdc, r.left, r.top, r.right, r.bottom); ::SelectObject(hdc, o); }',1)"
+"W47b 側欄那一處改回 DrawFocusRect|service/settings_window.cc|s=s.replace('      if (focused) DrawFocusRing(hdc, item, rad);','      if (focused) ::DrawFocusRect(hdc, &item);',1)"
 "W29o 檢查在 UI 執行緒上直接跑|service/settings_window.cc|s=s.replace('  update_failure_ = UpdateFailure::kNone;' + chr(10) + '  update_stage_ = UpdateStage::kChecking;','  UpdateFailure why0 = UpdateFailure::kNone; update_.Check(&why0);' + chr(10) + '  update_stage_ = UpdateStage::kChecking;',1)"
 "W29p 工作執行緒直接動畫面,不回 UI 執行緒|service/settings_window.cc|s=s.replace('  ::PostMessageW(self->hwnd_, WM_RIME_UPDATE_DONE, 0, 0);','  self->OnUpdateWorkerDone();',1)"
 "W29q 工作執行緒的下載那一條路是死的|service/settings_window.cc|s=s.replace('    self->update_.DownloadAndVerify(&why);','    (void)0;',1)"
@@ -3703,6 +3996,10 @@ fi
 
 info "docs/ui-design.md §12.12 的檢核項"
 run_checks
+# §12.14 的視覺規格是後寫的一節,檢核項也自成一組(W41–W47)。
+# ⚠ 編號**不是**規格寫的 W29–W35 —— 那七個號碼在這支腳本裡
+#   全部名花有主(見 check_w41_to_w47 的檔頭)。
+check_w41_to_w47
 printf '\n'
 if [ "${FAILED}" -gt 0 ]; then
   printf '\033[1;31m%d 條不合格(共檢查 %d 組)\033[0m\n' "${FAILED}" "${CHECKED}" >&2

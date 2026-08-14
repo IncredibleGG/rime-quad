@@ -54,10 +54,17 @@ class Theme {
  public:
   ~Theme() { Clear(); }
 
-  // 重讀系統偏好與高對比狀態。回傳 true = 有變化(呼叫端要重畫)。
+  // 重讀系統偏好、高對比狀態**與系統 accent**。
+  // 回傳 true = 有變化(呼叫端要重畫)。
+  //
+  // ⚠ accent 也在這裡重讀,而不是只在 WM_DWMCOLORIZATIONCOLORCHANGED
+  //   那一則裡 —— 換深淺時 accent 的**階**也會換(淺色取 Dark1、
+  //   深色取 Light2),而換深淺時第一則訊息不一定會來。
   bool Refresh(AppearancePref pref);
 
   Mode mode() const { return mode_; }
+  // 現在這一份色票用的 accent 種子(診斷用)。
+  Rgb accent_seed() const { return seed_; }
 
   COLORREF Color(Role r) const;
   // ⚠ 筆刷要**快取**。每次訊息 CreateSolidBrush 是 GDI 物件洩漏,
@@ -76,9 +83,24 @@ class Theme {
   // WM_SETTINGCHANGE 的 lParam 是不是 "ImmersiveColorSet"。
   static bool IsColorSetChange(LPARAM l);
 
+  // ⚠ §12.14.1 末段:**兩則訊息都要接。**
+  //   換 accent 時 WM_SETTINGCHANGE 不一定來;換深淺時
+  //   WM_DWMCOLORIZATIONCOLORCHANGED 不一定來。只接一則的症狀是
+  //   「換了顏色要重開設定視窗才會變」。
+  //   0x0320 = WM_DWMCOLORIZATIONCOLORCHANGED(mingw 的 winuser.h
+  //   沒有這個巨集,所以寫成常數並註明來源)。
+  static constexpr UINT kDwmColorizationChanged = 0x0320;
+
  private:
+  // 系統 accent。三段回落:AccentPalette → DWM AccentColor → 青瓷綠種子。
+  // 解析全部在 common/ui_accent.cc(純函式,Ubuntu 上測得到);
+  // 這一支只負責兩把 RegGetValueW。
+  Rgb ReadSystemAccent(bool dark) const;
+
   Mode mode_ = Mode::kLight;
   bool high_contrast_ = false;
+  Rgb seed_{};
+  Palette palette_{};
   std::map<int, HBRUSH> brushes_;
   std::map<int, HPEN> pens_;
 };

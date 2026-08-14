@@ -527,7 +527,17 @@ LRESULT CALLBACK SettingsWindow::WndProc(HWND hwnd, UINT msg, WPARAM w,
       ::SetTextColor(hdc, self->theme_.Color(disabled ? kDisabledText
                                              : secondary ? kOnSurfaceVariant
                                                          : kOnSurface));
-      const Role bg = id == IDC_DIAG ? kSurfaceVariant : kBackground;
+      // ── ⚠ 卡片裡的控制項要回 surface,不是 background ────────────
+      //
+      //   沒有這一格的話,卡片是 surface 色而卡片裡每一顆 STATIC 都帶著
+      //   一塊 background 色的底 —— 畫面上是一張卡片上面浮著幾塊顏色
+      //   不一樣的長方形,比沒有卡片還難看。
+      //   「哪一顆在卡片裡」由 LayoutSettingsPageDip() 回報(in_card),
+      //   **不在這裡判斷** —— 判斷在這裡的話它會與版面漂開。
+      auto it = self->in_card_.find(id);
+      const bool in_card = it != self->in_card_.end() && it->second;
+      const Role bg = id == IDC_DIAG ? kControlFill
+                                     : in_card ? kSurface : kBackground;
       ::SetBkColor(hdc, self->theme_.Color(bg));
       return reinterpret_cast<LRESULT>(self->theme_.Brush(bg));
     }
@@ -575,6 +585,16 @@ LRESULT CALLBACK SettingsWindow::WndProc(HWND hwnd, UINT msg, WPARAM w,
       if (self && (Theme::IsColorSetChange(l) || w == SPI_SETHIGHCONTRAST))
         self->RefreshTheme();
       break;
+    // ⚠ §12.14.1 末段:**兩則都要接。**
+    //   換 accent 時 WM_SETTINGCHANGE 不一定來;換深淺時這一則不一定來。
+    //   只接一則的症狀是「換了顏色要重開設定視窗才會變」。
+    case Theme::kDwmColorizationChanged:
+      if (self) self->RefreshTheme();
+      return 0;
+    // ⚠ 危險鍵的 hover **不在這裡**。子控制項的滑鼠訊息不會走到父視窗,
+    //   所以父視窗永遠收不到那兩顆按鈕的 WM_MOUSEMOVE / WM_MOUSELEAVE。
+    //   追蹤在 DangerProc(子類別化)裡 —— 在這裡放一個 case 只會是
+    //   一段永遠走不到、卻看起來在做事的碼。
     case WM_THEMECHANGED:
       if (self) self->RefreshTheme();
       break;
@@ -731,6 +751,13 @@ void SettingsWindow::CreateUi(HWND hwnd) {
                                inst, nullptr);
     if (d.id == IDC_SCHEMA_LIST) schema_list_ = h;
     if (d.id == IDC_NETLOG_LIST) net_log_list_ = h;
+    // 兩顆自繪危險鍵要自己追 hover(§12.14.6.4)。子控制項的滑鼠訊息
+    // 不會走到父視窗,所以子類別化它們 —— 這是 Win32 追 hot 狀態的
+    // 既有慣用法,不是我們的發明。
+    if (h && (d.id == IDC_RESET || d.id == IDC_NETLOG_CLEAR))
+      ::SetWindowSubclass(h, &SettingsWindow::DangerProc,
+                          static_cast<UINT_PTR>(d.id),
+                          reinterpret_cast<DWORD_PTR>(this));
   }
 
   // ⚠ report 模式沒有欄的話,每一列的矩形都是空的 —— 清單裡有列而畫面
@@ -775,7 +802,7 @@ void SettingsWindow::ApplyFonts() {
   //   放在 ApplyFonts 裡是刻意的:這支函式在建立時、WM_DPICHANGED、
   //   換介面語言、換主題四條路上都會被呼叫,而列高在那四種情況下都要重算。
   //   放在建立處的話,換一次 DPI 就退回 comctl32 的預設值。
-  const int row_px = Dip(metric::kSidebarItemH, dpi_);
+  const int row_px = Dip(metric::kRowH, dpi_);
   SetRowListRowHeight(sidebar_, row_px);
   SetRowListRowHeight(schema_list_, row_px);
 
@@ -816,6 +843,19 @@ void SettingsWindow::ApplyFonts() {
                  IDC_NETLOG_BLURB, IDC_NETLOG_SUMMARY,
                  IDC_NETLOG_COLS, IDC_NETLOG_EMPTY, IDC_NETLOG_CLEAR_BLURB})
     set(id, small_f);
+  // ── 按鈕文字是 t4(§12.14.3 的級距表)────────────────────────
+  //
+  // ⚠ 以前所有系統按鈕吃 body(t3 = 13),而自繪的危險鍵是 t4(12)——
+  //   同一頁上兩種按鈕的字級不一樣,差 1 DIP 看不出是錯的,但整排按鈕
+  //   放在一起就是「有一顆怪怪的」。
+  {
+    HFONT btn = fonts_.Get(text_size::t4);
+    for (int id : {IDC_CLOSE, IDC_UP, IDC_DOWN, IDC_APPLY_ORDER,
+                   IDC_UPDATE_CHECK, IDC_UPDATE_ACTION, IDC_UPDATE_PAGE,
+                   IDC_REDEPLOY, IDC_OPEN_USER_DIR, IDC_OPEN_SETTINGS_FILE,
+                   IDC_DIAG_COPY, IDC_RESET, IDC_NETLOG_CLEAR})
+      set(id, btn);
+  }
   set(IDC_DIAG, mono);
   // 紀錄檔的路徑是給人抄去查的,不是介面文案 —— 等寬(§4.11 的形狀)。
   set(IDC_NETLOG_PATH, mono);
@@ -844,6 +884,13 @@ void SettingsWindow::LayoutUi() {
   //   check_ui_spec.sh 的 W24 會擋下任何一個回到這裡的 Stack。
   const PageLayout page_layout = LayoutSettingsPageDip(page_, W,
                                                       PageStateNow());
+  // 卡片與「哪一顆在卡片裡」都由版面回報。⚠ **這裡不算任何一個** ——
+  //   自己算的那一份會與控制項的位置漂開,而漂開的樣子是
+  //   「卡片的邊框從控制項中間穿過去」。
+  cards_ = page_layout.cards;
+  in_card_.clear();
+  for (const PlacedControl& p : page_layout.items)
+    in_card_[p.id] = p.in_card;
   int viewport_h = ContentViewportHeightDip(H);
   scroll_max_ = std::max(0, page_layout.content_h_dip - viewport_h);
   if (scroll_ > scroll_max_) scroll_ = scroll_max_;
@@ -910,15 +957,22 @@ void SettingsWindow::LayoutUi() {
 
     // 底部固定列:不捲動,永遠看得見。
     if (id == IDC_STATUS) {
-      place(id, RectI{cx, H - kBottomBarH, cw - 120 - space::s3,
-                      metric::kMinTarget});
+      // §12.14.6.8:狀態文字靠左,**離側欄右緣 s7** —— 不是內容欄的 x。
+      // 內容欄是置中的,所以視窗一寬,那一行字就會跟著飄到中間,
+      // 而它旁邊什麼都沒有,看起來像放錯位置。
+      const int sx = metric::kSidebarW + space::s7;
+      place(id, RectI{sx, H - kBottomBarH,
+                      std::max(0, W - space::s7 - 100 - space::s3 - sx),
+                      metric::kButtonH});
       ClipToViewport(i, c, 0, -1);
       ::ShowWindow(c, SW_SHOW);
       continue;
     }
     if (id == IDC_CLOSE) {
+      // §12.14.6.8:寬 100、高 **32**(不是 28)。⚠ 它是**次要按鈕** ——
+      // 這一頁的主要動作是使用者正在改的那一項,不是離開。
       place(id, RectI{W - space::s7 - 100, H - kBottomBarH, 100,
-                      metric::kMinTarget});
+                      metric::kButtonH});
       ClipToViewport(i, c, 0, -1);
       ::ShowWindow(c, SW_SHOW);
       continue;
@@ -1058,6 +1112,11 @@ void SettingsWindow::EnsureFocusVisible() {
 void SettingsWindow::ShowPage(int page) {
   if (page < 0 || page >= kPageCount) page = 0;
   page_ = page;
+  // ⚠ 先換主要按鈕,再擺版面。一個視窗只能有一顆 BS_DEFPUSHBUTTON,
+  //   而它吃 Enter —— 留著上一頁那顆的話,使用者在這一頁按 Enter,
+  //   被按下去的是**看不見的**那一顆(§12.14.6.2 末段:這是行為缺陷,
+  //   不只是外觀)。
+  ApplyDefaultButtonForPage(page_);
   // 換頁一律回到頂端。留著上一頁的捲動量,新的一頁會從半空中開始。
   scroll_ = 0;
   // ⚠ 先全清再設(見 ui_listview.h 的 SelectOnlyRow),而且用重入旗標
@@ -1092,6 +1151,126 @@ void SettingsWindow::ShowPage(int page) {
 // 沒有控制項的矩形:ListView 保留逐列的 UIA 元素與選取狀態,
 // owner-draw 的 push button 仍然是 push button。
 
+void SettingsWindow::FillRoundRect(HDC hdc, const RECT& r, int radius_px,
+                                   Role fill, Role under) {
+  // ⚠ **先把角外那塊填成底色**。§12.14.0 第 2 條:少了這一步,圓角只是
+  //   一條畫在方塊裡面的弧,而那個方塊仍然是方的。
+  ::FillRect(hdc, const_cast<RECT*>(&r), theme_.Brush(under));
+  if (radius_px < 1) {
+    ::FillRect(hdc, const_cast<RECT*>(&r), theme_.Brush(fill));
+    return;
+  }
+  HGDIOBJ oldb = ::SelectObject(hdc, theme_.Brush(fill));
+  // 外框與填色同色 —— RoundRect 會用目前的畫筆描邊,不換的話會描出
+  // 一圈黑線(GDI 預設是 BLACK_PEN)。
+  HGDIOBJ oldp = ::SelectObject(hdc, theme_.Pen(fill, 1));
+  ::RoundRect(hdc, r.left, r.top, r.right, r.bottom, radius_px * 2,
+              radius_px * 2);
+  ::SelectObject(hdc, oldp);
+  ::SelectObject(hdc, oldb);
+}
+
+void SettingsWindow::StrokeRoundRect(HDC hdc, const RECT& r, int radius_px,
+                                     Role pen, int width_px) {
+  HGDIOBJ oldp = ::SelectObject(hdc, theme_.Pen(pen, width_px));
+  HGDIOBJ oldb = ::SelectObject(hdc, ::GetStockObject(NULL_BRUSH));
+  ::RoundRect(hdc, r.left, r.top, r.right, r.bottom, radius_px * 2,
+              radius_px * 2);
+  ::SelectObject(hdc, oldb);
+  ::SelectObject(hdc, oldp);
+}
+
+void SettingsWindow::DrawFocusRing(HDC hdc, const RECT& r, int radius_px) {
+  // §12.6.4 第 2 條:**不要用 DrawFocusRect** —— 它是 XOR 的點線框,
+  // 在我們的色票上會變成不可預測的顏色。
+  //
+  // §12.14.2 末段:兩圈互為反色。外圈 2 DIP kFocusOuter(淺色近黑 /
+  // 深色純白)+ 內圈 1 DIP kFocusInner(相反)。焦點環的圓角 =
+  // 元件圓角 + 2(§3.6)。
+  const int outer = Dip(metric::kFocusRingW, dpi_);
+  const int inner = Dip(metric::kHairline, dpi_);
+  StrokeRoundRect(hdc, r, radius_px + Dip(2, dpi_), kFocusOuter, outer);
+  RECT in = r;
+  ::InflateRect(&in, -outer, -outer);
+  if (in.right > in.left && in.bottom > in.top)
+    StrokeRoundRect(hdc, in, radius_px, kFocusInner, inner);
+}
+
+void SettingsWindow::TrackDangerHover(HWND ctl, int id) {
+  if (danger_hot_ == id) return;
+  ClearDangerHover();
+  danger_hot_ = id;
+  danger_tracked_ = ctl;
+  // WM_DRAWITEM 不給 hot 狀態,所以 hover 要自己追(§12.14.6.4)。
+  // ⚠ 沒有 TME_LEAVE 的話,滑鼠移開之後那一顆會一直停在 hover ——
+  //   而「按下去之前不知道自己指到了它」與「指開了還亮著」是同一種
+  //   缺陷的兩半。
+  TRACKMOUSEEVENT tme{};
+  tme.cbSize = sizeof(tme);
+  tme.dwFlags = TME_LEAVE;
+  tme.hwndTrack = ctl;
+  ::TrackMouseEvent(&tme);
+  ::InvalidateRect(ctl, nullptr, TRUE);
+}
+
+void SettingsWindow::ClearDangerHover() {
+  if (danger_hot_ < 0) return;
+  HWND old = danger_tracked_;
+  danger_hot_ = -1;
+  danger_tracked_ = nullptr;
+  if (old) ::InvalidateRect(old, nullptr, TRUE);
+}
+
+void SettingsWindow::ApplyDefaultButtonForPage(int page) {
+  // §12.14.6.2:「主要按鈕」= 給它 BS_DEFPUSHBUTTON,**不要自繪**。
+  // Win11 的 push button 在 BS_DEFPUSHBUTTON 下本來就是 accent 實心,
+  // 而 manifest 已經在了(windows/res/app.manifest)。自繪它會拿走
+  // §12.5.1 說的那兩樣東西,換到的只是「顏色跟我們算的一模一樣」。
+  //
+  // ⚠ **一個視窗只能有一顆**(它吃 Enter)。這是行為,不只是外觀:
+  //   留著兩顆的話 Enter 會按到看不見的那一顆 —— 使用者在「連網」頁
+  //   按 Enter,結果是「輸入方案」頁的「套用這個順序」被按下去。
+  int want = 0;
+  switch (page) {
+    case kPageSchemas:
+      want = IDC_APPLY_ORDER;
+      break;
+    case kPageAdvanced:
+      want = IDC_REDEPLOY;
+      break;
+    default:
+      // ⚠ 其餘三頁**刻意沒有**主要按鈕。§3.4 第 1 條「一頁最多一個彩色
+      //   重點」的另一半是「沒有主要動作的頁就不要指一個」——
+      //   外觀/文字頁上使用者改的是單選鈕,沒有一顆需要他按下去確認。
+      want = 0;
+      break;
+  }
+  if (want == default_button_) return;
+  auto set_style = [&](int id, bool def) {
+    HWND h = Ctl(hwnd_, id);
+    if (!h) return;
+    LONG st = ::GetWindowLongW(h, GWL_STYLE);
+    const LONG next = def ? ((st & ~static_cast<LONG>(BS_TYPEMASK)) |
+                             BS_DEFPUSHBUTTON)
+                          : ((st & ~static_cast<LONG>(BS_TYPEMASK)) |
+                             BS_PUSHBUTTON);
+    if (next == st) return;
+    ::SetWindowLongW(h, GWL_STYLE, next);
+    ::InvalidateRect(h, nullptr, TRUE);
+  };
+  if (default_button_) set_style(default_button_, false);
+  default_button_ = want;
+  if (want) set_style(want, true);
+  // ⚠ **不送 DM_SETDEFID。** 這是一個一般視窗類別,不是對話框 ——
+  //   DM_SETDEFID 由 DefDlgProc 處理,而我們走的是 DefWindowProc,
+  //   送過去等於什麼都沒做。真正決定 Enter 按到哪一顆的是訊息迴圈裡的
+  //   IsDialogMessageW():它問不到 DM_GETDEFID 就去找**帶
+  //   BS_DEFPUSHBUTTON 樣式的那一顆**。所以上面那一次 SetWindowLongW
+  //   就是全部,而「一個視窗只能有一顆」也因此是真的行為約束,
+  //   不只是外觀 —— 留著兩顆的話,IsDialogMessageW 找到的是**先建的**
+  //   那一顆,也就是使用者這一頁上看不見的那一顆。
+}
+
 LRESULT SettingsWindow::DrawSidebar(NMLVCUSTOMDRAW* cd) {
   switch (cd->nmcd.dwDrawStage) {
     case CDDS_PREPAINT:
@@ -1116,6 +1295,11 @@ LRESULT SettingsWindow::DrawSidebar(NMLVCUSTOMDRAW* cd) {
       //   保留 ListView、只把「畫什麼」的來源收成一份,兩邊都拿得到。
       const bool selected = (i == page_);
       const bool hot = (cd->nmcd.uItemState & CDIS_HOT) != 0;
+      // §12.14.6.6 的四欄是一般/滑過/按下/停用。按下那一格以前**不存在**
+      // —— comctl32 的 custom draw 不給「按下」,所以問滑鼠鍵。
+      // ⚠ 少一格的後果不是不好看:使用者按下去之前,那一顆與「只是指到」
+      //   長得一模一樣。
+      const bool down = hot && (::GetKeyState(VK_LBUTTON) & 0x8000) != 0;
       // ⚠ 焦點環只在**鍵盤**使用時畫(§12.6.4 第 1 條)。滑鼠使用者身上
       //   到處是框,是 Win32 自繪最常見的破綻。show_focus_ 由
       //   WM_UPDATEUISTATE 維護。
@@ -1129,32 +1313,56 @@ LRESULT SettingsWindow::DrawSidebar(NMLVCUSTOMDRAW* cd) {
       RECT r{};
       if (!RowRect(sidebar_, cd, &r)) return CDRF_DODEFAULT;
       // 側欄項的內距(§12.4.2:側欄左右內距 12)。
-      RECT item = r;
-      item.left += Dip(space::s5, dpi_);
-      item.right -= Dip(space::s5, dpi_);
+      // ⚠ 底、圓角、指示條三者**從同一個純函式出**(SidebarItemFillDip /
+      //   SidebarIndicatorDip)。以前這裡自己拿 RowRect 左右各縮 s5,而
+      //   ui_layout.cc 另有一份 SidebarItemFillDip() —— 兩份會漂開,
+      //   而漂開的樣子是「指示條與底色的圓角對不齊」。
+      // ⚠ 三個矩形都用**同一個原點**換算:純函式給的是視窗座標,
+      //   而 r 是 comctl32 給的那一列。原點取列的左上角,三者的相對位置
+      //   就與純函式算的一模一樣 —— 各自從不同的地方換算是這一格最容易
+      //   出錯的地方(第一版的指示條就因此往上跑了 2 DIP,而 2 DIP
+      //   在畫面上看起來只是「有點沒對齊」)。
+      const RectI row_dip = SidebarItemDip(i);
+      const RectI fill_dip = SidebarItemFillDip(i);
+      const RectI ind_dip = SidebarIndicatorDip(i);
+      RECT item{r.left + Dip(fill_dip.x, dpi_),
+                r.top + Dip(fill_dip.y - row_dip.y, dpi_),
+                r.left + Dip(fill_dip.x + fill_dip.w, dpi_),
+                r.top + Dip(fill_dip.y - row_dip.y + fill_dip.h, dpi_)};
 
+      const int rad = Dip(radius::kControl, dpi_);
       ::FillRect(hdc, &r, theme_.Brush(kBackground));
-      const Role bg = selected ? (hot ? kRowSelectedHover : kPrimaryContainer)
-                               : (hot ? kRowHover : kBackground);
-      if (bg != kBackground) ::FillRect(hdc, &item, theme_.Brush(bg));
+      const Role bg =
+          selected ? (down ? kPrimaryContainerPressed
+                           : hot ? kPrimaryContainerHover : kPrimaryContainer)
+                   : (down ? kRowPressed : hot ? kRowHover : kBackground);
+      if (bg != kBackground) FillRoundRect(hdc, item, rad, bg, kBackground);
 
-      if (focused) {
-        // §12.6.4 第 2 條:**不要用 DrawFocusRect** —— 它是 XOR 的點線框,
-        // 在我們的色票上會變成不可預測的顏色。自己畫 2 DIP 的框。
-        HPEN pen = theme_.Pen(kPrimary, Dip(2, dpi_));
-        HGDIOBJ oldp = ::SelectObject(hdc, pen);
-        HGDIOBJ oldb = ::SelectObject(hdc, ::GetStockObject(NULL_BRUSH));
-        ::Rectangle(hdc, item.left, item.top, item.right, item.bottom);
-        ::SelectObject(hdc, oldb);
-        ::SelectObject(hdc, oldp);
+      // 左緣指示條(§12.14.6.1)。**選中才有。**
+      // ⚠ 它是「哪一頁」的第二個訊號(第一個是底色)—— §3.4 第 2 條:
+      //   不得只用顏色傳達資訊。指示條是形狀,色覺障礙下也在。
+      if (selected) {
+        RECT ind{item.left, r.top + Dip(ind_dip.y - row_dip.y, dpi_),
+                 item.left + Dip(ind_dip.w, dpi_),
+                 r.top + Dip(ind_dip.y - row_dip.y + ind_dip.h, dpi_)};
+        FillRoundRect(hdc, ind, Dip(2, dpi_), kAccentIndicator, bg);
       }
 
+      if (focused) DrawFocusRing(hdc, item, rad);
+
       ::SetBkMode(hdc, TRANSPARENT);
-      ::SetTextColor(hdc, theme_.Color(selected ? kOnSurface
-                                                : kOnSurfaceVariant));
-      HGDIOBJ oldf = ::SelectObject(hdc, fonts_.Get(text_size::t3, selected));
+      // §12.14.6.1 的表:未選中滑過/按下時文字也要變成 onSurface。
+      ::SetTextColor(hdc, theme_.Color((selected || hot || down)
+                                           ? kOnSurface
+                                           : kOnSurfaceVariant));
+      // ⚠ **選中不換字重**(§12.14.3 末段)。中文堆疊底下那是
+      //   Regular ↔ Bold,字寬會變,切頁時側欄那幾行會互相跳。
+      //   選中由底色 + 指示條 + 文字色表達,三個都不改變排版。
+      HGDIOBJ oldf = ::SelectObject(hdc, fonts_.Get(text_size::t3, false));
       RECT tr = item;
-      tr.left += Dip(space::s4, dpi_);
+      // 文字左緣 = 項目左緣 + s6(16),**選中與未選中一樣**。
+      // 16 剛好讓文字清開 3 DIP 的指示條還有 13 DIP 的餘裕。
+      tr.left += Dip(space::s6, dpi_);
       const wchar_t* label = UiText(SettingsPageName(i));
       ::DrawTextW(hdc, label, -1, &tr,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
@@ -1186,6 +1394,7 @@ LRESULT SettingsWindow::DrawSchemaList(NMLVCUSTOMDRAW* cd) {
       //     在這裡照樣會發生 —— 而使用者截圖指的正好是清單。
       const bool selected = (i == schema_sel_);
       const bool hot = (cd->nmcd.uItemState & CDIS_HOT) != 0;
+      const bool down = hot && (::GetKeyState(VK_LBUTTON) & 0x8000) != 0;
       const bool focused =
           show_focus_ && (cd->nmcd.uItemState & CDIS_FOCUS) != 0;
 
@@ -1194,23 +1403,20 @@ LRESULT SettingsWindow::DrawSchemaList(NMLVCUSTOMDRAW* cd) {
       //   「『啟用的方式』底下是一個空白的 list」。
       RECT r{};
       if (!RowRect(schema_list_, cd, &r)) return CDRF_DODEFAULT;
-      const Role bg = selected ? (hot ? kRowSelectedHover : kPrimaryContainer)
-                               : (hot ? kRowHover : kSurface);
-      ::FillRect(hdc, &r, theme_.Brush(bg));
+      const int rad = Dip(radius::kControl, dpi_);
+      const Role bg =
+          selected ? (down ? kPrimaryContainerPressed
+                           : hot ? kPrimaryContainerHover : kPrimaryContainer)
+                   : (down ? kRowPressed : hot ? kRowHover : kSurface);
+      FillRoundRect(hdc, r, rad, bg, kSurface);
 
-      if (focused) {
-        HPEN pen = theme_.Pen(kPrimary, Dip(2, dpi_));
-        HGDIOBJ oldp = ::SelectObject(hdc, pen);
-        HGDIOBJ oldb = ::SelectObject(hdc, ::GetStockObject(NULL_BRUSH));
-        ::Rectangle(hdc, r.left, r.top, r.right, r.bottom);
-        ::SelectObject(hdc, oldb);
-        ::SelectObject(hdc, oldp);
-      }
+      if (focused) DrawFocusRing(hdc, r, rad);
 
       ::SetBkMode(hdc, TRANSPARENT);
       RECT tr = r;
-      tr.left += Dip(space::s4, dpi_);
-      tr.right -= Dip(space::s4, dpi_);
+      // §12.14.6.5:清單列左右內距 s5(12),不是 s4。
+      tr.left += Dip(space::s5, dpi_);
+      tr.right -= Dip(space::s5, dpi_);
 
       // 「預設」徽章:順序的第一個就是預設。⚠ 這一句是規範性的
       // (§6.7 第一層)—— 這一列上**不可以**出現方案 id,只有名字。
@@ -1220,15 +1426,42 @@ LRESULT SettingsWindow::DrawSchemaList(NMLVCUSTOMDRAW* cd) {
         SIZE bs{};
         HGDIOBJ oldf2 = ::SelectObject(hdc, fonts_.Get(text_size::t5));
         ::GetTextExtentPoint32W(hdc, badge, ::lstrlenW(badge), &bs);
-        RECT br{tr.right - bs.cx - 2 * Dip(space::s4, dpi_),
-                r.top + Dip(space::s3, dpi_), tr.right,
-                r.bottom - Dip(space::s3, dpi_)};
-        ::FillRect(hdc, &br, theme_.Brush(kSurfaceVariant));
+        // ── ⚠ 位置由純函式算(§12.14.6.5 / §12.14.0 第 3 條)──────
+        //
+        // 舊版把徽章的右緣釘在 tr.right,而 tr 來自 RowRect() ——
+        // 那一支會把列寬**撐到 GetClientRect 的寬度**。清單帶 WS_BORDER
+        // 而且沒有 LVS_NOSCROLL,所以項目一多就出現直捲軸:client 變窄、
+        // 欄寬沒跟著變窄,於是那一列比看得見的範圍寬,徽章被排到可視區
+        // 外面,被 DC 的裁剪切掉。使用者實機回報過。
+        //
+        // 現在算式吃的是**控制項自己的寬度**,而且明確扣掉捲軸寬。
+        RECT lc{};
+        ::GetClientRect(schema_list_, &lc);
+        const int list_w_dip =
+            MulDivRound(lc.right - lc.left, 96, static_cast<int>(dpi_));
+        const bool has_vs =
+            (::GetWindowLongW(schema_list_, GWL_STYLE) & WS_VSCROLL) != 0;
+        const int sb_dip = MulDivRound(
+            static_cast<int>(::GetSystemMetrics(SM_CXVSCROLL)), 96,
+            static_cast<int>(dpi_));
+        const BadgePlacement bp = BadgePlacementDip(
+            list_w_dip, /*row_top_dip=*/0, metric::kRowH,
+            MulDivRound(bs.cx, 96, static_cast<int>(dpi_)),
+            metric::kHairline, sb_dip, has_vs);
+        RECT br{r.left + Dip(bp.badge.x, dpi_),
+                r.top + Dip(bp.badge.y, dpi_),
+                r.left + Dip(bp.badge.right(), dpi_),
+                r.top + Dip(bp.badge.bottom(), dpi_)};
+        // 膠囊:圓角 = 高 ÷ 2。⚠ 外框**沒有** —— 試算過 1 DIP 外框對
+        // 徽章底只有 1.24:1,過不了 §3.4.1 的 1.4。
+        FillRoundRect(hdc, br, Dip(bp.radius_dip, dpi_), kBadgeFill, bg);
         ::SetTextColor(hdc, theme_.Color(kOnSurfaceVariant));
         ::DrawTextW(hdc, badge, -1, &br,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         ::SelectObject(hdc, oldf2);
-        tr.right = br.left - Dip(space::s3, dpi_);
+        // 名稱的截尾點與徽章的左緣**由同一個算式產生**,所以長方案名
+        // 不會壓到徽章上。
+        tr.right = r.left + Dip(bp.name_right, dpi_);
       }
 
       ::SetTextColor(hdc, theme_.Color(kOnSurface));
@@ -1262,6 +1495,7 @@ LRESULT SettingsWindow::DrawNetLogList(NMLVCUSTOMDRAW* cd) {
       //   問控制項本人。
       const bool selected = RowIsSelected(net_log_list_, static_cast<int>(i));
       const bool hot = (cd->nmcd.uItemState & CDIS_HOT) != 0;
+      const bool down = hot && (::GetKeyState(VK_LBUTTON) & 0x8000) != 0;
       const bool focused =
           show_focus_ && (cd->nmcd.uItemState & CDIS_FOCUS) != 0;
 
@@ -1270,18 +1504,14 @@ LRESULT SettingsWindow::DrawNetLogList(NMLVCUSTOMDRAW* cd) {
       //   (0,0,0,0),拿它去畫的結果是一片空白而且沒有任何錯誤。
       RECT r{};
       if (!RowRect(net_log_list_, cd, &r)) return CDRF_DODEFAULT;
-      const Role bg = selected ? (hot ? kRowSelectedHover : kPrimaryContainer)
-                               : (hot ? kRowHover : kSurface);
-      ::FillRect(hdc, &r, theme_.Brush(bg));
+      const int rad = Dip(radius::kControl, dpi_);
+      const Role bg =
+          selected ? (down ? kPrimaryContainerPressed
+                           : hot ? kPrimaryContainerHover : kPrimaryContainer)
+                   : (down ? kRowPressed : hot ? kRowHover : kSurface);
+      FillRoundRect(hdc, r, rad, bg, kSurface);
 
-      if (focused) {
-        HPEN pen = theme_.Pen(kPrimary, Dip(2, dpi_));
-        HGDIOBJ oldp = ::SelectObject(hdc, pen);
-        HGDIOBJ oldb = ::SelectObject(hdc, ::GetStockObject(NULL_BRUSH));
-        ::Rectangle(hdc, r.left, r.top, r.right, r.bottom);
-        ::SelectObject(hdc, oldb);
-        ::SelectObject(hdc, oldp);
-      }
+      if (focused) DrawFocusRing(hdc, r, rad);
 
       ::SetBkMode(hdc, TRANSPARENT);
       ::SetTextColor(hdc, theme_.Color(kOnSurface));
@@ -1396,6 +1626,28 @@ void SettingsWindow::DoClearNetLog() {
   SetTransientStatus(UiString::kNetLogCleared);
 }
 
+LRESULT CALLBACK SettingsWindow::DangerProc(HWND h, UINT m, WPARAM w,
+                                           LPARAM l, UINT_PTR id,
+                                           DWORD_PTR data) {
+  SettingsWindow* self = reinterpret_cast<SettingsWindow*>(data);
+  switch (m) {
+    case WM_MOUSEMOVE:
+      if (self) self->TrackDangerHover(h, static_cast<int>(id));
+      break;
+    case WM_MOUSELEAVE:
+      if (self) self->ClearDangerHover();
+      break;
+    case WM_NCDESTROY:
+      // ⚠ 一定要拿掉 —— 留著的話下一次視窗銷毀時會呼叫到已經不在的
+      //   物件上。SetWindowSubclass 的契約就是這一條。
+      ::RemoveWindowSubclass(h, &SettingsWindow::DangerProc, id);
+      break;
+    default:
+      break;
+  }
+  return ::DefSubclassProc(h, m, w, l);
+}
+
 void SettingsWindow::DrawDangerButton(DRAWITEMSTRUCT* di) {
   // §4.9 / §2-C1:**外框 + 危險色文字 + 透明底**。不得用危險色實心底 ——
   // 實心的紅底看起來像「這是主要動作」,而它正好相反。
@@ -1404,28 +1656,23 @@ void SettingsWindow::DrawDangerButton(DRAWITEMSTRUCT* di) {
   const bool pressed = (di->itemState & ODS_SELECTED) != 0;
   const bool disabled = (di->itemState & ODS_DISABLED) != 0;
   const bool focused = show_focus_ && (di->itemState & ODS_FOCUS) != 0;
-  // hover 要自己追(WM_DRAWITEM 不給 hot 狀態)。這裡用按下狀態代替,
-  // 少一階視覺回饋,但不會騙人。
-  ::FillRect(hdc, &r, theme_.Brush(kBackground));
-  if (pressed) ::FillRect(hdc, &r, theme_.Brush(kDangerPressed));
+  // ⚠ hover 現在**是真的 hover**:WM_DRAWITEM 不給 hot 狀態,所以由
+  //   TrackDangerHover()(TME_LEAVE + WM_MOUSEMOVE)自己追。
+  //   舊版拿按下狀態代替,少的那一階是「使用者按下去之前不知道自己
+  //   指到了它」——§12.14.6.4:四個狀態就是四個狀態。
+  const bool hot = danger_hot_ == static_cast<int>(di->CtlID);
+  const int rad = Dip(radius::kControl, dpi_);
+  // 底 = surface(等於卡片底,看起來透明)。⚠ **不得用危險色實心底**
+  //   (§4.9):實心紅底看起來像「這是主要動作」,而它正好相反。
+  const Role fill = disabled ? kSurface
+                             : pressed ? kDangerPressed
+                                       : hot ? kDangerHover : kSurface;
+  FillRoundRect(hdc, r, rad, fill, kSurface);
 
   const Role fg = disabled ? kDisabledText : kError;
-  HPEN pen = theme_.Pen(fg, Dip(1, dpi_));
-  HGDIOBJ oldp = ::SelectObject(hdc, pen);
-  HGDIOBJ oldb = ::SelectObject(hdc, ::GetStockObject(NULL_BRUSH));
-  ::Rectangle(hdc, r.left, r.top, r.right, r.bottom);
-  ::SelectObject(hdc, oldb);
-  ::SelectObject(hdc, oldp);
+  StrokeRoundRect(hdc, r, rad, fg, Dip(metric::kHairline, dpi_));
 
-  if (focused) {
-    HPEN fp = theme_.Pen(kPrimary, Dip(2, dpi_));
-    HGDIOBJ o1 = ::SelectObject(hdc, fp);
-    HGDIOBJ o2 = ::SelectObject(hdc, ::GetStockObject(NULL_BRUSH));
-    const int in = Dip(2, dpi_);
-    ::Rectangle(hdc, r.left + in, r.top + in, r.right - in, r.bottom - in);
-    ::SelectObject(hdc, o2);
-    ::SelectObject(hdc, o1);
-  }
+  if (focused) DrawFocusRing(hdc, r, rad);
 
   wchar_t buf[128] = {0};
   ::GetWindowTextW(di->hwndItem, buf, 128);
@@ -1486,6 +1733,52 @@ void SettingsWindow::OnPaint(HDC hdc) {
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
                   DT_NOPREFIX);
   ::SelectObject(hdc, oldf);
+
+  // ── 卡片(§12.14.5)────────────────────────────────────────
+  //
+  // ⚠ 卡片畫在父視窗的 WM_PAINT 裡,所以不涉及無障礙(§12.5.3 末列
+  //   「卡片／分隔線／空狀態／徽章」那一格已經涵蓋)。
+  // ⚠ 矩形由 LayoutSettingsPageDip() 給,這裡只換算成像素。
+  //   內容座標要減掉捲動量 —— 少了這一句,捲動時卡片會定在原地,
+  //   而控制項會從卡片裡滑出去。
+  {
+    const int card_r = Dip(radius::kControl, dpi_);
+    const int viewport_h = H - Dip(kBottomStripH, dpi_);
+    // ── ⚠ 卡片也要裁在摺線上 ────────────────────────────────────
+    //
+    //   控制項由 ScrollPlaceControlDip() 裁(那一支有單元測試),
+    //   而卡片是父視窗自己畫的 —— 沒有人裁它。捲到一半時,最後一張卡
+    //   會**畫進底部固定列**,蓋在「關閉」鈕與狀態文字那一條上面。
+    //   子控制項還在(它們是視窗,畫在最上層),所以症狀是
+    //   「關閉鈕底下多了一塊白色的方塊」,而不是按鈕不見了 ——
+    //   那種東西不會被回報成缺陷,只會被記成「這個設定畫面怪怪的」。
+    ::IntersectClipRect(hdc, sb, 0, W, viewport_h);
+    for (const CardRect& c : cards_) {
+      RECT cr{Dip(c.rect.x, dpi_), Dip(c.rect.y - scroll_, dpi_),
+              Dip(c.rect.x + c.rect.w, dpi_),
+              Dip(c.rect.y - scroll_ + c.rect.h, dpi_)};
+      if (cr.bottom <= 0 || cr.top >= viewport_h) continue;
+      // 底 surface + 1 DIP controlBorder + 圓角 4。⚠ **沒有陰影** ——
+      //   §3.5 第 3 條:卡片與底只差一階,靠 1px 分隔線切開,不靠陰影。
+      //   深色下用陰影的結果是一坨黑,而 GDI 沒有模糊,自畫的陰影只能
+      //   是幾條漸深的邊線 —— 那在 2026 年看起來比沒有陰影更舊。
+      FillRoundRect(hdc, cr, card_r, kSurface, kBackground);
+      StrokeRoundRect(hdc, cr, card_r, kControlBorder,
+                      Dip(metric::kHairline, dpi_));
+      // 卡內列與列之間的分隔線。⚠ **要縮排 s6** —— 不縮排的話它會碰到
+      //   卡片的圓角,看起來像裂縫(§12.14.6.7)。
+      for (int y : c.divider_ys) {
+        const int py = Dip(y - scroll_, dpi_);
+        if (py <= cr.top || py >= cr.bottom) continue;
+        RECT dl{cr.left + Dip(space::s6, dpi_), py,
+                cr.right - Dip(space::s6, dpi_),
+                py + Dip(metric::kHairline, dpi_)};
+        ::FillRect(hdc, &dl, theme_.Brush(kOutline));
+      }
+    }
+    // 裁切區還原 —— 底下那條 hairline 畫在摺線**上**,留著會被裁掉。
+    ::SelectClipRgn(hdc, nullptr);
+  }
 
   // 底部狀態行上面那一條 hairline。
   // ⚠ 與 ContentViewportHeightDip() 用**同一個**常數:內容就是裁在
@@ -2374,13 +2667,49 @@ void SettingsWindow::OnCommand(int id, int code) {
         SetStatus(UiString::kStatusOrderNotApplied);
         return;
       }
-      // 順序決定了預設,所以「一律使用某一個」的舊設定要一起放掉 ——
-      // 留著的話,使用者把另一個排到最前面卻看不到任何變化,
-      // 而畫面上沒有任何東西解釋得了那件事。
+      // ── ⚠ P0:排到第一 ≠ 引擎會用它 ────────────────────────────
+      //
+      // ChooseSchema()(common/schema_choice.cc)由高到低是:
+      //   1. pinnedHant / pinnedHans
+      //   2. pinnedGlobal
+      //   3. 清單中第一個字集相符的
+      //   4. 清單第一個
+      //
+      // 而 **pinnedHant 是自動寫的,使用者不知道**:pipe_server.cc 的
+      // note_schema 只要看到快照上的 schema_id 變了(也就是使用者按了
+      // Ctrl + ` 或 F4)就把它記下來。而這一頁的說明文字**自己在教
+      // 使用者去按那顆鍵**(「打字時按 Ctrl + ` 或 F4 可以隨時換」)。
+      //
+      // 於是實跑得出來的缺陷是:按過一次 Ctrl + ` 之後,再用這一頁把
+      // 另一個排到第一、按「套用這個順序」—— 落地是真的(default.custom.yaml
+      // 真的被改了),但**引擎仍然用 pinnedHant 那一個**。而畫面上有
+      // 三個綠訊號同時說相反的話:
+      //   · 「現在預設是『○○』」取的是 order_[0]
+      //   · 第 0 列掛著「預設」徽章
+      //   · 重新整理跑完會報「整理完成」
+      // 這正是狀態欄今晚撞過四次的同一個病:顯示的真相與引擎的真相是
+      // 兩份,而且會分岔。
+      //
+      // 舊碼**只清第 2 層**,而 pinnedGlobal 沒有任何 UI 會設它
+      //(全 repo 只有這一處清除、pipe_server.cc 一處讀)—— 也就是說
+      // 那一行等於空跑。
+      //
+      // 修法:使用者**親手排的順序**,比我們背著他記下來的那一次按鍵
+      // 權威。所以三層一起放掉。
+      bool pinned_changed = false;
       if (!settings_.Raw(keys::kSchemasPinnedGlobal).empty()) {
         settings_.SetPinnedGlobal(std::string());
-        store_->Save(settings_);
+        pinned_changed = true;
       }
+      if (!settings_.Raw(keys::kSchemasPinnedHant).empty()) {
+        settings_.SetPinnedForCharSet(CharSet::kHant, std::string());
+        pinned_changed = true;
+      }
+      if (!settings_.Raw(keys::kSchemasPinnedHans).empty()) {
+        settings_.SetPinnedForCharSet(CharSet::kHans, std::string());
+        pinned_changed = true;
+      }
+      if (pinned_changed) store_->Save(settings_);
       StartRedeploy(UiString::kSchemasApplyOrder);
       return;
     }

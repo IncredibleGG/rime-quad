@@ -2,6 +2,8 @@
 
 #include <cstring>
 
+#include "../common/ui_accent.h"
+
 namespace rimewin {
 namespace {
 
@@ -72,12 +74,58 @@ bool Theme::Refresh(AppearancePref pref) {
         break;
     }
   }
-  if (next == mode_ && hc == high_contrast_) return false;
+  const Rgb seed = ReadSystemAccent(next == Mode::kDark);
+  const bool same_seed =
+      seed.r == seed_.r && seed.g == seed_.g && seed.b == seed_.b;
+  if (next == mode_ && hc == high_contrast_ && same_seed) return false;
   mode_ = next;
   high_contrast_ = hc;
-  // 換了模式就把 GDI 物件全部丟掉重建 —— 留著的是舊色票的顏色。
+  seed_ = seed;
+  // ⚠ 色票**算一次存起來**,不是每次 Color() 都重算。守門那兩道是
+  //   8-bit 的二分搜尋,而 Color() 在 WM_PAINT 的每一列上都會被呼叫。
+  palette_ = PaletteFor(mode_, seed_);
+  // 換了模式或 accent 就把 GDI 物件全部丟掉重建 —— 留著的是舊色票的顏色。
   Clear();
   return true;
+}
+
+Rgb Theme::ReadSystemAccent(bool dark) const {
+  // ── 第 1 段:HKCU\...\Explorer\Accent → AccentPalette ─────────
+  //
+  // ⚠ 位元組數不是 32 就整段跳過(規格明文)。那個佈局是流傳的知識,
+  //   不是文件保證的 —— 賭它的下場是「顏色變成隨機的一組位元組」。
+  {
+    BYTE buf[64] = {0};
+    DWORD size = sizeof(buf);
+    DWORD type = 0;
+    if (::RegGetValueW(HKEY_CURRENT_USER,
+                       L"Software\\Microsoft\\Windows\\CurrentVersion"
+                       L"\\Explorer\\Accent",
+                       L"AccentPalette", RRF_RT_REG_BINARY, &type, buf,
+                       &size) == ERROR_SUCCESS) {
+      Rgb out{};
+      if (AccentFromPalette(buf, static_cast<size_t>(size), dark, &out))
+        return out;
+    }
+  }
+  // ── 第 2 段:HKCU\Software\Microsoft\Windows\DWM → AccentColor ─
+  {
+    DWORD v = 0;
+    DWORD size = sizeof(v);
+    DWORD type = 0;
+    if (::RegGetValueW(HKEY_CURRENT_USER,
+                       L"Software\\Microsoft\\Windows\\DWM", L"AccentColor",
+                       RRF_RT_REG_DWORD, &type, &v, &size) == ERROR_SUCCESS &&
+        size == sizeof(v))
+      return AccentFromDword(static_cast<uint32_t>(v));
+  }
+  // ── 第 3 段:青瓷綠當**種子**,走同一條階梯公式 ─────────────
+  //
+  // ⚠ **不使用 Windows.UI.ViewManagement.UISettings**(WinRT)。它是最準的
+  //   來源,但會把 combase.dll 與 WinRT 啟動拉進一支「必須讓外人用
+  //   dumpbin /imports 驗證它不連網」的程式(§12.1)。兩個 RegGetValueW
+  //   換得到 95% 的正確性,那個交換划算。
+  return AccentFallbackSeed();
 }
 
 COLORREF Theme::Color(Role r) const {
@@ -85,8 +133,7 @@ COLORREF Theme::Color(Role r) const {
     // 整份色票停用,改走系統的。
     return ::GetSysColor(SysColorFor(r));
   }
-  const Rgb* p = PaletteFor(mode_);
-  const Rgb c = p[r];
+  const Rgb c = palette_[r];
   return RGB(c.r, c.g, c.b);
 }
 

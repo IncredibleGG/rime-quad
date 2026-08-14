@@ -165,6 +165,9 @@ class StatusBar {
   // ⚠ 寬度由呼叫端給(0 = 用視窗現在的寬度)。Relayout 改了寬度之後
   //   一定要重走這一支 —— 只長寬度不重擺,右端會被推出螢幕。
   void ApplyPlacement(int w_dip);
+  // 視窗級圓角(§12.14.4)。DWM 或 region,**不得同時** —— 見實作。
+  static void ApplyWindowCorners(HWND hwnd, int w_px, int h_px,
+                                 int radius_px);
   void SavePlacement();
   // 把三個輸入餵給狀態機,並把結果變成 ShowWindow。只在 UI 執行緒上跑。
   void EvaluateVisibility();
@@ -230,6 +233,10 @@ class StatusBar {
   // 只在 UI 執行緒上碰。
   std::vector<Cell> cells_;
   int hot_ = -1;
+  // 第 3/4 格之間那條分隔線的 x(像素)。<0 = 這一次不畫。
+  int bar_separator_x_ = -1;
+  // 第 3 格被壓到 120 DIP 了嗎(決定要不要 DT_END_ELLIPSIS)。
+  bool schema_truncated_ = false;
   int pressed_ = -1;
   ServiceState service_state_ = ServiceState::kReady;
   // ⚠ 這裡以前是一個 visible_,而它同時是兩件事:「使用者要不要這個

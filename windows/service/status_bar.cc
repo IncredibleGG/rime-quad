@@ -9,6 +9,7 @@
 
 #include "../common/settings.h"
 #include "../common/status_cells.h"
+#include "../common/statusbar_layout.h"
 #include "../common/ui_dip.h"
 #include "../common/ui_layout.h"
 #include "../common/ui_strings.h"
@@ -44,12 +45,17 @@ constexpr UINT_PTR kStateTimer = 1;
 constexpr UINT kStatePollMs = 500;
 
 // §12.10.3 的尺寸(DIP)。
-constexpr int kBarH = 28;        // t4 字高 12 + 上下 padding 各 6 + 邊框 2
-constexpr int kCellMinW = metric::kMinTarget;  // 28
-constexpr int kCellPadH = space::s4;           // 10
-constexpr int kCellGap = space::s3;            // 6
-constexpr int kBarRadius = radius::kMedium;    // 7
-constexpr int kBarBorder = metric::kHairline;  // 1
+// ── ⚠ 幾何**不在這裡**了(§12.15 的 W34)────────────────────────
+//
+// 每一格的矩形以前是 Relayout() 自己算的,而這個檔案在 Ubuntu 上編不
+// 起來 —— 所以「每一格只有 26 DIP 高」(§12.14.0 第 5 條,低於 §3.6 的
+// 28)**沒有任何自動化看得到**,而它在畫面上看起來只是「那一橫有點扁」。
+//
+// 現在算式住在 common/statusbar_layout.cc,這裡只剩「量字寬」與「畫」。
+constexpr int kBarH = barmetric::kBarH;          // 32(從 28 改)
+constexpr int kBarRadius = barmetric::kBarRadius;  // 8(從 7 改)
+constexpr int kCellRadius = barmetric::kCellRadius;  // 4
+constexpr int kBarBorder = barmetric::kBorder;   // 1
 
 // ── ⚠ §8.12 的規範性字面,四端一致,**不得在地化** ────────────────
 //
@@ -398,6 +404,11 @@ void StatusBar::ThreadMain() {
   wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
   wc.hbrBackground = nullptr;  // 全自繪
   wc.lpszClassName = kClass;
+  // §12.14.4:懸浮狀態列**有**陰影,而且是系統畫的。
+  // ⚠ 不得自己畫陰影 —— GDI 沒有模糊,自畫的陰影只能是幾條漸深的邊線,
+  //   那在 2026 年看起來比沒有陰影更舊。CS_DROPSHADOW 還會**尊重使用者
+  //   關掉陰影的設定**(SPI_GETDROPSHADOW),那正是我們要的行為。
+  wc.style |= CS_DROPSHADOW;
   ::RegisterClassExW(&wc);
 
   WNDCLASSEXW pc{};
@@ -407,6 +418,8 @@ void StatusBar::ThreadMain() {
   pc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
   pc.hbrBackground = nullptr;
   pc.lpszClassName = kPopupClass;
+  // 方案彈出清單也是 top-level,同樣有陰影(§12.14.4 的表)。
+  pc.style |= CS_DROPSHADOW;
   ::RegisterClassExW(&pc);
 
   // §12.10.3:TOOLWINDOW 讓它不出現在 Alt+Tab 與工作列;
@@ -567,34 +580,58 @@ void StatusBar::Relayout() {
     }
   }
 
+  // ── 量字寬(只有這一段需要 HDC)────────────────────────────
+  //
+  // ⚠ 純函式量不了字,所以量好了交給它。**不要**在版面那一側估字寬:
+  //   估出來的那一份與畫出來的那一份會分岔,而分岔的樣子是
+  //   「點擊區與看到的格子錯開」。
   HDC hdc = ::GetDC(hwnd_);
   HGDIOBJ oldf = hdc ? ::SelectObject(hdc, fonts_.Get(text_size::t4)) : nullptr;
-  const int pad = Dip(kCellPadH, dpi_);
-  const int gap = Dip(kCellGap, dpi_);
-  const int minw = Dip(kCellMinW, dpi_);
-  const int h = Dip(kBarH, dpi_);
-  int x = Dip(kBarBorder + space::s2, dpi_);
-
-  for (Cell& c : cells_) {
-    if (c.text.empty()) {
-      c.rc = RECT{0, 0, 0, 0};  // 略過:不佔位置
-      continue;
-    }
-    const std::wstring& measure = c.text;
+  std::vector<BarCellIn> measured(cells_.size());
+  for (size_t i = 0; i < cells_.size(); ++i) {
+    if (cells_[i].text.empty()) continue;
     SIZE sz{};
     if (hdc)
-      ::GetTextExtentPoint32W(hdc, measure.c_str(),
-                              static_cast<int>(measure.size()), &sz);
-    int w = sz.cx + 2 * pad;
-    if (w < minw) w = minw;
-    c.rc = RECT{x, Dip(kBarBorder, dpi_), x + w, h - Dip(kBarBorder, dpi_)};
-    x += w + gap;
+      ::GetTextExtentPoint32W(hdc, cells_[i].text.c_str(),
+                              static_cast<int>(cells_[i].text.size()), &sz);
+    measured[i].text_w_dip = MulDivRound(sz.cx, 96, static_cast<int>(dpi_));
   }
   if (hdc) {
     if (oldf) ::SelectObject(hdc, oldf);
     ::ReleaseDC(hwnd_, hdc);
   }
-  const int total = x - gap + Dip(kBarBorder + space::s2, dpi_);
+
+  const bool sentence = !StateShowsCells(service_state_);
+  const BarLayout bl =
+      sentence ? LayoutStatusBarSentenceDip(
+                     measured.empty() ? 0 : measured[0].text_w_dip)
+               : LayoutStatusBarCellsDip(measured);
+  bar_separator_x_ = bl.separator_x_dip < 0
+                         ? -1
+                         : Dip(bl.separator_x_dip, dpi_);
+  schema_truncated_ = bl.schema_truncated;
+  for (size_t i = 0; i < cells_.size(); ++i) {
+    Cell& c = cells_[i];
+    // ⚠ 空字串的那一格**整格略過,不佔位置**(§8.12 規範性)。
+    //   簡/繁 那一格在 kHidden(引擎沒有回報任何字形)時拿到的就是空字串,
+    //   而它若還佔著位置,使用者會按到一個**看不見的開關** ——
+    //   按下去改變的是他看不見的東西,方向還是猜的。
+    //   零寬 → HitCell 跳過(`if (r.right <= r.left) continue;`),
+    //   那兩行合起來才是「點不到」。W26 兩個方向都在守。
+    if (c.text.empty()) {
+      c.rc = RECT{0, 0, 0, 0};  // 略過:不佔位置
+      continue;
+    }
+    if (i >= bl.cells.size() || bl.cells[i].skipped) {
+      c.rc = RECT{0, 0, 0, 0};
+      continue;
+    }
+    const RectI& r = bl.cells[i].rect;
+    c.rc = RECT{Dip(r.x, dpi_), Dip(r.y, dpi_), Dip(r.x + r.w, dpi_),
+                Dip(r.y + r.h, dpi_)};
+  }
+  const int total = Dip(bl.total_w_dip, dpi_);
+  const int minw = Dip(barmetric::kCellMinW, dpi_);
 
   // ── ⚠ 這裡以前是 SWP_NOMOVE ────────────────────────────────────
   //
@@ -674,6 +711,43 @@ void StatusBar::ApplyPlacement(int w_dip) {
   const PlacedBar p = PlaceStatusBar(anchor, monitors, w_dip, kBarH);
   ::SetWindowPos(hwnd_, HWND_TOPMOST, p.x, p.y, p.w, p.h,
                  SWP_NOACTIVATE);
+  ApplyWindowCorners(hwnd_, p.w, p.h, Dip(kBarRadius, dpi_));
+}
+
+void StatusBar::ApplyWindowCorners(HWND hwnd, int w_px, int h_px,
+                                   int radius_px) {
+  // ── §12.14.4「兩條路,**不得同時用**」──────────────────────────
+  //
+  // 1. DwmSetWindowAttribute(hwnd, 33, DWMWCP_ROUND) —— DWM 會做去鋸齒的
+  //    圓角,而且陰影跟著對。成功就**完成**。
+  // 2. 失敗(Win10 沒有這個屬性)→ SetWindowRgn + CreateRoundRectRgn。
+  //
+  // ⚠ 兩條同時走的結果是**雙重圓角**(DWM 圓一次、region 再切一次),
+  //   邊緣會出現鋸齒的月牙。所以第 1 條成功時**不准**再呼叫 SetWindowRgn。
+  if (!hwnd || w_px <= 0 || h_px <= 0) return;
+  using DwmSetFn = HRESULT(WINAPI*)(HWND, DWORD, LPCVOID, DWORD);
+  static HMODULE dwm = ::LoadLibraryW(L"dwmapi.dll");
+  static DwmSetFn fn =
+      dwm ? reinterpret_cast<DwmSetFn>(reinterpret_cast<void*>(
+                ::GetProcAddress(dwm, "DwmSetWindowAttribute")))
+          : nullptr;
+  if (fn) {
+    // 33 = DWMWA_WINDOW_CORNER_PREFERENCE、2 = DWMWCP_ROUND。
+    // mingw 的 dwmapi.h 沒有這兩個列舉,所以寫成常數並註明來源。
+    const DWORD pref = 2;
+    if (SUCCEEDED(fn(hwnd, 33, &pref, sizeof(pref)))) {
+      // ⚠ 成功了就把可能殘留的 region 拿掉 —— 上一次可能走的是第 2 條
+      //   (換螢幕、換 Windows 版本都做得到),留著就是雙重圓角。
+      ::SetWindowRgn(hwnd, nullptr, FALSE);
+      return;
+    }
+  }
+  // ⚠ CreateRoundRectRgn 的右下角是**排他的**,所以是 w + 1, h + 1。
+  //   少了那個 +1,右邊與下面各少一像素,症狀是「外框在右下角斷掉」。
+  ::SetWindowRgn(hwnd,
+                 ::CreateRoundRectRgn(0, 0, w_px + 1, h_px + 1, radius_px * 2,
+                                      radius_px * 2),
+                 TRUE);
 }
 
 void StatusBar::SavePlacement() {
@@ -711,21 +785,32 @@ void StatusBar::Paint(HDC hdc) {
   HBITMAP bmp = ::CreateCompatibleBitmap(hdc, client.right, client.bottom);
   HGDIOBJ old_bmp = ::SelectObject(mem, bmp);
 
-  ::FillRect(mem, &client, theme_.Brush(kSurface));
-
-  // 外框:一般是 outline 色,**出事的時候**才是 error 色。
-  // ⚠ 「正在準備」不是出事:輸入法在跑,只是還沒好。
-  //   把它畫成紅的,等於用顏色再說一次那句謊話。
+  // ── 底:**圓角**,不是先填滿再畫一條弧 ────────────────────────
+  //
+  // ⚠ §12.14.0 第 2 條記的就是舊寫法:`FillRect(client, kSurface)` 之後
+  //   `RoundRect(NULL_BRUSH)` —— 第二步只畫線,沒有把四個角外面那塊底色
+  //   挖掉,所以圓角是一條畫在方塊裡面的弧,視窗本身仍然是方的。
+  //   真正的圓角在視窗那一層(ApplyWindowCorners),這裡負責的是
+  //   「角外面那塊不要有底色」。
   {
-    const Role edge = StateIsFailure(service_state_) ? kError : kOutline;
-    HPEN pen = theme_.Pen(edge, Dip(kBarBorder, dpi_));
-    HGDIOBJ oldp = ::SelectObject(mem, pen);
-    HGDIOBJ oldb = ::SelectObject(mem, ::GetStockObject(NULL_BRUSH));
     const int r = Dip(kBarRadius, dpi_);
-    ::RoundRect(mem, client.left, client.top, client.right, client.bottom, r,
-                r);
-    ::SelectObject(mem, oldb);
+    HGDIOBJ oldb = ::SelectObject(mem, theme_.Brush(kSurface));
+    HGDIOBJ oldp = ::SelectObject(mem, theme_.Pen(kSurface, 1));
+    ::RoundRect(mem, client.left, client.top, client.right, client.bottom,
+                r * 2, r * 2);
     ::SelectObject(mem, oldp);
+    ::SelectObject(mem, oldb);
+  }
+
+  // 第 3 格與第 4 格之間那條 1 DIP 分隔線(左右各 s3)。
+  // ⚠ 理由不是裝飾:1–3 格**改狀態**,第 4 格**開一個視窗**。兩種不同的
+  //   後果之間要有一個看得見的界線,否則使用者會以為第四格也是一個開關。
+  //   1–2–3 之間**沒有**分隔線(它們是同一種東西)。
+  if (bar_separator_x_ > 0) {
+    RECT sep{bar_separator_x_, Dip(space::s1 + space::s2, dpi_),
+             bar_separator_x_ + Dip(kBarBorder, dpi_),
+             client.bottom - Dip(space::s1 + space::s2, dpi_)};
+    ::FillRect(mem, &sep, theme_.Brush(kOutline));
   }
 
   ::SetBkMode(mem, TRANSPARENT);
@@ -737,10 +822,19 @@ void StatusBar::Paint(HDC hdc) {
     RECT r = c.rc;
     const bool hot = static_cast<int>(i) == hot_;
     const bool down = static_cast<int>(i) == pressed_;
-    if (down)
-      ::FillRect(mem, &r, theme_.Brush(kRowPressed));
-    else if (hot)
-      ::FillRect(mem, &r, theme_.Brush(kRowHover));
+    // 格的圓角 4(控制項級);底只在滑過／按下時才畫。
+    // ⚠ 「一句話」那一種外觀畫的是**整條**,所以圓角跟著視窗走(8)。
+    const int cell_r =
+        Dip(StateShowsCells(service_state_) ? kCellRadius : kBarRadius, dpi_);
+    if (down || hot) {
+      const Role bg = down ? kRowPressed : kRowHover;
+      HGDIOBJ oldb = ::SelectObject(mem, theme_.Brush(bg));
+      HGDIOBJ oldp = ::SelectObject(mem, theme_.Pen(bg, 1));
+      ::RoundRect(mem, r.left, r.top, r.right, r.bottom, cell_r * 2,
+                  cell_r * 2);
+      ::SelectObject(mem, oldp);
+      ::SelectObject(mem, oldb);
+    }
 
     if (!StateShowsCells(service_state_)) {
       ::SetTextColor(mem, theme_.Color(StateIsFailure(service_state_)
@@ -755,11 +849,40 @@ void StatusBar::Paint(HDC hdc) {
     //   用顏色深淺表示哪一段生效,而使用者看不出來(見 status_cells.h)。
     ::SetTextColor(mem, theme_.Color(hot || down ? kOnSurface
                                                  : kOnSurfaceVariant));
-    ::DrawTextW(mem, c.text.c_str(), -1, &r,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    // ⚠ 第 3 格(方案名)壓到 120 DIP 之後要在**字元邊界**截,
+    //   不是畫到一半被裁掉。DT_END_ELLIPSIS 是唯一做得到這件事的旗標。
+    //   截尾**不是死路**:第 3 格點下去開的自繪清單裡是完整的名字。
+    UINT flags = DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX;
+    if (i == 2 && schema_truncated_) flags |= DT_END_ELLIPSIS;
+    ::DrawTextW(mem, c.text.c_str(), -1, &r, flags);
   }
 
   ::SelectObject(mem, oldf);
+
+  // ── 外框畫在**最後** ──────────────────────────────────────────
+  //
+  // 一般是 `controlBorder`(它畫在 surface 上,不是分隔兩塊),
+  // **出事的時候**才是 `error` 色。
+  // ⚠ 「正在準備」不是出事:輸入法在跑,只是還沒好。把它畫成紅的,
+  //   等於用顏色再說一次那句謊話。
+  //
+  // ⚠ **順序不是隨便的。** 服務沒起來時整條是一句話、而且**整條**可點,
+  //   所以滑過/按下畫的是整個 client 矩形 —— 先畫外框的話,那塊底會把
+  //   紅色外框整圈蓋掉,而使用者滑過去的那一刻「出事了」這個訊號就消失。
+  //   偏偏那正是他最需要它的時候(他正要按下去)。
+  {
+    const Role edge =
+        StateIsFailure(service_state_) ? kError : kControlBorder;
+    HPEN pen = theme_.Pen(edge, Dip(kBarBorder, dpi_));
+    HGDIOBJ oldp = ::SelectObject(mem, pen);
+    HGDIOBJ oldb = ::SelectObject(mem, ::GetStockObject(NULL_BRUSH));
+    const int r = Dip(kBarRadius, dpi_);
+    ::RoundRect(mem, client.left, client.top, client.right, client.bottom,
+                r * 2, r * 2);
+    ::SelectObject(mem, oldb);
+    ::SelectObject(mem, oldp);
+  }
+
   ::BitBlt(hdc, 0, 0, client.right, client.bottom, mem, 0, 0, SRCCOPY);
   ::SelectObject(mem, old_bmp);
   ::DeleteObject(bmp);
@@ -906,7 +1029,7 @@ int StatusBar::PopupRowCount() const {
 
 void StatusBar::PlacePopup() {
   if (!popup_ || !hwnd_) return;
-  const int row_h = Dip(metric::kSidebarItemH, dpi_);
+  const int row_h = Dip(metric::kRowH, dpi_);
   const int w = Dip(200, dpi_);
   const int h = row_h * PopupRowCount() + 2 * Dip(space::s2, dpi_);
   RECT bar{};
@@ -918,6 +1041,9 @@ void StatusBar::PlacePopup() {
   if (y < 0) y = bar.bottom + Dip(space::s2, dpi_);
   ::SetWindowPos(popup_, HWND_TOPMOST, x, y, w, h,
                  SWP_NOACTIVATE | SWP_SHOWWINDOW);
+  // 方案彈出清單也是 top-level → 視窗級圓角 8(§12.14.4)。
+  // ⚠ 同一支 helper,所以「DWM 或 region,不得同時」那一條在這裡也成立。
+  ApplyWindowCorners(popup_, w, h, Dip(kBarRadius, dpi_));
 }
 
 void StatusBar::OpenSchemaPopup() {
@@ -991,7 +1117,7 @@ void StatusBar::PaintPopup(HDC hdc) {
   ::SetBkMode(mem, TRANSPARENT);
   HGDIOBJ oldf = ::SelectObject(mem, fonts_.Get(text_size::t3));
 
-  const int row_h = Dip(metric::kSidebarItemH, dpi_);
+  const int row_h = Dip(metric::kRowH, dpi_);
   const int top = Dip(space::s2, dpi_);
   if (popup_loading_) {
     // ⚠ 覆核指出「狀態列現在沒有地方放字」,所以那句話放在**選單裡**。
@@ -1063,7 +1189,7 @@ LRESULT CALLBACK StatusBar::PopupProc(HWND hwnd, UINT msg, WPARAM w,
       RECT c{};
       ::GetClientRect(hwnd, &c);
       const int y = GET_Y_LPARAM(l);
-      const int row_h = Dip(metric::kSidebarItemH, self->dpi_);
+      const int row_h = Dip(metric::kRowH, self->dpi_);
       const int top = Dip(space::s2, self->dpi_);
       int hot = -1;
       if (GET_X_LPARAM(l) >= 0 && GET_X_LPARAM(l) < c.right && y >= top) {
