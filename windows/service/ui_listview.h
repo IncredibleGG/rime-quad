@@ -53,12 +53,22 @@ void EnsureRowListColumn(HWND list);
 // LVS_EX_FULLROWSELECT 把命中範圍變成整列,也就是我們畫出來的那一塊。
 // LVS_EX_DOUBLEBUFFER 順手收掉 comctl32 v6 自繪 + 捲動時的閃爍。
 //
-// ⚠ 這兩個旗標全樹以前**零命中**(`git grep LVS_EX_` 只有 res/app.manifest
-//   裡一句註解)。所以 kRowHover 那一格自繪的 hover 底色也從來沒有亮過:
-//   hot tracking 要 LVS_EX_TRACKSELECT 或 SetWindowTheme(L"Explorer"),
-//   兩者都沒有。這裡**刻意不補** TRACKSELECT —— 它會連帶把「滑過就選取」
-//   的行為打開,而那不是側欄該有的樣子。hover 那一格留著是死碼,
-//   要修的話是另一件事(§12.6.4)。
+// ⚠ 這兩個旗標全樹以前**零命中**（`git grep LVS_EX_` 只有 res/app.manifest
+//   裡一句註解）。
+//
+// ⚠ **hot tracking 沒有開,而且自繪那一側也不再假裝有。**
+//   comctl32 的 ListView 只在 LVS_EX_TRACKSELECT / LVS_EX_ONECLICKACTIVATE /
+//   LVS_EX_TWOCLICKACTIVATE 或 SetWindowTheme(L"Explorer") 之下才維護
+//   hot item,三者這裡都沒有。TRACKSELECT **刻意不補** —— 它會連帶把
+//   「滑過就選取」打開,而那不是側欄該有的樣子。
+//
+//   2026-08-15:settings_window.cc 三處自繪裡讀 CDIS_HOT 的那兩條分支
+//   （滑過 / 按下）已經**刪掉**。它們永遠走不到,而留著會讓
+//   §12.14.6.6 的「四狀態」在報告上看起來是做完的。
+//   要真的做出滑過／按下,要先有辦法看到畫面 —— 而 CI 的截圖
+//   （verify_installer.sh §12s）拍不到 hover（runner 上沒有人在動滑鼠）。
+//   所以那是另一件事,而且要連同「怎麼驗」一起提。
+
 void SetRowListExtendedStyle(HWND list);
 
 // 把第 row 列設成**唯一**被選取的那一列。row < 0 = 只清不選。

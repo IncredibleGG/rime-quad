@@ -1294,12 +1294,26 @@ LRESULT SettingsWindow::DrawSidebar(NMLVCUSTOMDRAW* cd) {
       //   要自己補一份 provider(§12.5.1 的判準是無障礙,不是省事)。
       //   保留 ListView、只把「畫什麼」的來源收成一份,兩邊都拿得到。
       const bool selected = (i == page_);
-      const bool hot = (cd->nmcd.uItemState & CDIS_HOT) != 0;
-      // §12.14.6.6 的四欄是一般/滑過/按下/停用。按下那一格以前**不存在**
-      // —— comctl32 的 custom draw 不給「按下」,所以問滑鼠鍵。
-      // ⚠ 少一格的後果不是不好看:使用者按下去之前,那一顆與「只是指到」
-      //   長得一模一樣。
-      const bool down = hot && (::GetKeyState(VK_LBUTTON) & 0x8000) != 0;
+      // ── ⚠ hover / pressed:**這裡沒有這兩個狀態,而且是故意的** ──
+      //
+      // §12.14.6.6 的表有四欄（一般 / 滑過 / 按下 / 停用）。這三個
+      // ListView 上**只做得到兩欄**,理由寫在 ui_listview.h:comctl32 的
+      // ListView 只在 LVS_EX_TRACKSELECT / LVS_EX_ONECLICKACTIVATE /
+      // LVS_EX_TWOCLICKACTIVATE 或 SetWindowTheme(L"Explorer") 之下才會
+      // 維護 hot item,而我們三者都沒有。
+      //
+      // 上一版讀了 `cd->nmcd.uItemState & CDIS_HOT`,並且用它同時算出
+      // 「按下」（hot && 左鍵）。那兩條分支**永遠走不到** —— 也就是說
+      // kRowHover / kRowPressed / kPrimaryContainerHover /
+      // kPrimaryContainerPressed 四個角色在這條路上一次都沒有亮過,
+      // 而報告上寫著四狀態 ✅。
+      //
+      // ⚠ 拿掉,不是接上。接上要 SetWindowTheme(L"Explorer"),而這台
+      //   建置機沒有 Windows、沒有 wine —— 接上去只會把「死碼」換成
+      //   「沒有人看過的碼」,那正是這條線已經燒掉三輪的形狀。
+      //   要接的話先有辦法看到畫面（見 verify_installer.sh §12s 的截圖）,
+      //   而截圖拍不到 hover（CI 上沒有滑鼠）。所以它是下一輪、
+      //   而且要連同「怎麼驗」一起提。
       // ⚠ 焦點環只在**鍵盤**使用時畫(§12.6.4 第 1 條)。滑鼠使用者身上
       //   到處是框,是 Win32 自繪最常見的破綻。show_focus_ 由
       //   WM_UPDATEUISTATE 維護。
@@ -1332,10 +1346,7 @@ LRESULT SettingsWindow::DrawSidebar(NMLVCUSTOMDRAW* cd) {
 
       const int rad = Dip(radius::kControl, dpi_);
       ::FillRect(hdc, &r, theme_.Brush(kBackground));
-      const Role bg =
-          selected ? (down ? kPrimaryContainerPressed
-                           : hot ? kPrimaryContainerHover : kPrimaryContainer)
-                   : (down ? kRowPressed : hot ? kRowHover : kBackground);
+      const Role bg = selected ? kPrimaryContainer : kBackground;
       if (bg != kBackground) FillRoundRect(hdc, item, rad, bg, kBackground);
 
       // 左緣指示條(§12.14.6.1)。**選中才有。**
@@ -1351,10 +1362,10 @@ LRESULT SettingsWindow::DrawSidebar(NMLVCUSTOMDRAW* cd) {
       if (focused) DrawFocusRing(hdc, item, rad);
 
       ::SetBkMode(hdc, TRANSPARENT);
-      // §12.14.6.1 的表:未選中滑過/按下時文字也要變成 onSurface。
-      ::SetTextColor(hdc, theme_.Color((selected || hot || down)
-                                           ? kOnSurface
-                                           : kOnSurfaceVariant));
+      // ⚠ 只有「選中」會換文字色。滑過／按下那兩格拿掉了 ——
+      //   見上面 hover / pressed 那一段。
+      ::SetTextColor(hdc,
+                     theme_.Color(selected ? kOnSurface : kOnSurfaceVariant));
       // ⚠ **選中不換字重**(§12.14.3 末段)。中文堆疊底下那是
       //   Regular ↔ Bold,字寬會變,切頁時側欄那幾行會互相跳。
       //   選中由底色 + 指示條 + 文字色表達,三個都不改變排版。
@@ -1393,8 +1404,8 @@ LRESULT SettingsWindow::DrawSchemaList(NMLVCUSTOMDRAW* cd) {
       //     兩處裸 LVM_SETITEMSTATE 的形狀,所以「兩列同時反白」
       //     在這裡照樣會發生 —— 而使用者截圖指的正好是清單。
       const bool selected = (i == schema_sel_);
-      const bool hot = (cd->nmcd.uItemState & CDIS_HOT) != 0;
-      const bool down = hot && (::GetKeyState(VK_LBUTTON) & 0x8000) != 0;
+      // ⚠ 沒有 hover / pressed。理由與 DrawSidebar 那一段逐字相同
+      //   （comctl32 不維護 hot item,那兩條分支永遠走不到）。
       const bool focused =
           show_focus_ && (cd->nmcd.uItemState & CDIS_FOCUS) != 0;
 
@@ -1404,10 +1415,7 @@ LRESULT SettingsWindow::DrawSchemaList(NMLVCUSTOMDRAW* cd) {
       RECT r{};
       if (!RowRect(schema_list_, cd, &r)) return CDRF_DODEFAULT;
       const int rad = Dip(radius::kControl, dpi_);
-      const Role bg =
-          selected ? (down ? kPrimaryContainerPressed
-                           : hot ? kPrimaryContainerHover : kPrimaryContainer)
-                   : (down ? kRowPressed : hot ? kRowHover : kSurface);
+      const Role bg = selected ? kPrimaryContainer : kSurface;
       FillRoundRect(hdc, r, rad, bg, kSurface);
 
       if (focused) DrawFocusRing(hdc, r, rad);
@@ -1494,8 +1502,8 @@ LRESULT SettingsWindow::DrawNetLogList(NMLVCUSTOMDRAW* cd) {
       //   它壞的方式不一樣:照 uItemState 畫,**整份紀錄每一列都反白**。
       //   問控制項本人。
       const bool selected = RowIsSelected(net_log_list_, static_cast<int>(i));
-      const bool hot = (cd->nmcd.uItemState & CDIS_HOT) != 0;
-      const bool down = hot && (::GetKeyState(VK_LBUTTON) & 0x8000) != 0;
+      // ⚠ 沒有 hover / pressed。理由與 DrawSidebar 那一段逐字相同
+      //   （comctl32 不維護 hot item,那兩條分支永遠走不到）。
       const bool focused =
           show_focus_ && (cd->nmcd.uItemState & CDIS_FOCUS) != 0;
 
@@ -1505,10 +1513,7 @@ LRESULT SettingsWindow::DrawNetLogList(NMLVCUSTOMDRAW* cd) {
       RECT r{};
       if (!RowRect(net_log_list_, cd, &r)) return CDRF_DODEFAULT;
       const int rad = Dip(radius::kControl, dpi_);
-      const Role bg =
-          selected ? (down ? kPrimaryContainerPressed
-                           : hot ? kPrimaryContainerHover : kPrimaryContainer)
-                   : (down ? kRowPressed : hot ? kRowHover : kSurface);
+      const Role bg = selected ? kPrimaryContainer : kSurface;
       FillRoundRect(hdc, r, rad, bg, kSurface);
 
       if (focused) DrawFocusRing(hdc, r, rad);

@@ -323,6 +323,15 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
   // 行盒高度只有一個來源:TextLineBoxDip()。
   const int t5h = TextLineBoxDip(text_size::t5);
   // §12.14.6.2:按鈕高 32。以前是 kMinTarget + s2,值一樣但那是巧合。
+  //
+  // ⚠ **按鈕一律走 card_block,不走 card_row。**
+  //   card_row 帶 36 的下限（卡片裡「一列」的最小高）,而按鈕不是「一列」
+  //   —— 用它推的話 32 會被墊成 36,而底部固定列的「關閉」仍然是 32:
+  //   同一個視窗上兩種按鈕高度。這正是 1a711a2 → 54e4b4d 之間跑掉的那一格
+  //   （基底寫的是 st.Push(btn_h, gap),直接推 32）。
+  //   ⚠ W3 抓不到它:32 與 36 都在允許的字面值集合裡。守門在
+  //   tests/test_ui_layout.cc 的
+  //   ui_layout_one_window_has_exactly_one_button_height。
   const int btn_h = metric::kButtonH;
 
   Stack st(cx, kContentTopDip, cw);
@@ -366,6 +375,9 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
     st.Skip(space::s4);  // 上內距
   };
   // 卡內一列。⚠ 最小高 36(= 一個點擊目標 + 餘裕),規格明文。
+  // ⚠ **按鈕不要用這一支** —— 見上面 btn_h 那一段。這一支是給開關、
+  //   單選鈕、清單列那種「一列」用的;按鈕的高度由 §12.14.6.2 釘死,
+  //   被墊高的話同一個視窗上會出現兩種按鈕高度。
   auto card_row = [&](int h_dip, int gap_dip) {
     const RectI row = st.Push(h_dip < metric::kRowH ? metric::kRowH : h_dip,
                               gap_dip);
@@ -427,8 +439,9 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
     card_end(space::s7);
   };
   // 固定寬度的按鈕(在卡片裡)。⚠ **一定要推進堆疊**。
+  // ⚠ card_block 而不是 card_row:按鈕不吃 36 的下限（見 btn_h 那一段）。
   auto card_button = [&](int id, int w, const char* what) {
-    const RectI row = card_row(btn_h, 0);
+    const RectI row = card_block(btn_h, 0);
     emit(id, RectI{row.x, row.y, w, row.h}, true, what, 0, 0, true);
   };
 
@@ -458,7 +471,7 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
         hide(IDC_SCHEMAS_EMPTY);
         emit(IDC_SCHEMA_LIST, card_block(list_h, space::s3), true,
              "schema_list", 0, 0, true);
-        const RectI row = card_row(btn_h, space::s3);
+        const RectI row = card_block(btn_h, space::s3);
         const int bw = (inner_w - 2 * space::s3) / 3;
         emit(IDC_UP, RectI{row.x, row.y, bw, row.h}, true, "move_up", 0, 0,
              true);
@@ -564,7 +577,7 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
       emit(IDC_UPDATE_STATUS, card_block(t5h * 3, space::s3), false,
            "update_status", text_size::t5, 3, true);
       {
-        const RectI row = card_row(btn_h, 0);
+        const RectI row = card_block(btn_h, 0);
         const int bw = (inner_w - 2 * space::s3) / 3;
         emit(IDC_UPDATE_CHECK, RectI{row.x, row.y, bw, row.h}, true,
              "update_check", 0, 0, true);
@@ -631,7 +644,7 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
       heading(IDC_FILES_HEAD, IDC_FILES_BLURB, UiString::kFilesBlurb);
       card_begin();
       {
-        const RectI row = card_row(btn_h, 0);
+        const RectI row = card_block(btn_h, 0);
         const int bw = (inner_w - space::s3) / 2;
         emit(IDC_OPEN_USER_DIR, RectI{row.x, row.y, bw, row.h}, true,
              "open_user_dir", 0, 0, true);

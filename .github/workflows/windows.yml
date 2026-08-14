@@ -82,6 +82,12 @@ jobs:
       - name: 反向測試（每一個植入都必須真的會紅）
         run: ./windows/audit_single_source.sh --self-check
 
+      # ⚠ 截圖判準自己也要被守。這一步不需要任何截圖 ——
+      #   它自己造十張假的,再一種一種弄壞,要求每一種都真的紅。
+      #   放在這裡是因為它只要 bash + python3,一秒以內。
+      - name: 反向測試（截圖判準的每一種壞法都必須真的會紅）
+        run: ./windows/check_ui_shots.sh --self-check
+
   # ────────────────────────────────────────────────────────────────
   # 設定介面的規範檢核(Ubuntu)。
   #
@@ -716,3 +722,35 @@ jobs:
           name: windows-x64-install-verify-${{ github.sha }}
           path: dist/verify/
           if-no-files-found: warn
+
+      # ── ⚠ 截圖:這條線第一次有人看得到畫面 ──────────────────────
+      #
+      # 上面那一步(verify_installer.sh)的 §12s 已經在這台 runner 上把
+      # 設定視窗開出來、五頁 × 深淺兩份各拍了一張,寫進 dist/verify/。
+      # 上一步的 artifact 已經涵蓋它,這裡再單獨傳一份**只有圖**的:
+      # 那一包同時裝著十幾個 .log,而要看畫面的人不該先去翻日誌。
+      #
+      # ⚠ `if: always()`:拍失敗的那一次才是最需要看到那幾張圖的一次。
+      #   下面的判準步驟排在它**後面**,所以「紅了但圖沒傳上來」不可能發生。
+      - name: 上傳設定視窗截圖（五頁 × 深淺兩份）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-settings-screenshots-${{ github.sha }}
+          path: dist/verify/settings-p*.bmp
+          if-no-files-found: warn
+
+      # ── ⚠ 拍不到要紅,而且要自己佔一列 ──────────────────────────
+      #
+      # 判準刻意**不**寫進 verify_installer.sh:那一支的結束碼要回答的是
+      # 「安裝/解除安裝對不對」。把「畫面拍到了嗎」混進同一個結束碼,
+      # 紅起來就分不出是哪一件事壞了 —— 而分不出來的紅會被當成雜訊。
+      #
+      # ⚠ 這一步**沒有** `if: always()`,也**沒有** `continue-on-error`:
+      #   · 沒有 always():上一步紅了就跳過它。安裝本身失敗時根本不會有圖,
+      #     那時再紅一次只是在同一個原因上多疊一行雜訊,
+      #     而它會把「安裝壞了」這個真正的訊號稀釋掉。
+      #   · 沒有 continue-on-error:一張全黑的圖比沒有圖更糟 ——
+      #     它在 artifact 上看起來像有交付。所以它要真的擋下這個 job。
+      - name: 截圖必須真的拍到畫面（十張、非空白、深淺不同）
+        run: ./windows/check_ui_shots.sh dist/verify

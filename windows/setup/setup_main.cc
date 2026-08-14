@@ -87,6 +87,8 @@ void Usage() {
       "  capture-window --class <類別名> --out <bmp 路徑> [--page <0-4>]\n"
       "                             把那個視窗畫一張 24-bit BMP 存下來。\n"
       "                             --page 先把它切到第幾頁(0 起算)。\n"
+      "                             --fail-if-blank:整張同一個顏色時以 3 結束\n"
+      "                             （CI 一定要帶;全黑的圖比沒有圖更糟）\n"
       "                             它不提權、不改任何狀態、只寫你指名的那個檔;\n"
       "                             支援時請使用者附上這張圖比描述畫面可靠得多。\n"
       "  check [--dll <路徑>] [--user] [--no-enum]\n"
@@ -536,7 +538,7 @@ bool LooksBlank(HBITMAP bmp, HDC dc, int w, int h) {
 }  // namespace
 
 int CaptureWindow(const std::wstring& window_class, const std::wstring& out,
-                  int page) {
+                  int page, bool fail_if_blank) {
   HWND h = ::FindWindowW(window_class.c_str(), nullptr);
   if (!h) {
     Say("!! capture-window:找不到類別「%s」的視窗\n",
@@ -596,8 +598,14 @@ int CaptureWindow(const std::wstring& window_class, const std::wstring& out,
       blank ? "(⚠ 整張同一個顏色)" : "", WideToUtf8(out).c_str(),
       wrote ? "寫檔成功" : "寫檔失敗");
   if (!wrote) return 1;
-  // ⚠ 一片空白**不當成失敗**:它仍然是證據(而且是最需要被看到的那一種)。
-  //   把它變成紅的會讓人去關掉這一步,而不是去看那張圖。
+  // ⚠ 空白圖:預設仍然是 0(使用者拿它做支援時,一張全黑的圖也是線索),
+  //   但 **CI 一定要帶 --fail-if-blank**。一張全黑的圖比沒有圖更糟 ——
+  //   它在 artifact 上看起來像有交付,而沒有人會去打開它。
+  if (blank && fail_if_blank) return 3;
+  // ⚠ 不帶旗標時一片空白**不當成失敗**:對使用者來說它仍然是證據
+  //   (而且是最需要被看到的那一種)。判它的是呼叫端 ——
+  //   CI 走 windows/check_ui_shots.sh,那一支會逐張逐頁再驗一次,
+  //   所以「這裡忘了帶旗標」不會變成一個沒有人看得到的洞。
   return 0;
 }
 
@@ -618,6 +626,7 @@ static int Run(int argc, wchar_t** argv) {
   bool require_visible = false;
   std::wstring capture_out;
   int capture_page = -1;
+  bool fail_if_blank = false;
   DoctorOptions doctor;
 
   for (int i = 2; i < argc; ++i) {
@@ -627,6 +636,7 @@ static int Run(int argc, wchar_t** argv) {
     else if (a == L"--out" && i + 1 < argc) capture_out = argv[++i];
     else if (a == L"--page" && i + 1 < argc)
       capture_page = ::_wtoi(argv[++i]);
+    else if (a == L"--fail-if-blank") fail_if_blank = true;
     else if (a == L"--lang" && i + 1 < argc) explicit_langid = ParseLangId(argv[++i]);
     else if (a == L"--dll" && i + 1 < argc) dll = argv[++i];
     else if (a == L"--dir" && i + 1 < argc) dir = argv[++i];
@@ -847,7 +857,8 @@ static int Run(int argc, wchar_t** argv) {
       Say("!! capture-window 需要 --class <類別名> --out <bmp 路徑>\n");
       return 2;
     }
-    return CaptureWindow(window_class, capture_out, capture_page);
+    return CaptureWindow(window_class, capture_out, capture_page,
+                         fail_if_blank);
   }
 
   if (verb == L"dump") {

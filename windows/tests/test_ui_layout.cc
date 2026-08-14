@@ -410,7 +410,10 @@ TEST(ui_layout_advanced_page_counts_the_last_button_in_its_height) {
   //   (s4)。所以「整頁的底」是**卡片的底**,不是控制項的底 ——
   //   內容高度必須把它算進去,否則捲到最底時最後那顆危險鍵下緣
   //   會貼著摺線(#76 的同一族)。舊值 762。
-  CHECK_INT(max_bottom, 918);
+  // ⚠ 2026-08-15:按鈕列改走 card_block(不吃 card_row 的 36 下限),
+  //   所以進階頁上那四列按鈕各矮 4 DIP:918 − 4×4 = 902。
+  //   這一行是釘住的,改版面時要一起改。
+  CHECK_INT(max_bottom, 902);
   for (const CardRect& c : pl.cards)
     if (c.rect.bottom() > max_bottom) max_bottom = c.rect.bottom();
   CHECK_INT(pl.content_h_dip, max_bottom + kContentPadBottomDip);
@@ -1480,4 +1483,113 @@ TEST(badge_left_and_name_ellipsis_come_from_the_same_expression) {
     CHECK_INT(p.name_right, p.badge.x - space::s3);
     CHECK(p.name_right < p.badge.x);
   }
+}
+
+// ── 按鈕高度:一個視窗上只准有一種(§12.14.6.2/.3)──────────────
+//
+// ⚠ **這一條是覆核抓到的迴歸的守門,不是裝飾。**
+//
+//   基底 1a711a2 寫的是 `btn_h = kMinTarget + s2 = 32; st.Push(btn_h, gap)`
+//   —— 直接推 32。54e4b4d 把它換成 `card_row(btn_h, gap)`,而 card_row
+//   帶 36 的下限(卡片裡「一列」的最小高)。於是每一顆按鈕都被墊成 36,
+//   而底部固定列的「關閉」仍然是 32:**同一個視窗上兩種按鈕高度**。
+//
+//   而 ui_layout.cc 那一輪自己加的註解描述的正是這個缺陷(「28 那一版比
+//   同一頁上其他按鈕矮 4 DIP,而那正是『看起來像對話框』的來源之一」)
+//   —— 缺陷原封不動地還在,只是從 28-vs-32 變成 32-vs-36。
+//
+// ⚠ **W3 抓不到這一件事。** 它驗的是 ui_layout.h 裡的字面值集合,而 32
+//   與 36 都在允許集合 {1,2,3,16,28,32,36,64,200} 裡面。每一個字面值都
+//   合法,組出來的畫面不合法 —— 這正是「值的白名單」擋不住的那一類。
+namespace {
+
+// 按鈕的 what 名字。⚠ 新增一顆按鈕要加進來 ——
+//   `no_button_escapes_the_height_check` 會在漏掉的時候紅。
+bool IsButtonWhat(const std::string& what) {
+  static const std::set<std::string> kButtons = {
+      "move_up",          "move_down",          "apply_order",
+      "update_check",     "update_action",      "update_page",
+      "clear_log_button", "redeploy_button",    "open_user_dir",
+      "open_settings_file", "diagnostics_copy", "reset_button",
+  };
+  return kButtons.count(what) == 1;
+}
+
+// 可點、而且**不放文字**(text_size_dip == 0 && text_lines == 0)的控制項
+// 只有兩類:按鈕,以及「框由控制項自己畫」的清單 / EDIT。
+// 第二類逐一列出 —— 兩份名單都對不上的那一顆,就是新加的按鈕沒有表態。
+bool IsNotAButton(const std::string& what) {
+  static const std::set<std::string> kNotButtons = {
+      "schema_list",
+      "net_log_list",
+      "diagnostics_edit",
+  };
+  return kNotButtons.count(what) == 1;
+}
+
+}  // namespace
+
+TEST(ui_layout_every_button_is_exactly_kButtonH_tall) {
+  int measured = 0;
+  for (int w : {660, 780, 1000, 1600}) {
+    for (int v = 0; v < kVariantCount; ++v) {
+      const PageLayout pl =
+          LayoutSettingsPageDip(kVariants[v].page, w, kVariants[v].state);
+      for (const PlacedControl& p : pl.items) {
+        if (p.rect.empty() || !IsButtonWhat(p.what)) continue;
+        // ⚠ 用 CHECK_INT,它印得出兩邊的值 —— 36 vs 32 這種差 4 的迴歸,
+        //   訊息裡沒有數字的話下一個人得重跑一次才知道差在哪。
+        CHECK_INT(p.rect.h, metric::kButtonH);
+        ++measured;
+      }
+    }
+  }
+  // 「範圍為空 = 全部合格」的解藥:下限也要驗。
+  CHECK(measured >= 30);
+}
+
+TEST(ui_layout_one_window_has_exactly_one_button_height) {
+  // 底部固定列的「關閉」**不在** LayoutSettingsPageDip 裡(它的位置是
+  // 唯一還由呼叫端算的東西),所以「按鈕多高」在樹上是兩份 ——
+  // 而兩份會漂開。這一條就是那兩份的對帳,而且它是使用者真的看得到的
+  // 那個判準:一個視窗上只有一種按鈕高度。
+  for (int w : {660, 780, 1000, 1600}) {
+    for (int v = 0; v < kVariantCount; ++v) {
+      std::set<int> heights;
+      const std::vector<HitTarget> targets =
+          ClickableTargetsDip(w, 560, kVariants[v].page, kVariants[v].state);
+      for (const HitTarget& t : targets) {
+        if (t.rect.empty()) continue;
+        if (std::string(t.what) == "close_button" || IsButtonWhat(t.what))
+          heights.insert(t.rect.h);
+      }
+      CHECK(!heights.empty());
+      CHECK_INT(static_cast<int>(heights.size()), 1);
+      CHECK_INT(*heights.begin(), metric::kButtonH);
+    }
+  }
+}
+
+TEST(no_button_escapes_the_height_check) {
+  // ⚠ 這一條看起來多餘,但它是上面兩條的「範圍為空」解藥:新增一顆按鈕
+  //   而忘了把名字加進 kButtons,上面兩條會安靜地少驗一顆 ——
+  //   而少驗的那一顆通常就是新加的那一顆。
+  int checked = 0;
+  for (int v = 0; v < kVariantCount; ++v) {
+    const PageLayout pl =
+        LayoutSettingsPageDip(kVariants[v].page, 780, kVariants[v].state);
+    for (const PlacedControl& p : pl.items) {
+      if (p.rect.empty() || !p.clickable) continue;
+      if (p.text_size_dip != 0 || p.text_lines != 0) continue;
+      const std::string what = p.what;
+      if (!IsButtonWhat(what) && !IsNotAButton(what)) {
+        // 用 CHECK_STR 讓名字進到訊息裡 —— 不然下一個人得自己去猜
+        // 是哪一顆沒有表態。
+        CHECK_STR(what, "(這一顆沒有表態:是按鈕就加進 kButtons,"
+                        "不是就加進 kNotButtons)");
+      }
+      ++checked;
+    }
+  }
+  CHECK(checked >= 12);
 }

@@ -3304,7 +3304,7 @@ PYSCRIPT
       NOPAGETEXTOUT=*)
         red "W39:Paint 讀了 page_text 卻沒有任何輸出呼叫"; w39bad=1 ;;
       HANDROLLED=*)
-        red "W39:繪製碼自己拼了一個 n/m 形式的頁碼 —— §8.12 明文規定後綴是 `+` 而不是分數,因為 librime **不提供總頁數**,寫成 1/3 就得靠猜"; w39bad=1 ;;
+        red "W39:繪製碼自己拼了一個 n/m 形式的頁碼 —— §8.12 明文規定後綴是 \`+\` 而不是分數,因為 librime **不提供總頁數**,寫成 1/3 就得靠猜"; w39bad=1 ;;
     esac
   done <<< "${w39out}"
   [ "${w39bad}" -eq 0 ] && ok "W39 頁碼整條鏈都接著:快照的 page_no / is_last_page → PageHint → ComputeLayout(留位置)→ PageIndicatorText(§8.12 的字面,純函式)→ Paint 真的畫出來,而且繪製碼沒有自己拼分數"
@@ -3568,7 +3568,7 @@ check_w41_to_w47() {
     #   下緣被削掉一條**,看起來像字型沒調好,不像 bug。
     if grep -q 'text_size::t1 + space::s3' "${lay_cc}" ||
        grep -q 'text_size::t2 + space::s2' "${lay_cc}"; then
-      red "W43:頁標題/區段標題的盒高又用 `字級 + 間距` 湊 —— 行盒只有一個來源:TextLineBoxDip()"
+      red "W43:頁標題/區段標題的盒高又用 \`字級 + 間距\` 湊 —— 行盒只有一個來源:TextLineBoxDip()"
       w43bad=1
     fi
   fi

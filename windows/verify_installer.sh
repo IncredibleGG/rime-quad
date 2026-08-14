@@ -2235,36 +2235,57 @@ else
      「開始」功能表那個捷徑按下去會**沒反應** —— 而它是新手唯一的入口。"
 fi
 
-# ── 12d. 截圖:讓「好不好看」第一次有人看得到 ────────────────────────
+# ── 12s. 截圖:讓「好不好看」第一次有人看得到 ────────────────────────
 #
 # ⚠ **這條線最大的問題不是哪一個色值寫錯,是沒有人看過畫面。**
 #   windows/service/settings_window.cc 這一路的改動全部在 Linux 上建置與
 #   驗證(建置機沒有 Windows、沒有 wine),而「好不好看」在那個條件下
-#   驗不了 —— 每一次都只能靠讀碼說服自己,而使用者今晚已經白裝過一次。
+#   驗不了 —— 每一次都只能靠讀碼說服自己,而使用者已經白裝過一次。
 #
 #   這一段把設定視窗的**五頁 × 深淺兩份**各拍一張,寫進 ${WORK}
-#   (= dist/verify/),而 windows.yml 最後一步已經 `if: always()` 上傳
-#   整個 dist/verify/ —— 所以**不必動 workflow**。
+#   (= dist/verify/)。檔名是 `settings-p<頁>-<light|dark>.bmp` ——
+#   人打開 artifact 不必猜哪張是哪張。
+#
+# ── ⚠ 這一段**只拍,不判**。判在 windows/check_ui_shots.sh ─────────
+#
+#   理由:這支腳本的結束碼要回答的是「安裝/解除安裝對不對」。把「畫面
+#   拍到了嗎」混進同一個結束碼,紅起來就分不出是哪一件事壞了 ——
+#   而分不出來的紅會被當成雜訊。所以判準是 windows.yml 裡**另一個步驟**
+#   (`./windows/check_ui_shots.sh dist/verify`),在 GitHub 的畫面上
+#   自己佔一列。手動跑這支腳本的人,底下那一行 log 會告訴他接著跑什麼。
 #
 # ⚠ 它證明得了什麼、證明不了什麼,寫清楚免得有人拿它當驗收:
 #     證明得了:方角 vs 圓角、徽章有沒有被切、四個文字盒有沒有削掉一條、
-#               側欄指示條在不在、卡片有沒有畫出來、深淺兩份各自長什麼樣。
+#               側欄指示條在不在、卡片有沒有畫出來、按鈕高度是不是一致、
+#               深淺兩份各自長什麼樣。
 #     證明不了:**字體**(runner 是 Windows Server,多半沒有
 #               Segoe UI Variable 與 Microsoft JhengHei UI,退化路徑會生效,
 #               所以圖上的字不是使用者看到的那一套 —— docs/ui-design.md
 #               §12.14.3 明著寫了這一條);**真實 accent**(runner 是預設藍);
-#               **125%/150%/200% 的 DPI**(runner 是 96);以及「好不好看」。
+#               **125%/150%/200% 的 DPI**(runner 是 96);**hover / 按下**
+#               (runner 上沒有人在動滑鼠);以及「好不好看」。
 #
-# ⚠ 這一段**不會讓 CI 變紅**。它是證據,不是判準 —— 要有判準得拿基準圖
-#   做像素比對,而字型算繪在不同 runner 映像之間會漂,那是下一輪的事。
-#   拍失敗只印一行,不 note_fail:一條會假紅的檢查會被人關掉,
-#   而關掉之後連證據都沒有了。
+# ── 深色怎麼切 ────────────────────────────────────────────────────
+#
+# ⚠ **不動 HKCU 的 AppsUseLightTheme。** 那個值改得動(runner 上我們是
+#   自己的使用者),而且產品真的讀它(service/ui_theme.cc 的
+#   SystemPrefersDark()),但它是**跟系統**那一條路:要讓已經開著的視窗
+#   重畫,得靠 WM_SETTINGCHANGE + "ImmersiveColorSet" 廣播真的送到、
+#   而且真的被那個視窗收到。這裡不賭那件事 —— 賭輸的樣子是**兩組圖
+#   長得一模一樣**,而那在 artifact 上與「深色沒做壞」分不出來。
+#
+#   走的是產品自己的偏好:`appearance.appearance = dark`(§12.7.4 的
+#   kDark,壓過系統)。它由服務啟動時讀進去,所以每一組圖各起一次服務。
+#
+# ⚠ 「兩組圖是不是真的不一樣」不是靠這裡的信心撐著 ——
+#   check_ui_shots.sh 逐頁 `cmp` 深淺兩張,一樣就紅。也就是說
+#   「深色沒切成功」會以紅字出現,不會靜靜只出淺色。
 capture_settings_ui() {
   local mode="$1"      # light / dark
   local shots=0
+  local blanks=0
   # 設定檔的格式是 `鍵 = 值`(見 common/settings.cc 的 Parse)。
-  # ⚠ 直接寫死深淺,**不跟系統** —— runner 的系統佈景是什麼我們不知道,
-  #   而「跟系統」會讓兩組圖在某些映像上變成同一組,那時沒有人會發現。
+  # ⚠ 直接寫死深淺,**不跟系統** —— 見上面那一段。
   mkdir -p "${USER_DIR}"
   printf 'appearance.appearance = %s\n' "${mode}" > "${USER_DIR}/luminakey.settings"
   "${INSTALL_DIR}/rime_service.exe" --settings --quit-after 90 \
@@ -2277,25 +2298,34 @@ capture_settings_ui() {
     sleep 1
   done
   if [ "${up}" -ne 1 ]; then
-    log "  (截圖 ${mode}:視窗沒開出來,跳過 —— 上面 12b 會先報這件事)"
+    log "  (截圖 ${mode}:視窗沒開出來 —— 上面 12b 會先報這件事;"
+    log "   十張圖會缺 ${mode} 那五張,check_ui_shots.sh 會因此紅)"
     kill "${pid}" 2>/dev/null || true
     return 0
   fi
   # 五頁:0=輸入方案 1=外觀 2=文字 3=連網 4=進階(common/ui_layout.h 的
   # SettingsPage 列舉,順序 = 側欄由上而下)。
-  local page
+  local page rc
   for page in 0 1 2 3 4; do
-    if "${INSTALL_DIR}/rime_ime_setup.exe" capture-window \
-         --class "${SETTINGS_CLASS}" --page "${page}" \
-         --out "$(cygpath -w "${WORK}")\\ui-${mode}-p${page}.bmp" \
-         >> "${WORK}/settings-shot-${mode}.log" 2>&1; then
-      shots=$((shots + 1))
-    fi
+    set +e
+    "${INSTALL_DIR}/rime_ime_setup.exe" capture-window \
+      --class "${SETTINGS_CLASS}" --page "${page}" --fail-if-blank \
+      --out "$(cygpath -w "${WORK}")\\settings-p${page}-${mode}.bmp" \
+      >> "${WORK}/settings-shot-${mode}.log" 2>&1
+    rc=$?
+    set -e
+    case "${rc}" in
+      0) shots=$((shots + 1)) ;;
+      # 3 = 寫出來了,但整張同一個顏色(PrintWindow 對自繪按鈕全黑的
+      #     那個已知風險)。檔案留著 —— 它是證據,而判它的是
+      #     check_ui_shots.sh。
+      3) blanks=$((blanks + 1)) ;;
+    esac
   done
   kill "${pid}" 2>/dev/null || true
   taskkill //IM rime_service.exe //F >/dev/null 2>&1 || true
   sleep 2
-  log "  截圖(${mode}):${shots} / 5 頁"
+  log "  截圖(${mode}):${shots} / 5 頁,其中 ${blanks} 張是整片同色"
   # ⚠ 把 capture-window 自己印的那一行(用了 PrintWindow 還是螢幕擷取、
   #   是不是整張同一個顏色)留在日誌裡 —— 「抓到黑畫面」與「視窗沒開出來」
   #   在 artifact 上長得一模一樣,不印的話沒有人分得出來。
@@ -2303,7 +2333,7 @@ capture_settings_ui() {
     sed 's/^/    /' || true
 }
 
-log "  12d. 設定視窗五頁 × 深淺兩份截圖(證據,不是判準)"
+log "  12s. 設定視窗五頁 × 深淺兩份截圖(只拍;判準在 check_ui_shots.sh)"
 settings_backup=""
 if [ -f "${USER_DIR}/luminakey.settings" ]; then
   # ⚠ 備份**不要**放進 ${WORK} —— 那整個目錄會被 upload-artifact 傳上去。
@@ -2324,8 +2354,9 @@ if [ -n "${settings_backup}" ] && [ -f "${settings_backup}" ]; then
 else
   rm -f "${USER_DIR}/luminakey.settings" 2>/dev/null || true
 fi
-shot_count="$(ls -1 "${WORK}"/ui-*.bmp 2>/dev/null | wc -l | tr -d ' ')"
-ok "截圖:${shot_count} 張寫進 dist/verify/(隨 artifact 上傳;字體與 accent 不代表真機)"
+shot_count="$(ls -1 "${WORK}"/settings-p*.bmp 2>/dev/null | wc -l | tr -d ' ')"
+log "  截圖:${shot_count} 張寫進 $(basename "$(dirname "${WORK}")")/$(basename "${WORK}")/"
+log "  ⚠ 這一節**不判**。要判就跑:./windows/check_ui_shots.sh \"${WORK}\""
 
 # ── 12c. 服務已經在跑時(具名事件那條路)──────────────────────────
 #
