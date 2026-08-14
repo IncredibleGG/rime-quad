@@ -270,6 +270,14 @@ restore_planted_tree() {
     local back="$DEVICE_RESTORE_APK"
     DEVICE_RESTORE_APK=""
     echo "[syllables] 把裝置上的 $IME_PKG 還原成乾淨的那一份($back)" >&2
+    # ⛔ 這一段跑在 EXIT trap 裡,也就是**任何**一條早退路徑都會走到它 ——
+    #   包含第 786 行那道閘還沒執行的那些。還原本身是破壞性動作
+    #   (uninstall ＋ install ＋ ime set),打錯機器一樣毀掉別條線的那一台。
+    #   所以這裡自己再問一次;問不過就不做,並且說出裝置上留著的是哪一份。
+    rs_assert_destructive_ok "$ADB" "$SERIAL" "uninstall、install、ime set(還原裝置端 APK)" || {
+      echo "!! 沒有指名裝置,略過裝置端還原 —— $IME_PKG 留著的是**植入的**那一份。" >&2
+      return
+    }
     adbs uninstall "$IME_PKG" >/dev/null 2>&1
     if adbs install -r -g -t "$back" >/dev/null 2>&1; then
       adbs shell ime enable "$IME_ID" >/dev/null 2>&1
@@ -394,6 +402,72 @@ fi
 #
 # 判準:**要碰裝置的時候才選裝置**。順序見「裝置準備」。
 adbs() { "$ADB" -s "$SERIAL" "$@"; }
+
+# ── 引擎準備好了沒:**問**,不要撈歷史日誌(工單 #101)────────────────────
+#
+# ⛔ 舊寫法是
+#       for _ in $(seq 1 40); do
+#         log_has "READY" adbs logcat -d -s RimeRuntime:I && { READY=1; break; }
+#       done
+#   而 `RimeRuntime` 那一行(`Log.i(TAG, "phase → $next")`,見
+#   `core/RimeRuntime.kt:282`)**只在相位改變時印一次**。這一輪迴圈在
+#   `am start` 之前做 `adbs logcat -c`,於是只要 IME 行程在 `pm clear` 之後、
+#   `logcat -c` 之前就已經跑完部署(它是預設輸入法,系統會自己把它拉起來,
+#   而上面那個 `ime enable`/`ime set` 迴圈更是直接踩下油門),那一行就被清掉了。
+#   IME 行程沒有再被殺過 → 它不會再印 → 這一輪等滿 120 秒 → 紅。
+#   而下一輪同一個 commit 原封不動重跑,時序差幾百毫秒就全綠。
+#   2026-08-14 發 26081401 時 `cn-t9-pinyin-numrow` 就是這樣紅的,
+#   前後兩份佈局全綠 —— 差別只是那兩輪 IME 剛好晚一點才起來。
+#
+# ✅ 新寫法問的是**現在**:debug 建置的 harness receiver
+#   (`<套件名>.devtools.BackupHarnessReceiver`,`--es op state`)
+#   收到廣播就把 `RimeRuntime.isReady` / `phase` 印出來。那是一個**答案**,
+#   不是一條歷史紀錄:清過 logcat、行程沒重啟、問一百次都答得出來。
+#   而且答案裡帶著 phase,所以「還在部署」與「部署失敗」不再長成同一句話。
+#
+# ⚠ 這個 receiver 只存在於 debug 建置(`src/debug/`),release 沒有,而這支
+#   腳本本來就只跑 debug APK(它自己會比對 sha256)。問不到答案時下面會說出
+#   「這一份 APK 沒有 harness」這件事,不會冒充成「引擎沒起來」。
+# ⚠ 套件名從 $IME_PKG 推,不寫死 —— `verify_product_ids.sh` 第 3 關
+#   ("scripts/ 底下沒有寫死的識別碼")會抓。與 verify_backup_roundtrip.sh:83 同一個寫法。
+RIME_STATE_RECEIVER="$IME_PKG/$IME_PKG.devtools.BackupHarnessReceiver"
+
+# 問一次。印出 `ready=… phase=… …` 那一行(問不到就什麼都不印,RC=1)。
+rime_state_once() {
+  local nonce out tail
+  nonce="rs$(date +%s%N)"
+  adbs shell am broadcast -n "$RIME_STATE_RECEIVER" --es op state --es path "$nonce" \
+    >/dev/null 2>&1
+  local i
+  for i in $(seq 1 20); do
+    out="$(adbs logcat -d -s BACKUPRT 2>/dev/null || true)"
+    # 只看**這一次**提問之後印出來的東西:nonce 是我們自己帶進去的,
+    # 它出現在 `begin op=state path=<nonce>` 那一行。
+    case "$out" in *"$nonce"*) tail="${out##*"$nonce"}" ;; *) tail="" ;; esac
+    case "$tail" in
+      *"ready="*)
+        printf '%s\n' "$tail" | sed -n 's/.*\(ready=.*\)$/\1/p' | head -1
+        return 0 ;;
+    esac
+    sleep 0.5
+  done
+  return 1
+}
+
+# 等到 ready=true(或超時)。RC=0 = 好了;RC=1 = 沒好,理由印在 stdout。
+rime_wait_ready() {
+  local deadline=$((SECONDS + ${1:-120})) line=""
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    line="$(rime_state_once || true)"
+    case "$line" in
+      *"ready=true"*) return 0 ;;
+      "") ;;                    # 沒人接廣播 —— 下面會分辨這一種
+    esac
+    sleep 2
+  done
+  printf '%s' "${line:-<harness 沒有回應>}"
+  return 1
+}
 info() { echo "[syllables] $*" >&2; }
 pass() { echo "  [PASS] $*"; }
 FAILURES=0
@@ -993,10 +1067,8 @@ for n in root.iter("node"):
   # shellcheck disable=SC2086
   [ -n "$FIELD_XY" ] && adbs shell input tap $FIELD_XY >/dev/null 2>&1
   READY=0
-  for _ in $(seq 1 40); do
-    if log_has "READY" adbs logcat -d -s RimeRuntime:I; then READY=1; break; fi
-    sleep 3
-  done
+  READY_WHY=""
+  if READY_WHY="$(rime_wait_ready 120)"; then READY=1; fi
   sleep 3
 
   # ⚠ 在這一段以前,**三種完全不同的失敗**都長成同一句
@@ -1010,7 +1082,14 @@ for n in root.iter("node"):
   if [ "$READY" -ne 1 ]; then
     DEPLOY_ERR="$(adbs shell "run-as $IME_PKG cat files/rime/log/rime.android.ERROR" 2>/dev/null \
       | tr -d '\r' | grep '^E' | head -3 | tr '\n' ' ')"
-    fail "$LAYOUT:等不到 RimeRuntime READY —— **librime 部署沒成功**,不是佈局的問題。"
+    fail "$LAYOUT:引擎沒有準備好(問 harness 得到:${READY_WHY:-<沒有回應>})。"
+    if [ "${READY_WHY:-}" = "<harness 沒有回應>" ]; then
+      fail "  ⚠ **沒有人接那個廣播**。最可能的原因是裝置上這一份不是 debug 建置"
+      fail "    ($RIME_STATE_RECEIVER 只存在於 src/debug/),而不是引擎起不來。"
+      fail "    兩件事的處置完全不同,所以這裡分開講。"
+    else
+      fail "  phase 不是 READY —— **librime 部署沒成功**,不是佈局的問題。"
+    fi
     fail "  librime 的 ERROR log:${DEPLOY_ERR:-<空>}"
     fail "  最常見的成因是 worktree 少了 core/data/user(裡面只有一個"
     fail "  default.custom.yaml,它把 schema_list 收斂成本專案實際打包的那幾個)。"

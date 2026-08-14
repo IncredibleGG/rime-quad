@@ -169,7 +169,13 @@ class LayoutParserTest {
         // 這證明佈局格式不需要「一鍵多值」的擴充。
         val abc = key(layout, "t9", "k2")
         assertEquals("ABC", abc.label)
-        assertEquals("2", abc.hint)          // hint 仍是使用者熟悉的數字
+        // ⚠ 這裡從前斷言 `hint == "2"`（註解寫著「hint 仍是使用者熟悉的數字」）。
+        //   工單 #100 把 `t9` 層 k2–k9 的 2–9 拿掉了：`hint` 不送出任何東西，
+        //   而這幾顆送的是 A/D/G/J/M/P/T/W —— 那八個數字**按下去永遠打不出來**。
+        //   `k1` 的 `1` 留著，因為那一顆真的 `send: { keysym: "1" }`。
+        //   規矩由 LayoutSwipeReachabilityTest「每一個數字或 ASCII 角標都有出口」守著。
+        assertEquals("", abc.hint)
+        assertEquals("1", key(layout, "t9", "k1").hint)
         val send = abc.send as SendSpec.Keysym
         assertEquals(0x41, send.code)
         assertEquals(Modifiers.NONE, send.modifiers)

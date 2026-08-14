@@ -174,16 +174,16 @@ layers:
 
       - weight: 1.0
         keys:
-          - { id: "q", label: "Q", hint: "1", send: { keysym: "Q", modifiers: [Shift] } }
-          - { id: "w", label: "W", hint: "2", send: { keysym: "W", modifiers: [Shift] } }
-          - { id: "e", label: "E", hint: "3", send: { keysym: "E", modifiers: [Shift] } }
-          - { id: "r", label: "R", hint: "4", send: { keysym: "R", modifiers: [Shift] } }
-          - { id: "t", label: "T", hint: "5", send: { keysym: "T", modifiers: [Shift] } }
-          - { id: "y", label: "Y", hint: "6", send: { keysym: "Y", modifiers: [Shift] } }
-          - { id: "u", label: "U", hint: "7", send: { keysym: "U", modifiers: [Shift] } }
-          - { id: "i", label: "I", hint: "8", send: { keysym: "I", modifiers: [Shift] } }
-          - { id: "o", label: "O", hint: "9", send: { keysym: "O", modifiers: [Shift] } }
-          - { id: "p", label: "P", hint: "0", send: { keysym: "P", modifiers: [Shift] } }
+          - { id: "q", label: "Q", hint: "1", send: { keysym: "Q", modifiers: [Shift] }, popup: { keys: [ { label: "1", send: { keysym: "1" } } ] } }
+          - { id: "w", label: "W", hint: "2", send: { keysym: "W", modifiers: [Shift] }, popup: { keys: [ { label: "2", send: { keysym: "2" } } ] } }
+          - { id: "e", label: "E", hint: "3", send: { keysym: "E", modifiers: [Shift] }, popup: { keys: [ { label: "3", send: { keysym: "3" } } ] } }
+          - { id: "r", label: "R", hint: "4", send: { keysym: "R", modifiers: [Shift] }, popup: { keys: [ { label: "4", send: { keysym: "4" } } ] } }
+          - { id: "t", label: "T", hint: "5", send: { keysym: "T", modifiers: [Shift] }, popup: { keys: [ { label: "5", send: { keysym: "5" } } ] } }
+          - { id: "y", label: "Y", hint: "6", send: { keysym: "Y", modifiers: [Shift] }, popup: { keys: [ { label: "6", send: { keysym: "6" } } ] } }
+          - { id: "u", label: "U", hint: "7", send: { keysym: "U", modifiers: [Shift] }, popup: { keys: [ { label: "7", send: { keysym: "7" } } ] } }
+          - { id: "i", label: "I", hint: "8", send: { keysym: "I", modifiers: [Shift] }, popup: { keys: [ { label: "8", send: { keysym: "8" } } ] } }
+          - { id: "o", label: "O", hint: "9", send: { keysym: "O", modifiers: [Shift] }, popup: { keys: [ { label: "9", send: { keysym: "9" } } ] } }
+          - { id: "p", label: "P", hint: "0", send: { keysym: "P", modifiers: [Shift] }, popup: { keys: [ { label: "0", send: { keysym: "0" } } ] } }
 
       - weight: 1.0
         keys:

@@ -274,6 +274,11 @@ if [ -n "$SCHEMA" ] && [ -f "$SRC_LAYOUT" ]; then
 fi
 
 # ─────────────────────────────────────────────── 啟動與就緒 ─────────────────
+# ⛔ 這兩行是**頂層**的，而上面那道閘關在 `if [ "$DO_CLEAR" -eq 1 ]` 裡面 ——
+#   `--no-clear` 跑起來時它一次都沒被問過，卻照樣把這台機器的預設輸入法換掉。
+#   `verify_device_hygiene.sh` 規則 C 是逐呼叫點的，看得到這件事（前提是它
+#   認得 `adbs`；2026-08-14 之前它不認得，所以這兩行從沒被指名過）。
+rs_assert_destructive_ok "$ADB" "$SERIAL" "ime enable、ime set" || exit 2
 adbs shell ime enable "$IME_ID" >/dev/null 2>&1
 adbs shell ime set "$IME_ID" >/dev/null 2>&1
 CUR="$(adbs shell settings get secure default_input_method 2>/dev/null | tr -d '\r')"

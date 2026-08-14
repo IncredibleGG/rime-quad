@@ -457,6 +457,21 @@ private fun BoxScope.CandidateExpandedPanel(
                         Row(
                             modifier = Modifier
                                 .weight(1f)
+                                // §8.6.4.2／ui-design §3.6 的觸控下界，與候選列
+                                // 同一條（那一側寫在 LazyRow 的每一項上）。
+                                //
+                                // ⚠ **這一條在隨附主題底下今天不會生效，寫出來是
+                                //   為了不讓它變成下一次的洞。** 面板這一側的格寬
+                                //   是 `weight(1f)` 平分出來的，而 `perRow` 由
+                                //   `Expander.perRow(maxWidth, itemDp)` 決定、
+                                //   `itemDp ≥ item.min_width + spacing`，所以
+                                //   平分之後每一格必然 ≥ `min_width`（實測 411 dp
+                                //   寬、perRow=5 → 79 dp/格）。
+                                //   會低於下界的是**第三方主題**：`candidates.bar.item`
+                                //   的 `min_width` 由主題給，把它設成 0 的話估寬就
+                                //   只剩文字寬＋內距，`perRow` 於是頂到 5 而每一格
+                                //   縮到文字寬。那時候這一行才是唯一擋著的東西。
+                                .widthIn(min = style.item.minWidth.dp)
                                 .fillMaxHeight()
                                 .semantics(mergeDescendants = true) {
                                     contentDescription = candDesc

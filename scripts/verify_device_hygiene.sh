@@ -113,10 +113,54 @@ HARD_SERIAL = re.compile(r'emulator-\d+')
 #   `verify_product_ids.sh` 有一行 `printf 'adb shell ime set …'` 在寫測試
 #   資料 —— 把它判紅就是在教下一個人「這支守門會亂叫」,而會亂叫的守門
 #   在第三次之後就沒有人看了。
+ADB_SUBCMD = r'(shell|uninstall|install|exec-out|push|pull)'
 ADB_CALL = re.compile(
     r'(\$\{?ADB\}?|(?<![\w./-])adb(?![\w-]))"?'
-    r'(\s+-s\s+\S+)?\s+(shell|uninstall|install|exec-out|push|pull)\b')
+    r'(\s+-s\s+\S+)?\s+' + ADB_SUBCMD + r'\b')
 QUOTED_DEMO = re.compile(r'^\s*(printf|echo|cat)\b')
+
+# ⛔ **自包裝的 adb 一定要算。** 上面那條 `ADB_CALL` 只認 `$ADB` 與裸 `adb`,
+#    而全樹十支腳本第一件事就是
+#        adbs() { "$ADB" -s "$SERIAL" "$@"; }
+#    然後 46 處破壞性動作(`pm clear` / `uninstall` / `ime set` / `ime enable`
+#    / `settings put`)全部寫成 `adbs shell …`。`adbs` 的 `adb` 後面接著 `s`,
+#    負向前瞻 `(?![\w-])` 當場否掉 —— 於是規則 C **一個呼叫點都沒有守到**。
+#    實測(2026-08-14):把 `verify_candbar.sh` 唯一那道 `rs_assert_destructive_ok`
+#    整段刪掉,這支守門照樣 RC=0、照樣印「全部通過」。
+#
+#    修法不是把 `adbs` 這個名字寫死(下一個人取名 `A`／`dev` 就又漏了),
+#    而是**先把這個檔案裡的 adb 包裝函式找出來**:一行定義的函式,
+#    body 裡呼叫 `$ADB` 或裸 `adb` —— 那個函式名從此與 `adb` 同級。
+WRAPPER_DEF = re.compile(
+    r'^\s*(?:function\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{(.*)$')
+
+
+def adb_aliases(lines):
+    """這個檔案裡「呼叫下去等於 adb」的函式名。
+
+    只認**單行**定義(`f() { "$ADB" -s "$SERIAL" "$@"; }`)—— 全樹十支都是這個
+    形狀,而多行函式要判得準就得剖析 shell。判不到的那一種會落回原本的
+    `ADB_CALL`,也就是「維持現況」,不會變成假綠燈以外的新問題。
+    """
+    out = set()
+    for _, text in lines:
+        m = WRAPPER_DEF.match(text)
+        if not m:
+            continue
+        name, body = m.group(1), m.group(2)
+        if re.search(r'(\$\{?ADB\}?|(?<![\w./-])adb(?![\w-]))', body):
+            out.add(name)
+    return out
+
+
+def adb_call_re(aliases):
+    """含本檔包裝函式的 `ADB_CALL`。沒有包裝函式時就是原本那一條。"""
+    if not aliases:
+        return ADB_CALL
+    alt = "|".join(re.escape(a) for a in sorted(aliases, key=len, reverse=True))
+    return re.compile(
+        r'((\$\{?ADB\}?|(?<![\w./-])adb(?![\w-]))"?(\s+-s\s+\S+)?|'
+        r'(?<![\w./-])(' + alt + r')(?![\w-]))\s+' + ADB_SUBCMD + r'\b')
 DESTRUCTIVE = re.compile(
     r'\bpm\s+clear\b|\buninstall\b|\bime\s+set\b|\bime\s+enable\b'
     r'|\bsettings\s+put\b|\brm\s+-rf\b'
@@ -272,9 +316,11 @@ def check(root):
                         "保證 RC=2(訊息還會說「那台是自動選來的」)。" % rel)
 
             # ── C:破壞性動作要過閘(**逐呼叫點**)──────────────────────
+            # ⚠ 用**本檔的** ADB_CALL(含 `adbs` 這類自包裝函式),不是全域那條。
+            file_adb_call = adb_call_re(adb_aliases(lines))
             if rel not in DESTRUCTIVE_ALLOW:
                 for idx, (n, l) in enumerate(lines):
-                    if not (DESTRUCTIVE.search(l) and ADB_CALL.search(l)
+                    if not (DESTRUCTIVE.search(l) and file_adb_call.search(l)
                             and not QUOTED_DEMO.match(l)):
                         continue
                     if gate_covers(lines, idx):
@@ -299,8 +345,10 @@ def check(root):
             problems.append("E 破壞性動作白名單列著 %s,但那個檔案不存在了。" % rel)
             continue
         body = "\n".join(l for _, l in code_lines(path))
-        if not any(DESTRUCTIVE.search(l) and ADB_CALL.search(l) and not QUOTED_DEMO.match(l)
-                   for _, l in code_lines(path)):
+        e_lines = code_lines(path)
+        e_call = adb_call_re(adb_aliases(e_lines))
+        if not any(DESTRUCTIVE.search(l) and e_call.search(l) and not QUOTED_DEMO.match(l)
+                   for _, l in e_lines):
             problems.append(
                 "E 破壞性動作白名單列著 %s,但它現在已經沒有破壞性動作了 ——"
                 "請刪掉那一筆。" % rel)
@@ -383,6 +431,23 @@ PLANTS = [
      '  "$ADB" -s "$SERIAL" shell pm clear org.a\n'
      'fi\n'
      '"$ADB" -s "$SERIAL" shell pm clear org.b\n'),
+    # C 的第三種形狀:**自包裝的 adb**。全樹十支腳本都寫
+    #   adbs() { "$ADB" -s "$SERIAL" "$@"; }
+    # 然後 46 處破壞性動作全走 `adbs shell …`。舊的 ADB_CALL 只認 `$ADB` 與
+    # 裸 `adb`,`adbs` 的負向前瞻當場否掉 —— 規則 C 因此**一個呼叫點都沒守到**。
+    # 沒有這一條 plant 的話,同一件事會再發生一次而且照樣全綠。
+    ("C", "scripts/_plant_c3.sh",
+     '#!/usr/bin/env bash\n. "$HERE/lib/device.sh"\n'
+     'SERIAL="$(rs_pick_serial "$ADB")"\n'
+     'adbs() { "$ADB" -s "$SERIAL" "$@"; }\n'
+     'adbs shell pm clear org.x\n'),
+    # 反向:換個名字(不叫 adbs)照樣要抓得到 —— 判準是「這個函式包了 adb」,
+    # 不是「這個函式叫 adbs」。
+    ("C", "scripts/_plant_c4.sh",
+     '#!/usr/bin/env bash\n. "$HERE/lib/device.sh"\n'
+     'SERIAL="$(rs_pick_serial "$ADB")"\n'
+     'dev() { "$ADB" -s "$SERIAL" "$@"; }\n'
+     'dev shell ime set org.x/.Ime\n'),
     ("D", "scripts/_plant_d.sh",
      '#!/usr/bin/env bash\nADB=adb\n"$ADB" -s "$X" shell true\n'),
     # 遞迴:違規檔放在**子目錄**裡也要抓得到(從前完全掃不到)。

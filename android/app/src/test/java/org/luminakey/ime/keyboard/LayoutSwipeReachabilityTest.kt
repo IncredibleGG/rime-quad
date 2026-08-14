@@ -4,7 +4,14 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.luminakey.ime.theme.KeyboardLayout
+import org.luminakey.ime.theme.LabelSource
+import org.luminakey.ime.theme.LayoutKey
+import org.luminakey.ime.theme.Popup
+import org.luminakey.ime.theme.PopupLayout
 import org.luminakey.ime.theme.RepoFixtures
+import org.luminakey.ime.theme.SendSpec
+import org.luminakey.ime.theme.SubKey
+import org.luminakey.ime.theme.SwipeDirection
 import java.io.File
 
 /**
@@ -167,6 +174,131 @@ class LayoutSwipeReachabilityTest {
         )
     }
 
+    /* ──────────── 2.5 每一個數字／ASCII 角標都有出口（工單 #100）──────────── */
+
+    /**
+     * `hint`（鍵面角落的小字）與 `swipe` 是**同一類**缺陷：寫在佈局裡、
+     * 讀起來像功能、而使用者一次都碰不到。
+     *
+     * ── 事實 ────────────────────────────────────────────────────────────
+     * `hint` **不送出任何東西**。`KeyboardView` 只把它畫出來（§9.4 的
+     * label / hint / send 三欄位分離），沒有任何一條分派讀它。所以一顆
+     * 鍵面角落印著 `3`、而這顆鍵按下去、長按、上滑都拿不到 `3` 的鍵，
+     * 就是一個「看得到、打不到」的字元。
+     *
+     * ── 判準：什麼算「有出口」──────────────────────────────────────────
+     *   · 這顆鍵**自己** `send` 那個字元（`bopomofo-dachen` 的 ㄅ 送 keysym
+     *     `1`、`t9-pinyin/t9` 的 `k1` 送 keysym `1` —— 角標就是它送的東西
+     *     在實體鍵盤上的樣子）；或
+     *   · 它的 **`popup`**（長按盤）裡有一顆送那個字元（`qwerty/lower`
+     *     從一開始就是這樣寫的，本檔以它為參考）。
+     *
+     * ⛔ **`swipe` 不算。** 本檔第 1 條就在釘住「Android 端沒有任何 swipe
+     *   分派」這個前提；`docs/theme-format.md` §9.6 也寫明 swipe 是 OPTIONAL。
+     *   `t9-pinyin/en` 那十顆從前只有 `swipe.up`，對使用者而言與什麼都沒有
+     *   完全一樣。
+     *
+     * ── 範圍：只管**數字與 ASCII 符號** ────────────────────────────────
+     * `cn-stroke` 的 `hint: "橫"`／`"豎"` 是筆畫的**名字**，不是使用者
+     * 會預期打得出來的字元；把它們判紅就是在教下一個人「這支測試會亂叫」。
+     * 所以判準只收單一 ASCII 數字與 ASCII 標點 —— 那才是「他以為按得到」的
+     * 那一類。
+     *
+     * ── 2026-08-14 這一輪做了什麼 ──────────────────────────────────────
+     *   補 popup（60 顆）：`qwerty/upper`、`intl-gboard/upper`、
+     *     `cn-t9-pinyin/en`、`cn-t9-pinyin/en_upper`、
+     *     `t9-pinyin/en`、`t9-pinyin/en_upper` —— 各層的 `lower` 早就有了，
+     *     `upper` 那一份是漏的。
+     *   拿掉 hint（17 顆）：`cn-t9-pinyin/t9`（9）、`t9-pinyin/t9`（8）——
+     *     那是電話鍵盤的既有標號，那幾顆送的是 `A/D/G/J/M/P/T/W`，
+     *     按下去永遠不會出現數字。`t9-pinyin/t9/k1` 留著（它真的送 `1`）。
+     */
+    @Test
+    fun `每一個數字或 ASCII 符號的 hint 都有真的出口`() {
+        val repo = FixtureRepo()
+        val orphans = mutableListOf<String>()
+        var checked = 0
+        for (id in RepoFixtures.layoutIds) {
+            val layout = repo.loadLayout(id).value ?: error("佈局 $id 載不起來,先修那個")
+            for (layer in layout.layers) {
+                for (row in layer.rows) {
+                    for (key in row.keys) {
+                        val want = typeableHint(key.hint) ?: continue
+                        checked++
+                        if (hintHasOutlet(key, want)) continue
+                        val where = "$id/${layer.id}/${key.id ?: key.label}"
+                        val via = if (key.swipe.isNotEmpty()) "（只有 swipe，而 swipe 沒有人分派）" else ""
+                        orphans += "$where 角標 '$want'$via"
+                    }
+                }
+            }
+        }
+        assertTrue(
+            "這幾顆鍵的角落印著一個使用者會預期打得出來的字元，而**沒有任何出口**：\n  " +
+                orphans.joinToString("\n  ") +
+                "\n兩條路，逐顆判斷（不要一律套用）：\n" +
+                "  · 他會預期打得出來 → 補一條真的出口：\n" +
+                "      popup: { keys: [ { label: \"3\", send: { keysym: \"3\" } } ] }\n" +
+                "      （參考寫法：core/layouts/qwerty.yaml 的 lower 層）\n" +
+                "  · 那只是在標示鍵位、或這一層本來就不該有那個字元 → 拿掉 hint。\n" +
+                "⛔ 補 `swipe:` **不算**：本檔第 1 條釘著「Android 端沒有 swipe 分派」。",
+            orphans.isEmpty(),
+        )
+        // 掃描範圍不得是空的 —— 「一顆都沒有」與「量錯了地方」在輸出上一模一樣。
+        assertTrue(
+            "一顆帶數字／ASCII 角標的鍵都沒掃到（實測應該有 ${EXPECTED_TYPEABLE_HINTS} 顆）—— 這條斷言在空轉",
+            checked >= 40,
+        )
+        assertEquals(
+            "帶數字／ASCII 角標的鍵數變了。改動佈局時這個數字要跟著改，" +
+                "而改之前先想清楚新的那幾顆有沒有出口。",
+            EXPECTED_TYPEABLE_HINTS,
+            checked,
+        )
+    }
+
+    /** 判準本身要擋得住東西，否則上面那條永遠是綠的。 */
+    @Test
+    fun `hint 判準的正反面`() {
+        // 反面：角標是數字、只有 swipe → 沒有出口。
+        val swipeOnly = LayoutKey(
+            id = "q", label = "q", hint = "1", icon = null,
+            labelFrom = LabelSource.NONE, width = 1f, style = "default",
+            spacer = false, active = true, repeat = false,
+            send = SendSpec.Keysym("q", 0, 0), tap = null, doubleTap = null,
+            longPress = null, popup = null,
+            swipe = mapOf(
+                SwipeDirection.UP to SubKey("1", "", null, SendSpec.Keysym("1", 0, 0), null)
+            ),
+        )
+        assertTrue("只有 swipe 被當成有出口了 —— 那正是 #100 的形狀", !hintHasOutlet(swipeOnly, '1'))
+        // 正面 A：popup 裡有那個字元。
+        val viaPopup = swipeOnly.copy(
+            swipe = emptyMap(),
+            popup = Popup(
+                PopupLayout.ROW, 1,
+                listOf(SubKey("1", "", null, SendSpec.Keysym("1", 0, 0), null)),
+            ),
+        )
+        assertTrue("popup 明明送得出 1", hintHasOutlet(viaPopup, '1'))
+        // 正面 B：鍵自己就送那個 keysym（注音大千的 ㄅ、t9-pinyin 的 k1）。
+        val selfSend = swipeOnly.copy(
+            swipe = emptyMap(), label = "ㄅ", send = SendSpec.Keysym("1", 0, 0),
+        )
+        assertTrue("這顆鍵自己就 send keysym 1", hintHasOutlet(selfSend, '1'))
+        // 正面 C：keysym 的**名字**（apostrophe / minus …）也算數。
+        val named = swipeOnly.copy(
+            swipe = emptyMap(), hint = "-", send = SendSpec.Keysym("minus", 0, 0),
+        )
+        assertTrue("keysym `minus` 就是 `-`", hintHasOutlet(named, '-'))
+        // 範圍：非 ASCII 的角標（筆畫名）不在這條規則裡。
+        assertEquals(null, typeableHint("橫"))
+        assertEquals(null, typeableHint(""))
+        assertEquals(null, typeableHint("12"))
+        assertEquals('3', typeableHint("3"))
+        assertEquals('-', typeableHint("-"))
+    }
+
     /* ──────────── 3. 佈局檔頭要說實話 ──────────── */
 
     @Test
@@ -189,6 +321,43 @@ class LayoutSwipeReachabilityTest {
     }
 
     /* ────────────────────────────── 夾具 ────────────────────────────── */
+
+    /**
+     * 這個 `hint` 是「使用者會預期打得出來的字元」嗎；是的話回那個字元。
+     *
+     * 只收**單一 ASCII 數字或 ASCII 標點**。多字元、CJK（`cn-stroke` 的
+     * 「橫」「豎」是筆畫的名字）、空字串一律回 null —— 它們不是承諾。
+     */
+    internal fun typeableHint(hint: String): Char? {
+        if (hint.length != 1) return null
+        val c = hint[0]
+        if (c.code !in 0x21..0x7E) return null
+        if (c.isLetter()) return null   // 字母角標是鍵位標示，不在這條規則裡
+        return c
+    }
+
+    /** 這顆鍵送得出 [want] 嗎（自己 send、或 popup 裡有一顆）。swipe 不算。 */
+    internal fun hintHasOutlet(key: LayoutKey, want: Char): Boolean {
+        if (emits(key.send, want)) return true
+        return key.popup?.keys.orEmpty().any { emits(it.send, want) }
+    }
+
+    /**
+     * 這個 `send` 打得出 [want] 嗎。
+     *
+     * keysym 有兩種寫法：單一字元（`"1"`、`"-"`）與 X11 的名字
+     * （`minus`、`semicolon`、`comma`、`period`、`slash`、`apostrophe` …）。
+     * 兩種都要認得，否則注音大千那五顆（`hint: "-"` ＋ `send: minus`）會被
+     * 誤判成沒有出口 —— 而它們是本 repo 裡最正確的寫法之一。
+     */
+    private fun emits(send: SendSpec?, want: Char): Boolean = when (send) {
+        null -> false
+        is SendSpec.Text -> send.text == want.toString()
+        is SendSpec.Keysym ->
+            if (send.name.length == 1) send.name[0] == want
+            else KEYSYM_CHAR[send.name] == want
+    }
+
 
     internal data class SwipeSite(
         val layout: String,
@@ -255,6 +424,28 @@ class LayoutSwipeReachabilityTest {
     private companion object {
         /** 與 `core/layouts` 底下每一份佈局檔頭那一行必須一字不差。 */
         const val MARK = "⚠ swipe 現在按不到"
+
+        /**
+         * 全樹「角標是數字或 ASCII 符號」的鍵數（2026-08-14 實測 96）。
+         *
+         * 釘住它的理由與底下 `EXPECTED_TOTAL` 相同：上面那條只問
+         * 「每一顆有沒有出口」，不問「有幾顆」，於是**整層被刪掉**
+         * 也是綠的。
+         */
+        const val EXPECTED_TYPEABLE_HINTS = 96
+
+        /** X11 keysym 名字 → 字元。只列本 repo 佈局實際用到的那幾個。 */
+        val KEYSYM_CHAR = mapOf(
+            "minus" to '-', "semicolon" to ';', "comma" to ',', "period" to '.',
+            "slash" to '/', "apostrophe" to '\'', "question" to '?', "exclam" to '!',
+            "colon" to ':', "plus" to '+', "equal" to '=', "asterisk" to '*',
+            "numbersign" to '#', "at" to '@', "percent" to '%', "ampersand" to '&',
+            "parenleft" to '(', "parenright" to ')', "bracketleft" to '[',
+            "bracketright" to ']', "braceleft" to '{', "braceright" to '}',
+            "quotedbl" to '"', "grave" to '`', "asciitilde" to '~', "bar" to '|',
+            "backslash" to '\\', "underscore" to '_', "less" to '<', "greater" to '>',
+            "dollar" to '$', "asciicircum" to '^',
+        )
 
         const val KIND_DIGIT = "字母鍵上滑出數字"
         const val KIND_CURSOR = "空白鍵左右滑移動游標"

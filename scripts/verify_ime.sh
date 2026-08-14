@@ -174,6 +174,14 @@ pass "模擬器開機完成"
 
 ORIG_IME="$(adbs shell settings get secure default_input_method 2>/dev/null | tr -d '\r')"
 
+# ⛔ 閘要在 `cleanup()` **定義之前**，不是在第 215 行。
+#   `cleanup` 掛在 EXIT trap 上，也就是**任何**一條早退路徑都會跑到它，
+#   包含第 215 行那道閘還沒執行的那些（例如安裝失敗）。而它做的
+#   `ime set` 是破壞性動作：打在別條線的模擬器上，那條線接下來整輪都是紅的。
+#   放在這裡兩件事一起成立：早退時已經過閘，而正常路徑上第 215 行那一道
+#   仍然在原地（訊息不同、問的是同一件事，重複問不花成本）。
+rs_assert_destructive_ok "$ADB" "$SERIAL" "ime set（EXIT trap 還原預設輸入法）" || exit 2
+
 cleanup() {
   if [ "$RESTORE_IME" -eq 1 ] && [ -n "${ORIG_IME:-}" ] && [ "$ORIG_IME" != "null" ]; then
     echo "還原預設輸入法為 $ORIG_IME"

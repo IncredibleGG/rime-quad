@@ -24,9 +24,16 @@
 #    英文，且中文沒有「打完單字按空白」的節奏，標點不該藏在 ?123 層裡。
 #  * **最右整欄是功能鍵**（⌫、重輸、0、⏎）。
 #  * **中間 3×3 才是 T9 字母**，而且左上角是「分詞」不是「1」。
-#  * **數字以右上角上標（hint）呈現**，1–9 對應九宮格位置；`0` 因為沒有
-#    對應的字母組，被放進右欄自成一鍵。這正是規範 §9.4 label / hint / send
-#    三欄位分離的用途：鍵面主字是 `abc`、角標是 `2`、送出的卻是 keysym `A`。
+#  * **`t9` 層的角落不印數字**（工單 #100，2026-08-14 改）。它從前印著
+#    1–9 的 `hint`，對應九宮格位置 —— 而那九顆鍵送的是 `A/D/G/J/M/P/T/W`
+#    與 `apostrophe`，**按下去永遠不會出現數字**。角標小字不送出任何東西
+#    （`KeyboardView` 只畫它），所以那是九顆「看得到、打不出來」的字元。
+#    要打數字走 `num` 層（`123` 鍵，本檔真的有一整面數字盤）。
+#    ⚠ 這條規矩由 `LayoutSwipeReachabilityTest`「每一個數字／ASCII 角標都
+#      有出口」守著：再寫一個沒有出口的 `hint` 進來，`./gradlew test` 會紅。
+#  * `0` 因為沒有對應的字母組，被放進右欄自成一鍵。
+#  * §9.4 的 label / hint / send 三欄位分離仍然成立，只是這一層現在用不到
+#    中間那一欄：鍵面主字是 `abc`、送出的是 keysym `A`。
 #  * **字母是小寫**（abc / def / ghi），不是大寫。三星、搜狗、微信鍵盤皆然。
 #
 #  ── 「分詞」與「重輸」對應到什麼？（不是 ABI 缺口，兩者都已有對應）─────
@@ -49,7 +56,7 @@
 #  | 重輸 | 無；只有退格左滑（swipe 是 OPTIONAL 能力，可能未實作） | **常駐鍵**，`tap: "clear"`，不依賴 swipe |
 #  | 標點 | 全部藏在「'」的長按盤裡 | **，。？三顆常駐鍵**，各自另有長按盤 |
 #  | 0 | 打不出來 | **獨立鍵**（右欄第三格），與實機一致 |
-#  | 數字 | hint 印了 2–9 但按不出數字 | 1–9 為 hint（維持 T9 語義）＋ **`num` 層是真的數字盤** |
+#  | 數字 | 兩份都拿掉了按不出來的角標（#100） | **`num` 層是真的數字盤**（t9-pinyin 沒有） |
 #  | 字母 | 大寫 ABC | **小寫 abc**（與三星／搜狗／微信一致） |
 #  | 符號 | 「符」→ numeric-symbol（10 欄西式符號表） | **「!@#」→ cn-symbols**（7 欄、中英分頁、可翻頁） |
 #
@@ -224,11 +231,10 @@ layers:
           # 灰色等於在字母方塊中間挖一個洞。完整規則見檔頭「鍵的顏色代表什麼」。
           - id: "delim"
             label: "分詞"
-            hint: "1"
             width: 2.2
             send: { keysym: "apostrophe" }
-          - { id: "k_abc",  label: "abc",  hint: "2", width: 2.2, send: { keysym: "A" } }
-          - { id: "k_def",  label: "def",  hint: "3", width: 2.2, send: { keysym: "D" } }
+          - { id: "k_abc", label: "abc", width: 2.2, send: { keysym: "A" } }
+          - { id: "k_def", label: "def", width: 2.2, send: { keysym: "D" } }
           - id: "backspace"
             icon: backspace
             width: 1.7
@@ -249,9 +255,9 @@ layers:
                 - { label: "…", send: { text: "…" } }
                 - { label: "—", send: { text: "—" } }
                 - { label: "～", send: { text: "～" } }
-          - { id: "k_ghi", label: "ghi", hint: "4", width: 2.2, send: { keysym: "G" } }
-          - { id: "k_jkl", label: "jkl", hint: "5", width: 2.2, send: { keysym: "J" } }
-          - { id: "k_mno", label: "mno", hint: "6", width: 2.2, send: { keysym: "M" } }
+          - { id: "k_ghi", label: "ghi", width: 2.2, send: { keysym: "G" } }
+          - { id: "k_jkl", label: "jkl", width: 2.2, send: { keysym: "J" } }
+          - { id: "k_mno", label: "mno", width: 2.2, send: { keysym: "M" } }
           # 重輸 = rs_clear_composition（§9.5 的 `clear`）。不依賴 swipe，
           # 因為 swipe 是 OPTIONAL 能力，不能是唯一觸達路徑（§9.6）。
           - id: "clear"
@@ -273,9 +279,9 @@ layers:
                 - { label: "！", send: { keysym: "exclam" } }
                 - { label: "·", send: { text: "·" } }
                 - { label: "…", send: { text: "…" } }
-          - { id: "k_pqrs", label: "pqrs", hint: "7", width: 2.2, send: { keysym: "P" } }
-          - { id: "k_tuv",  label: "tuv",  hint: "8", width: 2.2, send: { keysym: "T" } }
-          - { id: "k_wxyz", label: "wxyz", hint: "9", width: 2.2, send: { keysym: "W" } }
+          - { id: "k_pqrs", label: "pqrs", width: 2.2, send: { keysym: "P" } }
+          - { id: "k_tuv", label: "tuv", width: 2.2, send: { keysym: "T" } }
+          - { id: "k_wxyz", label: "wxyz", width: 2.2, send: { keysym: "W" } }
           # 「0」沒有對應的字母組（T9 的 0 歷來是空白／符號），所以自成一鍵，
           # 放在右欄第三格。實機如此。speller/alphabet 不含 0-9，
           # 所以這一鍵不會被 speller 吃掉，會原樣透傳給宿主。
@@ -414,16 +420,16 @@ layers:
 
       - weight: 1.0
         keys:
-          - { id: "e_q", label: "q", hint: "1", send: { keysym: "q" } }
-          - { id: "e_w", label: "w", hint: "2", send: { keysym: "w" } }
-          - { id: "e_e", label: "e", hint: "3", send: { keysym: "e" } }
-          - { id: "e_r", label: "r", hint: "4", send: { keysym: "r" } }
-          - { id: "e_t", label: "t", hint: "5", send: { keysym: "t" } }
-          - { id: "e_y", label: "y", hint: "6", send: { keysym: "y" } }
-          - { id: "e_u", label: "u", hint: "7", send: { keysym: "u" } }
-          - { id: "e_i", label: "i", hint: "8", send: { keysym: "i" } }
-          - { id: "e_o", label: "o", hint: "9", send: { keysym: "o" } }
-          - { id: "e_p", label: "p", hint: "0", send: { keysym: "p" } }
+          - { id: "e_q", label: "q", hint: "1", send: { keysym: "q" }, popup: { keys: [ { label: "1", send: { keysym: "1" } } ] } }
+          - { id: "e_w", label: "w", hint: "2", send: { keysym: "w" }, popup: { keys: [ { label: "2", send: { keysym: "2" } } ] } }
+          - { id: "e_e", label: "e", hint: "3", send: { keysym: "e" }, popup: { keys: [ { label: "3", send: { keysym: "3" } } ] } }
+          - { id: "e_r", label: "r", hint: "4", send: { keysym: "r" }, popup: { keys: [ { label: "4", send: { keysym: "4" } } ] } }
+          - { id: "e_t", label: "t", hint: "5", send: { keysym: "t" }, popup: { keys: [ { label: "5", send: { keysym: "5" } } ] } }
+          - { id: "e_y", label: "y", hint: "6", send: { keysym: "y" }, popup: { keys: [ { label: "6", send: { keysym: "6" } } ] } }
+          - { id: "e_u", label: "u", hint: "7", send: { keysym: "u" }, popup: { keys: [ { label: "7", send: { keysym: "7" } } ] } }
+          - { id: "e_i", label: "i", hint: "8", send: { keysym: "i" }, popup: { keys: [ { label: "8", send: { keysym: "8" } } ] } }
+          - { id: "e_o", label: "o", hint: "9", send: { keysym: "o" }, popup: { keys: [ { label: "9", send: { keysym: "9" } } ] } }
+          - { id: "e_p", label: "p", hint: "0", send: { keysym: "p" }, popup: { keys: [ { label: "0", send: { keysym: "0" } } ] } }
 
       - weight: 1.0
         keys:
@@ -512,16 +518,16 @@ layers:
 
       - weight: 1.0
         keys:
-          - { id: "e_q", label: "Q", hint: "1", send: { keysym: "Q", modifiers: [Shift] } }
-          - { id: "e_w", label: "W", hint: "2", send: { keysym: "W", modifiers: [Shift] } }
-          - { id: "e_e", label: "E", hint: "3", send: { keysym: "E", modifiers: [Shift] } }
-          - { id: "e_r", label: "R", hint: "4", send: { keysym: "R", modifiers: [Shift] } }
-          - { id: "e_t", label: "T", hint: "5", send: { keysym: "T", modifiers: [Shift] } }
-          - { id: "e_y", label: "Y", hint: "6", send: { keysym: "Y", modifiers: [Shift] } }
-          - { id: "e_u", label: "U", hint: "7", send: { keysym: "U", modifiers: [Shift] } }
-          - { id: "e_i", label: "I", hint: "8", send: { keysym: "I", modifiers: [Shift] } }
-          - { id: "e_o", label: "O", hint: "9", send: { keysym: "O", modifiers: [Shift] } }
-          - { id: "e_p", label: "P", hint: "0", send: { keysym: "P", modifiers: [Shift] } }
+          - { id: "e_q", label: "Q", hint: "1", send: { keysym: "Q", modifiers: [Shift] }, popup: { keys: [ { label: "1", send: { keysym: "1" } } ] } }
+          - { id: "e_w", label: "W", hint: "2", send: { keysym: "W", modifiers: [Shift] }, popup: { keys: [ { label: "2", send: { keysym: "2" } } ] } }
+          - { id: "e_e", label: "E", hint: "3", send: { keysym: "E", modifiers: [Shift] }, popup: { keys: [ { label: "3", send: { keysym: "3" } } ] } }
+          - { id: "e_r", label: "R", hint: "4", send: { keysym: "R", modifiers: [Shift] }, popup: { keys: [ { label: "4", send: { keysym: "4" } } ] } }
+          - { id: "e_t", label: "T", hint: "5", send: { keysym: "T", modifiers: [Shift] }, popup: { keys: [ { label: "5", send: { keysym: "5" } } ] } }
+          - { id: "e_y", label: "Y", hint: "6", send: { keysym: "Y", modifiers: [Shift] }, popup: { keys: [ { label: "6", send: { keysym: "6" } } ] } }
+          - { id: "e_u", label: "U", hint: "7", send: { keysym: "U", modifiers: [Shift] }, popup: { keys: [ { label: "7", send: { keysym: "7" } } ] } }
+          - { id: "e_i", label: "I", hint: "8", send: { keysym: "I", modifiers: [Shift] }, popup: { keys: [ { label: "8", send: { keysym: "8" } } ] } }
+          - { id: "e_o", label: "O", hint: "9", send: { keysym: "O", modifiers: [Shift] }, popup: { keys: [ { label: "9", send: { keysym: "9" } } ] } }
+          - { id: "e_p", label: "P", hint: "0", send: { keysym: "P", modifiers: [Shift] }, popup: { keys: [ { label: "0", send: { keysym: "0" } } ] } }
 
       - weight: 1.0
         keys:

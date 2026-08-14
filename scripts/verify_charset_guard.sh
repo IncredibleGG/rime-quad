@@ -26,15 +26,42 @@
 # 用法：
 #   scripts/verify_charset_guard.sh          # 全部
 #   scripts/verify_charset_guard.sh --keep   # 保留暫存目錄
+#   scripts/verify_charset_guard.sh --help   # 只印這一段就走（不碰網路、不碰檔案）
 #
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# ── ⚠ 參數解析必須在**任何**網路／檔案動作之前 ───────────────────────────
+#  這一段從前不存在（只有 `[ "${1:-}" = "--keep" ] && KEEP=1`），於是 `--help`
+#  一路落到下面的「取得 librime-lua/thirdparty」，`mkdir -p` 建了目錄、
+#  `git fetch` 去抓 Lua 原始碼。後果不是「說明多印了幾行」：
+#
+#    · `scripts/verify_script_readonly.sh` 的判準是「唯讀路徑不准碰外部工具」，
+#      它把 `git` 換成會 exit 127 的 shim。於是本檔的 `--help` 在**任何
+#      沒有 `third_party/librime-lua/thirdparty` 的地方**（新 clone、CI、
+#      任何新開的 worktree）RC=1，而在建置機的 `/home/lc/rime` 上因為那個
+#      gitignore 的目錄早就在，就一路綠燈。
+#      → **那支守門的綠燈取決於機器歷史，不是程式碼。**
+#    · 實測（2026-08-14，全新 worktree）：
+#        [readonly-guard] 唯讀路徑不該呼叫 git   ×3
+#        [error] 抓取 Lua 原始碼失敗   → RC=1
+#
+#  所以 `--help` 在這裡就結束，`ROOT` 之外一個變數都還沒展開、一個目錄都還
+#  沒建。其餘參數也在這裡定案，別再散落到下面。
+KEEP=0
+case "${1:-}" in
+  -h|--help)
+    sed -n '2,/^set -uo pipefail$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    exit 0 ;;
+  --keep) KEEP=1 ;;
+  "") ;;
+  *) echo "未知參數：$1" >&2; exit 2 ;;
+esac
+
 DATA="$ROOT/core/data/lua"
 TEST="$ROOT/scripts/charset_guard/test.lua"
 GEN="$ROOT/scripts/gen_charset_data.py"
-KEEP=0
-[ "${1:-}" = "--keep" ] && KEEP=1
 
 log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
