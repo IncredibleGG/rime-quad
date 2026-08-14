@@ -33,8 +33,9 @@ import org.luminakey.ime.theme.ThemeLoader
  *
  * ⚠ 這裡**不能**真的呼叫 Compose 的 `weight()`:JVM 單元測試沒有 Compose 的
  *   量測環境(專案也沒有 Robolectric),`RowScope` 拿不到。[composeWeight] 是
- *   那一行 `require` 的複製品,連訊息都照抄 —— 修之前這條測試丟出來的
- *   `IllegalArgumentException` 與裝置上那一次是同一句話。
+ *   那一行 `require` 的複製品:**條件照抄**(含 NaN),但訊息刻意多帶了值
+ *   以利除錯 —— 這一版 Compose 的原文是 `invalid weight; must be greater
+ *   than zero`,**沒有值**。所以是同一個例外、同一個條件,不是同一句話。
  */
 class KeyWeightFloorTest {
 
