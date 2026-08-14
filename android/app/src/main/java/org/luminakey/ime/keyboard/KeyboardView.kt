@@ -1791,6 +1791,54 @@ private fun fireDigit(
     SelectionDigitKeys.Act.Ignore -> Unit
 }
 
+/**
+ * §9.6 的點擊解析（tap → send → noop，而數字鍵在組字中由
+ * [SelectionDigitKeys] 接管），做成一個**手勢協程可以抓著不放**的東西。
+ *
+ * ⛔ **`digitAct` 是一個「問」，不是一份抄本 —— 這一行就是工單 #99 的第二半。**
+ *
+ * `Modifier.pointerInput(key)` 的協程在這顆鍵**第一次被碰到**時才啟動，
+ * 而它的 key 只有 `key`：組字狀態變了不會讓它重啟。所以它捕捉到的
+ * 區域變數**從此凍住**。把當下的 [SelectionDigitKeys.Act] 抄一份進去，
+ * 做出來的就是「這顆鍵第一次被按時是什麼狀態，它一輩子就是那個狀態」。
+ *
+ * 2026-08-14 emulator-5558 / lumina_test2 實測（`cn-t9-pinyin-numrow` ＋
+ * `t9_pinyin`），同一顆 `n3`：
+ *
+ * ```
+ * 07:38:01.585  launch key=n3 captured=SendDigit          ← 閒置按下去，協程啟動
+ * 07:38:09.907  compose key=n3 act=Select(2) cands=7      ← 組字了，畫面改成「選第 3 個」
+ * 07:38:20.956  fire   key=n3 captured=SendDigit
+ *                                fresh=Select(2)          ← 送出去的仍是第一行捕捉到的那一份
+ * ```
+ *
+ * 結果是數字進了引擎、被 `recognizer/patterns` 收走，宿主輸入框變成
+ * `33⋯` —— **使用者剛打好的組字沒了**。判準（[SelectionDigitKeys.act]）
+ * 從頭到尾都是對的：`composing=true` 時它只回 `Select` 或 `Ignore`，
+ * 兩者都不會把數字送進引擎。過期的是**送到判準面前的那份答案**。
+ *
+ * 同一份檔案在 `KeyView` 裡已經為 `onEvent` / `onPopup` / `behavior`
+ * 寫過這件事（`rememberUpdatedState`）；`digitAct` 是後來加的，漏了。
+ *
+ * ⚠ 這個函式存在的唯一理由是**讓那條路測得到**：`KeyView` 是
+ * `@Composable`，本模組的單元測試（純 JVM、沒有 compose-ui-test）
+ * 一行都摸不到它。見 `KeyFireTest`。
+ */
+internal fun keyFire(
+    key: LayoutKey,
+    digitAct: () -> SelectionDigitKeys.Act?,
+    onEvent: (KeyboardEvent) -> Unit,
+): () -> Unit = {
+    fireDigit(key, digitAct(), onEvent) ?: run {
+        val tap = key.tap
+        val send = key.send
+        when {
+            tap != null -> onEvent(KeyboardEvent.Act(tap))
+            send != null -> onEvent(KeyboardEvent.Send(send))
+        }
+    }
+}
+
 private fun dispatchSubKey(sub: SubKey, onEvent: (KeyboardEvent) -> Unit) {
     val tap = sub.tap
     val send = sub.send
@@ -1947,6 +1995,10 @@ private fun KeyView(
     val currentOnEvent by rememberUpdatedState(onEvent)
     val currentOnPopup by rememberUpdatedState(onPopup)
     val currentBehavior by rememberUpdatedState(behavior)
+    // ⛔ `digitAct` 也在這一份名單上,而它是後來才加的參數 —— 漏掉它的代價
+    //   不是「慢一幀」,是**同一顆數字鍵按過一次之後就一直答第一次那個答案**。
+    //   為什麼漏掉它會凍住、凍在什麼時候,寫在 [keyFire] 的檔頭。
+    val currentDigitAct by rememberUpdatedState(digitAct)
 
     // 這一顆鍵在「按鍵音」上算哪一種。系統的按鍵音效本來就分四個角色
     // (STANDARD / SPACEBAR / DELETE / RETURN),而在這一版之前我們一律送
@@ -1959,17 +2011,17 @@ private fun KeyView(
 
     fun haptic() = currentBehavior.onKeyPress(view, keyRole)
 
-    /** §9.6 的點擊解析：tap → send → noop。 */
+    // §9.6 的點擊解析。⚠ **只建立一次**（`key` 變了才重來）—— 底下
+    // `pointerInput(key)` 的手勢協程抓走的就是它，而那個協程在這顆鍵
+    // **第一次被碰到**時啟動、之後不再重啟。所以它手上必須是一個「問」，
+    // 不是一份抄本；理由與實測見 [keyFire]。
+    val resolveTap = remember(key) {
+        keyFire(key, { currentDigitAct }, { currentOnEvent(it) })
+    }
+
     fun fire() {
         haptic()
-        fireDigit(key, digitAct, currentOnEvent) ?: run {
-            val tap = key.tap
-            val send = key.send
-            when {
-                tap != null -> currentOnEvent(KeyboardEvent.Act(tap))
-                send != null -> currentOnEvent(KeyboardEvent.Send(send))
-            }
-        }
+        resolveTap()
     }
 
     // 有雙擊／長按／彈出盤的鍵不能在按下當下就出字，否則會與後續手勢打架。
@@ -1982,7 +2034,7 @@ private fun KeyView(
             while (true) {
                 // 自動重複走**同一條**解析 —— 兩處各寫一份的話,長按數字鍵
                 // 會走回那條毀掉組字的路,而單擊是對的。
-                fireDigit(key, digitAct, currentOnEvent)
+                fireDigit(key, currentDigitAct, currentOnEvent)
                     ?: key.send?.let { currentOnEvent(KeyboardEvent.Send(it)) }
                 delay(behavior.repeatIntervalMs.toLong())
             }
