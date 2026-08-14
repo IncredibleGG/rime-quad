@@ -52,6 +52,13 @@ rs_find_tesseract() {
     cand="$RIME_TESSERACT"
   elif cand="$(command -v tesseract 2>/dev/null)" && [ -n "$cand" ]; then
     :
+  elif [ -x "$HOME/.local/bin/tesseract" ]; then
+    # 建置機上那一份就在這裡(dpkg -x 解到別處、`~/.local/bin/tesseract` 是
+    # 包住它的一行 wrapper)。而 `~/.local/bin` 只在互動式 shell 的 PATH 上
+    # (`.bashrc`/`.profile`),`ssh host '<cmd>'` 這種非互動呼叫拿不到它 ——
+    # 於是這一關會以「找不到 tesseract」失敗,而那句話指向安裝、不指向機器。
+    # 前兩輪的調查者都先被這一條絆住,才發現要自己 export PATH。
+    cand="$HOME/.local/bin/tesseract"
   elif [ -x "$HOME/.local/tess/root/usr/bin/tesseract" ]; then
     cand="$HOME/.local/tess/root/usr/bin/tesseract"
   else

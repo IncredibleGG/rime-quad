@@ -248,6 +248,17 @@ PLANT_SRC_BACKUP=""
 PLANT_APK_BACKUP=""
 # 原始碼植入把**裝置上**那一份也換掉了。這裡記著「跑完要把哪一份裝回去」。
 DEVICE_RESTORE_APK=""
+# 開跑之前 `$CLEAN_APK_PATH` 上到底有沒有一份**乾淨的** APK。
+#
+# ⛔ 沒有這個旗標的時候,收尾那一段會把「gradle 剛剛寫在那條慣用路徑上的那一份」
+#   當成乾淨的裝回裝置 —— 而在**沒有先建過一次**的工作區(新 worktree、
+#   剛 clone 的機器)上,那個路徑上躺的正是**植入的**那一份。實測
+#   (2026-08-14,emulator-5558,新 worktree 跑 `--plant tap-swallowed`):
+#   收尾印「把裝置上的 $IME_PKG 還原成乾淨的那一份(…/app-debug.apk)」,
+#   而裝進去的 sha256=2a05a71e… **與 planted-tap-swallowed.apk 一模一樣**。
+#   下一支腳本於是對著一份植入了缺陷的 APK 報結果,而日誌上寫著「已還原」。
+#   (CI 的慢車道剛好逃過:它先把快車道的 artifact 下載到那條路徑上。)
+CLEAN_APK_WAS_PRESENT=0
 # ⚠ 還原是 trap 保證的。植入的原始碼留在 worktree 裡,下一個人(或下一條線)
 #   會拿它當基準改東西,而 git diff 上看起來就是「有人動了接線」。
 restore_planted_tree() {
@@ -298,6 +309,7 @@ build_planted_apk() {
   if [ -f "$CLEAN_APK_PATH" ]; then
     PLANT_APK_BACKUP="$OUT_DIR/app-debug.clean.apk"
     cp "$CLEAN_APK_PATH" "$PLANT_APK_BACKUP"
+    CLEAN_APK_WAS_PRESENT=1
   fi
   # ⚠ 錨點找不到就**當場停**(exit 2)。默默沒植入的話,這一輪會跑完、全綠、
   #   然後被反轉成「這一關沒有在守」—— 一句指著產品的紅字,而壞的是植入。
@@ -958,6 +970,34 @@ if [ -n "$PLANT" ] && plant_is_source "$PLANT"; then
 fi
 require_device_tools
 
+# ── 裝置上留著的是哪一份 ──────────────────────────────────────────────────
+#
+# ⚠ 這兩支**必須定義在 install_apk 之前**。bash 要執行過 `f() { … }` 那一行
+#   才有那個函式,而 `install_apk` 的呼叫點在它們原本的定義位置**之前** ——
+#   定義留在原處的話,它在那裡是「找不到命令」,而 `got=""` 會讓每一次安裝
+#   都被判成失敗。
+device_apk_sha() {
+  local p
+  p="$(adbs shell pm path "$IME_PKG" 2>/dev/null | tr -d '\r' | sed -n 's/^package://p' | head -1)"
+  [ -n "$p" ] || return 1
+  adbs shell "sha256sum '$p'" 2>/dev/null | tr -d '\r' | awk '{print $1}'
+}
+
+# 給人看的一行:裝置上留著的是哪一份。
+# ⚠ 「一個都沒裝」與「裝著另一份」對下一支腳本是兩種完全不同的處境
+#   (前者連 `pm clear` 都沒得清),所以要分得出來,不可以都印成空字串。
+device_apk_desc() {
+  local sha ver
+  sha="$(device_apk_sha || echo)"
+  if [ -z "$sha" ]; then
+    printf '%s' "$IME_PKG 根本沒有裝在 $SERIAL 上"
+    return 0
+  fi
+  ver="$(adbs shell dumpsys package "$IME_PKG" 2>/dev/null | tr -d '\r' \
+         | sed -n 's/^ *versionName=\(.*\)$/\1/p' | head -1)"
+  printf '%s' "$IME_PKG sha256=$sha versionName=${ver:-<問不到>}"
+}
+
 # 裝一份 APK 上去。
 #
 # ⚠ adb 的原話一定要留下來。這裡以前是
@@ -971,28 +1011,63 @@ require_device_tools
 #   正式金鑰簽的那一份 → INSTALL_FAILED_UPDATE_INCOMPATIBLE。版本號同理
 #   (`rime.versionCode` 也只在快車道寫進 ~/.gradle)。
 #   這兩種都不是產品缺陷,是「同一支 app 的兩份建置」的必然結果 ——
-#   所以撞到它們就先解除安裝再裝一次,而且**把原因說出來**,不要靜靜重試:
-#   靜靜重試會把「使用者升級時真的裝不上去」也一起吞掉,而那是承重的一條。
+#   而它們**每一次都會發生**,不是偶發:同一個 job 裡 `release_check.sh --emu-only`
+#   第 6c 關(升級路徑)最後蓋上去的是**正式金鑰簽的 release**,接著這一支要裝的
+#   是**當場 assembleDebug 出來的 debug 金鑰**那一份。實測(2026-08-14,
+#   emulator-5558 / lumina_test2,裝置上先放 R2 上那份已發布的 release 簽章 APK,
+#   憑證 SHA-256 444b1474…,再裝 debug 金鑰 6aaa85d1… 的那一份):
+#     Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: Existing package
+#              $IME_PKG signatures do not match newer version; ignoring!]
+#   所以**先解除安裝,再安裝** —— 不是撞牆之後才補救。
+#
+# ⚠ 這一支因此**不驗**「使用者升級時裝不裝得上去」。那一條是承重的,而它有它
+#   自己的關卡(`release_check.sh` 第 6c 關,那裡才是覆蓋安裝真正被驗到的地方)。
+#   在這裡順便驗它,只會讓「兩個守門共用一台裝置」的殘留狀態變成這一關的紅字。
+#
+# ⚠ **裝不上去不可以往下跑。** 從前這裡印一行「安裝沒成功」就繼續:接下來每一條
+#   斷言量的都是裝置上**留著的那一份別的 APK**,於是報出一堆看起來像產品缺陷的
+#   [FAIL](標點鍵沒反應、第二音節讀不到、候選沒收斂)。**對著錯的 APK 報出來的
+#   紅,比沒有測更糟** —— 沒測至少誠實。
 install_apk() {
-  local apk="$1" out rc
+  local apk="$1" out rc want got
+  want="$(sha256sum "$apk" 2>/dev/null | awk '{print $1}')"
+
+  # ⚠ `uninstall` 是破壞性動作,逐呼叫點過閘(`verify_device_hygiene.sh` 規則 C)。
+  #   「裝置準備」那一段開頭那一道罩得到這裡(規則 C 判的是縮排支配),但那是靠
+  #   版面、不是靠這一行說得清楚;而這支函式將來若被搬走,罩它的就不再是那一道。
+  if rs_assert_destructive_ok "$ADB" "$SERIAL" "uninstall $IME_PKG(裝 $(basename "$apk") 之前)"; then
+    if adbs uninstall "$IME_PKG" >/dev/null 2>&1; then
+      info "裝之前先移除了裝置上的 $IME_PKG(同一支 app 的兩份建置,簽章與版本號本來就會不同)"
+    fi
+  else
+    info "沒過裝置閘,沒有先移除舊安裝 —— 簽章或版本號不同的話,下面那一步會裝不上去。"
+  fi
+
   info "安裝 $apk"
   out="$(adbs install -r -g -t "$apk" 2>&1)"; rc=$?
-  if [ "$rc" -eq 0 ] && ! printf '%s' "$out" | grep -qi "failure"; then
+
+  # ⚠ 判準是**裝置上那一份的 sha256**,不是 adb 的結束碼、也不是輸出裡有沒有
+  #   "Failure" 這個字。兩邊都會說謊:
+  #     · adb 會先試 incremental、失敗再退回 streamed。實測(2026-08-14 本機):
+  #       成功的那一次輸出裡照樣有一行 `Failure [...]` —— 舊判準的
+  #       `grep -qi failure` 會把一次**成功的安裝**判成失敗,然後 exit 2。
+  #     · 反過來,舊版 adb 裝不上去也回 0。
+  #   「裝置上現在跑的是不是這一份」只有裝置答得出來,而下面每一關量的都是它。
+  got="$(device_apk_sha || echo)"
+  if [ -n "$want" ] && [ "$got" = "$want" ]; then
     return 0
   fi
-  info "安裝沒成功,adb 說:$(printf '%s' "$out" | tr '\n' ' ')"
-  case "$out" in
-    *UPDATE_INCOMPATIBLE*|*INCONSISTENT_CERTIFICATES*|*VERSION_DOWNGRADE*|*signatures*)
-      info "→ 這是同一支 app 的兩份建置(金鑰或版本號不同),不是產品問題:先解除安裝再裝一次。"
-      adbs uninstall "$IME_PKG" >/dev/null 2>&1
-      out="$(adbs install -r -g -t "$apk" 2>&1)"; rc=$?
-      if [ "$rc" -eq 0 ] && ! printf '%s' "$out" | grep -qi "failure"; then
-        info "→ 解除安裝之後裝上去了。"
-        return 0
-      fi
-      ;;
-  esac
-  echo "安裝 $apk 失敗(exit $rc):$(printf '%s' "$out" | tr '\n' ' ')" >&2
+
+  # 走 fail() 而不是光禿禿的 exit:訊息要進 FAIL_LOG,`finish` 才說得出
+  # 「紅的不是該紅的那一條」—— 帶 --plant 時,把環境故障當成「反向測試通過」
+  # 正是這一支最怕的假綠燈(見 fail() 上面那段註解)。
+  fail "裝不上去:$apk 沒有進到 $SERIAL(adb exit $rc)。"
+  fail "  adb 說:$(printf '%s' "$out" | tr '\n' ' ')"
+  fail "  裝置上留著的是:$(device_apk_desc)"
+  fail "  再往下跑的話,每一條斷言量到的都是那一份,不是要驗的這一份 ——"
+  fail "  對著別份 APK 報出來的紅看起來像產品缺陷,比沒有測更糟。所以這裡停。"
+  finish || true
+  # 2 = 這一關**沒驗到**(環境),不是 1 = 產品紅了。
   exit 2
 }
 
@@ -1001,8 +1076,15 @@ if [ -n "$APK" ]; then
   # 裝上去的是植入的那一份 → 這一輪結束時要把乾淨的那一份裝回裝置(見
   # restore_planted_tree)。CLEAN_APK_PATH 在 build_planted_apk 收尾時
   # 已經被還原成乾淨的那一份了。
-  if [ -n "$PLANT" ] && plant_is_source "$PLANT" && [ -f "$CLEAN_APK_PATH" ]; then
-    DEVICE_RESTORE_APK="$CLEAN_APK_PATH"
+  if [ -n "$PLANT" ] && plant_is_source "$PLANT"; then
+    if [ "$CLEAN_APK_WAS_PRESENT" -eq 1 ] && [ -f "$CLEAN_APK_PATH" ]; then
+      DEVICE_RESTORE_APK="$CLEAN_APK_PATH"
+    else
+      # 開跑之前那條路徑上什麼都沒有 → gradle 剛剛寫上去的那一份**就是植入的**。
+      # 把它當成「乾淨的」裝回裝置,等於一邊污染裝置一邊在日誌上寫「已還原」。
+      echo "!! 開跑之前 $CLEAN_APK_PATH 不存在,所以那裡現在躺的是**植入的**那一份 —— 不拿它當乾淨的裝回去。" >&2
+      echo "!! 這一輪跑完,裝置上留著的會是植入了 $PLANT 的 APK。下一支腳本請自己帶 --apk,或先裝一份乾淨的上去。" >&2
+    fi
   fi
 fi
 # ⚠ 見 verify_candbar.sh 同一行的註解:不帶 --apk 時要靠 `pm path` ＋
@@ -1025,12 +1107,8 @@ rs_write_device_stamp "$ADB" "$SERIAL" "$OUT_DIR/device.txt" "${APK:-}" "$IME_PK
 # 判準用 sha256:檔案大小會撞、版本號四條線都一樣、`pm path` 只給得出路徑。
 # 沒帶 --apk 時就把「開跑當下裝置上那一份」當成基準 —— 這一支要求的是
 # **從頭到尾同一份**,至於它是誰建的由呼叫端負責。
-device_apk_sha() {
-  local p
-  p="$(adbs shell pm path "$IME_PKG" 2>/dev/null | tr -d '\r' | sed -n 's/^package://p' | head -1)"
-  [ -n "$p" ] || return 1
-  adbs shell "sha256sum '$p'" 2>/dev/null | tr -d '\r' | awk '{print $1}'
-}
+# ⚠ `device_apk_sha` 的定義已經搬到 `install_apk` **之前**(bash 要執行過
+#   定義那一行才有函式,而 install_apk 現在靠它回答「到底裝進去了沒」)。
 APK_SHA=""
 if [ -n "$APK" ]; then
   APK_SHA="$(sha256sum "$APK" | awk '{print $1}')"
