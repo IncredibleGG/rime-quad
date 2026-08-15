@@ -4086,8 +4086,8 @@ self_check() {
 "W21|service/settings_window.cc|s=s.replace('CDIS_FOCUS','CDIS_SELECTED')"
 "W23|service/settings_window.cc|s=s.replace('kStatusRedeployRunning','kStatusApplied')"
 "W24a 版面回到 service|service/settings_window.cc|s=s.replace('void SettingsWindow::LayoutUi() {','void SettingsWindow::LayoutUi() { Stack sneaky(0, 0, 100); (void)sneaky.Push(10, 2);',1)"
-"W24b 版面上少三顆|common/ui_layout.cc|s=s.replace('      radios({IDC_THEME_0, IDC_THEME_1, IDC_THEME_2}, \"appearance_radio\");','',1)"
-"W24c 某頁多塞三顆|common/ui_layout.cc|s=s.replace('radios({IDC_THEME_0, IDC_THEME_1, IDC_THEME_2}, \"appearance_radio\");','radios({IDC_THEME_0, IDC_THEME_1, IDC_THEME_2, IDC_LANG_1, IDC_LANG_2, IDC_LANG_3}, \"appearance_radio\");',1)"
+"W24b 版面上少三顆|common/ui_layout.cc|s=s.replace('      radios(IDC_THEME_HEAD, IDC_THEME_BLURB, UiString::kThemeBlurb,' + chr(10) + '             {IDC_THEME_0, IDC_THEME_1, IDC_THEME_2}, \"appearance_radio\");','',1)"
+"W24c 某頁多塞三顆|common/ui_layout.cc|s=s.replace('{IDC_THEME_0, IDC_THEME_1, IDC_THEME_2}, \"appearance_radio\");','{IDC_THEME_0, IDC_THEME_1, IDC_THEME_2, IDC_LANG_1, IDC_LANG_2, IDC_LANG_3}, \"appearance_radio\");',1)"
 "W24e 頁名回到 service|service/settings_window.cc|s=s.replace('  wc.lpszClassName = kClass;','  const UiString sneaky[] = {UiString::kNavSchemas}; (void)sneaky;' + chr(10) + '  wc.lpszClassName = kClass;',1)"
 "W24d 表上少三顆|service/settings_window.cc|s=s.replace('    {IDC_THEME_0, L\"BUTTON\", RADIO1, UiString::kThemeFollowSystem},','',1).replace('    {IDC_THEME_1, L\"BUTTON\", RADIO, UiString::kThemeLight},','',1).replace('    {IDC_THEME_2, L\"BUTTON\", RADIO, UiString::kThemeDark},','',1)"
 "W25 拿掉滾輪|service/settings_window.cc|s=s.replace('case WM_MOUSEWHEEL:','case WM_NULL + 4242:',1)"
@@ -4304,7 +4304,15 @@ PYMUT
     local wnum; wnum="$(printf '%s' "${name}" | sed -n 's/^\(W[0-9]\{1,3\}\).*/\1/p')"
     if [ -n "${wnum}" ]; then
       local plain; plain="$(printf '%s\n' "${out}" | sed 's/\x1b\[[0-9;]*m//g')"
-      if ! printf '%s\n' "${plain}" | grep -q "^\[FAIL\] ${wnum}[:/ ]"; then
+      # ⚠ **這一行以前是 `printf … | grep -q …`,而那正是本檔檔頭
+      #   §2-G5 明文禁止的形狀。** `set -o pipefail` 下,grep -q 命中
+      #   之後立刻關掉 pipe,printf 收到 SIGPIPE(141),於是**命中**
+      #   被讀成失敗 —— 而且只在輸出夠大的時候發作。
+      #   實測(2026-08-15):W49i 那一條植入會讓 W49 吐 59 則違規,
+      #   於是 `[FAIL] W49:` 明明在輸出裡,harness 卻報
+      #   「不是紅在 W49」;把同一段 grep 抽出來單獨跑(沒有 pipefail)
+      #   就命中。**本檔被同一件事咬第四次,而這一次咬的是守門的守門。**
+      if ! grep -q "^\[FAIL\] ${wnum}[:/ ]" <<<"${plain}"; then
         printf '  \033[1;31m植入 %s 的違規之後紅了,但**不是紅在 %s** —— 換了個地方壞掉不算守住\033[0m\n' \
                "${name}" "${wnum}" >&2
         printf '%s\n' "${plain}" | grep '^\[FAIL\]' | head -4 >&2
