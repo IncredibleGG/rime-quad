@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 
 #include "../common/callback_gate.h"
 #include "../common/ime_policy.h"
@@ -544,8 +545,10 @@ Result Engine::ToggleAsciiMode(uint64_t id) {
   return r;
 }
 
-Result Engine::ProcessKey(uint64_t id, int32_t keysym, uint32_t mods) {
+Result Engine::ProcessKey(uint64_t id, int32_t keysym, uint32_t mods,
+                          KeyWait* wait) {
   Result r;
+  if (wait) *wait = KeyWait();
   // ── ⚠ 這道門在**呼叫端執行緒**上答，不排進佇列 ──────────
   //
   //   機制要寫對，因為它決定的不是「按鍵有沒有被吃掉」，是**連線活不活**：
@@ -570,11 +573,10 @@ Result Engine::ProcessKey(uint64_t id, int32_t keysym, uint32_t mods) {
   //   不呼叫任何 rs_*，所以在哪一條執行緒上答都是同一個答案 —— 而在這裡
   //   答是微秒級的，一顆鍵都不會排到那一包後面。
   //
-  //   ⚠ 這樣仍然**不是**「按鍵不會逾時」。剩下的是一個真的窗口：一顆鍵
-  //     剛好在 BeginDeploy 寫下階段之前讀到 kIdle、又排在那一包後面，那一顆
-  //     還是會逾時。要連它也收掉，得讓按鍵的等待有上限，而且遲到的工作
-  //     不可以把那顆鍵打進 librime（不然引擎組了字、宿主也打了字，兩邊
-  //     分岔）—— 那是另一件事，開在 task #93。
+  //   ⚠ 這道門收掉的只有「部署期間排在那一包後面」那一種。剩下的每一種
+  //     慢工作(SESSION_NEW 的 ApplyChoice 實測 442~753ms、離開的宿主
+  //     EndSessionAsync 要把使用者詞典寫回去、設定視窗套字形)它都管不到
+  //     —— 那些是下面那個有上限的等待在管的(#93)。
   //
   // ⚠ 而且這道門必須在 Find() **之前**（#90）：重新部署期間 session 是
   //   **真的不見了**，先 Find() 就會走進下面那條「找不到」—— 回給宿主的是
@@ -586,18 +588,58 @@ Result Engine::ProcessKey(uint64_t id, int32_t keysym, uint32_t mods) {
     r.handled = false;
     return r;
   }
-  Post("按鍵", [&] {
-    const uintptr_t sess = Find(id);
-    if (!sess) {
-      // 引擎不認得這個 id(部署後重建那一個失敗了,或宿主拿著過期的 id)。
-      // ⚠ 同樣不可以回一份全 0 的快照 —— 理由與上面那一段一模一樣。
-      r.handled = false;
-      r.snap.status_flags = kStDisabled;
-      return;
+  // ── 有上限的等待 + 作廢權(#93)──────────────────────────────
+  //
+  // 這一段以前是 `Post("按鍵", …)`,而 Post 是 `queue_.Call(label, fn, 0)`
+  // —— timeout 0 = **永遠等**。引擎只有一條 FIFO,所以任何一件排在前面的
+  // 慢工作都會讓這一顆鍵等到 DLL 那側的 50ms 用完;而那不是「這顆鍵慢了」,
+  // 是 ipc_client.cc:155 的 Fail() → Close() 把**整條連線丟掉**。
+  // 連線一丟,接下來 500ms 內那個宿主的每一顆鍵都是 fail-open 的英文,
+  // 而重連本身又要一次 SESSION_NEW + 一次 EndSessionAsync —— 正回饋。
+  //
+  // ⚠ **上限與作廢權必須同一次做完。**
+  //   只加上限的話:我們回 handled=false,DLL 那側會照既有路徑
+  //   (text_service.cc 的 SelfInsertChar)把那個字元自己補進宿主的文件;
+  //   而幾百毫秒之後那件遲到的工作又把同一顆鍵送進 librime ——
+  //   **引擎組了字、宿主也打了字,兩邊分岔**。那比現在更糟,而且是靜默的。
+  //   作廢權(common/work_queue.cc 的 CallAbandonable)保證這兩件事
+  //   剛好發生一件。
+  //
+  // ⚠ 逾時**不可以**回一份全 0 的快照 —— 理由與上面那一段一模一樣:
+  //   狀態列會把全 0 讀成「一切正常,而且什麼都沒開」,把使用者剛切好的
+  //   中英打回預設,同時一句「還沒好」都不說。
+  //
+  // ⚠ 結果寫在一個與工作**共同持有**的盒子裡,不是呼叫端的框:
+  //   逾時之後這個函式就返回了,而那件工作可能還在佇列裡。
+  //   這正是 common/work_queue.h 檔頭那一整段講的東西。
+  auto box = std::make_shared<Result>();
+  bool abandoned = false;
+  const WorkQueue::Status st = queue_.CallAbandonable(
+      "按鍵",
+      [this, id, keysym, mods, box] {
+        const uintptr_t sess = Find(id);
+        if (!sess) {
+          // 引擎不認得這個 id(部署後重建那一個失敗了,或宿主拿著過期的
+          // id)。⚠ 同樣不可以回一份全 0 的快照。
+          box->handled = false;
+          box->snap.status_flags = kStDisabled;
+          return;
+        }
+        box->handled = rs_process_key(sess, keysym, mods);
+        box->snap = TakeSnapshotLocked(sess);
+      },
+      kKeyDeadlineMs, &abandoned);
+
+  if (st != WorkQueue::Status::kDone) {
+    if (wait) {
+      wait->timed_out = true;
+      wait->abandoned = abandoned;
     }
-    r.handled = rs_process_key(sess, keysym, mods);
-    r.snap = TakeSnapshotLocked(sess);
-  });
+    r.handled = false;
+    r.snap.status_flags = kStDisabled;
+    return r;
+  }
+  r = *box;
   return r;
 }
 

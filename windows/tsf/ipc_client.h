@@ -162,6 +162,14 @@ class IpcClient {
   // 存在是為了讓 rime_probe 與日後的診斷工具講得出人話。
   const ReadyDiagnosis& diagnosis() const { return diag_; }
 
+  // ── 給 text_service 記數用的兩支 ────────────────────────────────
+  //
+  // ⚠ 兩支都只加一個計數器,一行記錄都不寫。呼叫點在宿主的 UI 執行緒上、
+  //   而且是每一顆按鍵都會經過的地方 —— 在那裡寫磁碟就是把「輸入法很慢」
+  //   做成一個功能。數字由下面那條節流的摘要一次帶出去。
+  void NoteKeyPassedThrough() { ++keys_passed_while_down_; }
+  void NoteKeyLostBetweenPasses() { ++keys_lost_between_passes_; }
+
   // 把連線狀態機歸零(退避、失敗計數、階段),連線本身也收掉。
   //
   // ⚠ **DLL 不可以呼叫這個。** 退避是它保護宿主 UI 執行緒的手段:
@@ -188,6 +196,8 @@ class IpcClient {
   void SendOneWay(const std::string& payload);
   bool RequestResult(const std::string& payload, uint32_t seq, Result* out);
   void Fail(LinkFailure kind);
+  // 節流的連線摘要(每 10 秒最多一行,總共最多 summary_budget_ 行)。
+  void MaybeTraceLinkSummary();
   bool TryLaunchService();
 
   HANDLE pipe_ = INVALID_HANDLE_VALUE;
@@ -209,6 +219,24 @@ class IpcClient {
   //   而且真正有用的是**前幾次**:第七次的失敗訊息與第一次一模一樣,
   //   只會把記錄檔前面那些有價值的行擠掉。
   int trace_budget_ = 6;
+
+  // ── 抖動的三個數字(#108)──────────────────────────────────────
+  //
+  // ⚠ 這三個是**計數器,不是記錄行**,而那個分別是這一整段的重點。
+  //   舊版唯一沒有額度的一行是 EnsureReady 成功時的「連線就緒」——
+  //   而它正好是抖動時每 500ms 寫一次的那一行。行程額度是 400 行
+  //   (trace.cc 的 kMaxLinesPerProcess),所以連線抖十分鐘就足以把
+  //   ActivateEx 那幾行真正有價值的訊息整個擠掉。
+  //   要補的記錄必須是**摘要**,不是逐事件。
+  uint32_t reconnects_ = 0;               // 第二次以後的每一次連上
+  uint32_t keys_passed_while_down_ = 0;   // 斷線期間放行給宿主的按鍵
+  uint32_t keys_lost_between_passes_ = 0; // Test 說吃、Key 卻送不出去的
+  int64_t connected_at_ms_ = 0;           // 這一條連線是什麼時候好的
+  uint32_t last_link_ms_ = 0;             // 上一條連線活了多久
+  bool ever_connected_ = false;
+  int64_t last_summary_ms_ = 0;
+  int ready_trace_budget_ = 3;   // 「連線就緒」前三次照寫
+  int summary_budget_ = 8;
 };
 
 }  // namespace rimewin

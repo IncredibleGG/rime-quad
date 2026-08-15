@@ -1264,18 +1264,29 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* ctx, WPARAM w, LPARAM l,
   // 是兩件完全不同的事,前者要查的是 ActivateEx 那一段。
   const KeyPlan plan = PlanKey(ev);
   const bool ready = plan.eat && ipc_.EnsureReady();
+  // ⚠ 額度用完之後不要完全靜音。這一格(「我們本來要吃它,但連線不在」)
+  //   是使用者說「間歇打不出中文」時最直接的計數,而它以前只活在那 5 行
+  //   額度裡 —— 用完之後整段時間完全沒有痕跡。只加計數,不寫記錄。
+  if (plan.eat && !ready) ipc_.NoteKeyPassedThrough();
   if (key_trace_budget_ > 0) {
     --key_trace_budget_;
     // 五個欄位就足以指出斷在哪一段:
     //   keysym == 0         → 佈局那一段(按鍵根本沒進引擎,見 win32_oracle.h)
     //   族別 + 組字中 = 不吃 → 刻意放行給宿主(退格在沒有組字時就走這裡)
     //   吃了但 !ready       → IPC 那一段(上面 EnsureReady 已經記了原因)
-    Trace("按鍵 vk=0x%02X scan=0x%02X keysym=0x%X mods=0x%X 族=%s 組字中=%d 吃掉=%d",
+    // ⚠ 多帶「階段 / 原因」兩欄是刻意的:上面那句「吃了但 !ready → IPC
+    //   那一段(上面 EnsureReady 已經記了原因)」有一個前提 ——
+    //   EnsureReady 的原因行只有 6 行額度(ipc_client.h 的 trace_budget_),
+    //   用完之後那個交叉參照就斷了。寫在這一行上,一行就自足。
+    const ReadyDiagnosis& d = ipc_.diagnosis();
+    Trace("按鍵 vk=0x%02X scan=0x%02X keysym=0x%X mods=0x%X 族=%s 組字中=%d "
+          "吃掉=%d 階段=%s 原因=%s",
           static_cast<unsigned>(w),
           static_cast<unsigned>((l >> 16) & 0xFF),
           static_cast<unsigned>(plan.mapped.keysym),
           static_cast<unsigned>(plan.mapped.modifiers), KeyKindTag(plan.kind),
-          Composing() ? 1 : 0, ready ? 1 : 0);
+          Composing() ? 1 : 0, ready ? 1 : 0, ReadyStageName(d.stage),
+          LinkFailureName(d.failure));
     if (key_trace_budget_ == 0)
       Trace("(按鍵記錄額度用完,之後不再記 —— 它在宿主的 UI 執行緒上)");
   }
@@ -1582,10 +1593,33 @@ bool TextService::HandleKey(ITfContext* ctx, WPARAM w, LPARAM l, bool key_up) {
 
   Result result;
   if (!ipc_.SendKey(plan.mapped.keysym, plan.mapped.modifiers, &result)) {
-    // ⚠ 這裡是「按鍵永久變灰」的分岔點。拿不到結果就**放行**,
-    //   不可以吃掉。使用者打不出中文會抱怨,打不出任何字則是電腦壞了。
+    // ── ⚠ 這一格以前是 `return false`,而那是一個黑洞 ──────────────
+    //
+    //   舊註解說「拿不到結果就**放行**,不可以吃掉」。那句話對的是
+    //   **上面那一格**(EnsureReady 失敗):那一條路上 OnTestKeyDown
+    //   同一趟也會失敗,所以我們從頭到尾沒有宣告吃過,宿主的預設處理
+    //   還在。這一條不是 —— 走到這裡代表 EnsureReady() 在 Test 那一趟
+    //   是好的、我們已經 `*eaten = TRUE`,而連線斷在**兩趟之間**。
+    //
+    //   宿主(以及 CUAS 相容層)在聽到「吃」的那一刻就放棄了自己的預設
+    //   處理;事後在這裡改口說沒吃,那顆鍵回不去 —— 它就這樣消失。
+    //   使用者看到的不是「打出英文」,是「按了完全沒有反應」,
+    //   而那比打出英文更糟。這正是本檔 OnTestKeyDown 那一段 ⚠⚠
+    //   寫的「掉進兩邊中間的黑洞」。
+    //
+    //   所以這裡要負責到底,規則與下面 !result.handled 那一段完全相同。
     engine_composing_ = false;
-    return false;
+    // 只加計數,不寫記錄:這裡是宿主的 UI 執行緒。數字由 ipc_client 的
+    // 節流摘要帶出去(「兩趟之間掉了=%u鍵」)。
+    ipc_.NoteKeyLostBetweenPasses();
+    if (ShouldSelfInsert(plan.kind) && !composition_) {
+      const char32_t ch = CharForSelfInsert(plan.mapped.keysym);
+      if (ch != 0 && SelfInsertChar(ctx, ch)) return true;
+    }
+    // 組字進行中的功能鍵(或補不出字元的那些):吃掉並且什麼都不做。
+    // 理由與下面那一段一字不差 —— 自己插字元會插進組字的 range 裡,
+    // 放行給宿主會讓它拿方向鍵去動壓在組字上的游標。
+    return true;
   }
   if (!result.handled) {
     // 引擎不處理這顆鍵 —— 但我們在 OnTestKeyDown 已經宣告吃掉它了,
@@ -1609,7 +1643,11 @@ bool TextService::HandleKey(ITfContext* ctx, WPARAM w, LPARAM l, bool key_up) {
     //   兩條都比「什麼都不做」糟。而且這樣一來
     //   「OnTestKeyDown 說吃 ⟹ OnKeyDown 也說吃」是**結構上**成立的,
     //   不是碰運氣 —— verify_input_matrix.sh 的 MISMATCH 那一格量的就是它。
-    //   (唯一的例外是連線在兩趟之間斷掉,而那條路上面已經放行了。)
+    //   ⚠ 這裡以前寫著「唯一的例外是連線在兩趟之間斷掉,而那條路上面
+    //     已經放行了」。**那句話是錯的**:上面那條路(SendKey 失敗)
+    //     以前是 `return false`,而它發生在 *eaten 已經是 TRUE 之後 ——
+    //     那不是放行,那是黑洞。現在它與這裡走同一套規則,所以
+    //     「Test 說吃 ⟹ Key 也說吃」**沒有例外**。
     if (ShouldSelfInsert(plan.kind) && !composition_) {
       const char32_t ch = CharForSelfInsert(plan.mapped.keysym);
       if (ch != 0 && SelfInsertChar(ctx, ch)) {
@@ -1640,9 +1678,44 @@ bool TextService::HandleKey(ITfContext* ctx, WPARAM w, LPARAM l, bool key_up) {
 
   pending_rect_ = false;
   const Snapshot snap = result.snap;
-  RunSyncSession(ctx, client_id_, [this, ctx, &snap](TfEditCookie ec) -> HRESULT {
-    return ApplyPlan(ec, ctx, snap);
-  });
+  // ⚠ 目標 context 與 SendAsciiToggle 用**同一份**判斷:組字是開在
+  //   composition_ctx_ 那一份文件上的,而 TSF 交進來的 ctx 不保證是同一個。
+  //   拿錯的話 SetCompositionText 會用 composition_->GetRange() 取範圍、
+  //   卻對**別人的** ctx 呼叫 SetSelection。兩條路各一份判斷本身就是缺陷。
+  //   ⚠ 這一格只有真機驗得到(#48),CI 上驗不到 —— 不宣稱它已經修好。
+  ITfContext* target = composition_ ? composition_ctx_ : ctx;
+  if (target) {
+    // ⚠ 回傳值一定要接住。舊版把它整個丟掉,於是「宿主拒絕了同步的讀寫鎖」
+    //   這件事完全沒有痕跡:ApplyPlan 一步都沒做(包括它第一行的
+    //   engine_composing_ 更新),而畫面上引擎好、管道通、那一橫顯示中/繁,
+    //   文件裡什麼都沒有出現。孿生路徑(SendAsciiToggle)做了這三件事,
+    //   這一條沒做 —— 兩份真相已經漂移。
+    const HRESULT shr =
+        RunSyncSession(target, client_id_,
+                       [this, target, &snap](TfEditCookie ec) -> HRESULT {
+                         return ApplyPlan(ec, target, snap);
+                       });
+    if (FAILED(shr)) {
+      // ApplyPlan 一步都沒做,所以 engine_composing_ 要在這裡自己跟上引擎
+      // —— 少了它,退格從此掉進黑洞(見 Composing())。
+      engine_composing_ = (snap.status_flags & kStComposing) != 0;
+      if (edit_fail_trace_budget_ > 0) {
+        --edit_fail_trace_budget_;
+        Trace("按鍵:edit session 失敗 hr=0x%08lX,快照沒寫進文件 keysym=0x%X",
+              static_cast<unsigned long>(shr),
+              static_cast<unsigned>(plan.mapped.keysym));
+      }
+    }
+  } else {
+    // 沒有文件可以動。至少讓 engine_composing_ 跟上引擎(同上)。
+    engine_composing_ = (snap.status_flags & kStComposing) != 0;
+    if (edit_fail_trace_budget_ > 0) {
+      --edit_fail_trace_budget_;
+      Trace("按鍵:沒有 context 可以套用快照 keysym=0x%X has_commit=%d",
+            static_cast<unsigned>(plan.mapped.keysym),
+            snap.has_commit ? 1 : 0);
+    }
+  }
 
   // IPC 放在 edit session **之外**:session 期間持有文件鎖,在那裡等別的
   // 進程回話,等於把宿主的文件鎖交給另一個進程的排程。

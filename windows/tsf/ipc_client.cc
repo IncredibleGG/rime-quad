@@ -30,6 +30,11 @@ constexpr DWORD kWaitPipeMs = 400;
 // 每一顆按鍵都會 CreateProcess 一次。
 constexpr int64_t kLaunchCooldownMs = 10000;
 
+// 連線摘要兩行之間的最短間隔。抖動時 EnsureReady 每 500ms 成功一次,
+// 而摘要是**累積**的 —— 十秒寫一行就足以讓使用者貼上來的 tsf.log
+// 說得出「重連了幾百次、掉了幾顆鍵」,又不會把行程額度吃光。
+constexpr int64_t kLinkSummaryMs = 10000;
+
 int64_t NowMs() { return static_cast<int64_t>(::GetTickCount64()); }
 
 // 這一種失敗值不值得**降級**重試一次舊版的 HELLO。
@@ -146,17 +151,48 @@ void IpcClient::ResetLink() {
   negotiated_proto_ = 0;
 }
 
+void IpcClient::MaybeTraceLinkSummary() {
+  if (summary_budget_ <= 0) return;
+  const int64_t now = NowMs();
+  if (last_summary_ms_ != 0 && now - last_summary_ms_ < kLinkSummaryMs) return;
+  last_summary_ms_ = now;
+  --summary_budget_;
+  // ⚠ 這一行要自成一體。舊版是「按鍵那一行說吃不吃,連線失敗那一行說原因」,
+  //   而兩邊各有各的額度(5 行 / 6 行)—— 用完之後那個交叉參照就斷了,
+  //   使用者貼上來的檔案回答不了任何問題。
+  Trace("連線摘要 重連=%u次 上一條活了=%ums 斷線期間放行=%u鍵 "
+        "兩趟之間掉了=%u鍵 上次原因=%s(階段=%s os_err=%lu 服務說=%s)",
+        static_cast<unsigned>(reconnects_),
+        static_cast<unsigned>(last_link_ms_),
+        static_cast<unsigned>(keys_passed_while_down_),
+        static_cast<unsigned>(keys_lost_between_passes_),
+        LinkFailureName(link_.last_failure()), ReadyStageName(diag_.stage),
+        static_cast<unsigned long>(diag_.os_error),
+        diag_.service_error.empty() ? "(沒說)" : diag_.service_error.c_str());
+}
+
 void IpcClient::Fail(LinkFailure kind) {
   // 任何失敗都把連線整條丟掉。
   //
   // 特別是逾時:一次逾時之後,那則回覆仍可能晚一點才到,而管道上的下一個
   // 讀取就會拿到它 —— 從此每一次請求都收到上一次的答案。使用者看到的是
   // 「輸入法慢一拍」,而那種錯位幾乎查不出來。關掉重來是唯一乾淨的做法。
+  const int64_t now = NowMs();
+  // 這一條連線活了多久。抖動的樣子就是這個數字很小(300ms 上下)而
+  // reconnects_ 一直漲 —— 那兩個數字擺在一起才是可讀的訊號。
+  //
+  // ⚠ **這裡不寫 Trace。** 它跑在宿主的 UI 執行緒上,而且抖動時每 500ms
+  //   來一次;寫在這裡就是重蹈本檔標頭那個覆轍。只留資料給摘要。
+  if (connected_at_ms_ != 0) {
+    const int64_t lived = now - connected_at_ms_;
+    last_link_ms_ = static_cast<uint32_t>(lived > 0 ? lived : 0);
+    connected_at_ms_ = 0;
+  }
   Close();
   // 記進診斷。**階段**(kPipe / kHandshake / kSession)由呼叫端自己設 ——
   // 只有它知道當下在做哪一步,而「哪一步」正是診斷裡最有用的一格。
   diag_.failure = kind;
-  link_.OnFailure(kind, NowMs());
+  link_.OnFailure(kind, now);
 }
 
 void IpcClient::SetProfile(uint32_t langid, const std::string& profile_guid) {
@@ -240,12 +276,25 @@ bool IpcClient::EnsureReady() {
     }
     return false;
   }
-  link_.OnConnected();
+  const int64_t ready_ms = NowMs();
+  link_.OnConnected(ready_ms);
   diag_.stage = ReadyStage::kNone;
-  Trace("連線就緒 proto=%u abi=%u session=%llu",
-        static_cast<unsigned>(negotiated_proto_),
-        static_cast<unsigned>(diag_.my_shell_abi),
-        static_cast<unsigned long long>(session_));
+  if (ever_connected_) ++reconnects_;
+  ever_connected_ = true;
+  connected_at_ms_ = ready_ms;
+  // ⚠ 這一行以前**沒有額度**,而它是抖動時每 500ms 寫一次的那一行 ——
+  //   行程額度只有 400 行(trace.cc 的 kMaxLinesPerProcess),所以它會把
+  //   ActivateEx 那幾行擠掉,而那正是「記錄裡完全沒有按鍵行」要查的地方。
+  //   前三次照寫(第一次連上的 proto / abi / session 是有價值的),
+  //   之後交給節流的摘要。
+  if (ready_trace_budget_ > 0) {
+    --ready_trace_budget_;
+    Trace("連線就緒 proto=%u abi=%u session=%llu",
+          static_cast<unsigned>(negotiated_proto_),
+          static_cast<unsigned>(diag_.my_shell_abi),
+          static_cast<unsigned long long>(session_));
+  }
+  MaybeTraceLinkSummary();
   return true;
 }
 
@@ -410,7 +459,7 @@ bool IpcClient::Exchange(const std::string& payload, uint32_t seq,
     Fail(LinkFailure::kServiceError);
     return false;
   }
-  link_.OnExchangeOk();
+  link_.OnExchangeOk(NowMs());
   return true;
 }
 

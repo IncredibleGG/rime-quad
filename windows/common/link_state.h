@@ -96,6 +96,8 @@ class LinkState {
     // 握手版本不合是**不會自己好**的:除非使用者換了檔案。
     // 這種情形退避到上限,不要每半秒去敲一次。
     int64_t handshake_backoff_ms = 30000;
+    // 一條連線要活多久才算「真的好了」。見 OnConnected / OnExchangeOk。
+    int64_t stable_ms = 2000;
   };
 
   // 不寫成 `LinkState(Config cfg = {})`:類別內用還沒完成的巢狀型別當
@@ -116,18 +118,43 @@ class LinkState {
 
   void OnAttempt(int64_t now_ms) { last_attempt_ms_ = now_ms; }
 
-  // 握手成功。退避歸零 —— 之前的失敗不該讓一條已經好了的連線繼續被懲罰。
-  void OnConnected() {
+  // 握手成功。
+  //
+  // ⚠ **這裡不歸零退避**,而那是這個檔案裡最反直覺的一行。
+  //
+  //   舊版是 `backoff_ms_ = 0; failures_ = 0;`,讀起來很對:
+  //   「之前的失敗不該讓一條已經好了的連線繼續被懲罰」。問題在
+  //   「已經好了」這四個字 —— 握手成功只證明**這一刻**管道通,
+  //   不證明這條連線活得下去。
+  //
+  //   於是「連上 → 第一顆鍵在服務端等到逾時 → ipc_client 的 Fail() 把
+  //   整條連線 Close() → 500ms 後再連上」這個迴圈,退避**永遠停在
+  //   initial_backoff_ms**,一次都不會升級:每一輪都先歸零再乘 2,
+  //   而 0 乘 2 還是走 initial。節流因此只涵蓋「連不上」,
+  //   完全不涵蓋「連上又立刻斷」—— 而後者才是使用者機器上正在發生的。
+  //
+  //   代價是真的:每一輪重連在服務端都是一次 SESSION_NEW(實測
+  //   rs_session_create 442~753ms)加一次 EndSessionAsync(把使用者詞典
+  //   寫回去),而那些正是把下一顆鍵擠爆的慢工作。十三個宿主一起以
+  //   500ms 轉的時候,引擎那條 FIFO 前面永遠有人 —— 這是一個正回饋迴圈。
+  //
+  //   所以歸零延到 OnExchangeOk(),而且要求這條連線**活過 stable_ms**。
+  void OnConnected(int64_t now_ms) {
     phase_ = LinkPhase::kReady;
-    backoff_ms_ = 0;
-    failures_ = 0;
-    next_attempt_ms_ = 0;
+    connected_at_ms_ = now_ms;
+    connected_ = true;
+    // next_attempt_ms_ 不動:kReady 期間 ShouldAttemptConnect 一律回 false,
+    // 而下一次 OnFailure 會重算它。留著上一輪的值,診斷才看得出來歷。
   }
 
   void OnFailure(LinkFailure kind, int64_t now_ms) {
     ++failures_;
     last_failure_ = kind;
     phase_ = LinkPhase::kDegraded;
+    // ⚠ 這裡**不重置 backoff_ms_**,而那正是修法的全部:
+    //   OnConnected 不再歸零之後,一條活不過 stable_ms 的連線斷掉時,
+    //   下面那個乘 2 是接著**上一輪**繼續倍增的,一路到 max_backoff_ms。
+    connected_ = false;
     if (kind == LinkFailure::kHandshake) {
       backoff_ms_ = cfg_.handshake_backoff_ms;
     } else {
@@ -141,8 +168,31 @@ class LinkState {
   }
 
   // 一次成功的請求／回覆。用來確認連線還活著。
-  void OnExchangeOk() {
-    if (phase_ == LinkPhase::kReady) failures_ = 0;
+  //
+  // 退避的歸零在**這裡**,不在 OnConnected —— 而且要求這條連線已經活過
+  // cfg_.stable_ms。判準是「撐得住」,不是「連得上」。
+  //
+  // ⚠ 這樣不會把「服務剛重開、第一顆鍵慢了一下、之後就正常」罰死:
+  //   OnExchangeOk 在**每一次**成功往返時都會被呼叫,所以連線只要真的
+  //   穩下來,過了 stable_ms 的第一次往返就把退避清乾淨了。
+  //   真正被罰滿的只有「每一次連上都撐不過 stable_ms」那一種。
+  //
+  // ⚠ stable_ms 的預設值 2000 沒有量測依據,它是推測。行為由
+  //   tests/test_link_state.cc 的 link_flap_escalates_backoff 與
+  //   link_stable_connection_still_resets_backoff 釘住,值本身可以再調。
+  void OnExchangeOk(int64_t now_ms) {
+    if (phase_ != LinkPhase::kReady) return;
+    if (!connected_ || now_ms - connected_at_ms_ < cfg_.stable_ms) return;
+    backoff_ms_ = 0;
+    failures_ = 0;
+  }
+
+  // 這一條連線(若還活著)已經活了多久。沒有連線 = -1。
+  // 給診斷用:「連線摘要」那一行要說得出「上一條活了 300ms」。
+  int64_t ConnectedForMs(int64_t now_ms) const {
+    if (!connected_) return -1;
+    const int64_t d = now_ms - connected_at_ms_;
+    return d > 0 ? d : 0;
   }
 
   int failures() const { return failures_; }
@@ -158,6 +208,8 @@ class LinkState {
   int64_t backoff_ms_ = 0;
   int64_t next_attempt_ms_ = 0;
   int64_t last_attempt_ms_ = 0;
+  int64_t connected_at_ms_ = 0;
+  bool connected_ = false;
 };
 
 }  // namespace rimewin

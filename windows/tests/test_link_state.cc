@@ -45,7 +45,7 @@ TEST(link_never_eats_key_before_handshake) {
 
 TEST(link_eats_key_only_when_ready) {
   LinkState s;
-  s.OnConnected();
+  s.OnConnected(0);
   CHECK(s.MayEatKey());
   CHECK(!s.ShouldAttemptConnect(0));  // 已經好了就不要再連
 }
@@ -55,7 +55,7 @@ TEST(link_every_failure_kind_stops_eating_keys) {
   //   少擋任何一種,使用者在那種情境下就打不了字。
   for (LinkFailure k : kAllLinkFailures) {
     LinkState s;
-    s.OnConnected();
+    s.OnConnected(0);
     CHECK(s.MayEatKey());
     s.OnFailure(k, 1000);
     CHECK(!s.MayEatKey());
@@ -65,7 +65,7 @@ TEST(link_every_failure_kind_stops_eating_keys) {
 
 TEST(link_stays_fail_open_across_repeated_timeouts) {
   LinkState s;
-  s.OnConnected();
+  s.OnConnected(0);
   int64_t now = 0;
   for (int i = 0; i < 50; ++i) {
     s.OnFailure(LinkFailure::kTimeout, now);
@@ -181,17 +181,30 @@ TEST(link_backoff_eats_almost_all_of_a_naive_retry_loop) {
 }
 
 TEST(link_recovers_cleanly_after_service_comes_back) {
-  LinkState s;
-  s.OnConnected();
+  // ⚠ 這一支的預期在 #93/#108 那一輪**刻意改過**,改的是「什麼時候算
+  //   恢復」:舊版是「握手成功的那一刻」,新版是「這條連線撐過
+  //   stable_ms 並且真的成功往返過一次」。
+  //
+  //   舊判準把「連上又立刻斷」讀成恢復,於是那個迴圈的退避永遠停在
+  //   500ms(見 link_flap_escalates_backoff)。而使用者要的「服務重開
+  //   之後立刻又能打字」這件事**沒有變**:下面後半段就是它。
+  LinkState::Config cfg;
+  cfg.stable_ms = 2000;
+  LinkState s(cfg);
+  s.OnConnected(0);
   s.OnFailure(LinkFailure::kIoError, 0);
   s.OnFailure(LinkFailure::kIoError, 0);
   CHECK(s.failures() == 2);
-  s.OnConnected();
+  s.OnConnected(0);
+  // 吃不吃按鍵**只看 phase**,與退避無關 —— 連上就立刻能打字,
+  // 使用者感覺得到的那一半一個位元都沒有變。
   CHECK(s.MayEatKey());
-  // 之前的失敗不該繼續懲罰一條已經好了的連線。
+  CHECK(!s.ShouldAttemptConnect(0));
+  // 但退避要等這條連線證明自己撐得住。
+  CHECK(s.backoff_ms() > 0);
+  s.OnExchangeOk(2000);
   CHECK_INT(s.backoff_ms(), 0);
   CHECK_INT(s.failures(), 0);
-  CHECK(!s.ShouldAttemptConnect(0));
 }
 
 // ⚠ 這一則守的是**上面那份清單漏了一筆**,而它剛剛真的發生過。
@@ -225,4 +238,81 @@ TEST(link_failure_list_covers_every_enum_value) {
 TEST(no_session_is_not_the_same_as_a_broken_wire) {
   CHECK(std::strcmp(LinkFailureName(LinkFailure::kNoSession),
                     LinkFailureName(LinkFailure::kBadMessage)) != 0);
+}
+
+
+// ── 「連上又立刻斷」完全不受節流保護 ──────────────────────────────
+//
+// ★ 這一支是症狀 B 那個正回饋迴圈的可執行證明。
+//
+//   退避原本只涵蓋**連不上**:OnConnected() 一被呼叫就把 backoff_ms_
+//   歸零。於是「連上 → 第一顆鍵逾時 → 整條連線被丟掉 → 500ms 後再連上」
+//   這個迴圈**永遠停在 initial_backoff_ms**,一次都不會升級。
+//
+//   而每一輪重連在服務端都是一次 SESSION_NEW(實測 442~753ms 的
+//   rs_session_create)+ 一次 EndSessionAsync(把使用者詞典寫回去)——
+//   也就是說,節流失效本身就在生產「把下一顆鍵擠爆」的慢工作。
+//   十三個宿主一起這樣轉的時候,引擎佇列前面永遠有人。
+//
+// 判準:一條**活不過 stable_ms** 的連線不算數,退避照樣倍增到上限。
+TEST(link_flap_escalates_backoff) {
+  LinkState::Config cfg;
+  cfg.initial_backoff_ms = 500;
+  cfg.max_backoff_ms = 5000;
+  cfg.stable_ms = 2000;
+  LinkState s(cfg);
+
+  const int64_t kExpected[] = {500, 1000, 2000, 4000, 5000};
+  int64_t now = 0;
+  for (int i = 0; i < 5; ++i) {
+    s.OnConnected(now);          // 連上了
+    s.OnFailure(LinkFailure::kTimeout, now + 50);  // 50ms 之後第一顆鍵就逾時
+    CHECK_INT(s.backoff_ms(), kExpected[i]);
+    CHECK_INT(s.next_attempt_ms(), now + 50 + kExpected[i]);
+    // 500ms 的固定週期在第二輪之後就不夠了 —— 那正是「有節流」的意思。
+    if (i >= 1) CHECK(!s.ShouldAttemptConnect(now + 50 + 500));
+    now = now + 50 + kExpected[i];
+  }
+  // 十輪之後仍然頂在上限,不會回頭。
+  for (int i = 0; i < 5; ++i) {
+    s.OnConnected(now);
+    s.OnFailure(LinkFailure::kTimeout, now + 50);
+    CHECK_INT(s.backoff_ms(), 5000);
+    now = now + 50 + 5000;
+  }
+}
+
+// 反過來的那一半:連線**真的穩下來**之後,退避一定要歸零。
+//
+// 少了這一條,上面那支可以靠「永遠不歸零」全綠 —— 而那個實作的意思是
+// 「服務重開之後使用者要等五秒才打得出中文」,那不是修好,是換一個病。
+TEST(link_stable_connection_still_resets_backoff) {
+  LinkState::Config cfg;
+  cfg.initial_backoff_ms = 500;
+  cfg.max_backoff_ms = 5000;
+  cfg.stable_ms = 2000;
+  LinkState s(cfg);
+
+  // 先抖三輪,把退避推上去。
+  int64_t now = 0;
+  for (int i = 0; i < 3; ++i) {
+    s.OnConnected(now);
+    s.OnFailure(LinkFailure::kTimeout, now + 50);
+    now += 5000;
+  }
+  CHECK(s.backoff_ms() >= 2000);
+
+  // 這一條連線活得久。
+  s.OnConnected(now);
+  s.OnExchangeOk(now + 10);      // 還不夠久 —— 不可以歸零
+  CHECK(s.backoff_ms() >= 2000);
+  s.OnExchangeOk(now + 1999);    // 差一毫秒也還是不夠
+  CHECK(s.backoff_ms() >= 2000);
+  s.OnExchangeOk(now + 2000);    // 撐過 stable_ms 了
+  CHECK_INT(s.backoff_ms(), 0);
+  CHECK_INT(s.failures(), 0);
+
+  // 歸零之後再壞一次,要從 initial 重新開始,不是接著上一輪。
+  s.OnFailure(LinkFailure::kTimeout, now + 3000);
+  CHECK_INT(s.backoff_ms(), 500);
 }

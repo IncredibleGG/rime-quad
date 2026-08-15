@@ -36,6 +36,7 @@
 #ifndef RIMEWIN_COMMON_WORK_QUEUE_H_
 #define RIMEWIN_COMMON_WORK_QUEUE_H_
 
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -122,6 +123,27 @@ class WorkQueue {
   // ⚠ 逾時之後要拿工作的結果,用 CallFor —— 不要自己開一個變數讓
   //   工作寫進去。那正是這個檔案存在的理由。
   Status Call(const char* label, std::function<void()> fn, int timeout_ms);
+
+  // ── 一顆按鍵:有界等待 + **作廢權** ────────────────────────────
+  //
+  // 與 Call 只差一件事,而那件事是硬規則:
+  //
+  //   ⚠ **逾時之後,遲到的工作不可以再執行本體。**
+  //
+  // 少了它,加上限換到的是一個更糟的缺陷:呼叫端已經回報「沒有處理」、
+  // 宿主自己把那顆鍵打進文件了,而幾百毫秒之後那件遲到的工作又把同一顆
+  // 鍵送進引擎 —— 引擎組了字、宿主也打了字,**兩邊分岔**。那種錯位是
+  // 靜默的,而且要重現得先讓引擎剛好慢那麼一下。
+  //
+  // 作廢權是一次 atomic 交換,兩邊誰先碰到誰負責:
+  //   · 工作進來的第一件事就是換走它。換到 = 本體歸它跑。
+  //   · 呼叫端逾時之後也去換。換到 = 本體**保證一步都不會跑**。
+  // 所以「本體跑了」與「呼叫端放棄了」剛好發生一件,不會兩件都發生。
+  //
+  // body_abandoned 回報的就是呼叫端有沒有換到 ——
+  // false 代表工作已經進到本體裡了(那一格見 .cc 的說明)。
+  Status CallAbandonable(const char* label, std::function<void()> fn,
+                         int timeout_ms, bool* body_abandoned = nullptr);
 
   // 有回傳值的有界呼叫。結果放在一個與工作**共同持有**的盒子裡:
   // 逾時之後遲到的工作寫進盒子(還活著),而呼叫端的 `*out` 一個位元組

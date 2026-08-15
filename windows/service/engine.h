@@ -169,7 +169,33 @@ class Engine {
   void PrimeSpareSession(uint32_t langid, const std::string& schema_id,
                          const std::vector<OptionAssign>& options);
 
-  Result ProcessKey(uint64_t id, int32_t keysym, uint32_t mods);
+  // ── 一顆按鍵的等待上限 ────────────────────────────────────────
+  //
+  // DLL 那一側每一顆按鍵的預算是 50ms(tsf/ipc_client.cc 的
+  // kKeyTimeoutMs),而**超過它的代價不是「打出英文」**:
+  // ipc_client.cc 的 Fail() 第一句就是 Close(),整條連線被丟掉、
+  // session_ 歸零。所以服務端這一側必須在 50ms **之內**先放棄,
+  // 剩下的 15ms 留給管道往返與序列化。
+  //
+  // ⚠ 35 這個值是從 50 扣掉餘裕算出來的,不是量出來的最佳值。
+  static constexpr int kKeyDeadlineMs = 35;
+
+  // 一顆按鍵等待的結果。給 pipe_server 記錄用 ——
+  // 「使用者說間歇打不出中文」要變成一個數字,就是從這裡出去的。
+  struct KeyWait {
+    // 在 kKeyDeadlineMs 內沒有等到(或工作根本沒入列)。
+    bool timed_out = false;
+    // 本體**確定一步都沒跑**(我們先搶到作廢權)。
+    //
+    // ⚠ timed_out 而 abandoned 為 false 是那個誠實的殘留窗口:
+    //   工作剛好在我們放棄的同一瞬間進到 rs_process_key 裡了。
+    //   那一顆鍵有可能引擎組了字、而宿主也自己打了字。
+    //   記下來,不要假裝沒有。
+    bool abandoned = false;
+  };
+
+  Result ProcessKey(uint64_t id, int32_t keysym, uint32_t mods,
+                    KeyWait* wait = nullptr);
   Result SelectCandidate(uint64_t id, int32_t index);
   Result CommitComposition(uint64_t id);
   Result Clear(uint64_t id);

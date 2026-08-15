@@ -232,6 +232,38 @@ WorkQueue::Status WorkQueue::Call(const char* label, std::function<void()> fn,
   return ok ? Status::kDone : Status::kTimeout;
 }
 
+WorkQueue::Status WorkQueue::CallAbandonable(const char* label,
+                                             std::function<void()> fn,
+                                             int timeout_ms,
+                                             bool* body_abandoned) {
+  if (body_abandoned) *body_abandoned = false;
+  // 作廢權。**兩邊都用 exchange**,所以「本體跑了」與「呼叫端放棄了」
+  // 剛好發生一件 —— 不是先讀再寫的那種檢查(那個有窗口)。
+  //
+  // ⚠ shared_ptr 是必要的,不是保守:逾時之後呼叫端的框隨時會消失,
+  //   而那件工作還在佇列裡。理由與本檔開頭那一整段完全相同。
+  auto claim = std::make_shared<std::atomic<bool>>(false);
+  const Status s = Call(label,
+                        [claim, fn] {
+                          // 呼叫端已經放棄了 → 本體一步都不跑。
+                          if (claim->exchange(true)) return;
+                          fn();
+                        },
+                        timeout_ms);
+  if (s == Status::kDone) return s;
+  // 逾時(或根本沒入列)。把作廢權搶下來 ——
+  // 搶到 = 本體保證永遠不會被進入。
+  const bool ours = !claim->exchange(true);
+  if (body_abandoned) *body_abandoned = ours;
+  // ⚠ 搶不到的那一格(ours == false)是誠實的殘留窗口:工作**剛好**在
+  //   我們逾時的同一瞬間進到本體裡了。它有多寬,就是那兩個 exchange
+  //   之間的距離 —— 微秒級,而且與佇列有多長無關(真正會痛的那一種是
+  //   「工作在佇列裡躺了幾百毫秒才被撿走」,那一種一定是我們先搶到)。
+  //   這一格關不掉:librime 沒有中途取消。呼叫端要做的是把它記下來,
+  //   不是假裝沒有。
+  return s;
+}
+
 int64_t WorkQueue::StalledMs() const {
   std::lock_guard<std::mutex> lock(state_mu_);
   if (!running_label_) return 0;

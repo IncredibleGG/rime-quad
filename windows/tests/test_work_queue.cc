@@ -548,3 +548,64 @@ TEST(work_queue_start_during_a_pending_stop_is_not_swallowed) {
   q.Stop();
   CHECK_INT(ran.load(), 1);
 }
+
+
+// ── 15. 逾時之後,遲到的工作不可以再執行本體 ─────────────────────
+//
+// ★ 這一條守的是「加上限」這件事本身的代價。
+//
+//   service/engine.cc 的按鍵改成有上限的等待之後,逾時的那一顆鍵會被
+//   回報成 handled=false —— 而 tsf/text_service.cc 收到 handled=false
+//   會**自己把那個字元補進宿主的文件**(SelfInsertChar)。
+//   如果那件遲到的工作稍後又把同一顆鍵送進 librime,結果是
+//   **引擎組了字、宿主也打了字,兩邊分岔**。
+//
+//   engine.cc 在 Ubuntu 上編不起來(要 MSVC),所以這道閘只能住在
+//   common/ 才守得住 —— 與 bar_visibility.h:72-76 同一句話。
+//
+// ⚠ 不是「逾時就取消」:工作沒有被取消,它照樣會被撿走、照樣會跑完
+//   那個包裝。這一條要的是**本體**(那個會呼叫 rs_process_key 的
+//   lambda)一次都沒有被進入。
+TEST(work_queue_abandoned_key_job_never_runs_its_body) {
+  WorkQueue q;
+  q.Start();
+  Gate gate;
+  std::atomic<bool> entered{false};
+  // 工作者被釘在一件慢工作裡 —— 也就是「引擎正在收 session / 部署」。
+  BlockWorker(&q, &gate, &entered);
+
+  std::atomic<int> body_ran{0};
+  bool abandoned = false;
+  const WorkQueue::Status s = q.CallAbandonable(
+      "測試:按鍵", [&body_ran] { body_ran.fetch_add(1); }, 20, &abandoned);
+
+  CHECK(s == WorkQueue::Status::kTimeout);
+  // 呼叫端搶到了作廢權。搶到 = 從這一刻起本體保證不會跑。
+  CHECK(abandoned);
+  CHECK_INT(body_ran.load(), 0);
+
+  // 放行。那件遲到的工作現在會被撿走 —— Stop() 保證已入列的工作
+  // 都會被執行(見 ThreadMain),所以下面那一行不是在賽跑。
+  gate.Open();
+  q.Stop();
+
+  // ★ 全條最重要的一行:那件工作**跑過了**,而本體一次都沒進去。
+  CHECK_INT(body_ran.load(), 0);
+}
+
+// ── 16. 沒有逾時的時候,本體照樣要跑 ───────────────────────────
+//
+// 上面那一條單獨存在時,一個「永遠作廢」的實作可以全綠 ——
+// 而那個實作的意思是「按鍵從此永遠不進引擎」。兩條要一起看。
+TEST(work_queue_bounded_key_job_runs_when_it_makes_the_deadline) {
+  WorkQueue q;
+  q.Start();
+  std::atomic<int> body_ran{0};
+  bool abandoned = true;
+  const WorkQueue::Status s = q.CallAbandonable(
+      "測試:按鍵", [&body_ran] { body_ran.fetch_add(1); }, 1000, &abandoned);
+  CHECK(s == WorkQueue::Status::kDone);
+  CHECK(!abandoned);
+  CHECK_INT(body_ran.load(), 1);
+  q.Stop();
+}

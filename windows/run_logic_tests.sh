@@ -195,6 +195,40 @@ if "${SCRIPT_DIR}/audit_offline_win.sh" --self-check; then
 fi
 echo "==> 反向測試通過(離線稽核會紅)"
 
+# ── #93/#108:按鍵的等待必須有上限,而且一定要配作廢權 ──────────
+#
+# service/engine.cc 在這台 Ubuntu 上**編不起來**(要 MSVC),所以這一條
+# 只能用文字判準守 —— 而它守的正是這一輪最容易被順手還原的一行:
+# Post("按鍵", ...) 是 queue_.Call(label, fn, 0) = **永遠等**,
+# 而 DLL 那一側每顆鍵只有 50ms(tsf/ipc_client.cc 的 kKeyTimeoutMs)。
+# 逾時的代價不是「打出英文」,是 Fail() → Close() 把整條連線丟掉。
+#
+# ⚠ 兩個方向都要問。只問「有沒有 CallAbandonable」的話,有人多加一句
+#   Post("按鍵", ...) 回去照樣全綠;只問「有沒有 Post」的話,換成
+#   queue_.Call(..., 35)(有上限、**沒有**作廢權)也照樣全綠 ——
+#   而那一種換到的是「引擎組了字、宿主也打了字」,比原本更糟,
+#   而且是靜默的。作廢權的測試在 tests/test_work_queue.cc。
+#
+# ⚠ 用 grep -c 先存進變數再比,不要寫 printf 接 grep -q:
+#   在 set -o pipefail 底下**命中會變成失敗**(SIGPIPE 141)——
+#   這棵樹被咬過五次。
+echo
+echo "==> 按鍵的等待有上限而且配了作廢權(#93)"
+# ⚠ 錨在行首:engine.cc 的**註解裡**寫著那一行以前長什麼樣
+#   (那段說明是這次改動的主要價值之一)。不錨行首的話,
+#   守門會被自己的說明文字咬到 —— 而那種紅只會教人把說明刪掉。
+KEY_POST=$(grep -cE '^[[:space:]]*Post\("按鍵"' "${SCRIPT_DIR}/service/engine.cc" || true)
+KEY_BOUNDED=$(grep -c 'queue_.CallAbandonable(' "${SCRIPT_DIR}/service/engine.cc" || true)
+if [ "${KEY_POST}" -ne 0 ]; then
+  echo "!! engine.cc 又出現 ${KEY_POST} 處無上限的 Post(按鍵) —— 那是 queue_.Call(...,0) = 永遠等,而 DLL 那側只有 50ms" >&2
+  exit 1
+fi
+if [ "${KEY_BOUNDED}" -lt 1 ]; then
+  echo "!! engine.cc 的按鍵沒有走 queue_.CallAbandonable() —— 上限與作廢權必須同時在" >&2
+  exit 1
+fi
+echo "   按鍵走 CallAbandonable(${KEY_BOUNDED} 處),沒有無上限的 Post(按鍵)"
+
 echo
 echo "==> 單一來源稽核(同一件事不得在兩個地方各寫一份)"
 "${SCRIPT_DIR}/audit_single_source.sh"

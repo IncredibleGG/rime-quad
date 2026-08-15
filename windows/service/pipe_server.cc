@@ -495,6 +495,30 @@ void PipeServer::ServeClient(HANDLE pipe) {
   RECT caret{0, 0, 0, 0};
   char buf[8192];
 
+  // ── 這一條連線的量測(#108)──────────────────────────────────
+  //
+  // ServeClient 全程只有四處 Log,而且全在 SESSION_NEW 與換方案上;
+  // 連線建立與關閉一個字都不印 —— 所以服務端這一側**完全看不到抖動**。
+  // 使用者回報「間歇打不出中文」時,這幾個數字是唯一能把它變成樣式的東西:
+  //
+  //   [pipe] 連線 #12 離場 存活=312ms 握手=1 session=7 按鍵=1 逾時=1 …
+  //
+  // 連續好幾行長這樣 = 重連迴圈;存活很久而逾時一直漲 = 引擎佇列塞住。
+  // 兩者要修的地方完全不同。
+  const DWORD conn_t0 = ::GetTickCount();
+  uint32_t keys_seen = 0;
+  uint32_t keys_timed_out = 0;
+  uint32_t keys_abandoned = 0;
+  // 每條連線最多 20 行 KEY_MS。⚠ 一定要有額度:這是**每鍵**路徑,
+  // 沒有額度的話一個卡住的引擎會把 1 MiB 的 service.log 寫滿並從頭來過,
+  // 把真正有價值的前幾行捲掉。
+  int key_ms_budget = 20;
+  // 這條連線是怎麼結束的。⚠ 一律指向字面值,不必管生命週期。
+  const char* last_step = "(還在讀)";
+  unsigned last_op = 0;
+  Log("[pipe] 連線 #%llu 進場\n",
+      static_cast<unsigned long long>(client_id));
+
   auto send = [&](const std::string& payload) -> bool {
     const std::string framed = Frame(payload);
     size_t sent = 0;
@@ -508,7 +532,10 @@ void PipeServer::ServeClient(HANDLE pipe) {
       if (!ok && ::GetLastError() == ERROR_IO_PENDING)
         WaitOverlapped(pipe, &ov, stop_event_, &written);
       ::CloseHandle(ov.hEvent);
-      if (written == 0) return false;
+      if (written == 0) {
+        last_step = "送不出去(對面已經不在了)";
+        return false;
+      }
       sent += written;
     }
     return true;
@@ -569,8 +596,14 @@ void PipeServer::ServeClient(HANDLE pipe) {
       if (!ok && ::GetLastError() == ERROR_IO_PENDING)
         fine = WaitOverlapped(pipe, &ov, stop_event_, &got);
       ::CloseHandle(ov.hEvent);
-      if (!fine || got == 0) goto done;
-      if (!reader.Feed(buf, got)) goto done;
+      if (!fine || got == 0) {
+        last_step = got == 0 ? "對面關掉了連線(讀到 0 位元組)" : "讀取失敗";
+        goto done;
+      }
+      if (!reader.Feed(buf, got)) {
+        last_step = "分幀失敗";
+        goto done;
+      }
     }
 
     Op op;
@@ -587,6 +620,7 @@ void PipeServer::ServeClient(HANDLE pipe) {
       break;
     }
 
+    last_op = static_cast<unsigned>(op);
     switch (op) {
       case Op::kHello: {
         Hello h;
@@ -788,6 +822,7 @@ void PipeServer::ServeClient(HANDLE pipe) {
         break;
       }
       case Op::kSessionEnd: {
+        last_step = "SESSION_END(宿主自己收工)";
         uint64_t sid = 0;
         // 同 done: 那一段的理由 —— 不讓離開的宿主佔著連線執行緒等詞典寫完。
         if (DecodeSimple(payload, &seq, &sid)) engine_->EndSessionAsync(sid);
@@ -815,10 +850,30 @@ void PipeServer::ServeClient(HANDLE pipe) {
         // ⚠ 設定是在**這一刻**讀的,不是開機時讀一次快取起來:
         //   使用者在設定裡按下那顆開關之後,下一次輕點就該照新的走 ——
         //   而一顆「要重開才生效」的開關,他會以為它壞了。
-        //   成本是一次小檔案讀取,而且只發生在真的輕點了 Shift 的時候
-        //   (組合鍵一律不會走到這裡),不在每一顆按鍵的路上。
-        const bool shift_tap_on =
-            settings_ ? settings_->Load().ShiftTapToggle() : true;
+        //
+        // ⚠ 但**只有真的可能是輕點 Shift 的那一顆才讀**。上面那句
+        //   「只發生在真的輕點了 Shift 的時候…不在每一顆按鍵的路上」
+        //   以前與程式碼不符:`settings_->Load()` 是無條件執行的,排在
+        //   DecideKeyAction 之前,於是**每一顆按鍵**都在連線執行緒上做一次
+        //   CreateFileW + ReadFile + Parse(settings_store.cc 的 Load /
+        //   ReadFileUtf8),而且握著一把與 Save / AppendNetLog 共用的
+        //   行程層級 mutex —— AppendNetLog 是「整份讀 + 寫暫存檔 +
+        //   FlushFileBuffers + MoveFileExW」,它跑的時候每一個宿主的每一顆
+        //   按鍵都卡在那把鎖上。防毒軟體對 %APPDATA% 的即時掃描讓這一步的
+        //   延遲既真實又間歇。
+        //
+        // ⚠ 行為一個位元都沒有變:DecideKeyAction 只有
+        //   Hotkey::kToggleAsciiModeShiftTap 那一格會用到 shift_tap_enabled
+        //   (見 common/hotkey_policy.cc),而那一格正是這裡問到的那一顆。
+        //   分類本身是純函式,不碰磁碟。
+        DWORD dt_set = 0;
+        bool shift_tap_on = true;
+        if (ClassifyHotkey(k.keysym, k.mods) ==
+            Hotkey::kToggleAsciiModeShiftTap) {
+          const DWORD t_set = ::GetTickCount();
+          shift_tap_on = settings_ ? settings_->Load().ShiftTapToggle() : true;
+          dt_set = ::GetTickCount() - t_set;
+        }
         const KeyAction action =
             DecideKeyAction(k.keysym, k.mods, shift_tap_on);
         if (action == KeyAction::kIgnore) {
@@ -855,7 +910,39 @@ void PipeServer::ServeClient(HANDLE pipe) {
         } else if (action == KeyAction::kToggleAsciiMode) {
           r = engine_->ToggleAsciiMode(k.session);
         } else {
-          r = engine_->ProcessKey(k.session, k.keysym, k.mods);
+          // ── 把「間歇打不出中文」變成一個數字(#108)────────────
+          //
+          // ⚠ 四個欄位缺一不可,而且它們**分得開第一名與第二名**:
+          //   · 引擎佇列塞住 → 佇列前面是「收 session」/「套用方案與選項」,
+          //     已跑 / 最舊等待很大,而 dt_set 接近 0。
+          //   · 設定檔 I/O   → dt_set 很大而佇列那三個接近 0。
+          //   沒有分項的話,兩者在總時間上長得一模一樣 —— 這個專案已經
+          //   因為「一道只量得到成功案例的關卡」吃過虧,不要再造一個。
+          //
+          // 三個佇列欄位早就存在(work_queue.h),只是到現在為止唯一的
+          // 消費點是設定視窗(settings_window.cc),連線路徑上沒有人讀。
+          Engine::KeyWait kw;
+          const DWORD t0 = ::GetTickCount();
+          r = engine_->ProcessKey(k.session, k.keysym, k.mods, &kw);
+          const DWORD dt = ::GetTickCount() - t0;
+          ++keys_seen;
+          if (kw.timed_out) ++keys_timed_out;
+          if (kw.abandoned) ++keys_abandoned;
+          // 30ms 這個門檻:超過它就代表這顆鍵已經吃掉 DLL 那側 50ms
+          // 預算的大半(engine.h 的 kKeyDeadlineMs 是 35)。
+          if ((dt >= 30 || kw.timed_out) && key_ms_budget > 0) {
+            --key_ms_budget;
+            Log("[pipe] KEY_MS=%lu(設定讀取=%lums,佇列前面是「%s」,"
+                "已跑 %lldms,最舊等待 %lldms,逾時=%d,本體作廢=%d)%s\n",
+                static_cast<unsigned long>(dt),
+                static_cast<unsigned long>(dt_set),
+                engine_->CurrentJobLabel().c_str(),
+                static_cast<long long>(engine_->StalledMs()),
+                static_cast<long long>(engine_->OldestWaitingMs()),
+                kw.timed_out ? 1 : 0, kw.abandoned ? 1 : 0,
+                key_ms_budget == 0 ? "  (KEY_MS 額度用完,這條連線不再記)"
+                                   : "");
+          }
         }
         note_schema(r.snap);
         push_ui(r.snap);
@@ -1000,6 +1087,18 @@ void PipeServer::ServeClient(HANDLE pipe) {
   }
 
 done:
+  // ── 這一行是抖動在 service.log 裡的樣式(#108)──
+  //
+  // 存活=300ms、按鍵=1、逾時=1 連續好幾行 = 重連迴圈;
+  // 存活很久而逾時一直漲 = 引擎佇列塞住。兩者要修的地方完全不同,
+  // 而在這一行之前,服務端這一側兩種都看不到。
+  Log("[pipe] 連線 #%llu 離場 存活=%lums 握手=%d session=%llu "
+      "按鍵=%u 逾時=%u 本體作廢=%u 最後一步=%s(op=%u)\n",
+      static_cast<unsigned long long>(client_id),
+      static_cast<unsigned long>(::GetTickCount() - conn_t0),
+      authed ? 1 : 0, static_cast<unsigned long long>(session),
+      static_cast<unsigned>(keys_seen), static_cast<unsigned>(keys_timed_out),
+      static_cast<unsigned>(keys_abandoned), last_step, last_op);
   // ⚠ 不等它做完。rs_session_destroy 要把使用者詞典寫回去,而**下一個**
   //   宿主的 SESSION_NEW 就排在它後面 —— 那正是矩陣裡 8 個宿主逾時的
   //   成因之一。這裡改成非同步之後,這條連線的執行緒不再陪著等;

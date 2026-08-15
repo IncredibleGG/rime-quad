@@ -2866,9 +2866,22 @@ for fn in gates:
     i_find = gb.find('Find(id)')
     if i_find >= 0 and i_find < i_gate:
         print('GATEAFTERFIND=%s' % fn)
-    i_post = gb.find('Post(')
+    # ⚠ 「排進佇列」現在有兩種寫法:ToggleAsciiMode 走 Post(=無上限),
+    #   ProcessKey 走 CallAbandonable(=有上限 + 作廢權,#93)。
+    #   這裡問的是同一個性質:那道門有沒有排在**佇列**後面。
+    m_q = re.search(r'(?<![A-Za-z_])(CallAbandonable|Post)\s*\(', gb)
+    i_post = m_q.start() if m_q else -1
     if i_post >= 0 and i_post < i_gate:
         print('GATEBEHINDQUEUE=%s' % fn)
+    # ⚠ 按鍵那一條另外要求**有上限**(#93/#108)。
+    #   Engine::Post 是 queue_.Call(label, fn, 0) = 永遠等,而 DLL 那一側
+    #   每顆鍵只有 50ms;無上限的等待 = 整條連線被丟掉。
+    #   而且上限一定要配作廢權,不然遲到的工作會把同一顆鍵再打進 librime。
+    if fn == 'ProcessKey':
+        if 'CallAbandonable(' not in gb:
+            print('UNBOUNDEDKEY=%s' % fn)
+        elif re.search(r'(?<![A-Za-z_])Post\s*\(', gb):
+            print('KEYALSOPOSTS=%s' % fn)
     if re.search(r'deploy_state_\.load\(\)\s*!=\s*1', gb):
         print('OLDJUDGE=%s' % fn)
 PYSCRIPT
@@ -2940,11 +2953,15 @@ PYSCRIPT
         red "W36:Engine::${w36line#GATEAFTERFIND=} 的門排在 Find() 之後 —— 重新部署期間 session 是真的不見了,先 Find() 就會走進「找不到」那條路,回給宿主一份 status_flags 全 0 的快照,而狀態列會把它當成「一切正常」"; w36bad=1 ;;
       GATEBEHINDQUEUE=*)
         red "W36:Engine::${w36line#GATEBEHINDQUEUE=} 的門排在 Post() 之後 —— 那道門會在**引擎執行緒**上答,而且排在「收乾淨 session 再開始部署」那一包後面(每一個 rs_session_destroy 都要把使用者詞典寫回去,是這條路上最慢的一步);Engine::Post 是 queue_.Call(...,0) = **永遠等**。而 DLL 那一側每顆鍵的預算是 50 毫秒(tsf/ipc_client.cc 的 kKeyTimeoutMs)—— 逾時就 Fail(kTimeout) → Close()、session_ = 0,**整條連線被丟掉**,於是部署後「保住原 id、重套方案 / 簡繁 / 英數」那一套(#85)對那個宿主不生效"; w36bad=1 ;;
+      UNBOUNDEDKEY=*)
+        red "W36:Engine::${w36line#UNBOUNDEDKEY=} 的按鍵沒有走 CallAbandonable() —— 那表示它又回到無上限的等待(Engine::Post 是 queue_.Call(...,0))。引擎只有一條 FIFO,任何一件慢工作(SESSION_NEW 的 ApplyChoice 實測 442~753ms、離開的宿主寫回使用者詞典)都會讓那顆鍵吃滿 DLL 那側的 50 毫秒預算,而逾時的代價不是「打出英文」,是 ipc_client.cc 的 Fail() → Close() 把**整條連線丟掉**(#93/#108)"; w36bad=1 ;;
+      KEYALSOPOSTS=*)
+        red "W36:Engine::${w36line#KEYALSOPOSTS=} 裡除了 CallAbandonable() 還有一個 Post() —— Post 是無上限的等待,混在按鍵這條路上等於上限沒有生效"; w36bad=1 ;;
       OLDJUDGE=*)
         red "W36:Engine::${w36line#OLDJUDGE=} 還在用 deploy_state_ != 1 判斷 —— 那個值首次部署成功之後**永遠**是 1,重新部署期間這道門是開的(#90 的原始形狀)"; w36bad=1 ;;
     esac
   done <<< "${w36out}"
-  [ "${w36bad}" -eq 0 ] && ok "W36 ${ncreate} 個建 session 的呼叫點全部先問過 SessionCreationAllowed(),BeginDeploy 不在 UI 執行緒上部署而是整包丟給引擎執行緒,那一包收乾淨才 rs_deploy()、拒絕啟動時會建回來也會讓畫面知道,部署終局那一條不靠任何視窗,重建會重套方案與選項,${ngate} 道按鍵的門都讀 phase_、排在 Find() 之前、而且排在 Post() 之前(在呼叫端執行緒上答,不排在收 session 那一包後面)"
+  [ "${w36bad}" -eq 0 ] && ok "W36 ${ncreate} 個建 session 的呼叫點全部先問過 SessionCreationAllowed(),BeginDeploy 不在 UI 執行緒上部署而是整包丟給引擎執行緒,那一包收乾淨才 rs_deploy()、拒絕啟動時會建回來也會讓畫面知道,部署終局那一條不靠任何視窗,重建會重套方案與選項,${ngate} 道按鍵的門都讀 phase_、排在 Find() 之前、而且排在佇列之前(在呼叫端執行緒上答,不排在收 session 那一包後面),ProcessKey 的等待有上限而且配了作廢權(CallAbandonable)"
   # ── W37:部署回呼碰的那個 Engine,活多久 ─────────────────────────
   #
   # OnDeploy 跑在 **librime 的部署執行緒**上,而 Engine 是 main 那條執行緒
@@ -4242,7 +4259,8 @@ self_check() {
 "W36g 那道門讀不到階段|service/engine.cc|s=s.replace('ShouldFailOpen(phase_.load(), deploy_state_.load() == 1,','ShouldFailOpen(RedeployPhase::kIdle, deploy_state_.load() == 1,',1)"
 "W36h BeginDeploy 沒有先把門關上|service/engine.cc|s=s.replace('RedeployEvent::kRequested','RedeployEvent::kRebuilt',1)"
 "W36i 收乾淨那一支不再銷毀 session|service/engine.cc|s=s.replace('    rs_session_destroy(kv.second);' + chr(10) + '  }' + chr(10) + '  const int total','  }' + chr(10) + '  const int total',1)"
-"W36m 按鍵那道門又排到佇列後面|service/engine.cc|s=s.replace('Result Engine::ProcessKey(uint64_t id, int32_t keysym, uint32_t mods) {' + chr(10) + '  Result r;','Result Engine::ProcessKey(uint64_t id, int32_t keysym, uint32_t mods) {' + chr(10) + '  Result r;' + chr(10) + '  Post(' + chr(34) + '先擋一下' + chr(34) + ', [] {});',1)"
+"W36m 按鍵那道門又排到佇列後面|service/engine.cc|s=s.replace('  Result r;' + chr(10) + '  if (wait) *wait = KeyWait();','  Result r;' + chr(10) + '  if (wait) *wait = KeyWait();' + chr(10) + '  Post(' + chr(34) + '先擋一下' + chr(34) + ', [] {});',1)"
+"W36o 按鍵改回沒有作廢權的等待(#93 的本體)|service/engine.cc|s=s.replace('queue_.CallAbandonable(','queue_.Call(',1)"
 "W37a 部署回呼改回裸指標|service/engine.cc|s=s.replace('  g_deploy_gate.Run([ok](Engine* e) { e->OnDeployTerminal(ok); });','  if (g_deploy_engine) g_deploy_engine->OnDeployTerminal(ok);',1)"
 "W37b 閘換成 std::atomic<Engine*>(只換型別)|service/engine.cc|s=s.replace('CallbackGate<Engine> g_deploy_gate;','std::atomic<Engine*> g_deploy_gate{nullptr};',1)"
 "W37c Stop 的關閘排到佇列後面|service/engine.cc|s=s.replace('  g_deploy_gate.Close();' + chr(10) + '  if (!started_) return;','  if (!started_) return;',1).replace('  started_ = false;','  started_ = false;' + chr(10) + '  g_deploy_gate.Close();',1)"

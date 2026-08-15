@@ -258,6 +258,12 @@ class TextService : public ITfTextInputProcessorEx,
   //   「vk 進來了、映出的 keysym 是什麼、有沒有被吃掉」——
   //   第二十顆按鍵的那一行與第一顆一模一樣。
   int key_trace_budget_ = 5;
+  // edit session 被宿主拒絕時的額度。**刻意不與上面那個共用**:
+  // 那一格是「引擎好、管道通、那一橫顯示中/繁,而文件裡什麼都沒出現」
+  // 唯一不需要連線抖動就能解釋的一條,而它以前一行記錄都沒有
+  // (HandleKey 把 RunSyncSession 的回傳值直接丟掉)。
+  // 共用額度的話,英數模式下打幾個字母就把它用光了。
+  int edit_fail_trace_budget_ = 3;
 
   // 最近一次待送出的候選窗位置。在 edit session 內算好,出來之後才送 ——
   // edit session 裡做 IPC 等於在持有文件鎖的時候等別的進程。
