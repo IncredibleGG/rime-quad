@@ -763,8 +763,20 @@ Result Engine::ChangePage(uint64_t id, bool backward) {
 }
 
 Result Engine::CurrentResult(uint64_t id, int deadline_ms, KeyWait* wait) {
-  // ⚠ 這一支在按鍵那條路上(簡繁快捷鍵的第二趟),所以與 ProcessKey
+  // ⚠ 這一支在按鍵那條路上(簡繁快捷鍵那兩趟裡的**第一趟** —— 順序在
+  //   這一輪改過:那件不可逆的事排在最後,理由整段寫在
+  //   common/key_deadline.h 的 PlanVariantKey()),所以與 ProcessKey
   //   同一套。上一輪它還是 Post() = 永遠等。
+  //
+  // ⚠ **Find(id) 失敗時工作是「跑完了」,不是「沒跑」。** 盒子維持預設
+  //   (handled=false、快照全 0),而 CallKeyBounded 回 true。呼叫端要靠
+  //   box->handled 才分得出「跑完了而且是現況」與「跑完了但引擎不認得
+  //   這個 session」—— 後者那一份全 0 的快照被當成現況的話,候選窗會被
+  //   收掉、那一橫把中/英寫成「中」,而 DLL 會把它套進文件,使用者打到
+  //   一半的組字當場消失而且沒有上屏。
+  //   (ProcessKey 對同一件事是在工作本體裡標 kStDisabled;這一支選的是
+  //    「handled 留 false,由呼叫端讀」—— 兩種都可以,不可以的是兩種都
+  //    沒有。check_ui_spec.sh 的 W36 CLAIMBEFOREFIND 守著這一格。)
   auto box = std::make_shared<Result>();
   if (!CallKeyBounded(
           "取快照",

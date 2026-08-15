@@ -150,23 +150,24 @@ void RedirectStdIoIfDetached() {
 //    這個誤解寫的,而它把連線記錄的節流設計成「一輩子 64 條」——
 //    也就是使用者下午出事時那組行已經不寫了。兩處都在這一輪改對。)
 //
-// ⚠ 截斷之前先留一行,不然讀的人會以為記錄自己少了一段。
+// ⚠ 那一行說明要寫在 freopen **之後**。寫在之前的話它進的是**舊檔**,
+//   而下一句 `_wfreopen(path, L"w", stderr)` 連它一起截掉 —— 讀
+//   service.log 的人什麼都看不到。而且那句話要**自足**:它上面沒有東西,
+//   所以不可以寫成「承上」。
 // ⚠ 呼叫點是**每一條新連線**(pipe_server 的 SetLogCheckpoint),不是
 //   每一顆按鍵:GetFileAttributesExW 是磁碟 I/O。
 void RollServiceLogIfTooBig() {
   if (!g_owns_service_log) return;
   const std::wstring path = ServiceLogPath();
   if (path.empty() || !ServiceLogTooBig(path)) return;
-  std::fprintf(stderr,
-               "[log] service.log 超過 1 MiB,從這裡重新開始"
-               "(前面的內容已經丟掉)\n");
-  std::fflush(stderr);
   if (!::_wfreopen(path.c_str(), L"w", stderr)) {
     g_owns_service_log = false;
     return;
   }
   ::_wfreopen(path.c_str(), L"a", stdout);
-  std::fprintf(stderr, "[log] (承上:這是截斷之後的新檔)\n");
+  std::fprintf(stderr,
+               "[log] service.log 超過 1 MiB,已經從頭來過 —— "
+               "這一行以前的內容(更早的那幾次故障)已經丟掉了\n");
   std::fflush(stderr);
 }
 

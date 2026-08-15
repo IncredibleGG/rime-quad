@@ -122,3 +122,63 @@ TEST(KeyDeadline_HostStallIsCountedInTrips) {
   // 200 × 2 = 400 > 300。
   CHECK(kKeyTimeoutMs * kKeyPipeTripsPerKey <= 300);
 }
+
+TEST(KeyDeadline_VariantKeySideEffectGoesLast) {
+  // ── ① 副作用發生了 ⇒ 那顆鍵一定算被我們吃掉 ──────────────────
+  //
+  //   ToggleVariantPref() 回 true 的當下簡繁**已經真的換掉了**。這時回
+  //   handled=false 的話,tsf/text_service.cc 的 `if (!r.handled) return
+  //   false` → `*eaten = FALSE` → TSF 把 Ctrl+Shift+F **也**交給宿主:
+  //   使用者按一下同時得到「簡繁換了」與「VS Code 的跨檔搜尋開了」。
+  CHECK_MSG(PlanVariantKey(/*snapshot_is_current=*/true, /*toggled=*/true)
+                .eat_key,
+            "副作用已經發生,那顆鍵必須算被我們吃掉");
+
+  // ── ② 那顆鍵算被吃掉 ⇒ 手上那一份一定是引擎的現況 ──────────────
+  //
+  //   handled=1 配一份全 0 的快照,DLL 會走 RunSyncSession(ApplyPlan(…))
+  //   把它套進文件 —— 空快照的意思是「沒有組字」,使用者打到一半的那一段
+  //   當場消失,而且**沒有上屏**。
+  for (int i = 0; i < 4; ++i) {
+    const bool cur = (i & 1) != 0;
+    const bool tog = (i & 2) != 0;
+    const VariantKeyPlan p = PlanVariantKey(cur, tog);
+    CHECK_MSG(!p.eat_key || p.ui_is_current,
+              "吃掉了那顆鍵卻拿不出現況 —— DLL 會把空快照套進文件");
+    CHECK_MSG(!p.eat_key || cur,
+              "第一趟沒跑成(或引擎不認得這個 session)就不可以吃掉那顆鍵");
+    // ③ 沒有現況快照就不准去做那件不可逆的事。這一格是 ①② 成立的理由:
+    //   副作用排在最後一趟,前面每一趟失敗都退回「一步都沒做」。
+    CHECK_MSG(p.may_toggle == cur,
+              "那件不可逆的事必須排在**握著現況快照之後**");
+    // 編譯期那一組(common/key_deadline.h 的 static_assert)在執行期再說
+    // 一次 —— 這個框架沒有 SKIP,斷言數為 0 就算失敗。
+    CHECK(VariantKeyPlanIsSound(cur, tog));
+  }
+
+  // ⚠ 四格都要驗。少驗的話,把 PlanVariantKey 改成「永遠吃掉」仍然是綠的
+  //   —— 而那正是這一輪要修掉的那個迴歸(引擎切了、宿主也開了)。
+  CHECK(!PlanVariantKey(true, false).eat_key);
+  CHECK(!PlanVariantKey(false, true).eat_key);
+  CHECK(!PlanVariantKey(false, false).eat_key);
+  CHECK(PlanVariantKey(true, true).eat_key !=
+        PlanVariantKey(true, false).eat_key);
+}
+
+TEST(KeyDeadline_VariantKeyNeverPredictsTheBudget) {
+  // ⚠ 覆核者對「先確認預算夠走兩趟」提的陷阱:第一趟要花多久**事前不知道**,
+  //   所以在最前面查一次不算數。這裡把那條性質釘住:兩趟各自問一次
+  //   RemainingKeyBudgetMs(),而第一趟花掉多少都行 —— 第二趟拿到 0 時,
+  //   ToggleVariantPref 的 `deadline_ms <= 0` 那道門回「什麼都沒做」,
+  //   於是 toggled=false → 不吃那顆鍵 → 交回宿主,兩邊一致。
+  for (int spent = 0; spent <= kKeyDeadlineMs + 50; ++spent) {
+    const int left = RemainingKeyBudgetMs(spent);
+    CHECK(left >= 0);
+    CHECK(left <= kKeyDeadlineMs);
+    // 預算用完的那一格必須表達得出「不做」,而不是退化成「永遠等」。
+    if (left == 0) {
+      CHECK_MSG(!PlanVariantKey(true, /*toggled=*/false).eat_key,
+                "第二趟沒做成就不可以吃掉那顆鍵");
+    }
+  }
+}

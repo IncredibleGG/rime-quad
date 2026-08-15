@@ -174,6 +174,122 @@ constexpr KeyUiAction DecideKeyUiAction(bool timed_out, bool result_is_current) 
                                            : KeyUiAction::kLeaveUiAlone;
 }
 
+// ── 簡繁快捷鍵那條路:那件不可逆的事排在**最後一趟** ────────────────
+//
+// `case Op::kKey` 上的簡繁快捷鍵(Ctrl+Shift+F)在服務端要走**兩趟**引擎
+// 佇列,而其中一趟是有副作用的:PipeServer::ToggleVariantPref() 回 true 的
+// 當下,簡繁**已經真的換掉了** —— settings_window_->SetVariantPref() →
+// PostMessage(WM_RIME_SET_VARIANT) → CommitVariantPref() → store_->Save() +
+// engine_->ApplyVariantAll()(settings_window.cc:2446 / :770 / :2425;hwnd_ 在
+// ThreadMain 開機就建好,不是開過設定才有,所以這條路一直是通的)。
+//
+// ── 上一輪的順序造出來的東西 ────────────────────────────────────
+//
+// 順序是「先切、再取快照」,而取快照那一趟在這一輪被加上了上限。逾時的
+// 那一份是預設建構的 Result,handled 留 false → 送回 DLL →
+// tsf/text_service.cc 的 `if (!r.handled) { … return false; }` →
+// `*eaten = FALSE` → OnPreservedKey 回 FALSE → **TSF 把那顆鍵交給宿主**。
+//
+// 使用者按一下的結果是:簡繁在背後換了,**同時**宿主的 Ctrl+Shift+F 也開了
+// (VS Code 的跨檔搜尋、Word 的字型對話框、檔案總管的新資料夾)。
+//
+// ⚠ main 上不存在這個狀態 —— 當時第二趟是 Engine::Post() = 永遠等,handled
+//   永遠是 true。**是「替第二趟加上限」造出來的**,而觸發條件正好是這一輪
+//   在對付的情境:引擎忙。兩趟共用一份 kKeyDeadlineMs,第一趟吃掉 70ms
+//   之後第二趟只剩 30ms,而兩趟之間還插得進新工作。
+//
+// ── 為什麼是「換順序」,不是「多一個協議欄位」 ──────────────────
+//
+// 另一條路是逾時時仍然宣告 handled=true,再多帶一格告訴 DLL「吃掉了,但
+// 不要動文件」。那要動 Result 的線路格式,而 Result 是**服務 → DLL**:
+// 舊 DLL 的 DecodeResult 要求「剛好用完」,所以新欄位只能照協商出來的版本
+// 寫 —— 也就是 proto ≤ 4 的 DLL(舊的、以及新 DLL 對舊服務降版之後的那些)
+// 收不到那一格,而它們踩到的正是「組字當場消失而且沒有上屏」。升版本身是
+// 純加法沒錯,但這裡的「少一項功能」等於「那個破壞性的缺陷還在」。
+//
+// 換順序不必動線路,而且它把問題**消掉**而不是描述它:唯一那件不可逆的事
+// 排在最後,前面每一趟失敗都退回「一步都沒做」—— 而那條路早就存在、
+// 也早就是對的(handled=false → 那顆鍵交回宿主,兩邊一致)。
+//
+// ⚠ 這裡**一次都不預測**「預算夠不夠走兩趟」。第一趟要花多久事前不知道,
+//   所以「最前面查一次」不算數;這裡改成每一趟開始時各問一次
+//   RemainingKeyBudgetMs(),而第一趟花掉多少都行:剩 0 的話第二趟那道
+//   `deadline_ms <= 0` 的門會直接回「什麼都沒做」。
+struct VariantKeyPlan {
+  // 可不可以去做那件不可逆的事。
+  // ⚠ 呼叫端只有在它為真時才准呼叫 ToggleVariantPref() —— 這一格**就是**
+  //   「副作用排在最後一趟」那道門。
+  bool may_toggle;
+  // 回給 DLL 的 handled。true = 這顆鍵算我們吃掉了,宿主不准再動作一次。
+  bool eat_key;
+  // 這一份快照是不是引擎的現況 —— 服務端可不可以拿它碰 UI,以及 DLL 可不
+  // 可以把它套進文件。
+  bool ui_is_current;
+};
+
+// snapshot_is_current = 第一趟(唯讀的 Engine::CurrentResult)真的跑完了,
+//   **而且**引擎認得那個 session。
+//   ⚠ 後半段不可以省。CurrentResult 的工作本體在 Find(id) 失敗時直接
+//     return,盒子維持預設(handled=false、快照全 0),而 CallKeyBounded
+//     仍然回 true —— 工作**確實跑完了**,只是答案是「不認得」。只看
+//     timed_out 的話,一份全 0 的快照會被當成現況:候選窗被收掉、那一橫把
+//     中/英寫成「中」、簡繁那格消失,而 DLL 會把它套進文件,使用者打到
+//     一半的組字當場消失而且沒有上屏。
+//   ⚠ 而且那不是競態,是一個**會留著的狀態**:重新部署後某個宿主重建失敗
+//     (Engine::RebuildSessionsOnEngineThread 的 `++failed; continue;`),
+//     它的 id 就永久不在 sessions_ 裡,而 ReadBackStatus(0) 的
+//     sessions_.begin() 退路照樣成功 —— 那個宿主之後每按一次就被清一次。
+// toggled = 第二趟真的做了(ToggleVariantPref 回 true)。
+//   ⚠ snapshot_is_current 為假時呼叫端根本不會去呼叫它,那一格傳 false。
+constexpr VariantKeyPlan PlanVariantKey(bool snapshot_is_current,
+                                        bool toggled) {
+  return VariantKeyPlan{snapshot_is_current, snapshot_is_current && toggled,
+                        snapshot_is_current && toggled};
+}
+
+// ── 兩條硬性要求。四格全列出來,而且是**編譯期**的 ──────────────────
+//
+// ⚠ 寫成 static_assert 而不是註解:這個標頭服務端與 DLL 端都 include,
+//   破壞任何一條的人編不過。tests/test_key_deadline.cc 再用執行期斷言把
+//   同一組寫一次,讓報表上看得到「這一條真的被檢查了」。
+//
+//   ① 副作用發生了 ⇒ 那顆鍵一定算被我們吃掉。
+//   ② 那顆鍵算被吃掉 ⇒ 手上那一份一定是引擎的現況。
+//   ③ 沒有握著現況快照 ⇒ 不准去做那件不可逆的事(①② 靠它才成立)。
+constexpr bool VariantKeyPlanIsSound(bool snapshot_is_current, bool toggled) {
+  return
+      // ① 副作用只在 may_toggle 為真時才可能發生,而那時一定 eat_key。
+      (!(PlanVariantKey(snapshot_is_current, toggled).may_toggle && toggled) ||
+       PlanVariantKey(snapshot_is_current, toggled).eat_key) &&
+      // ② 吃掉了就一定拿得出現況(DLL 套進文件的不會是空的或舊的)。
+      (!PlanVariantKey(snapshot_is_current, toggled).eat_key ||
+       PlanVariantKey(snapshot_is_current, toggled).ui_is_current) &&
+      (!PlanVariantKey(snapshot_is_current, toggled).eat_key ||
+       snapshot_is_current) &&
+      // ③ 沒有現況快照就不准動那件不可逆的事。
+      (PlanVariantKey(snapshot_is_current, toggled).may_toggle ==
+       snapshot_is_current);
+}
+
+static_assert(VariantKeyPlanIsSound(false, false) &&
+                  VariantKeyPlanIsSound(false, true) &&
+                  VariantKeyPlanIsSound(true, false) &&
+                  VariantKeyPlanIsSound(true, true),
+              "簡繁快捷鍵那條路的兩條硬性要求:副作用發生了那顆鍵就一定要"
+              "算被吃掉(否則宿主的 Ctrl+Shift+F 會同時動作一次),而算被"
+              "吃掉就一定要拿得出引擎的現況(否則 DLL 會把一份空快照套進"
+              "文件,使用者打到一半的組字當場消失而且沒有上屏)");
+
+// 反向:把 PlanVariantKey 改成「永遠吃掉」或「永遠不吃」都要編不過。
+static_assert(PlanVariantKey(true, true).eat_key,
+              "握著現況快照、而且真的切了 —— 這一格必須吃掉那顆鍵,"
+              "不然簡繁換了而宿主的 Ctrl+Shift+F 也開了");
+static_assert(!PlanVariantKey(true, false).eat_key &&
+                  !PlanVariantKey(false, true).eat_key &&
+                  !PlanVariantKey(false, false).eat_key,
+              "什麼都沒做就不可以吃掉那顆鍵(key_eat_policy.h:做不到的事"
+              "不要吃掉那顆鍵)");
+
 }  // namespace rimewin
 
 #endif  // RIMEWIN_KEY_DEADLINE_H_

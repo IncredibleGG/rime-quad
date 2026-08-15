@@ -263,6 +263,14 @@ key_path_gates() {   # $1 = engine.cc  $2 = pipe_server.cc;回非零 = 有違規
   # 所以判準改成:**把出口找出來**。
   #   a. 從 pipe_server.cc 的 `case Op::kKey` 那一格,收集所有 `engine_->X(`;
   #      並且往下一層,收集那一格呼叫到的 PipeServer 成員裡的 `engine_->X(`。
+  #
+  #      ⚠ **只有一層,而這是一個真的上限,不是「還沒遇到」。** 覆核者
+  #        實測過:新增 `PipeServer::OuterRefresh → InnerRefresh →
+  #        engine_->SelectCandidate`,再從 `case Op::kKey` 呼叫 OuterRefresh
+  #        —— 這道判準**抓不到**(分母仍然是 4),因為 InnerRefresh 不是
+  #        `case Op::kKey` 直接叫的,而收集只往下追一層。
+  #        所以:**按鍵那條路上不要寫兩層的 helper**。真的需要的話,
+  #        這裡要跟著改成遞迴收集(而不是「反正守門是綠的」)。
   #   b. 對每一個 X,去 engine.cc 看它**會不會排進佇列並等**
   #      (Post / queue_.Call / CallKeyBounded)。不會的(StalledMs 那些
   #      純讀數的)自動不在範圍裡 —— 不必維護一份會過期的名單。
@@ -419,6 +427,50 @@ else:
 #   「push_ui 只發生在守門裡面」。他在守門那個大括號**後面**多加一行
 #   push_ui(r.snap),四條判準全綠。所以數出現次數,而且必須恰好 1。
 print('NPUSHUI=%d' % len(re.findall(r'push_ui\s*\(', key_block)))
+
+# ── (6) 簡繁那條:那件不可逆的事排在**最後一趟** ────────────────
+#
+# ⚠ 這一條守的是這一輪自己造出來的迴歸:上一輪的順序是「先切、再取
+#   快照」,而 ToggleVariantPref() 回 true 的當下簡繁**已經真的換掉了**。
+#   第二趟(這一輪才加上限的 CurrentResult)逾時 → handled 留 false →
+#   TSF 把 Ctrl+Shift+F **也**交給宿主:簡繁在背後換了,而 VS Code 的
+#   跨檔搜尋同時開了。判斷住在 common/key_deadline.h 的 PlanVariantKey()
+#   (兩條硬性要求在那裡是 static_assert),這裡守的是**接線**。
+mvb = re.search(r'if\s*\(\s*action\s*==\s*KeyAction::kToggleVariant\s*\)',
+                key_block)
+if mvb is None:
+    print('NOVARIANTBRANCH=1')
+else:
+    vb = block_from(key_block, mvb.start())
+    i_snap = vb.find('CurrentResult(')
+    i_tog = vb.find('ToggleVariantPref(')
+    if i_snap < 0 or i_tog < 0:
+        print('VARIANTTRIPMISSING=1')
+    else:
+        if i_tog < i_snap:
+            print('SIDEEFFECTFIRST=1')
+        # 那件不可逆的事必須被 may_toggle 擋著 —— 順序對了但沒有那道門的話,
+        # 下一個人把取快照那一趟搬走,順序就又反了。
+        i_may = vb.find('may_toggle')
+        if i_may < 0 or i_may > i_tog:
+            print('TOGGLEUNGUARDED=1')
+    m_plan = re.search(r'PlanVariantKey\s*\(', vb)
+    if m_plan is None:
+        print('NOVARIANTPLAN=1')
+    else:
+        # ⚠ ② 就在這一格:第一趟跑完了**不等於**那一份是現況。引擎在
+        #   Find(id) 失敗時回一份 handled=false 的全 0 快照,而 CallKeyBounded
+        #   照樣回 true。答案已經在 r.handled 裡,呼叫端不可以丟掉它。
+        first_args = re.sub(r'\s+', '', paren_args(vb, m_plan.end() - 1))
+        if 'r.handled' not in first_args:
+            print('NOSESSIONCHECK=1')
+    # handled 與「碰不碰 UI」都要從那份計畫來,不可以自己寫死。
+    m_h = re.search(r'r\.handled\s*=\s*true', vb)
+    i_eat = vb.find('vp.eat_key')
+    if m_h is not None and (i_eat < 0 or i_eat > m_h.start()):
+        print('HANDLEDNOTPLANNED=1')
+    if not re.search(r'key_result_is_current\s*=\s*vp\.ui_is_current', vb):
+        print('UINOTPLANNED=1')
 PYKEY
 )"
 
@@ -444,6 +496,30 @@ PYKEY
         bad=1 ;;
       GUARDEMPTY=*)
         echo "!! pipe_server.cc 問了 DecideKeyUiAction() 卻沒有把 push_ui 排在它裡面 —— 問完不理它與沒問是同一件事" >&2
+        bad=1 ;;
+      NOVARIANTBRANCH=*)
+        echo "!! pipe_server.cc 的按鍵那一格找不到 KeyAction::kToggleVariant 的分支 —— 掃描範圍錯了" >&2
+        bad=1 ;;
+      VARIANTTRIPMISSING=*)
+        echo "!! 簡繁那一格少了兩趟裡的一趟(CurrentResult / ToggleVariantPref)—— 掃描範圍錯了,或那條路被改成別的形狀" >&2
+        bad=1 ;;
+      SIDEEFFECTFIRST=*)
+        echo "!! 簡繁那一格把**有副作用**的 ToggleVariantPref() 排在取快照之前 —— 它回 true 的當下簡繁已經真的換掉了(SetVariantPref → WM_RIME_SET_VARIANT → store_->Save() + ApplyVariantAll),而取快照那一趟逾時會讓 handled 留 false,於是 TSF 把 Ctrl+Shift+F **也**交給宿主:使用者按一下同時得到「簡繁換了」與「VS Code 的跨檔搜尋開了」。那件不可逆的事要排在最後一趟(common/key_deadline.h 的 PlanVariantKey)" >&2
+        bad=1 ;;
+      TOGGLEUNGUARDED=*)
+        echo "!! 簡繁那一格呼叫 ToggleVariantPref() 之前沒有問過 PlanVariantKey() 的 may_toggle —— 順序這一次是對的,而沒有那道門的話下一個人把取快照那一趟搬走,順序就又反了,而每一條判準都還是綠的" >&2
+        bad=1 ;;
+      NOVARIANTPLAN=*)
+        echo "!! 簡繁那一格沒有走 common/key_deadline.h 的 PlanVariantKey() —— 兩條硬性要求(副作用發生了那顆鍵就一定要算被吃掉;算被吃掉就一定要拿得出現況)的 static_assert 在那支函式上,繞過它等於那兩條沒有人守" >&2
+        bad=1 ;;
+      NOSESSIONCHECK=*)
+        echo "!! 簡繁那一格判斷「第一趟是不是現況」時沒有讀 r.handled —— Engine::CurrentResult 在 Find(id) 失敗時工作**跑完了**卻回一份 handled=false 的全 0 Result,而 CallKeyBounded 照樣回 true。只看 kw.timed_out 的話那一份會被當成現況:候選窗被收掉、那一橫把中/英寫成「中」,而 DLL 會把空快照套進文件,使用者打到一半的組字當場消失而且沒有上屏。⚠ 這不是競態:重新部署後重建失敗的那個宿主,它的 id **永久**不在 sessions_ 裡" >&2
+        bad=1 ;;
+      HANDLEDNOTPLANNED=*)
+        echo "!! 簡繁那一格自己把 r.handled 寫成 true,沒有先問過 PlanVariantKey() 的 eat_key —— 那正是「什麼都沒做卻宣稱吃掉了」的形狀" >&2
+        bad=1 ;;
+      UINOTPLANNED=*)
+        echo "!! 簡繁那一格的 key_result_is_current 不是從 PlanVariantKey() 的 ui_is_current 來的 —— 那一格決定要不要把快照餵進候選窗與那一橫,自己寫死等於繞過判斷" >&2
         bad=1 ;;
     esac
   done <<EOF
@@ -474,7 +550,7 @@ echo
 echo "==> 按鍵那條路的判準(#93/#108)"
 key_path_gates "${SCRIPT_DIR}/service/engine.cc" \
                "${SCRIPT_DIR}/service/pipe_server.cc" || exit 1
-echo "   三個出口都有上限 + 作廢權、都吃同一份預算;逾時與「什麼都沒做」都不碰 UI,而 push_ui 恰好一處"
+echo "   三個出口都有上限 + 作廢權、都吃同一份預算;逾時與「什麼都沒做」都不碰 UI,而 push_ui 恰好一處;簡繁那條的副作用排在最後一趟,而且『是不是現況』讀的是 r.handled 不是只有 kw.timed_out"
 
 # ── 反向測試:每一條判準都要真的會紅 ───────────────────────────────
 #
@@ -485,7 +561,9 @@ echo "==> 反向測試(按鍵那些判準必須抓得到植入的違規)"
 KEY_GATE_TMP="$(mktemp -d)"
 for plant in unbounded_post no_abandon borrow_disabled ui_unguarded \
              toggle_ascii_unbudgeted variant_unbudgeted \
-             toggle_ascii_reverted push_ui_outside_guard ui_always_current; do
+             toggle_ascii_reverted push_ui_outside_guard ui_always_current \
+             variant_side_effect_first variant_ignores_session \
+             variant_toggle_unguarded variant_handled_forced; do
   cp "${SCRIPT_DIR}/service/engine.cc" "${KEY_GATE_TMP}/engine.cc"
   cp "${SCRIPT_DIR}/service/pipe_server.cc" "${KEY_GATE_TMP}/pipe_server.cc"
   case "${plant}" in
@@ -554,6 +632,54 @@ PYEXTRA
     # 「什麼都沒做」那一格照樣更新 UI(② 在 main 上的樣子)。
     ui_always_current)
       sed -i 's/DecideKeyUiAction(kw.timed_out, key_result_is_current)/DecideKeyUiAction(kw.timed_out, true)/' \
+        "${KEY_GATE_TMP}/pipe_server.cc" ;;
+    # ── ① 這一輪自己造出來的那個迴歸,以及它的三種鄰居 ─────────────
+    # 換回「先切、再取快照」:引擎切了,而逾時讓宿主的 Ctrl+Shift+F 也開了。
+    variant_side_effect_first)
+      python3 - "${KEY_GATE_TMP}/pipe_server.cc" <<'PYSEFIRST'
+import io, sys
+p = sys.argv[1]
+s = io.open(p, encoding='utf-8').read()
+old = """          r = engine_->CurrentResult(k.session, key_budget_left(), &kw);
+          VariantKeyPlan vp =
+              PlanVariantKey(!kw.timed_out && r.handled, /*toggled=*/false);
+          if (vp.may_toggle) {
+            vp = PlanVariantKey(true, ToggleVariantPref(key_budget_left(), &kw));
+          }
+"""
+new = """          VariantKeyPlan vp = PlanVariantKey(false, false);
+          if (ToggleVariantPref(key_budget_left(), &kw)) {
+            r = engine_->CurrentResult(k.session, key_budget_left(), &kw);
+            vp = PlanVariantKey(!kw.timed_out && r.handled, true);
+          }
+"""
+assert s.count(old) == 1, s.count(old)
+io.open(p, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+PYSEFIRST
+      ;;
+    # ② 本體:把引擎已經算好的答案(r.handled)丟掉。
+    variant_ignores_session)
+      sed -i 's/PlanVariantKey(!kw.timed_out && r.handled,/PlanVariantKey(!kw.timed_out,/' \
+        "${KEY_GATE_TMP}/pipe_server.cc" ;;
+    # 順序對了,但那件不可逆的事沒有被 may_toggle 擋著。
+    variant_toggle_unguarded)
+      python3 - "${KEY_GATE_TMP}/pipe_server.cc" <<'PYUNGUARD'
+import io, sys
+p = sys.argv[1]
+s = io.open(p, encoding='utf-8').read()
+old = """          if (vp.may_toggle) {
+            vp = PlanVariantKey(true, ToggleVariantPref(key_budget_left(), &kw));
+          }
+"""
+new = """          vp = PlanVariantKey(true, ToggleVariantPref(key_budget_left(), &kw));
+"""
+assert s.count(old) == 1, s.count(old)
+io.open(p, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+PYUNGUARD
+      ;;
+    # 不問計畫,自己宣稱吃掉了。
+    variant_handled_forced)
+      sed -i 's/          if (vp.eat_key) {/          if (true) {/' \
         "${KEY_GATE_TMP}/pipe_server.cc" ;;
   esac
   if key_path_gates "${KEY_GATE_TMP}/engine.cc" \

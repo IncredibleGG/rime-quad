@@ -2712,10 +2712,12 @@ PYSCRIPT
   #   4. OnDeployTerminal(部署終局)要重建 —— 而且**不可以**掛在設定
   #      視窗的計時器上:那個視窗可以被關掉。
   #   5. RebuildSessionsOnEngineThread 要重套方案與選項(#85)。
-  #   6. ProcessKey / ToggleAsciiMode 那道門要用 ShouldFailOpen(phase_...),
-  #      而且在 ProcessKey 裡要排在 Find() **之前**;兩支都要排在
-  #      Post() **之前** —— 那道門只讀兩個 atomic,要在呼叫端執行緒上答,
-  #      不可以排在引擎那條唯一的 FIFO 後面(理由見下面那一條紅字)。
+  #   6. 按鍵那條路上的每一支(**從程式碼數出來**:走 CallKeyBounded 的
+  #      就是)都要有上限、旁邊不可以再放一條無上限的 Post、而且
+  #      「引擎不認得這個 session」不可以長得像一份現況;其中會把鍵餵進
+  #      librime / 會改引擎狀態的那些,還要有 ShouldFailOpen(phase_...)
+  #      那道門,而且它要排在 Find() **與**佇列**之前** —— 那道門只讀兩個
+  #      atomic,要在呼叫端執行緒上答,不可以排在引擎那條唯一的 FIFO 後面。
   check
   local w36bad=0
   local w36out; w36out="$("${PY}" - "${CODE_DIR}" <<'PYSCRIPT'
@@ -2866,13 +2868,63 @@ else:
     if 'deadline_ms <= 0' not in kbe:
         print('NOZEROBUDGETGUARD=1')
 
-# ── 6. 按鍵那道門 ────────────────────────────────────────────────
-gates = ('ProcessKey', 'ToggleAsciiMode')
-print('NGATE=%d' % len(gates))
-for fn in gates:
-    gb = body_of(en, 'Engine::%s(' % fn)
-    if gb is None:
-        print('NOGATEFN=%s' % fn)
+# ── 6. 按鍵那條路 ────────────────────────────────────────────────
+#
+# ⚠ 這裡以前是一份**寫死的白名單** `gates = ('ProcessKey','ToggleAsciiMode')`。
+#   `case Op::kKey` 上另外兩個出口(Engine::ReadBackStatus 與
+#   Engine::CurrentResult)不在裡面,於是「CurrentResult 在 Find(id) 失敗時
+#   工作跑完了、卻回一份 handled=false 的全 0 Result」這件事從頭到尾沒有
+#   任何一條判準看得到 —— 而同一支腳本的 W40 紅字寫的一字不差就是它造成的
+#   傷害(「DLL 會把空快照套進文件,使用者打到一半的字當場消失」)。
+#   **白名單會過期,而過期的白名單長得跟綠燈一模一樣。**
+#
+# 所以改成從 engine.cc 數出來:走 CallKeyBounded() 的就在按鍵那條路上
+# (那一支的宣告上寫著「按鍵那條路唯一的入口」)。新增一個出口時它自動
+# 進範圍,不必有人記得回來改名單。
+def engine_defs(src):
+    out = []
+    seen = set()
+    # 定義一律從第 0 欄開始;貪婪的 [^\n]* 讓 `Engine::StatusReadback
+    # Engine::ReadBackStatus(` 取到的是**後面**那一個名字。
+    for m in re.finditer(r'(?m)^[A-Za-z_][^\n]*\bEngine::(\w+)\s*\(', src):
+        name = m.group(1)
+        if name in seen:
+            continue
+        b = src.find('{', m.start())
+        if b < 0:
+            continue
+        ob, cb = match_from(src, b)
+        seen.add(name)
+        out.append((name, src[ob + 1:cb - 1]))
+    return out
+
+# CallKeyBounded 自己另外有一段(6b)在守,不算在被守的那些裡面。
+keydefs = [(n, b) for n, b in engine_defs(en)
+           if n != 'CallKeyBounded' and 'CallKeyBounded(' in b]
+print('NGATE=%d' % len(keydefs))
+for fn, gb in keydefs:
+    # (a) 有上限的路旁邊不可以再放一條無上限的 Post()。
+    #     ⚠ ReadBackStatus 兩條路都有(deadline_ms > 0 才是按鍵那條),
+    #       所以與 run_logic_tests.sh 同一個豁免條件。
+    if (re.search(r'(?<![A-Za-z_])Post\s*\(', gb) and
+            'deadline_ms > 0' not in gb):
+        print('KEYALSOPOSTS=%s' % fn)
+    if re.search(r'deploy_state_\.load\(\)\s*!=\s*1', gb):
+        print('OLDJUDGE=%s' % fn)
+    # (b) ⚠ 「引擎不認得這個 session」**不可以長得像一份現況**。
+    #     工作本體要先 Find() 成功才准宣稱 handled / ok —— 反過來的話
+    #     呼叫端再也分不出「跑完了而且是現況」與「跑完了但不認得」,
+    #     而後者是一份全 0 的快照:候選窗被收掉、那一橫把中/英寫成「中」,
+    #     DLL 還會把它套進文件,使用者打到一半的組字當場消失。
+    i_find = gb.find('Find(')
+    m_claim = re.search(r'(?<![A-Za-z_])(?:handled|ok)\s*=\s*true', gb)
+    if i_find >= 0 and m_claim is not None and m_claim.start() < i_find:
+        print('CLAIMBEFOREFIND=%s' % fn)
+    # (c) 以下三條只問**會改引擎狀態 / 會把鍵餵進 librime**的那些。
+    #     ⚠ 這個分野也是從行為算出來的,不是又一份名單:唯讀的那兩趟
+    #       (回讀狀態、取快照)不需要 fail-open 那道門 —— 它們一個位元
+    #       都不會寫進正在被抽換的詞庫。
+    if 'rs_process_key(' not in gb and 'SetAsciiModeAll(' not in gb:
         continue
     i_gate = gb.find('ShouldFailOpen(')
     if i_gate < 0:
@@ -2904,12 +2956,6 @@ for fn in gates:
     #
     # ⚠ 判準是 CallKeyBounded(按鍵那條路唯一的入口),不是 CallAbandonable:
     #   後者現在只出現在 CallKeyBounded 裡面,直接呼叫它就是繞過那個入口。
-    if 'CallKeyBounded(' not in gb:
-        print('UNBOUNDEDKEY=%s' % fn)
-    elif re.search(r'(?<![A-Za-z_])Post\s*\(', gb):
-        print('KEYALSOPOSTS=%s' % fn)
-    if re.search(r'deploy_state_\.load\(\)\s*!=\s*1', gb):
-        print('OLDJUDGE=%s' % fn)
 PYSCRIPT
 )"
   local ncreate; ncreate="$(num "$(printf '%s\n' "${w36out}" | grep '^NCREATE=' | cut -d= -f2)")"
@@ -2917,7 +2963,10 @@ PYSCRIPT
   # ⚠ 分母:三個建 session 的呼叫點(當場建、備用池、部署後重建)、
   #   兩道按鍵的門。掃不到就是範圍寫錯,而那必須是紅的。
   need_scope "W36 建 session 的呼叫點" "${ncreate}" 3 || w36bad=1
-  need_scope "W36 按鍵那道門" "${ngate}" 2 || w36bad=1
+  # ⚠ 分母:按鍵那條路上走 CallKeyBounded 的至少四支(ProcessKey、
+  #   ToggleAsciiMode、ReadBackStatus、CurrentResult)。掃到 3 個就是有一個
+  #   出口悄悄離開了這條路 —— 而那正是上一版那份寫死名單的形狀。
+  need_scope "W36 按鍵那條路上的出口" "${ngate}" 4 || w36bad=1
   local w36line
   while IFS= read -r w36line; do
     case "${w36line}" in
@@ -2991,9 +3040,11 @@ PYSCRIPT
         red "W36:Engine::${w36line#KEYALSOPOSTS=} 裡除了 CallKeyBounded() 還有一個 Post() —— Post 是無上限的等待,混在按鍵這條路上等於上限沒有生效"; w36bad=1 ;;
       OLDJUDGE=*)
         red "W36:Engine::${w36line#OLDJUDGE=} 還在用 deploy_state_ != 1 判斷 —— 那個值首次部署成功之後**永遠**是 1,重新部署期間這道門是開的(#90 的原始形狀)"; w36bad=1 ;;
+      CLAIMBEFOREFIND=*)
+        red "W36:Engine::${w36line#CLAIMBEFOREFIND=} 在 Find() **之前**就把 handled / ok 宣稱成 true —— 引擎不認得這個 session 時,呼叫端就再也分不出「跑完了而且是現況」與「跑完了但不認得」。後者是一份**全 0** 的快照:候選窗被收掉、那一橫把中/英寫成「中」而簡繁那格消失,而 DLL 收到 handled=1 會走 ApplyPlan 把它套進文件,使用者打到一半的組字當場消失**而且沒有上屏**。⚠ 這不是競態:重新部署後重建失敗的那個宿主(RebuildSessionsOnEngineThread 的 ++failed; continue;),它的 id **永久**不在 sessions_ 裡"; w36bad=1 ;;
     esac
   done <<< "${w36out}"
-  [ "${w36bad}" -eq 0 ] && ok "W36 ${ncreate} 個建 session 的呼叫點全部先問過 SessionCreationAllowed(),BeginDeploy 不在 UI 執行緒上部署而是整包丟給引擎執行緒,那一包收乾淨才 rs_deploy()、拒絕啟動時會建回來也會讓畫面知道,部署終局那一條不靠任何視窗,重建會重套方案與選項,${ngate} 道按鍵的門都讀 phase_、排在 Find() 之前、而且排在佇列之前(在呼叫端執行緒上答,不排在收 session 那一包後面),${ngate} 道門的等待都有上限(都走單一入口 CallKeyBounded,而作廢權與「預算用完不入列」住在那個入口裡)"
+  [ "${w36bad}" -eq 0 ] && ok "W36 ${ncreate} 個建 session 的呼叫點全部先問過 SessionCreationAllowed(),BeginDeploy 不在 UI 執行緒上部署而是整包丟給引擎執行緒,那一包收乾淨才 rs_deploy()、拒絕啟動時會建回來也會讓畫面知道,部署終局那一條不靠任何視窗,重建會重套方案與選項,按鍵那條路上**數出來**的 ${ngate} 個出口全部走單一入口 CallKeyBounded(作廢權與「預算用完不入列」住在那個入口裡)、旁邊沒有無上限的 Post、而且一支都不在 Find() 之前宣稱認得這個 session;其中會改引擎狀態的那些還讀 phase_、排在 Find() 之前、也排在佇列之前(在呼叫端執行緒上答,不排在收 session 那一包後面)"
   # ── W37:部署回呼碰的那個 Engine,活多久 ─────────────────────────
   #
   # OnDeploy 跑在 **librime 的部署執行緒**上,而 Engine 是 main 那條執行緒
@@ -4192,7 +4243,7 @@ self_check() {
 "W40e 服務端沒有人處理那顆鍵|service/pipe_server.cc|s=s.replace('        if (action == KeyAction::kToggleVariant) {','        if (false) {',1)"
 "W40f 方向自己判一次(第二份真相)|service/pipe_server.cc|s=s.replace('  if (!ToggleVariantTarget(now, &to_simplified)) return false;','  to_simplified = (now != VariantCell::kSimplified);',1)"
 "W40g 切了不回讀,從設定檔反推|service/pipe_server.cc|s=s.replace('  const Engine::StatusReadback rb =' + chr(10) + '      engine_->ReadBackStatus(0, deadline_ms, wait);','  Engine::StatusReadback rb; rb.ok = true;',1)"
-"W40h 回一份空快照(使用者打到一半的字會消失)|service/pipe_server.cc|s=s.replace('            r = engine_->CurrentResult(k.session, key_budget_left(), &kw);','',1)"
+"W40h 回一份空快照(使用者打到一半的字會消失)|service/pipe_server.cc|s=s.replace('          r = engine_->CurrentResult(k.session, key_budget_left(), &kw);','',1)"
 "W40i main.cc 沒把設定視窗交出去|service/main.cc|s=s.replace('  server.SetSettingsWindow(no_ui ? nullptr : &settings);','',1)"
 "W27e 拿掉那一橫自己更新的計時器|service/status_bar.cc|s=s.replace('  ::SetTimer(hwnd_, kStateTimer, kStatePollMs, nullptr);','',1)"
 "W27f 計時器還在但不再比對狀態|service/status_bar.cc|s=s.replace('      if (now != self->service_state_) {','      if (false) {',1)"
@@ -4299,6 +4350,8 @@ self_check() {
 "W36i 收乾淨那一支不再銷毀 session|service/engine.cc|s=s.replace('    rs_session_destroy(kv.second);' + chr(10) + '  }' + chr(10) + '  const int total','  }' + chr(10) + '  const int total',1)"
 "W36m 按鍵那道門又排到佇列後面|service/engine.cc|s=s.replace('  Result r;' + chr(10) + '  if (wait) *wait = KeyWait();','  Result r;' + chr(10) + '  if (wait) *wait = KeyWait();' + chr(10) + '  Post(' + chr(34) + '先擋一下' + chr(34) + ', [] {});',1)"
 "W36o 按鍵改回沒有作廢權的等待(#93 的本體)|service/engine.cc|s=s.replace('queue_.CallAbandonable(','queue_.Call(',1)"
+"W36p 取快照那一趟在 Find() 之前就宣稱認得這個 session(舊白名單看不到的那一格)|service/engine.cc|s=s.replace('            const uintptr_t sess = Find(id);' + chr(10) + '            if (!sess) return;' + chr(10) + '            box->handled = true;','            box->handled = true;' + chr(10) + '            const uintptr_t sess = Find(id);' + chr(10) + '            if (!sess) return;',1)"
+"W36q 取快照那一趟悄悄離開按鍵那條路(分母要掉到 3)|service/engine.cc|s=s.replace('  if (!CallKeyBounded(' + chr(10) + '          ' + chr(34) + '取快照' + chr(34) + ',','  if (!Post(' + chr(10) + '          ' + chr(34) + '取快照' + chr(34) + ',',1)"
 "W37a 部署回呼改回裸指標|service/engine.cc|s=s.replace('  g_deploy_gate.Run([ok](Engine* e) { e->OnDeployTerminal(ok); });','  if (g_deploy_engine) g_deploy_engine->OnDeployTerminal(ok);',1)"
 "W37b 閘換成 std::atomic<Engine*>(只換型別)|service/engine.cc|s=s.replace('CallbackGate<Engine> g_deploy_gate;','std::atomic<Engine*> g_deploy_gate{nullptr};',1)"
 "W37c Stop 的關閘排到佇列後面|service/engine.cc|s=s.replace('  g_deploy_gate.Close();' + chr(10) + '  if (!started_) return;','  if (!started_) return;',1).replace('  started_ = false;','  started_ = false;' + chr(10) + '  g_deploy_gate.Close();',1)"

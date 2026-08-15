@@ -532,8 +532,11 @@ void PipeServer::ServeClient(HANDLE pipe) {
   uint32_t keys_abandoned = 0;
   // 每條連線最多 20 行 KEY_MS。⚠ 一定要有額度:這是**每鍵**路徑,
   // 沒有額度的話一個卡住的引擎會把 service.log 一路寫大 —— 而那個檔案
-  // **不是環形的**(service/main.cc 的大小檢查只在啟動時做一次),
-  // 超過 1 MiB 之後被丟掉的是整份,連同前面真正有價值的那幾行。
+  // **不是環形的**:超過 1 MiB 時被丟掉的是**整份**,連同前面真正有價值
+  // 的那幾行。(這一輪把檢查點從「只在啟動時做一次」改成每一條新連線都
+  // 做一次 —— service/main.cc 的 RollServiceLogIfTooBig,由這一支的
+  // SetLogCheckpoint 掛上去。那讓「整份被丟掉」提早發生,**不是**讓它
+  // 變成環形的:額度照樣要有。)
   int key_ms_budget = 20;
   // 這條連線的進場 / 離場要不要寫。⚠ **一次決定,兩行共用** ——
   //   額度在中途用完的話會留下一條只有進場沒有離場的連線,而
@@ -978,23 +981,49 @@ void PipeServer::ServeClient(HANDLE pipe) {
         bool key_result_is_current = false;
         Result r;
         if (action == KeyAction::kToggleVariant) {
-          // 簡繁快捷鍵(Ctrl+Shift+F,G76)。
+          // ── 簡繁快捷鍵(Ctrl+Shift+F,G76)────────────────────────
+          //
+          // ⚠ **這一格的順序是判準,不是風格。** 判斷本身住在
+          //   common/key_deadline.h 的 PlanVariantKey(),那裡有兩條硬性
+          //   要求的 static_assert 與整段理由;這裡只負責照它的順序走:
+          //
+          //     1. 先取快照 —— 唯讀的一趟(engine.cc 的「取快照」只有
+          //        Find + TakeSnapshotLocked),失敗 = 一步都沒做。
+          //     2. 手上真的握著一份現況之後,才去做那件**不可逆**的事。
+          //
+          //   反過來寫(上一輪的樣子)的結果是:ToggleVariantPref() 回
+          //   true 的當下簡繁已經真的換掉了,而第二趟逾時讓 handled 留
+          //   false,於是 TSF 把 Ctrl+Shift+F **也**交給宿主 —— 使用者按
+          //   一下同時得到「簡繁換了」與「VS Code 的跨檔搜尋開了」。
           //
           // ⚠ 回的是**當下這一份**快照,不是空的。DLL 收到 handled=1
           //   之後會把它套進文件(tsf/text_service.cc 的 SendAsciiToggle
           //   那一整段 ⚠),而空快照的意思是「沒有組字」——
           //   使用者打到一半的那一段會當場消失。
           //   簡繁本身是非同步套上去的(設定視窗那條執行緒),所以此刻
-          //   文件本來就不該有任何變化,拿當下這一份正是對的。
-          if (ToggleVariantPref(key_budget_left(), &kw)) {
-            r = engine_->CurrentResult(k.session, key_budget_left(), &kw);
-            // ⚠ 第二趟也會逾時。逾時的那一份是預設建構的 Result,
-            //   宣告 handled=true 等於叫 DLL 把一份「沒有組字、沒有候選」
-            //   套進文件 —— 使用者打到一半的那一段會當場消失。
-            if (!kw.timed_out) {
-              r.handled = true;
-              key_result_is_current = true;
-            }
+          //   文件本來就不該有任何變化,拿當下這一份正是對的 ——
+          //   而「當下」在切之前取還是切之後取,對文件都是同一份。
+          //
+          // ⚠ `!kw.timed_out && r.handled` 的後半段不可以省。CurrentResult
+          //   的工作本體在 Find(id) 失敗時直接 return,盒子維持預設
+          //   (handled=false、快照全 0),而 CallKeyBounded 仍然回 true
+          //   —— 工作**確實跑完了**,只是答案是「引擎不認得這個 session」。
+          //   引擎已經把答案放在 r.handled 裡了,上一輪呼叫端把它丟掉、
+          //   無條件覆寫成 true。詳見 PlanVariantKey() 的說明。
+          r = engine_->CurrentResult(k.session, key_budget_left(), &kw);
+          VariantKeyPlan vp =
+              PlanVariantKey(!kw.timed_out && r.handled, /*toggled=*/false);
+          if (vp.may_toggle) {
+            vp = PlanVariantKey(true, ToggleVariantPref(key_budget_left(), &kw));
+          }
+          if (vp.eat_key) {
+            r.handled = true;
+            key_result_is_current = vp.ui_is_current;
+          } else {
+            // 什麼都沒做 —— 走與下面那條既有出口一模一樣的路:一份預設
+            // 建構的 Result(handled=false),DLL 把那顆鍵交回宿主。
+            // **不可以**假裝切了,也不可以把這一份餵給 UI。
+            r = Result();
           }
           // ── ⚠ ToggleVariantPref 回 false = **什麼都沒做** ──────────
           //
