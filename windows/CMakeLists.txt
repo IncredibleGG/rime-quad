@@ -455,6 +455,43 @@ target_link_libraries(rime_service PRIVATE
 # 唯一查得動的辦法 —— 而 Windows 端的建置機器正是這種機器。
 target_link_options(rime_service PRIVATE /MAP)
 
+# ── 子系統:GUI,而不是 console ───────────────────────────────────────
+#
+# ⚠ **下面兩行必須同一次加。只加第一行的話整個連結會失敗。**
+#
+# 為什麼要改:「開始」功能表那個捷徑指的就是 rime_service.exe --settings
+# (installer/luminakey.iss 的 {group} 那一列),由 Explorer 直接啟動 ——
+# 不經 cmd、不經 start,所以沒有人幫它填標準控制代碼。console 子系統的進程
+# 在那個情況下,OS **一定**會配一個新的主控台:使用者看到的是一個黑框
+# 閃一下就沒了。更糟的是,唯一說明失敗原因的那一行(service/main.cc 的
+# 「找不到執行中的服務的設定事件」)走 stderr,而 RedirectStdIoIfDetached()
+# 一看到 std handle 有效就提早 return —— 於是那一行印在黑框裡,
+# 永遠進不了 service.log。改成 GUI 之後兩件事一起解決:沒有黑框,
+# 而且那一行會落進 service.log。
+#
+# ⚠ /ENTRY 不可省。WIN32_EXECUTABLE 只會加 /subsystem:windows
+#   (CMake 的 Platform/Windows-MSVC.cmake:CMAKE_<lang>_CREATE_WIN32_EXE),
+#   它**不碰**進入點;而 MSVC 在 /SUBSYSTEM:WINDOWS 下的預設進入點是
+#   WinMainCRTStartup —— 它呼叫 WinMain,而我們只有 main。
+#   症狀是 LNK2019: unresolved external symbol WinMain。
+#
+# ⚠ 而進入點**不可以**改成 WinMain / wWinMain 來迎合它:見 service/main.cc
+#   進入點那一段的說明(glog 的 ProgramInvocationShortName() 走
+#   const_basename(__argv[0]),而 __argv 只有窄字元進入點才會被 CRT 填;
+#   CI run #16–#19 每一次都崩在同一個 RVA)。所以這裡是**把進入點釘回
+#   mainCRTStartup**,而不是去改原始碼。
+#
+# ⚠ 只有 rime_service 這一個目標改。rime_console / rime_probe /
+#   rime_ime_setup / rime_tests / rime_tsf_host 全部維持 console ——
+#   那幾支本來就是給人從命令列跑、要看輸出的。
+#
+# 守門:windows/check_binaries.sh 用 dumpbin /headers 斷言這個位元
+# (rime_service.exe = Windows GUI,那幾支命令列工具 = Windows CUI)。少了它,
+# 哪天有人把下面兩行刪掉,黑框會靜靜地回來而所有既有的綠燈都還是綠的 ——
+# CI 全程重導向 stdout,察覺不到差別。
+set_target_properties(rime_service PROPERTIES WIN32_EXECUTABLE TRUE)
+target_link_options(rime_service PRIVATE /ENTRY:mainCRTStartup)
+
 # ── 應用程式資訊清單 ────────────────────────────────────────────────────
 #
 # ⚠ **這是整個 Windows 端外觀的分水嶺,不是可有可無的收尾。**

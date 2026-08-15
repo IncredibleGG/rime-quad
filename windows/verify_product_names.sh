@@ -98,6 +98,7 @@ landed_rows() {
 設定檔表頭|windows/common/settings.cc|"# ${RS_PRODUCT_NAME} 設定。由設定介面寫入,也可以自己改。\\n"
 候選窗類別名|windows/service/cand_window.cc|constexpr wchar_t kClassName[] = L"${RS_PRODUCT_NAME}CandidateWindow";
 設定窗類別名|windows/service/settings_window.cc|constexpr wchar_t kClass[] = L"${RS_PRODUCT_NAME}SettingsWindow";
+設定窗類別名(瘦 DLL 側)|windows/winshared/winutil.cc|static const wchar_t kSettingsWindowClassName[] = L"${RS_PRODUCT_NAME}SettingsWindow";
 設定窗標題|windows/common/ui_strings.cc|L"${RS_PRODUCT_NAME_ZH} 設定", L"${RS_PRODUCT_NAME_ZH_HANS} 设置")
 系統匣提示|windows/common/ui_strings.cc|X(kTrayTip, L"${RS_PRODUCT_NAME} Input Method", L"${RS_PRODUCT_NAME_ZH}",
 COM 類別描述|windows/tsf/guids.h|#define RIME_TEXT_SERVICE_DESC L"${RS_PRODUCT_NAME_ZH}"

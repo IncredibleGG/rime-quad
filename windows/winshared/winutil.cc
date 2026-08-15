@@ -80,6 +80,15 @@ std::wstring RimeSettingsEventName() {
   return L"Local\\LuminaKeySettings." + CurrentUserSidString();
 }
 
+// ⚠ 與 service/settings_window.cc 的 kClass 是同一個名字。改一邊不改另一邊
+//   的症狀是 FindWindowW 永遠找不到 → 前景權永遠讓不出去 → 使用者按了設定,
+//   視窗開在別的視窗後面。兩份都被 verify_product_names.sh 逐字守著。
+static const wchar_t kSettingsWindowClassName[] = L"LuminaKeySettingsWindow";
+
+const wchar_t* RimeSettingsWindowClassName() {
+  return kSettingsWindowClassName;
+}
+
 std::string GuidToUtf8(const GUID& g) {
   wchar_t buf[64] = {0};
   if (::StringFromGUID2(g, buf, 64) == 0) return std::string();

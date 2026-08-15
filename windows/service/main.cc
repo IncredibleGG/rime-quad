@@ -407,6 +407,64 @@ void WarmUpEngine(rimewin::Engine* engine, rimewin::SettingsStore* store,
 // %APPDATA% 底下的使用者資料目錄。
 static int RunService(int argc, wchar_t** argv);
 
+// ── 診斷動詞:把輸出接回叫我們的那個主控台 ────────────────────────
+//
+// ⚠ 這一段是 rime_service.exe 改成 **GUI 子系統**(windows/CMakeLists.txt 的
+//   set_target_properties(... WIN32_EXECUTABLE TRUE))的必要配套,不是裝飾。
+//
+// --print-dirs 與 --print-choice 是文件裡叫人**用手跑**的診斷動詞(見本檔
+// 開頭的用法區塊,以及 windows/README.md)。GUI 子系統的進程啟動時系統
+// **不會**幫它補標準控制代碼(只有 console 進程才會),所以從 cmd 手動跑
+// 會一個字都不印 —— 而「什麼都沒印」與「程式當掉了」在使用者眼裡分不出來。
+// 少了這一段,README 上那一行就變成假的。
+//
+// ⚠ **只有出現診斷動詞時才做這件事。** 正常啟動、以及瘦 DLL 用
+//   CREATE_NO_WINDOW | DETACHED_PROCESS 起的那一支(tsf/ipc_client.cc),
+//   一個 API 都不會碰到,行為零變化。
+//
+// ⚠ **必須在 RunService() 之前做完。** RedirectStdIoIfDetached()
+//   (RunService 的第一件事)一看到 STD_ERROR_HANDLE 有效就提早 return;
+//   順序反了的話,診斷輸出會被寫進 service.log,而主控台上還是空的 ——
+//   兩個地方都看不到,比只壞一邊更難查。
+//
+// ⚠ **CI 守不到這一格。** verify_installer.sh 的 §5(--print-dirs)與
+//   §5b(--print-choice)都有重導向或管線,shell 會把 std handle 填好,
+//   所以有沒有這一段它們都是綠的。守它的是 verify_installer.sh 裡那一格
+//   刻意用 `cmd //c` 跑、不重導向的檢查(§5c)。
+static void AttachParentConsoleForDiagnosticVerbs(int argc, wchar_t** argv) {
+  bool wants_console = false;
+  for (int i = 1; i < argc; ++i) {
+    const std::wstring a = argv[i];
+    if (a == L"--print-dirs" || a == L"--print-choice") {
+      wants_console = true;
+      break;
+    }
+  }
+  if (!wants_console) return;
+
+  // 已經有人幫我們填好了(`> x.txt`、管線、CI)→ 什麼都不要動。
+  // GUI 進程沒有主控台時 GetStdHandle 回的是 NULL(不是
+  // INVALID_HANDLE_VALUE);兩種都當成「沒有」。
+  const HANDLE existing = ::GetStdHandle(STD_OUTPUT_HANDLE);
+  if (existing != nullptr && existing != INVALID_HANDLE_VALUE) return;
+
+  // 父行程已經結束,或根本不是從主控台啟動的(捷徑)→ 失敗,安靜略過。
+  if (!::AttachConsole(ATTACH_PARENT_PROCESS)) return;
+
+  const HANDLE conout =
+      ::CreateFileW(L"CONOUT$", GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (conout == INVALID_HANDLE_VALUE) return;
+  ::SetStdHandle(STD_OUTPUT_HANDLE, conout);
+  ::SetStdHandle(STD_ERROR_HANDLE, conout);
+  // 設好 std handle 還不夠:Say() / Err() 走的是 CRT 的 stdout / stderr,
+  // 而那兩個 FILE* 在進程啟動時就綁定好了。不 freopen 的話,印出來的東西
+  // 會掉進一個沒有接上任何東西的 FILE*,結果與什麼都沒做一樣。
+  ::_wfreopen(L"CONOUT$", L"w", stdout);
+  ::_wfreopen(L"CONOUT$", L"w", stderr);
+}
+
 int main(int /*narrow_argc*/, char** /*narrow_argv*/) {
   int argc = 0;
   LPWSTR* argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc);
@@ -414,6 +472,8 @@ int main(int /*narrow_argc*/, char** /*narrow_argv*/) {
     std::fprintf(stderr, "CommandLineToArgvW 失敗\n");
     return 2;
   }
+  // ⚠ 順序:一定在 RunService 之前。理由見上面那個函式的說明。
+  AttachParentConsoleForDiagnosticVerbs(argc, argv);
   const int rc = RunService(argc, argv);
   ::LocalFree(argv);
   return rc;
@@ -581,6 +641,32 @@ static int RunService(int argc, wchar_t** argv) {
     //   靜靜結束的話,使用者按了語言列上的「設定」什麼都不會發生 ——
     //   而那正是這個專案抓過四次的那種鍵。
     if (open_settings) {
+      // ⚠ 先讓前景權,再送事件 —— 順序反了的話,事件有可能已經被處理完,
+      //   那時才轉讓就來不及了。
+      //
+      //   真正把視窗叫出來的是**已經在跑的那一支服務**:它收到事件之後
+      //   ShowWindow + SetForegroundWindow(settings_window.cc 的
+      //   WM_RIME_OPEN)。而那一支不符合 SetForegroundWindow 的任何一條
+      //   放行條件 —— 它不是前景進程、不是被前景進程啟動的、也沒有收到
+      //   最後一個輸入事件。被擋下來時系統只會讓工作列按鈕閃一下,
+      //   使用者看到的是「按了設定,什麼都沒發生」。
+      //
+      //   有前景權的是**這一支**:使用者剛剛從「開始」功能表(Explorer,
+      //   前景進程)把它啟動起來。AllowSetForegroundWindow 是把這份權利
+      //   交出去的唯一辦法。
+      //
+      //   ⚠ 傳**精確的 pid**,不要 ASFW_ANY —— 那等於對整台機器上每一個
+      //     進程開放搶前景,而我們只需要讓那一支服務叫得到它自己的視窗。
+      //   服務用 --no-ui 起來時設定視窗根本沒建(見下面的 if (!no_ui)),
+      //   那時 FindWindowW 找不到,這一步就靜靜跳過:不影響 SetEvent,
+      //   也不影響下面那條「叫不出來」的錯誤路徑。
+      const HWND settings_hwnd =
+          ::FindWindowW(rimewin::SettingsWindowClassName(), nullptr);
+      if (settings_hwnd) {
+        DWORD settings_pid = 0;
+        ::GetWindowThreadProcessId(settings_hwnd, &settings_pid);
+        if (settings_pid) ::AllowSetForegroundWindow(settings_pid);
+      }
       HANDLE ev = ::OpenEventW(EVENT_MODIFY_STATE, FALSE,
                                rimewin::RimeSettingsEventName().c_str());
       if (ev) {

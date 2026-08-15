@@ -206,5 +206,81 @@ log "檢查 rime_ime_setup.exe 的相依(只擋 CRT;網路只准 ws2_32)"
 check_deps "${BIN_DIR}/rime_ime_setup.exe" loose "ws2_32.dll"
 
 echo
+# ── 3. 子系統 ─────────────────────────────────────────────────
+#
+# ⚠ **這一節守的是一個位元,而那個位元就是「點捷徑會不會閃黑框」的全部。**
+#
+#   rime_service.exe 被「開始」功能表的捷徑由 Explorer 直接啟動 ——
+#   不經 cmd、不經 start,所以沒有人幫它填標準控制代碼。console 子系統的
+#   進程在那個情況下,OS **一定**會配一個新的主控台:使用者看到的是一個
+#   黑框閃一下就沒了。而唯一說明失敗原因的那一行(service/main.cc 的
+#   「找不到執行中的服務的設定事件」)走 stderr,就印在那個黑框裡 ——
+#   RedirectStdIoIfDetached() 看到 handle 有效會提早 return,所以它永遠
+#   進不了 service.log。這是使用者回報的症狀 D。
+#
+#   修法在 windows/CMakeLists.txt:rime_service 的 WIN32_EXECUTABLE TRUE
+#   加上 /ENTRY:mainCRTStartup(兩行缺一不可)。
+#
+# ⚠ **為什麼非要在產物上守不可:**哪天有人把那兩行刪掉,黑框會靜靜地
+#   回來,而**所有既有的綠燈都還是綠的** —— CI 全程重導向 stdout,
+#   察覺不到任何差別。這一節是那件事唯一的長期保險。
+#
+#   另外幾支維持 CUI 也要守:它們是給人從命令列跑、要看輸出的。
+#   哪天有人「順手」把子系統設定加到整個目錄上,它們會變成一個字都不印,
+#   而那同樣沒有任何錯誤訊息。
+#
+# ⚠ 判斷**不可以**寫成 `dumpbin ... | grep -q ...`:set -o pipefail 底下
+#   grep -q 一命中就關掉管線,dumpbin 收到 SIGPIPE,整條管線變成 141 ——
+#   也就是「命中反而變成失敗」。這棵樹被這一條咬過五次。
+#   先把輸出存進變數,再用 grep -c 數(grep -c 會把輸入讀完,不關管線)。
+check_subsystem() {   # check_subsystem <exe> <'Windows GUI'|'Windows CUI'> <說明>
+  local exe="$1" want="$2" why="$3" name out n
+  name="$(basename "${exe}")"
+  # ⚠ 不存在就跳過,與 check_deps 同一個規矩 —— 而且這一條是必要的,
+  #   不是偷懶:這支腳本在 CI 上被跑**兩次**
+  #   (.github/workflows/windows.yml 的 logic/bin 與 ime/bin),
+  #   而 logic 那一組**刻意沒有** rime_service.exe(build.sh 的 build_logic
+  #   甚至明著斷言它不在)。「找不到就紅」會讓那一格無故變紅,
+  #   而紅的原因與產品無關。
+  #   「產物齊不齊」由 build.sh 的 require_artifacts 守,不在這裡重複一次。
+  if [ ! -f "${exe}" ]; then
+    log "略過 ${name}(這個目錄裡沒有它)"
+    return
+  fi
+  if ! out="$(dumpbin.exe //headers "$(cygpath -w "${exe}")" 2>&1)"; then
+    echo "  !! dumpbin //headers 失敗:${name}" >&2
+    printf '%s\n' "${out}" | sed 's/^/     /' >&2
+    fail=1
+    return
+  fi
+  n="$(printf '%s\n' "${out}" | grep -c "subsystem (${want})")" || n=0
+  if [ "${n}" -ge 1 ]; then
+    log "${name} 的子系統是 ${want} ✓"
+  else
+    echo "  !! ${name} 的子系統不是「${want}」。" >&2
+    echo "     ${why}" >&2
+    printf '%s\n' "${out}" | grep -i "subsystem" | sed 's/^/     實際: /' >&2 || true
+    fail=1
+  fi
+}
+
+log "檢查子系統(rime_service.exe 必須 GUI,命令列工具必須 CUI)"
+check_subsystem "${BIN_DIR}/rime_service.exe" "Windows GUI" \
+  "它被「開始」功能表的捷徑直接啟動。console 子系統會讓 OS 配一個新的主控台,
+     使用者看到黑框閃一下,而唯一的錯誤說明就印在那個黑框裡、進不了
+     service.log。請確認 windows/CMakeLists.txt 上 rime_service 的
+     WIN32_EXECUTABLE TRUE 與 /ENTRY:mainCRTStartup 兩行都還在
+     (少了第二行是 LNK2019,不會走到這裡;少了第一行就是這一格)。"
+check_subsystem "${BIN_DIR}/rime_ime_setup.exe" "Windows CUI" \
+  "它是命令列工具(register / doctor / find-window / capture-window),
+     安裝程式與 verify_installer.sh 都靠它的 stdout。"
+check_subsystem "${BIN_DIR}/rime_probe.exe" "Windows CUI" \
+  "診斷探針,只有輸出有價值。"
+check_subsystem "${BIN_DIR}/rime_tests.exe" "Windows CUI" \
+  "單元測試,CI 靠它的 stdout 判成敗。"
+check_subsystem "${BIN_DIR}/rime_console.exe" "Windows CUI" \
+  "命令列版的引擎驅動,只有輸出有價值。"
+
+echo
 [ "${fail}" -eq 0 ] || die "二進位檢查失敗,見上。"
 log "二進位檢查全部通過 ✓"

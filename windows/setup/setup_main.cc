@@ -80,10 +80,13 @@ void Usage() {
       "                             不給 --lang 就依使用者既有的語言清單自動選。\n"
       "  disable-user               全部停用\n"
       "  user-profiles              印出目前啟用了哪幾份、以及自動判斷會選哪一份\n"
-      "  find-window --class <類別名> [--visible]\n"
+      "  find-window --class <類別名> [--visible] [--foreground]\n"
       "                             那個視窗類別現在存不存在。找到 = 0,沒找到 = 1\n"
       "                             --visible:還要求它是**顯示中**的\n"
       "                             (CI 用:斷言「設定視窗真的開出來了」)\n"
+      "                             --foreground:還要求它就是**目前的前景視窗**\n"
+      "                             (顯示了但停在別的視窗後面,在使用者眼裡\n"
+      "                              與「按了沒反應」是同一件事)\n"
       "  capture-window --class <類別名> --out <bmp 路徑> [--page <0-4>]\n"
       "                             把那個視窗畫一張 24-bit BMP 存下來。\n"
       "                             --page 先把它切到第幾頁(0 起算)。\n"
@@ -624,6 +627,7 @@ static int Run(int argc, wchar_t** argv) {
   uint32_t explicit_langid = 0;
   std::wstring window_class;
   bool require_visible = false;
+  bool require_foreground = false;
   std::wstring capture_out;
   int capture_page = -1;
   bool fail_if_blank = false;
@@ -633,6 +637,7 @@ static int Run(int argc, wchar_t** argv) {
     const std::wstring a = argv[i];
     if (a == L"--class" && i + 1 < argc) window_class = argv[++i];
     else if (a == L"--visible") require_visible = true;
+    else if (a == L"--foreground") require_foreground = true;
     else if (a == L"--out" && i + 1 < argc) capture_out = argv[++i];
     else if (a == L"--page" && i + 1 < argc)
       capture_page = ::_wtoi(argv[++i]);
@@ -835,19 +840,29 @@ static int Run(int argc, wchar_t** argv) {
     }
     const HWND h = ::FindWindowW(window_class.c_str(), nullptr);
     const bool visible = h && ::IsWindowVisible(h);
+    // ⚠ 「顯示中」與「在最前面」是兩件不同的事,而使用者只在乎第二件。
+    //   服務進程不符合 SetForegroundWindow 的任何一條放行條件,所以少了
+    //   AllowSetForegroundWindow 的時候,視窗會被顯示出來、卻停在別的視窗
+    //   後面 —— 體感就是「按了設定沒反應」。IsWindowVisible 對那個狀態
+    //   回真,所以不多問這一句的話,壞掉與修好在報表上是同一格綠。
+    const bool foreground = h && (::GetForegroundWindow() == h);
     Say("類別「%s」:%s\n", WideToUtf8(window_class).c_str(),
         h ? (visible ? "找到了(顯示中)" : "找到了(隱藏)") : "找不到");
     if (h) {
       DWORD pid = 0;
       ::GetWindowThreadProcessId(h, &pid);
-      Say("  hwnd=%p pid=%lu visible=%d\n", static_cast<void*>(h),
-          static_cast<unsigned long>(pid), visible ? 1 : 0);
+      Say("  hwnd=%p pid=%lu visible=%d foreground=%d\n",
+          static_cast<void*>(h), static_cast<unsigned long>(pid),
+          visible ? 1 : 0, foreground ? 1 : 0);
     }
     // ⚠ --visible 不是可有可無的。設定視窗在**服務一啟動時就被建好但不顯示**
     //   (見 service/settings_window.cc:按下去要立刻看到窗,不能等它建)。
     //   所以「視窗存在」對任何一支跑著的服務都恆真 —— 拿它當斷言的話,
     //   「按下去有反應」與「按下去沒反應」會一起通過。使用者看得到的是
     //   **顯示出來**,不是存在。
+    // --foreground 隱含 --visible:前景視窗必定是顯示中的,而把兩件事綁在
+    // 一起可以少一種「呼叫端忘了帶 --visible」的假綠。
+    if (require_foreground) return (visible && foreground) ? 0 : 1;
     if (require_visible) return visible ? 0 : 1;
     return h ? 0 : 1;
   }

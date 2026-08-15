@@ -464,6 +464,18 @@ class SettingsWindow {
   // 所以不需要 atomic;背景執行緒**不碰它**。
 };
 
+// 設定視窗的視窗類別名 —— **服務進程這一側**的唯一出口。
+//
+// 回傳的是 settings_window.cc 的 kClass,也就是真的拿去 RegisterClassExW 的
+// 那一份;所以問這個函式拿到的名字,保證與實際註冊的類別是同一個。
+// ⚠ 那一行被 windows/verify_product_names.sh 的「設定窗類別名」逐字比對,
+//   一個字都不可以動 —— 要對外開放就是加這個存取器,不是把字面值抽成變數。
+//
+// 呼叫端:service/main.cc 的 --settings 分支。它要先 FindWindowW 拿到執行中
+// 那一支服務的 pid,才有辦法 AllowSetForegroundWindow 把前景權讓過去。
+// (瘦 DLL 不連這個檔案,它問的是 winshared 的 RimeSettingsWindowClassName()。)
+const wchar_t* SettingsWindowClassName();
+
 }  // namespace rimewin
 
 #endif  // RIMEWIN_SERVICE_SETTINGS_WINDOW_H_

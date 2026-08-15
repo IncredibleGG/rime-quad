@@ -58,6 +58,25 @@ std::wstring RimeServiceMutexName();
 //   有辦法對我們的服務發號施令。
 std::wstring RimeSettingsEventName();
 
+// 設定視窗的視窗類別名。
+//
+// 用途只有一個:**把前景權讓給已經在跑的那一支服務**。「請它開窗」的兩條路
+// (IPC 與具名事件)都只是送一個請求過去,真正呼叫 SetForegroundWindow 的是
+// 那一支服務 —— 而它三條放行條件一條都不符合(不是前景進程、不是被前景進程
+// 啟動的、沒收到最後一個輸入事件),系統只會讓工作列按鈕閃一下。呼叫端要先
+// FindWindowW(這個名字) 拿到它的 pid,才 AllowSetForegroundWindow(pid)。
+//
+// ⚠ 這是同一個名字的**第二份**字面值,而且是刻意的:真正拿去
+//   RegisterClassExW 的那一份在 service/settings_window.cc(那一行被
+//   windows/verify_product_names.sh 逐字守著,一個字都不可以動),
+//   而瘦 DLL **不連** settings_window.cc。
+//   兩份分別由 verify_product_names.sh 的「設定窗類別名」與
+//   「設定窗類別名(瘦 DLL 側)」兩列各自逐字比對 scripts/lib/product.env ——
+//   所以漂移會在那支腳本上紅,而不是靜悄悄地變成「FindWindow 永遠找不到」
+//   (那個症狀不會有任何錯誤訊息,只是前景權永遠讓不出去)。
+// ⚠ 要抄第三份的話:不要。改成問這個函式。
+const wchar_t* RimeSettingsWindowClassName();
+
 // GUID → "{XXXXXXXX-…}"(大寫)。只作診斷與線路上的識別用;
 // **比較 GUID 一律用 IsEqualGUID,不要比字串** —— 大小寫與括號的差異
 // 會讓「看起來一樣」的兩個值比不相等。

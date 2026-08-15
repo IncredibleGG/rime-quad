@@ -467,6 +467,9 @@ void SettingsWindow::Stop() {
   }
 }
 
+// ⚠ 只是把 kClass 讓外面問得到;27 行那個字面值不動(見標頭的說明)。
+const wchar_t* SettingsWindowClassName() { return kClass; }
+
 void SettingsWindow::Open() {
   if (hwnd_) ::PostMessageW(hwnd_, WM_RIME_OPEN, 0, 0);
 }
@@ -709,7 +712,13 @@ LRESULT CALLBACK SettingsWindow::WndProc(HWND hwnd, UINT msg, WPARAM w,
       if (self) {
         self->ReloadFromSettings();
         if (w > 0) self->ShowPage(static_cast<int>(w) - 1);
-        ::ShowWindow(hwnd, SW_SHOW);
+        // ⚠ 最小化過的視窗,SW_SHOW **不會**把它還原 —— 它只是把一個
+        //   已經在工作列上的圖示再「顯示」一次,畫面上什麼都不會發生。
+        //   症狀與「按了設定沒反應」一模一樣,而且只在使用者最小化過一次
+        //   之後才出現,所以很容易被當成偶發。
+        //   (這不是 check_ui_spec.sh W25 守的那一行;W25 守的是本檔案下面
+        //    ::ShowWindow(c, sp.visible ? SW_SHOW : SW_HIDE); 那一行。)
+        ::ShowWindow(hwnd, ::IsIconic(hwnd) ? SW_RESTORE : SW_SHOW);
         ::SetForegroundWindow(hwnd);
         ::SetActiveWindow(hwnd);
       }

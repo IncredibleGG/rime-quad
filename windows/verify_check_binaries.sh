@@ -50,6 +50,19 @@ cat > "${WORK}/fakebin/dumpbin.exe" <<'EOF'
 #!/usr/bin/env bash
 mode="$1"; file="$2"
 base="$(basename "${file}")"
+if [ "${mode}" = "//headers" ]; then
+  # dumpbin /headers 的 OPTIONAL HEADER VALUES 區塊長這樣:
+  #     2 subsystem (Windows GUI)
+  # 這裡只需要那一行,數字給不給無所謂 —— 真正的判準是括號裡那個名字。
+  echo "OPTIONAL HEADER VALUES"
+  case "${base}" in
+    rime_service.exe)   echo "               2 subsystem (${SUBSYS_SERVICE:-Windows GUI})" ;;
+    rime_ime_setup.exe) echo "               3 subsystem (${SUBSYS_SETUP:-Windows CUI})" ;;
+    *)                  echo "               3 subsystem (Windows CUI)" ;;
+  esac
+  echo "  Summary"
+  exit 0
+fi
 if [ "${mode}" = "//exports" ]; then
   echo "    ordinal hint RVA      name"
   echo "          1    0 00001000 DllCanUnloadNow"
@@ -94,6 +107,10 @@ BASE_TSF="kernel32.dll user32.dll advapi32.dll ole32.dll oleaut32.dll"
 BASE_SERVICE="kernel32.dll user32.dll gdi32.dll shell32.dll comctl32.dll"
 BASE_SETUP="kernel32.dll user32.dll advapi32.dll ole32.dll"
 
+# 子系統的基準:服務是 GUI(黑框那一格已經修好),命令列工具是 CUI。
+export SUBSYS_SERVICE="Windows GUI"
+export SUBSYS_SETUP="Windows CUI"
+
 echo "== 基準:各自帶著該有的東西 =="
 export DEPS_TSF="${BASE_TSF}"
 export DEPS_SERVICE="${BASE_SERVICE} winhttp.dll ws2_32.dll"
@@ -131,6 +148,28 @@ run_case "rime_tsf.dll 相依動態 CRT(/MT 沒生效)" red
 export DEPS_TSF="${BASE_TSF} dwmapi.dll"
 run_case "rime_tsf.dll 多一個不在允許清單的 DLL" red
 export DEPS_TSF="${BASE_TSF}"
+
+echo
+echo "== 子系統:黑框那一格(症狀 D)=="
+# ⚠ 這一組是 check_binaries.sh 那一節的反向測試。少了它,那一節「永遠綠」
+#   與「真的在看」分不出來 —— 而它守的正好是一個**沒有任何其他綠燈會變色**
+#   的位元(CI 全程重導向 stdout,黑框回來了也不會有人紅)。
+export SUBSYS_SERVICE="Windows CUI"
+run_case "rime_service.exe 掉回 console 子系統(捷徑會閃黑框)" red
+export SUBSYS_SERVICE="Windows GUI"
+export SUBSYS_SETUP="Windows GUI"
+run_case "rime_ime_setup.exe 變成 GUI(命令列輸出會整個消失)" red
+export SUBSYS_SETUP="Windows CUI"
+run_case "兩支都對(基準回到綠,證明上面兩條不是恆紅)" ok
+
+echo
+echo "== logic 那一組沒有 rime_service.exe:不可以因為「找不到」就紅 =="
+# ⚠ check_binaries.sh 在 CI 上被跑兩次(windows.yml 的 logic/bin 與 ime/bin),
+#   而 logic 那一組**刻意沒有** rime_service.exe(build.sh 的 build_logic
+#   甚至斷言它不在)。子系統那一節若把「找不到」當成失敗,那一格會無故變紅。
+mv "${WORK}/bin/rime_service.exe" "${WORK}/rime_service.exe.hidden"
+run_case "目錄裡沒有 rime_service.exe(= logic 那一組)" ok
+mv "${WORK}/rime_service.exe.hidden" "${WORK}/bin/rime_service.exe"
 
 echo
 printf '通過 %d,失敗 %d\n' "${pass}" "${fail}"

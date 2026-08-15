@@ -522,6 +522,22 @@ settings_window_present() {
     --class "${SETTINGS_CLASS}" --visible >/dev/null 2>&1
 }
 
+# ⚠ 「顯示中」與「在最前面」是兩件不同的事,而使用者只在乎第二件。
+#
+#   把視窗叫出來的是**已經在跑的那一支服務**,而它不符合
+#   SetForegroundWindow 的任何一條放行條件(不是前景進程、不是被前景進程
+#   啟動的、沒收到最後一個輸入事件)。少了 service/main.cc 與
+#   tsf/text_service.cc 那兩處 AllowSetForegroundWindow(精確 pid),
+#   系統只會讓工作列按鈕閃一下 —— 視窗**顯示出來了,卻停在別的視窗後面**。
+#   使用者的體感與「按了設定沒反應」一模一樣。
+#
+#   而 settings_window_present() 只問 IsWindowVisible,對那個狀態回真:
+#   壞掉與修好在報表上會是同一格綠。這一個就是補上那一格。
+settings_window_foreground() {
+  "${INSTALL_DIR}/rime_ime_setup.exe" find-window \
+    --class "${SETTINGS_CLASS}" --visible --foreground >/dev/null 2>&1
+}
+
 # ── 捷徑(.lnk)指到哪裡、帶什麼參數 ──────────────────────────────
 #
 # ⚠ 這是這一輪非加不可的一項,而它**第一次跑就抓到一個一直存在的缺陷**:
@@ -1063,6 +1079,53 @@ case "${d_user}" in
   *\\AppData\\*) ok "user 在 AppData 底下: ${d_user}" ;;
   *) note_fail "user 是「${d_user}」,預期在 %APPDATA% 底下" ;;
 esac
+
+# ── 5x. 同一個診斷動詞,經過 cmd 再跑一次 ────────────────────────────
+#
+# ⚠ 這一格是 service/main.cc 的 AttachParentConsoleForDiagnosticVerbs()
+#   在整棵樹上僅有的自動守門。
+#
+#   rime_service.exe 現在是 **GUI 子系統**(CMakeLists.txt 的
+#   WIN32_EXECUTABLE TRUE,為的是讓「開始」功能表的捷徑不再閃黑框)。
+#   GUI 進程啟動時系統**不會**幫它補標準控制代碼,所以 --print-dirs /
+#   --print-choice 這兩個「文件叫人用手跑」的診斷動詞,必須自己
+#   AttachConsole(ATTACH_PARENT_PROCESS) 才有輸出。
+#
+#   ⚠ 上面 §5 那一格**證不了**這件事:`> dirs.txt 2>&1` 是 shell 幫它把
+#     handle 填好的,AttachConsole 那一段寫不寫都一樣綠。
+#
+# ── ⚠ 這一格證不到什麼,要說清楚 ────────────────────────────────
+#
+#   只要我們在這一端把輸出接起來(檔案或管線都一樣),cmd 就會把那個
+#   handle 傳給子行程,於是 GetStdHandle 不是 NULL、AttachConsole 那一段
+#   根本不會執行。真正的「裸主控台」要有人**看著螢幕**才驗得到 ——
+#   那一條在真機清單上,不在這裡。
+#
+#   這一格證得到的是另外兩件、而且都是這次改動真的可能弄壞的事:
+#     1. 改成 GUI 子系統之後,這支 exe 從 cmd **還起得來**(進入點沒斷、
+#        CRT 起得來)。/ENTRY:mainCRTStartup 若哪天被拿掉,連結會先紅;
+#        但 CRT 的 app type 相關的啟動期崩潰只會在這裡現形。
+#     2. 輸出內容與 §5 **一字不差** —— 也就是子系統換了之後,這個動詞的
+#        行為沒有跟著漂掉。
+log "  5x. 同一個動詞經過 cmd 再跑一次(GUI 子系統之後進入點還活著)"
+set +e
+cmd //c "\"${INSTALL_DIR_W}\\rime_service.exe\" --print-dirs" \
+  > "${WORK}/dirs-cmd.raw" 2>&1
+rc_cmd=$?
+set -e
+tr -d '\r' < "${WORK}/dirs-cmd.raw" > "${WORK}/dirs-cmd.clean"
+if [ "${rc_cmd}" -ne 0 ]; then
+  sed 's/^/     /' "${WORK}/dirs-cmd.clean"
+  note_fail "cmd //c rime_service.exe --print-dirs 以 ${rc_cmd} 結束。
+     改成 GUI 子系統之後它還起得來嗎?(windows/CMakeLists.txt 的
+     /ENTRY:mainCRTStartup 是保住 main 進入點的那一行。)"
+elif diff -u "${WORK}/dirs.clean" "${WORK}/dirs-cmd.clean" > "${WORK}/dirs-cmd.diff" 2>&1; then
+  ok "經過 cmd 跑出來的三個目錄與 §5 一字不差"
+else
+  sed 's/^/     /' "${WORK}/dirs-cmd.diff"
+  note_fail "同一個 --print-dirs,經過 cmd 跑出來的內容與 §5 不同 ——
+     子系統換了之後這個診斷動詞的行為跟著漂掉了。"
+fi
 
 # ── 5b. 輸入模式 → 方案 / 簡繁(docs/settings-model.md §4)────────
 #
@@ -2227,6 +2290,22 @@ for i in $(seq 1 40); do
   if settings_window_present; then opened=1; break; fi
   sleep 1
 done
+# ── 12b-fg. 開出來了,而且必須在**最前面** ────────────────────────
+#
+# ⚠ 量在這裡而不是等一下才量:視窗剛出現的那一刻,前景狀態最乾淨。
+#   冷啟動這一支是**自己建視窗**的,而它是被有前景權的呼叫端啟動的,
+#   所以它本來就該在最前面 —— 拿不到就是真的壞了。
+if [ "${opened}" -eq 1 ]; then
+  if settings_window_foreground; then
+    ok "冷啟動:設定視窗就是前景視窗"
+  else
+    "${INSTALL_DIR}/rime_ime_setup.exe" find-window \
+      --class "${SETTINGS_CLASS}" 2>&1 | sed 's/^/     /' || true
+    note_fail "冷啟動的設定視窗顯示出來了,但**不是前景視窗**。
+     使用者看到的是「按了設定,視窗開在別的東西後面」—— 而那與
+     「按了完全沒反應」在體感上是同一件事。"
+  fi
+fi
 if [ "${opened}" -eq 1 ]; then
   ok "冷啟動:--settings 把設定視窗開出來了(捷徑走的就是這條)"
 else
@@ -2401,6 +2480,27 @@ if [ "${opened}" -eq 1 ]; then
         if settings_window_present; then warm=1; break; fi
         sleep 1
       done
+      # ── 前景:這一格才是症狀 D 第 5 問真正要守的東西 ─────────────
+      #
+      # ⚠ 第二支 --settings 只送一個具名事件就結束;真正呼叫
+      #   SetForegroundWindow 的是已經在跑的那一支服務,而它三條放行條件
+      #   一條都不符合。沒有 service/main.cc 那一段
+      #   AllowSetForegroundWindow(執行中那一支的精確 pid),系統只會讓
+      #   工作列按鈕閃一下 —— 視窗顯示出來了,卻停在別的視窗後面,而
+      #   settings_window_present() 對那個狀態回真。
+      # ⚠ 這一條的反向確認(把 main.cc 那一段拿掉,它必須紅)只有
+      #   Windows CI 做得到:建置機是 Linux,連結不起來。
+      if [ "${warm}" -eq 1 ]; then
+        if settings_window_foreground; then
+          ok "前景權轉讓成立:第二支 --settings 之後,設定視窗在最前面"
+        else
+          "${INSTALL_DIR}/rime_ime_setup.exe" find-window \
+            --class "${SETTINGS_CLASS}" 2>&1 | sed 's/^/     /' || true
+          note_fail "第二支 --settings 把視窗叫出來了,但它**不是前景視窗**。
+     少了 service/main.cc 的 AllowSetForegroundWindow(執行中那一支的 pid),
+     系統只會讓工作列按鈕閃一下 —— 使用者以為按了沒反應。"
+        fi
+      fi
       if [ "${warm}" -eq 1 ] && [ "${rc_warm}" -eq 0 ]; then
         ok "具名事件那條路成立:第二支 --settings 把視窗叫出來了(rc=${rc_warm})"
       else

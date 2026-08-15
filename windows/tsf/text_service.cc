@@ -2057,6 +2057,27 @@ void TextService::RefreshProfile() {
 }
 
 void TextService::OpenSettings() {
+  // ⚠ 前景權要在**送出請求之前**讓出去,而且路 1 與路 2 都要。
+  //
+  //   路 1(IPC)與路 2(具名事件)都只是「請已經在跑的那一支服務開窗」,
+  //   真正呼叫 SetForegroundWindow 的是那一支 —— 而它不符合任何一條放行
+  //   條件(不是前景進程、不是被前景進程啟動的、沒收到最後一個輸入事件),
+  //   系統只會讓工作列按鈕閃一下。使用者看到的是「視窗開了,可是在別的
+  //   視窗後面」,而那與「按了沒反應」在體感上是同一件事。
+  //
+  //   宿主進程在使用者按下語言列按鈕的當下**就是**前景進程,所以它有權轉讓。
+  //   ⚠ 精確 pid,不用 ASFW_ANY。
+  //   ⚠ 路 3(下面的 CreateProcess)不需要這一步:那一支自己建視窗,而且
+  //     它是被有前景權的宿主啟動的 —— 放行條件第二條本來就成立。
+  //   ⚠ 類別名問 winshared,**不要在這裡抄一份字面值**(見 winutil.h)。
+  const HWND settings_hwnd =
+      ::FindWindowW(RimeSettingsWindowClassName(), nullptr);
+  if (settings_hwnd) {
+    DWORD settings_pid = 0;
+    ::GetWindowThreadProcessId(settings_hwnd, &settings_pid);
+    if (settings_pid) ::AllowSetForegroundWindow(settings_pid);
+  }
+
   // 路 1:管道已經連上 → 走 IPC。UWP / 市集 App 的宿主跑在 AppContainer 裡,
   // 開不了 Local\ 底下別人建立的具名物件,那時只有這一條走得通。
   if (ipc_.SendOpenSettings()) {
