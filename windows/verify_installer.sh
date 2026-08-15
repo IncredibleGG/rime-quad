@@ -607,10 +607,17 @@ settings_section_teardown() {   # $@ = 這一節 fork 出來的 pid(可以是空
   done
   taskkill //IM rime_service.exe //F >/dev/null 2>&1 || true
   sleep 2
+  # ── ⚠ 每一次都記一行「現在前景是誰」,不是只在失敗時記 ────────────
+  #
+  #   上一輪這個函式跑了五次、五次都綠,而記錄裡只有五行 ✓ ——
+  #   於是「收尾之後前景是空的」與「收尾之後前景交給了 runner 上另一支
+  #   程式」在報表上長得一模一樣,而那正是 §13 拿不拿得到前景的分水嶺
+  #   (見 tests/tsf_host_main.cc 的 ForceForeground 檔頭)。
+  #   一個只在失敗時才說話的記錄,答不出「為什麼下一節開始紅」。
+  foreground_note "收尾之後"
   if foreground_not_ours; then
     ok "收尾之後前景已經不是設定視窗了(桌面狀態還乾淨,下一節量得到東西)"
   else
-    foreground_note "收尾之後"
     note_fail "收尾之後**前景仍然是我們的設定視窗**。
      這代表視窗沒有正規下台,前景這個欄位卡在我們手上(或卡在我們留下
      的殘留控制代碼上)。後面每一節的 TSF 宿主都會拿不到執行緒焦點,
@@ -2921,51 +2928,87 @@ else
   # 使用者機器上**現在**的狀態(他實測回報「我沒重啟也能用」的那一台)。
   # 走不通的話,他看到的是「有些程式能打字、有些不能」。
   log "  13c. 舊的 DLL 映像 + 新的服務"
-  if [ "${OLD_RC}" -eq 0 ]; then
-    ok "**舊的 DLL 映像在升級之後照樣打得出「你好」**(重新連上了新的服務)
+  # ── 判準是**三句話**,不是一句 ────────────────────────────────
+  #
+  # ⚠ 這裡以前只有一句「舊的 DLL 在升級之後不能用了」,而它在
+  #   run 31896143629 上是**錯的**:那一趟舊 DLL 全程連著新服務
+  #   (p13-svc-new.log:連線 #1 存活=300829ms 握手=1),
+  #   只是宿主拿不到前景,一顆按鍵都沒有離開宿主進程。
+  #   一句話蓋住三種完全不同的原因,而它指的方向會把人送去改
+  #   管道名 / 版本協商 / rime_shell ABI —— 那三個都是好的。
+  #
+  # 現在宿主自己走完一趟**不需要前景**的線路,並且分三格回報:
+  #
+  #   PHASE2_LINK_PIPE       管道連得上嗎(服務在不在那個名字上聽)
+  #   PHASE2_LINK_HANDSHAKE  握手成立嗎(proto / rime_shell ABI 談得攏)
+  #   PHASE2_LINK_SESSION    建得出 session 嗎(引擎給不給)
+  #
+  # 三格各自獨立會紅,而且紅字只指向它自己那一件事。
+  # 按鍵那一段(送 nihao1 比對「你好」)保留,但它是**加分題不是判準**:
+  # 它需要執行緒焦點,而焦點拿不拿得到不由產品決定。
+  P13_LPIPE="$(tr -d '\r' < "${WORK}/p13-oldhost.log" \
+               | sed -n 's/^ *PHASE2_LINK_PIPE=\([01]\).*/\1/p' | head -1)"
+  P13_LHS="$(tr -d '\r' < "${WORK}/p13-oldhost.log" \
+             | sed -n 's/^ *PHASE2_LINK_HANDSHAKE=\([01]\).*/\1/p' | head -1)"
+  P13_LSESS="$(tr -d '\r' < "${WORK}/p13-oldhost.log" \
+               | sed -n 's/^ *PHASE2_LINK_SESSION=\([01]\).*/\1/p' | head -1)"
+  P13_LSTAGE="$(tr -d '\r' < "${WORK}/p13-oldhost.log" \
+                | sed -n 's/^ *PHASE2_LINK_STAGE=//p' | head -1)"
+  P13_KEYPATH="$(tr -d '\r' < "${WORK}/p13-oldhost.log" \
+                 | sed -n 's/^ *PHASE2_KEYPATH_MEASURED=\([01]\).*/\1/p' \
+                 | head -1)"
+  if [ -z "${P13_LPIPE}${P13_LHS}${P13_LSESS}" ]; then
+    # 宿主連那三行都沒印出來 = 它根本沒走到第二階段。這與「量到壞的」
+    # 完全不同,不可以共用同一句紅字。
+    note_fail "宿主沒有印出 PHASE2_LINK_* 那三行 —— 第二階段沒有跑到
+     (宿主結束碼 ${OLD_RC})。先看上面它自己印的失敗,不要從這一格
+     去查管道名、版本協商或 rime_shell ABI。"
+  elif [ "${P13_LPIPE}" != "1" ]; then
+    note_fail "**管道連不上**(宿主印的 PHASE2_LINK_PIPE=0,停在「${P13_LSTAGE:-?}」)。
+     這一格不經過 TSF,所以它與前景無關 —— 它是真的。
+     ⚠ 只查兩件事,**不要**碰版本協商或 ABI(那兩關還沒被問到):
+       1. 那一刻有沒有一支服務在跑(err=2 沒有人在那個名字上聽;
+          err=5 有人在聽但這個身分開不了)
+       2. 管道名兩邊算出來一不一樣(winshared/winutil.cc 的 RimePipeName)"
+  elif [ "${P13_LHS}" != "1" ]; then
+    note_fail "**管道連上了,但握手不成立**(PHASE2_LINK_HANDSHAKE=0)。
+     這一格不經過 TSF,與前景無關。兩邊宣告的 proto 與 rime_shell ABI
+     都印在上面那一行裡,誰是舊的一眼看得出來。
+     去查:common/protocol.h 的版本協商與降級重試、
+     tsf/ipc_client.cc 的 Handshake(ABI 那一格沒有降級的路)。"
+  elif [ "${P13_LSESS}" != "1" ]; then
+    note_fail "**握手過了,但建不出 session**(PHASE2_LINK_SESSION=0)。
+     這一格與前景無關,**也與版本協商無關** —— 版本已經談攏了。
+     去查服務端:service/pipe_server.cc 的 kSessionNew、
+     service/engine.cc 的 NewSession / TakeSpareSession。
+     最常見的原因是它還在部署詞庫,而前面「等它就緒」那一步沒等夠。"
+  elif [ "${OLD_RC}" -ne 0 ]; then
+    note_fail "線路那三句話都成立,但宿主仍以 ${OLD_RC} 結束 ——
+     壞在按鍵那一段(session 開了,但按鍵沒有走成)。
+     要看的是服務端 [pipe] 那幾行的 按鍵= / 逾時= 兩個數字,
+     以及瘦 DLL 的除錯記錄。不要回頭去查管道名或版本協商。"
+  elif [ "${P13_KEYPATH}" = "1" ]; then
+    ok "**舊的 DLL 映像在升級之後照樣打得出「你好」**(而且線路那三句話
+     ——管道 / 握手 / session——也都成立)
      —— 這是使用者升級之後那些沒關掉的程式(檔案總管、瀏覽器)的處境。"
   else
-    # ── 三種紅字,不是一種 ────────────────────────────────────
-    #
-    # ⚠ 這裡以前只有一句「舊的 DLL 在升級之後不能用了」,而它在
-    #   run 31896143629 上是**錯的**:那一趟舊 DLL 全程連著新服務
-    #   (p13-svc-new.log:連線 #1 存活=300829ms 握手=1),
-    #   只是宿主拿不到前景,一顆按鍵都沒有離開宿主進程。
-    #   一句話蓋住三種完全不同的原因,而它指的方向會把人送去改
-    #   管道名 / 版本協商 / rime_shell ABI —— 那三個都是好的。
-    #
-    # 現在照**證據**分派,順序是「最不需要前景的先問」:
-    #   1. 桌面在這一節開始前就髒了(§13a 已經紅過)→ 環境,不是產品
-    #   2. 宿主自己說它拿不到焦點(PHASE2_PROBE_SKIPPED=1)→ 同上
-    #   3. 管道連不回去(PHASE2_PIPE_REACHABLE=0)→ **這才是產品**
-    #   4. 以上都不是 → 真的打不出字
-    P13_SKIPPED="$(tr -d '\r' < "${WORK}/p13-oldhost.log" \
-                   | sed -n 's/^ *PHASE2_PROBE_SKIPPED=//p' | head -1)"
-    P13_PIPE="$(tr -d '\r' < "${WORK}/p13-oldhost.log" \
-                | sed -n 's/^ *PHASE2_PIPE_REACHABLE=//p' | head -1)"
-    if [ "${P13_PIPE}" = "0" ]; then
-      note_fail "**管道那一側真的連不回去**(宿主印的 PHASE2_PIPE_REACHABLE=0)。
-     這一格不經過 TSF,所以它與前景無關 —— 它是真的。
-     去查:管道名(winshared/winutil.cc 的 RimePipeName)、
-     握手的版本協商(common/protocol.h、tsf/ipc_client.cc 的 EnsureReady)、
-     rime_shell 的 ABI(ipc_client.cc 的 Handshake)。"
-    elif [ "${P13_DESKTOP_DIRTY}" = "1" ] || [ "${P13_SKIPPED}" = "1" ]; then
-      note_fail "**這一格沒有量到相容性** —— 宿主拿不到 TSF 執行緒焦點
-     (PHASE2_PROBE_SKIPPED=${P13_SKIPPED:-?}),按鍵一顆都沒有離開宿主進程。
-     而管道是連得上的(PHASE2_PIPE_REACHABLE=${P13_PIPE:-?}),
-     也就是說**沒有任何證據說產品壞了,也沒有任何證據說它是好的**。
-     ⚠ 不要從這一格去查管道名、版本協商或 rime_shell ABI。
-     要查的是**誰佔著前景**:宿主印了它的 pid / exe / 類別 / IsWindow,
-     上面 §13a 的 [桌面] 那幾行也記了同一件事。
-     ⚠ 這一節的前提壞了,所以它必須是紅的 —— 一個驗不到東西的段落
-       綠起來,比它紅起來危險得多。"
-    else
-      note_fail "舊的 DLL 在升級之後不能用了(宿主結束碼 ${OLD_RC})。
-     宿主拿得到焦點、管道也連得上,所以這一格是**真的量到了壞的**。
-     症狀會是「有些程式能打字、有些不能」,而使用者無法理解為什麼。"
-    fi
+    # ⚠ 刻意的取捨,而且它**每一次都要看得見**:三句話成立所以這一格綠,
+    #   但按鍵那一段這一趟沒有量到。宿主自己也印了同一句話。
+    ok "舊的 DLL 映像與新的服務**線路整條走通**:管道連得上、握手成立、
+     session 建得出來(三句話都在上面那幾行裡)。"
+    printf '\033[1;33m  ⚠ 按鍵路徑這一次沒有量到(宿主拿不到前景)——\033[0m\n'
+    (tr -d '\r' < "${WORK}/p13-oldhost.log" \
+       | grep -a '按鍵路徑這一次沒有量到' || true) | sed 's/^/    /'
+    printf '\033[1;33m    這一格的判定由上面那三句話決定,它們不經過 TSF。\033[0m\n'
+    printf '\033[1;33m    要讓按鍵那一段也量得到,要修的是**誰佔著前景**,\033[0m\n'
+    printf '\033[1;33m    不是管道名、不是版本協商、也不是 rime_shell 的 ABI。\033[0m\n'
   fi
-  (tr -d '\r' < "${WORK}/p13-oldhost.log" | grep -a 'PHASE2_' || true) \
+  # ⚠ 桌面在這一節開始前就髒了的話,§13a 已經自己紅過一次(P13_DESKTOP_DIRTY),
+  #   這裡**不再報第二次** —— 同一件事報兩次會讓人以為壞了兩件事。
+  #   它與上面的判定刻意分開:判定用的是不需要前景的那三句話,
+  #   而那一條講的是測試台的狀態,要修的是 §12 的收尾。
+  (tr -d '\r' < "${WORK}/p13-oldhost.log" \
+     | grep -aE 'PHASE2_|KEYPATH_|LINK_|FOREGROUND_' || true) \
     | sed 's/^/    /'
 
   # ── 13d. 新開的進程必須拿到新版 ──────────────────────────────
@@ -2994,9 +3037,22 @@ else
   rc=$?
   set -e
   tr -d '\r' < "${WORK}/p13-newhost.log" | sed 's/^/    /'
-  [ "${rc}" -eq 0 ] \
-    && ok "升級之後新開的宿主打得出「你好」" \
-    || note_fail "升級之後新開的宿主以 ${rc} 結束"
+  # ⚠ 這一格與 §13c 用同一條規矩:宿主拿不到前景時,「打得出你好」量不到,
+  #   而它會改用不需要前景的那條線路(管道 / 握手 / session)來判。
+  #   所以綠的時候要說清楚**綠在哪一件事上** —— 兩者不是同一句話。
+  P13D_KEYPATH="$(tr -d '\r' < "${WORK}/p13-newhost.log" \
+                  | sed -n 's/^ *KEYPATH_MEASURED=\([01]\).*/\1/p' | head -1)"
+  if [ "${rc}" -ne 0 ]; then
+    note_fail "升級之後新開的宿主以 ${rc} 結束(看它自己印的失敗:
+     線路那三句話不成立的話,紅字會直接指到是哪一句)"
+  elif [ "${P13D_KEYPATH}" = "1" ]; then
+    ok "升級之後新開的宿主打得出「你好」"
+  else
+    ok "升級之後新開的宿主與服務**線路整條走通**(管道 / 握手 / session)"
+    printf '\033[1;33m  ⚠ 按鍵路徑這一次沒有量到(宿主拿不到前景)\033[0m\n'
+    (tr -d '\r' < "${WORK}/p13-newhost.log" \
+       | grep -a '按鍵路徑這一次沒有量到' || true) | sed 's/^/    /'
+  fi
   LOADED_NEW="$(tr -d '\r' < "${WORK}/p13-newhost.log" \
                 | sed -n 's/^ *LOADED_TSF_DLL=//p' | head -1)"
   # ⚠ 大小寫不敏感地比。Windows 的路徑不分大小寫,而 %ProgramW6432% 與
