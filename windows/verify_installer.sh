@@ -1197,7 +1197,15 @@ esac
 #        行為沒有跟著漂掉。
 log "  5x. 同一個動詞經過 cmd 再跑一次(GUI 子系統之後進入點還活著)"
 set +e
-cmd //c "\"${INSTALL_DIR_W}\\rime_service.exe\" --print-dirs" \
+# ⚠ 執行檔路徑與參數要當成**兩個引數**交給 cmd,不要自己在單一引數裡寫
+#   跳脫過的引號:MSYS 會把 `"` 轉成 `\"` 才交給 cmd.exe,而 cmd **不認**
+#   反斜線跳脫,整串會被當成一個命令名(症狀:'"C:\Program Files\...exe"'
+#   is not recognized)。拆成兩個引數之後由 MSYS 自己補引號,cmd 收到的是
+#   `/c "C:\Program Files\...\rime_service.exe" --print-dirs`,
+#   剛好命中 `cmd /?` 說的「恰好兩個引號 + 中間是可執行檔名」那一條而保留引號。
+#   這棵樹裡會動的先例是 build.sh:182 與 check_binaries.sh:54 —— 兩者都是
+#   **單一引數、裡面沒有引號**。
+cmd //c "${INSTALL_DIR_W}\\rime_service.exe" --print-dirs \
   > "${WORK}/dirs-cmd.raw" 2>&1
 rc_cmd=$?
 set -e
