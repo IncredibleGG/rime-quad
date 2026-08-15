@@ -84,6 +84,13 @@ void Usage() {
       "                             那個視窗類別現在存不存在。找到 = 0,沒找到 = 1\n"
       "                             --visible:還要求它是**顯示中**的\n"
       "                             (CI 用:斷言「設定視窗真的開出來了」)\n"
+      "  capture-window --class <類別名> --out <bmp 路徑> [--page <0-4>]\n"
+      "                             把那個視窗畫一張 24-bit BMP 存下來。\n"
+      "                             --page 先把它切到第幾頁(0 起算)。\n"
+      "                             --fail-if-blank:整張同一個顏色時以 3 結束\n"
+      "                             （CI 一定要帶;全黑的圖比沒有圖更糟）\n"
+      "                             它不提權、不改任何狀態、只寫你指名的那個檔;\n"
+      "                             支援時請使用者附上這張圖比描述畫面可靠得多。\n"
       "  check [--dll <路徑>] [--user] [--no-enum]\n"
       "                             斷言註冊狀態;不通過就以非零結束\n"
       "                             --no-enum:只驗登錄檔,不問 TSF 的列舉 API\n"
@@ -435,6 +442,173 @@ int main(int, char**) {
   return rc;
 }
 
+// ── capture-window:把一個視窗畫成 BMP ────────────────────────────
+//
+// ⚠ **這條線最大的問題是沒有人看過畫面。** windows/service/settings_window.cc
+//   這一路的改動全部在 Linux 上建置與驗證,而「好不好看」在那個條件下
+//   是驗不了的 —— 每一次都只能靠讀碼說服自己。
+//
+//   .github/workflows/windows.yml 有三個 windows-latest 的 job,而
+//   verify_installer.sh §12b 已經在 runner 上把設定視窗**開出來並斷言
+//   它是顯示中的**。所以截圖不是新能力,是把已經在那裡的一步接出一張圖。
+//
+// ── 為什麼是 PrintWindow 而不是螢幕擷取 ──────────────────────────
+//
+//   PW_RENDERFULLCONTENT 直接叫視窗把自己畫進一張記憶體 DC:
+//     · 不需要顯示裝置(runner 有沒有真的螢幕不影響)
+//     · 不需要把視窗弄到前景(跨進程搶前景在 Windows 上會被拒絕)
+//     · 被別的視窗蓋住也拍得到
+//   ⚠ 已知風險:BS_OWNERDRAW 的兩顆危險鍵走不走得到 WM_PRINTCLIENT,
+//     **我沒有證據**。所以失敗或整張全黑時退回螢幕擷取,而且
+//     **在日誌裡印出用了哪一條** —— 「抓到黑畫面」與「視窗沒開出來」
+//     在 artifact 上長得一模一樣,不印的話沒有人分得出來。
+//
+// ⚠ **這個動詞不寫進產品的主進程。** rime_service.exe 是握著使用者詞庫的
+//   那一支,不該為了 CI 長出一個測試旗標。PrintWindow 對別的進程的 HWND
+//   一樣有效,所以 rime_service.exe 一行都不用改。
+//
+// ⚠ 它對使用者無害:不提權、不改任何狀態、只寫一個他指名的檔案。
+//   rime_ime_setup.exe 本來就是使用者機器上的診斷工具(「開始」功能表裡
+//   那一項「診斷:輸入法為什麼不能用」),多一個「把你的設定視窗截一張圖」
+//   對支援是正資產。
+namespace {
+
+// 24-bit BMP。⚠ 不用任何編碼器 —— BITMAPFILEHEADER + BITMAPINFOHEADER
+//   直接落地,不引入新相依(§12.1:每一個匯入都要解釋得清楚)。
+bool WriteBmp24(const std::wstring& path, HBITMAP bmp, HDC dc, int w, int h) {
+  BITMAPINFO bi{};
+  bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+  bi.bmiHeader.biWidth = w;
+  bi.bmiHeader.biHeight = -h;  // 負 = top-down
+  bi.bmiHeader.biPlanes = 1;
+  bi.bmiHeader.biBitCount = 24;
+  bi.bmiHeader.biCompression = BI_RGB;
+  const int stride = ((w * 3) + 3) & ~3;
+  std::vector<BYTE> pixels(static_cast<size_t>(stride) * h, 0);
+  if (!::GetDIBits(dc, bmp, 0, h, pixels.data(), &bi, DIB_RGB_COLORS))
+    return false;
+
+  BITMAPFILEHEADER fh{};
+  fh.bfType = 0x4D42;  // 'BM'
+  fh.bfOffBits = sizeof(fh) + sizeof(bi.bmiHeader);
+  fh.bfSize = fh.bfOffBits + static_cast<DWORD>(pixels.size());
+  BITMAPINFOHEADER ih = bi.bmiHeader;
+  ih.biHeight = h;  // 檔案裡寫正的,像素改成 bottom-up
+  ih.biSizeImage = static_cast<DWORD>(pixels.size());
+
+  HANDLE f = ::CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (f == INVALID_HANDLE_VALUE) return false;
+  DWORD wrote = 0;
+  bool ok = ::WriteFile(f, &fh, sizeof(fh), &wrote, nullptr) != 0 &&
+            ::WriteFile(f, &ih, sizeof(ih), &wrote, nullptr) != 0;
+  // bottom-up:一列一列倒著寫。
+  for (int y = h - 1; ok && y >= 0; --y)
+    ok = ::WriteFile(f, pixels.data() + static_cast<size_t>(y) * stride,
+                     static_cast<DWORD>(stride), &wrote, nullptr) != 0;
+  ::CloseHandle(f);
+  return ok;
+}
+
+// 整張圖是不是同一個顏色(全黑/全白)。
+// ⚠ 這一格就是「抓到什麼都沒有」與「抓到畫面」的分界,而它在 artifact 上
+//   看起來一樣 —— 所以要在**這裡**分辨,不是等人打開圖檔。
+bool LooksBlank(HBITMAP bmp, HDC dc, int w, int h) {
+  BITMAPINFO bi{};
+  bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+  bi.bmiHeader.biWidth = w;
+  bi.bmiHeader.biHeight = -h;
+  bi.bmiHeader.biPlanes = 1;
+  bi.bmiHeader.biBitCount = 24;
+  bi.bmiHeader.biCompression = BI_RGB;
+  const int stride = ((w * 3) + 3) & ~3;
+  std::vector<BYTE> px(static_cast<size_t>(stride) * h, 0);
+  if (!::GetDIBits(dc, bmp, 0, h, px.data(), &bi, DIB_RGB_COLORS)) return true;
+  const BYTE r0 = px[0], g0 = px[1], b0 = px[2];
+  for (int y = 0; y < h; ++y) {
+    const BYTE* row = px.data() + static_cast<size_t>(y) * stride;
+    for (int x = 0; x < w; ++x) {
+      if (row[x * 3] != b0 || row[x * 3 + 1] != g0 || row[x * 3 + 2] != r0)
+        return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
+int CaptureWindow(const std::wstring& window_class, const std::wstring& out,
+                  int page, bool fail_if_blank) {
+  HWND h = ::FindWindowW(window_class.c_str(), nullptr);
+  if (!h) {
+    Say("!! capture-window:找不到類別「%s」的視窗\n",
+        WideToUtf8(window_class).c_str());
+    return 1;
+  }
+  if (!::IsWindowVisible(h)) {
+    // ⚠ 不是「拍不到」,是**拍到的東西不代表使用者看到的**。設定視窗在
+    //   服務啟動時就被建好但不顯示,所以隱藏的那一份可能還沒擺過版面。
+    Say("!! capture-window:視窗存在但不是顯示中的 —— 不拍\n");
+    return 1;
+  }
+  if (page >= 0) {
+    // WM_RIME_OPEN(WM_APP + 1),wParam = page + 1。
+    // ⚠ 這個編碼與 service/settings_window.cc 的 OpenAt() 是同一份約定。
+    //   跨進程送訊息,所以 rime_service.exe **一行都不用改**。
+    ::PostMessageW(h, WM_APP + 1, static_cast<WPARAM>(page + 1), 0);
+    // 換頁會重排版面與重畫,給它一點時間 —— 沒有可以等的事件。
+    ::Sleep(1200);
+  }
+
+  RECT wr{};
+  ::GetWindowRect(h, &wr);
+  const int w = wr.right - wr.left;
+  const int hgt = wr.bottom - wr.top;
+  if (w <= 0 || hgt <= 0) {
+    Say("!! capture-window:視窗矩形是空的\n");
+    return 1;
+  }
+
+  HDC screen = ::GetDC(nullptr);
+  HDC mem = ::CreateCompatibleDC(screen);
+  HBITMAP bmp = ::CreateCompatibleBitmap(screen, w, hgt);
+  HGDIOBJ old = ::SelectObject(mem, bmp);
+
+  const char* how = "PrintWindow";
+  // 2 = PW_RENDERFULLCONTENT(mingw 的 winuser.h 不一定有這個巨集)。
+  BOOL ok = ::PrintWindow(h, mem, 2);
+  if (!ok || LooksBlank(bmp, mem, w, hgt)) {
+    // 退回螢幕擷取。⚠ 這一條需要真的有顯示裝置,而 runner 有沒有
+    //   **我沒有證據** —— 所以它是退路,不是主路。
+    how = "BitBlt(screen)";
+    ::BitBlt(mem, 0, 0, w, hgt, screen, wr.left, wr.top, SRCCOPY);
+  }
+  const bool blank = LooksBlank(bmp, mem, w, hgt);
+  const bool wrote = WriteBmp24(out, bmp, mem, w, hgt);
+
+  ::SelectObject(mem, old);
+  ::DeleteObject(bmp);
+  ::DeleteDC(mem);
+  ::ReleaseDC(nullptr, screen);
+
+  // ⚠ **一定要印出用了哪一條、以及是不是一片空白。** 沒有這兩行的話,
+  //   「PrintWindow 對自繪按鈕沒作用」與「視窗真的長這樣」在 artifact 上
+  //   長得一模一樣。
+  Say("capture-window:%dx%d 用 %s%s → %s(%s)\n", w, hgt, how,
+      blank ? "(⚠ 整張同一個顏色)" : "", WideToUtf8(out).c_str(),
+      wrote ? "寫檔成功" : "寫檔失敗");
+  if (!wrote) return 1;
+  // ⚠ 空白圖:預設仍然是 0(使用者拿它做支援時,一張全黑的圖也是線索),
+  //   但 **CI 一定要帶 --fail-if-blank**。一張全黑的圖比沒有圖更糟 ——
+  //   它在 artifact 上看起來像有交付,而沒有人會去打開它。
+  if (blank && fail_if_blank) return 3;
+  // ⚠ 不帶旗標時一片空白**不當成失敗**:對使用者來說它仍然是證據
+  //   (而且是最需要被看到的那一種)。判它的是呼叫端 ——
+  //   CI 走 windows/check_ui_shots.sh,那一支會逐張逐頁再驗一次,
+  //   所以「這裡忘了帶旗標」不會變成一個沒有人看得到的洞。
+  return 0;
+}
+
 static int Run(int argc, wchar_t** argv) {
   if (argc < 2) {
     Usage();
@@ -450,12 +624,19 @@ static int Run(int argc, wchar_t** argv) {
   uint32_t explicit_langid = 0;
   std::wstring window_class;
   bool require_visible = false;
+  std::wstring capture_out;
+  int capture_page = -1;
+  bool fail_if_blank = false;
   DoctorOptions doctor;
 
   for (int i = 2; i < argc; ++i) {
     const std::wstring a = argv[i];
     if (a == L"--class" && i + 1 < argc) window_class = argv[++i];
     else if (a == L"--visible") require_visible = true;
+    else if (a == L"--out" && i + 1 < argc) capture_out = argv[++i];
+    else if (a == L"--page" && i + 1 < argc)
+      capture_page = ::_wtoi(argv[++i]);
+    else if (a == L"--fail-if-blank") fail_if_blank = true;
     else if (a == L"--lang" && i + 1 < argc) explicit_langid = ParseLangId(argv[++i]);
     else if (a == L"--dll" && i + 1 < argc) dll = argv[++i];
     else if (a == L"--dir" && i + 1 < argc) dir = argv[++i];
@@ -669,6 +850,15 @@ static int Run(int argc, wchar_t** argv) {
     //   **顯示出來**,不是存在。
     if (require_visible) return visible ? 0 : 1;
     return h ? 0 : 1;
+  }
+
+  if (verb == L"capture-window") {
+    if (window_class.empty() || capture_out.empty()) {
+      Say("!! capture-window 需要 --class <類別名> --out <bmp 路徑>\n");
+      return 2;
+    }
+    return CaptureWindow(window_class, capture_out, capture_page,
+                         fail_if_blank);
   }
 
   if (verb == L"dump") {

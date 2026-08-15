@@ -58,6 +58,7 @@
 
 #include <functional>
 #include <string>
+#include <map>
 #include <vector>
 
 #include "../common/schema_choice.h"
@@ -178,7 +179,38 @@ class SettingsWindow {
   LRESULT DrawSidebar(NMLVCUSTOMDRAW* cd);
   LRESULT DrawSchemaList(NMLVCUSTOMDRAW* cd);
   LRESULT DrawNetLogList(NMLVCUSTOMDRAW* cd);
+  // 核取方塊(BS_AUTOCHECKBOX)**與單選鈕**(BS_AUTORADIOBUTTON)的
+  // **字**由我們畫 —— uxtheme 畫的那一份在深色下是 1.21:1,
+  // 而讀不到字的那三頁全是單選鈕。見 .cc 檔裡那一段。
+  LRESULT DrawRowButtonText(NMCUSTOMDRAW* cd);
   void DrawDangerButton(DRAWITEMSTRUCT* di);
+
+  // ── §12.14.4:自己畫的每一塊都是圓角 ────────────────────────
+  //
+  // ⚠ 「先 FillRect 再 RoundRect(NULL_BRUSH)」是**方角**:第二步只畫線,
+  //   沒有把四個角外面那塊底色挖掉。§12.14.0 第 2 條記的就是那個形狀。
+  //   這一支先把角外那塊填成 under 色,再用 RoundRect 填實。
+  void FillRoundRect(HDC hdc, const RECT& r, int radius_px, Role fill,
+                     Role under);
+  // 只描一圈邊(不填)。
+  void StrokeRoundRect(HDC hdc, const RECT& r, int radius_px, Role pen,
+                       int width_px);
+  // §12.14.2 的雙色焦點環:外 2 DIP focusOuter + 內 1 DIP focusInner。
+  // ⚠ **不用 kPrimary。** accent 是使用者選的,一個淺黃色的焦點環畫在
+  //   白底的清單列上是看不見的,而焦點看不見就是鍵盤使用者走不下去。
+  //   兩圈互為反色,所以不管底下是什麼顏色,一定有一圈看得見。
+  void DrawFocusRing(HDC hdc, const RECT& r, int radius_px);
+  // 危險鍵的 hover:WM_DRAWITEM 不給 hot 狀態,要自己追。
+  void TrackDangerHover(HWND ctl, int id);
+  void ClearDangerHover();
+  // 這一頁的主要按鈕(BS_DEFPUSHBUTTON)。⚠ 一個視窗只能有一顆,
+  // 切頁時要把上一頁那顆的樣式拿掉,否則 Enter 會按到看不見的那一顆。
+  void ApplyDefaultButtonForPage(int page);
+  // 兩顆自繪危險鍵的子類別化。⚠ 存在的理由只有一個:滑鼠訊息**不會**
+  // 走到父視窗 —— 子控制項自己收 WM_MOUSEMOVE。沒有這一支就追不到
+  // hover,而 §12.14.6.4 的四個狀態就會少一個。
+  static LRESULT CALLBACK DangerProc(HWND h, UINT m, WPARAM w, LPARAM l,
+                                     UINT_PTR id, DWORD_PTR data);
 
  public:
   // 中英模式變了。可從任何執行緒呼叫。
@@ -227,6 +259,30 @@ class SettingsWindow {
   static DWORD WINAPI UpdateWorkerEntry(LPVOID self);
 
   void StartRedeploy(UiString why);
+
+  // ── W2:從這個視窗裡跑得到自我診斷 ─────────────────────────
+  //
+  // 在這之前,進階頁的「診斷」區塊只有一顆「複製」,而 windows/service/
+  // 底下一行 doctor 的呼叫都沒有。一個東西壞掉、因此打開設定的人,
+  // 得先關掉設定、回「開始」功能表、找到另一個捷徑 —— 而「設定」
+  // 是他唯一知道的入口。
+  //
+  // ⚠ **不開執行緒。** 診斷會逐一開啟系統上的每一個進程,還會叫起
+  //   rime_console 做端到端檢查(那一段的等待預算是分鐘級,見
+  //   common/first_run_timing.h),所以它一定不能跑在 UI 執行緒上 ——
+  //   但也不必為它再開一條執行緒:它本來就是**另一個進程**。
+  //   我們只要拿著它的 handle,用一顆 500ms 的計時器問「結束了沒」。
+  //   (更新那一條走的是真的執行緒,而「下載執行緒沒有人等它,關視窗
+  //    等於 use-after-free」正是那條路上還沒修完的東西。這裡不再多開
+  //    一個同樣形狀的東西。)
+  //
+  // ⚠ **這不是連網出口。** 它 ShellExecute 一支同目錄的本機執行檔,
+  //   與「開始」功能表那個診斷捷徑是同一行命令。windows/ 底下唯一
+  //   碰得到網路 API 的檔案仍然只有 service/net_gate.cc
+  //   (windows/audit_offline_win.sh 盯著這一條)。
+  void StartDoctorReport();
+  void OnDoctorTick();
+  void StopDoctorWatch();
   void SetStatus(const std::wstring& text);
   void SetStatus(UiString s) { SetStatus(UiText(s)); }
   // 成功訊息 4 秒後自己清掉(§12.5.3:不做浮層,成功不值得一個新表面)。
@@ -340,6 +396,18 @@ class SettingsWindow {
   // ⚠ 存著是為了**只在變動時**才呼叫 SetWindowRgn:那一支會重畫,
   //   每次 LayoutUi 都無條件呼叫的話,捲動時整頁會閃。
   std::vector<int> clip_h_;
+  // 這一頁上的卡片矩形(內容座標,DIP)。OnPaint 畫它們。
+  // ⚠ 由 LayoutSettingsPageDip() 產生 —— 這裡只是把結果存下來,
+  //   **不得**自己算。自己算的那一份會與控制項的位置漂開。
+  std::vector<CardRect> cards_;
+  // 這一顆控制項坐在卡片裡嗎(id → bool)。WM_CTLCOLOR* 靠它決定
+  // 回 surface 還是 background。
+  std::map<int, bool> in_card_;
+  // 現在滑鼠指著哪一顆危險鍵(-1 = 沒有)。
+  int danger_hot_ = -1;
+  HWND danger_tracked_ = nullptr;
+  // 現在哪一顆是 BS_DEFPUSHBUTTON(0 = 沒有)。
+  int default_button_ = 0;
 
   // ⚠ **只有一個 NetGate**,而且是整個進程唯一的那一個 —— 出口只有一個,
   //   這裡不新開第二條路(見 net_gate.h 的「單一出口」)。它宣告在上面
@@ -353,6 +421,12 @@ class SettingsWindow {
   UpdateFailure update_failure_ = UpdateFailure::kNone;
   // 上一次交棒的結果(啟動時和解出來的)。只顯示一次。
   std::wstring update_note_;
+
+  // W2:正在跑的那支 rime_ime_setup.exe(nullptr = 沒有在跑)。
+  // ⚠ 它同時是「按鈕要不要停用」的真相 —— 不另外放一個布林,
+  //   兩份會漂移,而漂移的樣子是按鈕永遠灰著或者可以連按五次。
+  HANDLE doctor_proc_ = nullptr;
+  DWORD doctor_start_ = 0;
 
   bool deploying_ = false;
   uint32_t deploy_seq_ = 0;

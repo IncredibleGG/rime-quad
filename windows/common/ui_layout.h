@@ -58,20 +58,45 @@ constexpr int s7 = 20;
 constexpr int s8 = 32;
 }  // namespace space
 
-// ── §3.3 圓角(桌面欄)。按鈕不在這裡 —— 它跟平台走。
+// ── §12.14.4 圓角:Windows 端**只有兩個值** ─────────────────────
+//
+// ⚠ §3.3 的桌面欄(10/7/6/5)在 Windows 端**不使用**。理由是 §3.3 自己
+//   那一條:「按鈕的圓角跟平台走,不跟我們走」。在 Win11 上,**所有**
+//   控制項的圓角都是平台給的,不只按鈕 —— 一個 7 DIP 圓角的清單列擺在
+//   4 DIP 圓角的系統核取方塊旁邊,看起來是兩套東西拼起來的。
+//
+//   膠囊(徽章)= 高度 ÷ 2,不是自由參數,所以不在這裡。
+//   焦點環 = 元件圓角 + 2,同理。
 namespace radius {
-constexpr int kLarge = 10;
-constexpr int kMedium = 7;
-constexpr int kMediumInner = 6;
-constexpr int kSmall = 5;
+constexpr int kControl = 4;  // 卡片、側欄項、清單列、按鈕、狀態列每一格
+constexpr int kWindow = 8;   // 懸浮狀態列、方案彈出清單、確認對話框、候選窗
 }  // namespace radius
 
 // ── §3.6 / §12.4.2 元件尺寸 ─────────────────────────────────────
 namespace metric {
 constexpr int kHairline = 1;
-constexpr int kMinTarget = 28;   // 桌面點擊目標最小 28×28
-constexpr int kSidebarItemH = 36;
+constexpr int kFocusRingW = 2;   // §12.14.2:焦點環外圈
+constexpr int kIndicatorW = 3;   // §12.14.6.1:側欄選中項左緣指示條的寬
+constexpr int kIndicatorH = 16;  // 同上的高
+constexpr int kMinTarget = 28;   // 桌面點擊目標最小 28×28;狀態列每一格的高
+constexpr int kButtonH = 32;     // §12.14.6.2:按鈕高;懸浮狀態列整條的高
+// ⚠ 舊名 kSidebarItemH。§12.14.5:36 有**兩個**意思(側欄項高、清單列高),
+//   而那是刻意的 —— 兩者是同一種東西(一列可點的、放一行 t3 的東西),
+//   值一樣才對。名字叫 kSidebarItemH 的時候,方案清單用它看起來像
+//   「借了側欄的常數」,下一個人會想拆成兩個,然後兩個會漂開。
+constexpr int kRowH = 36;
 constexpr int kSidebarStatusH = 64;
+// §12.14.6.2/.3:按鈕的**下界**寬,不是它的寬。
+//
+// ⚠ 這個常數是這一輪新加的,而它的存在本身就是那個缺陷的名字:
+//   在它之前,一列按鈕的寬度是「內容欄減掉間距再除以顆數」——
+//   也就是**每一顆都跟著視窗變寬**。進階頁那張「重新整理字詞」的卡
+//   因此是 540×52 而按鈕只佔左邊 180,右邊 360 DIP 整片空白;
+//   輸入方案頁的上移/下移/套用這個順序各被拉成 165 寬,
+//   讀起來是一列對話框按鈕,不是一排工具列按鈕。
+//   現在寬度由**字**決定(ButtonWidthDip),而這一格是它的地板:
+//   「確定」「複製」這種兩個字的按鈕不可以縮成一顆藥丸。
+constexpr int kButtonMinW = 80;
 constexpr int kSidebarW = 200;   // §5.1「不可拖曳」→ 固定,不是 splitter
 }  // namespace metric
 
@@ -125,11 +150,11 @@ int ContentXDip(int window_w_dip);
 // 側欄是一個真的 SysListView32(LVS_REPORT + 自繪),而 comctl32 排列的
 // 方式是固定的:第一列從清單的 client 頂端開始,之後每一列往下**列高**,
 // **列與列之間沒有間隔**。列高由 SetRowListRowHeight() 釘成
-// metric::kSidebarItemH。
+// metric::kRowH。
 //
 // 舊版這裡多加了一個 space::s2 的列距:
 //
-//     r.y = space::s5 + index * (metric::kSidebarItemH + space::s2);
+//     r.y = space::s5 + index * (metric::kRowH + space::s2);
 //
 // 那個 +4 在畫面上不存在 —— 沒有任何東西畫得出它,comctl32 也不認得它。
 // 它只存在於**我們以為列在哪裡**的那一份裡,而命中判定用的正是那一份:
@@ -150,6 +175,16 @@ RectI SidebarItemDip(int index);
 //   底比列窄是視覺,不是命中範圍。使用者按在底左邊那 12 DIP 上仍然要換頁,
 //   不然那一條會變成一道看不見的死區。
 RectI SidebarItemFillDip(int index);
+// 側欄選中項左緣那條指示條(§12.14.6.1)。**只有選中的那一項有。**
+//
+// ⚠ 它不是裝飾:§3.4 第 2 條要求「不得只用顏色傳達資訊」,而「現在是
+//   哪一頁」的第一個訊號是底色。指示條是**形狀**,色覺障礙下也在。
+//
+// ⚠ 它與底色、圓角**必須從同一個矩形算**(SidebarItemFillDip)。
+//   分開算的樣子是「指示條與底色的圓角對不齊」—— 差一兩個 DIP,
+//   看起來只是「做得不精緻」,不像 bug,所以永遠不會有人回報。
+RectI SidebarIndicatorDip(int index);
+
 // 側欄底部的狀態區(兩行 t5:「可以打字」/「離線」)。
 RectI SidebarStatusDip(int window_h_dip);
 
@@ -223,6 +258,42 @@ int EstimateTextLinesDip(const wchar_t* text, int size_dip, int w_dip);
 //   消失,而且沒有任何錯誤)。現在不合法的字級一律當成 t5 ——
 //   **回傳保證 >= TextLineBoxDip(text_size::t5)**。
 int EstimateTextBoxHeightDip(const wchar_t* text, int size_dip, int w_dip);
+
+// ── 一段文字畫出來大約多寬(DIP)────────────────────────────────
+//
+// ⚠ **估算,不是量測** —— 同 EstimateTextLinesDip,而且刻意用**同一個**
+//   字寬模型(全形算一個字級,其餘算 0.6 個)。兩支各用一套模型的話,
+//   「這一行放得下」與「這顆按鈕要多寬」會給出互相矛盾的答案。
+//
+// ⚠ 錯的方向也一樣:往**寬**的一邊。少算的後果是按鈕上的字被系統
+//   截尾(使用者看到「重新整理字…」);多算的後果是按鈕寬幾個 DIP。
+//   兩者不對稱,所以再留 1/16 的餘裕(0.6 是拉丁字母的平均寬,
+//   不是上界)。
+// ⚠ 換行字元在這裡**不換行** —— 這一支回的是「排成一行」的寬度,
+//   按鈕上的字本來就只有一行。
+int EstimateTextWidthDip(const wchar_t* text, int size_dip);
+
+// ── 一顆按鈕要多寬(§12.14.6.2/.3)──────────────────────────────
+//
+// = t4 的字寬 + 左右各 `s5`,下界 `metric::kButtonMinW`。
+//
+// ⚠ **這一支存在的理由是版面在用「填滿寬度」思考。** 舊版一列按鈕的
+//   寬是 `(inner_w - 2*s3) / 3` —— 三顆各 165 DIP,橫跨整個內容欄
+//   平均分配。那不是工具列,是對話框的按鈕列;而且視窗一拉寬,
+//   「上移」這兩個字底下的按鈕就跟著長到 300 DIP。
+//
+// ⚠ 寬度從**顯示的那一句**算,所以它跟著介面語言變 —— 與說明段的
+//   高度(EstimateTextBoxHeightDip)同一條路。
+int ButtonWidthDip(UiString label);
+
+// ── 這一顆按鈕上寫的是哪一句 ────────────────────────────────────
+//
+// ⚠ 這是「寬度從哪一句算」的唯一來源。字本身是
+//   service/settings_window.cc 的 kControls 填的,兩邊必須是同一句 ——
+//   不然按鈕會照 A 句的寬度畫、上面寫 B 句,而 B 句比較長的時候
+//   使用者看到的是被截尾的字。check_ui_spec.sh 的 W35 逐顆比對這兩份。
+// ⚠ 不是按鈕的 id 回 UiString::kUiStringCount。
+UiString SettingsButtonLabel(int id);
 
 // ── 內容區的直向堆疊 ────────────────────────────────────────────
 //
@@ -371,6 +442,9 @@ enum SettingsControlId : int {
   IDC_DIAG_NOTE,
   IDC_DIAG,
   IDC_DIAG_COPY,
+  // ⚠ W2:跑 `rime_ime_setup.exe doctor --report`。與「開始」功能表那個
+  //   診斷捷徑**同一行命令**,不是另外寫一份。
+  IDC_DIAG_RUN,
   IDC_RESET_HEAD,
   IDC_RESET_BLURB,
   IDC_RESET,
@@ -393,6 +467,10 @@ enum SettingsControlId : int {
   IDC_UPDATE_TRUST,
   IDC_UPDATE_WHAT,
   IDC_UPDATE_STATUS,
+  // ⚠ W1:「為什麼下面那幾顆是灰的」。排在按鈕**之前**,理由與
+  //   IDC_UPDATE_TRUST 一樣:排在後面的話,他已經點過三次才讀到。
+  //   只在連網開關關著的時候出現(見 PageState::net_switch_off)。
+  IDC_UPDATE_GATE,
   IDC_UPDATE_CHECK,
   IDC_UPDATE_ACTION,
   IDC_UPDATE_PAGE,
@@ -417,6 +495,29 @@ constexpr int kContentTopDip = space::s8;
 // 內容底端留白:最後一個控制項與那條 hairline 之間。
 constexpr int kContentPadBottomDip = space::s7;
 
+// ── 摺線那一段:「下面還有東西」要看起來像還有東西 ──────────────
+//
+// 摺線 = 內容區的下緣,也就是底部固定列上面那條 hairline。它是一條
+// **視窗內部**的硬邊,而那正是問題:視窗邊緣把東西切斷沒有人覺得奇怪,
+// 視窗**中間**一條線把一張有外框的圓角卡片切斷,看起來是畫錯了。
+//
+// 實機截圖(796×599,client 763×560,摺線在 y=506)上看得到的兩件事:
+//   1. 卡片的左右兩條 1 DIP 外框直直撞上摺線就沒了,沒有下緣、沒有下圓角
+//      —— 空白比較多的那一側(右邊)只剩一小截豎線,像沒畫完;
+//   2. 剛好跨過摺線的控制項被**攔腰切開**:文字頁的「全形/半形」那個區段
+//      標題在 y=497、高 22,可視高度 506 —— 它被裁成 9 DIP,
+//      也就是從字的中間切過去。
+//
+// 這裡的兩個常數把那兩件事分開處理:
+//   · kScrollFadeH:摺線上方這一段是**淡出區**。卡片在這一段裡由
+//     surface 一階一階混到 background(GDI 沒有 alpha,所以是實色分帶,
+//     顏色由 ScrollFadeMix() 算 —— 純函式,測得到)。淡出是「還有更多」
+//     全世界都認得的訊號,而且它把那截沒畫完的外框一起吃掉。
+//   · ContentClipLineDip():**控制項**裁在淡出區的上緣,不是摺線上。
+//     所以淡出區裡永遠只有卡片的底色與外框,沒有字 —— 字上面蓋一層
+//     淡出會變成「這一列是不是停用了」,那是另一個缺陷。
+constexpr int kScrollFadeH = space::s6;
+
 // 一顆被擺好的控制項。⚠ y 是**內容座標**(捲動量 0 時等於視窗座標),
 // 呼叫端自己減掉捲動量。
 struct PlacedControl {
@@ -424,10 +525,44 @@ struct PlacedControl {
   RectI rect;          // 空矩形 = 這一頁上不出現(呼叫端 ShowWindow(SW_HIDE))
   bool clickable = false;
   const char* what = "";  // 診斷用,永遠英文(§4.11)
+  // ── ⚠ 這兩格是 W31' 的取材面(§12.15)────────────────────────
+  //
+  // 「這個矩形放得下它要放的字嗎」這件事,測試沒辦法從 rect 自己看出來
+  // —— 它得知道那是幾級的字、幾行。以前那個知識只存在於
+  // LayoutSettingsPageDip() 的區域變數裡,所以 §12.14.0 第 4 條那四處
+  // (頁標題 28 < 31、區段標題 19 < 22)**沒有任何自動化看得到**。
+  //
+  // 0 = 這一顆不放文字(清單、EDIT、按鈕的框由控制項自己畫)。
+  int text_size_dip = 0;
+  int text_lines = 0;
+  // 這一顆坐在卡片裡嗎。⚠ 它決定 WM_CTLCOLOR* 要回 surface 還是
+  //   background —— 沒有這一格的話,卡片裡的每一顆 STATIC 都會帶著
+  //   一塊 background 色的底,而卡片是 surface 色:畫面上是一張卡片
+  //   上面浮著幾塊顏色不一樣的長方形。這比沒有卡片還難看。
+  bool in_card = false;
+};
+
+// ── 卡片(§12.14.5,這一輪視覺上最大的一個改動)────────────────
+//
+// Win11 的設定介面**每一個區塊都是一張卡片**,而那正是「看起來像真的
+// 軟體」與「看起來像對話框」的分界。現況內容區是「標題 → 說明 → 控制項」
+// 一路往下攤平,沒有容器。
+//
+// ⚠ 卡片**不是**新的控制項:它畫在父視窗的 WM_PAINT 裡,所以不涉及
+//   無障礙。卡片內部控制項的位置**照舊由 LayoutSettingsPageDip() 算**,
+//   卡片只是多一個「把某幾顆控制項的矩形聯集起來再往外撐 padding」的輸出。
+//   這樣 W18 / W31' 量的還是同一批矩形。
+struct CardRect {
+  RectI rect;
+  // 卡內列與列之間的分隔線 y(內容座標)。⚠ 要縮排 s6,不縮排的話
+  //   它會碰到卡片的圓角,看起來像裂縫(§12.14.6.7)。
+  std::vector<int> divider_ys;
 };
 
 struct PageLayout {
   std::vector<PlacedControl> items;
+  // 這一頁上的卡片。⚠ 順序 = 由上而下。
+  std::vector<CardRect> cards;
   // 內容總高(含底部留白)。**捲動範圍唯一的來源** ——
   // 所以任何一顆沒有推進堆疊的控制項都會落在捲動範圍以外。
   int content_h_dip = 0;
@@ -489,6 +624,20 @@ struct PageState {
   // 上面那一格說明說的是哪一件事。見 SchemaListNote。
   // ⚠ schema_list_empty 為 false 時它沒有意義(那一格不出現)。
   int schema_note = kSchemaNoteEmpty;
+  // 「連網」頁:開關關著的時候,更新那一段上面多一句話說明那幾顆按鈕
+  // 為什麼按不動、以及怎麼讓它們不灰(W1)。開著的時候那一句是假的,
+  // 所以整格不出現。
+  //
+  // ⚠ 預設 **true**,方向與 net_log_empty 同一個理由:連網開關本身
+  //   預設就是關的(離線為預設是產品定位),所以「第一次打開設定」
+  //   看到的必須是**有說明**的那一版。預設 false 等於把這一條修給了
+  //   少數人,而漏掉的正好是第一次來的那個人。
+  //
+  // ⚠ 這一格加在**結構的最後**是刻意的:tests 裡有
+  //   `const PageState has_rows{false, false};` 這種位置初始化,
+  //   插在中間會把 false 錯位餵給這一格,而症狀是「那句說明無聲無息
+  //   地不見了」——畫面上什麼都沒壞,只是又回到 W1 那個狀態。
+  bool net_switch_off = true;
 };
 
 // 一頁的完整版面。
@@ -496,6 +645,17 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip, PageState state);
 
 // 內容區的可視高度。⚠ 視窗矮於底部固定列時回 0,不回負數。
 int ContentViewportHeightDip(int window_h_dip);
+
+// ── 控制項裁在哪一條線上 ────────────────────────────────────────
+//
+// 底下**還有內容**(scroll_dip < scroll_max_dip)時,控制項裁在
+// 可視高度再往上 kScrollFadeH 的地方 —— 那一段留給淡出區。
+// 已經捲到底(或者根本不用捲)時沒有淡出區,裁在可視高度上。
+//
+// ⚠ 這一支是純函式,理由與 ScrollPlaceControlDip() 一樣:它以前**不存在**,
+//   而「裁在哪」是寫在 service/settings_window.cc 裡的一個算式 ——
+//   那個檔案在 Ubuntu 上編不起來,所以那個算式沒有任何測試看得到。
+int ContentClipLineDip(int window_h_dip, int scroll_dip, int scroll_max_dip);
 
 // 捲動上限(DIP)。內容放得下時是 0。
 // ⚠ 這一支**必須**吃 window_h_dip —— 舊版的 ClickableTargetsDip 把它
@@ -519,8 +679,18 @@ struct ScrolledPlacement {
   // 視窗座標 = 內容座標 - 捲動量。**捲動量一定要參與**,
   // 否則捲軸會動而內容不動。
   int y_dip = 0;
-  // <0 = 不裁;>=0 = 只露出這麼高。0 = 一個像素都看不到 ——
-  // 但**仍然存在、仍然在 Tab 順序上**(見 visible)。
+  // ── ⚠ 只有兩個值:-1(整顆都畫)或 0(一個像素都不畫)──────────
+  //
+  // 舊版回的是「露出這麼高」,也就是**半顆控制項**:預設尺寸下文字頁的
+  // 「全形/半形」區段標題在 y=497、高 22,可視高度 506 —— 它被裁成 9,
+  // 從字的中間橫著切過去。使用者回報的是「摺線那裡看起來像壞掉」,
+  // 而那正是它:被攔腰切開的字沒有任何辦法讀成「還有東西可以捲」。
+  //
+  // 現在一顆控制項要嘛整顆在裁切線以上,要嘛完全不畫。摺線因此永遠
+  // 落在**空白**上(卡片的內距或頁面底色),而「還有更多」交給
+  // 淡出區(kScrollFadeH)與捲軸去說 —— 它們說得清楚,半個字說不清楚。
+  //
+  // ⚠ 0 **不等於**隱藏:控制項仍然存在、仍然在 Tab 順序上(見 visible)。
   int clip_h_dip = -1;
   // ⚠ 永遠 true,而且**這是規定,不是實作細節**:捲出可視範圍的控制項
   //   只裁不藏。ShowWindow(SW_HIDE) 會讓它退出 Tab 順序,於是鍵盤
@@ -528,9 +698,89 @@ struct ScrolledPlacement {
   //   呼叫端必須把這個欄位接到 ShowWindow 的引數上(而不是寫死
   //   SW_SHOW/SW_HIDE),這樣「藏起來」才會是一個測得到的行為改變。
   bool visible = true;
+  // ── ⚠ **真的送進 SetWindowPos 的那一個矩形**(視窗座標)────────
+  //
+  // 2026-08-15:在它之前,呼叫端拿的是 `y_dip` + `clip_h_dip` 兩個值,
+  // 而「一個像素都不畫」是靠 `SetWindowRgn()` 給那顆控制項套一個空區域
+  // 達成的。那個作法有一個結構性的問題:**區域不在版面模型裡**。
+  // 版面說「這顆在 y=507」,而 y=507 已經壓在底部固定列(H−48=512)上;
+  // 畫面上它到底有沒有被畫出來,取決於一個沒有任何純函式看得到的
+  // Win32 呼叫。實機截圖(796×599)量到的就是這個:外觀頁的
+  // 「標準」那一列被畫在 y=507..543,把「關閉」鈕蓋掉只剩右緣十幾個
+  // 像素;文字頁的區段說明被畫在 y=521..553,壓在同一條列上。
+  //
+  // 所以現在「不畫」是一個**尺寸**,不是一個區域:w = h = 0。
+  // 空矩形畫不出任何東西是幾何,不是 Win32 的某一條語意 ——
+  // 而且 `RectI::empty()` 讓它在版面模型上**量得到**
+  // (見 DrawnRectsDip 與 test_ui_layout.cc 的
+  //  nothing_is_ever_drawn_on_the_bottom_fixed_bar)。
+  //
+  // ⚠ 位置(x/y)仍然是真的位置,不是把它挪到畫面外:控制項還在
+  //   Tab 順序上,焦點一到 EnsureFocusVisible() 就會捲到它 ——
+  //   那條路徑讀的是**內容座標**,不是這裡的 rect。
+  RectI rect;
 };
+// ⚠ 第三個引數是**裁切線**(ContentClipLineDip()),不是可視高度。
+//   兩者在「還有更多」的時候差 kScrollFadeH -- 傳可視高度進去的話,
+//   控制項會畫進淡出區裡,而字上面蓋一層淡出看起來像那一列被停用了。
 ScrolledPlacement ScrollPlaceControlDip(const RectI& content_rect,
-                                        int scroll_dip, int viewport_h_dip);
+                                        int scroll_dip, int clip_line_dip);
+
+// ── 畫面上**真的畫得出來**的每一塊(視窗座標)────────────────────
+//
+// ⚠ 這一支存在的理由是一次量錯的宣告。上一輪的報告說摺線那一段修好了,
+//   而十張實機截圖(796×599)量出來的是:外觀頁與文字頁的底部固定列
+//   仍然被蓋掉 —— 「關閉」鈕只剩右緣十幾個像素,而 SetStatus() 寫的
+//   「已套用」「正在套用…」那一行完全看不到。
+//
+//   成因不是那一段裁切沒寫,是**沒有人量得到它**:卡片裁在父視窗的
+//   DC 上(IntersectClipRect),控制項裁在 SetWindowRgn 上,兩者都是
+//   Win32 的呼叫,而版面模型只認得「這顆在 y=507」。y=507 + 高 36
+//   壓在 H−kBottomBarH=512 那一列上,所以只要那一個 Win32 呼叫沒有
+//   生效(或者像截圖那條路徑一樣看不見它),畫面就是壞的,
+//   而每一條純函式的測試都是綠的。
+//
+//   這一支把「畫得出來的是哪些矩形」變成一個**算得出來的東西**:
+//   卡片照 OnPaint 的裁切線裁,控制項照 ScrollPlaceControlDip() 的
+//   結果取,兩者合起來就是畫面。test_ui_layout.cc 的
+//   nothing_is_ever_drawn_on_the_bottom_fixed_bar 對五頁 ×
+//   每一個捲動位置斷言:**底部固定列那一帶不得有任何一塊**。
+struct DrawnRect {
+  int id = 0;            // 控制項 id;卡片是 0
+  bool is_card = false;
+  const char* what = "";  // 診斷用,永遠英文(§4.11)
+  RectI rect;             // 視窗座標(已經減過捲動量、已經裁過)
+};
+std::vector<DrawnRect> DrawnRectsDip(int page, int window_w_dip,
+                                     int window_h_dip, int scroll_dip,
+                                     PageState state);
+
+// ── 「預設」徽章擺哪裡(§12.14.6.5)─────────────────────────────
+//
+// ⚠ **這一支存在的理由是 §12.14.0 第 3 條**:徽章的位置以前從**列矩形**
+//   往回推,而列矩形會被 RowRect() 撐到 GetClientRect 的寬度。清單帶
+//   WS_BORDER、沒有 LVS_NOSCROLL,所以項目一多就出現直捲軸,client 變窄
+//   而欄寬沒跟著變窄 —— 那一列比看得見的範圍寬,徽章被排到可視區外面,
+//   被 DC 的裁剪切掉。使用者實機回報過:「清單右上角那個徽章畫壞了」。
+//
+//   修法與那個因果對不對無關:**位置不該從列矩形往回推**。這裡用控制項
+//   自己的寬度,而且**明確扣掉捲軸寬** —— 這樣它在有沒有捲軸兩種情況下
+//   都是對的,也才測得到。
+//
+// ⚠ has_vscroll 要從 `GetWindowLongW(list, GWL_STYLE) & WS_VSCROLL` 來,
+//   **不要**用「項目數 > 可視列數」自己推 —— 那會在捲軸剛出現的那一幀算錯。
+//
+// badge_text_w_dip 是量出來的字寬(GetTextExtentPoint32W)。純函式量不了字,
+// 所以它是**輸入** —— 測試餵合成的寬度,不假裝量得到。
+struct BadgePlacement {
+  RectI badge;      // 膠囊本體(相對清單控制項的 client 座標)
+  int radius_dip;   // = 高 ÷ 2。膠囊不是自由參數
+  int name_right;   // 名稱截尾的右界 —— 與徽章左緣**同一個算式**
+};
+BadgePlacement BadgePlacementDip(int list_w_dip, int row_top_dip,
+                                 int row_h_dip, int badge_text_w_dip,
+                                 int border_dip, int scrollbar_w_dip,
+                                 bool has_vscroll);
 
 // ── W18 的取材面 ────────────────────────────────────────────────
 //

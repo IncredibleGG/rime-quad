@@ -975,13 +975,19 @@ std::string Engine::SchemaOfSession(uint64_t id) {
   return out;
 }
 
-Engine::StatusReadback Engine::ReadBackStatus() {
+Engine::StatusReadback Engine::ReadBackStatus(uint64_t session_id) {
   StatusReadback out;
   Post("回讀狀態", [&] {
-    // 挑一個活著的 session。沒有就退而求其次用備用池裡的 ——
-    // 它們的選項是照同一份計畫配的,回讀出來的是同一件事。
-    uintptr_t sess = 0;
-    if (!sessions_.empty()) sess = sessions_.begin()->second;
+    // ⚠ 指定了就問指定的那一個。呼叫端(懸浮那一橫)知道使用者此刻
+    //   正在打字的是哪一個宿主(common/bar_owner.h 算出來的
+    //   focused_session),而 13 個宿主的 ascii_mode 是各自獨立的 ——
+    //   方案自己的按鍵與 ascii_composer 都會只翻其中一個。
+    //   挑 sessions_.begin() 等於擲骰子,而那正是使用者回報的
+    //   「點那一格沒反應,而它始終顯示『中』」。
+    uintptr_t sess = session_id ? Find(session_id) : 0;
+    // 沒指定、或指定的那一個已經不在了 → 退而求其次挑一個活著的,
+    // 再退到備用池(它們的選項是照同一份計畫配的)。
+    if (!sess && !sessions_.empty()) sess = sessions_.begin()->second;
     if (!sess) {
       std::lock_guard<std::mutex> lock(spare_mu_);
       if (!spare_.empty()) sess = Find(spare_.begin()->second.session);

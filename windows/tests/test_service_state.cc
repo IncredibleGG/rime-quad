@@ -12,6 +12,8 @@
 
 #include "../common/service_state.h"
 
+#include "../common/first_run_timing.h"
+
 #include <string>
 #include <vector>
 
@@ -244,4 +246,32 @@ TEST(service_state_flag_survives_a_real_round_trip_on_the_wire) {
   CHECK(ServiceStateOf(Facts(true, true, true,
                              SnapshotSaysNotReady(back.snap.status_flags))) ==
         ServiceState::kPreparing);
+}
+
+// ── W3:「首次要等多久」四份碼講四個數字,其中兩份使用者讀得到 ────
+//
+//   installer/luminakey.iss 的 FinishedLabel  一到數分鐘   ← 使用者讀得到
+//   common/service_state.h / status_bar.cc     7~12 秒
+//   service/engine.h                           可能好幾分鐘
+//   setup/doctor.cc 的診斷報告                 一到數分鐘   ← 使用者讀得到
+//
+// 實測是 7~12 秒。也就是說使用者讀得到的那兩處差了一個數量級,而且是
+// 往**壞的**那一邊差 —— 一個等了十幾秒的人會以為還要再等好幾分鐘。
+// (對照:安卓端同一句話是「Takes about 13 seconds.」,有數字而且是對的。)
+//
+// ⚠ 這一條驗的不是「等於 7 或 12」——那樣的測試只是把同一個數字再抄
+//   一份,而抄一份正是這件事本身。驗的是**性質**:使用者讀得到的那句
+//   話必須是秒級的,而且下界要比上界小。
+TEST(first_run_timing_is_measured_seconds_not_worst_case_minutes) {
+  CHECK(kFirstDeployTypicalLowSec > 0);
+  CHECK(kFirstDeployTypicalLowSec < kFirstDeployTypicalHighSec);
+  // 一分鐘以上就不再是「馬上就好」,而一個被嚇跑的人不會回來確認
+  // 它其實只花了十秒。
+  CHECK(kFirstDeployTypicalHighSec < 60);
+  // 逾時預算是**另一個問題**的答案(使用者自己灌了很大的詞典時,
+  // 部署真的可能跑到分鐘級),所以它必須明顯比上面那一組寬 ——
+  // 兩件事分開命名之後,就不會再有人拿逾時預算去嚇一個剛裝完的人。
+  CHECK(kDeployWaitBudgetSec > kFirstDeployTypicalHighSec * 4);
+  // Win + 空白鍵的清單多久才看得到我們(登錄檔是同步的,CTF 不是)。
+  CHECK(kProfileVisibleObservedSec > 0);
 }

@@ -58,6 +58,13 @@
 //   ── Ctrl+空白鍵(中英切換)────────────────────────────────────
 //
 //   --check-preserved-key        問 TSF「這顆鍵註冊了沒」(不呼叫產品)
+//
+//   ── 那一橫的「在場」訊號(工單 #82 的另一半)────────────────
+//
+//   --watch-presence   在 ActivateProfile **之前**自己把那條具名管道
+//                      開起來,然後在 ActivateEx 之後、**送出第一顆
+//                      按鍵之前**數服務端有幾條連線。0 條 = 失敗。
+//                      見下面 PresenceWatch 的檔頭。
 //   --press-preserved-key        **真的按下去**,並斷言 OnPreservedKey 有跑
 //   --toggle-mid-compose "nihao" 先打這幾個字讓引擎進入組字,再按那顆鍵
 //   --expect-toggle-doc "nihao"  按完之後文件必須完全等於這個
@@ -163,6 +170,175 @@ void Pump(DWORD ms) {
     ::Sleep(10);
   }
 }
+
+// ───────────────── 那一橫的「在場」連線:服務端那一格 ─────────────────
+//
+// ══ 補的是哪一個洞 ═════════════════════════════════════════════════
+//
+// 那一橫顯不顯示,服務端要答的是「使用者此刻正在用的那一條執行緒上,
+// 啟用中的是不是我們」(common/bar_owner.h)。而那句話的前半段只有宿主
+// 自己知道,它表達的方式就是**在場連線的生死**:ActivateEx / profile
+// sink 的啟用邊開,Deactivate / profile sink 的非啟用邊關。
+//
+// 判準本身守得很滿(tests/test_bar_owner.cc 十二支 + test_bar_visibility.cc
+// 九支)。⚠ **這一格守的是訊號有沒有真的到服務端。**
+// verify_tsf.sh 以前走到「ActivateEx 被呼叫了」就停手,
+// **沒有問過 activation 會不會開出一條連線**。
+//
+// 而使用者實機回報的正是那一格:切回輸入法之後那一橫不見了,
+// 按下第一顆鍵才回來 —— 因為在那之前,唯一會開連線的
+// EnsureReady() 全部在按鍵路徑上。
+//
+// ══ 這個類別做什麼 ═════════════════════════════════════════════════
+//
+// 在 ActivateProfile **之前**把那條具名管道自己開起來,然後數有幾條連線
+// 連進來。也就是說它站在**服務端**那一格上問問題,而不是問 DLL
+// 「你有沒有想連」——後者是「訊號有沒有送出去」,前者才是「訊號有沒有到」。
+//
+//   · 不回話、**一條連線都不關**。它**不是** rime_service.exe 的替身,
+//     只是那條管道的接線員;這個 job 沒有 librime,也不需要。
+//   · ⚠ **在場連線現在會送一則 HELLO**(它要報出 host_pid / host_tid,
+//     否則服務端只知道「有一條 handle 開著」,而那是一個沒有產品意義的
+//     量 —— 見 common/bar_owner.h)。這個接線員不回那則 HELLO,所以
+//     DLL 那一側會在握手逾時之後自己重連 —— 也就是說底下數到的
+//     `accepted` **不再等於「有幾個宿主」**,只等於「訊號到了幾次」。
+//     這一格要驗的仍然是同一件事:第一顆按鍵之前有沒有到過。
+//   · ⏳ 讓這個接線員真的回一則 HELLO_OK(於是 Windows CI 會實際跑過
+//     proto v3 與 host_tid 上線路那一段),只有 Windows runner 驗得到,
+//     已記進 #48。**這一輪沒有做**,不要把 accepted>0 讀成「握手過了」。
+//
+// ⚠ FIRST_PIPE_INSTANCE 是刻意的:那個名字已經被一支**真的**服務佔著時,
+//   我們要失敗並說出來,而不是接手 —— 接手的話數到的連線是誰的說不準,
+//   而一個說不準的綠燈比紅燈糟。快速 job 裡沒有服務,所以那是真的紅燈。
+class PresenceWatch {
+ public:
+  ~PresenceWatch() { Stop(); }
+
+  bool Start() {
+    stop_ = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    accept_evt_ = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!stop_ || !accept_evt_) {
+      err_ = ::GetLastError();
+      return false;
+    }
+    pending_ = CreateInstance(true, &err_);
+    if (pending_ == INVALID_HANDLE_VALUE) return false;
+    thread_ = ::CreateThread(nullptr, 0, &PresenceWatch::ThreadMain, this, 0,
+                             nullptr);
+    if (!thread_) {
+      err_ = ::GetLastError();
+      return false;
+    }
+    return true;
+  }
+
+  // 到目前為止**接到過**幾條連線。只增不減 —— 我們要問的是
+  // 「第一顆按鍵之前有沒有來過」,不是「此刻有幾條」。
+  int accepted() const {
+    return static_cast<int>(::InterlockedCompareExchange(
+        const_cast<volatile LONG*>(&accepted_), 0, 0));
+  }
+
+  DWORD error() const { return err_; }
+
+  void Stop() {
+    if (stop_) ::SetEvent(stop_);
+    // ⚠ 先把執行緒收乾淨,才碰 held_ —— 那個容器只有它在寫。
+    if (thread_) {
+      ::WaitForSingleObject(thread_, 3000);
+      ::CloseHandle(thread_);
+      thread_ = nullptr;
+    }
+    for (size_t i = 0; i < held_.size(); ++i) ::CloseHandle(held_[i]);
+    held_.clear();
+    if (pending_ != INVALID_HANDLE_VALUE) {
+      ::CloseHandle(pending_);
+      pending_ = INVALID_HANDLE_VALUE;
+    }
+    if (accept_evt_) {
+      ::CloseHandle(accept_evt_);
+      accept_evt_ = nullptr;
+    }
+    if (stop_) {
+      ::CloseHandle(stop_);
+      stop_ = nullptr;
+    }
+  }
+
+ private:
+  static HANDLE CreateInstance(bool first, DWORD* err) {
+    DWORD mode = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED;
+    if (first) mode |= FILE_FLAG_FIRST_PIPE_INSTANCE;
+    // ⚠ 安全描述元用預設的(nullptr)。這裡的用戶端與伺服器是**同一個
+    //   進程、同一份權杖**(rime_tsf.dll 被載進 rime_tsf_host.exe),
+    //   而產品那一份 DACL 只授權目前使用者這件事是 pipe_server.cc 的事,
+    //   不是這支假宿主要驗的。
+    HANDLE h = ::CreateNamedPipeW(
+        RimePipeName().c_str(), mode,
+        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT |
+            PIPE_REJECT_REMOTE_CLIENTS,
+        PIPE_UNLIMITED_INSTANCES, 4096, 4096, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE && err) *err = ::GetLastError();
+    return h;
+  }
+
+  static DWORD WINAPI ThreadMain(LPVOID p) {
+    static_cast<PresenceWatch*>(p)->Run();
+    return 0;
+  }
+
+  void Run() {
+    HANDLE pipe = pending_;
+    pending_ = INVALID_HANDLE_VALUE;
+    for (;;) {
+      if (pipe == INVALID_HANDLE_VALUE) {
+        DWORD e = 0;
+        pipe = CreateInstance(false, &e);
+        if (pipe == INVALID_HANDLE_VALUE) return;
+      }
+      OVERLAPPED ov;
+      ::ZeroMemory(&ov, sizeof(ov));
+      ov.hEvent = accept_evt_;
+      ::ResetEvent(accept_evt_);
+      BOOL done = ::ConnectNamedPipe(pipe, &ov);
+      const DWORD e = done ? 0u : ::GetLastError();
+      if (!done && e == ERROR_PIPE_CONNECTED) {
+        done = TRUE;  // 用戶端在 ConnectNamedPipe 之前就連上了
+      } else if (!done && e == ERROR_IO_PENDING) {
+        HANDLE waits[2] = {accept_evt_, stop_};
+        if (::WaitForMultipleObjects(2, waits, FALSE, INFINITE) !=
+            WAIT_OBJECT_0) {
+          ::CancelIoEx(pipe, &ov);
+          DWORD n = 0;
+          ::GetOverlappedResult(pipe, &ov, &n, TRUE);
+          ::CloseHandle(pipe);
+          return;
+        }
+        DWORD n = 0;
+        done = ::GetOverlappedResult(pipe, &ov, &n, FALSE);
+      }
+      if (!done) {
+        ::CloseHandle(pipe);
+        pipe = INVALID_HANDLE_VALUE;
+        continue;
+      }
+      ::InterlockedIncrement(&accepted_);
+      // ⚠ 不關。關掉的話 DLL 那一側會重連,而一條連線就會被數成好幾條。
+      held_.push_back(pipe);
+      pipe = INVALID_HANDLE_VALUE;
+      if (::WaitForSingleObject(stop_, 0) == WAIT_OBJECT_0) return;
+    }
+  }
+
+  HANDLE stop_ = nullptr;
+  HANDLE accept_evt_ = nullptr;
+  HANDLE thread_ = nullptr;
+  HANDLE pending_ = INVALID_HANDLE_VALUE;
+  // ⚠ 只有接線執行緒寫它,而 Stop() 先 join 才讀。
+  std::vector<HANDLE> held_;
+  volatile LONG accepted_ = 0;
+  DWORD err_ = 0;
+};
 
 // ───────────────────────── 假的文件 ─────────────────────────
 //
@@ -941,6 +1117,8 @@ static int Run(int argc, wchar_t** argv) {
   bool press_preserved = false;
   // ⚠ 量測,不是斷言。見 MeasureShiftDelivery()。
   bool press_shift = false;
+  // ⚠ 那一橫的「在場」訊號。見 PresenceWatch 的檔頭。
+  bool watch_presence = false;
   std::wstring toggle_keys;
   std::wstring expect_toggle_doc;
   bool have_expect_toggle = false;
@@ -973,6 +1151,7 @@ static int Run(int argc, wchar_t** argv) {
     else if (a == L"--trace" && i + 1 < argc) trace_path = argv[++i];
     else if (a == L"--check-preserved-key") check_preserved = true;
     else if (a == L"--press-shift") press_shift = true;
+    else if (a == L"--watch-presence") watch_presence = true;
     else if (a == L"--press-preserved-key") press_preserved = true;
     else if (a == L"--toggle-mid-compose" && i + 1 < argc) {
       toggle_keys = argv[++i];
@@ -1103,6 +1282,22 @@ static int Run(int argc, wchar_t** argv) {
   Step("ITfThreadMgr::SetFocus", hr);
   Pump(200);
 
+  // ── 那一橫的「在場」連線:先把服務端那一格架起來 ──────────────
+  //
+  // ⚠ **一定要在 ActivateProfile 之前。** DLL 是在那一步才被載入並
+  //   ActivateEx 的,而在場連線就是 ActivateEx 開出去的 ——
+  //   管道晚一步存在,那條連線就會連不上,而我們會把它讀成「沒有訊號」。
+  PresenceWatch presence;
+  bool presence_ready = false;
+  if (watch_presence) {
+    presence_ready = presence.Start();
+    if (presence_ready)
+      Say("  PresenceWatch:那條具名管道已由這支假宿主接管\n");
+    else
+      Say("  PresenceWatch:**架不起來**(err=%lu)\n",
+          static_cast<unsigned long>(presence.error()));
+  }
+
   // ── 啟用我們的語言設定檔 ────────────────────────────────────
   //
   // ⚠ 這一步是整支程式的重點,而且**旗標的組合會決定它成不成功**。
@@ -1187,6 +1382,38 @@ static int Run(int argc, wchar_t** argv) {
     Fail("ActivateEx **沒有被呼叫** —— DLL 載入了,但系統沒有把它當成輸入法叫起來");
   else
     Say("  (ActivateEx 沒有被呼叫)\n");
+
+  // ── 那一橫的訊號:ActivateEx 之後、**任何按鍵之前** ────────────
+  //
+  // ⚠ 位置就是斷言本身。放到送按鍵之後的話,第一顆按鍵的 EnsureReady()
+  //   也會開一條連線 —— 那一條**本來就會有**,而它正好蓋住我們要問的
+  //   那件事(「按鍵之前有沒有」)。這裡不是「順手也數一下」。
+  if (watch_presence) {
+    if (!presence_ready) {
+      Say("PRESENCE_STUB=unavailable err=%lu\n",
+          static_cast<unsigned long>(presence.error()));
+      Fail("那條具名管道架不起來 —— 這一格什麼都沒驗到。"
+           "err=5(ACCESS_DENIED)多半是這台機器上有一支真的服務佔著它");
+    } else {
+      // 在場連線是 DLL 在**背景執行緒**上開的,所以要給它一點時間。
+      // ⚠ 上限 3 秒,而且只等到「看見為止」—— 沒有連線時**不可以**
+      //   因為等得夠久就宣布成功。
+      int seen = presence.accepted();
+      for (int i = 0; i < 60 && seen == 0; ++i) {
+        Pump(50);
+        seen = presence.accepted();
+      }
+      Say("PRESENCE_STUB=ok\n");
+      Say("PRESENCE_CLIENTS_BEFORE_KEYS=%d\n", seen);
+      if (seen > 0)
+        Ok("ActivateEx 之後、第一顆按鍵之前,服務端已經有 %d 條連線 —— "
+           "那一橫的訊號是**啟用**,不是**按鍵**", seen);
+      else
+        Fail("ActivateEx 過了,服務端**一條連線都沒有**。"
+             "那一橫要等使用者按下第一顆鍵才會出現(工單 #82 的另一半):"
+             "clients_ 是 0,而唯一推得回去的 EnsureReady() 全部在按鍵路徑上");
+    }
+  }
 
   // ── 送按鍵 ─────────────────────────────────────────────────
   //

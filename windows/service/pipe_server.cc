@@ -5,6 +5,7 @@
 
 #include <sddl.h>
 
+#include <atomic>
 #include <cstdarg>
 #include <cstdio>
 #include <string>
@@ -451,17 +452,25 @@ void PipeServer::ServeClient(HANDLE pipe) {
   //   連線數都不會變,那一橫因此不會閃。
   //
   // ⚠ 一定要配對。這一支有很多條 goto done,所以用 RAII 保證離開時
-  //   一定減一 —— 漏掉一次,連線數就永遠偏高,那一橫再也藏不起來,
-  //   而那種缺陷只有人肉試得出來。
+  //   那筆註冊一定消失 —— 漏掉一次,那一橫就會替一個已經走掉的宿主
+  //   繼續顯示,而那種缺陷只有人肉試得出來。
+  //
+  // ⚠ **註冊不是一張票。** 建構的這一刻我們連對面是不是我們自己的 DLL
+  //   都還不知道(還沒讀到第一個位元組),所以它 activated=false,
+  //   一票都不投;要等 HELLO 才算一筆有效的提案。收斂規則在
+  //   common/bar_owner.h,13 個宿主怎麼變成一個答案由純函式測試守著。
+  static std::atomic<uint64_t> next_client_id{1};
+  const uint64_t client_id = next_client_id.fetch_add(1);
   struct ClientTicket {
     StatusBar* bar;
-    explicit ClientTicket(StatusBar* b) : bar(b) {
-      if (bar) bar->OnClientAttached();
+    uint64_t id;
+    ClientTicket(StatusBar* b, uint64_t i) : bar(b), id(i) {
+      if (bar) bar->OnClientAttached(id);
     }
     ~ClientTicket() {
-      if (bar) bar->OnClientDetached();
+      if (bar) bar->OnClientDetached(id);
     }
-  } ticket(bar_);
+  } ticket(bar_, client_id);
 
   FrameReader reader;
   bool authed = false;
@@ -605,6 +614,17 @@ void PipeServer::ServeClient(HANDLE pipe) {
         ok.proto = h.proto;
         authed = true;
         langid = h.input_langid;
+        // ── 那一橫的訊號:這條連線是「哪一條執行緒上的我們」──────
+        //
+        // ⚠ 這一行是 S1 與 S4 的共同出口。少了它,服務端只知道
+        //   「有一條管道 handle 開著」—— 一個沒有產品意義的量:
+        //   12 個背景宿主(有的凍結、有的永遠不送 Deactivate)每一條
+        //   都算一票,使用者切到微軟拼音之後那一橫照樣自己冒出來。
+        //   有了 (pid, tid),bar_owner 才比得出「使用者此刻正在用的
+        //   那一條執行緒上啟用中的是不是我們」。
+        // ⚠ host_tid 只有 proto >= 3 才在線路上;0 = 報不出來(舊 DLL),
+        //   那時 bar_owner 退回去比 pid,精確度差一階但看得見它。
+        if (bar_) bar_->OnClientIdentified(client_id, h.host_pid, h.host_tid);
         if (!send(EncodeHelloOk(seq, ok))) goto done;
         break;
       }
@@ -647,6 +667,9 @@ void PipeServer::ServeClient(HANDLE pipe) {
           ok.session = engine_->NewSession();
         }
         session = ok.session;
+        // 那一橫回讀中英狀態時要問**這一個**(見 status_bar.cc 的
+        // RefreshFromEngine):使用者正在打字的那個宿主的 session。
+        if (bar_) bar_->OnClientSession(client_id, ok.session);
         const DWORD t_created = ::GetTickCount();
         if (ok.session == 0) {
           // ⚠ **不可以送一則 session=0 的 SESSION_OK。**
@@ -816,11 +839,18 @@ void PipeServer::ServeClient(HANDLE pipe) {
         if (!DecodeArg(payload, &seq, &a)) goto done;
         if (op == Op::kFocus) {
           if (a.arg == 0) ui_->Hide();
-          // ⚠ a.arg == 1(焦點來了)以前完全沒有處理。它是那一橫的
-          //   **加強**條件:知道而且沒有焦點時才走遲滯,拿不到時
-          //   一律視為「有」(fail-visible)。判準在
-          //   common/bar_visibility.cc,這裡只轉達。
-          if (bar_) bar_->OnHostFocus(a.arg != 0);
+          // ⚠ **這一則不再餵那一橫,而那是刻意的。**
+          //
+          //   它以前寫進一個**單一全域** any_focused_,由「最後說話的
+          //   那個宿主」蓋掉前一個 —— 而每一個宿主都會送這一則。
+          //   使用者在記事本打字時,19:31:47 的 Snipaste、19:31:52 的
+          //   rustdesk、19:32:17 的 conhost 一進場就把前景那一份蓋掉,
+          //   那一橫因此時有時無(他實機回報的 S2)。
+          //
+          //   焦點現在是**一個位置**,不是一個布林:誰是前景由服務端
+          //   自己問 OS(status_bar.cc 的 ReadForegroundOwner),再跟
+          //   每一條連線報上來的 (pid, tid) 比。這一則仍然要收 ——
+          //   候選窗要靠它收起來 —— 但它不再是可見性的輸入。
           break;  // 單向,不回覆
         }
         Result r;

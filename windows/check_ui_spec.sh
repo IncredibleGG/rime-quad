@@ -200,16 +200,30 @@ run_checks() {
     red "W3:找不到 common/ui_layout.h —— 掃描範圍錯了"
   else
     local sp; sp="$(grep -o 'constexpr int s[0-9] = [0-9]*' "${lay}" | grep -o '[0-9]*$' | sort -n | tr '\n' ' ')"
-    local ra; ra="$(grep -o 'constexpr int k[A-Za-z]* = [0-9]*' "${lay}" | sed -n '/kLarge\|kMedium\|kMediumInner\|kSmall/p' | grep -o '[0-9]*$' | sort -n | tr '\n' ' ')"
+    # ⚠ §12.15 的 W3 修訂:圓角集合從 {5,6,7,10} 改成 **{4,8}**。
+    #   §3.3 的桌面欄在 Windows 端不使用 —— 在 Win11 上**所有**控制項的
+    #   圓角都是平台給的,一個 7 DIP 圓角的清單列擺在 4 DIP 圓角的系統
+    #   核取方塊旁邊,看起來是兩套東西拼起來的(§12.14.4)。
+    # ⚠ 用 **namespace 範圍**抓,不是靠名字前綴 —— `kWindowDefaultW` /
+    #   `kWindowMinH` 這幾個視窗尺寸也叫 kWindow*,靠前綴會把 460/560/
+    #   660/780 一起抓進圓角集合,而那條檢查會變成「永遠紅」→ 被關掉。
+    local ra; ra="$(sed -n '/^namespace radius {/,/^}/p' "${lay}" | grep -o 'constexpr int k[A-Za-z]* = [0-9]*' | grep -o '[0-9]*$' | sort -n | tr '\n' ' ')"
+    # ⚠ **元件尺寸那一組以前根本沒被檢查。** W3 的 ok 訊息說「三個集合都
+    #   落在階梯上」,而程式只比對了 sp(間距)與 ra(圓角) ——
+    #   metric:: 那一組從來沒有進過任何一個 if。這正是 §2-G 說的那種
+    #   「訊息比程式做的多」的守門:它每一次都綠,而它什麼都沒驗。
+    local me; me="$(sed -n '/^namespace metric {/,/^}/p' "${lay}" | grep -o 'constexpr int k[A-Za-z]* = [0-9]*' | grep -o '[0-9]*$' | sort -n | tr '\n' ' ')"
     local ts; ts="$(grep -o 'constexpr int t[0-9] = [0-9]*' "${lay}" | grep -o '[0-9]*$' | sort -n | tr '\n' ' ')"
     local nlit; nlit="$(num "$(grep -c 'constexpr int' "${lay}" || true)")"
     need_scope "W3" "${nlit}" 20 || true
     if [ "${sp}" != "2 4 6 10 12 16 20 32 " ]; then
       red "W3:間距階梯不是 §3.1 桌面欄的八階(得到:${sp})"
-    elif [ "${ra}" != "5 6 7 10 " ]; then
-      red "W3:圓角不是 §3.3 桌面欄的四個值(得到:${ra})"
+    elif [ "${ra}" != "4 8 " ]; then
+      red "W3:圓角不是 §12.14.4 的兩個值 {4,8}(得到:${ra})"
+    elif [ "${me}" != "1 2 3 16 28 32 36 64 80 200 " ]; then
+      red "W3:元件尺寸不是 §12.14.5 的十個值 {1,2,3,16,28,32,36,64,80,200}(得到:${me})"
     else
-      ok "W3 間距/圓角/尺寸三個集合都落在階梯上"
+      ok "W3 間距/圓角/尺寸三個集合都落在階梯上(圓角 {4,8};尺寸那一組這一輪才**真的**被比對)"
     fi
     # ── W4:字級落在 §3.2 桌面欄 ──
     check
@@ -316,7 +330,10 @@ run_checks() {
       "test_ui_layout.cc:ui_layout_every_control_belongs_to_exactly_one_page" \
       "test_statusbar_place.cc:statusbar_falls_back_when_the_monitor_disappears" \
       "test_statusbar_place.cc:statusbar_growing_wider_stays_inside_the_work_area" \
-      "test_ui_palette.cc:palette_every_pair_meets_its_threshold_in_both_modes" \
+      "test_ui_palette.cc:palette_every_neutral_pair_meets_its_threshold_in_both_modes" \
+      "test_ui_palette.cc:accent_derived_roles_meet_thresholds_for_every_accent" \
+      "test_statusbar_layout.cc:statusbar_cells_are_at_least_28_by_28" \
+      "test_ui_layout.cc:every_text_rect_is_at_least_its_line_box_times_lines" \
       "test_status_cells.cc:status_cells_input_mode_shows_exactly_one_label" \
       "test_status_cells.cc:status_cells_mode_and_variant_speak_the_same_way" \
       "test_ui_layout.cc:ui_layout_sidebar_list_never_covers_the_status_lines" \
@@ -757,11 +774,23 @@ if lu is None:
 else:
     if 'si.nPos = scroll_;' not in lu or '::SetScrollInfo(hwnd_, SB_VERT, &si,' not in lu:
         out.append('SCROLLBAR_NOT_FED')
-    if not re.search(r'ScrollPlaceControlDip\(\s*p->rect,\s*scroll_,\s*viewport_h\s*\)', lu):
+    if not re.search(r'ScrollPlaceControlDip\(\s*p->rect,\s*scroll_,\s*clip_line\s*\)', lu):
         out.append('NO_SCROLL_ARG')
-    if not re.search(r'place\(id, RectI\{p->rect\.x, sp\.y_dip,', lu):
-        out.append('Y_NOT_FROM_FN')
-    if not re.search(r'ClipToViewport\(i, c, p->rect\.w, sp\.clip_h_dip\)', lu):
+    # ⚠ 裁切線也要從純函式來。寫成 `viewport_h - 16` 那種字面
+    #   算式的話，那個數字就又變成一個沒有人量得到的東西 ——
+    #   而它決定「淡出區裡有沒有字」，也就是 B 那一條看起來像不像壞掉。
+    if not re.search(r'const int clip_line =\s*ContentClipLineDip\(H, scroll_, scroll_max_\);', lu):
+        out.append('CLIPLINE_NOT_FROM_FN')
+    # ⚠ **位置與尺寸都要從 sp.rect 來。** 舊版只驗 y(place(id, RectI{
+    #   p->rect.x, sp.y_dip, p->rect.w, p->rect.h}))—— 尺寸是自己拼的,
+    #   於是跨過裁切線的控制項仍然被擺成滿尺寸,只靠 SetWindowRgn()
+    #   把它變不見。那個區域不在版面模型裡,沒有純函式量得到 ——
+    #   而實機截圖量到的就是它壓在底部固定列上。
+    if not re.search(r'place\(id, sp\.rect\);', lu):
+        out.append('RECT_NOT_FROM_FN')
+    if re.search(r'place\(id, RectI\{p->rect', lu):
+        out.append('RECT_HANDROLLED')
+    if not re.search(r'ClipToViewport\(i, c, sp\.rect\.w, sp\.clip_h_dip\)', lu):
         out.append('CLIP_NOT_FROM_FN')
     if not re.search(r'::ShowWindow\(c, sp\.visible \? SW_SHOW : SW_HIDE\);', lu):
         out.append('SHOW_NOT_FROM_FN')
@@ -774,6 +803,8 @@ if 'int ScrollMaxDip(' not in lay:
     out.append('NO_SCROLLMAX')
 if 'ScrolledPlacement ScrollPlaceControlDip(' not in lay:
     out.append('NO_PUREFN')
+if 'int ContentClipLineDip(' not in lay:
+    out.append('NO_CLIPLINE_FN')
 if '(void)window_h_dip' in lay:
     out.append('VOID_HEIGHT')
 
@@ -817,9 +848,14 @@ ${w25out}" ;;
       NO_SCROLL_ARG)
         w25msg "LayoutUi 沒有把 **scroll_** 送進 ScrollPlaceControlDip() ——
      捲軸拖得動、內容一動也不動。這正是上一輪被實測拆掉而全綠的那一行。" ;;
-      Y_NOT_FROM_FN)
-        w25msg "控制項的 y **不是**從 ScrollPlaceControlDip() 的回傳值來的(預期
-     place(id, RectI{p->rect.x, sp.y_dip, ...}))—— 寫成 p->rect.y 就是不捲了" ;;
+      RECT_NOT_FROM_FN)
+        w25msg "控制項的矩形**不是** ScrollPlaceControlDip() 給的(預期 place(id, sp.rect);)
+     —— y 寫成 p->rect.y 就是不捲了;尺寸自己拼的話,跨過裁切線的控制項
+     會被擺成滿尺寸壓在底部固定列上,而那一列寫的是「已套用」「正在套用…」" ;;
+      RECT_HANDROLLED)
+        w25msg "LayoutUi 裡還有一個自己拼的 place(id, RectI{...}) —— 只要尺寸不是
+     sp.rect 給的,「不畫」就又變成一個只有 SetWindowRgn 知道的事實,
+     而版面模型量不到它(這正是 2026-08-15 那十張截圖上的缺陷)" ;;
       CLIP_NOT_FROM_FN)
         w25msg "裁切高度不是從 ScrollPlaceControlDip() 來的(預期
      ClipToViewport(i, c, p->rect.w, sp.clip_h_dip))" ;;
@@ -836,6 +872,14 @@ ${w25out}" ;;
       NO_PUREFN)
         w25msg "common/ui_layout.cc 沒有 ScrollPlaceControlDip —— 捲動後的位置/裁切/顯示
      又回到 settings_window.cc 裡了,而那裡單元測試看不到" ;;
+      CLIPLINE_NOT_FROM_FN)
+        w25msg "裁切線不是 ContentClipLineDip() 算的(預期
+     const int clip_line = ContentClipLineDip(H, scroll_, scroll_max_);)——
+     它決定「淡出區裡有沒有字」,寫成字面算式的話那個數字就沒有人量得到,
+     而症狀是摺線上一列字被淡出蓋掉一半,看起來像那一列被停用了" ;;
+      NO_CLIPLINE_FN)
+        w25msg "common/ui_layout.cc 沒有 ContentClipLineDip —— 裁切線又回到
+     settings_window.cc 裡了,而那裡單元測試看不到" ;;
       VOID_HEIGHT)
         w25msg "ui_layout.cc 又把 window_h_dip 丟掉了 —— 「排到視窗底部以外」對測試
      而言會再一次不存在" ;;
@@ -937,6 +981,20 @@ for name, send, optimistic in cells:
         out.append('NOREADBACK=' + name)
     elif iread < isend:
         out.append('READBACK_BEFORE_SEND=' + name)
+    # 回讀落地之後要記下時刻 —— 在它之前**產生**的點擊要被丟掉。
+    isettle = code.find('toggle_settled_ms_ = ')
+    if isettle < 0 or (iread >= 0 and isettle < iread):
+        out.append('NOSETTLE=' + name)
+
+# ── 連點:冪等的對象是「意圖」,不是「點擊」──────────────────────
+#
+# 回讀是阻塞的(排在引擎佇列上,而佇列可以被部署或一顆慢按鍵佔住好幾秒)。
+# 那段期間這條 UI 執行緒停著,使用者會一直點,而那些訊息在解除阻塞之後
+# 一次全部進來 —— 一下一次翻轉。使用者實機回報:「連點幾次之後變成
+# 完全打不出中文」。⚠ 要比的是訊息**產生**的時刻(GetMessageTime),
+# 不是處理的時刻 —— 用處理時刻的話那些訊息都是「剛剛才到的」,擋不掉。
+if '::GetMessageTime()' not in body:
+    out.append('NO_INTENT_GATE')
 
 # 回讀那一支本身要真的去問引擎,而且要重畫 —— 定義留著、身體空掉
 # 一樣是綠的,那正是上一輪被拆掉的形狀。
@@ -945,8 +1003,18 @@ if not r:
     out.append('NOREFRESHDEF')
 else:
     rb = r.group(1)
-    if 'ReadBackStatus()' not in rb:
+    if 'ReadBackStatus(' not in rb:
         out.append('REFRESH_NOT_ASKING')
+    # ⚠ 要問**使用者此刻正在打字的那一個** session。13 個宿主各有自己的
+    #   ascii_mode(方案自己的按鍵、ascii_composer 都只翻其中一個),
+    #   隨便挑一個等於擲骰子 —— 那一格會畫著別的宿主的狀態。
+    if 'ReadBackStatus(focused_session_)' not in rb:
+        out.append('READBACK_ASKS_ANYONE')
+    # ⚠ 回讀失敗(沒有 session)時,中英那一格**不准**停在舊值上:
+    #   那正是「引擎已經切成英數而畫面還說中」。它有一個行程層級、
+    #   永遠答得出來的來源,而且那是 ClickCell 決定方向時讀的同一格。
+    if 'engine_->AsciiMode()' not in rb:
+        out.append('REFRESH_CAN_LIE')
     if 'Relayout();' not in rb or '::InvalidateRect(' not in rb:
         out.append('REFRESH_NOT_REPAINTING')
 
@@ -996,6 +1064,26 @@ ${w26c}" ;;
         w26msg "${l26#NOREADBACK=} 那一格送出去之後沒有 RefreshFromEngine() ——
      **那一格要等使用者真的打一個字才會變**,而使用者會以為沒點到,
      然後再點一次(於是切回去了)。" ;;
+      NOSETTLE=*)
+        w26msg "${l26#NOSETTLE=} 那一格回讀完之後沒有記下 toggle_settled_ms_ ——
+     回讀會擋住那一橫的 UI 執行緒(引擎佇列可以被佔住好幾秒),那段期間
+     使用者會一直點,而那些點擊在解除阻塞之後**一次全部**送進來:
+     一下一次翻轉。使用者實機回報「連點幾次之後變成完全打不出中文」。" ;;
+      NO_INTENT_GATE)
+        w26msg "ClickCell 沒有用 ::GetMessageTime() 擋掉過期的點擊 ——
+     冪等的對象必須是**意圖**,不是「點擊」。比處理時刻的話那些擠在
+     佇列裡的點擊都是「剛剛才到的」,一個都擋不掉。" ;;
+      READBACK_ASKS_ANYONE)
+        w26msg "RefreshFromEngine 沒有問 focused_session_ —— 13 個宿主各有
+     自己的 ascii_mode(方案自己的按鍵、ascii_composer 都只翻其中一個),
+     隨便挑一個等於擲骰子。那一格會畫著**別的程式**的狀態,
+     而使用者看到的是「點了那一格沒反應」。" ;;
+      REFRESH_CAN_LIE)
+        w26msg "RefreshFromEngine 在回讀不到 session 時讓中英那一格停在舊值 ——
+     ⛔ 那正是使用者今晚踩到的那一格:引擎已經切成英數(完全打不出中文)
+     而那一格還說「中」。它有一個行程層級、永遠答得出來的來源
+     (engine_->AsciiMode()),而且那是 ClickCell 決定方向時讀的**同一格**
+     —— 畫面與方向必須同一個來源,分岔的樣子就是「點了沒反應」。" ;;
       READBACK_BEFORE_SEND=*)
         w26msg "${l26#READBACK_BEFORE_SEND=} 那一格先回讀才送出去 —— 讀到的是舊值,
      那一格會停在點下去之前的樣子" ;;
@@ -1024,7 +1112,7 @@ ${w26c}" ;;
   #   `variant_ = ` / `ascii_mode_ = `,通過的意思是「沒有樂觀寫入」。
   #   讀守門輸出的人會照這句話去理解程式碼該長什麼樣子,說反了就是
   #   叫下一個人把缺陷寫回來。
-  [ "${w26bad}" -eq 0 ] && ok "W26 狀態列寬度一變就重走 PlaceStatusBar,而且 中/En 與 简/繁 兩格都**不**樂觀寫入 —— 送出去之後立刻向引擎回讀,畫面上那個字是引擎說的"
+  [ "${w26bad}" -eq 0 ] && ok "W26 狀態列寬度一變就重走 PlaceStatusBar;中/En 與 简/繁 兩格都**不**樂觀寫入(送出去之後立刻回讀);回讀問的是使用者正在打字的那一個 session;回讀不到時中英那一格退回行程層級的來源(**不准**停在舊值上);而且過期的連點會被丟掉"
 
   # ── W27:三種處境三句話,而且那三句話真的流到畫面上 ─────────────
   #
@@ -3243,7 +3331,7 @@ PYSCRIPT
       NOPAGETEXTOUT=*)
         red "W39:Paint 讀了 page_text 卻沒有任何輸出呼叫"; w39bad=1 ;;
       HANDROLLED=*)
-        red "W39:繪製碼自己拼了一個 n/m 形式的頁碼 —— §8.12 明文規定後綴是 `+` 而不是分數,因為 librime **不提供總頁數**,寫成 1/3 就得靠猜"; w39bad=1 ;;
+        red "W39:繪製碼自己拼了一個 n/m 形式的頁碼 —— §8.12 明文規定後綴是 \`+\` 而不是分數,因為 librime **不提供總頁數**,寫成 1/3 就得靠猜"; w39bad=1 ;;
     esac
   done <<< "${w39out}"
   [ "${w39bad}" -eq 0 ] && ok "W39 頁碼整條鏈都接著:快照的 page_no / is_last_page → PageHint → ComputeLayout(留位置)→ PageIndicatorText(§8.12 的字面,純函式)→ Paint 真的畫出來,而且繪製碼沒有自己拼分數"
@@ -3393,6 +3481,566 @@ PYSCRIPT
   [ "${w40bad}" -eq 0 ] && ok "W40 簡繁快捷鍵整條鏈都接著:GUID → PreserveKey{'F', Ctrl|Shift} → OnPreservedKey 認得 → VariantToggleKeysym 的正規形式 → hotkey_policy 分類 → pipe_server 走 ToggleVariantTarget(單一來源)+ 向引擎回讀 + SetVariantPref → 回的是真快照不是空的,而且 main.cc 真的把設定視窗交出去、Deactivate 真的還鍵"
 }
 
+check_w41_to_w47() {
+  info "§12.14 視覺規格的機器檢查(W41–W47)"
+
+  # ── W41(規格的 W29):視窗級圓角走 DWM **或** region,不得同時 ──────
+  #
+  # ⚠ 兩條同時走的結果是雙重圓角(DWM 圓一次、region 再切一次),
+  #   邊緣會出現鋸齒的月牙 —— 而那看起來像「顯示卡的問題」,不像我們的。
+  # ⚠ CreateRoundRectRgn 的右下角是**排他的**,所以引數必須是 w+1, h+1。
+  #   少了那個 +1,右邊與下面各少一像素,症狀是「外框在右下角斷掉」。
+  check
+  local corner_src="${CODE_DIR}/service/status_bar.cc"
+  local w41bad=0
+  if [ ! -f "${corner_src}" ]; then
+    red "W41:找不到 service/status_bar.cc —— 掃描範圍錯了"
+    w41bad=1
+  else
+    local nsetrgn ndwm33
+    nsetrgn="$(num "$(grep -c 'SetWindowRgn' "${corner_src}" || true)")"
+    ndwm33="$(num "$(grep -c 'DWMWA_WINDOW_CORNER_PREFERENCE\|, 33,' "${corner_src}" || true)")"
+    need_scope "W41" "$((nsetrgn + ndwm33))" 2 || w41bad=1
+    # 圓角那一支必須是**一支**:同一個函式裡先試 DWM、成功就 return。
+    local body
+    body="$(sed -n '/^void StatusBar::ApplyWindowCorners/,/^}/p' "${corner_src}")"
+    if [ -z "${body}" ]; then
+      red "W41:找不到 StatusBar::ApplyWindowCorners 的本體 —— 圓角沒有單一入口,兩條路遲早會同時走"
+      w41bad=1
+    else
+      # ⚠ 判準不是「這支函式裡有沒有 return;」—— 開頭那句
+      #   `if (!hwnd || w_px <= 0 ...) return;` 本身就是一個 return,
+      #   所以那種寫法在把 DWM 成功之後那一個 return 拿掉之後照樣綠。
+      #   要問的是:**DWM 成功那一塊裡面**有沒有收手。
+      local dwmblk
+      dwmblk="$(printf '%s\n' "${body}" | sed -n '/if (SUCCEEDED(fn(hwnd, 33/,/^    }/p')"
+      case "${dwmblk}" in
+        *"return;"*) : ;;
+        *) red "W41:DWM 設定成功之後沒有 return —— 接著會再切一次 region,那是雙重圓角(邊緣會出現鋸齒的月牙,而那看起來像顯示卡的問題)"; w41bad=1 ;;
+      esac
+      case "${body}" in
+        *"w_px + 1, h_px + 1"*) : ;;
+        *) red "W41:CreateRoundRectRgn 的引數不是 w+1, h+1 —— 右下角會斷一像素(那個 +1 是排他座標,不是保險)"; w41bad=1 ;;
+      esac
+    fi
+  fi
+  [ "${w41bad}" -eq 0 ] && ok "W41 視窗級圓角只有一條路:DWM 33 成功就 return,失敗才 SetWindowRgn(而且是 w+1/h+1)"
+
+  # ── W42(規格的 W30):accent 的解析與衍生是純函式,而且過門檻 ────────
+  check
+  local acc="${CODE_DIR}/common/ui_accent.cc"
+  local acct="${CODE_DIR}/tests/test_ui_palette.cc"
+  local w42bad=0
+  if [ ! -f "${acc}" ] || [ ! -f "${acct}" ]; then
+    red "W42:找不到 common/ui_accent.cc 或 tests/test_ui_palette.cc —— 掃描範圍錯了"
+    w42bad=1
+  else
+    # ⚠ 純函式那一半:ui_accent.cc **不得** include windows.h。
+    #   一旦它 include 了,整支就在 Ubuntu 上編不起來,而 W42 的單元測試
+    #   會靜靜地從 run_logic_tests.sh 裡消失。
+    if grep -q '#include <windows.h>' "${acc}"; then
+      red "W42:common/ui_accent.cc include 了 windows.h —— 它就再也不是 Ubuntu 上測得到的東西了"
+      w42bad=1
+    fi
+    # 測試資料的規模:accent 數 ≥ 8、每個 accent 的配對數 ≥ 9。
+    local nseed npair
+    # ⚠ 一行上寫兩個 seed,所以要數**出現次數**不是命中行數。
+    #   grep -c 數的是行 —— 八個 accent 會被數成四個,而那讓一條
+    #   「範圍夠不夠大」的斷言在範圍其實夠大時報紅。
+    nseed="$(num "$(sed -n '/^const Seed kSeeds\[\]/,/};/p' "${acct}" | grep -o '0x' | wc -l)")"
+    npair="$(num "$(sed -n '/^const Pair kAccentPairs\[\]/,/};/p' "${acct}" | grep -o '{"' | wc -l)")"
+    need_scope "W42 accent 數" "${nseed}" 8 || w42bad=1
+    need_scope "W42 每個 accent 的配對數" "${npair}" 9 || w42bad=1
+    # 三道守門都要在。
+    for fn in PushForContrast PushForContrastTwo DeriveAccentRoles; do
+      grep -q "${fn}" "${acc}" || { red "W42:common/ui_accent.cc 少了 ${fn}"; w42bad=1; }
+    done
+    # ⚠ 對**兩個底**都算,不是只算一個 —— §3.4.1 記著那次事故。
+    # ⚠ 光 grep 'bg_a' / 'bg_b' 會被**參數名**滿足:把
+    #   `ContrastRatio(c, bg_b) >= want` 整段拿掉之後,兩個名字仍然在
+    #   函式簽章上。要看的是那兩個底**真的被拿去算**。
+    grep -q 'ContrastRatio(c, bg_a)' "${acc}" &&
+      grep -q 'ContrastRatio(c, bg_b)' "${acc}" || {
+      red "W42:守門只對一個底算 —— §3.4.1 那次「只驗一半就宣告過關」的事故就是這個形狀"
+      w42bad=1
+    }
+  fi
+  [ "${w42bad}" -eq 0 ] && ok "W42 accent 的解析與衍生是純函式(不碰 windows.h),八個 accent × 十組配對都在測試資料裡,而且對 surface 與 background 兩個底都算"
+
+  # ── W43(規格的 W31):文字矩形高度 ≥ 行盒 × 行數 ────────────────────
+  check
+  local lay_cc="${CODE_DIR}/common/ui_layout.cc"
+  local lay_h="${CODE_DIR}/common/ui_layout.h"
+  local lay_t="${CODE_DIR}/tests/test_ui_layout.cc"
+  local w43bad=0
+  if [ ! -f "${lay_h}" ] || [ ! -f "${lay_t}" ]; then
+    red "W43:找不到 ui_layout.h 或 test_ui_layout.cc —— 掃描範圍錯了"
+    w43bad=1
+  else
+    # 版面必須**回報**「這一顆是哪一級、幾行」,否則測試量不到。
+    # ⚠ `int text_size_dip` 是 `int text_size_dip_removed` 的**前綴** ——
+    #   改名之後舊判準照樣綠。要連後面那個 `=` 一起比。
+    grep -qE 'int text_size_dip *=' "${lay_h}" &&
+      grep -qE 'int text_lines *=' "${lay_h}" || {
+      red "W43:PlacedControl 沒有 text_size_dip / text_lines —— 「這個矩形放得下它要放的字嗎」就沒有取材面了"
+      w43bad=1
+    }
+    grep -q 'every_text_rect_is_at_least_its_line_box_times_lines' "${lay_t}" || {
+      red "W43:少了走過每一頁版面的那個單元測試"
+      w43bad=1
+    }
+    # ⚠ 頁標題與區段標題**不得**再用 `字級 + 間距` 湊高度。
+    #   §12.14.0 第 4 條:t1 給 28(要 31)、t2 給 19(要 22),
+    #   而 STATIC 是頂端對齊並且會裁切 —— 短的那幾 DIP 是**每一個標題的
+    #   下緣被削掉一條**,看起來像字型沒調好,不像 bug。
+    if grep -q 'text_size::t1 + space::s3' "${lay_cc}" ||
+       grep -q 'text_size::t2 + space::s2' "${lay_cc}"; then
+      red "W43:頁標題/區段標題的盒高又用 \`字級 + 間距\` 湊 —— 行盒只有一個來源:TextLineBoxDip()"
+      w43bad=1
+    fi
+  fi
+  [ "${w43bad}" -eq 0 ] && ok "W43 版面回報級距與行數,單元測試走過每一頁逐一比對,而且標題不再用「字級 + 間距」湊盒高"
+
+  # ── W44(規格的 W32):lfWeight 只准兩個值 ──────────────────────────
+  check
+  local w44
+  w44="$(hits 'lfWeight *=' | grep -v '^\s*//' || true)"
+  local n44; n44="$(num "$(printf '%s\n' "${w44}" | grep -c 'lfWeight' || true)")"
+  local w44bad=0
+  need_scope "W44" "${n44}" 1 || w44bad=1
+  # 賦值點必須全部在 ui_font.cc 裡 —— 散出去就管不住了。
+  if printf '%s\n' "${w44}" | grep -q -v 'ui_font\.cc'; then
+    red "W44:lfWeight 的賦值點跑到 ui_font.cc 以外:$(printf '%s\n' "${w44}" | grep -v 'ui_font\.cc' | head -3)"
+    w44bad=1
+  fi
+  # ⚠ ≥ 700 一律禁止:字體沒有粗體時 GDI 會**合成**粗體(把字形往旁邊
+  #   多塗一次),在漢字上是一團糊。我們永遠不知道使用者機器上有沒有
+  #   那個字重,所以永遠不要要求它。
+  if printf '%s\n' "${w44}" | grep -q 'FW_BOLD\|FW_HEAVY\|FW_BLACK\|= *[789][0-9][0-9]'; then
+    red "W44:lfWeight 出現 700 以上的字重 —— 字體沒有粗體時 GDI 會合成,漢字上是一團糊"
+    w44bad=1
+  fi
+  if printf '%s\n' "${w44}" | grep -q 'FW_MEDIUM\|= *500'; then
+    red "W44:lfWeight 出現 500 —— Segoe UI 與 Microsoft JhengHei UI 都沒有它,GDI 會挑到 400,而版面會照 500 排"
+    w44bad=1
+  fi
+  [ "${w44bad}" -eq 0 ] && ok "W44 lfWeight 只出現 FW_NORMAL 與 FW_SEMIBOLD,而且賦值點全部在 ui_font.cc 裡"
+
+  # ── W45(規格的 W33):可執行檔宣告 comctl32 6.0.0.0 ────────────────
+  #
+  # ⚠ 規格說這一條「三種寫法擇一」。今天成立的是 .manifest 那一種
+  #   (windows/res/app.manifest + CMakeLists 的 /MANIFEST:EMBED)。
+  #   ⚠ **windows.yml 已經有一步在 Windows 上驗執行檔真的內嵌了它**
+  #     (含負對照),所以這裡驗的是**原始碼層面**:那份 manifest 還在、
+  #     還被掛上去。兩者不重複 —— CI 那一步驗二進位,這裡驗來源。
+  check
+  local w45bad=0
+  local nsrc; nsrc="$(num "$(find "${WIN}" \( -name '*.cc' -o -name '*.h' -o -name '*.manifest' \) 2>/dev/null | wc -l)")"
+  need_scope "W45" "${nsrc}" 20 || w45bad=1
+  # ⚠ **在真的 windows/ 上找,不是在去註解的那棵樹上。**
+  #   CODE_DIR 只收 .cc/.h(見 sources()),.manifest 根本不在那裡 ——
+  #   在那裡找的結果永遠是「一種都沒有」,而那是一條恆紅的檢查,
+  #   下場是被人關掉(#84 記過同一件事)。
+  local decl=""
+  if [ -f "${WIN}/res/app.manifest" ]; then decl="${WIN}/res/app.manifest"; fi
+  if [ -z "${decl}" ]; then
+    decl="$(grep -rl 'manifestdependency' "${WIN}" --include='*.cc' --include='*.rc' 2>/dev/null | head -1 || true)"
+  fi
+  if [ -z "${decl}" ]; then
+    red "W45:三種宣告方式(.manifest / .rc / #pragma comment)一種都沒有 —— InitCommonControlsEx 啟動的會是系統目錄裡的 comctl32 **v5**,整個畫面會回到 Windows 95 的樣子"
+    w45bad=1
+  else
+    grep -q 'Microsoft.Windows.Common-Controls' "${decl}" || {
+      red "W45:${decl#${WIN}/} 裡沒有 Microsoft.Windows.Common-Controls"; w45bad=1; }
+    # ⚠ 要比對的是真正的 assemblyIdentity,不是檔頭那段說明 ——
+    #   說明裡也寫著「Microsoft.Windows.Common-Controls 6.0.0.0」,
+    #   整檔 grep 會被它滿足,而那時執行檔裡宣告的可能是別的版本。
+    grep -q 'version="6\.0\.0\.0"' "${decl}" || {
+      red "W45:${decl#${WIN}/} 的 assemblyIdentity 不是 version=\"6.0.0.0\"(檔頭那段說明不算)"; w45bad=1; }
+    grep -q 'MANIFESTINPUT\|manifestdependency\|RT_MANIFEST' "${WIN}/CMakeLists.txt" || {
+      red "W45:那份 manifest 沒有被掛到任何一個目標上 —— 檔案在,而執行檔裡沒有"; w45bad=1; }
+  fi
+  [ "${w45bad}" -eq 0 ] && ok "W45 comctl32 6.0.0.0 的相依宣告還在,而且還掛在執行檔上(二進位那一半由 windows.yml 在 Windows 上驗)"
+
+  # ── W46(規格的 W34):狀態列每格 ≥ 28×28、整條 ≤ 320 ────────────────
+  check
+  local barl="${CODE_DIR}/common/statusbar_layout.cc"
+  local bart="${CODE_DIR}/tests/test_statusbar_layout.cc"
+  local w46bad=0
+  if [ ! -f "${barl}" ] || [ ! -f "${bart}" ]; then
+    red "W46:格的矩形還住在 service/status_bar.cc 裡(Ubuntu 上編不起來)—— 「每一格只有 26 DIP 高」這件事就沒有任何自動化看得到"
+    w46bad=1
+  else
+    grep -q 'LayoutStatusBarCellsDip' "${barl}" || {
+      red "W46:common/statusbar_layout.cc 裡沒有 LayoutStatusBarCellsDip"; w46bad=1; }
+    # ⚠ status_bar.cc **不得**再自己算格子的矩形。
+    if grep -q 'c.rc = RECT{x,' "${CODE_DIR}/service/status_bar.cc"; then
+      red "W46:service/status_bar.cc 又自己算格子的矩形 —— 那是第二份真相,而且是 Ubuntu 上看不到的那一份"
+      w46bad=1
+    fi
+    local ncase; ncase="$(num "$(grep -c '^TEST(' "${bart}" || true)")"
+    need_scope "W46" "${ncase}" 5 || w46bad=1
+    grep -q 'statusbar_cells_are_at_least_28_by_28' "${bart}" || {
+      red "W46:少了「每一格 ≥ 28×28」那一條"; w46bad=1; }
+    grep -q 'statusbar_total_never_exceeds_320' "${bart}" || {
+      red "W46:少了「整條 ≤ 320」那一條"; w46bad=1; }
+    # ── ⚠ 「測試檔在、測試名也在」證明不了值是對的 ────────────────
+    #
+    #   把上下內縮改回 kBarBorder(也就是 §12.14.0 第 5 條那個 26 DIP)
+    #   之後,上面那幾條 grep **全部照樣綠** —— 紅的是 run_logic_tests.sh,
+    #   不是這裡。而 §2-G 要求的是「這一條檢查自己有反向測試」。
+    #   所以兩個真正會被改掉的常數在這裡也各釘一次。
+    local barh="${CODE_DIR}/common/statusbar_layout.h"
+    grep -q 'kInsetV = space::s1' "${barh}" || {
+      red "W46:狀態列上下內縮不是 s1(2)—— 每一格會回到 26 DIP 高,低於 §3.6 的 28,而它在畫面上看起來只是「那一橫有點扁」"
+      w46bad=1; }
+    grep -q 'barmetric::kInsetV' "${barl}" || {
+      red "W46:common/statusbar_layout.cc 沒有用 kInsetV 算上下內縮"; w46bad=1; }
+    grep -q 'kSchemaContentMaxW = 120' "${barh}" || {
+      red "W46:第 3 格的內容寬上限不是 120"; w46bad=1; }
+    # ⚠ kSchemaContentMaxW 在這個檔案裡出現兩次(第 3 格的上限、以及
+    #   壓縮時的下界),所以「這個名字有出現」證明不了上限還在。
+    #   要比對的是**哪一格有上限**那一句。
+    grep -q 'index == 2 ? barmetric::kSchemaContentMaxW' "${barl}" || {
+      red "W46:第 3 格(方案名)沒有 120 DIP 的內容寬上限 —— 整條會超過 320,而超出去的那一截在螢幕外面"
+      w46bad=1; }
+    grep -q 'kBarMaxW = 320' "${barh}" || {
+      red "W46:整條的寬上限不是 320"; w46bad=1; }
+  fi
+  [ "${w46bad}" -eq 0 ] && ok "W46 狀態列的格矩形住在 common/(Ubuntu 上測得到),每格 ≥ 28×28、整條 ≤ 320 都有單元測試"
+
+  # ── W47(規格的 W35):焦點環不得用 kPrimary ────────────────────────
+  #
+  # ⚠ 理由不是配色:accent 是**使用者選的**。一個淺黃色的焦點環畫在白底
+  #   的清單列上是看不見的,而焦點看不見就是鍵盤使用者走不下去。
+  #   改用 Win11 自己的雙色環:外圈 focusOuter + 內圈 focusInner,
+  #   兩圈互為反色,所以不管底下是什麼顏色一定有一圈看得見。
+  check
+  local sw="${CODE_DIR}/service/settings_window.cc"
+  local w47bad=0
+  if [ ! -f "${sw}" ]; then
+    red "W47:找不到 service/settings_window.cc —— 掃描範圍錯了"
+    w47bad=1
+  else
+    local nfocus
+    nfocus="$(num "$(grep -c 'DrawFocusRing(' "${sw}" || true)")"
+    # 自繪的焦點分支 ≥ 4(側欄、方案清單、連網紀錄、危險鍵)+ 定義本身。
+    need_scope "W47" "${nfocus}" 5 || w47bad=1
+    # kPrimary 不得出現在任何一個焦點分支上。
+    if grep -n 'Pen(kPrimary' "${sw}" >/dev/null 2>&1; then
+      red "W47:焦點環還在用 kPrimary:$(grep -n 'Pen(kPrimary' "${sw}" | head -3)"
+      w47bad=1
+    fi
+    grep -q 'kFocusOuter' "${sw}" && grep -q 'kFocusInner' "${sw}" || {
+      red "W47:找不到 kFocusOuter / kFocusInner —— 雙色環沒有落地"; w47bad=1; }
+    # ⚠ 也不准回去用 DrawFocusRect:它是 XOR 的點線框,在我們的色票上
+    #   會變成不可預測的顏色(§12.6.4 第 2 條)。
+    if grep -q '::DrawFocusRect' "${sw}"; then
+      red "W47:又用了 ::DrawFocusRect —— XOR 的點線框在我們的色票上是不可預測的顏色"
+      w47bad=1
+    fi
+  fi
+  [ "${w47bad}" -eq 0 ] && ok "W47 四個自繪焦點分支都走雙色環(focusOuter/focusInner),沒有一處用 kPrimary,也沒有 DrawFocusRect"
+
+  # ── W48:按鈕的寬度是從**畫面上那一句**算的 ─────────────────────
+  #
+  # ⚠ §12.14.6.2/.3 這一輪改成「按鈕依內容寬」(舊版把內容欄平均切開,
+  #   三顆各 165 DIP,讀起來是對話框的按鈕列)。寬度因此從一個 UiString
+  #   算出來 —— 而**那一句必須就是控制項上真的寫的那一句**。
+  #
+  #   兩份會漂開,而漂開的樣子是:按鈕照 A 句的寬度畫、上面寫 B 句。
+  #   B 句比較長的時候使用者看到的是被系統截尾的字(「重新整理字…」),
+  #   而版面測試全綠 —— 它量的是 A 句。
+  #
+  # ⚠ 所以這一條逐顆比對 common/ui_layout.cc 的 SettingsButtonLabel()
+  #   與 service/settings_window.cc 的 kControls。多一顆、少一顆、
+  #   對到別的 UiString,三種都紅。
+  check
+  local w48out; w48out="$("${PY}" - "${CODE_DIR}/common/ui_layout.cc" "${sw}" <<'PYSCRIPT'
+import sys as _s
+_s.stdout.reconfigure(encoding='utf-8', newline='')
+import re, sys
+lay = open(sys.argv[1], encoding='utf-8', errors='replace').read()
+sw = open(sys.argv[2], encoding='utf-8', errors='replace').read()
+out = []
+
+m = re.search(r'UiString SettingsButtonLabel\(int id\) \{(.*?)\n\}', lay, re.S)
+if not m:
+    out.append('NO_TABLE')
+else:
+    table = dict(re.findall(r'case\s+(IDC_[A-Z0-9_]+):\s*return\s+UiString::(k\w+);',
+                            m.group(1)))
+    # kControls 裡每一顆 BUTTON、而且不是核取/單選鈕的,就是按鈕。
+    ctl = {}
+    for cm in re.finditer(r'\{(IDC_[A-Z0-9_]+),\s*L"BUTTON",\s*([^,]+),\s*'
+                          r'UiString::(k\w+)\}', sw):
+        cid, style, label = cm.group(1), cm.group(2), cm.group(3)
+        if 'CHECKBOX' in style or 'RADIO' in style:
+            continue
+        ctl[cid] = label
+    # 「關閉」在底部固定列上,寬度由 §12.14.6.8 釘死 100,不走 ButtonWidthDip。
+    ctl.pop('IDC_CLOSE', None)
+    for cid, label in sorted(ctl.items()):
+        if cid not in table:
+            out.append('MISSING=' + cid)
+        elif table[cid] != label:
+            out.append('MISMATCH=%s:%s!=%s' % (cid, table[cid], label))
+    for cid in sorted(table):
+        if cid not in ctl:
+            out.append('EXTRA=' + cid)
+    if len(ctl) < 10:
+        out.append('SCOPE_TOO_SMALL=%d' % len(ctl))
+
+print('SCOPE_OK')
+for line in out:
+    print(line)
+PYSCRIPT
+)" || true
+  local w48bad=0
+  w48msg() { red "W48:$*"; w48bad=1; }
+  case "${w48out}" in *SCOPE_OK*) ;; *) w48msg "掃描沒有跑起來(python 掛了?)" ;; esac
+  while IFS= read -r line; do
+    case "${line}" in
+      ''|SCOPE_OK) continue ;;
+      NO_TABLE) w48msg "common/ui_layout.cc 沒有 SettingsButtonLabel() —— 按鈕的寬度
+     又變成一個沒有來源的數字" ;;
+      MISSING=*) w48msg "${line#MISSING=} 是按鈕,但 SettingsButtonLabel() 裡沒有它 ——
+     它的寬度會掉到下界 80,而字比 80 長的話會被截尾" ;;
+      EXTRA=*)   w48msg "SettingsButtonLabel() 有 ${line#EXTRA=},但 kControls 裡沒有這一顆按鈕" ;;
+      MISMATCH=*) w48msg "${line#MISMATCH=} —— 寬度是照左邊那一句算的,畫面上寫的是右邊那一句" ;;
+      SCOPE_TOO_SMALL=*) w48msg "只認出 ${line#SCOPE_TOO_SMALL=} 顆按鈕 —— 正規表示式沒對上,
+     這一條等於沒跑" ;;
+      *) w48msg "未知的回報:${line}" ;;
+    esac
+  done <<< "${w48out}"
+  [ "${w48bad}" -eq 0 ] && ok "W48 每一顆按鈕的寬度都是從它自己畫面上那一句算的(SettingsButtonLabel 與 kControls 逐顆對得上)"
+
+  # ── W49:畫面上**每一個字**的顏色都必須是我們挑的 ────────────────
+  #
+  # ⚠ **這一條這一輪換了形狀,而換形狀的理由是它上一版是綠的、
+  #    而畫面上的字讀不到。**
+  #
+  #   上一版守的是:「kControls 裡每一顆 BS_AUTOCHECKBOX 都在
+  #   IsSwitchRow() 裡」。它守的是一個**判準**(哪幾顆算開關列),
+  #   不是一個**結果**(畫面上的字讀不讀得到)。於是:
+  #     · 四顆核取方塊補齊了 → 綠;
+  #     · 而深色下讀不到字的那三頁(外觀 / 文字 / 進階)上,
+  #       出問題的 26 顆全是 BS_AUTORADIOBUTTON —— 一顆都不在它的
+  #       定義域裡。實機截圖量出來仍然是 **1.21:1**,守門不動如山。
+  #
+  #   新版守的是結果的取材面:**kControls 裡每一顆會顯示文字的控制項,
+  #   它的字色是誰畫的?** 每一顆都要落進一個**封閉的**分類:
+  #
+  #     ctlcolor  STATIC / 唯讀 EDIT   → WM_CTLCOLORSTATIC 的 SetTextColor
+  #     wedraw    核取方塊 / 單選鈕     → NM_CUSTOMDRAW(DrawRowButtonText)
+  #                                       ⚠ 底是我們畫的、字是系統畫的,
+  #                                         所以**必須**把字搶回來
+  #     ownerdraw BS_OWNERDRAW          → WM_DRAWITEM(DrawDangerButton)
+  #     push      BS_PUSHBUTTON         → uxtheme 畫**整顆**(底也是它的),
+  #                                       字與底一致、讀得到 —— 這一格是
+  #                                       明文的例外,而且樣式必須剛好是
+  #                                       `BS_PUSHBUTTON | WS_TABSTOP`
+  #     list      ListView              → NM_CUSTOMDRAW(逐列自繪)
+  #
+  #   **落不進去的就是紅的。** 這一句回答的正是「下一次有人加一種新的
+  #   控制項而忘了重畫它的字,這條守門會不會紅」:會 —— 一顆 COMBOBOX、
+  #   一顆帶圖的按鈕、一顆 SS_OWNERDRAW 的 STATIC,全都是第六類。
+  #   (反向測試 W49f/W49g 各植入一次,要求它真的紅。)
+  #
+  # ⚠ 為什麼分類要從**樣式位元**推,不從第二份名單推:名單會與 kControls
+  #   漂開,而漂開的樣子就是這一次的缺陷。樣式位元是同一份事實。
+  check
+  local w49out; w49out="$("${PY}" - "${sw}" <<'PYSCRIPT'
+import sys as _s
+_s.stdout.reconfigure(encoding='utf-8', newline='')
+import re, sys
+sw = open(sys.argv[1], encoding='utf-8', errors='replace').read()
+out = []
+
+def body_of(head, endpat='\n}\n'):
+    i = sw.find(head)
+    if i < 0:
+        return None
+    j = sw.find(endpat, i)
+    return sw[i:j] if j > 0 else sw[i:]
+
+# ── kControls 的每一顆:id / 類別 / 樣式 ────────────────────────
+macros = dict(re.findall(r'^#define (\w+) (\([^\n]*\))$', sw, re.M))
+i = sw.find('const ControlDef kControls[] = {')
+entries = []
+if i < 0:
+    out.append('NO_TABLE')
+else:
+    j = sw.find('\n};', i)
+    body = re.sub(r'//[^\n]*', '',
+                  sw[i + len('const ControlDef kControls[] = {'):j])
+    depth = 0
+    cur = ''
+    for ch in body:
+        if ch == '{':
+            depth += 1
+            if depth == 1:
+                cur = ''
+                continue
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                entries.append(cur)
+                continue
+        if depth >= 1:
+            cur += ch
+
+kinds = {}
+counts = {'ctlcolor': 0, 'wedraw': 0, 'ownerdraw': 0, 'push': 0, 'list': 0}
+for e in entries:
+    parts = [' '.join(x.split()) for x in e.split(',')]
+    if len(parts) != 4:
+        out.append('BAD_ENTRY=' + (parts[0] if parts else '?'))
+        continue
+    cid, cls, style, label = parts
+    for k, v in macros.items():
+        style = re.sub(r'\b' + k + r'\b', v, style)
+    toks = set(t.strip(' ()') for t in style.split('|') if t.strip(' ()'))
+    kind = None
+    if cls == 'L"STATIC"':
+        # SS_OWNERDRAW / SS_BITMAP… 都不是「系統照 DC 的文字色畫」的那一種。
+        kind = 'ctlcolor' if toks == {'SS_LEFT', 'SS_NOPREFIX'} else None
+    elif cls == 'L"EDIT"':
+        kind = 'ctlcolor' if 'ES_READONLY' in toks else None
+    elif cls == 'WC_LISTVIEWW':
+        kind = 'list'
+    elif cls == 'L"BUTTON"':
+        if 'BS_OWNERDRAW' in toks:
+            kind = 'ownerdraw'
+        elif 'BS_AUTOCHECKBOX' in toks or 'BS_AUTORADIOBUTTON' in toks:
+            kind = 'wedraw'
+        elif toks == {'BS_PUSHBUTTON', 'WS_TABSTOP'}:
+            kind = 'push'
+    if kind is None:
+        out.append('UNKNOWN_KIND=%s|%s|%s' % (cid, cls, '|'.join(sorted(toks))))
+        continue
+    kinds[cid] = kind
+    counts[kind] += 1
+
+# ⚠ 掃描範圍太小 = 正規表示式沒對上 = 這一條等於沒跑。
+for kind, floor in (('ctlcolor', 40), ('wedraw', 25), ('push', 8),
+                    ('ownerdraw', 2), ('list', 2)):
+    if counts[kind] < floor:
+        out.append('SCOPE_TOO_SMALL=%s:%d<%d' % (kind, counts[kind], floor))
+
+# ── wedraw 那一類:名單要與樣式位元對得起來(兩個方向)──────────
+m = re.search(r'bool WeDrawTheText\(int id\) \{(.*?)\n\}', sw, re.S)
+if not m:
+    out.append('NO_LIST')
+else:
+    listed = set(re.findall(r'(IDC_[A-Z0-9_]+)', m.group(1)))
+    want = set(k for k, v in kinds.items() if v == 'wedraw')
+    for cid in sorted(want - listed):
+        out.append('NOT_LISTED=' + cid)
+    for cid in sorted(listed - want):
+        out.append('NOT_A_ROW_BUTTON=' + cid)
+
+# ── 通知要真的接出去 ────────────────────────────────────────────
+if not re.search(r'if \(WeDrawTheText\(static_cast<int>\(nm->idFrom\)\) &&\s*\n?\s*'
+                 r'nm->code == NM_CUSTOMDRAW\) \{\s*\n\s*\*result = DrawRowButtonText\(',
+                 sw):
+    out.append('NOT_WIRED')
+
+# ── 每一類的字色都必須從 theme_ 來 ──────────────────────────────
+draw = body_of('LRESULT SettingsWindow::DrawRowButtonText(NMCUSTOMDRAW* cd) {')
+if draw is None:
+    out.append('NO_DRAWFN')
+else:
+    if 'theme_.Color(disabled ? kDisabledText : kOnSurface)' not in draw:
+        out.append('NOT_OUR_COLOR')
+    if '::DrawTextW(' not in draw:
+        out.append('NO_TEXT_DRAWN')
+    if 'CDRF_NOTIFYPOSTPAINT' not in draw:
+        out.append('NO_POSTPAINT')
+    if '::FillRect(cd->hdc, &text,' not in draw:
+        out.append('NOT_ERASED')
+    # ⚠ **兩邊都要**。方塊在右(BS_RIGHTBUTTON)與方塊在左(單選鈕)
+    #   要擦的是相反的一欄;只做一邊的話,另一邊擦掉的是方塊、
+    #   留下的是系統畫的字 —— 也就是這一輪覆核量到的 1.21:1。
+    if not ('BS_RIGHTBUTTON' in draw and 'GWL_STYLE' in draw):
+        out.append('ONE_GLYPH_SIDE_ONLY')
+
+ctl = body_of('    case WM_CTLCOLORBTN: {', '\n    case ')
+if ctl is not None and 'case WM_CTLCOLORSTATIC:' not in sw:
+    out.append('NO_CTLCOLOR')
+if ctl is None:
+    out.append('NO_CTLCOLOR')
+elif not re.search(r'::SetTextColor\(hdc, self->theme_\.Color\(', ctl):
+    out.append('CTLCOLOR_NOT_OUR_COLOR')
+
+for fn, code in (('void SettingsWindow::DrawDangerButton(', 'OWNERDRAW'),
+                 ('LRESULT SettingsWindow::DrawSidebar(', 'LIST_SIDEBAR'),
+                 ('LRESULT SettingsWindow::DrawSchemaList(', 'LIST_SCHEMA'),
+                 ('LRESULT SettingsWindow::DrawNetLogList(', 'LIST_NETLOG')):
+    b = body_of(fn)
+    if b is None:
+        out.append('NO_FN=' + code)
+    elif not re.search(r'::SetTextColor\([^;]*theme_\.Color\(', b):
+        out.append('NOT_OUR_COLOR_' + code)
+
+print('SCOPE_OK')
+for line in out:
+    print(line)
+PYSCRIPT
+)" || true
+  local w49bad=0
+  w49msg() { red "W49:$*"; w49bad=1; }
+  case "${w49out}" in *SCOPE_OK*) ;; *) w49msg "掃描沒有跑起來(python 掛了?)" ;; esac
+  while IFS= read -r line; do
+    line="${line%$'\r'}"
+    case "${line}" in
+      ''|SCOPE_OK) continue ;;
+      NO_TABLE) w49msg "找不到 kControls[] —— 掃描範圍錯了,這一條等於沒跑" ;;
+      BAD_ENTRY=*) w49msg "kControls 裡有一筆解不開的項目(${line#BAD_ENTRY=})——
+     解不開就分不了類,而分不了類的那一顆的字色沒有人在管" ;;
+      SCOPE_TOO_SMALL=*) w49msg "只認出 ${line#SCOPE_TOO_SMALL=} 顆 ——
+     正規表示式沒對上,這一條等於沒跑" ;;
+      UNKNOWN_KIND=*) w49msg "kControls 裡出現了一種**沒有人說得出字色從哪來**的控制項:
+     ${line#UNKNOWN_KIND=}
+     每一顆會顯示文字的控制項都必須落進五類其中一類:
+       STATIC(SS_LEFT|SS_NOPREFIX)/ 唯讀 EDIT → WM_CTLCOLORSTATIC;
+       BS_AUTOCHECKBOX / BS_AUTORADIOBUTTON   → DrawRowButtonText;
+       BS_OWNERDRAW                            → DrawDangerButton;
+       BS_PUSHBUTTON|WS_TABSTOP                → uxtheme 畫整顆(明文例外);
+       ListView                                → 逐列自繪。
+     落不進去代表它的字是系統用**淺色佈景**畫的,而底是我們的深色卡片
+     —— 深色下那是 1.21:1,比停用文字還低,而三道對比守門看不見它
+     (它們量的是我們的色票,那個顏色不在裡面)。" ;;
+      NO_LIST) w49msg "settings_window.cc 沒有 WeDrawTheText() —— 沒有人說得出哪幾顆的字由我們畫" ;;
+      NOT_LISTED=*) w49msg "${line#NOT_LISTED=} 是核取方塊/單選鈕,但不在 WeDrawTheText() 裡 ——
+     那一顆的字會回去給 uxtheme 畫,而深色下那是 1.21:1
+     (上一輪就是這樣漏掉 26 顆單選鈕的)" ;;
+      NOT_A_ROW_BUTTON=*) w49msg "WeDrawTheText() 列了 ${line#NOT_A_ROW_BUTTON=},
+     但它不是 BS_AUTOCHECKBOX 也不是 BS_AUTORADIOBUTTON" ;;
+      NOT_WIRED) w49msg "NM_CUSTOMDRAW 沒有接到 DrawRowButtonText() —— 函式在,沒有人叫它" ;;
+      NO_DRAWFN) w49msg "找不到 DrawRowButtonText 的定義" ;;
+      NOT_OUR_COLOR) w49msg "那一列的字色不是從 theme_ 來的 —— 那正是缺陷本身
+     (畫面上的顏色不在我們的色票裡,所以 §12.14.1 的三道守門看不見它)" ;;
+      NO_TEXT_DRAWN) w49msg "DrawRowButtonText 沒有真的畫字(缺 DrawTextW)——
+     擦掉了卻不畫,那一列會變成空白" ;;
+      NO_POSTPAINT) w49msg "沒有回 CDRF_NOTIFYPOSTPAINT —— POSTPAINT 那一段永遠走不到" ;;
+      NOT_ERASED) w49msg "沒有先把那一欄擦掉(缺 FillRect)—— 系統畫的那份近黑字
+     還在,我們的字只是疊在它上面" ;;
+      ONE_GLYPH_SIDE_ONLY) w49msg "DrawRowButtonText 沒有從樣式位元(GWL_STYLE / BS_RIGHTBUTTON)
+     判斷方塊在哪一邊 —— 開關列的方塊在右、單選鈕的在左,要擦的是相反
+     的一欄。只做一邊的話,另一邊擦掉的是方塊、留下的是系統畫的字,
+     而那正是 2026-08-15 截圖上量到的 1.21:1" ;;
+      NO_CTLCOLOR) w49msg "找不到 WM_CTLCOLORSTATIC 分支 —— 掃描範圍錯了" ;;
+      CTLCOLOR_NOT_OUR_COLOR) w49msg "WM_CTLCOLORSTATIC 沒有用 theme_ 設文字色 ——
+     那是 59 顆 STATIC 與唯讀 EDIT 的字色唯一的出處" ;;
+      NO_FN=*) w49msg "找不到 ${line#NO_FN=} 那一支自繪函式 —— 掃描範圍錯了" ;;
+      NOT_OUR_COLOR_*) w49msg "${line#NOT_OUR_COLOR_} 的字色不是從 theme_ 來的" ;;
+      *) w49msg "未知的回報:${line}" ;;
+    esac
+  done <<< "${w49out}"
+  [ "${w49bad}" -eq 0 ] && ok "W49 kControls 裡每一顆會顯示文字的控制項都落進五類其中一類,而每一類的字色都指得出一個用 theme_ 的出處(第六類是紅的)"
+}
+
 # ────────────────────────────────────────────────────────────────
 # 反向測試:每一條都真的植入一次違規,要求它變紅。
 # ────────────────────────────────────────────────────────────────
@@ -3438,19 +4086,23 @@ self_check() {
 "W21|service/settings_window.cc|s=s.replace('CDIS_FOCUS','CDIS_SELECTED')"
 "W23|service/settings_window.cc|s=s.replace('kStatusRedeployRunning','kStatusApplied')"
 "W24a 版面回到 service|service/settings_window.cc|s=s.replace('void SettingsWindow::LayoutUi() {','void SettingsWindow::LayoutUi() { Stack sneaky(0, 0, 100); (void)sneaky.Push(10, 2);',1)"
-"W24b 版面上少三顆|common/ui_layout.cc|s=s.replace('      radios({IDC_THEME_0, IDC_THEME_1, IDC_THEME_2}, \"appearance_radio\");','',1)"
-"W24c 某頁多塞三顆|common/ui_layout.cc|s=s.replace('radios({IDC_THEME_0, IDC_THEME_1, IDC_THEME_2}, \"appearance_radio\");','radios({IDC_THEME_0, IDC_THEME_1, IDC_THEME_2, IDC_LANG_1, IDC_LANG_2, IDC_LANG_3}, \"appearance_radio\");',1)"
+"W24b 版面上少三顆|common/ui_layout.cc|s=s.replace('      radios(IDC_THEME_HEAD, IDC_THEME_BLURB, UiString::kThemeBlurb,' + chr(10) + '             {IDC_THEME_0, IDC_THEME_1, IDC_THEME_2}, \"appearance_radio\");','',1)"
+"W24c 某頁多塞三顆|common/ui_layout.cc|s=s.replace('{IDC_THEME_0, IDC_THEME_1, IDC_THEME_2}, \"appearance_radio\");','{IDC_THEME_0, IDC_THEME_1, IDC_THEME_2, IDC_LANG_1, IDC_LANG_2, IDC_LANG_3}, \"appearance_radio\");',1)"
 "W24e 頁名回到 service|service/settings_window.cc|s=s.replace('  wc.lpszClassName = kClass;','  const UiString sneaky[] = {UiString::kNavSchemas}; (void)sneaky;' + chr(10) + '  wc.lpszClassName = kClass;',1)"
 "W24d 表上少三顆|service/settings_window.cc|s=s.replace('    {IDC_THEME_0, L\"BUTTON\", RADIO1, UiString::kThemeFollowSystem},','',1).replace('    {IDC_THEME_1, L\"BUTTON\", RADIO, UiString::kThemeLight},','',1).replace('    {IDC_THEME_2, L\"BUTTON\", RADIO, UiString::kThemeDark},','',1)"
 "W25 拿掉滾輪|service/settings_window.cc|s=s.replace('case WM_MOUSEWHEEL:','case WM_NULL + 4242:',1)"
 "W25b 又把高度丟掉|common/ui_layout.cc|s=s.replace('int ScrollMaxDip(int page, int window_w_dip, int window_h_dip,','int ScrollMaxDipRemoved(int page, int window_w_dip, int window_h_dip,',1)"
 "W26 狀態列不重擺|service/status_bar.cc|s=s.replace('  ApplyPlacement(MulDivRound(total_w, 96, static_cast<int>(dpi_)));','',1)"
-"W26b 简繁點完不回讀|service/status_bar.cc|s=s.replace('      RefreshFromEngine();\n      return;\n    }\n    case kCellSchema:','      return;\n    }\n    case kCellSchema:',1)"
-"W26c 回讀不問引擎|service/status_bar.cc|s=s.replace('  const Engine::StatusReadback rb = engine_->ReadBackStatus();','  Engine::StatusReadback rb;',1)"
+"W26b 简繁點完不回讀|service/status_bar.cc|s=s.replace('      RefreshFromEngine();\n      toggle_settled_ms_ = ::GetTickCount();\n      return;\n    }\n    case kCellSchema:','      return;\n    }\n    case kCellSchema:',1)"
+"W26c 回讀不問引擎|service/status_bar.cc|s=s.replace('  const Engine::StatusReadback rb = engine_->ReadBackStatus(focused_session_);','  Engine::StatusReadback rb;',1)"
 "W26d 中英又樂觀寫入|service/status_bar.cc|s=s.replace('      engine_->SetAsciiModeAll(!engine_->AsciiMode());','      { std::lock_guard<std::mutex> lk(mu_); ascii_mode_ = !ascii_mode_; }\n      engine_->SetAsciiModeAll(!engine_->AsciiMode());',1)"
 "W26f 空的那一格又佔位置|service/status_bar.cc|s=s.replace('    if (c.text.empty()) {','    if (false) {',1)"
 "W26g 零寬的那一格又點得到|service/status_bar.cc|s=s.replace('    if (r.right <= r.left) continue;','',1)"
 "W26e 回讀之後不重畫|service/status_bar.cc|s=s.replace('  if (changed) {\n    Relayout();\n    ::InvalidateRect(hwnd_, nullptr, TRUE);\n','  if (changed) {\n',1)"
+"W26h 回讀又問隨便一個 session|service/status_bar.cc|s=s.replace('engine_->ReadBackStatus(focused_session_)','engine_->ReadBackStatus()',1)"
+"W26i 回讀不到就讓那一格繼續說謊(使用者今晚踩到的那一格)|service/status_bar.cc|s=s.replace('  } else {\n    ascii = engine_->AsciiMode();\n  }','  } else {\n    return;\n  }',1)"
+"W26j 連點又變成 N 次翻轉(比的是處理時刻,不是產生時刻)|service/status_bar.cc|s=s.replace('const DWORD produced = static_cast<DWORD>(::GetMessageTime());','const DWORD produced = ::GetTickCount();',1)"
+"W26k 回讀落地了卻不記時刻|service/status_bar.cc|s=s.replace('      toggle_settled_ms_ = ::GetTickCount();\n','',1)"
 "W27a Relayout 不再問狀態|service/status_bar.cc|s=s.replace('  service_state_ = CurrentServiceState();','  service_state_ = ServiceState::kReady;',1)"
 "W27b 那一橫的字寫死一句|service/status_bar.cc|s=s.replace('    c.text = UiText(StatusTextFor(service_state_));','    c.text = UiText(UiString::kBarNotRunning);',1)"
 "W27c 不讀線路上的旗標|service/status_bar.cc|s=s.replace('SnapshotSaysNotReady(snap.status_flags)','false',1)"
@@ -3495,13 +4147,29 @@ self_check() {
 "W27j 側欄三種合併回同一句|common/service_state.cc|s=s.replace('      return UiString::kNavStatusPreparing;','      return UiString::kNavStatusNotRunning;',1)"
 "W12a 設定視窗不跟著系統換深淺(整檔 grep 抓不到)|service/settings_window.cc|s=s.replace('Theme::IsColorSetChange(l) ||','false ||',1)"
 "W12b 比對的字面值被換掉|service/ui_theme.cc|s=s.replace('L'+chr(34)+'ImmersiveColorSet'+chr(34),'L'+chr(34)+'SomethingElse'+chr(34),1)"
-"W25a 捲動量沒套到控制項(覆核者實測的拆法)|service/settings_window.cc|s=s.replace('place(id, RectI{p->rect.x, sp.y_dip, p->rect.w, p->rect.h});','place(id, RectI{p->rect.x, p->rect.y, p->rect.w, p->rect.h});',1)"
-"W25b 捲動量沒送進純函式|service/settings_window.cc|s=s.replace('ScrollPlaceControlDip(p->rect, scroll_, viewport_h)','ScrollPlaceControlDip(p->rect, 0, viewport_h)',1)"
+"W25a 捲動量沒套到控制項(覆核者實測的拆法)|service/settings_window.cc|s=s.replace('    place(id, sp.rect);','    place(id, RectI{p->rect.x, p->rect.y, p->rect.w, p->rect.h});',1)"
+"W25k 尺寸自己拼回滿尺寸(2026-08-15 截圖上的缺陷本身)|service/settings_window.cc|s=s.replace('    place(id, sp.rect);','    place(id, RectI{p->rect.x, sp.y_dip, p->rect.w, p->rect.h});',1)"
+"W25b 捲動量沒送進純函式|service/settings_window.cc|s=s.replace('ScrollPlaceControlDip(p->rect, scroll_, clip_line)','ScrollPlaceControlDip(p->rect, 0, clip_line)',1)"
+"W25i 裁切線自己算(那個數字就沒有人量得到了)|service/settings_window.cc|s=s.replace('const int clip_line = ContentClipLineDip(H, scroll_, scroll_max_);','const int clip_line = viewport_h;',1)"
+"W25j 裁切線的純函式從 common/ 消失|common/ui_layout.cc|s=s.replace('int ContentClipLineDip(','int ContentClipLineDipGone(',1)"
+"W48a 按鈕的寬度照另一句算(畫面上寫的是別句)|common/ui_layout.cc|s=s.replace('case IDC_RESET:             return UiString::kResetButton;','case IDC_RESET:             return UiString::kCancel;',1)"
+"W48b 少一顆按鈕沒有表態(寬度掉到下界 80)|common/ui_layout.cc|s=s.replace('    case IDC_OPEN_USER_DIR:     return UiString::kOpenUserDir;','',1)"
+"W48c 那張表整個不見|common/ui_layout.cc|s=s.replace('UiString SettingsButtonLabel(int id) {','UiString SettingsButtonLabelGone(int id) {',1)"
+"W49a 少一顆核取方塊沒進名單(那一列的字回去給 uxtheme 畫)|service/settings_window.cc|s=s.replace('      id == IDC_FOLLOW_MODE || id == IDC_BAR_SHOW ||','      id == IDC_BAR_SHOW ||',1)"
+"W49a2 少一顆**單選鈕**沒進名單(這一輪覆核抓到的缺陷本身)|service/settings_window.cc|s=s.replace('      id == IDC_SCALE_0 || id == IDC_SCALE_1 || id == IDC_SCALE_2 ||','      id == IDC_SCALE_0 || id == IDC_SCALE_1 ||',1)"
+"W49b 開關列的字色不是我們的(缺陷本身)|service/settings_window.cc|s=s.replace('theme_.Color(disabled ? kDisabledText : kOnSurface));','::GetSysColor(COLOR_BTNTEXT));',1)"
+"W49c NM_CUSTOMDRAW 沒接出去(函式在,沒有人叫它)|service/settings_window.cc|s=s.replace('    *result = DrawRowButtonText(reinterpret_cast<NMCUSTOMDRAW*>(nm));','    *result = CDRF_DODEFAULT;',1)"
+"W49d 不先擦就畫(系統那份近黑字還在底下)|service/settings_window.cc|s=s.replace('  ::FillRect(cd->hdc, &text, theme_.Brush(bg));','  (void)bg;',1)"
+"W49e PREPAINT 不要求回 POSTPAINT(那一段永遠走不到)|service/settings_window.cc|s=s.replace('    return CDRF_NOTIFYPOSTPAINT;','    return CDRF_DODEFAULT;',1)"
+"W49f 加一種**新的控制項**而沒有人說得出它的字色從哪來(下一次的形狀)|service/settings_window.cc|s=s.replace('    {IDC_STATUS, L\"STATIC\", ST, kNoText},','    {IDC_STATUS, L\"STATIC\", ST, kNoText},' + chr(10) + '    {IDC_CLOSE, L\"COMBOBOX\", CBS_DROPDOWNLIST | WS_TABSTOP, UiString::kClose},',1)"
+"W49g 加一顆新的單選鈕卻忘了重畫它的字(下一次的形狀)|service/settings_window.cc|s=s.replace('    {IDC_SHAPE_2, L\"BUTTON\", RADIO, UiString::kShapeFull},','    {IDC_SHAPE_2, L\"BUTTON\", RADIO, UiString::kShapeFull},' + chr(10) + '    {IDC_SHAPE_3, L\"BUTTON\", RADIO, UiString::kShapeFull},',1)"
+"W49h 只擦一邊(單選鈕的方塊在左,擦錯邊就等於沒修)|service/settings_window.cc|s=s.replace('  const bool glyph_right = (style & BS_RIGHTBUTTON) != 0;','  const bool glyph_right = true;',1)"
+"W49i STATIC 換成 SS_OWNERDRAW(字色又變成系統的)|service/settings_window.cc|s=s.replace('#define ST (SS_LEFT | SS_NOPREFIX)','#define ST (SS_OWNERDRAW | SS_NOPREFIX)',1)"
 "W25c 捲出可視範圍就藏起來(覆核者實測的拆法)|service/settings_window.cc|s=s.replace('::ShowWindow(c, sp.visible ? SW_SHOW : SW_HIDE);','::ShowWindow(c, SW_HIDE);',1)"
 "W25d 主視窗的捲軸拿掉(覆核者實測的拆法)|service/settings_window.cc|s=s.replace('WS_THICKFRAME | WS_VSCROLL | WS_CLIPCHILDREN','WS_THICKFRAME | WS_CLIPCHILDREN',1)"
 "W25e 訊息迴圈裡的焦點呼叫刪掉、定義留著(覆核者實測的拆法)|service/settings_window.cc|s=s.replace('        EnsureFocusVisible();','        (void)0;',1)"
 "W25f 滾輪分支在但什麼都不做|service/settings_window.cc|s=s.replace('      if (self) self->OnMouseWheel(GET_WHEEL_DELTA_WPARAM(w));','',1)"
-"W25g 裁切高度不從純函式來|service/settings_window.cc|s=s.replace('ClipToViewport(i, c, p->rect.w, sp.clip_h_dip);','ClipToViewport(i, c, p->rect.w, -1);',1)"
+"W25g 裁切高度不從純函式來|service/settings_window.cc|s=s.replace('ClipToViewport(i, c, sp.rect.w, sp.clip_h_dip);','ClipToViewport(i, c, sp.rect.w, -1);',1)"
 "W25h 純函式從 common/ 消失|common/ui_layout.cc|s=s.replace('ScrolledPlacement ScrollPlaceControlDip(','ScrolledPlacement ScrollPlaceControlDipGone(',1)"
 "W29a 開關的狀態讀錯地方|service/settings_window.cc|s=s.replace('const bool on = net_gate_.Enabled();','const bool on = settings_.NetworkEnabled();',1)"
 "W29b 開關底下那句話寫死一條|service/settings_window.cc|s=s.replace('SetText(hwnd_, IDC_NET_STATE, UiText(NetSwitchSummary(on)));','SetText(hwnd_, IDC_NET_STATE, UiText(UiString::kNetworkOffSummary));',1)"
@@ -3510,6 +4178,20 @@ self_check() {
 "W29e 問了開關但問在 CreateThread 之後(位置式判準)|service/settings_window.cc|blk='  if (!net_gate_.Enabled()) {' + chr(10) + '    update_failure_ = UpdateFailure::kSwitchOff;' + chr(10) + '    update_stage_ = UpdateStage::kIdle;' + chr(10) + '    RefreshNetworkAndUpdateCard();' + chr(10) + '    return;' + chr(10) + '  }' + chr(10); ct='  update_thread_ = ::CreateThread(nullptr, 0, &UpdateWorkerEntry, this, 0,' + chr(10) + '                                  nullptr);' + chr(10); s=s.replace(blk,'',1); s=s.replace(ct,ct+blk,1)"
 "W29m 問了開關卻不收手(那個分支沒有 return)|service/settings_window.cc|s=s.replace('    update_stage_ = UpdateStage::kIdle;' + chr(10) + '    RefreshNetworkAndUpdateCard();' + chr(10) + '    return;' + chr(10) + '  }','    update_stage_ = UpdateStage::kIdle;' + chr(10) + '    RefreshNetworkAndUpdateCard();' + chr(10) + '  }',1)"
 "W29n 擋下的理由說成別的(不是 kSwitchOff)|service/settings_window.cc|s=s.replace('    update_failure_ = UpdateFailure::kSwitchOff;' + chr(10) + '    update_stage_ = UpdateStage::kIdle;','    update_failure_ = UpdateFailure::kUnreachable;' + chr(10) + '    update_stage_ = UpdateStage::kIdle;',1)"
+"W3r 圓角回到桌面欄的 {5,6,7,10}|common/ui_layout.h|s=s.replace('constexpr int kControl = 4;','constexpr int kControl = 5;',1)"
+"W3m 元件尺寸偷加一個不在階梯上的值|common/ui_layout.h|s=s.replace('constexpr int kIndicatorW = 3;','constexpr int kIndicatorW = 5;',1)"
+"W41a DWM 成功之後又切一次 region(雙重圓角)|service/status_bar.cc|s=s.replace('      ::SetWindowRgn(hwnd, nullptr, FALSE);' + chr(10) + '      return;','      ::SetWindowRgn(hwnd, nullptr, FALSE);',1)"
+"W41b CreateRoundRectRgn 少了那個 +1(右下角斷一像素)|service/status_bar.cc|s=s.replace('w_px + 1, h_px + 1','w_px, h_px',1)"
+"W42a accent 的守門只對一個底算(§3.4.1 那次事故的形狀)|common/ui_accent.cc|s=s.replace('    return ContrastRatio(c, bg_a) >= want && ContrastRatio(c, bg_b) >= want;','    return ContrastRatio(c, bg_a) >= want;',1)"
+"W42b 測試資料少掉最難的那幾個 accent|tests/test_ui_palette.cc|s=s.replace('    {\"yellow (hardest)\", 0xFFB900},   {\"bright green\", 0x00CC6A},','',1).replace('    {\"purple\", 0x8764B8},             {\"red\", 0xE81123},','',1)"
+"W43a 頁標題的盒高改回 t1 + s3(§12.14.0 第 4 條)|common/ui_layout.cc|s=s.replace('emit(title_id, st.Push(TextLineBoxDip(text_size::t1), space::s1), false,','emit(title_id, st.Push(text_size::t1 + space::s3, space::s1), false,',1)"
+"W43b 版面不再回報級距與行數|common/ui_layout.h|s=s.replace('  int text_size_dip = 0;','  int text_size_dip_removed = 0;',1)"
+"W44a 塞一個 FW_BOLD|service/ui_font.cc|s=s.replace('lf.lfWeight = semibold ? FW_SEMIBOLD : FW_NORMAL;','lf.lfWeight = semibold ? FW_BOLD : FW_NORMAL;',1)"
+"W45a 把 comctl32 的版本改掉(只改真正宣告的那一行,檔頭的說明留著)|res/app.manifest|s=s.replace(chr(34)+'6.0.0.0'+chr(34), chr(34)+'5.0.0.0'+chr(34))"
+"W46a 上下內縮改回 kBarBorder(回到現況的 26 DIP)|common/statusbar_layout.cc|s=s.replace('  const int top = barmetric::kInsetV;','  const int top = metric::kHairline;',1).replace('  const int cell_h = barmetric::kBarH - 2 * barmetric::kInsetV;  // 28','  const int cell_h = barmetric::kBarH - 2 * metric::kHairline;',1)"
+"W46b 第 3 格的 120 上限拿掉(整條會超過 320)|common/statusbar_layout.cc|s=s.replace('  return index == 2 ? barmetric::kSchemaContentMaxW : -1;','  return -1;',1)"
+"W47a 焦點環改回 kPrimary 單圈|service/settings_window.cc|s=s.replace('      if (focused) DrawFocusRing(hdc, r, rad);','      if (focused) { HPEN p = theme_.Pen(kPrimary, Dip(2, dpi_)); HGDIOBJ o = ::SelectObject(hdc, p); ::Rectangle(hdc, r.left, r.top, r.right, r.bottom); ::SelectObject(hdc, o); }',1)"
+"W47b 側欄那一處改回 DrawFocusRect|service/settings_window.cc|s=s.replace('      if (focused) DrawFocusRing(hdc, item, rad);','      if (focused) ::DrawFocusRect(hdc, &item);',1)"
 "W29o 檢查在 UI 執行緒上直接跑|service/settings_window.cc|s=s.replace('  update_failure_ = UpdateFailure::kNone;' + chr(10) + '  update_stage_ = UpdateStage::kChecking;','  UpdateFailure why0 = UpdateFailure::kNone; update_.Check(&why0);' + chr(10) + '  update_stage_ = UpdateStage::kChecking;',1)"
 "W29p 工作執行緒直接動畫面,不回 UI 執行緒|service/settings_window.cc|s=s.replace('  ::PostMessageW(self->hwnd_, WM_RIME_UPDATE_DONE, 0, 0);','  self->OnUpdateWorkerDone();',1)"
 "W29q 工作執行緒的下載那一條路是死的|service/settings_window.cc|s=s.replace('    self->update_.DownloadAndVerify(&why);','    (void)0;',1)"
@@ -3520,7 +4202,7 @@ self_check() {
 "W29g 紀錄不是從出口讀來的|service/settings_window.cc|s=s.replace('BuildNetLogView(net_gate_.ReadLog(), ui_lang_, LocalTzOffsetMinutes())','BuildNetLogView({}, ui_lang_, LocalTzOffsetMinutes())',1)"
 "W29h 更新卡片那一句話寫死一條|service/settings_window.cc|s=s.replace('  SetText(hwnd_, IDC_UPDATE_STATUS, text.c_str());','  SetText(hwnd_, IDC_UPDATE_STATUS, UiText(UiString::kUpdateStatusUpToDate));',1)"
 "W29i 清除紀錄不問一聲|service/settings_window.cc|s=s.replace('  if (!ConfirmDialog(hwnd_, &theme_, script(),' + chr(10) + '                     UiText(UiString::kNetLogClearHeading),' + chr(10) + '                     UiText(UiString::kNetLogClearBlurb),' + chr(10) + '                     UiText(UiString::kNetLogClearButton),' + chr(10) + '                     UiText(UiString::kCancel)))' + chr(10) + '    return;','',1)"
-"W29j 開關寫不進去卻不說|service/settings_window.cc|s=s.replace('    SetStatus(UiString::kStatusSaveFailed);' + chr(10) + '    RefreshNetworkPage();' + chr(10) + '    return;','    RefreshNetworkPage();' + chr(10) + '    return;',1)"
+"W29j 開關寫不進去卻不說|service/settings_window.cc|s=s.replace('    SetStatus(UiString::kStatusSaveFailed);' + chr(10) + '    RefreshNetworkAndUpdateCard();' + chr(10) + '    return;','    RefreshNetworkAndUpdateCard();' + chr(10) + '    return;',1)"
 "W29k 更新卡片的純函式從 common/ 消失|common/update_flow.cc|s=s.replace('UpdateCard DescribeUpdateCard(','UpdateCard DescribeUpdateCardGone(',1)"
 "W29k2 那一句失敗文案的純函式從 common/ 消失|common/update_flow.cc|s=s.replace('UiString UpdateFailureText(','UiString UpdateFailureTextGone(',1)"
 "W29k3 「要不要提開關」的純函式從 common/ 消失|common/update_flow.cc|s=s.replace('bool UpdateFailureNeedsSwitch(','bool UpdateFailureNeedsSwitchGone(',1)"
@@ -3622,7 +4304,15 @@ PYMUT
     local wnum; wnum="$(printf '%s' "${name}" | sed -n 's/^\(W[0-9]\{1,3\}\).*/\1/p')"
     if [ -n "${wnum}" ]; then
       local plain; plain="$(printf '%s\n' "${out}" | sed 's/\x1b\[[0-9;]*m//g')"
-      if ! printf '%s\n' "${plain}" | grep -q "^\[FAIL\] ${wnum}[:/ ]"; then
+      # ⚠ **這一行以前是 `printf … | grep -q …`,而那正是本檔檔頭
+      #   §2-G5 明文禁止的形狀。** `set -o pipefail` 下,grep -q 命中
+      #   之後立刻關掉 pipe,printf 收到 SIGPIPE(141),於是**命中**
+      #   被讀成失敗 —— 而且只在輸出夠大的時候發作。
+      #   實測(2026-08-15):W49i 那一條植入會讓 W49 吐 59 則違規,
+      #   於是 `[FAIL] W49:` 明明在輸出裡,harness 卻報
+      #   「不是紅在 W49」;把同一段 grep 抽出來單獨跑(沒有 pipefail)
+      #   就命中。**本檔被同一件事咬第四次,而這一次咬的是守門的守門。**
+      if ! grep -q "^\[FAIL\] ${wnum}[:/ ]" <<<"${plain}"; then
         printf '  \033[1;31m植入 %s 的違規之後紅了,但**不是紅在 %s** —— 換了個地方壞掉不算守住\033[0m\n' \
                "${name}" "${wnum}" >&2
         printf '%s\n' "${plain}" | grep '^\[FAIL\]' | head -4 >&2
@@ -3655,6 +4345,10 @@ fi
 
 info "docs/ui-design.md §12.12 的檢核項"
 run_checks
+# §12.14 的視覺規格是後寫的一節,檢核項也自成一組(W41–W47)。
+# ⚠ 編號**不是**規格寫的 W29–W35 —— 那七個號碼在這支腳本裡
+#   全部名花有主(見 check_w41_to_w47 的檔頭)。
+check_w41_to_w47
 printf '\n'
 if [ "${FAILED}" -gt 0 ]; then
   printf '\033[1;31m%d 條不合格(共檢查 %d 組)\033[0m\n' "${FAILED}" "${CHECKED}" >&2

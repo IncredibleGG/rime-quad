@@ -139,6 +139,10 @@ void EnsureClass() {
   //   設 COLOR_BTNFACE+1 的話,深色模式下會先閃一片淺灰。
   wc.hbrBackground = nullptr;
   wc.lpszClassName = kClass;
+  // §12.14.4 的陰影表:確認對話框是 top-level,**有**陰影。
+  // ⚠ 它帶 WS_CAPTION,所以 Win11 上系統本來就會給一份;CS_DROPSHADOW
+  //   是為了 Win10 與關掉組合效果的機器。兩者不會疊 —— 系統只畫一份。
+  wc.style |= CS_DROPSHADOW;
   ::RegisterClassExW(&wc);
 }
 

@@ -107,6 +107,15 @@ inline void CheckEq(const char* file, int line, const char* ea, const char* eb,
     }                                                                          \
   } while (0)
 
+// 條件 + **自己寫的訊息**。⚠ 存在的理由:走一整個版面的迴圈時,
+// 「CHECK(false)」說不出是哪一頁、哪一顆、在哪一個捲動位置 ——
+// 而查不出來的紅字會被當成雜訊,然後被關掉。
+#define CHECK_MSG(cond, msg)                                                 \
+  do {                                                                       \
+    ++::rimewin_test::Assertions();                                          \
+    if (!(cond)) ::rimewin_test::Fail(__FILE__, __LINE__, (msg));            \
+  } while (0)
+
 #define CHECK_STR(a, b)                                                      \
   do {                                                                       \
     ++::rimewin_test::Assertions();                                          \

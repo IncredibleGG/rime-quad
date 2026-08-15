@@ -256,11 +256,41 @@ namespace {
   X(kDiagnosticsHeading, L"Diagnostics", L"診斷", L"诊断")                     \
   X(kDiagnosticsNote,                                                          \
     L"These numbers are for us. You do not need to understand them - just "    \
-    L"copy them into your report.",                                            \
-    L"這些數字是給我們看的,你不用懂 —— 回報問題時複製過去就好。",             \
-    L"这些数字是给我们看的,你不用懂 —— 回报问题时复制过去就好。")             \
+    L"copy them into your report. If something is actually broken, the "       \
+    L"second button runs the full check instead: it looks at the files, the "  \
+    L"registration, the service and the engine, and opens the result in "      \
+    L"Notepad for you to send us.",                                            \
+    L"這些數字是給我們看的,你不用懂 —— 回報問題時複製過去就好。"              \
+    L"真的壞掉的話,用下面第二顆:它會把檔案、註冊、服務、引擎整個檢查"        \
+    L"一遍,把結果用記事本打開,你把那一份給我們就夠了。",                     \
+    L"这些数字是给我们看的,你不用懂 —— 回报问题时复制过去就好。"              \
+    L"真的坏掉的话,用下面第二颗:它会把文件、注册、服务、引擎整个检查"        \
+    L"一遍,把结果用记事本打开,你把那一份给我们就够了。")                     \
   X(kDiagnosticsCopy, L"Copy", L"複製", L"复制")                               \
   X(kDiagnosticsCopied, L"Copied.", L"複製好了。", L"复制好了。")              \
+  /* ── W2:設定視窗裡的那顆診斷鍵 ─────────────────────────────── */        \
+  /* ⚠ 按鈕上的字不講「doctor」也不講「診斷報告」——講他現在的處境。 */      \
+  X(kDiagnosticsRunButton,                                                     \
+    L"Find out why it is not working",                                         \
+    L"檢查它為什麼不能用",                                                     \
+    L"检查它为什么不能用")                                                     \
+  /* ⚠ %u = 已經跑了幾秒。不畫假的進度條 —— 那會停在某個數字不動。 */        \
+  X(kDiagnosticsRunning,                                                       \
+    L"Checking... %u seconds so far. When it finishes, the report opens "      \
+    L"in Notepad by itself.",                                                  \
+    L"正在檢查…已經 %u 秒。做完會自己用記事本把報告打開。",                    \
+    L"正在检查…已经 %u 秒。做完会自己用记事本把报告打开。")                    \
+  X(kDiagnosticsRunDone,                                                       \
+    L"Done - the report is open in Notepad. Send us the whole thing.",         \
+    L"檢查完了,報告已經用記事本打開。把那整份給我們就夠了。",                 \
+    L"检查完了,报告已经用记事本打开。把那整份给我们就够了。")                 \
+  /* ⚠ 叫不起來的時候要說得出**還有哪一條路** —— 一句「失敗」對一個 */      \
+  /*   東西已經壞掉的人沒有用。 */                                            \
+  X(kDiagnosticsRunFailed,                                                     \
+    L"Could not start the checking tool. The Start menu has a shortcut "       \
+    L"that does exactly the same thing.",                                      \
+    L"叫不起那支檢查程式。「開始」功能表裡有一個做同一件事的捷徑。",           \
+    L"叫不起那支检查程序。“开始”菜单里有一个做同一件事的快捷方式。")           \
   X(kResetHeading, L"Put the settings back to how they started", \
     L"把設定回復成一開始的樣子", L"把设置回复成一开始的样子") \
   X(kResetBlurb, \
@@ -566,6 +596,20 @@ namespace {
     L"them.",                                                                 \
     L"更新的時候:輸入法會先停下來,換掉檔案,然後自己起來。不必重新開機,也不必登出。已經開著的程式要等你下一次開它,才會換成新的。",       \
     L"更新的时候:输入法会先停下来,换掉文件,然后自己起来。不必重新开机,也不必登出。已经开着的程序要等你下一次开它,才会换成新的。")       \
+  /* ── W1:為什麼下面那幾顆是灰的、怎麼讓它們不灰 ──────────────── */      \
+  /* ⚠ 只在開關**關著**的時候畫出來(見 ui_layout.cc)。開著的時候 */        \
+  /*   這一句是假的,而一句永遠都在的假話比沒有還糟。 */                      \
+  X(kUpdateSwitchGate,                                                        \
+    L"The buttons below need the network, and the switch at the top of "      \
+    L"this page is off - that is the default, not a fault. Turn it on and "   \
+    L"the first two work; the last one also needs a newer version to have "   \
+    L"been found.",                                                           \
+    L"下面那幾顆按不動:它們要連網,而這一頁最上面那個「連網」開關是關的"     \
+    L" —— 那是預設值,不是壞掉。把它打開,前兩顆就會亮;最後那顆還要等"      \
+    L"真的查到有新版本。查完隨時可以再把開關關回去。",                        \
+    L"下面那几颗按不动:它们要连网,而这一页最上面那个“连网”开关是关的"      \
+    L" —— 那是默认值,不是坏掉。把它打开,前两颗就会亮;最后那颗还要等"      \
+    L"真的查到有新版本。查完随时可以再把开关关回去。")                        \
   X(kUpdateCheckButton,                                                       \
     L"Check for a newer version",                                             \
     L"看看有沒有新版本",                                                              \

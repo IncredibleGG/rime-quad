@@ -896,3 +896,113 @@ TEST(BuildOptionPlan_half_shape_is_sent_as_false_not_omitted) {
   CHECK_INT(CountOption(plan, "full_shape"), 1);
   CHECK(!plan[0].value);
 }
+
+// ────────────────────────────────────────────────────────────────
+// P0:「套用這個順序」按下去之後,引擎真的會用排在第一的那一個
+// ────────────────────────────────────────────────────────────────
+//
+// ⚠ 這一條守的是一個**實跑出來的**缺陷,不是一個假想的。復現路徑:
+//
+//   A. 從來沒按過 Ctrl + ` → 清單首項 = 引擎拿到的,一切正常。
+//   B. 按過一次 Ctrl + `(這一頁的說明文字自己在教使用者按它),
+//      pipe_server.cc 的 note_schema 把它寫進 pinnedHant ——
+//      **使用者不知道有這件事,而且沒有任何 UI 顯示它**。
+//   C. 之後用設定視窗把另一個排回第一、按「套用這個順序」:
+//      default.custom.yaml 真的被改了,重新整理也真的跑完了,
+//      而**引擎仍然用 pinnedHant 那一個**。
+//
+//   C 這一刻畫面上有三個綠訊號同時說相反的話:「現在預設是『○○』」、
+//   第 0 列的「預設」徽章、以及「整理完成」。三個都取 order_[0],
+//   與 ChooseSchema 無關 —— 顯示的真相與引擎的真相是兩份。
+//
+// 修法:套用順序時把 pinnedHant / pinnedHans / pinnedGlobal 三層一起放掉
+//(settings_window.cc 的 IDC_APPLY_ORDER)。語意也對得上 —— 使用者
+// 親手排的順序,比我們背著他記下來的那一次按鍵權威。
+//
+// 反向:把 settings_window.cc 那三行清除改回只清 pinnedGlobal,
+// 這一條會紅。
+
+namespace {
+
+// 使用者按過一次 Ctrl + ` 選了注音之後,設定裡是這個樣子。
+SchemaPreference AfterUserPressedCtrlBacktick() {
+  SchemaPreference p;
+  p.follow_input_mode = true;
+  p.pinned_hant = "bopomofo_tw";  // pipe_server.cc 的 note_schema 寫的
+  return p;
+}
+
+// 設定視窗的 IDC_APPLY_ORDER 現在做的事(三層一起放掉)。
+SchemaPreference AfterApplyOrder(SchemaPreference p) {
+  p.pinned_global.clear();
+  p.pinned_hant.clear();
+  p.pinned_hans.clear();
+  return p;
+}
+
+}  // namespace
+
+TEST(schema_apply_order_actually_changes_what_the_engine_loads) {
+  // 繁體 langid(zh-TW)。
+  const uint32_t hant = 0x0404;
+  // 使用者把拼音排回第一。
+  const std::vector<std::string> reordered = {"luna_pinyin_tw", "bopomofo_tw",
+                                              "luna_pinyin", "t9_pinyin"};
+
+  // ── B:按過 Ctrl + ` 之後,釘的那一個贏過清單 ──────────────────
+  const SchemaPreference pinned = AfterUserPressedCtrlBacktick();
+  const SchemaChoice before = ChooseSchema(hant, reordered, pinned);
+  CHECK(before.schema_id == "bopomofo_tw");
+  CHECK(std::string(before.source) == "pinnedHant");
+  // ⚠ 這一行就是缺陷:清單首項是拼音,而引擎拿到注音。
+  CHECK(before.schema_id != reordered[0]);
+
+  // ── C:按下「套用這個順序」之後,清單首項說了算 ────────────────
+  const SchemaChoice after =
+      ChooseSchema(hant, reordered, AfterApplyOrder(pinned));
+  CHECK(after.schema_id == reordered[0]);
+  CHECK(after.schema_id == "luna_pinyin_tw");
+  // 而且畫面上那三個綠訊號(「現在預設是」、徽章、「整理完成」)
+  // 現在說的是同一件事。
+}
+
+TEST(schema_apply_order_clears_all_three_pins_not_just_the_global_one) {
+  // ⚠ 舊碼只清 pinnedGlobal,而 **pinnedGlobal 沒有任何 UI 會設它**
+  //   —— 全 repo 只有那一處清除、pipe_server.cc 一處讀。也就是說
+  //   那一行等於空跑,而真正會擋路的第 1 層原封不動。
+  const uint32_t hans = 0x0804;
+  const std::vector<std::string> list = {"luna_pinyin", "luna_pinyin_tw"};
+  SchemaPreference p;
+  p.follow_input_mode = true;
+  p.pinned_global = "luna_pinyin_tw";
+  p.pinned_hant = "bopomofo_tw";
+  p.pinned_hans = "t9_pinyin";
+
+  // 只清 global 的那一版:第 1 層仍然贏。
+  SchemaPreference only_global = p;
+  only_global.pinned_global.clear();
+  // pinnedHans 指的方案不在清單上 → 當作沒釘,往下走(規範明文)。
+  // 所以這裡改用一個在清單上的,才看得出第 1 層真的擋路。
+  only_global.pinned_hans = "luna_pinyin_tw";
+  const SchemaChoice half = ChooseSchema(hans, list, only_global);
+  CHECK(half.schema_id == "luna_pinyin_tw");
+  CHECK(half.schema_id != list[0]);
+
+  // 三層一起清:清單首項說了算。
+  const SchemaChoice full = ChooseSchema(hans, list, AfterApplyOrder(p));
+  CHECK(full.schema_id == list[0]);
+  CHECK(full.schema_id == "luna_pinyin");
+}
+
+TEST(schema_apply_order_does_not_touch_the_variant_switch) {
+  // ⚠ 放掉「釘住的方案」**不等於**放掉簡繁偏好。使用者在「文字」那一頁
+  //   選的簡體/繁體是另一件事,套用順序不得順手把它清掉 ——
+  //   那會是「我只是排個順序,結果打出來的字變了」。
+  SchemaPreference p;
+  p.follow_input_mode = true;
+  p.pinned_hant = "bopomofo_tw";
+  p.variant = VariantPref::kSimplified;
+  const SchemaPreference after = AfterApplyOrder(p);
+  CHECK(after.variant == VariantPref::kSimplified);
+  CHECK(after.follow_input_mode);
+}

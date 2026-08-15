@@ -52,6 +52,17 @@ namespace rimewin {
 //   仍然比沒有圖示好,而沒有圖示等於少一個入口。
 HICON MakeModeTrayIcon(const wchar_t* text, UINT dpi);
 
+// 同一支,但尺寸直接給像素。
+//
+// ⚠ 用途是**視窗類別的圖示**(WNDCLASSEXW.hIcon / hIconSm):
+//   那兩格的尺寸來自 GetSystemMetrics(SM_CXICON / SM_CXSMICON),
+//   不是 DPI 的那四階。硬把 dpi 湊成 192 去換 32 像素是可以,
+//   但下一個人讀到 `MakeModeTrayIcon(g, 192)` 會以為那是高 DPI 的
+//   路徑,而不是「我要 32 像素」。
+// ⚠ 回傳的 HICON 由呼叫端負責。註冊給視窗類別的那一份
+//   **不要 DestroyIcon** —— 類別活多久它就要活多久。
+HICON MakeModeIconPx(const wchar_t* text, int px);
+
 }  // namespace rimewin
 
 #endif  // RIMEWIN_SERVICE_TRAY_ICON_H_

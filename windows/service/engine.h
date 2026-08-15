@@ -44,8 +44,15 @@ class Engine {
   ~Engine();
 
   // 先在呼叫端執行緒上做 rs_init,成功後再啟動引擎執行緒。
-  // 部署是非同步的,本函式不等它完成 —— 首次部署要編譯詞庫,可能好幾分鐘,
-  // 而那段時間裡使用者已經在打字了(服務會對每一顆按鍵立刻回「沒處理」)。
+  // 部署是非同步的,本函式不等它完成 —— 那段時間裡使用者已經在打字了
+  // (服務會對每一顆按鍵立刻回「沒處理」)。
+  //
+  // ⚠ 「要多久」有**兩個不同的答案**,而它們都在 common/first_run_timing.h:
+  //   出貨預設方案是十幾秒(kFirstDeployTypical*,**使用者讀得到的句子
+  //   一律用這一組**),而使用者自己灌了很大的詞典時要留到分鐘級
+  //   (kDeployWaitBudgetSec,那是**等待預算**不是期待值)。
+  //   這裡不再複述任何一個數字 —— 四份碼各講一個數字正是 W3 那個缺陷,
+  //   而它的代價是完成頁對一個只要等十幾秒的人說「一到數分鐘」。
   bool Start(const std::string& shared_dir, const std::string& user_dir,
              const std::string& log_dir);
   void Stop();
@@ -340,6 +347,16 @@ class Engine {
   //   宣稱切過了卻拿不出東西,狀態列就會說謊,而那顆鍵已經被吃掉了。
   Result ToggleAsciiMode(uint64_t id);
   bool AsciiMode() const { return ascii_mode_.load(); }
+  // ⚠ 只記下行程層級那一格,**不動任何 session**。
+  //
+  //   用途只有一個:懸浮那一橫回讀到「使用者正在用的那個 session 現在
+  //   是 X」之後,把 X 記回來,好讓下一次「切一下」的方向與畫面上那個
+  //   字是同一個來源。兩邊分岔的樣子是「點了沒反應」——
+  //   畫面說中、方向從行程層級算(已經是 En)→ 再點送的還是同一個值。
+  //
+  //   ⚠ 不可以拿它代替 SetAsciiModeAll:那一支要真的去改每一個 session,
+  //     而這一支刻意什麼都不改(它記的是**觀察到的事實**,不是命令)。
+  void NoteAsciiModeFromSession(bool on) { ascii_mode_.store(on); }
   void SelectSchemaAll(const std::string& schema_id);
 
   // 記住這個 session 是從哪一個語言設定檔來的。
@@ -376,7 +393,10 @@ class Engine {
     bool ok = false;  // 一個活著的 session 都沒有 → 什麼都不要改
     uint32_t status_flags = 0;
   };
-  StatusReadback ReadBackStatus();
+  // ⚠ session_id = 0 代表「沒有指定」—— 那時退回去挑一個活著的,
+  //   再退到備用池。**指定的時候一定要問指定的那一個**:13 個宿主各有
+  //   自己的 ascii_mode,挑第一個等於擲骰子。
+  StatusReadback ReadBackStatus(uint64_t session_id = 0);
 
   // 把「這個語言該用什麼」套到一個 session 上。回傳實際選中的方案 id
   // (沒有選就回空字串)。

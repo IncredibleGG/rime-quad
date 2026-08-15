@@ -14,6 +14,7 @@
 #include "../common/ui_layout.h"
 #include "../common/ui_strings.h"
 
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -109,7 +110,7 @@ TEST(ui_layout_sidebar_items_are_evenly_spaced) {
   //   `space::s2`(4 DIP)—— 一個畫面上不存在、只存在於我們這份算式裡的
   //   間隔。它就是 #75 那 16 DIP 的來源。
   CHECK_INT(b.y - a.bottom(), 0);
-  CHECK_INT(a.h, metric::kSidebarItemH);
+  CHECK_INT(a.h, metric::kRowH);
   CHECK_INT(a.w, metric::kSidebarW);
   CHECK_INT(a.x, 0);
 }
@@ -134,8 +135,8 @@ TEST(ui_layout_sidebar_hit_and_draw_are_the_same_rect) {
     int seen = 0;
     for (int i = 0; i < kPageCount; ++i) {
       // comctl32 排出來的那一列(清單的 y + i × 列高,列與列之間無間隔)。
-      const RectI drawn{list.x, list.y + i * metric::kSidebarItemH, list.w,
-                        metric::kSidebarItemH};
+      const RectI drawn{list.x, list.y + i * metric::kRowH, list.w,
+                        metric::kRowH};
       const RectI item = SidebarItemDip(i);
       CHECK_INT(item.x, drawn.x);
       CHECK_INT(item.y, drawn.y);
@@ -156,11 +157,18 @@ TEST(ui_layout_sidebar_hit_and_draw_are_the_same_rect) {
 
       // 畫出來的那塊底比列窄(§12.4.2 的左右內距 12),但它**一定**
       // 落在列裡面 —— 底左邊那 12 DIP 仍然按得到,不是死區。
+      // ⚠ 2026-08-14:底現在**上下也各縮 s1**,好讓 §12.14.6.1 的
+      //   「項與項之間 s2(4)」看得見(comctl32 的列是連著的,間隔只能
+      //   做在底上)。命中範圍一格都沒有動 —— 上面那三條 CHECK_INT 就是
+      //   那件事,而 sidebar_item_fills_leave_a_visible_gap_but_the_hit_area_does_not
+      //   從另一邊釘住它。
       const RectI fill = SidebarItemFillDip(i);
       CHECK(fill.x >= item.x);
       CHECK(fill.right() <= item.right());
-      CHECK_INT(fill.y, item.y);
-      CHECK_INT(fill.h, item.h);
+      CHECK(fill.y >= item.y);
+      CHECK(fill.bottom() <= item.bottom());
+      CHECK_INT(fill.y - item.y, space::s1);
+      CHECK_INT(fill.h, item.h - 2 * space::s1);
       CHECK(fill.w > 0);
     }
     // ⚠ 範圍斷言:掃到零項而報「全部合格」正是 §2-G 講的那個失效方式。
@@ -176,7 +184,7 @@ TEST(ui_layout_sidebar_hit_and_draw_are_the_same_rect) {
 TEST(ui_layout_no_point_hits_two_sidebar_items) {
   const RectI list = SidebarListDip(kWindowDefaultH);
   int probed = 0;
-  for (int y = list.y; y < list.y + kPageCount * metric::kSidebarItemH; ++y) {
+  for (int y = list.y; y < list.y + kPageCount * metric::kRowH; ++y) {
     int hits = 0;
     for (int i = 0; i < kPageCount; ++i) {
       const RectI r = SidebarItemDip(i);
@@ -186,7 +194,7 @@ TEST(ui_layout_no_point_hits_two_sidebar_items) {
     CHECK_INT(hits, 1);
     ++probed;
   }
-  CHECK(probed >= kPageCount * metric::kSidebarItemH);
+  CHECK(probed >= kPageCount * metric::kRowH);
 }
 
 // ── 版面的取材面:每一頁都要走得到 ──────────────────────────────
@@ -353,12 +361,20 @@ TEST(ui_layout_appearance_page_still_needs_scrolling_at_the_default_size) {
   //   它改完狀態列生命週期之後是**假的**),而 win-next 讓版面真的去
   //   量那句話。兩件事都要在,所以數字必須跟著走 —— 釘住舊數字等於
   //   宣稱那句話沒改。
-  CHECK_INT(find(IDC_THEME_0).y, 563);
-  CHECK_INT(find(IDC_THEME_1).y, 593);
-  CHECK_INT(find(IDC_THEME_2).y, 623);
-  CHECK_INT(find(IDC_BAR_SHOW).y, 730);
-  CHECK_INT(find(IDC_APPEAR_NOTE).y, 786);
-  CHECK_INT(pl.content_h_dip, 838);
+  // ⚠ 2026-08-14(§12.14 的風格那一輪):整組又往下移了,舊值
+  //   563 / 593 / 623 / 730 / 786,content_h 838。三個來源:
+  //     · 單選/開關列 28 → 36(§12.14.6.6 的表,一列高 36);
+  //     · 每一組控制項外面多了一張**卡片**(上下內距各 s4);
+  //     · 頁標題 28 → 31、區段標題 19 → 22(§12.14.0 第 4 條,
+  //       行盒本來就該是 TextLineBoxDip)。
+  //   ⚠ **重點沒有變**:深淺三態仍然在可視高度(506)以下,這一頁仍然
+  //     非捲不可。
+  CHECK_INT(find(IDC_THEME_0).y, 705);
+  CHECK_INT(find(IDC_THEME_1).y, 743);
+  CHECK_INT(find(IDC_THEME_2).y, 781);
+  CHECK_INT(find(IDC_BAR_SHOW).y, 919);
+  CHECK_INT(find(IDC_APPEAR_NOTE).y, 985);
+  CHECK_INT(pl.content_h_dip, 1037);
 
   // 預設尺寸下的可視高度是 506 —— 深淺三態在 574 以下,**看不到**。
   CHECK_INT(ContentViewportHeightDip(kWindowDefaultH), 506);
@@ -391,7 +407,27 @@ TEST(ui_layout_advanced_page_counts_the_last_button_in_its_height) {
   //   而中間那一段畫面上會有兩個互相矛盾的開關。
   //
   // ⚠ 2026-08-11:說明段的高度改成從字數算(#76),舊值 810。
-  CHECK_INT(max_bottom, 762);
+  // ⚠ 2026-08-14:卡片進來之後,最後一顆控制項的下面還有卡片的下內距
+  //   (s4)。所以「整頁的底」是**卡片的底**,不是控制項的底 ——
+  //   內容高度必須把它算進去,否則捲到最底時最後那顆危險鍵下緣
+  //   會貼著摺線(#76 的同一族)。舊值 762。
+  // ⚠ 2026-08-15:按鈕列改走 card_block(不吃 card_row 的 36 下限),
+  //   所以進階頁上那四列按鈕各矮 4 DIP:918 − 4×4 = 902。
+  //   這一行是釘住的,改版面時要一起改。
+  // ⚠ 2026-08-15（A）：「重新整理字詞」「你的檔案」「重設全部設定」三張卡
+  //   從「區段標題浮在一個只放按鈕的空盒上面」
+  //   改成「標籤在左、按鈕在右」（§12.14.6.9）。
+  //   標題與說明搬進卡片之後，每一張卡省下一整塊高度：
+  //   902 → 836（矮 66 DIP）。舊值 902 裡面有 66 DIP 是空白。
+  // ⚠ 2026-08-15(W2):「診斷」那一格多了一顆「檢查它為什麼不能用」,
+  //   而它的說明文(kDiagnosticsNote)因此從一行變成三行 —— 那一段現在
+  //   要講得出「第二顆是做什麼的、跑完會怎樣」。836 → 852:高 16 DIP,
+  //   正好是那一段多出來的**一行**(t5 的行盒高就是 16)。
+  //   **按鈕列本身沒有變高**:card_buttons 的高是 btn_h,
+  //   一列裡放幾顆不影響它。
+  CHECK_INT(max_bottom, 852);
+  for (const CardRect& c : pl.cards)
+    if (c.rect.bottom() > max_bottom) max_bottom = c.rect.bottom();
   CHECK_INT(pl.content_h_dip, max_bottom + kContentPadBottomDip);
   // 三顆固定寬度的按鈕都要在內容高度以內。
   for (int id : {IDC_REDEPLOY, IDC_DIAG_COPY, IDC_RESET}) {
@@ -411,6 +447,9 @@ TEST(ui_layout_network_page_counts_the_update_card_in_its_height) {
     for (const PlacedControl& p : pl.items)
       if (!p.rect.empty() && p.rect.bottom() > max_bottom)
         max_bottom = p.rect.bottom();
+    // ⚠ 卡片的下內距也算(見進階頁那一條)。
+    for (const CardRect& c : pl.cards)
+      if (c.rect.bottom() > max_bottom) max_bottom = c.rect.bottom();
     CHECK_INT(pl.content_h_dip, max_bottom + kContentPadBottomDip);
     // 三顆更新鍵與清除鍵都要在內容高度以內 —— 捲到最底碰得到。
     for (int id : {IDC_UPDATE_CHECK, IDC_UPDATE_ACTION, IDC_UPDATE_PAGE,
@@ -615,7 +654,14 @@ TEST(ui_layout_stack_puts_danger_last_behind_a_divider) {
   //   與說明(21 + 36 = 57 DIP),已經大於 s7 + hairline + s7 = 41 ——
   //   拿按鈕去量的話,把 st.PushDivider() 整行刪掉這一條仍然是綠的。
   //   (2026-08-10 的反向測試就是這樣抓到的,在連網頁那一條上。)
-  CHECK_INT(reset_head_y, diag_copy_bottom + 2 * space::s7 + metric::kHairline);
+  // ⚠ 2026-08-14:診斷那顆「複製」現在坐在卡片裡,所以按鈕下緣與那條
+  //   分隔線之間還隔著卡片的下內距(s4)。分隔線本身沒有變。
+  // ⚠ 2026-08-15（A）：「重設全部設定」那一區的區段標題
+  //   現在坐在卡片裡面（§12.14.6.9 的「標籤在左」），
+  //   所以它與那條分隔線之間多了一個卡片的上內距 s4。
+  //   ⚠ 分隔線本身沒有變：上下各 s7 + 1 DIP。
+  CHECK_INT(reset_head_y, diag_copy_bottom + space::s4 + 2 * space::s7 +
+                              metric::kHairline + space::s4);
   CHECK(reset_y > reset_head_y);
 }
 
@@ -673,11 +719,21 @@ TEST(ui_layout_scrolled_out_controls_stay_in_the_tab_order) {
   CHECK(inside.visible);
   CHECK_INT(inside.clip_h_dip, -1);
 
-  // 捲到一半:只露出可視範圍以內那一截,免得畫在底部固定列上面。
+  // 捲到一半：⚠ **全有或全無**。舊版回的是 20（露出
+  //   可視範圍以內那一截），也就是**半顆控制項**——
+  //   預設尺寸下文字頁的「全形/半形」區段標題在 y=497、高 22，
+  //   裁切線 506，於是它被畫成 9 DIP：從字的中間橫著切過去。
+  //   那就是使用者說的「摺線那裡看起來像壞掉」。
   const ScrolledPlacement half = ScrollPlaceControlDip(r, 120, viewport);
   CHECK(half.visible);
   CHECK_INT(half.y_dip, 480);
-  CHECK_INT(half.clip_h_dip, 20);
+  CHECK_INT(half.clip_h_dip, 0);
+  // ⚠ 而且不只這一組：clip_h_dip 只允許有兩個值。
+  //   沒有這一圈的話，「只裁一點點」會悠悠地回來。
+  for (int scroll = 0; scroll <= 900; ++scroll) {
+    const int c = ScrollPlaceControlDip(r, scroll, viewport).clip_h_dip;
+    if (c != -1 && c != 0) CHECK_INT(c, -1);
+  }
 
   // 捲過頭(整顆在上方):上方由父視窗的 client 矩形負責,這裡不裁。
   const ScrolledPlacement above = ScrollPlaceControlDip(r, 900, viewport);
@@ -702,6 +758,96 @@ TEST(ui_layout_scrolled_out_controls_stay_in_the_tab_order) {
   }
   CHECK(off_screen > 0);   // 掃描範圍非空:真的有捲到看不見的控制項
   CHECK_INT(hidden, 0);    // 而且沒有一顆是藏起來的
+}
+
+// ── 底部固定列那一帶:畫面上不得有任何一塊 ──────────────────────
+//
+// ⚠ **這一條是拿實機截圖上量到的東西寫回來的。**
+//
+//   十張截圖(796×599,client 763×560)逐像素量出來:
+//     · settings-p1-light,y=559(client 528):x287..734 一整條
+//       (255,255,255)= 淺色的 kSurface,把「關閉」鈕蓋掉只剩右緣十幾點;
+//     · settings-p2-light,同一條掃描線:多段 (69,79,81)
+//       = 淺色的 kOnSurfaceVariant,也就是區段說明的字,壓在同一列上。
+//   對回版面:外觀頁的 IDC_SCALE_2 在 y=507..543、文字頁的
+//   IDC_SHAPE_BLURB 在 y=521..553,而底部固定列從 H−kBottomBarH=512
+//   開始。**兩顆都在固定列上面。**
+//
+// ⚠ 這一列不是裝飾:SetStatus() / SetTransientStatus() 寫的
+//   「已套用」「正在套用…」「重新整理字詞跑了幾秒」「複製好了」
+//   全在那一行。被蓋住 = 使用者改完設定得不到任何回饋。
+//
+// ⚠ 為什麼舊的守門沒有響:「不畫」以前是靠 SetWindowRgn() 給控制項
+//   套一個空區域達成的,而**區域不在版面模型裡**。純函式只看得到
+//   「這顆在 y=507」,看不到那一個 Win32 呼叫有沒有生效 ——
+//   所以這一條改成量 DrawnRectsDip():畫得出來的是哪些矩形。
+//   下一次有人把裁切拆掉,矩形就會回到固定列上,這一條就紅。
+TEST(nothing_is_ever_drawn_on_the_bottom_fixed_bar) {
+  // 三種視窗:預設(捲軸吃掉 17 DIP 的那一份)、最小、很高的那一個。
+  const int sizes[][2] = {{kWindowDefaultW - 17, kWindowDefaultH},
+                          {kWindowDefaultW, kWindowDefaultH},
+                          {kWindowMinW, kWindowMinH},
+                          {kWindowDefaultW, 900}};
+  int scanned = 0, scrolled_pages = 0;
+  for (const auto& wh : sizes) {
+    const int W = wh[0], H = wh[1];
+    const int bar_top = H - kBottomBarH;
+    for (int page = 0; page < kPageCount; ++page) {
+      const int smax = ScrollMaxDip(page, W, H, PageState{});
+      if (smax > 0) ++scrolled_pages;
+      for (int scroll = 0; scroll <= smax; ++scroll) {
+        const int clip = ContentClipLineDip(H, scroll, smax);
+        for (const DrawnRect& d :
+             DrawnRectsDip(page, W, H, scroll, PageState{})) {
+          ++scanned;
+          const std::string where =
+              std::string(d.what) + " id=" + std::to_string(d.id) +
+              " page=" + std::to_string(page) + " scroll=" +
+              std::to_string(scroll) + " y=" + std::to_string(d.rect.y) +
+              ".." + std::to_string(d.rect.bottom());
+          // 1. 固定列那一帶不得有任何一塊(控制項或卡片)。
+          // ⚠ CHECK_MSG 的第二個引數只在**失敗時**才求值,所以上面那一句
+          //   字串是白花的 —— 但它讓紅字說得出是哪一頁、哪一顆、
+          //   在哪一個捲動位置,而查不出來的紅字會被當成雜訊然後被關掉。
+          CHECK_MSG(d.rect.bottom() <= bar_top,
+                    "畫在底部固定列上:" + where + "(固定列從 " +
+                        std::to_string(bar_top) + " 開始)");
+          // 2. 摺線上不得有被攔腰切開的**控制項**。
+          //    (卡片是刻意跨過去的 —— 淡出區把它接起來,見 kScrollFadeH。)
+          CHECK_MSG(d.is_card || d.rect.y >= clip || d.rect.bottom() <= clip,
+                    "被裁切線攔腰切開:" + where + "(裁切線 " +
+                        std::to_string(clip) + ")");
+        }
+      }
+    }
+  }
+  // ⚠ 掃描範圍不得是空的:上面那一圈一顆都沒走過的話,這一條會安靜地
+  //   全綠 —— 而那正是這一輪要消滅的形狀。
+  CHECK(scanned > 1000);
+  CHECK(scrolled_pages > 0);
+}
+
+// ── 那一條真的抓得到嗎:同一個版面,把裁切拿掉就必須紅 ──────────
+//
+// ⚠ 上面那一條斷言的是「沒有東西在固定列上」。一條**永遠不會紅**的
+//   斷言與一條守得住的斷言在 CI 上長得一模一樣,所以這裡把缺陷本身
+//   造出來:不裁,直接把每一顆控制項擺在 y − scroll 上(那正是
+//   2026-08-15 之前畫面上發生的事),然後要求它真的落在固定列上。
+TEST(the_bottom_bar_check_would_actually_catch_the_regression) {
+  const int W = kWindowDefaultW - 17, H = kWindowDefaultH;
+  const int bar_top = H - kBottomBarH;
+  int would_hit = 0;
+  for (int page = 0; page < kPageCount; ++page) {
+    const PageLayout pl = LayoutSettingsPageDip(page, W, PageState{});
+    for (const PlacedControl& p : pl.items) {
+      if (p.rect.empty()) continue;
+      // 不裁的那一版:rect 直接就是 {x, y - scroll, w, h}。
+      const RectI raw{p.rect.x, p.rect.y, p.rect.w, p.rect.h};
+      if (raw.y < H && raw.bottom() > bar_top) ++would_hit;
+    }
+  }
+  // 外觀頁的 IDC_SCALE_2、文字頁的 IDC_SHAPE_BLURB…… 至少兩顆。
+  CHECK(would_hit >= 2);
 }
 
 // ── W26:側欄清單與底部狀態區不可以重疊,兩行文字要放得下 ──────────
@@ -844,6 +990,86 @@ TEST(ui_layout_network_page_empty_log_says_so_instead_of_showing_a_blank_list) {
   }
 }
 
+// ── W1:三顆更新鍵是灰的,而畫面上沒有一個字說為什麼 ─────────────
+//
+// 缺陷本身在 service/settings_window.cc:
+//
+//     ::EnableWindow(chk, card.show_check_button && on ? TRUE : FALSE);
+//
+// `on` 是連網開關,而它**預設是關的**(卡片自己寫著「已關閉(預設)」)。
+// 於是「更新」那一整段從頭到尾三顆按鈕都按不動 —— 而那一段裡沒有任何
+// 一句話說「要先打開上面那個開關」。麻瓜的動作是連點三次「看看有沒有
+// 新版本」然後放棄。
+//
+// ⚠ 對照組是**我們自己的安卓端**:啟用頁那顆灰掉的 Switch 底下寫著
+//   「Waiting for the step above」。同一個產品、同一種情況,一邊說了
+//   一邊沒說。這一條就是把那個形狀補到 Windows 上。
+//
+// ⚠ 修法**不是**「把按鈕改成不灰」。連網開關預設關是產品定位
+//   (離線為預設),那是對的。
+TEST(ui_layout_network_page_says_why_the_update_buttons_are_grey) {
+  PageState off;
+  // 開關預設關 —— 版面的預設值必須與那件事同一個方向,
+  // 否則第一次打開設定的人看到的就是沒有說明的那一版。
+  CHECK(off.net_switch_off);
+  PageState on = off;
+  on.net_switch_off = false;
+
+  const RectI gate = FindOn(kPageNetwork, off, IDC_UPDATE_GATE);
+  const RectI check = FindOn(kPageNetwork, off, IDC_UPDATE_CHECK);
+  CHECK(!gate.empty());
+  CHECK(!check.empty());
+  // ⚠ 要排在按鈕**上面**。排在下面的話,他已經點過三次才讀到。
+  //   這與 IDC_UPDATE_TRUST 在按鈕之前是同一條理由。
+  CHECK(gate.bottom() <= check.y);
+  // ⚠ 而且要在同一張卡片裡。浮在卡片外面就變成一段與按鈕無關的旁白,
+  //   而「灰掉的東西旁邊」這件事就不成立了。
+  const PageLayout pl = LayoutSettingsPageDip(kPageNetwork, 780, off);
+  bool in_card = false;
+  for (const PlacedControl& p : pl.items)
+    if (p.id == IDC_UPDATE_GATE) in_card = p.in_card;
+  CHECK(in_card);
+  // 捲到底碰得到(#76 的形狀:說明長出來把後面的東西擠到摺線下)。
+  CHECK(gate.bottom() <= pl.content_h_dip);
+
+  // 開關打開之後這一句就是假的 —— 不可以還留在畫面上。
+  CHECK(FindOn(kPageNetwork, on, IDC_UPDATE_GATE).empty());
+  CHECK(!FindOn(kPageNetwork, on, IDC_UPDATE_CHECK).empty());
+}
+
+// ── W2:從設定視窗裡走得到診斷 ──────────────────────────────────
+//
+// 缺陷本身:進階頁的「診斷」區塊只有一顆「複製」,而 windows/service/
+// 底下一行 doctor 的呼叫都沒有(只有三行註解提到它)。一個東西壞掉、
+// 因此打開設定的人,得先關掉設定、回「開始」功能表、找到另一個捷徑
+// ——「設定」是他唯一知道的入口,而那個入口走不到自我診斷。
+TEST(ui_layout_advanced_page_can_reach_the_doctor) {
+  const PageState st;
+  const RectI copy = FindOn(kPageAdvanced, st, IDC_DIAG_COPY);
+  const RectI run = FindOn(kPageAdvanced, st, IDC_DIAG_RUN);
+  CHECK(!copy.empty());
+  CHECK(!run.empty());
+  // 同一列按鈕(§12.14.6.2:依內容寬、由左往右),不重疊。
+  CHECK_INT(run.y, copy.y);
+  CHECK(run.x >= copy.right());
+  const PageLayout pl = LayoutSettingsPageDip(kPageAdvanced, 780, st);
+  // ⚠ 捲到底碰得到。進階頁最後一個區塊是破壞性的「還原」,
+  //   而這一顆要在它上面 —— 不是在摺線下。
+  CHECK(run.bottom() <= pl.content_h_dip);
+  bool clickable = false, in_card = false;
+  for (const PlacedControl& p : pl.items)
+    if (p.id == IDC_DIAG_RUN) {
+      clickable = p.clickable;
+      in_card = p.in_card;
+    }
+  CHECK(clickable);
+  CHECK(in_card);
+  // 破壞性的「還原」仍然是最後一個區塊(§4.9 / §2-C2)。
+  const RectI reset = FindOn(kPageAdvanced, st, IDC_RESET);
+  CHECK(!reset.empty());
+  CHECK(run.bottom() <= reset.y);
+}
+
 TEST(ui_layout_network_page_clear_button_is_last_and_behind_a_divider) {
   // §4.9 / §2-C2:破壞性動作是該頁最後一個區塊,與上面隔一條 hairline + s7。
   // 清除連網紀錄是破壞性的 —— 清掉之後,使用者用來稽核我們的那份證據
@@ -862,13 +1088,41 @@ TEST(ui_layout_network_page_clear_button_is_last_and_behind_a_divider) {
   CHECK(!clear.empty());
   CHECK(!path.empty());
   CHECK(!head.empty());
-  // 它是最後一顆。
-  CHECK_INT(clear.bottom(), max_bottom);
+  // ⚠ 它在**最後一個區塊**裡。
+  //   2026-08-15（A）：這一條以前寫的是「它是最後一顆控制項」
+  //   （clear.bottom() == max_bottom）。改成「標籤在左、按鈕在右」
+  //   之後，那張卡的左欄是標題 + 兩行說明（22 + 2 + 32 = 56），
+  //   比按鈕（32）高，而按鈕是**垂直置中**的——所以說明的下緣
+  //   （1020）比按鈕的下緣（1008）低 12 DIP。
+  //   ⚠ 那不是缺陷：§4.9 要的是「危險動作在最後一個區塊」，
+  //     不是「危險按鈕的下緣是全頁最低的一個像素」。所以判準改成
+  //     「它在最後一張卡裡，而且那張卡是全頁最後一張」——
+  //     這才是規範真正說的那件事。
+  CHECK(!pl.cards.empty());
+  {
+    const CardRect& last = pl.cards.back();
+    CHECK(clear.y >= last.rect.y);
+    CHECK(clear.bottom() <= last.rect.bottom());
+    for (const CardRect& c : pl.cards)
+      CHECK(c.rect.bottom() <= last.rect.bottom());
+    // 而且危險區塊的下面**沒有別的控制項**。
+    for (const PlacedControl& q : pl.items)
+      if (!q.rect.empty()) CHECK(q.rect.y <= last.rect.bottom());
+  }
+  for (const CardRect& c : pl.cards)
+    if (c.rect.bottom() > max_bottom) max_bottom = c.rect.bottom();
   // ⚠ 與上面隔著一條分隔線(s7 + hairline + s7 = 41 DIP),而且量的是
   //   **區段標題**——它才是分隔線正下方的第一個東西。拿按鈕去量的話,
   //   標題(21)加說明(36)本身就有 57 DIP,把 st.PushDivider() 刪掉
   //   斷言照樣成立。這是反向測試實際抓到的一條假綠。
-  CHECK_INT(head.y, path.bottom() + 2 * space::s7 + metric::kHairline);
+  // ⚠ 2026-08-14:紀錄檔路徑那一行在卡片裡,所以中間多了卡片的下內距。
+  // ⚠ 2026-08-15（A）：那個區段標題現在坐在卡片裡面，
+  //   所以它與分隔線之間又多了一個卡片的上內距 s4。
+  CHECK_INT(head.y, path.bottom() + space::s4 + 2 * space::s7 +
+                        metric::kHairline + space::s4);
+  // ⚠ 那條分隔線與上面那張卡之間**只有一份** s7(卡片不留尾巴,
+  //   PushDivider 自己留)。兩份的樣子是線離上面遠、離下面近,
+  //   看起來像它屬於下面那一段。
   CHECK(clear.y > head.y);
   // ⚠ 最後一顆的高度要真的進內容高度。舊版的「重設全部設定」就是
   //   沒有推進堆疊,於是捲到底仍然差 32 DIP 碰不到。
@@ -1203,4 +1457,572 @@ TEST(ui_layout_schema_note_box_follows_its_own_text) {
   //    會把字切掉的地方。不逐一指定哪一格,是因為那會隨文案改動而假紅。)
   CHECK(differs_somewhere);
   SetUiLang(UiLang::kZhHant);
+}
+
+// ────────────────────────────────────────────────────────────────
+// §12.14 帶來的新檢核項(W31' / 卡片 / 指示條 / 徽章)
+// ────────────────────────────────────────────────────────────────
+
+// ── W31':內容區每一個放文字的矩形,高度 ≥ 行盒 × 行數 ───────────
+//
+// ⚠ 反向:把 title_block 的頁標題改回 `text_size::t1 + space::s3`(28),
+//   這一條會紅 —— 而畫面上只是「每一個頁標題的下緣被削掉一條」,
+//   看起來像字型沒調好,不像 bug。§12.14.0 第 4 條就是這麼被漏掉的。
+TEST(every_text_rect_is_at_least_its_line_box_times_lines) {
+  int measured = 0;
+  for (UiLang lang : {UiLang::kEnUs, UiLang::kZhHant, UiLang::kZhHans}) {
+    SetUiLang(lang);
+    for (int w : {kWindowMinW, kWindowDefaultW, 1200}) {
+      for (int page = 0; page < kPageCount; ++page) {
+        for (int variant = 0; variant < 2; ++variant) {
+          PageState st;
+          st.schema_list_empty = variant == 1;
+          st.net_log_empty = variant == 1;
+          const PageLayout pl = LayoutSettingsPageDip(page, w, st);
+          for (const PlacedControl& p : pl.items) {
+            if (p.rect.empty() || p.text_size_dip <= 0) continue;
+            const int want = TextLineBoxDip(p.text_size_dip) * p.text_lines;
+            if (p.rect.h < want) {
+              char buf[256];
+              std::snprintf(buf, sizeof(buf),
+                            "id=%d what=%s h=%d < %d (t%d x %d lines)", p.id,
+                            p.what, p.rect.h, want, p.text_size_dip,
+                            p.text_lines);
+              ::rimewin_test::Fail(__FILE__, __LINE__, buf);
+            }
+            ++measured;
+          }
+        }
+      }
+    }
+  }
+  SetUiLang(UiLang::kZhHant);
+  // 範圍斷言(§2-G2):W31 要求量到的文字矩形數 ≥ 30。
+  CHECK(measured >= 30);
+}
+
+TEST(page_title_and_section_heading_use_the_full_line_box) {
+  // §12.14.0 第 4 條列的那兩處:t1 給 28(要 31)、t2 給 19(要 22)。
+  // 這一條把修正釘在具體的數字上,而不是只釘在 ≥ 的關係上。
+  CHECK_INT(TextLineBoxDip(text_size::t1), 31);
+  CHECK_INT(TextLineBoxDip(text_size::t2), 22);
+  const PageLayout pl =
+      LayoutSettingsPageDip(kPageSchemas, kWindowDefaultW, PageState{});
+  int title_h = 0, head_h = 0;
+  for (const PlacedControl& p : pl.items) {
+    if (p.id == IDC_SCHEMAS_TITLE) title_h = p.rect.h;
+    if (p.id == IDC_SCHEMAS_LIST_HEAD) head_h = p.rect.h;
+  }
+  CHECK_INT(title_h, 31);
+  CHECK_INT(head_h, 22);
+}
+
+// ── 卡片(§12.14.5)────────────────────────────────────────────────
+
+TEST(every_card_stays_inside_the_content_column) {
+  // ⚠ 第一版的卡片往**外**撐 s6,而那在最小視窗(660)下把卡片的左緣
+  //   推到 x = 194 —— 也就是側欄裡面。預設 780 寬時它看起來完全正確,
+  //   這正是「在我這台機器上很好」的形狀。
+  int seen = 0;
+  for (int w : {kWindowMinW, kWindowDefaultW, 1200}) {
+    const int cx = ContentXDip(w);
+    const int cw = ContentWidthDip(w);
+    for (int page = 0; page < kPageCount; ++page) {
+      const PageLayout pl = LayoutSettingsPageDip(page, w, PageState{});
+      for (const CardRect& c : pl.cards) {
+        CHECK_INT(c.rect.x, cx);
+        CHECK_INT(c.rect.w, cw);
+        CHECK(c.rect.x >= metric::kSidebarW);
+        CHECK(c.rect.h > 0);
+        ++seen;
+      }
+    }
+  }
+  CHECK(seen >= 15);
+}
+
+TEST(every_in_card_control_sits_inside_its_card_with_padding) {
+  // 卡片是「控制項矩形的聯集 + padding」。所以每一顆標了 in_card 的
+  // 控制項都要真的落在某一張卡片裡面,而且左右各留 s6、上下各留 s4。
+  int matched = 0;
+  for (int page = 0; page < kPageCount; ++page) {
+    for (int variant = 0; variant < 2; ++variant) {
+      PageState st;
+      st.schema_list_empty = variant == 1;
+      st.net_log_empty = variant == 1;
+      const PageLayout pl =
+          LayoutSettingsPageDip(page, kWindowDefaultW, st);
+      for (const PlacedControl& p : pl.items) {
+        if (!p.in_card || p.rect.empty()) continue;
+        bool inside = false;
+        for (const CardRect& c : pl.cards) {
+          if (p.rect.x >= c.rect.x + space::s6 &&
+              p.rect.right() <= c.rect.right() - space::s6 &&
+              p.rect.y >= c.rect.y + space::s4 &&
+              p.rect.bottom() <= c.rect.bottom() - space::s4) {
+            inside = true;
+            break;
+          }
+        }
+        if (!inside) {
+          char buf[200];
+          std::snprintf(buf, sizeof(buf),
+                        "in_card control id=%d (%s) is not inside any card",
+                        p.id, p.what);
+          ::rimewin_test::Fail(__FILE__, __LINE__, buf);
+        }
+        ++matched;
+      }
+    }
+  }
+  CHECK(matched >= 40);
+}
+
+TEST(card_inner_dividers_are_indented_and_inside_the_card) {
+  // §12.14.6.7:卡片內的分隔線**要縮排** s6 —— 不縮排的話它會碰到
+  // 卡片的圓角,看起來像裂縫。
+  int lines = 0;
+  const PageLayout pl =
+      LayoutSettingsPageDip(kPageAppearance, kWindowDefaultW, PageState{});
+  for (const CardRect& c : pl.cards) {
+    for (int y : c.divider_ys) {
+      CHECK(y > c.rect.y);
+      CHECK(y < c.rect.bottom());
+      ++lines;
+    }
+  }
+  CHECK(lines >= 3);  // 候選數那一張卡有五顆單選鈕 → 四條線
+  CHECK(space::s6 == 16);
+}
+
+TEST(radio_rows_and_switch_rows_are_36_tall) {
+  // §12.14.6.6 的表:整列高 36。現況單選是 kMinTarget(28)。
+  const PageLayout pl =
+      LayoutSettingsPageDip(kPageAppearance, kWindowDefaultW, PageState{});
+  int rows = 0;
+  for (const PlacedControl& p : pl.items) {
+    if (p.rect.empty()) continue;
+    const std::string what = p.what ? p.what : "";
+    if (what.find("radio") == std::string::npos &&
+        what.find("switch") == std::string::npos)
+      continue;
+    CHECK_INT(p.rect.h, metric::kRowH);
+    CHECK_INT(metric::kRowH, 36);
+    ++rows;
+  }
+  CHECK(rows >= 13);
+}
+
+// ── 側欄左緣指示條(§12.14.6.1)───────────────────────────────────
+
+TEST(sidebar_indicator_is_3x16_centred_on_the_item_fill) {
+  for (int i = 0; i < kPageCount; ++i) {
+    const RectI fill = SidebarItemFillDip(i);
+    const RectI ind = SidebarIndicatorDip(i);
+    CHECK_INT(ind.w, 3);
+    CHECK_INT(ind.h, 16);
+    CHECK_INT(ind.w, metric::kIndicatorW);
+    CHECK_INT(ind.h, metric::kIndicatorH);
+    // x = 項目的左緣,**不縮排**。
+    CHECK_INT(ind.x, fill.x);
+    // 垂直置中。
+    CHECK_INT(ind.y - fill.y, fill.bottom() - ind.bottom());
+    // ⚠ 一定落在那塊底裡面 —— 底、圓角、指示條共用同一個矩形。
+    CHECK(ind.y >= fill.y);
+    CHECK(ind.bottom() <= fill.bottom());
+  }
+}
+
+TEST(sidebar_item_fills_leave_a_visible_gap_but_the_hit_area_does_not) {
+  // §12.14.6.1:項與項之間 s2(4)。comctl32 的列是連著的,所以間隔只能
+  // 做在**畫出來的那塊底**上。
+  // ⚠ 而命中範圍必須仍然是整列 —— 舊版把間隔加進命中那一份算式,
+  //   累積到第 5 項差 16 DIP(#75)。
+  for (int i = 1; i < kPageCount; ++i) {
+    const RectI prev = SidebarItemFillDip(i - 1);
+    const RectI cur = SidebarItemFillDip(i);
+    CHECK_INT(cur.y - prev.bottom(), space::s2);
+  }
+  for (int i = 0; i < kPageCount; ++i) {
+    const RectI row = SidebarItemDip(i);
+    const RectI fill = SidebarItemFillDip(i);
+    // 底在列裡面,而且列與列之間**沒有**縫(命中是連續的)。
+    CHECK(fill.y >= row.y);
+    CHECK(fill.bottom() <= row.bottom());
+    CHECK_INT(row.h, metric::kRowH);
+    if (i > 0) CHECK_INT(SidebarItemDip(i - 1).bottom(), row.y);
+  }
+}
+
+TEST(sidebar_text_left_clears_the_indicator_with_room_to_spare) {
+  // §12.14.6.1:文字左緣 = 項目左緣 + s6(16),**選中與未選中一樣**。
+  // 16 剛好讓文字清開 3 DIP 的指示條還有 13 DIP 的餘裕。
+  CHECK_INT(space::s6, 16);
+  CHECK(space::s6 - metric::kIndicatorW >= 12);
+}
+
+// ── 「預設」徽章(§12.14.6.5)────────────────────────────────────
+
+TEST(badge_is_a_capsule_18_tall_centred_in_the_row) {
+  const BadgePlacement p = BadgePlacementDip(/*list_w=*/400, /*row_top=*/72,
+                                             /*row_h=*/metric::kRowH,
+                                             /*badge_text_w=*/24,
+                                             /*border=*/1, /*scrollbar_w=*/17,
+                                             /*has_vscroll=*/false);
+  CHECK_INT(p.badge.h, 18);
+  CHECK_INT(p.radius_dip, 9);            // 膠囊 = 高 ÷ 2
+  CHECK_INT(p.badge.w, 24 + 2 * space::s3);  // 左右內距 s3
+  // 列內置中:(36 − 18) / 2 = 9。
+  CHECK_INT(p.badge.y - 72, 9);
+}
+
+TEST(badge_right_edge_moves_left_when_the_scrollbar_appears) {
+  // ⚠ **這是 §12.14.0 第 3 條的修法。** 舊算式從列矩形往回推,而列矩形
+  //   會被撐到 client 寬 —— 捲軸出現之後徽章被排到可視區外面,被裁掉。
+  const BadgePlacement no_sb =
+      BadgePlacementDip(400, 0, metric::kRowH, 24, 1, 17, false);
+  const BadgePlacement with_sb =
+      BadgePlacementDip(400, 0, metric::kRowH, 24, 1, 17, true);
+  CHECK_INT(no_sb.badge.right(), 400 - 1 - 0 - space::s5);
+  CHECK_INT(with_sb.badge.right(), 400 - 1 - 17 - space::s5);
+  CHECK(with_sb.badge.right() < no_sb.badge.right());
+  // 兩種情況下徽章都在控制項的可視範圍內。
+  CHECK(no_sb.badge.right() <= 400);
+  CHECK(with_sb.badge.right() <= 400 - 17);
+}
+
+TEST(badge_left_and_name_ellipsis_come_from_the_same_expression) {
+  // 三件事同時被修好的第 3 件:名稱的截尾點與徽章的左緣由同一個算式
+  // 產生,所以長方案名不會壓到徽章上。
+  for (int text_w : {8, 24, 60, 200}) {
+    const BadgePlacement p =
+        BadgePlacementDip(400, 0, metric::kRowH, text_w, 1, 17, true);
+    CHECK_INT(p.name_right, p.badge.x - space::s3);
+    CHECK(p.name_right < p.badge.x);
+  }
+}
+
+// ── 按鈕高度:一個視窗上只准有一種(§12.14.6.2/.3)──────────────
+//
+// ⚠ **這一條是覆核抓到的迴歸的守門,不是裝飾。**
+//
+//   基底 1a711a2 寫的是 `btn_h = kMinTarget + s2 = 32; st.Push(btn_h, gap)`
+//   —— 直接推 32。54e4b4d 把它換成 `card_row(btn_h, gap)`,而 card_row
+//   帶 36 的下限(卡片裡「一列」的最小高)。於是每一顆按鈕都被墊成 36,
+//   而底部固定列的「關閉」仍然是 32:**同一個視窗上兩種按鈕高度**。
+//
+//   而 ui_layout.cc 那一輪自己加的註解描述的正是這個缺陷(「28 那一版比
+//   同一頁上其他按鈕矮 4 DIP,而那正是『看起來像對話框』的來源之一」)
+//   —— 缺陷原封不動地還在,只是從 28-vs-32 變成 32-vs-36。
+//
+// ⚠ **W3 抓不到這一件事。** 它驗的是 ui_layout.h 裡的字面值集合,而 32
+//   與 36 都在允許集合 {1,2,3,16,28,32,36,64,200} 裡面。每一個字面值都
+//   合法,組出來的畫面不合法 —— 這正是「值的白名單」擋不住的那一類。
+namespace {
+
+// 按鈕的 what 名字。⚠ 新增一顆按鈕要加進來 ——
+//   `no_button_escapes_the_height_check` 會在漏掉的時候紅。
+bool IsButtonWhat(const std::string& what) {
+  static const std::set<std::string> kButtons = {
+      "move_up",          "move_down",          "apply_order",
+      "update_check",     "update_action",      "update_page",
+      "clear_log_button", "redeploy_button",    "open_user_dir",
+      "open_settings_file", "diagnostics_copy", "diagnostics_report",
+      "reset_button",
+  };
+  return kButtons.count(what) == 1;
+}
+
+// 可點、而且**不放文字**(text_size_dip == 0 && text_lines == 0)的控制項
+// 只有兩類:按鈕,以及「框由控制項自己畫」的清單 / EDIT。
+// 第二類逐一列出 —— 兩份名單都對不上的那一顆,就是新加的按鈕沒有表態。
+bool IsNotAButton(const std::string& what) {
+  static const std::set<std::string> kNotButtons = {
+      "schema_list",
+      "net_log_list",
+      "diagnostics_edit",
+  };
+  return kNotButtons.count(what) == 1;
+}
+
+}  // namespace
+
+TEST(ui_layout_every_button_is_exactly_kButtonH_tall) {
+  int measured = 0;
+  for (int w : {660, 780, 1000, 1600}) {
+    for (int v = 0; v < kVariantCount; ++v) {
+      const PageLayout pl =
+          LayoutSettingsPageDip(kVariants[v].page, w, kVariants[v].state);
+      for (const PlacedControl& p : pl.items) {
+        if (p.rect.empty() || !IsButtonWhat(p.what)) continue;
+        // ⚠ 用 CHECK_INT,它印得出兩邊的值 —— 36 vs 32 這種差 4 的迴歸,
+        //   訊息裡沒有數字的話下一個人得重跑一次才知道差在哪。
+        CHECK_INT(p.rect.h, metric::kButtonH);
+        ++measured;
+      }
+    }
+  }
+  // 「範圍為空 = 全部合格」的解藥:下限也要驗。
+  CHECK(measured >= 30);
+}
+
+TEST(ui_layout_one_window_has_exactly_one_button_height) {
+  // 底部固定列的「關閉」**不在** LayoutSettingsPageDip 裡(它的位置是
+  // 唯一還由呼叫端算的東西),所以「按鈕多高」在樹上是兩份 ——
+  // 而兩份會漂開。這一條就是那兩份的對帳,而且它是使用者真的看得到的
+  // 那個判準:一個視窗上只有一種按鈕高度。
+  for (int w : {660, 780, 1000, 1600}) {
+    for (int v = 0; v < kVariantCount; ++v) {
+      std::set<int> heights;
+      const std::vector<HitTarget> targets =
+          ClickableTargetsDip(w, 560, kVariants[v].page, kVariants[v].state);
+      for (const HitTarget& t : targets) {
+        if (t.rect.empty()) continue;
+        if (std::string(t.what) == "close_button" || IsButtonWhat(t.what))
+          heights.insert(t.rect.h);
+      }
+      CHECK(!heights.empty());
+      CHECK_INT(static_cast<int>(heights.size()), 1);
+      CHECK_INT(*heights.begin(), metric::kButtonH);
+    }
+  }
+}
+
+TEST(no_button_escapes_the_height_check) {
+  // ⚠ 這一條看起來多餘,但它是上面兩條的「範圍為空」解藥:新增一顆按鈕
+  //   而忘了把名字加進 kButtons,上面兩條會安靜地少驗一顆 ——
+  //   而少驗的那一顆通常就是新加的那一顆。
+  int checked = 0;
+  for (int v = 0; v < kVariantCount; ++v) {
+    const PageLayout pl =
+        LayoutSettingsPageDip(kVariants[v].page, 780, kVariants[v].state);
+    for (const PlacedControl& p : pl.items) {
+      if (p.rect.empty() || !p.clickable) continue;
+      if (p.text_size_dip != 0 || p.text_lines != 0) continue;
+      const std::string what = p.what;
+      if (!IsButtonWhat(what) && !IsNotAButton(what)) {
+        // 用 CHECK_STR 讓名字進到訊息裡 —— 不然下一個人得自己去猜
+        // 是哪一顆沒有表態。
+        CHECK_STR(what, "(這一顆沒有表態:是按鈕就加進 kButtons,"
+                        "不是就加進 kNotButtons)");
+      }
+      ++checked;
+    }
+  }
+  CHECK(checked >= 12);
+}
+
+// ── A:按鈕依內容寬,卡片裡不准只有按鈕(§12.14.6.2/.3/.9)──────────
+//
+// ⚠ 這三條是這一輪覆核的直接判準。覆核者打開十張真的截圖之後說的是:
+//   「卡片又大又空」與「按鈕被拉成等寬長方形」。兩件事是同一個成因:
+//   **版面在用「填滿寬度」思考,而不是用「內容需要多寬」思考。**
+//   舊版一列 n 顆按鈕的寬是 `(inner_w - (n-1)*s3) / n` —— 視窗一拉寬,
+//   「上移」這兩個字底下的按鈕就跟著長。
+
+TEST(buttons_are_sized_to_their_label_never_to_the_column) {
+  SetUiLang(UiLang::kZhHant);
+  int measured = 0;
+  for (int v = 0; v < kVariantCount; ++v) {
+    for (int w : {660, 780, 1000, 1600}) {
+      const PageLayout pl =
+          LayoutSettingsPageDip(kVariants[v].page, w, kVariants[v].state);
+      for (const PlacedControl& p : pl.items) {
+        if (p.rect.empty() || !IsButtonWhat(p.what)) continue;
+        const UiString label = SettingsButtonLabel(p.id);
+        // ⚠ 每一顆按鈕都要在那張表上。不在表上的話 ButtonWidthDip
+        //   會拿到 kUiStringCount,而寬度會安靜地掉到下界 80。
+        CHECK(label != UiString::kUiStringCount);
+        CHECK_INT(p.rect.w, ButtonWidthDip(label));
+        CHECK(p.rect.w >= metric::kButtonMinW);
+        ++measured;
+      }
+    }
+  }
+  CHECK(measured >= 30);
+}
+
+TEST(widening_the_window_never_widens_a_button) {
+  // ⚠ **這一條就是那張截圖。** 三顆 165 DIP 的等寬按鈕橫跨整個內容欄,
+  //   讀起來是對話框的按鈕列。判準寫成「視窗變寬,按鈕一格都不准變」
+  //   —— 平均分配的算式在這一條底下不可能存活。
+  SetUiLang(UiLang::kZhHant);
+  int compared = 0;
+  for (int v = 0; v < kVariantCount; ++v) {
+    std::map<int, int> narrow;
+    const PageLayout a =
+        LayoutSettingsPageDip(kVariants[v].page, 660, kVariants[v].state);
+    for (const PlacedControl& p : a.items)
+      if (!p.rect.empty() && IsButtonWhat(p.what)) narrow[p.id] = p.rect.w;
+    for (int w : {780, 1000, 1600}) {
+      const PageLayout b =
+          LayoutSettingsPageDip(kVariants[v].page, w, kVariants[v].state);
+      for (const PlacedControl& p : b.items) {
+        if (p.rect.empty() || !IsButtonWhat(p.what)) continue;
+        auto it = narrow.find(p.id);
+        if (it == narrow.end()) continue;
+        CHECK_INT(p.rect.w, it->second);
+        ++compared;
+      }
+    }
+  }
+  // 9 個變體 × 3 個寬度,只有輸入方案/連網/進階三頁有按鈕 —— 45 次比對。
+  CHECK(compared >= 40);
+}
+
+TEST(no_card_holds_only_buttons) {
+  // ⚠ 覆核者的原話:「一張卡裡只有按鈕時,卡不該是整行寬的空盒」。
+  //   進階頁那張「重新整理字詞」是 540×52,而按鈕只佔左邊 180 ——
+  //   右邊 360 DIP 全是空白,而那是「看起來沒做完」最大的單一來源。
+  //
+  //   走的是(乙):卡片留著,**左邊放標籤、右邊放按鈕**(對照組的做法)。
+  //   所以判準是:每一張卡裡都必須有至少一顆帶字的控制項。
+  //   走(甲)(按鈕不套卡片)的話這一條也會綠 —— 它擋的是那個空盒,
+  //   不是某一種做法。
+  SetUiLang(UiLang::kZhHant);
+  int cards_seen = 0;
+  for (int v = 0; v < kVariantCount; ++v) {
+    for (int w : {660, 780, 1600}) {
+      const PageLayout pl =
+          LayoutSettingsPageDip(kVariants[v].page, w, kVariants[v].state);
+      for (const CardRect& c : pl.cards) {
+        bool has_text = false;
+        bool has_anything = false;
+        for (const PlacedControl& p : pl.items) {
+          if (!p.in_card || p.rect.empty()) continue;
+          if (p.rect.y < c.rect.y || p.rect.bottom() > c.rect.bottom())
+            continue;
+          has_anything = true;
+          // 帶字的:STATIC / 開關 / 單選鈕 / 清單 / 唯讀 EDIT。
+          // 按鈕的 text_size_dip 是 0(字由控制項自己畫)。
+          if (p.text_size_dip > 0 || IsNotAButton(p.what)) has_text = true;
+        }
+        CHECK(has_anything);
+        if (!has_text)
+          CHECK_STR("這張卡裡只有按鈕", "卡片要嘛帶標籤(§12.14.6.9),"
+                                        "要嘛那組按鈕不要套卡片");
+        ++cards_seen;
+      }
+    }
+  }
+  CHECK(cards_seen >= 30);
+}
+
+TEST(action_card_puts_the_label_left_and_the_buttons_right) {
+  // §12.14.6.9 的幾何:標籤欄靠左、按鈕靠右,右緣對齊**卡片內寬**的右緣
+  // (不是內容欄的右緣 —— 差 s6,而差那 16 DIP 的樣子是
+  //  「按鈕比卡片還往外凸一點」)。
+  SetUiLang(UiLang::kZhHant);
+  const PageLayout pl = LayoutSettingsPageDip(kPageAdvanced, 780, PageState{});
+  const int cx = ContentXDip(780);
+  const int cw = ContentWidthDip(780);
+  auto find = [&](int id) {
+    for (const PlacedControl& p : pl.items)
+      if (p.id == id) return p.rect;
+    return RectI{};
+  };
+  const RectI head = find(IDC_REDEPLOY_HEAD);
+  const RectI blurb = find(IDC_REDEPLOY_BLURB);
+  const RectI btn = find(IDC_REDEPLOY);
+  CHECK(!head.empty());
+  CHECK(!blurb.empty());
+  CHECK(!btn.empty());
+  // 標題與說明搬進卡片了 —— 它們的底要跟著換成 surface(in_card)。
+  for (const PlacedControl& p : pl.items)
+    if (p.id == IDC_REDEPLOY_HEAD || p.id == IDC_REDEPLOY_BLURB)
+      CHECK(p.in_card);
+  // 左欄靠左,右緣不碰到按鈕。
+  CHECK_INT(head.x, cx + space::s6);
+  CHECK_INT(blurb.x, head.x);
+  CHECK(head.right() + space::s6 <= btn.x);
+  // 按鈕靠右:右緣 = 卡片內寬的右緣。
+  CHECK_INT(btn.right(), cx + cw - space::s6);
+  // 兩顆的那一張也一樣,而且兩顆之間 s3。
+  const RectI b1 = find(IDC_OPEN_USER_DIR);
+  const RectI b2 = find(IDC_OPEN_SETTINGS_FILE);
+  CHECK(!b1.empty());
+  CHECK(!b2.empty());
+  CHECK_INT(b2.right(), cx + cw - space::s6);
+  CHECK_INT(b2.x - b1.right(), space::s3);
+}
+
+TEST(button_width_follows_the_label_and_has_a_floor) {
+  SetUiLang(UiLang::kZhHant);
+  // 短標籤吃下界。
+  CHECK_INT(ButtonWidthDip(UiString::kSchemasMoveUp), metric::kButtonMinW);
+  // 長標籤比短標籤寬 —— 而且是**因為字**,不是因為欄寬。
+  CHECK(ButtonWidthDip(UiString::kResetButton) >
+        ButtonWidthDip(UiString::kSchemasMoveUp));
+  // 全形字大約一個字級寬,拉丁字母 0.6 個 —— 同樣五個字,全形比較寬。
+  // ⚠ 用碼點寫,不寫字面:W7 規定 catalog 以外不得出現中日韓寬字串,
+  //   而那條規矩沒有「測試除外」—— 有了例外,下一個真的違規的就進得來。
+  CHECK(EstimateTextWidthDip(L"12345", text_size::t4) <
+        EstimateTextWidthDip(L"\u4E00\u4E8C\u4E09\u56DB\u4E94",
+                             text_size::t4));
+  // 字越多越寬 —— 一格都不准反過來。
+  int prev = -1;
+  std::wstring grow;
+  for (int i = 0; i < 40; ++i) {
+    const int w = EstimateTextWidthDip(grow.c_str(), text_size::t4);
+    CHECK(w >= prev);
+    prev = w;
+    grow += L'W';
+  }
+  // 邊界:空字串 / 空指標 / 不合法字級都不可以回負數。
+  CHECK_INT(EstimateTextWidthDip(nullptr, text_size::t4), 0);
+  CHECK_INT(EstimateTextWidthDip(L"", text_size::t4), 0);
+  CHECK_INT(EstimateTextWidthDip(L"abc", 0), 0);
+  CHECK_INT(EstimateTextWidthDip(L"abc", -5), 0);
+}
+
+// ── B:摺線 —— 沒有一顆控制項會被攔腰切開 ────────────────────────
+//
+// ⚠ 缺陷的原始現場:預設尺寸(client 763×560、摺線 506)下,文字頁的
+//   「全形/半形」區段標題在 y=497、高 22 —— 舊版把它裁成 9 DIP,
+//   也就是從字的中間橫著切過去。使用者回報的是「摺線那裡看起來像壞掉」。
+
+TEST(no_control_is_ever_cut_through_its_middle) {
+  SetUiLang(UiLang::kZhHant);
+  int cut = 0, whole = 0;
+  for (int v = 0; v < kVariantCount; ++v) {
+    for (int wh : {460, 560, 700}) {
+      const PageLayout pl =
+          LayoutSettingsPageDip(kVariants[v].page, 780, kVariants[v].state);
+      const int smax =
+          ScrollMaxDip(kVariants[v].page, 780, wh, kVariants[v].state);
+      for (int scroll = 0; scroll <= smax; scroll += 13) {
+        const int line = ContentClipLineDip(wh, scroll, smax);
+        for (const PlacedControl& p : pl.items) {
+          if (p.rect.empty()) continue;
+          const ScrolledPlacement sp =
+              ScrollPlaceControlDip(p.rect, scroll, line);
+          // 只有兩種答案:整顆畫,或者一個像素都不畫。
+          CHECK(sp.clip_h_dip == -1 || sp.clip_h_dip == 0);
+          CHECK(sp.visible);
+          if (sp.clip_h_dip == 0) ++cut; else ++whole;
+        }
+      }
+    }
+  }
+  // 掃描範圍非空的兩面:真的有畫的,也真的有不畫的。
+  CHECK(cut > 0);
+  CHECK(whole > 0);
+}
+
+TEST(the_fade_strip_exists_only_when_there_is_more_below) {
+  const int H = kWindowDefaultH;
+  const int vp = ContentViewportHeightDip(H);
+  // 內容放得下 → 沒有淡出區。
+  CHECK_INT(ContentClipLineDip(H, 0, 0), vp);
+  // 還有更多 → 讓出 kScrollFadeH。
+  CHECK_INT(ContentClipLineDip(H, 0, 300), vp - kScrollFadeH);
+  CHECK_INT(ContentClipLineDip(H, 299, 300), vp - kScrollFadeH);
+  // 已經捲到底 → 沒有淡出區(下面沒有東西了,淡出等於騙人)。
+  CHECK_INT(ContentClipLineDip(H, 300, 300), vp);
+  // 呼叫端把 scroll 帶過頭(換頁/換 DPI 的那一格)也不可以讓它閃一下。
+  CHECK_INT(ContentClipLineDip(H, 999, 300), vp);
+  // 視窗矮到淡出區比可視高度還高:回 0,不回負數 ——
+  // 負數會讓每一顆控制項都被判成跨線,整頁空白。
+  CHECK(ContentClipLineDip(kBottomStripH + 4, 0, 300) >= 0);
+  CHECK(ContentClipLineDip(10, 0, 300) >= 0);
 }

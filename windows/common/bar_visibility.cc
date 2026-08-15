@@ -28,14 +28,13 @@ BarAction BarVisibility::Feed(const BarVisibilityInputs& in) {
     return BarAction::kHide;
   }
 
-  // 2. 有沒有人在用 + 3. 有沒有焦點(不可知一律視為「有」)。
+  // 2. 使用者此刻在不在用我們。
   //
-  // ⚠ focus_known 為假時**不看** any_focused。焦點訊號在使用者打第一個
-  //   字之前根本不送(ipc_client.cc 的 MayEatKey 閘),所以「還沒收到過」
-  //   是開機後的常態。在那裡藏起來,那一橫就永遠等不到第一個字。
-  const bool in_use = in.active_clients > 0;
-  const bool focused = !in.focus_known || in.any_focused;
-  const bool wanted = in_use && focused;
+  // ⚠ 這裡以前還有第三個輸入(焦點,不可知時 fail-visible)。它退場了:
+  //   「在不在用」現在**已經包含**焦點 —— DecideBarOwner() 問的就是
+  //   「焦點那條執行緒上啟用中的是不是我們」。留著 fail-visible 等於
+  //   在同一件事上開兩個入口,而其中一個的意思是「不知道就顯示」。
+  const bool wanted = in.in_use;
 
   if (wanted) {
     // 立刻顯示,而且取消待隱藏 —— 是**取消**,不是延後。

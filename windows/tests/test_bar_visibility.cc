@@ -17,13 +17,15 @@ using namespace rimewin;
 
 namespace {
 
-// 「有人在用、有焦點、開關開著」的那一組輸入。
+// 「使用者此刻正在用我們、開關開著」的那一組輸入。
+//
+// ⚠ in_use 是 common/bar_owner.h 收斂過的**一個布林**,不是「有幾條連線」。
+//   收斂本身(13 個宿主怎麼變成一個答案)由 tests/test_bar_owner.cc 驗,
+//   這一支只驗遲滯。
 BarVisibilityInputs Using(uint64_t now_ms) {
   BarVisibilityInputs in;
   in.user_enabled = true;
-  in.active_clients = 1;
-  in.focus_known = true;
-  in.any_focused = true;
+  in.in_use = true;
   in.now_ms = now_ms;
   return in;
 }
@@ -34,18 +36,14 @@ BarVisibilityInputs Using(uint64_t now_ms) {
 TEST(bar_visibility_user_switch_wins_over_everything) {
   BarVisibility v;
   int seen = 0;
-  for (int clients = 0; clients < 3; ++clients) {
-    for (int known = 0; known < 2; ++known) {
-      for (int focused = 0; focused < 2; ++focused) {
-        BarVisibilityInputs in;
-        in.user_enabled = false;
-        in.active_clients = clients;
-        in.focus_known = known != 0;
-        in.any_focused = focused != 0;
-        in.now_ms = static_cast<uint64_t>(seen) * 1000u;
-        CHECK(v.Feed(in) == BarAction::kHide);
-        ++seen;
-      }
+  for (int in_use = 0; in_use < 2; ++in_use) {
+    for (int t = 0; t < 6; ++t) {
+      BarVisibilityInputs in;
+      in.user_enabled = false;
+      in.in_use = in_use != 0;
+      in.now_ms = static_cast<uint64_t>(seen) * 1000u;
+      CHECK(v.Feed(in) == BarAction::kHide);
+      ++seen;
     }
   }
   CHECK_INT(seen, 12);  // 掃描範圍非空(§2-G2)
@@ -55,22 +53,38 @@ TEST(bar_visibility_user_switch_wins_over_everything) {
   CHECK(v.Feed(Using(99999)) == BarAction::kShow);
 }
 
-// ── V2:拿不到焦點資訊時一律視為「有」(fail-visible)────────────
-TEST(bar_visibility_unknown_focus_is_visible) {
+// ── V2:fail-visible 已經退場 —— 「沒在用」就是藏,沒有第三種 ────────
+//
+// ⚠ 這一支以前斷言的是相反的事:焦點不可知時一律顯示。當時白紙黑字的
+//   理由是「焦點訊號在使用者打第一個字之前根本不送(ipc_client.cc 的
+//   MayEatKey 閘)」,所以「不知道」是開機後的常態。
+//
+//   那個前提在這一輪消失了:在場連線在 ActivateEx 當下就建立並握手
+//   (tsf/text_service.cc 的 PresenceLink),所以「使用者此刻在不在用
+//   我們」在第一顆按鍵之前就答得出來。前提沒了,fail-visible 就從
+//   保護變成漏洞 —— 它的意思是「不知道的時候顯示」,而使用者回報的
+//   S4(切到微軟拼音之後那一橫還自己冒出來)正是「不知道」。
+//
+// ⚠ 「這一刻的前景答不了這個問題」不走這裡(OS 答不出前景,或前景是
+//   **服務自己的設定視窗**):那由呼叫端**維持現狀**處理
+//   (common/bar_owner.h 的 undecidable),不是在判準裡多開一個分支。
+TEST(bar_visibility_not_in_use_hides_there_is_no_third_answer) {
   BarVisibility v;
-  BarVisibilityInputs in;
-  in.user_enabled = true;
-  in.active_clients = 1;
-  in.focus_known = false;
-  in.any_focused = false;  // ⚠ focus_known 為假時**不看**這一格
-  in.now_ms = 0;
-  CHECK(v.Feed(in) == BarAction::kShow);
+  CHECK(v.Feed(Using(0)) == BarAction::kShow);
 
-  // ipc_client.cc 的 `if (!MayEatKey()) return;` —— 焦點訊號在使用者打
-  // 第一個字之前根本不送。所以「還沒收到過焦點訊息」是**開機後的常態**,
-  // 不是異常。這時候藏起來,那一橫就永遠等不到第一個字。
-  in.now_ms = 60000;
-  CHECK(v.Feed(in) == BarAction::kShow);
+  BarVisibilityInputs gone = Using(0);
+  gone.in_use = false;
+  CHECK(v.Feed(gone) == BarAction::kPending);
+  gone.now_ms = 3000;
+  CHECK(v.Feed(gone) == BarAction::kHide);
+
+  // 從頭開始也一樣:沒在用就是藏,不會因為「還不知道」而先顯示。
+  BarVisibility fresh;
+  BarVisibilityInputs idle;
+  idle.user_enabled = true;
+  idle.in_use = false;
+  idle.now_ms = 60000;
+  CHECK(fresh.Feed(idle) == BarAction::kHide);
 }
 
 // ── V3 / V4:遲滯的邊界 ───────────────────────────────────────────
@@ -81,7 +95,7 @@ TEST(bar_visibility_hide_waits_for_the_full_delay) {
   CHECK(v.Feed(Using(0)) == BarAction::kShow);
 
   BarVisibilityInputs gone = Using(0);
-  gone.active_clients = 0;
+  gone.in_use = false;
   CHECK(v.Feed(gone) == BarAction::kPending);
 
   // V3:還沒到期 —— 一毫秒都算數。
@@ -103,7 +117,7 @@ TEST(bar_visibility_pending_is_cancelled_when_it_comes_back) {
   CHECK(v.Feed(Using(0)) == BarAction::kShow);
 
   BarVisibilityInputs gone = Using(0);
-  gone.active_clients = 0;
+  gone.in_use = false;
   CHECK(v.Feed(gone) == BarAction::kPending);
 
   // 1500 毫秒時又有人連上來。
@@ -115,7 +129,7 @@ TEST(bar_visibility_pending_is_cancelled_when_it_comes_back) {
 
   // 而且下一次真的離開時,三秒要重新從頭算。
   BarVisibilityInputs gone2 = Using(4000);
-  gone2.active_clients = 0;
+  gone2.in_use = false;
   CHECK(v.Feed(gone2) == BarAction::kPending);
   gone2.now_ms = 6999;
   CHECK(v.Feed(gone2) == BarAction::kPending);
@@ -124,41 +138,37 @@ TEST(bar_visibility_pending_is_cancelled_when_it_comes_back) {
 }
 
 // ── V6:Alt+Tab 到另一個也用 LuminaKey 的程式,一次都不可以閃 ───────
+//
+// ⚠ 「兩個宿主都在用我們的時候 in_use 仍然是真」那一半現在由
+//   common/bar_owner.h 負責(tests/test_bar_owner.cc 的 O5)。這裡驗的是
+//   剩下那一半:in_use 沒變的時候,這支狀態機一次 kPending 都不可以吐。
 TEST(bar_visibility_switching_between_our_own_hosts_never_flickers) {
   BarVisibility v;
-  // 兩個宿主都握著連線。
-  BarVisibilityInputs two = Using(0);
-  two.active_clients = 2;
-  CHECK(v.Feed(two) == BarAction::kShow);
+  CHECK(v.Feed(Using(0)) == BarAction::kShow);
 
-  // Alt+Tab:其中一個關掉了,還有一個在。
   int seen = 0;
   for (uint64_t t = 100; t <= 10000; t += 100) {
-    BarVisibilityInputs one = Using(t);
-    one.active_clients = 1;
-    // ⚠ 一次 kPending 都不可以出現。判準是「這台機器上還有沒有人在用
-    //   LuminaKey」,不是「哪一個輸入框」—— 同一支程式裡跳輸入框、
-    //   在都用 LuminaKey 的程式之間 Alt+Tab,都不該讓它動。
-    CHECK(v.Feed(one) == BarAction::kShow);
+    CHECK(v.Feed(Using(t)) == BarAction::kShow);
     ++seen;
   }
   CHECK_INT(seen, 100);
 }
 
-// ── V7:焦點是加強條件 —— 知道而且沒有焦點時才會走遲滯 ────────────
-TEST(bar_visibility_known_unfocused_hides_after_the_delay) {
+// ── V7:切到別的輸入法 → 遲滯到期後隱藏(#82 那一條不得倒退)────────
+TEST(bar_visibility_switching_to_another_ime_hides_after_the_delay) {
   BarVisibility v;
   CHECK(v.Feed(Using(0)) == BarAction::kShow);
 
-  BarVisibilityInputs blurred = Using(0);
-  blurred.focus_known = true;
-  blurred.any_focused = false;  // 連線還在,但焦點跑到別的輸入法去了
-  CHECK(v.Feed(blurred) == BarAction::kPending);
+  // 使用者按 Win+空白鍵切到微軟拼音。背景那 12 個宿主的連線一條都沒斷,
+  // 但 DecideBarOwner() 說前景那條執行緒上啟用中的不是我們。
+  BarVisibilityInputs elsewhere = Using(0);
+  elsewhere.in_use = false;
+  CHECK(v.Feed(elsewhere) == BarAction::kPending);
 
-  blurred.now_ms = 3500;
-  CHECK(v.Feed(blurred) == BarAction::kHide);
+  elsewhere.now_ms = 3500;
+  CHECK(v.Feed(elsewhere) == BarAction::kHide);
 
-  // 焦點回來 → 立刻(不是三秒後)。
+  // 切回來 → 立刻(不是三秒後)。
   CHECK(v.Feed(Using(3600)) == BarAction::kShow);
 }
 
@@ -167,7 +177,7 @@ TEST(bar_visibility_reset_clears_everything) {
   BarVisibility v;
   CHECK(v.Feed(Using(0)) == BarAction::kShow);
   BarVisibilityInputs gone = Using(0);
-  gone.active_clients = 0;
+  gone.in_use = false;
   CHECK(v.Feed(gone) == BarAction::kPending);
 
   v.Reset();
@@ -185,9 +195,7 @@ TEST(bar_visibility_starts_hidden_without_a_pending_flash) {
   BarVisibility v;
   BarVisibilityInputs nobody;
   nobody.user_enabled = true;
-  nobody.active_clients = 0;
-  nobody.focus_known = false;
-  nobody.any_focused = false;
+  nobody.in_use = false;
   nobody.now_ms = 0;
   // ⚠ 不是 kPending。服務啟動時本來就沒有人在用,那一橫不該先出現
   //   三秒再消失 —— 那是一次沒有任何人要求過的閃爍。
@@ -204,7 +212,7 @@ TEST(bar_visibility_survives_a_backwards_clock) {
   BarVisibility v;
   CHECK(v.Feed(Using(10000)) == BarAction::kShow);
   BarVisibilityInputs gone = Using(10000);
-  gone.active_clients = 0;
+  gone.in_use = false;
   CHECK(v.Feed(gone) == BarAction::kPending);
   // ⚠ 呼叫端餵的是**單調**時鐘,但這一支不該因為一個倒退的時間戳就
   //   永遠卡在 pending(那樣那一橫會再也藏不起來,而且沒有人查得出來)。

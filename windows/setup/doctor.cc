@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "../common/first_run_timing.h"
 #include "../tsf/guids.h"
 #include "../tsf/ipc_client.h"
 #include "../tsf/registration.h"
@@ -452,8 +453,11 @@ void SectionPipe(Report& r) {
     case ReadyStage::kPipe:
       if (d.os_error == ERROR_FILE_NOT_FOUND) {
         r.Fail("管道不存在(錯誤 2)",
-               "服務沒有在監聽。若第 4 節說服務在跑,那它多半還在編譯詞庫\n"
-               "         (首次安裝要一到數分鐘),過幾分鐘再跑一次這支診斷。");
+               Fmt("服務沒有在監聽。若第 4 節說服務在跑,那它多半還在整理"
+                   "字詞\n"
+                   "         (剛安裝完通常是 %d~%d 秒),等一下再跑一次"
+                   "這支診斷。",
+                   kFirstDeployTypicalLowSec, kFirstDeployTypicalHighSec));
       } else if (d.os_error == ERROR_ACCESS_DENIED) {
         r.Fail("管道在,但這個身分開不了(錯誤 5)",
                "兩種成因,第 4 節的提權判定可以分辨:\n"
@@ -486,12 +490,15 @@ void SectionPipe(Report& r) {
       //   立刻跑這支診斷,就會停在這一格。
       //   把它寫成「幾乎一定是第一次載入詞典」會讓人去重裝,而重裝沒有用。
       r.Fail("連上也握手了,但建不出 session",
-             "服務接得到連線,只是還沒空回答。兩種常見成因:\n"
-             "         (a) 剛安裝完,第一次載入方案詞典(要一到數分鐘);\n"
-             "         (b) 你剛在很多程式裡連續打過字 —— 引擎是單一執行緒,\n"
-             "             上屏造成的詞典寫入還在排隊。\n"
-             "         兩種都是暫時的:等一兩分鐘再跑一次這支診斷。\n"
-             "         一直如此才是真的壞了,那時看第 7 節的引擎層。");
+             Fmt("服務接得到連線,只是還沒空回答。兩種常見成因:\n"
+                 "         (a) 剛安裝完,第一次載入方案詞典"
+                 "(通常 %d~%d 秒);\n"
+                 "         (b) 你剛在很多程式裡連續打過字 —— 引擎是單一"
+                 "執行緒,\n"
+                 "             上屏造成的詞典寫入還在排隊。\n"
+                 "         兩種都是暫時的:等一下再跑一次這支診斷。\n"
+                 "         一直如此才是真的壞了,那時看第 7 節的引擎層。",
+                 kFirstDeployTypicalLowSec, kFirstDeployTypicalHighSec));
       break;
     case ReadyStage::kNone:
       r.Fail("連線沒有成功,但沒有記到失敗階段", "請把這份報告整份回報。");
@@ -656,7 +663,8 @@ void SectionEngine(Report& r, const std::wstring& dir, bool service_running) {
   // ⚠ 逾時不是 FAIL。首次安裝時 librime 要編譯詞庫,那是**好幾分鐘**的事,
   //   而在那之前引擎本來就給不出候選。把它報成 FAIL 會讓一台其實正常的
   //   機器看起來壞掉,而使用者接下來會做的事(重裝)只會讓計時器重來。
-  const DWORD wait = ::WaitForSingleObject(pi.hProcess, 180000);
+  const DWORD wait = ::WaitForSingleObject(
+      pi.hProcess, static_cast<DWORD>(kDeployWaitBudgetSec) * 1000);
   DWORD rc = 1;
   if (wait == WAIT_TIMEOUT) {
     ::TerminateProcess(pi.hProcess, 1);
@@ -693,9 +701,17 @@ void SectionEngine(Report& r, const std::wstring& dir, bool service_running) {
              "librime 起不來。多半是 data\\shared 缺東西或路徑不對。\n"
              "         重新安裝一次;仍然如此的話請把這份報告整份回報。");
     } else {
-      r.Warn("引擎層起得來,但這一次沒有打完(180 秒)");
+      r.Warn(Fmt("引擎層起得來,但這一次沒有打完(%d 秒)",
+                 kDeployWaitBudgetSec));
       r.Note("rs_init 過了,所以 librime 與資料是好的 —— 它在等部署回報。");
-      r.Note("首次安裝時編譯詞庫要一到數分鐘;過幾分鐘再跑一次。");
+      // ⚠ 這一格**可以**講分鐘級,而且應該:走到這裡代表已經等了整個
+      //   預算還沒完,那就不是「剛裝完的那十幾秒」那一種了 ——
+      //   多半是使用者自己灌了一份很大的詞典。兩件事的數字不一樣,
+      //   而它們的來源都在 common/first_run_timing.h。
+      r.Note(Fmt("剛安裝完通常只要 %d~%d 秒。等了 %d 秒還沒完,多半是你自己"
+                 "加了很大的詞典;過幾分鐘再跑一次。",
+                 kFirstDeployTypicalLowSec, kFirstDeployTypicalHighSec,
+                 kDeployWaitBudgetSec));
     }
     return;
   }
@@ -733,11 +749,15 @@ void SectionEngine(Report& r, const std::wstring& dir, bool service_running) {
     //   而不是自己開一條新的線索。
     r.Fail(Fmt("引擎層起得來,但打不出「你好」(結束碼 %lu)",
                static_cast<unsigned long>(rc)),
-           "第 4 節說服務**從來沒有跑起來過** —— 方案的編譯產物是服務\n"
-           "         第一次啟動時才生出來的,所以這一格是第 4 節的**下游**,\n"
-           "         不是另一個問題。\n"
-           "         先照第 4 節把服務跑起來(它會編譯詞庫,要一到數分鐘),\n"
-           "         再回來跑一次這支診斷。不要先去查方案或詞庫。");
+           std::string(
+               "第 4 節說服務**從來沒有跑起來過** —— 方案的編譯產物是服務\n"
+               "         第一次啟動時才生出來的,所以這一格是第 4 節的"
+               "**下游**,\n"
+               "         不是另一個問題。\n") +
+               Fmt("         先照第 4 節把服務跑起來(它會整理字詞,通常 "
+                   "%d~%d 秒),\n"
+                   "         再回來跑一次這支診斷。不要先去查方案或詞庫。",
+                   kFirstDeployTypicalLowSec, kFirstDeployTypicalHighSec));
   } else if (inited) {
     // 服務**在跑**而引擎層仍然打不出字 —— 這時才真的輪到方案 / 詞庫那一層。
     r.Fail(Fmt("引擎層起得來,但打不出「你好」(結束碼 %lu)",
@@ -885,8 +905,31 @@ int RunDoctor(const DoctorOptions& opt) {
 
   Report r;
   r.Line("════════════════════════════════════════════════════════════");
-  r.Line("  RIME 輸入法 自我診斷");
+  // ── ⚠ W5:抬頭寫的必須是**他點的那個捷徑上的名字** ────────────
+  //
+  //   這裡本來寫「RIME 輸入法」,而使用者點的捷徑叫「LuminaKey 診斷:
+  //   輸入法為什麼不能用」。一個已經在懷疑自己裝錯東西的人,打開報告
+  //   看到另一個產品名 —— 那一秒他會以為自己開錯程式了。
+  //
+  //   ⚠ 名字取自 tsf/guids.h 的 RIME_TEXT_SERVICE_DESC,**不另外寫一份
+  //     字面值**:那一行由 windows/verify_product_names.sh 的「COM 類別
+  //     描述」逐字盯著 product.env,所以下一次改名時這裡會跟著動。
+  r.Line("  " + W(RIME_TEXT_SERVICE_DESC) + " 自我診斷");
   r.Line("════════════════════════════════════════════════════════════");
+  // ── ⚠ W5 的另一半:先說「這一份是給誰看的」 ───────────────────
+  //
+  //   底下的段落標題是「具名管道(瘦 DLL 與服務之間那條線)」、
+  //   「哪些程式載入了 rime_tsf.dll」、「引擎層(不經 TSF、不經管道)」
+  //   —— 這是全產品術語最集中的一頁,而它正是出事的人被引導去的那一頁。
+  //
+  //   ⚠ **不要把內容簡化掉。** 這份報告的讀者本來就是我們,那個設計是
+  //     對的:一份看得懂但說不清楚的報告,換來的是再問三輪。
+  //     要做的是**把「這份是給我們看的」講在最前面**,像設定視窗裡
+  //     kDiagnosticsNote 那一句、也像安卓端那一句一樣。
+  r.Blank();
+  r.Line("這一份是寫給我們看的,不是寫給你的。");
+  r.Line("裡面的名詞你一個都不必看懂 —— 整份貼給我們就夠了,結論在最後面。");
+  r.Line("(裡面沒有你打過的字、沒有候選字、沒有視窗標題。)");
   {
     SYSTEMTIME st;
     ::GetLocalTime(&st);
