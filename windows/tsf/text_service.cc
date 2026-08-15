@@ -316,6 +316,20 @@ class PresenceLink {
     Release();
   }
 
+  // ⭐ 「這條執行緒上啟用中的**不再是我們**」——在關掉這條連線之前,
+  //    先把這句話說出去(#111)。
+  //
+  // ⚠ 它**不 Release()**:參考計數仍然由緊接著的 ClosePresence() → Stop()
+  //   負責。這裡設 stop_ 只是為了讓背景執行緒立刻從 WaitUntilBroken 那個
+  //   INFINITE 的讀裡醒過來 —— 不必為這件事多一個事件、多一條要對齊的
+  //   時序。真正的送出在**擁有那個 pipe handle 的那條執行緒**上(Run)。
+  //
+  // ⚠ 也在宿主的 UI 執行緒上被呼叫,所以一個位元組都不在這裡寫。
+  void NoteYield() {
+    ::InterlockedExchange(&yielded_, 1);
+    ::SetEvent(stop_);
+  }
+
  private:
   // 這一圈沒有成果時的兩段式退避。
   //
@@ -426,7 +440,17 @@ class PresenceLink {
         if (!Backoff(&misses)) break;
         continue;
       }
-      WaitUntilBroken(pipe, io);
+      const bool stopped = WaitUntilBroken(pipe, io);
+      // ⭐ 被 NoteYield 叫醒的話,**先把那句話說出去再走**。
+      //
+      // ⚠ 順序不可以反:送出必須在關 handle 之前,而且必須在擁有這個
+      //   handle 的這條執行緒上。宿主的 UI 執行緒不碰管道 —— 每一次
+      //   Win+空白鍵切輸入法都在那裡等一次 I/O 是不能接受的。
+      // ⚠ 送不出去(管道剛好斷了、宿主同一瞬間被砍掉)的後果是:服務端
+      //   只看到連線消失 → kHold → 維持現狀。那是「那一橫留著」,
+      //   不是退回 #111。
+      if (stopped && ::InterlockedCompareExchange(&yielded_, 0, 0) != 0)
+        SendYield(pipe);
       // ⚠ 這一行就是 #82 的「切走之後那一橫必須消失」:關掉 →
       //   服務端那條 ServeClient 讀到 0 位元組 → ClientTicket 解構
       //   → OnClientDetached → 那筆註冊消失。
@@ -498,6 +522,41 @@ class PresenceLink {
     return true;
   }
 
+  // ⭐ 「這條執行緒上啟用中的不再是我們」——單向,不等回覆。
+  //
+  // ⚠ **不可以重用 WriteAll。** 它的 WaitForMultipleObjects 帶著 stop_,
+  //   而這一刻 stop_ 已經被 NoteYield 設起來了 —— WriteAll 會立刻
+  //   CancelIoEx 然後回 false,那句話一個位元組都送不出去。所以這裡用
+  //   一個**自己新建的事件**,而且不等 stop_。
+  // ⚠ 上限 300 毫秒。這條是背景執行緒,但它拖著的是 g_rime_dll_refs ——
+  //   讓它無限等於讓 DLL 卸載不掉。
+  // ⚠ ov 在堆疊上:取消之後**一定**要 GetOverlappedResult(..., TRUE),
+  //   提早返回等於讓核心寫一塊已經不存在的記憶體。
+  // ⚠ proto_ < 4 就不送:PresenceLink 握手被拒時會自己降版(見 Run),
+  //   而 v3 以下的服務收到不認得的 op 會回錯並關掉連線。降版過的宿主
+  //   行為退回「連線消失 → 服務端維持現狀」—— 留著,不是亂收。
+  void SendYield(HANDLE pipe) {
+    if (proto_ < 4) return;
+    HANDLE ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!ev) return;
+    const std::string data = Frame(EncodeSimple(2, Op::kProfileState, 0));
+    OVERLAPPED ov;
+    ::ZeroMemory(&ov, sizeof(ov));
+    ov.hEvent = ev;
+    DWORD wrote = 0;
+    if (!::WriteFile(pipe, data.data(), static_cast<DWORD>(data.size()),
+                     &wrote, &ov)) {
+      if (::GetLastError() == ERROR_IO_PENDING) {
+        if (::WaitForSingleObject(ev, kYieldWriteMs) != WAIT_OBJECT_0)
+          ::CancelIoEx(pipe, &ov);
+        ::GetOverlappedResult(pipe, &ov, &wrote, TRUE);
+      }
+    }
+    ::CloseHandle(ev);
+    Trace("在場連線:已告知服務『這條執行緒上啟用中的不再是我們』(送出 %lu 位元組)",
+          static_cast<unsigned long>(wrote));
+  }
+
   // ── 這條連線是誰 ────────────────────────────────────────────
   //
   // 服務端要的只有兩格:host_pid 與**啟用我們的那一條執行緒**的 tid。
@@ -562,24 +621,37 @@ class PresenceLink {
   //   握完手之後一則請求都不送。所以這個讀完成 0 位元組 = 連線沒了。
   //   ⚠ 但仍然要用迴圈:萬一將來服務端多送了什麼,一次讀就返回會被
   //     誤判成斷線,然後這條執行緒開始重連迴圈。
-  void WaitUntilBroken(HANDLE pipe, HANDLE io) {
+  //
+  // ⚠ 回傳值:true = 被 stop_ 叫醒(我們要主動收尾,管道還在);
+  //           false = 管道斷了(對面已經沒了,一個位元組都寫不出去)。
+  //   這兩件事必須分得出來 —— #111 的那句讓位只有在前者才送得出去。
+  bool WaitUntilBroken(HANDLE pipe, HANDLE io) {
     if (!io) {
       // 事件建不出來的退路:那就只等停止訊號。連線斷掉會慢一點被發現,
       // 但**絕不可以**在這裡忙等 —— 那是一條 100% CPU 的迴圈。
       ::WaitForSingleObject(stop_, INFINITE);
-      return;
+      return true;
     }
     char scratch[256];
     while (::WaitForSingleObject(stop_, 0) != WAIT_OBJECT_0) {
       if (ReadOnce(pipe, io, scratch, sizeof(scratch), INFINITE, nullptr) == 0)
-        return;
+        // ⚠ 讀到 0 有兩種:對面關了,或 ReadOnce 是被 stop_ 打斷的。
+        //   再問一次 stop_ 才分得出來。
+        return ::WaitForSingleObject(stop_, 0) == WAIT_OBJECT_0;
     }
+    return true;
   }
 
   static const DWORD kIoTimeoutMs = 3000;
+  // 送那句讓位的上限。⚠ 比 kIoTimeoutMs 短:這一刻使用者已經按下
+  //   Win+空白鍵了,而這條執行緒拖著 g_rime_dll_refs。
+  static const DWORD kYieldWriteMs = 300;
 
   HANDLE stop_ = nullptr;
   LONG refs_ = 0;
+  // ⭐ 「走之前要先說一句話」。由宿主的 UI 執行緒寫(NoteYield)、
+  //    背景執行緒讀(Run),所以走 Interlocked。
+  LONG yielded_ = 0;
   uint32_t host_tid_ = 0;
   // 這條連線宣告的線路版本。握手被拒就降一版重試(見 Run)。
   uint32_t proto_ = kProtocolVersion;
@@ -1800,6 +1872,13 @@ STDMETHODIMP TextService::OnActivated(DWORD /*profile_type*/, LANGID langid,
     Trace("profile sink:停用(我們的=%d 帶ACTIVE=%d)—— 收在場連線與 session",
           ours ? 1 : 0, active ? 1 : 0);
     ipc_.Close();
+    // ⭐ **整個 #111 的修法只靠這一行。** 它必須在 ClosePresence() 之前:
+    //   收連線與「說出那句話」是兩件事,而後者要趁那條管道還在。
+    //
+    //   少了它,服務端就再也收不到任何「別人的」正面證據 —— 判準只剩
+    //   kOurs 與 kHold,那一橫變成真正的常駐(#82 復活)。
+    //   audit_single_source.sh 有一條守門盯著這一行的存在與位置。
+    NotePresenceYielded();
     ClosePresence();
     return S_OK;
   }
@@ -1829,6 +1908,17 @@ void TextService::ClosePresence() {
   if (!presence_) return;
   presence_->Stop();
   presence_ = nullptr;
+}
+
+// ⭐ 「這條執行緒上啟用中的不再是我們」——服務端唯一的正面證據(#111)。
+//
+// ⚠ **只有 profile sink 的非啟用邊走這裡,Deactivate 不走。**
+//   Deactivate 的意思是「我們的 TIP 正從這條執行緒上被卸下」,它答不了
+//   「使用者選了誰」—— 宿主結束、視窗關掉、TSF 收工都會走它,而那些
+//   都不是「他換了輸入法」。而且它本來就不保證會來(見 Deactivate 那一段)。
+//   拿它當證據,就等於把 #111 換一個方向放回去:每關一個視窗那一橫閃一下。
+void TextService::NotePresenceYielded() {
+  if (presence_) presence_->NoteYield();
 }
 
 void TextService::RefreshProfile() {

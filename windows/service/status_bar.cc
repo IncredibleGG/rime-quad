@@ -6,6 +6,10 @@
 #include <windowsx.h>
 
 #include <algorithm>
+// std::fprintf / std::snprintf —— LogOwnerDecision 那一行走 stderr,
+// 而服務的 stderr 就是 service.log(main.cc 的重導向)。
+#include <cstdio>
+#include <string>
 
 #include "../common/settings.h"
 #include "../common/status_cells.h"
@@ -153,6 +157,16 @@ BarOwnerForeground ReadForegroundOwner() {
   fg.known = true;
   fg.pid = static_cast<uint32_t>(pid);
   fg.tid = static_cast<uint32_t>(tid);
+  // ⚠ 同樣是**取值**,不是判斷:「這條執行緒收不到文字就不准隱藏」那個
+  //   判斷在 common/bar_owner.cc(測得到,O16)。
+  //   桌面、工作列、截圖疊層沒有鍵盤焦點視窗 —— 它們代表的是「他此刻
+  //   沒在打字」,不是「他換了輸入法」。GetGUIThreadInfo 是跨進程、
+  //   同桌面、不需權限的一次呼叫;對更高完整性層級的前景可能回 FALSE,
+  //   那時 can_take_text 維持 false → 隱藏那條路走不通 → 維持現狀。
+  GUITHREADINFO gti;
+  ::ZeroMemory(&gti, sizeof(gti));
+  gti.cbSize = sizeof(gti);
+  fg.can_take_text = ::GetGUIThreadInfo(tid, &gti) && gti.hwndFocus != nullptr;
 
   // ⚠ 只有前景真的是 UWP 的框視窗時才去列舉子視窗。每半秒對每一個
   //   前景視窗列舉一次子視窗是白花的。
@@ -210,6 +224,15 @@ void StatusBar::OnClientIdentified(uint64_t client_id, uint32_t host_pid,
       c.activated = true;
       break;
     }
+    // ⚠ 這條執行緒上我們的 TIP 又活了 —— 舊的讓位紀錄必須**立刻**作廢。
+    //   少了這一行:使用者切走再切回來,那一橫會因為一筆還沒過期的
+    //   舊證據而繼續藏著(最長 10 分鐘),而他什麼都沒做錯。
+    for (size_t i = 0; i < yields_.size();) {
+      if (host_tid != 0 && yields_[i].host_tid == host_tid)
+        yields_.erase(yields_.begin() + static_cast<long>(i));
+      else
+        ++i;
+    }
   }
   // 立刻顯示是規範的一部分(§12.10.6):使用者切過來、還沒打第一個字
   // 之前那一橫就該在。等 500 毫秒的話他會先看到一個空位。
@@ -225,6 +248,46 @@ void StatusBar::OnClientSession(uint64_t client_id, uint64_t session) {
   }
 }
 
+// ⭐ #111 的新事實來源:宿主**說出來**「這條執行緒上啟用中的不再是我們」。
+//
+// ⚠ 這一支跑在連線執行緒上,所以只碰 regs_ / yields_,一個視窗 API 都不碰。
+void StatusBar::OnClientProfileState(uint64_t client_id, bool ours_active) {
+  {
+    std::lock_guard<std::mutex> lock(reg_mu_);
+    uint32_t host_tid = 0;
+    for (size_t i = 0; i < regs_.size(); ++i) {
+      if (regs_[i].client_id != client_id) continue;
+      host_tid = regs_[i].host_tid;
+      break;
+    }
+    // ⚠ 報不出 tid(舊 DLL)就沒有可以下鍵的地方。舊 DLL 本來就不會送
+    //   這則訊息,走到這裡代表對面壞了 —— 什麼都不做才是對的:
+    //   一筆 tid=0 的紀錄會對上任何一個「查不到 tid」的前景。
+    if (host_tid == 0) return;
+    for (size_t i = 0; i < yields_.size();) {
+      if (yields_[i].host_tid == host_tid)
+        yields_.erase(yields_.begin() + static_cast<long>(i));
+      else
+        ++i;
+    }
+    if (!ours_active) {
+      // 上限 64,滿了丟最舊的。
+      if (yields_.size() >= 64) yields_.erase(yields_.begin());
+      BarOwnerYield y;
+      y.host_tid = host_tid;
+      y.at_ms = ::GetTickCount64();  // ⚠ 單調時鐘,不是牆上時鐘
+      yields_.push_back(y);
+    }
+  }
+  // 立刻重算一次:使用者按 Win+空白鍵切走的那一刻就該開始倒數,
+  // 不必等下一個 500 毫秒的 tick。
+  if (thread_id_) ::PostThreadMessageW(thread_id_, WM_RIME_REFRESH, 0, 0);
+}
+
+// ⚠ **這一支不准碰 yields_。** 連線死掉不是「使用者換了輸入法」的證據,
+//   只是「這個宿主不見了」—— 而宿主被砍掉、宿主凍結、宿主根本沒載入
+//   我們,在服務端是同一個事件。上一版把這兩件事混成一件,那就是 #111。
+//   audit_single_source.sh 有一條負面守門盯著這一格。
 void StatusBar::OnClientDetached(uint64_t client_id) {
   {
     std::lock_guard<std::mutex> lock(reg_mu_);
@@ -305,12 +368,17 @@ void StatusBar::EvaluateVisibility() {
   // (ReadForegroundOwner)。⚠ 前景**只能**由 OS 回答:讓 13 個宿主
   //   各自宣稱「我是前景」的話,兩個同時說 true 就退化回舊判準的 OR。
   std::vector<BarOwnerClient> snapshot;
+  std::vector<BarOwnerYield> yields;
   {
     std::lock_guard<std::mutex> lock(reg_mu_);
     snapshot = regs_;
+    yields = yields_;
   }
+  // ⚠ fg 必須具名:記錄那一行要印它的 tid 與行程名,而那是使用者下一次
+  //   回報時我們唯一指得出「是哪一個程式把那一橫拿走了」的東西。
+  const BarOwnerForeground fg = ReadForegroundOwner();
   const BarOwnerDecision owner =
-      DecideBarOwner(snapshot, ReadForegroundOwner());
+      DecideBarOwner(snapshot, yields, fg, ::GetTickCount64());
   // ⚠ 前景回答不了這個問題時 → **維持現狀**。兩個原因:OS 答不出來
   //   (UAC 提示 / 安全桌面),或前景是**服務自己的視窗**(設定視窗 /
   //   托盤選單 / 那一橫自己的彈出選單)。在那裡把 in_use_ 打成 false,
@@ -326,6 +394,11 @@ void StatusBar::EvaluateVisibility() {
   in.in_use = in_use_;
   in.now_ms = ::GetTickCount64();  // ⚠ 單調時鐘,不是牆上時鐘
   const BarAction act = visibility_.Feed(in);
+  // ⚠ 記錄要寫在 kPending 那個早退**之前**:倒數中的那一段正是使用者
+  //   要貼給我們看的東西,寫在後面的話它永遠不會被寫下來。
+  const bool final_shown =
+      (act == BarAction::kPending) ? shown_ : (act == BarAction::kShow);
+  LogOwnerDecision(fg, owner, snapshot.size(), final_shown);
   if (act == BarAction::kPending) return;  // 遲滯還沒到期,維持現狀
   const bool want = act == BarAction::kShow;
   if (want == shown_) return;
@@ -333,6 +406,102 @@ void StatusBar::EvaluateVisibility() {
   // ⚠ 重新出現時**不重新定位**:回到使用者拖過的同一個位置。
   //   ApplyPlacement 已經在 Relayout 裡做過了,這裡只切可見性。
   ::ShowWindow(hwnd_, want ? SW_SHOWNOACTIVATE : SW_HIDE);
+}
+
+// ── 那一橫為什麼在 / 為什麼不在 ──────────────────────────────────
+//
+// ⚠ 這是使用者下一次回報時我們**唯一**查得到的東西。#111 的整個定位
+//   過程之所以要靠推理,就是因為服務端從來沒有寫下「我這一刻判成什麼、
+//   前景是誰」—— tsf.log 只看得到宿主那一側。
+//
+// ⚠ 只在**結果改變**時寫一行(節流鍵 = 三態 + 最後的可見性)。每 500
+//   毫秒一行的話,一天下來是十七萬行,而使用者要貼給我們看。
+//
+// ⚠ 這一行走 stderr。從瘦 DLL 以 DETACHED_PROCESS 拉起來的服務,stderr
+//   被 main.cc 重導向到 service.log;從開始功能表捷徑啟動的那一支有
+//   console,這一行會印在那個一閃就沒的黑框裡(工單 #110 / 症狀 D)。
+void StatusBar::LogOwnerDecision(const BarOwnerForeground& fg,
+                                 const BarOwnerDecision& owner,
+                                 size_t n_clients, bool shown) {
+  if (ever_logged_ && owner.verdict == last_logged_verdict_ &&
+      shown == last_logged_shown_)
+    return;
+  const bool was_shown = last_logged_shown_;
+  const bool first = !ever_logged_;
+  ever_logged_ = true;
+  last_logged_verdict_ = owner.verdict;
+  last_logged_shown_ = shown;
+
+  const char* why = "hold(說不出來)";
+  switch (owner.verdict) {
+    case BarOwnerVerdict::kOurs:
+      why = "ours(前景那條執行緒上啟用中的是我們)";
+      break;
+    case BarOwnerVerdict::kTheirs:
+      why = "theirs(那條執行緒自己說過:啟用中的不再是我們)";
+      break;
+    case BarOwnerVerdict::kHold:
+      switch (owner.hold_reason) {
+        case BarOwnerDecision::HoldReason::kForegroundUnknown:
+          why = "hold(OS 答不出前景)";
+          break;
+        case BarOwnerDecision::HoldReason::kForegroundIsService:
+          why = "hold(前景是服務自己的視窗)";
+          break;
+        case BarOwnerDecision::HoldReason::kNoPresenceOnThread:
+          why = "hold(那條執行緒上查不到在場連線,而它也沒說過讓位)";
+          break;
+        case BarOwnerDecision::HoldReason::kYieldedButNoFocus:
+          why = "hold(說過讓位,但那條執行緒此刻收不到文字)";
+          break;
+        case BarOwnerDecision::HoldReason::kNone:
+          break;
+      }
+      break;
+  }
+
+  // ⚠ exe / cls 只在真的要寫的時候才去查 —— 平常每 500 毫秒那一圈
+  //   一個系統呼叫都不多花。
+  std::string exe = "(取不到)";
+  if (fg.pid != 0) {
+    HANDLE ph = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+                              static_cast<DWORD>(fg.pid));
+    if (ph) {
+      wchar_t path[MAX_PATH] = {0};
+      DWORD n = MAX_PATH;
+      if (::QueryFullProcessImageNameW(ph, 0, path, &n)) {
+        const std::wstring full(path, n);
+        const size_t slash = full.find_last_of(L'\\');
+        exe = WideToUtf8(slash == std::wstring::npos ? full
+                                                    : full.substr(slash + 1));
+      } else {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "(取不到,err=%lu)",
+                      static_cast<unsigned long>(::GetLastError()));
+        exe = buf;
+      }
+      ::CloseHandle(ph);
+    } else {
+      char buf[64];
+      std::snprintf(buf, sizeof(buf), "(開不了,err=%lu)",
+                    static_cast<unsigned long>(::GetLastError()));
+      exe = buf;
+    }
+  }
+  wchar_t clsw[64] = {0};
+  std::string cls = "(取不到)";
+  if (::GetClassNameW(::GetForegroundWindow(), clsw, 63) > 0)
+    cls = WideToUtf8(clsw);
+
+  const char* decision = shown ? "顯示" : "隱藏";
+  const char* moved = (!first && shown == was_shown) ? "(維持)" : "";
+  std::fprintf(stderr,
+               "[bar] 判斷變了:前景 tid=%u pid=%u exe=%s cls=%s "
+               "在場連線=%zu 收文字=%s 三態=%s 決定=%s%s\n",
+               static_cast<unsigned>(fg.tid), static_cast<unsigned>(fg.pid),
+               exe.c_str(), cls.c_str(), n_clients,
+               fg.can_take_text ? "是" : "否", why, decision, moved);
+  std::fflush(stderr);
 }
 
 void StatusBar::Refresh() {

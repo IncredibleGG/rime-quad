@@ -751,6 +751,8 @@ START_RE = re.compile(r'\bPresenceLink\s*::\s*Start\s*\(')
 STOP_RE = re.compile(r'\bpresence_\s*->\s*Stop\s*\(')
 OPEN_RE = re.compile(r'\bEnsurePresence\s*\(\s*\)')
 CLOSE_RE = re.compile(r'\bClosePresence\s*\(\s*\)')
+# ⭐ #111:「這條執行緒上啟用中的不再是我們」——服務端唯一的正面證據。
+YIELD_RE = re.compile(r'\bNotePresenceYielded\s*\(\s*\)')
 
 # ── 分母:從程式碼數出來的。掃到 0 個是紅,不是「0 個違規」──────────
 n_start = len(START_RE.findall(src))
@@ -827,6 +829,36 @@ if onact is not None:
                    '輸入法時服務端不會知道,那一橫會在他已經換了輸入法'
                    '之後繼續冒出來(S4)。Deactivate 補不上這一格:'
                    '背景執行緒上它延遲或永不會來。')
+    # ── ⭐ #111:「別人的」唯一的正面證據 ────────────────────────
+    #
+    # ⚠ 這一輪把判準改成「隱藏需要正面證據」之後,服務端只認一句話:
+    #   宿主明確說出「這條執行緒上啟用中的不再是我們」(kProfileState)。
+    #   而產生那句話的**只有這一行**,它是一行可以被「順手」刪掉的呼叫,
+    #   刪掉之後編得過、九支純函式測試照樣全綠,而症狀是那一橫變成
+    #   真正的常駐(#82 復活)。既有守門守的是連線的生死,守不到這一句。
+    n_yield = len(YIELD_RE.findall(onact))
+    if n_yield != 1:
+        bad.append('OnActivated 裡有 %d 處 NotePresenceYielded() —— 應該'
+                   '剛好 1 處。少了它,服務端就再也收不到任何「別人的」'
+                   '證據:判準只剩「是我們」與「不知道」,而「不知道」'
+                   '一律維持現狀 —— 那一橫會變成真正的常駐(#82 復活)。'
+                   % n_yield)
+    elif (CLOSE_RE.search(onact) is not None and
+          YIELD_RE.search(onact).start() > CLOSE_RE.search(onact).start()):
+        bad.append('OnActivated 裡 NotePresenceYielded() 排在 ClosePresence()'
+                   '**之後** —— 順序反了。ClosePresence 會把在場連線收掉,'
+                   '而那句話要趁那條管道還在的時候送出去。反過來的結果是'
+                   '每一次切走輸入法都送不出證據,那一橫收不起來。')
+    # ⚠ 反過來:Deactivate **不准**呼叫它。Deactivate 的意思是「我們的
+    #   TIP 正從這條執行緒上被卸下」,它答不了「使用者選了誰」——
+    #   宿主結束、視窗關掉、TSF 收工都會走它。拿它當證據等於把 #111
+    #   換一個方向放回去:每關一個視窗那一橫就閃一下。
+if deact is not None and YIELD_RE.search(deact):
+    bad.append('Deactivate 裡出現了 NotePresenceYielded() —— 它答不了'
+               '「使用者選了誰」。宿主結束、視窗關掉、TSF 收工都會走'
+               'Deactivate,把它當成「使用者切走輸入法」的證據,等於讓'
+               '每一次關視窗都把那一橫收起來。那句話只有 profile sink 的'
+               '非啟用邊說得出口。')
 
 # ── 這條連線報不報得出自己是誰 ───────────────────────────────────
 #
@@ -947,6 +979,45 @@ if not re.search(r'\bReadForegroundOwner\s*\(\s*\)', bar):
     bad.append('status_bar.cc 沒有去問 OS 前景是誰 —— 剩下的就只有'
                '宿主自己的宣稱,而兩個宿主同時宣稱就退化回舊判準的 OR。')
 
+# ── ⭐ #111 的兩格:那句話收得到,而且那筆證據活得比連線久 ────────
+n_ps = len(re.findall(r'bar_->OnClientProfileState\s*\(', pipe))
+if n_ps != 1:
+    bad.append('pipe_server.cc 裡有 %d 處 bar_->OnClientProfileState( —— '
+               '應該剛好 1 處。少了它,宿主說出口的那句「這條執行緒上'
+               '啟用中的不再是我們」到了服務端就被丟掉,判準只剩'
+               '「是我們」與「不知道」,而那一橫再也收不起來(#82 復活)。'
+               % n_ps)
+
+# ⚠ **負面守門。** 把讓位紀錄綁回連線壽命,是這個設計最自然、最容易被
+#   誤「修」回去的一步(「連線都沒了,順手清掉吧」),而它一旦發生,
+#   症狀立刻回到 #111:截圖之後那一橫不見了。
+#   連線死掉不是「使用者換了輸入法」的證據 —— 宿主被砍掉、宿主凍結、
+#   宿主根本沒載入我們,在服務端是同一個事件。
+m_det = re.search(r'void\s+StatusBar::OnClientDetached\s*\([^)]*\)\s*\{',
+                  bar)
+if not m_det:
+    bad.append('找不到 StatusBar::OnClientDetached —— 規則 6 對不上這一格了,'
+               '不是「沒有違規」。')
+else:
+    depth = 0
+    end = -1
+    for i in range(m_det.end() - 1, len(bar)):
+        if bar[i] == '{':
+            depth += 1
+        elif bar[i] == '}':
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    if end < 0:
+        bad.append('OnClientDetached 的大括號配不起來 —— 規則 6 對不上了。')
+    elif re.search(r'\byields_\b', bar[m_det.end():end]):
+        bad.append('OnClientDetached 裡碰了 yields_ —— 讓位紀錄被綁回連線'
+                   '壽命了。它**必須活得比連線久**:TSF 很可能在讓位之後'
+                   '緊接著 Deactivate 那條執行緒上的 TIP,連線會死,而證據'
+                   '不可以跟著死。做完這件事編得過、測試也綠,而使用者的'
+                   '症狀立刻回到 #111:截圖一下那一橫就不見了。')
+
 # ── 提權宿主那道閘只有一個入口 ───────────────────────────────────
 #
 # ⚠ 在場連線那條路**只准 CreateFileW,不准啟動服務**:啟動會產生一支
@@ -972,6 +1043,8 @@ print('   那一橫的在場訊號:四個邊都在(ActivateEx / OnActivated 啟�
       'HELLO 帶得出 host_tid;退避的歸零點在握手成功之後;'
       '服務端接得到身分、接得到 session、真的去問前景、'
       '而且認得出前景是服務自己;'
+      'OnActivated 的非啟用邊在收連線**之前**說出讓位、而 Deactivate 不說,'
+      '服務端收得到那句話,而且 OnClientDetached 不碰讓位紀錄;'
       'ActivateEx 裡沒有 EnsureReady(;LaunchService( 仍然只有 1 個呼叫點')
 PY_BAR_PRESENCE_WIRING
 
@@ -1006,6 +1079,10 @@ if [ "${1:-}" = "--self-check" ]; then
                bar_forgets_which_session_is_focused \
                bar_pins_the_focused_session_to_zero \
                bar_forgets_its_own_settings_window \
+               presence_never_says_it_yielded \
+               presence_yields_after_it_already_hung_up \
+               bar_drops_the_profile_state_message \
+               bar_ties_yields_to_connection_lifetime \
                presence_resets_backoff_before_the_handshake \
                presence_short_cycle_is_not_a_success; do
     tmp="$(mktemp -d)"
@@ -1156,11 +1233,50 @@ PY_NOCLOSE
         sed -i 's|if (bar_) bar_->OnClientIdentified(client_id, h.host_pid, h.host_tid);|(void)client_id;|' \
           "${tmp}/windows/service/pipe_server.cc" ;;
       bar_ignores_the_foreground)
-        sed -i 's|      DecideBarOwner(snapshot, ReadForegroundOwner());|      BarOwnerDecision();|' \
+        sed -i 's|      DecideBarOwner(snapshot, yields, fg, ::GetTickCount64());|      BarOwnerDecision();|' \
           "${tmp}/windows/service/status_bar.cc" ;;
       bar_overwrites_state_when_os_cannot_answer)
         sed -i 's|  if (!owner.undecidable) {|  if (true) {|' \
           "${tmp}/windows/service/status_bar.cc" ;;
+      # ── ⭐ #111 的三個。三個都「編得過、純函式測試全綠」──────────
+      #
+      # 1) 把那句話的來源刪掉。判準只剩「是我們」與「不知道」,而
+      #    「不知道」一律維持現狀 → 那一橫變成真正的常駐(#82 復活)。
+      presence_never_says_it_yielded)
+        sed -i '/^[[:space:]]*NotePresenceYielded();$/d' \
+          "${tmp}/windows/tsf/text_service.cc" ;;
+      # 2) 更陰險的一個:那一行還在,只是排到 ClosePresence() **後面**。
+      #    連線已經被收掉了,那句話送不出去 —— 只數呼叫次數的守門抓不到。
+      presence_yields_after_it_already_hung_up)
+        python3 - "${tmp}/windows/tsf/text_service.cc" <<'PY_YIELDLATE'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+old = '    NotePresenceYielded();\n    ClosePresence();\n'
+assert old in s, '植入對不上 OnActivated 的寫法了 —— 反向測試會變成假綠'
+new = '    ClosePresence();\n    NotePresenceYielded();\n'
+open(p, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+PY_YIELDLATE
+        ;;
+      # 3) 服務端把那句話丟掉。宿主說了,而沒有人聽 —— 症狀同 (1)。
+      bar_drops_the_profile_state_message)
+        sed -i '/if (bar_) bar_->OnClientProfileState(client_id, v != 0);/d' \
+          "${tmp}/windows/service/pipe_server.cc" ;;
+      # 4) ⭐ **最容易被「順手修好」的那一個**:連線都沒了,順手把讓位
+      #    紀錄也清掉。做完之後編得過、十九支純函式測試照樣全綠,而
+      #    使用者的症狀立刻回到 #111 —— 因為「連線消失」與「使用者切走
+      #    輸入法」又變成同一個事件了。
+      bar_ties_yields_to_connection_lifetime)
+        python3 - "${tmp}/windows/service/status_bar.cc" <<'PY_YIELDLIFE'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+anchor = 'void StatusBar::OnClientDetached(uint64_t client_id) {\n'
+assert anchor in s, '植入對不上 OnClientDetached 的寫法了 —— 反向測試會變成假綠'
+inject = anchor + '  { std::lock_guard<std::mutex> lk(reg_mu_); yields_.clear(); }\n'
+open(p, 'w', encoding='utf-8').write(s.replace(anchor, inject, 1))
+PY_YIELDLIFE
+        ;;
       # ── ⭐ 覆核者實測過的兩個:做完之後三支守門全綠,而 S3(甲)復活 ──
       #
       #   那一橫回讀中英狀態時問的是**別的宿主**(或不存在)的 session,

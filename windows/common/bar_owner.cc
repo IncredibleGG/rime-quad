@@ -51,16 +51,45 @@ bool Beats(const BarOwnerClient& a, int rank_a, const BarOwnerClient& b,
   return a.client_id < b.client_id;
 }
 
+// 這條執行緒明確說過「啟用中的不再是我們」,而且那句話還沒過期嗎。
+//
+// ⚠ UWP 那一層也要看:前景是 ApplicationFrameHost 的框視窗時,真正
+//   讓位的是 CoreWindow 底下那條執行緒。
+bool SaidItYielded(const std::vector<BarOwnerYield>& yields,
+                   const BarOwnerForeground& fg, uint64_t now_ms) {
+  for (size_t i = 0; i < yields.size(); ++i) {
+    const BarOwnerYield& y = yields[i];
+    if (y.host_tid == 0) continue;
+    if (y.host_tid != fg.tid && !(fg.inner_known && y.host_tid == fg.inner_tid))
+      continue;
+    // ⚠ 先比大小再相減,不要直接 `now_ms - y.at_ms`:now_ms 可能比
+    //   at_ms 小(呼叫端餵了一個較早的時間),而無號相減會繞成一個
+    //   巨大的正數 —— 那會讓一筆**剛剛才寫下**的證據看起來已經過期。
+    //   時間倒退時當成「還沒過期」:證據本身是可信的,存疑的只有它
+    //   的年紀,讓 TTL 自然走完才是對的。
+    if (now_ms < y.at_ms) return true;
+    if (now_ms - y.at_ms < BarOwnerYieldTtlMs()) return true;
+  }
+  return false;
+}
+
 }  // namespace
 
+// 10 分鐘。夠長到「切走輸入法之後去做別的事、再回來」還算數,
+// 夠短到一個被回收的 tid 不會一直冒充別人。
+uint32_t BarOwnerYieldTtlMs() { return 600000; }
+
 BarOwnerDecision DecideBarOwner(const std::vector<BarOwnerClient>& clients,
-                                const BarOwnerForeground& fg) {
+                                const std::vector<BarOwnerYield>& yields,
+                                const BarOwnerForeground& fg, uint64_t now_ms) {
   BarOwnerDecision out;
   // ⚠ 前景問不出來就**什麼都不要說**。這裡回 in_use=false 的話,UAC 提示
   //   跳出來的那一秒那一橫會開始倒數隱藏,而使用者什麼都沒做。
   //   tid 為 0 也算問不出來:那是 GetWindowThreadProcessId 失敗的樣子。
   if (!fg.known || fg.tid == 0) {
     out.undecidable = true;
+    out.verdict = BarOwnerVerdict::kHold;
+    out.hold_reason = BarOwnerDecision::HoldReason::kForegroundUnknown;
     return out;
   }
   // ── 前景是**服務自己**:設定視窗 / 托盤選單 / 那一橫的彈出選單 ──
@@ -82,6 +111,8 @@ BarOwnerDecision DecideBarOwner(const std::vector<BarOwnerClient>& clients,
       (fg.pid == fg.service_pid ||
        (fg.inner_known && fg.inner_pid == fg.service_pid))) {
     out.undecidable = true;
+    out.verdict = BarOwnerVerdict::kHold;
+    out.hold_reason = BarOwnerDecision::HoldReason::kForegroundIsService;
     return out;
   }
 
@@ -95,10 +126,41 @@ BarOwnerDecision DecideBarOwner(const std::vector<BarOwnerClient>& clients,
       best_rank = rank;
     }
   }
-  if (!best) return out;  // in_use 維持 false —— 前景那條執行緒不是我們的
-  out.in_use = true;
-  out.focused_client = best->client_id;
-  out.focused_session = best->session;
+  if (best) {
+    out.verdict = BarOwnerVerdict::kOurs;
+    out.in_use = true;
+    out.focused_client = best->client_id;
+    out.focused_session = best->session;
+    return out;
+  }
+
+  // ── 一條都對不上。**這一行就是 #111 的全部。** ────────────────
+  //
+  // 以前這裡直接 `return out;`(undecidable=false、in_use=false)——
+  // 也就是「查不到 = 是別人的」。截圖工具、工作列、桌面、以及每一個
+  // 在升級前就開著、還抱著舊 DLL 的宿主(它們沒有在場連線這回事)
+  // 全部落在這裡,於是那一橫在使用者眼前消失。
+  //
+  // 現在**隱藏需要正面證據**:這條執行緒要自己說過「啟用中的不再是
+  // 我們」(kProfileState),而且它此刻真的收得到文字。兩者缺一,
+  // 答案就是「我不知道」→ 呼叫端維持上一次的判斷。
+  if (!SaidItYielded(yields, fg, now_ms)) {
+    out.undecidable = true;
+    out.verdict = BarOwnerVerdict::kHold;
+    out.hold_reason = BarOwnerDecision::HoldReason::kNoPresenceOnThread;
+    return out;
+  }
+  // ⚠ 它說過讓位,但這條執行緒此刻**沒有鍵盤焦點視窗**(桌面、工作列、
+  //   截圖疊層,或 GetGUIThreadInfo 對提權宿主回 FALSE)。那不是
+  //   「使用者正在用別的輸入法打字」,只是「他此刻沒有在打字」——
+  //   而讓位紀錄是黏著的,它會一直在,不能讓它把那一橫永久壓住。
+  if (!fg.can_take_text) {
+    out.undecidable = true;
+    out.verdict = BarOwnerVerdict::kHold;
+    out.hold_reason = BarOwnerDecision::HoldReason::kYieldedButNoFocus;
+    return out;
+  }
+  out.verdict = BarOwnerVerdict::kTheirs;  // in_use 維持 false → 隱藏
   return out;
 }
 

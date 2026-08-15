@@ -368,6 +368,8 @@ bool DecodeSimple(const std::string& p, uint32_t* seq, uint64_t* session) {
     case Op::kCommitComposition:
     case Op::kClear:
     case Op::kOpenSettings:  // v2 起。單向,沒有回覆。
+    // v4 起。單向,沒有回覆。⚠ 那個 u64 是布林(0 = 讓位),不是 session。
+    case Op::kProfileState:
       break;
     default:
       return false;

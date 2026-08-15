@@ -625,6 +625,37 @@ void PipeServer::ServeClient(HANDLE pipe) {
         // ⚠ host_tid 只有 proto >= 3 才在線路上;0 = 報不出來(舊 DLL),
         //   那時 bar_owner 退回去比 pid,精確度差一階但看得見它。
         if (bar_) bar_->OnClientIdentified(client_id, h.host_pid, h.host_tid);
+        // ── ⭐ 這個宿主抱著的是**升級前的那一份 DLL** ──────────────
+        //
+        // 使用者這一次的 tsf.log 證實了一件事:重裝之前就開著的每一個
+        // 宿主行程,直到它自己重開之前都還載著舊的 rime_tsf.dll ——
+        // 分界乾淨到零例外。Explorer.exe(工作列、檔案總管)幾乎永遠
+        // 不會重開,所以這不是罕見情況,是他桌面上一半的程式。
+        //
+        // ⚠ 這一行是為了讓**下一次**回報查得到,不是給使用者看的 ——
+        //   刻意不做成彈窗:一個離線為預設的輸入法不該在使用者打字時
+        //   跳出一個他沒有辦法立刻處理的東西。
+        // ⚠ 有節流:同一個 pid 只寫一次(連線會斷會重連,而 13 個宿主
+        //   ×每次重連一行就是一面牆)。上限 64,滿了就不再記 ——
+        //   超過這個量級時那一行的價值已經被稀釋掉了。
+        if (h.proto < kProtocolVersion) {
+          bool fresh = false;
+          {
+            std::lock_guard<std::mutex> lk(old_proto_mu_);
+            if (old_proto_seen_.size() < 64 &&
+                old_proto_seen_.insert(h.host_pid).second)
+              fresh = true;
+          }
+          if (fresh)
+            Log("[pipe] 舊版宿主:%s(pid=%lu)用線路版本 %u 連上來,"
+                "我們是 %u —— 這個程式在你升級前就開著,它還載著舊的 "
+                "rime_tsf.dll。把它整個關掉再開(工作列 / 檔案總管要"
+                "重開機或重啟 Explorer),那一橫與新功能才會對它生效。\n",
+                h.host_exe.empty() ? "(不明)" : h.host_exe.c_str(),
+                static_cast<unsigned long>(h.host_pid),
+                static_cast<unsigned>(h.proto),
+                static_cast<unsigned>(kProtocolVersion));
+        }
         if (!send(EncodeHelloOk(seq, ok))) goto done;
         break;
       }
@@ -863,6 +894,18 @@ void PipeServer::ServeClient(HANDLE pipe) {
         push_ui(r.snap);
         if (!send(EncodeResult(seq, r))) goto done;
         break;
+      }
+      // ⭐ #111 的新事實來源。單向,不回覆。
+      //
+      // ⚠ 那個 u64 是布林(0 = 這條執行緒上啟用中的不再是我們),不是
+      //   session —— 它只是沿用 EncodeSimple 既有的形狀,不必動編碼器。
+      // ⚠ :582 的 `if (!authed && op != Op::kHello)` 已經保證這則訊息一定
+      //   在 HELLO 之後才被接受,所以 client_id 那一筆一定已經有 host_tid。
+      case Op::kProfileState: {
+        uint64_t v = 0;
+        if (!DecodeSimple(payload, &seq, &v)) goto done;
+        if (bar_) bar_->OnClientProfileState(client_id, v != 0);
+        break;  // 單向,不回覆
       }
       case Op::kCommitComposition:
       case Op::kClear: {

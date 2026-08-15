@@ -143,6 +143,17 @@ class StatusBar {
                           uint32_t host_tid);
   void OnClientSession(uint64_t client_id, uint64_t session);
   void OnClientDetached(uint64_t client_id);
+  // ⭐ 宿主**說出來**的那句話(protocol.h 的 kProfileState)。
+  //
+  //   ours_active == false → 這條連線所在的那條執行緒上,啟用中的
+  //                          **不再是我們**。這是服務端唯一拿得到的
+  //                          「別人的」正面證據(#111)。
+  //   ours_active == true  → 又是我們了,作廢那筆紀錄。
+  //
+  // ⚠ 紀錄鍵是 **tid**、存在 yields_,**不是**掛在連線上 —— TSF 很可能
+  //   在讓位之後緊接著 Deactivate 那條執行緒上的 TIP,連線會死,
+  //   而證據不可以跟著死。
+  void OnClientProfileState(uint64_t client_id, bool ours_active);
 
  private:
   static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l);
@@ -171,6 +182,14 @@ class StatusBar {
   void SavePlacement();
   // 把三個輸入餵給狀態機,並把結果變成 ShowWindow。只在 UI 執行緒上跑。
   void EvaluateVisibility();
+  // 判斷**改變時**往 service.log 寫一行(節流鍵 = 三態 + 最後的可見性)。
+  //
+  // ⚠ 這一行是使用者下一次回報時我們唯一查得到的東西:它帶著前景的
+  //   tid / 行程名 / 視窗類別,以及「為什麼」。⚠ exe / cls 只在真的要寫
+  //   的時候才去查 —— 每 500 毫秒那一圈的成本是零。
+  void LogOwnerDecision(const BarOwnerForeground& fg,
+                        const BarOwnerDecision& owner, size_t n_clients,
+                        bool shown);
   // 向引擎回讀一次,把結果貼進 ascii_mode_ / variant_ 並重畫。
   //
   // ⚠ 這一支取代了那三格的**樂觀寫入**。點下去之後畫面要不要變、變成
@@ -256,6 +275,19 @@ class StatusBar {
   // 讓繪製去等連線執行緒。
   std::mutex reg_mu_;
   std::vector<BarOwnerClient> regs_;
+  // ── 「這條執行緒說過:啟用中的不再是我們」──────────────────────
+  //
+  // 由 reg_mu_ 保護(與 regs_ 同一把鎖:兩者永遠一起被讀)。
+  //
+  // ⚠ **它刻意不隨連線消滅。** OnClientDetached 一個字都不准碰它 ——
+  //   連線死掉不是「使用者換了輸入法」的證據,只是「這個宿主不見了」
+  //   (宿主被砍掉、宿主凍結、宿主根本沒載入我們,在服務端長得一模一樣)。
+  //   把它綁回連線壽命是這個設計最自然、最容易被「順手修好」的一步,
+  //   而那一步一做,#111 立刻復活:截圖之後那一橫又會不見。
+  //   audit_single_source.sh 有一條負面守門盯著這件事。
+  //
+  // 上限 64 筆,滿了丟最舊的(使用者機器上是 13 個宿主的量級)。
+  std::vector<BarOwnerYield> yields_;
 
   // ── 只在那一橫自己的 UI 執行緒上碰 ──────────────────────────
   //
@@ -268,6 +300,16 @@ class StatusBar {
   // sessions_.begin() —— 13 個宿主各有自己的 ascii_mode,挑第一個
   // 等於擲骰子,而那正是使用者回報的「點了那一格沒反應」。
   uint64_t focused_session_ = 0;
+  // ── 記錄節流(只在那一橫自己的 UI 執行緒上碰)────────────────
+  //
+  // ⚠ 節流鍵刻意**不含 tid**:含了的話使用者每點一次視窗就多一行,
+  //   貼上來又是一面牆。而三態從 kOurs 變 kHold 的那一刻本來就會寫
+  //   一行,那一行裡就帶著截圖工具的 tid 與檔名 —— 一格就指得出來。
+  // ⚠ ever_logged_ 讓服務起來之後**第一次**判斷必定寫一行,否則初始值
+  //   剛好等於現況時整份記錄是空的,而使用者貼不出任何東西。
+  BarOwnerVerdict last_logged_verdict_ = BarOwnerVerdict::kHold;
+  bool last_logged_shown_ = false;
+  bool ever_logged_ = false;
   // 上一次「切一下」真正落地的時刻(GetTickCount)。⚠ 在它之前**產生**
   //   的滑鼠訊息一律丟掉 —— 回讀會擋住這條 UI 執行緒(引擎佇列可以被
   //   佔住好幾秒,見 #93 / #103),那段期間使用者會一直點,而每一下都

@@ -78,8 +78,12 @@ bool DecodeHelloAsV1Only(const std::string& p, uint32_t* seq, uint32_t* proto) {
 
 }  // namespace
 
-TEST(Proto_v3_is_the_current_version_and_v1_is_still_accepted) {
-  CHECK_INT(kProtocolVersion, 3);
+TEST(Proto_v4_is_the_current_version_and_v1_is_still_accepted) {
+  // v4 = 多了 kProfileState(#111:「別人的」必須是宿主說出來的)。
+  // ⚠ 最舊接受版本**沒有跟著往上動**,而且不准動:使用者機器上每一個
+  //   升級前就開著的行程都還載著舊的 rime_tsf.dll,把下限往上抬等於
+  //   把它們全部踢掉,而 Explorer.exe 幾乎永遠不會重開。
+  CHECK_INT(kProtocolVersion, 4);
   CHECK_INT(kMinProtocolVersion, 1);
   CHECK(kMinProtocolVersion <= kProtocolVersion);
 }
@@ -382,4 +386,81 @@ TEST(proto_variant_unknown_still_round_trips) {
     ++seen;
   }
   CHECK_INT(seen, 3);
+}
+
+// ══ v4:升版**不准**把還抱著舊 DLL 的宿主擋在門外 ═══════════════
+//
+// 這件事不是推論出來的,是查過 pipe_server.cc 的 HELLO 分支之後寫下來的:
+// 那道關卡是 `h.proto < kMinProtocolVersion || h.proto > kProtocolVersion`,
+// 而它回的是**協商出來的** `ok.proto = h.proto`。所以舊 DLL 宣告 2 或 3
+// 都落在區間內 → 接受 → 用戶端那一格 `ok.proto != proto_` 也對得上。
+//
+// ⚠ 這一支存在的理由:使用者機器上**每一個升級前就開著的行程**都還載著
+//   舊的 rime_tsf.dll,而 Explorer.exe 幾乎永遠不會重開。如果升版會把它們
+//   擋掉,那升版本身就是一個比 #111 更大的迴歸。
+TEST(Proto_v4_bump_still_accepts_the_dlls_that_never_got_restarted) {
+  // 服務端那道關卡的兩個邊,逐字照抄自 pipe_server.cc。
+  for (uint32_t p = kMinProtocolVersion; p <= kProtocolVersion; ++p) {
+    const bool refused = (p < kMinProtocolVersion || p > kProtocolVersion);
+    CHECK(!refused);
+  }
+  // 使用者機器上真的存在的那兩種舊 DLL。
+  CHECK(2 >= kMinProtocolVersion && 2 <= kProtocolVersion);
+  CHECK(3 >= kMinProtocolVersion && 3 <= kProtocolVersion);
+  // ⚠ v4 是**純加法**:它一個 Hello 欄位都沒加,所以 v3 的位元組佈局
+  //   一個位元都沒動 —— 舊服務解得完一則 v4 的 HELLO(它只會在版本
+  //   區間那一關拒絕,而那條路徑是 PresenceLink 早就在處理的降版重試)。
+  Hello v3;
+  v3.proto = 3;
+  v3.shell_abi = 1;
+  v3.host_pid = 4242;
+  v3.host_exe = "C:\\Windows\\Explorer.EXE";
+  v3.input_langid = 0x0404;
+  v3.profile_guid = "{C6B736EB-38E3-4041-B59B-ECF91AD8E28A}";
+  v3.host_tid = 4343;
+  Hello v4 = v3;
+  v4.proto = 4;
+  const std::string w3 = EncodeHello(7, v3);
+  const std::string w4 = EncodeHello(7, v4);
+  CHECK_INT(w3.size(), w4.size());  // 沒有新欄位 = 沒有新位元組
+
+  // 舊 DLL 的 HELLO 在**這一版**的解碼器底下照樣完整:host_tid 還在,
+  // 也就是那一橫的 per-thread 精確度對它們一點都沒少。
+  uint32_t seq = 0;
+  Hello back;
+  CHECK(DecodeHello(w3, &seq, &back));
+  CHECK_INT(back.proto, 3);
+  CHECK_INT(back.host_tid, 4343);
+  CHECK_STR(back.host_exe, v3.host_exe);
+}
+
+// ── kProfileState:走既有的 EncodeSimple 形狀,而且不撞任何一個 op ──
+TEST(Proto_profile_state_rides_the_existing_simple_shape) {
+  // 0 = 這條執行緒上啟用中的**不再是**我們。
+  const std::string away = EncodeSimple(9, Op::kProfileState, 0);
+  uint32_t seq = 0;
+  uint64_t v = 123;
+  CHECK(DecodeSimple(away, &seq, &v));
+  CHECK_INT(seq, 9);
+  CHECK_INT(v, 0);
+  // 1 = 又是我們了。
+  const std::string back = EncodeSimple(10, Op::kProfileState, 1);
+  CHECK(DecodeSimple(back, &seq, &v));
+  CHECK_INT(seq, 10);
+  CHECK_INT(v, 1);
+
+  // ⚠ op 不可以跟既有的任何一個撞:撞了的話一則「讓位」會被當成
+  //   「開設定」,使用者切走輸入法時設定視窗會自己跳出來。
+  CHECK(static_cast<uint8_t>(Op::kProfileState) !=
+        static_cast<uint8_t>(Op::kOpenSettings));
+  CHECK_INT(static_cast<uint8_t>(Op::kProfileState), 0x0F);
+
+  // 截斷 / 多餘位元組一律整則丟掉,不是半讀半猜。
+  int seen = 0;
+  for (size_t cut = 1; cut < away.size(); ++cut) {
+    CHECK(!DecodeSimple(away.substr(0, cut), &seq, &v));
+    ++seen;
+  }
+  CHECK(seen > 8);
+  CHECK(!DecodeSimple(away + std::string(1, '\0'), &seq, &v));
 }

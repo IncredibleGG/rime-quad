@@ -73,7 +73,28 @@ namespace rimewin {
 //   新服務收到 v1 / v2 就照它宣告的版本解,host_tid 留 0。
 //   **0 必須等於「報不出來」**,而 bar_owner.h 對報不出 tid 的用戶端
 //   退回去比 pid —— 精確度差一階,但不會讓舊 DLL 的使用者失去那一橫。
-inline constexpr uint32_t kProtocolVersion = 3;
+//
+// ── v4 加了什麼 ──────────────────────────────────────────────────
+//
+// v4 **沒有動 HELLO 的位元組佈局**,它只多了一則客戶端→服務端的訊息:
+// kProfileState(0x0F)。宿主用它說出「這條執行緒上啟用中的**不再是**
+// 我們」—— 在 v4 之前,那句話唯一的表達方式是把在場連線關掉,而
+// 「關掉」與「宿主死了 / 宿主被砍掉 / 宿主根本沒載入我們」在服務端
+// 長得一模一樣。那個歧義就是 #111:服務端只好把「查不到」讀成
+// 「是別人的」,於是截圖工具、工作列、桌面一搶到前景那一橫就消失。
+//
+// ⚠ **升版本身不會擋掉任何舊 DLL**,這一點查過而不是推測的:
+//   · 舊 DLL(proto=2/3)→ 新服務:pipe_server.cc 的關卡是
+//     `h.proto < kMinProtocolVersion || h.proto > kProtocolVersion`,
+//     2 與 3 都落在 [1,4] 內 → **接受**,而且回的是協商出來的
+//     `ok.proto = h.proto`,用戶端那一格 `ok.proto != proto_` 也對得上。
+//     舊 DLL 一切照舊,只是永遠不會送 kProfileState。
+//   · 新 DLL(proto=4)→ 舊服務(上限 3):因為 v4 沒有新欄位,舊服務的
+//     DecodeHello 解得完(它走 proto>=3 那一支,AtEnd() 成立),接著才
+//     在版本區間那一關回 kError 並關連線 → PresenceLink 讀到的不是
+//     HELLO_OK → kRejected → `--proto_` 降到 3 重試 → 成功。
+//   所以 v4 是**純加法**:兩個方向都退化成「少一項功能」,不是「連不上」。
+inline constexpr uint32_t kProtocolVersion = 4;
 
 // 服務端仍然接受的最舊版本。降到這個以下就真的不相容了。
 inline constexpr uint32_t kMinProtocolVersion = 1;
@@ -102,6 +123,20 @@ enum class Op : uint8_t {
   // 走的就是這一條)。⚠ 只有在協商到的版本 >= 2 時才可以送 ——
   // v1 的服務收到不認得的 op 會回錯誤並關掉連線。
   kOpenSettings = 0x0E,
+  // v4 起。單向,沒有回覆,走 EncodeSimple / DecodeSimple 的形狀
+  // (`op` + `seq` + 一個 u64)。那個 u64 **不是 session**,是一個布林:
+  //
+  //     0 = 這條連線所在的那條執行緒上,啟用中的**不再是我們**
+  //     1 = 又是我們了
+  //
+  // ⚠ 這是服務端唯一拿得到的「別人的」正面證據。少了它,服務端只能從
+  //   「這條執行緒上查不到任何在場連線」推出「使用者切走了」,而那個
+  //   推論對截圖工具、工作列、桌面、以及**任何在升級前就開著、還抱著
+  //   舊 DLL 的宿主**全部是錯的(#111)。
+  //
+  // ⚠ 只有協商到的版本 >= 4 才准送 —— v3 以下的服務收到不認得的 op 會
+  //   回 kError 並關掉連線(kOpenSettings 在 v2 立過同一條規矩)。
+  kProfileState = 0x0F,
   // 服務 → 用戶端
   kHelloOk = 0x81,
   kSessionOk = 0x82,

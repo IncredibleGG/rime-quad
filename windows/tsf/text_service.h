@@ -207,6 +207,12 @@ class TextService : public ITfTextInputProcessorEx,
   //   (audit_single_source.sh 規則 6 守著)。
   void EnsurePresence();
   void ClosePresence();
+  // ⭐ 「這條執行緒上啟用中的不再是我們」——在收連線**之前**說出去。
+  //
+  // ⚠ 只有 OnActivated 的非啟用邊呼叫它,**Deactivate 不呼叫**:
+  //   Deactivate 答不了「使用者選了誰」(宿主結束、視窗關掉、TSF 收工
+  //   都會走它),拿它當證據就是把 #111 換個方向放回去。
+  void NotePresenceYielded();
   // 服務執行檔的完整路徑(與 DLL 同目錄)。空字串 = 算不出來。
   std::wstring service_path_;
   // 每個 HKL 一個 oracle。使用者切換鍵盤佈局時重建。

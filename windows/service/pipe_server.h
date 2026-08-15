@@ -10,6 +10,7 @@
 
 #include <atomic>
 #include <mutex>
+#include <set>
 #include <thread>
 #include <vector>
 
@@ -129,6 +130,13 @@ class PipeServer {
   std::mutex ui_mu_;
   uint64_t ui_session_ = 0;
   RECT ui_caret_{};
+  // ── 「這個宿主抱著升級前的那一份 DLL」只記一次 ────────────────
+  //
+  // ⚠ 節流的鍵是 **host_pid**,不是連線 —— 連線會斷會重連,而使用者
+  //   機器上有 13 個宿主。上限 64 筆(超過就不再記):那個量級之後,
+  //   那一行的診斷價值已經被稀釋掉了,而記錄的長度是使用者的成本。
+  std::mutex old_proto_mu_;
+  std::set<uint32_t> old_proto_seen_;
   std::mutex mu_;
   std::vector<std::thread> clients_;
 };

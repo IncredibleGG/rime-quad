@@ -37,6 +37,30 @@
 //      OS 也是唯一**不依賴宿主活著、不依賴宿主誠實**的一方:被凍結的
 //      UWP 進程、來不及送 Deactivate 就被砍掉的宿主,都靠這一層擋。
 //
+// ── #111:上一版把「查不到」讀成「是別人的」──────────────────────
+//
+// 上面第 1 層寫著「宿主表達的方式是**在場連線的生死**」,而那句話有一個
+// 沒說出口的前提:**每一個前景執行緒都會有一條在場連線**。它不成立:
+//
+//   · 截圖工具(Snipaste)、工作列、桌面 —— 它們從來不載入我們的 TIP,
+//     一條在場連線都不會有,而截圖框選會佔住前景遠超過 3000 毫秒。
+//   · 更嚴重的一種,是使用者的 tsf.log 這一次才證實的:**在升級前就
+//     開著的宿主行程,直到它自己重開之前都還抱著舊的 rime_tsf.dll**,
+//     而舊 DLL 沒有在場連線這回事。Explorer.exe(工作列、檔案總管)
+//     幾乎永遠不會重開 —— 這不是偶發,是使用者桌面上一半的程式。
+//
+// 於是「這條執行緒上沒有在場連線」的真正意思是**「我不知道」**,而上一版
+// 把它讀成「是別人的」→ in_use=false → 3 秒後隱藏。
+//
+// 這一版把那一格拆成兩態,而**隱藏需要正面證據**:宿主必須明確說出
+// 「這條執行緒上啟用中的不再是我們」(protocol.h 的 kProfileState),
+// 而那句證據存在服務端、鍵是 tid、活得比連線久(BarOwnerYield)。
+//
+// ⚠ 這樣做會不會把 S4 放回去?不會 —— 收起來的觸發點還是同一個:
+//   profile sink 的非啟用邊(text_service.cc 的 OnActivated)。一個邊都
+//   沒少,只是它的表達方式從「把連線關掉」(與宿主死掉同一個事件)
+//   換成「說一句話」(只有這一件事會產生它)。
+//
 // ── 為什麼是純函式 ──────────────────────────────────────────────
 //
 // 三輪壞掉的都不是「判準寫錯」,是「送到判準面前的那份答案錯了」。
@@ -101,7 +125,54 @@ struct BarOwnerForeground {
   // 那等於「沒有人在用」:3000 毫秒之後那一橫在他眼前消失,而他做的
   // 事只是打開設定。見 BarOwnerDecision::undecidable 的第二個原因。
   uint32_t service_pid = 0;
+  // ── 前景那條執行緒此刻**收不收得到文字** ──────────────────────
+  //
+  // 由呼叫端填(status_bar.cc 的一次 GetGUIThreadInfo:有 hwndFocus
+  // 就是真)。桌面、工作列、截圖疊層這種前景**沒有鍵盤焦點視窗**,
+  // 而它們代表的不是「使用者換了輸入法」,只是「他此刻沒有在任何
+  // 地方打字」。
+  //
+  // ⚠ 預設 false = **不知道**,而且只有「隱藏」那一條路要求它為真。
+  //   方向是刻意的:忘了餵料(或 UIPI 讓 GetGUIThreadInfo 對提權宿主
+  //   回 FALSE)的後果是「那一橫留著」,不是「那一橫亂收」。
+  bool can_take_text = false;
 };
+
+// 那一橫這一刻該怎麼辦。
+//
+// ⚠ **三態,不是布林。** 「前景不是我們的」與「這個前景答不出這個問題」
+//   是兩件完全不同的事,而上一版把它們混成同一個 in_use=false ——
+//   那正是 #111:截圖工具、工作列、桌面、以及**每一個在升級前就開著、
+//   還抱著舊 DLL 的宿主**(它們一條在場連線都沒有)全部被讀成「別人的」,
+//   於是那一橫在使用者眼前消失。
+enum class BarOwnerVerdict : uint8_t {
+  // 前景那條執行緒上啟用中的是我們 → 顯示。
+  kOurs,
+  // 前景那條執行緒上啟用中的**不是**我們,而且這是宿主**說出來的**,
+  // 不是我們從「查不到」推出來的 → 隱藏。
+  kTheirs,
+  // 答不出來 → **維持上一次的判斷**。這一格刻意很寬:查不到就落在這裡。
+  kHold,
+};
+
+// 「某一條執行緒明確說過它讓位了」這件事的載體。
+//
+// ⚠ 它**必須活得比連線久**。TSF 很可能在讓位之後緊接著把那條執行緒上的
+//   TIP 也 Deactivate 掉,連線會死;證據不可以跟著死,否則服務端又退回
+//   只能從「查不到」推論的狀態 —— 也就是 #111 本身。所以鍵是 tid、
+//   存在 StatusBar(status_bar.h 的 yields_),不掛在連線物件上。
+struct BarOwnerYield {
+  uint32_t host_tid = 0;
+  // 單調時鐘(GetTickCount64)。過期規則見 BarOwnerYieldTtlMs()。
+  uint64_t at_ms = 0;
+};
+
+// 一筆讓位紀錄能活多久(毫秒)。
+//
+// ⚠ tid 會被系統回收,所以這筆證據不能永久有效。過期之後回到 kHold =
+//   維持當下,而當下本來就是隱藏 —— 過期本身製造不出任何可見的錯,
+//   它只把「拿一個被回收的 tid 當成別人的」那個窗口關掉。
+uint32_t BarOwnerYieldTtlMs();
 
 struct BarOwnerDecision {
   // ⚠ 真 = **這一刻的前景回答不了「那一橫該不該顯示」這個問題**。
@@ -118,9 +189,28 @@ struct BarOwnerDecision {
   //
   //   ⚠ 名字不叫 os_unknown:第 2 個原因底下 OS 答得完全正確,
   //     而這個 codebase 已經吃過好幾次「名字說的比實際窄一階」的虧。
+  //
+  //   ⚠ #111 之後,這一格的**第 3 個原因才是最常見的那一個**:
+  //     前景那條執行緒上查不到任何在場連線。以前那走的是「別人的」,
+  //     現在走這裡。收起來需要正面證據 —— 見 verdict。
   bool undecidable = false;
   // 使用者此刻正在用的那條執行緒上,啟用中的是不是我們。
   bool in_use = false;
+  // ── 三態的具名版本。undecidable ≡ (verdict == kHold),
+  //    in_use ≡ (verdict == kOurs) —— 那兩個布林保留原名原義,因為
+  //    呼叫點(status_bar.cc)與守門(audit_single_source.sh)都逐字
+  //    綁著它們。verdict 存在的理由是**記錄寫得出「為什麼」**:
+  //    兩個布林拼不出「他切走了」與「這個前景我不認識」的差別。
+  BarOwnerVerdict verdict = BarOwnerVerdict::kHold;
+  // kHold 時,是哪一種答不出來 —— 只給記錄用,判斷一律只看 verdict。
+  enum class HoldReason : uint8_t {
+    kNone,            // verdict != kHold
+    kForegroundUnknown,   // OS 答不出前景(UAC / 安全桌面)
+    kForegroundIsService, // 前景是服務自己的視窗
+    kNoPresenceOnThread,  // 那條執行緒上查不到在場連線,也沒說過讓位
+    kYieldedButNoFocus,   // 說過讓位,但那條執行緒此刻收不到文字
+  };
+  HoldReason hold_reason = HoldReason::kNone;
   // 那一條連線是誰。0 = 沒有。
   uint64_t focused_client = 0;
   // 它的 session。0 = 它還沒建 session(切過來但還沒打字)。
@@ -129,7 +219,7 @@ struct BarOwnerDecision {
 
 // ── 收斂規則(逐條,而且每一條都有一支測試)────────────────────
 //
-//   · OS 答不出前景          → undecidable,呼叫端維持現狀
+//   · OS 答不出前景          → kHold,呼叫端維持現狀
 //   · 前景是**服務自己**      → 同上。設定視窗不是一個宿主,
 //     (設定視窗 / 托盤選單)     那一刻不代表「沒有人在用」
 //   · 沒握手的連線            → 一票都不投
@@ -140,8 +230,17 @@ struct BarOwnerDecision {
 //   · 同分時:先挑**有 session 的**那一條(在場連線與按鍵連線並存時,
 //     要回讀的是有 session 的那一條),再挑 client_id 最小的 ——
 //     答案必須是確定的,不可以在兩條之間跳
+//   · 一條都對不上時 → **不再直接判成「別人的」**(那是 #111):
+//       - 那條執行緒送過還沒過期的讓位紀錄,**而且**它此刻收得到文字
+//         → kTheirs(隱藏)
+//       - 其餘一律 kHold(維持)
+//
+// ⚠ yields 為什麼是引數而不是狀態:過期判斷要跟收斂規則住在一起,
+//   才在這台 Ubuntu 上測得到(status_bar.cc 在 Linux 上編不起來)。
+//   now_ms 同理 —— 純函式不可以自己去問時鐘。
 BarOwnerDecision DecideBarOwner(const std::vector<BarOwnerClient>& clients,
-                                const BarOwnerForeground& fg);
+                                const std::vector<BarOwnerYield>& yields,
+                                const BarOwnerForeground& fg, uint64_t now_ms);
 
 }  // namespace rimewin
 
