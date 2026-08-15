@@ -100,6 +100,7 @@ SRCS=(
   "${SCRIPT_DIR}/tests/test_statusbar_layout.cc"
   "${SCRIPT_DIR}/tests/test_ui_strings.cc"
   "${SCRIPT_DIR}/tests/test_key_deadline.cc"
+  "${SCRIPT_DIR}/tests/test_keypath_ledger.cc"
   "${SCRIPT_DIR}/tests/test_log_rate.cc"
   "${SCRIPT_DIR}/tests/test_service_state.cc"
   "${SCRIPT_DIR}/tests/test_redeploy_flow.cc"
@@ -179,6 +180,279 @@ if "${OUT}/rime_tests" --self-check; then
   exit 1
 fi
 echo "==> 反向測試通過(框架會紅)"
+
+# ── 赦免機制:先紅後綠 ──────────────────────────────────────────
+#
+# common/keypath_ledger.h 決定 tsf_host 那一趟「按鍵路徑」的失敗算不算數,
+# 而它上一版的寫法放過了一條真的假綠(那一版是**編出來跑過**才抓到的):
+#
+#   一個永不清除的黏滯全域旗標 g_keypath_blind:第一階段搶不到前景把它
+#   設起來,第二階段 ForceForeground() 搶贏了、真的送了按鍵、真的量到
+#   「打出來的是 nihao 而不是你好」—— 那一筆仍然被記進「瞎的」那一格,
+#   於是被赦免,宿主 rc=0,而 verify_installer.sh 印出
+#   「OK >>> 舊的 DLL 映像在升級之後照樣打得出「你好」」。
+#
+# 上面 tests/test_keypath_ledger.cc 是綠的,但**綠燈本身證明不了它會紅**。
+# 這裡把那幾種寫法真的放回 keypath_ledger.h 的複本裡,要求它變紅。
+#
+# ⚠ 動的是複本,不是這棵樹上的檔案。
+echo
+echo "==> 赦免機制的反向測試(把黏滯旗標那種寫法放回去,測試必須變紅)"
+LEDGER_TMP="$(mktemp -d)"
+mkdir -p "${LEDGER_TMP}/common" "${LEDGER_TMP}/tests"
+cp "${SCRIPT_DIR}/common/keypath_ledger.h" "${LEDGER_TMP}/common/"
+cp "${SCRIPT_DIR}/tests/test_keypath_ledger.cc" \
+   "${SCRIPT_DIR}/tests/test_main.cc" \
+   "${SCRIPT_DIR}/tests/check.h" "${LEDGER_TMP}/tests/"
+cp "${LEDGER_TMP}/common/keypath_ledger.h" "${LEDGER_TMP}/pristine.h"
+
+ledger_build_and_run() {   # 回 0 = 那一份複本的測試全過
+  if ! "${CXX}" -std=c++17 -O1 -Wall -Wextra \
+        "${LEDGER_TMP}/tests/test_main.cc" \
+        "${LEDGER_TMP}/tests/test_keypath_ledger.cc" \
+        -o "${LEDGER_TMP}/ledger_tests" > "${LEDGER_TMP}/build.log" 2>&1; then
+    echo "!! 反向測試的複本編不起來 —— 這一段等於什麼都沒驗到" >&2
+    cat "${LEDGER_TMP}/build.log" >&2
+    exit 1
+  fi
+  "${LEDGER_TMP}/ledger_tests" > "${LEDGER_TMP}/run.log" 2>&1
+}
+
+# 控制組。⚠ 少了它,一個「編得起來但跑不動」的複本會讓底下每一個植入都
+# 「變紅」,而這一整段就變成一個永遠通過、什麼都沒守的裝飾。
+if ! ledger_build_and_run; then
+  echo "!! 沒有改過的 keypath_ledger.h 複本竟然是紅的 —— 底下每一個植入" >&2
+  echo "   都會「變紅」,而那不代表判準抓得到任何東西" >&2
+  cat "${LEDGER_TMP}/run.log" >&2
+  exit 1
+fi
+echo "   ok  控制組(一個字都沒改的複本)是綠的"
+
+# 每一個植入後面那一行寫的是**它該讓哪一則變紅**。
+# ⚠ 不只要求「有東西紅了」,還要求紅的是指定的那一則 —— 否則一個把整份
+#   檔案改成編不出正確語意的植入也會「通過」,而它證明不了判準有在守。
+ledger_plants="
+sticky_blind_flag:four_combinations_blind_then_seen_failure_is_not_excused
+measured_means_never_blind:four_combinations_blind_then_seen_failure_is_not_excused
+excuse_without_link:four_combinations_link_not_verified_excuses_nothing
+say_not_measured_always:four_combinations_blind_then_seen_failure_is_not_excused
+"
+for entry in ${ledger_plants}; do
+  plant="${entry%%:*}"
+  want="${entry#*:}"
+  cp "${LEDGER_TMP}/pristine.h" "${LEDGER_TMP}/common/keypath_ledger.h"
+  python3 - "${LEDGER_TMP}/common/keypath_ledger.h" "${plant}" <<'PYLEDGER'
+import io, sys
+p, plant = sys.argv[1], sys.argv[2]
+s = io.open(p, encoding='utf-8').read()
+
+# ① 那個黏滯旗標本人:NoteFail 不理呼叫點給的答案,改從「這一趟瞎過沒有」推。
+#    這就是 tsf_host_main.cc 上一版 `if (g_keypath_blind)` 的逐字等價寫法。
+if plant == 'sticky_blind_flag':
+    old = """  void NoteFail(bool blind) {
+    if (blind)
+      ++fails_blind_;
+    else
+      ++fails_focused_;
+  }"""
+    new = """  void NoteFail(bool blind) {
+    (void)blind;
+    if (segments_blind_ > 0)
+      ++fails_blind_;
+    else
+      ++fails_focused_;
+  }"""
+# ② KEYPATH_MEASURED 改回「這一趟從來沒瞎過」——
+#    於是它會與第二階段自己印的 PHASE2_KEYPATH_MEASURED=1 打架。
+elif plant == 'measured_means_never_blind':
+    old = "  bool measured() const { return segments_focused_ > 0; }"
+    new = "  bool measured() const { return segments_blind_ == 0; }"
+# ③ 拿掉「乙走通了」這個前提 —— 一個什麼都沒驗到的段落就會綠起來。
+elif plant == 'excuse_without_link':
+    old = "    return (link_verified_ && any_blind_segment()) ? fails_blind_ : 0;"
+    new = "    return any_blind_segment() ? fails_blind_ : 0;"
+# ④ 「這一次沒有量到」改成只要瞎過就印 —— 明明量到了還是印。
+elif plant == 'say_not_measured_always':
+    old = """  bool say_nothing_measured() const {
+    return !measured() && any_blind_segment();
+  }"""
+    new = "  bool say_nothing_measured() const { return any_blind_segment(); }"
+else:
+    raise SystemExit('不認得的植入:%s' % plant)
+
+assert s.count(old) == 1, '植入 %s 的錨點命中 %d 次' % (plant, s.count(old))
+io.open(p, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+PYLEDGER
+  if ledger_build_and_run; then
+    echo "!! 植入 ${plant} 之後 test_keypath_ledger 仍然是綠的 —— 它不算數" >&2
+    cat "${LEDGER_TMP}/run.log" >&2
+    exit 1
+  fi
+  # ⚠ 用 grep -c 存進變數再比,不要寫 grep -q 接管線:
+  #   set -o pipefail 底下命中會變成 141。這棵樹被咬過五次。
+  hit=$(grep -c -- "${want}" "${LEDGER_TMP}/run.log" || true)
+  if [ "${hit}" -eq 0 ]; then
+    echo "!! 植入 ${plant} 之後測試是紅的,但紅的不是 ${want} ——" >&2
+    echo "   那代表它是被別的東西咬到的,這一條判準沒有被證明有在守" >&2
+    cat "${LEDGER_TMP}/run.log" >&2
+    exit 1
+  fi
+  echo "   ok  植入 ${plant} → ${want} 變紅"
+done
+rm -rf "${LEDGER_TMP}"
+echo "==> 赦免機制的反向測試通過(4 種寫法都被指名抓到)"
+
+# ── 宿主那一側的**接線** ────────────────────────────────────────
+#
+# 上面驗的是判準本身(common/keypath_ledger.h)。判準對了不代表宿主用對了
+# —— 而這一輪的 blocker 正好就是接線:規則沒問題,錯在每一筆失敗的
+# 「瞎不瞎」是從一個跨階段的全域變數推來的,不是呼叫點給的。
+#
+# tsf_host_main.cc 在這台 Ubuntu 上編不起來(要 MSVC + msctf.h),
+# 所以接線只能用文字判準守。判準寫成一支函式,為的是能拿**改壞的複本**
+# 去問它 —— 一道從來沒有紅過的文字判準,與沒有判準是同一件事。
+keypath_wiring_gates() {   # $1 = tsf_host_main.cc;回非零 = 有違規
+  python3 - "$1" <<'PYWIRE'
+import io, re, sys
+
+p = sys.argv[1]
+raw = io.open(p, encoding='utf-8').read()
+
+# ⚠ /*blind=*/ 自己就是一個註解,所以先把它換成一個記號再剝註解。
+#   不先換的話,剝完之後每一個呼叫點看起來都沒有帶答案。
+MARK = '\x01BLIND\x01'
+src = raw.replace('/*blind=*/', MARK)
+
+# ⚠ 註解一定要剝掉。這棵樹的註解裡寫滿了「以前長什麼樣」,而判準若讀得到
+#   它,守門就會被自己的說明文字咬到 —— 那種紅只會教人把說明刪掉。
+#   (這裡的檔頭就寫著 FailKeyPath() 上一版怎麼分帳的。)
+def strip_comments(s):
+    out, i, n = [], 0, len(s)
+    while i < n:
+        c = s[i]
+        if c in '"\'':
+            q = c
+            out.append(c); i += 1
+            while i < n:
+                out.append(s[i])
+                if s[i] == '\\' and i + 1 < n:
+                    out.append(s[i + 1]); i += 2; continue
+                if s[i] == q:
+                    i += 1; break
+                i += 1
+            continue
+        if s.startswith('//', i):
+            while i < n and s[i] != '\n': i += 1
+            continue
+        if s.startswith('/*', i):
+            j = s.find('*/', i + 2)
+            i = n if j < 0 else j + 2
+            out.append(' ')
+            continue
+        out.append(c); i += 1
+    return ''.join(out)
+
+code = strip_comments(src)
+bad = []
+
+# ── (1) 每一個 FailKeyPath() 呼叫點都必須自己回答「這一筆瞎不瞎」──────
+#
+# 編譯器擋得住「少傳一個參數」,擋不住「傳了但沒人看得出傳的是什麼」。
+# 要求寫成 /*blind=*/,是為了讓覆核的人在呼叫點就讀得到那個事實。
+calls = [m for m in re.finditer(r'(?<!void )FailKeyPath\(', code)]
+if len(calls) < 5:
+    # 分母不對就不當成通過:這道判準八成是被改壞了,而不是違規消失了。
+    bad.append('FailKeyPath 的呼叫點只數到 %d 個 —— 這道判準的分母不對'
+               % len(calls))
+for m in calls:
+    line = code[:m.start()].count('\n') + 1
+    tail = code[m.end():m.end() + 400].lstrip()
+    if not tail.startswith(MARK):
+        bad.append('第 %d 行附近的 FailKeyPath() 沒有帶 /*blind=*/ —— '
+                   '「這一筆失敗當時有沒有焦點」是呼叫點才知道的事實' % line)
+        continue
+    # ── (2) 而且那個答案不可以是一個全域變數 ──────────────────────
+    #
+    # 這就是被改掉的那條 blocker 的形狀:g_keypath_blind 是一個永不清除的
+    # 黏滯全域旗標,第一階段設起來之後,第二階段真的量到的失敗也跟著被
+    # 記成「瞎的」,於是被赦免,rc=0。
+    rest = tail[len(MARK):]
+    cuts = [x for x in (rest.find(','), rest.find(')')) if x >= 0]
+    if not cuts:
+        bad.append('第 %d 行的 FailKeyPath() 剖不出第一個參數 ——'
+                   ' 這道判準讀不懂它,不當成通過' % line)
+        continue
+    arg = rest[:min(cuts)]
+    if re.match(r'^\s*g_[A-Za-z0-9_]*\s*$', arg):
+        bad.append('第 %d 行的 FailKeyPath() 把「瞎不瞎」交給全域變數「%s」——'
+                   ' 那正是被改掉的那條假綠的形狀' % (line, arg.strip()))
+
+# ── (3) 兩個階段各自記自己那一段 ────────────────────────────────
+n_seg = len(re.findall(r'g_keypath\.NoteSegment\(', code))
+if n_seg < 2:
+    bad.append('g_keypath.NoteSegment() 只出現 %d 次 —— 第一階段與第二階段'
+               '各自的按鍵路徑都要自己記一段,不然 KEYPATH_MEASURED 會與'
+               ' PHASE2_KEYPATH_MEASURED 打架' % n_seg)
+
+# ── (4) 收尾那兩個欄位必須由帳本回答,不可以再從「瞎過沒有」推 ────────
+if 'g_keypath.measured()' not in code:
+    bad.append('收尾的 KEYPATH_MEASURED 沒有用 g_keypath.measured() ——'
+               ' 它一旦改回從「這一趟瞎過沒有」推,就會與'
+               ' PHASE2_KEYPATH_MEASURED 在同一份 log 裡打架')
+if 'g_keypath.say_nothing_measured()' not in code:
+    bad.append('「按鍵路徑這一次沒有量到」那一句沒有被 '
+               'g_keypath.say_nothing_measured() 守著 ——'
+               ' 那句話只有真的一段都沒量到時才准印')
+
+for b in bad:
+    print('!! ' + b, file=sys.stderr)
+raise SystemExit(1 if bad else 0)
+PYWIRE
+}
+
+echo
+echo "==> 宿主那一側的接線(tsf_host_main.cc 在 Ubuntu 上編不起來,只能文字守)"
+if ! keypath_wiring_gates "${SCRIPT_DIR}/tests/tsf_host_main.cc"; then
+  echo "!! 現況就違規了" >&2
+  exit 1
+fi
+echo "   ok  現況乾淨"
+
+echo "==> 反向測試(接線判準必須抓得到植入的違規)"
+WIRE_TMP="$(mktemp -d)"
+cp "${SCRIPT_DIR}/tests/tsf_host_main.cc" "${WIRE_TMP}/pristine.cc"
+for plant in drop_blind_marker blind_from_a_sticky_global \
+             drop_one_note_segment measured_back_to_the_sticky_flag \
+             unguard_the_not_measured_line; do
+  cp "${WIRE_TMP}/pristine.cc" "${WIRE_TMP}/host.cc"
+  python3 - "${WIRE_TMP}/host.cc" "${plant}" <<'PYWIREPLANT'
+import io, sys
+p, plant = sys.argv[1], sys.argv[2]
+s = io.open(p, encoding='utf-8').read()
+if plant == 'drop_blind_marker':
+    old, new = '/*blind=*/!phase2_focus,\n', '!phase2_focus,\n'
+elif plant == 'blind_from_a_sticky_global':
+    # 逐字把那條 blocker 放回去:第二階段那一筆改成問全域旗標。
+    old, new = '/*blind=*/!phase2_focus,\n', '/*blind=*/g_keypath_blind,\n'
+elif plant == 'drop_one_note_segment':
+    old, new = '      g_keypath.NoteSegment(phase1_focus);\n', ''
+elif plant == 'measured_back_to_the_sticky_flag':
+    old, new = 'g_keypath.measured() ? 1 : 0', 'g_keypath.any_blind_segment() ? 0 : 1'
+elif plant == 'unguard_the_not_measured_line':
+    old, new = 'if (g_keypath.say_nothing_measured()) {', 'if (g_keypath.any_blind_segment()) {'
+else:
+    raise SystemExit('不認得的植入:%s' % plant)
+assert s.count(old) >= 1, '植入 %s 的錨點一次都沒命中' % plant
+io.open(p, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+PYWIREPLANT
+  if keypath_wiring_gates "${WIRE_TMP}/host.cc" 2>/dev/null; then
+    echo "!! 植入 ${plant} 之後接線判準仍然是綠的 —— 它不算數" >&2
+    exit 1
+  fi
+  echo "   ok  植入 ${plant} → 變紅"
+done
+rm -rf "${WIRE_TMP}"
+echo "==> 接線的反向測試通過(5 種改法都抓得到)"
 
 # ── 守門腳本自己也要被驗 ────────────────────────────────────────
 #

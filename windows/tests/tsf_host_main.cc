@@ -110,11 +110,17 @@
 //                  焦點拿不到時它量到的是「沒有答案」,不是「壞掉」。
 //                  輸出:KEYPATH_MEASURED / KEYPATH_FAILS / EXCUSED。
 //
-//   ⚠ 焦點拿不到、**而且**線路那三句話全部成立時,按鍵那一段的失敗
-//     不計入結束碼 —— 但那一行「按鍵路徑這一次沒有量到(拿不到前景:…)」
-//     **每一次都印**。這是刻意的取捨,而看不見的取捨等於沒有取捨。
+//   ⚠ 赦免是**一筆一筆**判的,判準是「記下這一筆的當下有沒有焦點」——
+//     那是呼叫點才知道的事實,所以 FailKeyPath() 把它當參數收。
+//     記帳本身在 common/keypath_ledger.h(那裡的檔頭寫著上一版怎麼漏的),
+//     由 tests/test_keypath_ledger.cc 在 Ubuntu 上真的跑。
+//   ⚠ 沒有焦點時記下的那些、**而且**線路那三句話全部成立時,才不計入
+//     結束碼。有焦點時記下的一律計入 —— 那些是真的量到了。
 //     線路那三句話沒走通就一律計入:一個什麼都沒量到的段落綠起來,
 //     比它紅起來危險得多。
+//   ⚠ KEYPATH_MEASURED 問的是「整趟裡有沒有任何一段量到」,
+//     PHASE2_KEYPATH_MEASURED 問的是「第二階段那一段量到沒有」。
+//     兩者範圍不同,但不可以打架:有一段量到了,收尾就不准說整趟沒量到。
 //
 // 結束碼 0 = 要求的每一項都成立。
 #include <msctf.h>
@@ -135,6 +141,7 @@
 // ⚠ 線路格式與 ABI 常數。這一支**不連結 rime_tsf**(見 CMakeLists 的說明),
 //   所以這裡拿到的是與瘦 DLL 同一份原始碼編出來的第二個副本,不是 DLL 手上
 //   那一份的程式碼。差別很重要,ProbeServiceLink 的檔頭把它寫清楚了。
+#include "keypath_ledger.h"
 #include "protocol.h"
 #include "rime_shell.h"
 
@@ -183,32 +190,32 @@ void Fail(const char* fmt, ...) {
 //
 // ⚠ **這不是放寬斷言。** 這些失敗仍然逐條印出來、仍然預設計入結束碼;
 //   只有在同時滿足下面兩件事時才被赦免:
-//     1. 這一趟真的拿不到執行緒焦點(g_keypath_blind),而且
+//     1. **記下那一筆的當下**真的拿不到執行緒焦點,而且
 //     2. **另一條不需要前景的量法整條走通了**(第二階段的三句話:
 //        管道 / 握手 / session —— 見 ProbeServiceLink)。
 //   少了第 2 條就沒有任何東西被量到,那時它必須紅 ——
 //   一個什麼都沒驗到的段落綠起來,比它紅起來危險得多。
-// ⚠ 分成兩個數字,而不是一個。
-//   g_keypath_fails_blind 是**在拿不到焦點的狀態下**記下的那些 —— 只有
-//   它們赦免得起來。g_keypath_fails_seen 是焦點拿得到的時候記下的:
-//   那些是真的量到了,一律計入。
-//   少了這一分,一趟「第一階段有焦點、第二階段掉了」會把第一階段真的
-//   量到的缺陷一起赦免掉 —— 那正是這一整輪在防的那種假綠。
-int g_keypath_fails_blind = 0;
-int g_keypath_fails_seen = 0;
-bool g_keypath_blind = false;
-// 那三句話(管道 / 握手 / session)是不是整條走通了。
-// **只有它為真時**,按鍵那一段量不到才赦免得起來。
-bool g_link_verified = false;
+//
+// ⚠ **第 1 條問的是那一筆,不是這一趟。** 上一版用一個永不清除的黏滯
+//   全域旗標(g_keypath_blind)分帳,而它放過了一條真的假綠:第一階段
+//   搶不到前景把旗標設起來,第二階段 ForceForeground() 搶贏了、真的送了
+//   按鍵、真的量到「打出來的是 nihao 而不是你好」—— 那一筆仍然被記進
+//   「瞎的」那一格,於是被赦免,rc=0。同一份 log 裡宿主自己印著
+//   PHASE2_DOC="nihao"。(而新加的 AttachThreadInput 剛好把這個組合從
+//   不可能變成可能:升級那幾分鐘裡前景擁有者本來就會變。)
+//
+//   所以現在 FailKeyPath() 把「這一筆瞎不瞎」當**參數**收 ——
+//   由編譯器逼每一個呼叫點回答,而不是從一個跨階段的全域變數推。
+//   記帳規則本身在 common/keypath_ledger.h(在 Ubuntu 上編得起來、
+//   由 tests/test_keypath_ledger.cc 真的跑);這裡只負責填數字。
+rimewin::KeypathLedger g_keypath;
 bool g_phase2_ran = false;
 
-void FailKeyPath(const char* fmt, ...) {
-  if (g_keypath_blind)
-    ++g_keypath_fails_blind;
-  else
-    ++g_keypath_fails_seen;
-  std::fprintf(stdout, "  !! [按鍵路徑%s] ",
-               g_keypath_blind ? "・沒有焦點" : "");
+// blind = **記下這一筆的當下**執行緒焦點在不在我們身上。
+// ⚠ 不要傳一個從全域狀態算出來的值進來 —— 那等於把上面那條假綠放回去。
+void FailKeyPath(bool blind, const char* fmt, ...) {
+  g_keypath.NoteFail(blind);
+  std::fprintf(stdout, "  !! [按鍵路徑%s] ", blind ? "・沒有焦點" : "");
   va_list ap;
   va_start(ap, fmt);
   std::vfprintf(stdout, fmt, ap);
@@ -2167,6 +2174,11 @@ static int Run(int argc, wchar_t** argv) {
   int eaten_count = 0;
   int mismatch_count = 0;
   int host_handled = 0;
+  // 第一階段這一段按鍵路徑:走了沒有,以及走的當下有沒有執行緒焦點。
+  // ⚠ phase1_ran 是分開的一格。沒走過的話「瞎不瞎」根本沒有答案,
+  //   而「沒有答案」不可以被當成「瞎的」拿去赦免 —— 那時一律計入。
+  bool phase1_ran = false;
+  bool phase1_focus = false;
   // ⚠ ks 提到迴圈外面:第二階段(升級之後)要用**同一個**介面再送一次鍵。
   //   在第一階段就 Release 掉的話,第二階段得自己再 QueryInterface 一次 ——
   //   那是另一條路,而「升級之後還能不能打字」要驗的正是原本那一條。
@@ -2185,6 +2197,7 @@ static int Run(int argc, wchar_t** argv) {
       const HRESULT fhr = thread_mgr->IsThreadFocus(&thread_focus);
       Say("  IsThreadFocus = %d (hr=0x%08lX)\n", thread_focus ? 1 : 0,
           static_cast<unsigned long>(fhr));
+      phase1_focus = thread_focus != FALSE;
       ITfDocumentMgr* focused = nullptr;
       const HRESULT ghr = thread_mgr->GetFocus(&focused);
       Say("  ThreadMgr::GetFocus = %p (hr=0x%08lX)%s\n",
@@ -2219,16 +2232,23 @@ static int Run(int argc, wchar_t** argv) {
         Say("  重新搶前景之後 IsThreadFocus = %d(前景視窗 %p,我們的是 %p)\n",
             again ? 1 : 0, static_cast<void*>(::GetForegroundWindow()),
             static_cast<void*>(hwnd));
+        // ⚠ 搶完之後**重新問**的這一個才算數。上一版只把一個全域旗標
+        //   設起來就不管了,而底下真正送鍵的是這一刻的焦點狀態。
+        phase1_focus = again != FALSE;
         if (!again) {
-          g_keypath_blind = true;
           SayForegroundIdentity("送按鍵前");
           FailKeyPath(
+              /*blind=*/true,
               "送按鍵之前仍然拿不到執行緒焦點 —— TSF 不會把任何按鍵交給\n"
               "     文字服務,所以底下量到的東西**不能拿來判斷產品好壞**。\n"
               "     這是測試台/工作階段的問題,不是輸入法的問題。\n"
               "     上面那一段「前景視窗 = …」寫的就是**誰佔著前景**。");
         }
       }
+      // 這一段按鍵路徑要走了。它「有沒有量到」由**這一刻**的焦點決定,
+      // 而不由這一趟稍後(例如第二階段)發生的事決定。
+      phase1_ran = true;
+      g_keypath.NoteSegment(phase1_focus);
       if (check_preserved) CheckPreservedKey(ks);
       // ⚠ 擺在這裡(其他按鍵送出去**之前**)是刻意的:trace 的按鍵額度
       //   有限(text_service.cc 的 key_trace_budget_),被別的鍵用完的話
@@ -2278,11 +2298,17 @@ static int Run(int argc, wchar_t** argv) {
   //   拿它來判斷「按鍵有沒有到達」會永遠說沒有 —— 實測 CI run #59 就是這樣:
   //   記錄檔裡明明有兩行 keysym=0x6E / 0x69,而這支程式報「一顆都沒到達」。
   //   一個讀舊資料的斷言比沒有斷言更糟:它會把人送去查一段其實是好的程式碼。
+  // ⚠ 底下那幾條斷言量到的都是**第一階段那一段**的結果,所以它們的
+  //   「瞎不瞎」也由第一階段決定 —— 不是由這一趟後來發生的事決定。
+  //   沒走過按鍵那一段(phase1_ran=0)時一律當成「有量到」計入:
+  //   那時失敗的原因與前景無關(例如 --expect 給了卻沒給 --keys)。
+  const bool p1_blind = phase1_ran && !phase1_focus;
   const std::string trace_after_keys = ReadAll(trace_path);
   const bool saw_any_key =
       trace_after_keys.find("按鍵 vk=") != std::string::npos;
   if (!keys.empty() && !saw_any_key) {
     FailKeyPath(
+        /*blind=*/p1_blind,
         "按鍵**一顆都沒有到達 OnTestKeyDown** —— 不是「不吃」,是根本沒收到。\n"
         "     要查的是 ActivateEx 裡的 AdviseKeyEventSink,不是佈局也不是連線。\n"
         "     記錄裡的 key sink 那一行會說掛上了沒有。");
@@ -2291,10 +2317,11 @@ static int Run(int argc, wchar_t** argv) {
       // ⚠ 這一條也記在按鍵那個帳上,而理由不是寬容:
       //   AdviseKeyEventSink(..., fForeground = TRUE) 本來就**要求呼叫執行緒
       //   擁有前景**。拿不到前景時它掛不上是必然的,不是缺陷。
-      FailKeyPath("記錄明說 key event sink 兩種都掛不上");
+      FailKeyPath(/*blind=*/p1_blind, "記錄明說 key event sink 兩種都掛不上");
   }
   if (require_eaten && eaten_count == 0 && saw_any_key)
-    FailKeyPath("按鍵到達了 OnTestKeyDown,但一顆都沒有被吃掉。\n"
+    FailKeyPath(/*blind=*/p1_blind,
+                "按鍵到達了 OnTestKeyDown,但一顆都沒有被吃掉。\n"
                 "     照除錯記錄裡的 keysym 判斷是哪一段:\n"
                 "       keysym=0x0  → 鍵盤佈局問不出字(win32_oracle.h)\n"
                 "       keysym!=0   → 連不上服務(上面會有一行「連線失敗」)");
@@ -2303,7 +2330,8 @@ static int Run(int argc, wchar_t** argv) {
     if (doc->text == expect_doc)
       Ok("文件內容 = \"%s\"(與預期相同)", Narrow(expect_doc).c_str());
     else
-      FailKeyPath("文件內容 = \"%s\",預期 \"%s\"\n"
+      FailKeyPath(/*blind=*/p1_blind,
+                  "文件內容 = \"%s\",預期 \"%s\"\n"
                   "     ⚠ 斷言看的是**文件內容**,不是「有沒有被吃掉」——\n"
                   "     「吃掉了但什麼都沒做」正是這一輪要抓的缺陷。",
                   Narrow(doc->text).c_str(), Narrow(expect_doc).c_str());
@@ -2313,8 +2341,8 @@ static int Run(int argc, wchar_t** argv) {
     if (doc->text == expect)
       Ok("文件裡真的是「%s」—— 整條 TSF 路徑走通了", Narrow(expect).c_str());
     else
-      FailKeyPath("文件裡是「%s」,預期「%s」", Narrow(doc->text).c_str(),
-                  Narrow(expect).c_str());
+      FailKeyPath(/*blind=*/p1_blind, "文件裡是「%s」,預期「%s」",
+                  Narrow(doc->text).c_str(), Narrow(expect).c_str());
   }
 
   // ══════════════════════════════════════════════════════════════
@@ -2537,7 +2565,9 @@ static int Run(int argc, wchar_t** argv) {
               static_cast<void*>(hwnd));
           if (!phase2_focus) SayForegroundIdentity("第二階段");
         }
-        if (!phase2_focus) g_keypath_blind = true;
+        // ⚠ 這裡**不再**去設一個全域旗標。第二階段瞎不瞎是第二階段
+        //   自己的事,而底下每一筆失敗都自己帶著這個答案走
+        //   (見 common/keypath_ledger.h 的檔頭)。
 
         // ── 這個進程手上那一份 DLL,現在躺在磁碟的哪裡 ──────────────
         //
@@ -2681,9 +2711,12 @@ static int Run(int argc, wchar_t** argv) {
         //
         // ⚠ 不管量到沒量到,底下這一行**每一次都印**。這是刻意的取捨,
         //   而一個看不見的取捨等於沒有取捨。
+        // 第二階段這一段按鍵路徑的結論就在下面這個 if 鏈裡,
+        // 而它有沒有量到只由 phase2_focus 決定 —— 與第一階段無關。
+        g_keypath.NoteSegment(phase2_focus != FALSE);
         if (!phase2_focus) {
           Say("  PHASE2_KEYPATH_MEASURED=0\n");
-          Say("  ⚠ 按鍵路徑這一次沒有量到(拿不到前景:%s)\n",
+          Say("  ⚠ 第二階段的按鍵路徑這一次沒有量到(拿不到前景:%s)\n",
               ForegroundOwnerBrief().c_str());
           Say("     這一格的判定由上面那三句話(管道 / 握手 / session)決定,\n"
               "     它們不經過 TSF。要讓按鍵那一段也量得到,要修的是**誰佔著\n"
@@ -2691,7 +2724,9 @@ static int Run(int argc, wchar_t** argv) {
               "     不是管道名、不是版本協商、也不是 rime_shell 的 ABI。\n");
         } else if (!relinked) {
           Say("  PHASE2_KEYPATH_MEASURED=1\n");
+          // ⚠ 這一條在 phase2_focus==TRUE 的分支裡:確實量到了。
           FailKeyPath(
+              /*blind=*/!phase2_focus,
               "按鍵探測在 %lu 毫秒 / %d 次之內沒有成功,而**線路整條是通的**\n"
               "     (管道 / 握手 / session 三句話都成立)。也就是說連線那一段\n"
               "     是好的,壞在更後面:session 開了但按鍵沒有回應。\n"
@@ -2716,14 +2751,19 @@ static int Run(int argc, wchar_t** argv) {
             Ok("**升級之後,同一個進程用舊的 DLL 照樣打得出「%s」**",
                Narrow(expect).c_str());
           else
-            FailKeyPath("第二階段打出來的是「%s」,預期「%s」——\n"
+            // ⚠ 這一條也在 phase2_focus==TRUE 的分支裡,而且它是**送完鍵、
+            //   比對過文件內容**才記的 —— 那是這條路上最硬的一筆量測。
+            //   上一版把它記進「瞎的」那一格,於是 rc=0。
+            FailKeyPath(/*blind=*/!phase2_focus,
+                        "第二階段打出來的是「%s」,預期「%s」——\n"
                         "     舊的 DLL 連上了新的服務,但打出來的東西不對。\n"
                         "     那比連不上更糟:使用者不會發現。",
                         Narrow(doc->text).c_str(), Narrow(expect).c_str());
         }
         // 上面那三句話全部成立,才有資格赦免按鍵那一段量不到的失敗。
         g_phase2_ran = true;
-        g_link_verified = link.pipe && link.handshake && link.session;
+        g_keypath.set_link_verified(link.pipe && link.handshake &&
+                                    link.session);
       }
     }
   }
@@ -2754,59 +2794,92 @@ static int Run(int argc, wchar_t** argv) {
   //   所以判準統一成一句:**焦點拿不到的時候,改用不需要前景的那條路
   //   問同一個問題**;那條路走不通就紅在那條路上,走得通才赦免按鍵。
   //   沒有第二階段的跑法也拿得到這一格,而且它一樣會紅在該紅的地方。
-  if (g_keypath_blind && !g_phase2_ran) {
+  if (g_keypath.any_blind_segment() && !g_phase2_ran) {
     Say("\n══ 拿不到前景 —— 改用不經過 TSF 的那條路問一次 ══\n");
     LinkProbe link;
     // profile_guid 留空:protocol.h 說它只作診斷,服務端不得據此改行為。
     ProbeServiceLink(&link, langid, std::string());
     SayLinkProbe("LINK", link);
     JudgeLinkProbe(link);
-    g_link_verified = link.pipe && link.handshake && link.session;
+    g_keypath.set_link_verified(link.pipe && link.handshake && link.session);
   }
 
   // ── 按鍵那一段的帳,現在結 ────────────────────────────────────────
   //
-  // 赦免的條件有**兩個**,而且兩個都必須成立:
-  //   1. 這一趟真的拿不到執行緒焦點 —— 也就是說那些失敗量到的是
+  // 赦免是**一筆一筆**判的,而且三個條件都要成立(見
+  // common/keypath_ledger.h::excused_fails):
+  //   1. **記下那一筆的當下**拿不到執行緒焦點 —— 也就是說它量到的是
   //      「沒有答案」,不是「壞掉」;
-  //   2. 另一條不需要前景的量法(管道 / 握手 / session 三句話)整條走通了
+  //   2. 這一趟確實有一段是瞎的 —— 記帳自己壞了的時候不赦免任何東西;
+  //   3. 另一條不需要前景的量法(管道 / 握手 / session 三句話)整條走通了
   //      —— 也就是說這一格**確實有東西被量到**。
   //
-  // ⚠ 少了第 2 條就一律計入。這一點是整段最重要的一行:一個什麼都沒驗到
+  // ⚠ 第 1 條問的是**那一筆**,不是這一趟。上一版問的是一個跨階段的黏滯
+  //   全域旗標,於是「第一階段瞎、第二階段搶回前景並量到打錯字」那一筆
+  //   也被赦免掉,rc=0。那條假綠現在由 tests/test_keypath_ledger.cc 的
+  //   four_combinations_blind_then_seen_failure_is_not_excused 守著。
+  //
+  // ⚠ 少了第 3 條就一律計入。這一點是整段最重要的一行:一個什麼都沒驗到
   //   的段落綠起來,比它紅起來危險得多。§5c / §5d / §6c 那些沒有第二階段
-  //   的跑法永遠走不到赦免這一條,它們拿不到焦點時仍然會紅。
+  //   的跑法拿不到焦點時,乙走不通就仍然會紅。
   //
   // ⚠ 不管赦不赦免,那些失敗**上面已經逐條印出來了**,而且下面這一行
   //   每一次都印。看不見的取捨等於沒有取捨。
-  const bool excused = g_keypath_blind && g_link_verified;
+  const int excused = g_keypath.excused_fails();
   // **無條件印。** 這一行是整個取捨的帳單,而一張只在某些情況下才出現的
   // 帳單,等於沒有帳單。
+  //
+  // ⚠ 欄位的定義,一個一個講清楚(上一版 KEYPATH_MEASURED 與
+  //   PHASE2_KEYPATH_MEASURED 會在同一份 log 裡打架,那本身就是缺陷):
+  //     KEYPATH_MEASURED    整趟裡**有沒有任何一段**是在有焦點的狀態下
+  //                         走完的。第二階段那一行問的是那一段,範圍不同,
+  //                         但兩者不會矛盾:這一格是把量到的段落數出來的。
+  //     KEYPATH_BLIND       整趟裡**有沒有任何一段**是瞎的。
+  //                         ⚠ 它與 KEYPATH_MEASURED **不是互補**:
+  //                         兩段一瞎一明時兩個都是 1,兩個都對。
+  //     KEYPATH_SEGMENTS    量到的段落數 / 瞎的段落數。
+  //     KEYPATH_FAILS_SEEN  記下的當下**有**焦點的失敗 —— 永遠計入。
+  //     KEYPATH_FAILS_BLIND 記下的當下**沒有**焦點的失敗 —— 有條件赦免。
+  //     EXCUSED             真的被赦免掉的**筆數**(不是 0/1)。
   Say("\nKEYPATH_MEASURED=%d KEYPATH_FAILS_BLIND=%d KEYPATH_FAILS_SEEN=%d "
-      "KEYPATH_BLIND=%d LINK_VERIFIED=%d EXCUSED=%d\n",
-      g_keypath_blind ? 0 : 1, g_keypath_fails_blind, g_keypath_fails_seen,
-      g_keypath_blind ? 1 : 0, g_link_verified ? 1 : 0, excused ? 1 : 0);
-  // 焦點拿得到時記下的那些**永遠計入** —— 它們是真的量到了。
-  g_fails += g_keypath_fails_seen;
-  if (g_keypath_blind) {
-    // ⚠ 這一句每一次拿不到前景都印,不管後面赦不赦免。
-    Say("⚠ 按鍵路徑這一次沒有量到(拿不到前景:%s)\n",
+      "KEYPATH_BLIND=%d LINK_VERIFIED=%d EXCUSED=%d "
+      "KEYPATH_SEGMENTS=%d/%d\n",
+      g_keypath.measured() ? 1 : 0, g_keypath.fails_blind(),
+      g_keypath.fails_focused(), g_keypath.any_blind_segment() ? 1 : 0,
+      g_keypath.link_verified() ? 1 : 0, excused, g_keypath.segments_focused(),
+      g_keypath.segments_blind());
+  // ⚠ 「這一次沒有量到」只有真的一段都沒量到時才准印。上一版憑黏滯旗標
+  //   印它,於是第二階段明明量到了、log 裡還是有這一句。
+  if (g_keypath.say_nothing_measured()) {
+    Say("⚠ 整趟下來按鍵路徑這一次沒有量到(拿不到前景:%s)\n",
         ForegroundOwnerBrief().c_str());
+  } else if (g_keypath.say_partly_measured()) {
+    // 量到了,但不是每一段都量到。這一句與上面那句互斥,而且它**不是**
+    // 「沒有量到」—— 說錯話會把人送去查前景,而該查的是量到的那一段。
+    Say("⚠ 按鍵路徑有 %d 段量到了、%d 段沒有(沒量到的那幾段在上面各自\n"
+        "  印了自己那一行)。這一行的判定看的是量到的那幾段。\n",
+        g_keypath.segments_focused(), g_keypath.segments_blind());
   }
-  if (excused) {
-    Say("  上面 %d 項按鍵相關的失敗**不計入結束碼**,因為它們量到的是\n"
-        "  「沒有答案」而不是「壞掉」。這一趟的判定由不需要前景的那三句話\n"
-        "  (管道 / 握手 / session)決定,而它們全部成立。\n"
-        "  ⚠ 這是刻意的取捨。要讓按鍵那一段也量得到,要修的是**誰佔著\n"
+  if (excused > 0) {
+    Say("  上面 %d 項按鍵相關的失敗**不計入結束碼**,因為它們是在拿不到\n"
+        "  焦點的當下記的 —— 量到的是「沒有答案」而不是「壞掉」。\n"
+        "  它們的判定由不需要前景的那三句話(管道 / 握手 / session)決定,\n"
+        "  而它們全部成立。\n"
+        "  ⚠ 這是刻意的取捨,而且它只赦免瞎的那幾筆:有焦點時記下的\n"
+        "    %d 項照樣計入。要讓瞎的那幾段也量得到,要修的是**誰佔著\n"
         "    前景**,不是輸入法。\n",
-        g_keypath_fails_blind);
-  } else {
-    if (g_keypath_blind)
-      Say("  而不需要前景的那條路**也沒有走通**(LINK_VERIFIED=0)——\n"
-          "  所以這一趟什麼都沒有被量到,按鍵那 %d 項失敗照樣計入。\n"
-          "  一個驗不到東西的段落綠起來,比它紅起來危險得多。\n",
-          g_keypath_fails_blind);
-    g_fails += g_keypath_fails_blind;
+        excused, g_keypath.fails_focused());
+  } else if (g_keypath.fails_blind() > 0) {
+    // ⚠ 這裡**不可以**說「這一趟什麼都沒有被量到」——「第一階段量到了、
+    //   第二階段掉了前景」那一種組合底下那句話是假的,而假話會把人送去
+    //   查前景,而該查的是量到的那一段。只講那幾筆自己的處境。
+    Say("  拿不到焦點時記下的那 %d 項**照樣計入**:它們自己什麼都沒量到,\n"
+        "  而不需要前景的那條路也沒有走通(LINK_VERIFIED=%d)——\n"
+        "  沒有任何一條路對它們給出過答案。\n"
+        "  一個驗不到東西的段落綠起來,比它紅起來危險得多。\n",
+        g_keypath.fails_blind(), g_keypath.link_verified() ? 1 : 0);
   }
+  g_fails += g_keypath.counted_fails();
 
   Say("\n=== %s(%d 項失敗)===\n", g_fails == 0 ? "通過" : "失敗", g_fails);
   return g_fails == 0 ? 0 : 1;

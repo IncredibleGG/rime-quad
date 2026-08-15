@@ -227,6 +227,7 @@ add_executable(rime_tests
   tests/test_statusbar_layout.cc
   tests/test_ui_strings.cc
   tests/test_key_deadline.cc
+  tests/test_keypath_ledger.cc
   tests/test_log_rate.cc
   tests/test_service_state.cc
   tests/test_redeploy_flow.cc
