@@ -129,13 +129,33 @@ PipeServer::~PipeServer() {
   if (stop_event_) ::CloseHandle(stop_event_);
 }
 
-bool PipeServer::ToggleVariantPref() {
+bool PipeServer::ToggleVariantPref(int deadline_ms, Engine::KeyWait* wait) {
+  if (wait) *wait = Engine::KeyWait();
+  // ── ⚠ 預算用完就在這裡停,**不可以**往下傳 ──────────────────────
+  //
+  //   Engine::ReadBackStatus 的約定是「deadline_ms <= 0 = 舊行為,永遠等」
+  //   (那條路留給不在按鍵路徑上的呼叫端)。把一個已經用完的預算原樣
+  //   傳下去,結果不是「立刻放棄」,是**掉回無上限的等待** —— 而且它
+  //   長得跟修好了一模一樣。這一格是這一輪最容易再犯一次的地方。
+  if (deadline_ms <= 0) {
+    if (wait) {
+      wait->timed_out = true;
+      wait->abandoned = true;  // 一步都沒排進去
+    }
+    return false;
+  }
   if (!settings_window_ || !engine_) return false;
   // ⚠ 方向從**引擎回讀**算,不是從設定檔算,也不是從畫面反推 ——
   //   與狀態列第一格那一段是同一條理由:拿畫面反推的話,只要畫面曾經
   //   與引擎不一致,再按一次送的就是同一個值,使用者會覺得這顆鍵
   //   只能往一個方向切。
-  const Engine::StatusReadback rb = engine_->ReadBackStatus();
+  // ⚠ 有上限 + 作廢權。這一支在按鍵那條路上,而它以前是
+  //   Engine::Post("回讀狀態") = 永遠等 —— 與 Ctrl+空白 同一個缺陷,
+  //   只是守門看不到它(舊判準只認 engine.cc 的 Post("按鍵"))。
+  const Engine::StatusReadback rb =
+      engine_->ReadBackStatus(0, deadline_ms, wait);
+  // rb.ok = false 有兩種:一個活著的 session 都沒有,或這一趟逾時了。
+  // 兩種的處置一樣 —— **什麼都不做**,而那包含不碰 UI。
   if (!rb.ok) return false;
   const VariantCell now =
       VariantCellFrom((rb.status_flags & kStVariantKnown) != 0,
@@ -511,26 +531,35 @@ void PipeServer::ServeClient(HANDLE pipe) {
   uint32_t keys_timed_out = 0;
   uint32_t keys_abandoned = 0;
   // 每條連線最多 20 行 KEY_MS。⚠ 一定要有額度:這是**每鍵**路徑,
-  // 沒有額度的話一個卡住的引擎會把 1 MiB 的 service.log 寫滿並從頭來過,
-  // 把真正有價值的前幾行捲掉。
+  // 沒有額度的話一個卡住的引擎會把 service.log 一路寫大 —— 而那個檔案
+  // **不是環形的**(service/main.cc 的大小檢查只在啟動時做一次),
+  // 超過 1 MiB 之後被丟掉的是整份,連同前面真正有價值的那幾行。
   int key_ms_budget = 20;
   // 這條連線的進場 / 離場要不要寫。⚠ **一次決定,兩行共用** ——
   //   額度在中途用完的話會留下一條只有進場沒有離場的連線,而
   //   「存活多久 / 最後一步是什麼」正是這兩行唯一的產出。
   bool log_conn = false;
+  int conn_log_suppressed = 0;
   {
-    int left = conn_log_budget_.load(std::memory_order_relaxed);
-    while (left > 0 && !conn_log_budget_.compare_exchange_weak(
-                           left, left - 1, std::memory_order_relaxed)) {
-    }
-    log_conn = left > 0;
+    std::lock_guard<std::mutex> lock(conn_log_mu_);
+    log_conn = conn_log_.Allow(static_cast<int64_t>(::GetTickCount()),
+                               &conn_log_suppressed);
   }
+  // ⚠ 記錄檔的執行期大小檢查掛在這裡(每條連線一次),不是每顆按鍵 ——
+  //   理由見 pipe_server.h 的 SetLogCheckpoint。
+  if (on_log_checkpoint_) on_log_checkpoint_();
   // 這條連線是怎麼結束的。⚠ 一律指向字面值,不必管生命週期。
   const char* last_step = "(還在讀)";
   unsigned last_op = 0;
-  if (log_conn)
+  if (log_conn) {
+    if (conn_log_suppressed > 0)
+      // ⚠ 被壓掉的則數不可以消失。它本身就是重連迴圈**最強**的訊號:
+      //   「這中間另有 137 條連線沒記」比 10 行「存活=300ms」還說得清楚。
+      Log("[pipe] (前面另有 %d 條連線沒記 —— 每分鐘只留一條的節流)\n",
+          conn_log_suppressed);
     Log("[pipe] 連線 #%llu 進場\n",
         static_cast<unsigned long long>(client_id));
+  }
 
   auto send = [&](const std::string& payload) -> bool {
     const std::string framed = Frame(payload);
@@ -852,6 +881,12 @@ void PipeServer::ServeClient(HANDLE pipe) {
       case Op::kKey: {
         KeyReq k;
         if (!DecodeKey(payload, &seq, &k)) goto done;
+        // ⚠ 這顆鍵的碼表從**這裡**起算,不是從 ProcessKey 起算:
+        //   下面那道 ClassifyHotkey 命中輕點 Shift 時要讀設定檔
+        //   (磁碟 I/O,而且握著一把與 Save 共用的行程層級 mutex),
+        //   而 DLL 那一側的 150ms 從它送出那一刻就在跑。把 dt_set 排在
+        //   預算外面等於服務端不再「先放棄」。
+        const DWORD key_t_in = ::GetTickCount();
         // ── Ctrl+空白鍵:中英切換 ────────────────────────────────
         //
         // ⚠ 攔在 librime **之前**,而且判斷來自 common/hotkey_policy.cc
@@ -912,9 +947,35 @@ void PipeServer::ServeClient(HANDLE pipe) {
           if (!send(EncodeResult(seq, r))) goto done;
           break;
         }
-        // ⚠ 這一格要留在 if/else 外面:下面那一段 UI 的去留由它決定,
-        //   而算出它的地方在 else 分支裡面。
-        bool key_timed_out = false;
+        // ── 一顆按鍵在服務端只有**一份**預算(#93,這一輪補完)────
+        //
+        // ⚠ 這條路上有**三個**出口會進引擎那條唯一的 FIFO,而上一輪
+        //   只有第三個有上限:
+        //     · Ctrl+Shift+F → ToggleVariantPref()(ReadBackStatus)
+        //                     → CurrentResult()          ← 兩趟
+        //     · Ctrl+空白 / 輕點 Shift → ToggleAsciiMode()
+        //     · 其他 → ProcessKey()
+        //   前兩個當時都還是 Engine::Post() = queue_.Call(…, 0) = 永遠等。
+        //
+        // ⚠ 而預算是**一顆鍵**的,不是一趟的:簡繁那條要走兩趟,兩趟各給
+        //   kKeyDeadlineMs 的話最壞 200ms,而 DLL 只有 150ms —— 服務端
+        //   不再「先放棄」,common/key_deadline.h 的 static_assert 守的
+        //   關係在執行期被破壞,而它一個字都看不到。
+        //
+        // ⚠ t0 要在**讀設定檔之前**起算:dt_set 那一段(ClassifyHotkey
+        //   命中輕點 Shift 時才會去讀)也在 DLL 那 150ms 的時鐘裡面。
+        const DWORD key_t0 = key_t_in;
+        auto key_budget_left = [key_t0]() -> int {
+          return RemainingKeyBudgetMs(
+              static_cast<int>(::GetTickCount() - key_t0));
+        };
+        // ⚠ 這兩格要留在 if/else 外面:下面那一段 UI 的去留由它們決定,
+        //   而算出它們的地方在各個分支裡面。
+        Engine::KeyWait kw;
+        // 「這一份 Result 是不是引擎的現況」。⚠ 它**不是** handled ——
+        //   引擎不吃這顆鍵(英數模式下的字母)時 handled=false,但快照
+        //   仍然是現況,候選窗與那一橫該照著更新。
+        bool key_result_is_current = false;
         Result r;
         if (action == KeyAction::kToggleVariant) {
           // 簡繁快捷鍵(Ctrl+Shift+F,G76)。
@@ -925,14 +986,34 @@ void PipeServer::ServeClient(HANDLE pipe) {
           //   使用者打到一半的那一段會當場消失。
           //   簡繁本身是非同步套上去的(設定視窗那條執行緒),所以此刻
           //   文件本來就不該有任何變化,拿當下這一份正是對的。
-          if (ToggleVariantPref()) {
-            r = engine_->CurrentResult(k.session);
-            r.handled = true;
+          if (ToggleVariantPref(key_budget_left(), &kw)) {
+            r = engine_->CurrentResult(k.session, key_budget_left(), &kw);
+            // ⚠ 第二趟也會逾時。逾時的那一份是預設建構的 Result,
+            //   宣告 handled=true 等於叫 DLL 把一份「沒有組字、沒有候選」
+            //   套進文件 —— 使用者打到一半的那一段會當場消失。
+            if (!kw.timed_out) {
+              r.handled = true;
+              key_result_is_current = true;
+            }
           }
-          // ToggleVariantPref 回 false = 什麼都沒做 → r.handled 維持 false
-          // → DLL 把那顆鍵交回宿主。**不可以**假裝切了。
+          // ── ⚠ ToggleVariantPref 回 false = **什麼都沒做** ──────────
+          //
+          //   兩種情況:引擎回讀不到(rb.ok=false / 逾時),或方案根本
+          //   沒宣告字形開關(VariantCell 是 kHidden → ToggleVariantTarget
+          //   回 false)。r 維持預設建構 → r.handled 是 false →
+          //   DLL 把那顆鍵交回宿主。**不可以**假裝切了。
+          //
+          //   ⚠ 而「什麼都不做」包含**不碰 UI** —— 與上面「使用者把輕點
+          //     Shift 關掉了」那一格是同一條規矩,只差 25 行,而 main 上
+          //     這一格是壞的:它照樣 note_schema + push_ui 一份全 0 的
+          //     快照。items 空的 → ui_->Hide() 把使用者組字到一半的候選窗
+          //     收掉;旗標全 0 → SnapshotFlagsAreUsable() 仍然是 true
+          //     (它只看 kStDisabled),於是那一橫把中/英寫成「中」、
+          //     簡繁那格整個消失 —— 而引擎可能正在英數模式,什麼都沒變。
+          //     擋它的是 key_result_is_current(見下面的 DecideKeyUiAction)。
         } else if (action == KeyAction::kToggleAsciiMode) {
-          r = engine_->ToggleAsciiMode(k.session);
+          r = engine_->ToggleAsciiMode(k.session, key_budget_left(), &kw);
+          key_result_is_current = !kw.timed_out;
         } else {
           // ── 把「間歇打不出中文」變成一個數字(#108)────────────
           //
@@ -945,39 +1026,50 @@ void PipeServer::ServeClient(HANDLE pipe) {
           //
           // 三個佇列欄位早就存在(work_queue.h),只是到現在為止唯一的
           // 消費點是設定視窗(settings_window.cc),連線路徑上沒有人讀。
-          Engine::KeyWait kw;
-          const DWORD t0 = ::GetTickCount();
-          r = engine_->ProcessKey(k.session, k.keysym, k.mods, &kw);
-          const DWORD dt = ::GetTickCount() - t0;
-          ++keys_seen;
-          if (kw.timed_out) ++keys_timed_out;
-          if (kw.abandoned) ++keys_abandoned;
-          key_timed_out = kw.timed_out;
-          // 門檻與兩個上限是一組的,所以同樣住在 common/key_deadline.h
-          // (kKeySlowLogMs)。它刻意低於服務端的上限:只記已經逾時的那些
-          // 會看不到「快要逾時」那一段,而那一段才是樣式開始的地方。
-          if ((dt >= static_cast<DWORD>(kKeySlowLogMs) || kw.timed_out) &&
-              key_ms_budget > 0) {
-            --key_ms_budget;
-            Log("[pipe] KEY_MS=%lu(設定讀取=%lums,佇列前面是「%s」,"
-                "已跑 %lldms,最舊等待 %lldms,逾時=%d,本體作廢=%d)%s\n",
-                static_cast<unsigned long>(dt),
-                static_cast<unsigned long>(dt_set),
-                engine_->CurrentJobLabel().c_str(),
-                static_cast<long long>(engine_->StalledMs()),
-                static_cast<long long>(engine_->OldestWaitingMs()),
-                kw.timed_out ? 1 : 0, kw.abandoned ? 1 : 0,
-                key_ms_budget == 0 ? "  (KEY_MS 額度用完,這條連線不再記)"
-                                   : "");
-          }
+          r = engine_->ProcessKey(k.session, k.keysym, k.mods,
+                                  key_budget_left(), &kw);
+          key_result_is_current = !kw.timed_out;
         }
-        // ── ⚠ 逾時的那一份不可以碰 UI(#93/#108 的覆核抓到的)──────
+        // ── 把「間歇打不出中文」變成一個數字,**三個出口都算** ───────
         //
-        //   逾時代表本體多半一步都沒跑(作廢成功),引擎那邊的組字狀態
-        //   原封不動。那一份 Result 是佔位,不是現況 —— 餵進去的話:
-        //   候選是空的 → push_ui 會把候選窗收掉,而使用者正組字到一半;
-        //   旗標也會被那一橫讀走 → 一個健康的引擎自稱「正在準備字詞」。
-        //   兩件事使用者都當場看得到,而且畫面從此與引擎分岔。
+        // ⚠ 上一輪這四個計數只包住 ProcessKey 那一格,於是最常按的那顆鍵
+        //   (Ctrl+空白)逾時多少次,離場那一行答不出來 —— 而那一行正是
+        //   使用者被請去撈的東西。
+        const DWORD dt = ::GetTickCount() - key_t0;
+        ++keys_seen;
+        if (kw.timed_out) ++keys_timed_out;
+        if (kw.abandoned) ++keys_abandoned;
+        // 門檻與兩個上限是一組的,所以同樣住在 common/key_deadline.h
+        // (kKeySlowLogMs)。它刻意低於服務端的上限:只記已經逾時的那些
+        // 會看不到「快要逾時」那一段,而那一段才是樣式開始的地方。
+        if ((dt >= static_cast<DWORD>(kKeySlowLogMs) || kw.timed_out) &&
+            key_ms_budget > 0) {
+          --key_ms_budget;
+          Log("[pipe] KEY_MS=%lu(動作=%d,設定讀取=%lums,佇列前面是「%s」,"
+              "已跑 %lldms,最舊等待 %lldms,逾時=%d,本體作廢=%d)%s\n",
+              static_cast<unsigned long>(dt), static_cast<int>(action),
+              static_cast<unsigned long>(dt_set),
+              engine_->CurrentJobLabel().c_str(),
+              static_cast<long long>(engine_->StalledMs()),
+              static_cast<long long>(engine_->OldestWaitingMs()),
+              kw.timed_out ? 1 : 0, kw.abandoned ? 1 : 0,
+              key_ms_budget == 0 ? "  (KEY_MS 額度用完,這條連線不再記)"
+                                 : "");
+        }
+        // ── ⚠ 不是現況的那一份不可以碰 UI(#93/#108 的覆核抓到的)───
+        //
+        //   兩種「不是現況」,而它們的症狀一模一樣:
+        //
+        //   · **逾時** —— 本體多半一步都沒跑(作廢成功),引擎那邊的組字
+        //     狀態原封不動。那一份 Result 是佔位。
+        //   · **什麼都沒做** —— 簡繁快捷鍵那一格(ToggleVariantPref 回
+        //     false)。r 從頭到尾沒有被引擎寫過。
+        //
+        //   餵進去的話:候選是空的 → push_ui 會把候選窗收掉,而使用者
+        //   正組字到一半;旗標也會被那一橫讀走 → 全 0 的快照
+        //   SnapshotFlagsAreUsable() 是 true,那一橫於是把中/英寫成「中」、
+        //   簡繁那格整個消失。兩件事使用者都當場看得到,而且畫面從此
+        //   與引擎分岔。
         //
         //   這與上面「使用者把輕點 Shift 關掉了」那一格是同一條規矩:
         //   什麼都不做包含**不碰 UI**。判準在 common/key_deadline.h,
@@ -985,7 +1077,13 @@ void PipeServer::ServeClient(HANDLE pipe) {
         //
         // ⚠ 回給宿主的 r 照送不誤 —— DLL 要靠 handled=false 才知道
         //   這顆鍵要自己收尾(tsf/text_service.cc)。不送等於那顆鍵消失。
-        if (DecideKeyUiAction(key_timed_out) == KeyUiAction::kUpdateUi) {
+        //
+        // ⚠ 這一格裡 push_ui( 只准出現**一次**。判準 (4) 證明的是
+        //   「push_ui 在守門裡面」,不是「push_ui 只發生在守門裡面」——
+        //   覆核者實測:在這個大括號**後面**多加一行 push_ui(r.snap),
+        //   四條判準全綠。所以守門加了第五條:數出現次數。
+        if (DecideKeyUiAction(kw.timed_out, key_result_is_current) ==
+            KeyUiAction::kUpdateUi) {
           note_schema(r.snap);
           push_ui(r.snap);
         }
@@ -1142,10 +1240,7 @@ done:
         static_cast<unsigned long>(::GetTickCount() - conn_t0),
         authed ? 1 : 0, static_cast<unsigned long long>(session),
         static_cast<unsigned>(keys_seen), static_cast<unsigned>(keys_timed_out),
-        static_cast<unsigned>(keys_abandoned), last_step, last_op,
-        conn_log_budget_.load(std::memory_order_relaxed) == 0
-            ? "  (連線進出的額度用完,之後的連線不再記)"
-            : "");
+        static_cast<unsigned>(keys_abandoned), last_step, last_op, "");
   // ⚠ 不等它做完。rs_session_destroy 要把使用者詞典寫回去,而**下一個**
   //   宿主的 SESSION_NEW 就排在它後面 —— 那正是矩陣裡 8 個宿主逾時的
   //   成因之一。這裡改成非同步之後,這條連線的執行緒不再陪著等;

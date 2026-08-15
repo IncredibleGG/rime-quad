@@ -2849,6 +2849,23 @@ else:
     if 'SelectAndApply(' not in rb or 'rs_set_option(' not in rb:
         print('NOREAPPLY=1')
 
+# ── 6b. 作廢權住在那個單一入口裡 ────────────────────────────────
+#
+# ⚠ #93 這一輪把按鍵那條路收成**一個**入口 Engine::CallKeyBounded(),
+#   而作廢權(逾時之後遲到的工作不可以再執行本體)就住在它裡面。
+#   上一版的判準是「ProcessKey 的本體裡有 CallAbandonable」——
+#   搬家之後那一條看不到它了,而反向測試 W36o 因此變綠:
+#   把 CallAbandonable 換成 Call(= 沒有作廢權)整支腳本仍然是綠的。
+#   ⚠ 那正是「守門綠著、卻抓不到它宣稱抓的東西」的形狀。
+kbe = body_of(en, 'bool Engine::CallKeyBounded(')
+if kbe is None:
+    print('NOKEYENTRYFN=1')
+else:
+    if 'queue_.CallAbandonable(' not in kbe:
+        print('NOABANDONRIGHT=1')
+    if 'deadline_ms <= 0' not in kbe:
+        print('NOZEROBUDGETGUARD=1')
+
 # ── 6. 按鍵那道門 ────────────────────────────────────────────────
 gates = ('ProcessKey', 'ToggleAsciiMode')
 print('NGATE=%d' % len(gates))
@@ -2869,7 +2886,8 @@ for fn in gates:
     # ⚠ 「排進佇列」現在有兩種寫法:ToggleAsciiMode 走 Post(=無上限),
     #   ProcessKey 走 CallAbandonable(=有上限 + 作廢權,#93)。
     #   這裡問的是同一個性質:那道門有沒有排在**佇列**後面。
-    m_q = re.search(r'(?<![A-Za-z_])(CallAbandonable|Post)\s*\(', gb)
+    m_q = re.search(
+        r'(?<![A-Za-z_])(CallKeyBounded|CallAbandonable|Post)\s*\(', gb)
     i_post = m_q.start() if m_q else -1
     if i_post >= 0 and i_post < i_gate:
         print('GATEBEHINDQUEUE=%s' % fn)
@@ -2877,11 +2895,19 @@ for fn in gates:
     #   Engine::Post 是 queue_.Call(label, fn, 0) = 永遠等,而 DLL 那一側
     #   每顆鍵只有 common/key_deadline.h 的 kKeyTimeoutMs;無上限的等待 = 整條連線被丟掉。
     #   而且上限一定要配作廢權,不然遲到的工作會把同一顆鍵再打進 librime。
-    if fn == 'ProcessKey':
-        if 'CallAbandonable(' not in gb:
-            print('UNBOUNDEDKEY=%s' % fn)
-        elif re.search(r'(?<![A-Za-z_])Post\s*\(', gb):
-            print('KEYALSOPOSTS=%s' % fn)
+    #
+    # ⚠ **兩支都要,不是只有 ProcessKey。** 上一輪這裡寫的是
+    #   `if fn == 'ProcessKey':`,而同一道門下面的 ToggleAsciiMode
+    #   (Ctrl+空白 / 輕點 Shift —— 中文輸入法上最常按的那顆鍵)當時
+    #   還是 Post("切中英後取快照") = 永遠等。這一格看不到它,
+    #   run_logic_tests.sh 那四條也看不到它,而 commit 標題說已經修好了。
+    #
+    # ⚠ 判準是 CallKeyBounded(按鍵那條路唯一的入口),不是 CallAbandonable:
+    #   後者現在只出現在 CallKeyBounded 裡面,直接呼叫它就是繞過那個入口。
+    if 'CallKeyBounded(' not in gb:
+        print('UNBOUNDEDKEY=%s' % fn)
+    elif re.search(r'(?<![A-Za-z_])Post\s*\(', gb):
+        print('KEYALSOPOSTS=%s' % fn)
     if re.search(r'deploy_state_\.load\(\)\s*!=\s*1', gb):
         print('OLDJUDGE=%s' % fn)
 PYSCRIPT
@@ -2953,15 +2979,21 @@ PYSCRIPT
         red "W36:Engine::${w36line#GATEAFTERFIND=} 的門排在 Find() 之後 —— 重新部署期間 session 是真的不見了,先 Find() 就會走進「找不到」那條路,回給宿主一份 status_flags 全 0 的快照,而狀態列會把它當成「一切正常」"; w36bad=1 ;;
       GATEBEHINDQUEUE=*)
         red "W36:Engine::${w36line#GATEBEHINDQUEUE=} 的門排在 Post() 之後 —— 那道門會在**引擎執行緒**上答,而且排在「收乾淨 session 再開始部署」那一包後面(每一個 rs_session_destroy 都要把使用者詞典寫回去,是這條路上最慢的一步);Engine::Post 是 queue_.Call(...,0) = **永遠等**。而 DLL 那一側每顆鍵的預算是 common/key_deadline.h 的 kKeyTimeoutMs—— 逾時就 Fail(kTimeout) → Close()、session_ = 0,**整條連線被丟掉**,於是部署後「保住原 id、重套方案 / 簡繁 / 英數」那一套(#85)對那個宿主不生效"; w36bad=1 ;;
+      NOKEYENTRYFN=*)
+        red "W36:找不到 Engine::CallKeyBounded —— 按鍵那條路的單一入口不見了,掃描範圍錯了"; w36bad=1 ;;
+      NOABANDONRIGHT=*)
+        red "W36:Engine::CallKeyBounded 沒有走 queue_.CallAbandonable() —— 上限少了作廢權換到的缺陷比原本更糟:我們回 handled=false、DLL 把字元自己補進文件,而幾百毫秒之後那件遲到的工作又把同一顆鍵送進 librime,引擎組了字而宿主也打了字(#93)"; w36bad=1 ;;
+      NOZEROBUDGETGUARD=*)
+        red "W36:Engine::CallKeyBounded 沒有擋掉「預算已經用完」—— 0 傳進 WorkQueue::Call 的意思正好是『永遠等』,於是預算用完那一格會退化成無上限的等待,而且它偽裝成已經修好的樣子"; w36bad=1 ;;
       UNBOUNDEDKEY=*)
-        red "W36:Engine::${w36line#UNBOUNDEDKEY=} 的按鍵沒有走 CallAbandonable() —— 那表示它又回到無上限的等待(Engine::Post 是 queue_.Call(...,0))。引擎只有一條 FIFO,任何一件慢工作(SESSION_NEW 的 ApplyChoice 實測 442~753ms、離開的宿主寫回使用者詞典)都會讓那顆鍵吃滿 DLL 那側的預算(common/key_deadline.h 的 kKeyTimeoutMs),而逾時的代價不是「打出英文」,是 ipc_client.cc 的 Fail() → Close() 把**整條連線丟掉**(#93/#108)"; w36bad=1 ;;
+        red "W36:Engine::${w36line#UNBOUNDEDKEY=} 的按鍵沒有走 CallKeyBounded() —— 那表示它又回到無上限的等待(Engine::Post 是 queue_.Call(...,0))。引擎只有一條 FIFO,任何一件慢工作(SESSION_NEW 的 ApplyChoice 實測 442~753ms、離開的宿主寫回使用者詞典)都會讓那顆鍵吃滿 DLL 那側的預算(common/key_deadline.h 的 kKeyTimeoutMs),而逾時的代價不是「打出英文」,是 ipc_client.cc 的 Fail() → Close() 把**整條連線丟掉**(#93/#108)"; w36bad=1 ;;
       KEYALSOPOSTS=*)
-        red "W36:Engine::${w36line#KEYALSOPOSTS=} 裡除了 CallAbandonable() 還有一個 Post() —— Post 是無上限的等待,混在按鍵這條路上等於上限沒有生效"; w36bad=1 ;;
+        red "W36:Engine::${w36line#KEYALSOPOSTS=} 裡除了 CallKeyBounded() 還有一個 Post() —— Post 是無上限的等待,混在按鍵這條路上等於上限沒有生效"; w36bad=1 ;;
       OLDJUDGE=*)
         red "W36:Engine::${w36line#OLDJUDGE=} 還在用 deploy_state_ != 1 判斷 —— 那個值首次部署成功之後**永遠**是 1,重新部署期間這道門是開的(#90 的原始形狀)"; w36bad=1 ;;
     esac
   done <<< "${w36out}"
-  [ "${w36bad}" -eq 0 ] && ok "W36 ${ncreate} 個建 session 的呼叫點全部先問過 SessionCreationAllowed(),BeginDeploy 不在 UI 執行緒上部署而是整包丟給引擎執行緒,那一包收乾淨才 rs_deploy()、拒絕啟動時會建回來也會讓畫面知道,部署終局那一條不靠任何視窗,重建會重套方案與選項,${ngate} 道按鍵的門都讀 phase_、排在 Find() 之前、而且排在佇列之前(在呼叫端執行緒上答,不排在收 session 那一包後面),ProcessKey 的等待有上限而且配了作廢權(CallAbandonable)"
+  [ "${w36bad}" -eq 0 ] && ok "W36 ${ncreate} 個建 session 的呼叫點全部先問過 SessionCreationAllowed(),BeginDeploy 不在 UI 執行緒上部署而是整包丟給引擎執行緒,那一包收乾淨才 rs_deploy()、拒絕啟動時會建回來也會讓畫面知道,部署終局那一條不靠任何視窗,重建會重套方案與選項,${ngate} 道按鍵的門都讀 phase_、排在 Find() 之前、而且排在佇列之前(在呼叫端執行緒上答,不排在收 session 那一包後面),${ngate} 道門的等待都有上限(都走單一入口 CallKeyBounded,而作廢權與「預算用完不入列」住在那個入口裡)"
   # ── W37:部署回呼碰的那個 Engine,活多久 ─────────────────────────
   #
   # OnDeploy 跑在 **librime 的部署執行緒**上,而 Engine 是 main 那條執行緒
@@ -3433,7 +3465,10 @@ else:
 if 'Hotkey::kToggleVariant' not in hp:
     print('NOCLASSIFY=1')
 
-kb = body_of(ps, 'bool PipeServer::ToggleVariantPref()')
+# ⚠ 錨不要帶引數列:這一支現在吃「這顆鍵剩下的預算」與 KeyWait*
+#   (#93 的第三個出口)。錨在 `()` 上的話,加一個參數就等於
+#   「找不到本體」—— 而那道紅指的方向是錯的。
+kb = body_of(ps, 'bool PipeServer::ToggleVariantPref(')
 if kb is None:
     print('NOTOGGLEFN=1')
 else:
@@ -3441,7 +3476,10 @@ else:
         print('TOGGLENOSINGLESOURCE=1')
     if 'SetVariantPref(' not in kb:
         print('TOGGLENOWRITE=1')
-    if 'ReadBackStatus()' not in kb:
+    # ⚠ 同上:錨在 `engine_->ReadBackStatus(` 而不是 `ReadBackStatus()`。
+    #   那一趟現在要帶著這顆鍵剩下的預算與 KeyWait*(#93),
+    #   而「回讀」這個性質一個位元都沒有變。
+    if 'engine_->ReadBackStatus(' not in kb:
         print('TOGGLENOREADBACK=1')
 
 if 'KeyAction::kToggleVariant' not in ps:
@@ -4153,8 +4191,8 @@ self_check() {
 "W40d Deactivate 不還鍵|tsf/text_service.cc|s=s.replace('        keystroke->UnpreserveKey(GUID_RimePreservedKeyVariant, &vk);','',1)"
 "W40e 服務端沒有人處理那顆鍵|service/pipe_server.cc|s=s.replace('        if (action == KeyAction::kToggleVariant) {','        if (false) {',1)"
 "W40f 方向自己判一次(第二份真相)|service/pipe_server.cc|s=s.replace('  if (!ToggleVariantTarget(now, &to_simplified)) return false;','  to_simplified = (now != VariantCell::kSimplified);',1)"
-"W40g 切了不回讀,從設定檔反推|service/pipe_server.cc|s=s.replace('  const Engine::StatusReadback rb = engine_->ReadBackStatus();','  Engine::StatusReadback rb; rb.ok = true;',1)"
-"W40h 回一份空快照(使用者打到一半的字會消失)|service/pipe_server.cc|s=s.replace('            r = engine_->CurrentResult(k.session);','',1)"
+"W40g 切了不回讀,從設定檔反推|service/pipe_server.cc|s=s.replace('  const Engine::StatusReadback rb =' + chr(10) + '      engine_->ReadBackStatus(0, deadline_ms, wait);','  Engine::StatusReadback rb; rb.ok = true;',1)"
+"W40h 回一份空快照(使用者打到一半的字會消失)|service/pipe_server.cc|s=s.replace('            r = engine_->CurrentResult(k.session, key_budget_left(), &kw);','',1)"
 "W40i main.cc 沒把設定視窗交出去|service/main.cc|s=s.replace('  server.SetSettingsWindow(no_ui ? nullptr : &settings);','',1)"
 "W27e 拿掉那一橫自己更新的計時器|service/status_bar.cc|s=s.replace('  ::SetTimer(hwnd_, kStateTimer, kStatePollMs, nullptr);','',1)"
 "W27f 計時器還在但不再比對狀態|service/status_bar.cc|s=s.replace('      if (now != self->service_state_) {','      if (false) {',1)"

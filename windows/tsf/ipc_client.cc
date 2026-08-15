@@ -160,13 +160,28 @@ void IpcClient::MaybeTraceLinkSummary() {
   // ⚠ 這一行要自成一體。舊版是「按鍵那一行說吃不吃,連線失敗那一行說原因」,
   //   而兩邊各有各的額度(5 行 / 6 行)—— 用完之後那個交叉參照就斷了,
   //   使用者貼上來的檔案回答不了任何問題。
+  // ── ⚠ 措辭:不可以叫讀 tsf.log 的人「別看這裡」 ────────────────
+  //
+  //   舊的那一句是「兩趟之間斷線改由我們收尾=N 鍵」。**它在兩種情況下
+  //   不成立**,而那兩種正好是使用者要查的:
+  //
+  //   · text_service.cc 的 SelfInsertChar 把 RunSyncSession 的 HRESULT
+  //     整個丟掉、無條件 return true。宿主拒絕 edit session 時那顆鍵
+  //     **真的沒有出口**,卻仍然被算成「收尾」。
+  //   · 組字中那一條是「吃掉並且什麼都不做」—— 從使用者角度就是
+  //     **按了沒反應**。
+  //
+  //   所以兩種分開數:補進文件的那些叫「補字」,吃掉的那些叫
+  //   「吃掉沒出口」,而後者正是「按了沒反應」在記錄裡的樣子。
   Trace("連線摘要 重連=%u次 上一條活了=%ums 斷線期間放行=%u鍵 "
-        "兩趟之間斷線改由我們收尾=%u鍵 "
+        "兩趟之間斷線:補字=%u鍵 吃掉沒出口=%u鍵(這些使用者看到的是"
+        "「按了沒反應」) "
         "上次原因=%s(階段=%s os_err=%lu 服務說=%s)",
         static_cast<unsigned>(reconnects_),
         static_cast<unsigned>(last_link_ms_),
         static_cast<unsigned>(keys_passed_while_down_),
-        static_cast<unsigned>(keys_rescued_between_passes_),
+        static_cast<unsigned>(keys_rescued_by_self_insert_),
+        static_cast<unsigned>(keys_eaten_with_no_outlet_),
         LinkFailureName(link_.last_failure()), ReadyStageName(diag_.stage),
         static_cast<unsigned long>(diag_.os_error),
         diag_.service_error.empty() ? "(沒說)" : diag_.service_error.c_str());
@@ -355,9 +370,24 @@ bool IpcClient::TryLaunchService() {
   return LaunchService(service_path_);
 }
 
-bool IpcClient::WriteAllTimed(const std::string& data, DWORD timeout_ms) {
+// 絕對 deadline 的兩個工具。⚠ 相減之後轉成有號數再比,不要寫
+// `now >= deadline`:GetTickCount() 49.7 天繞回一次,而那種比較在繞回的
+// 那一瞬間會把「還剩 100ms」讀成「已經逾時」——症狀是「輸入法忽然斷線」,
+// 一年遇到一次,查不出來。
+static DWORD DeadlineIn(DWORD ms) { return ::GetTickCount() + ms; }
+static DWORD MsLeft(DWORD deadline) {
+  const LONG d = static_cast<LONG>(deadline - ::GetTickCount());
+  return d > 0 ? static_cast<DWORD>(d) : 0;
+}
+
+bool IpcClient::WriteAllTimed(const std::string& data, DWORD deadline) {
   size_t sent = 0;
   while (sent < data.size()) {
+    // ⚠ **整趟**共用一個 deadline。舊版在這裡每一塊都重新給一份完整的
+    //   timeout_ms —— 一個一次只收一小段的對面可以把這個迴圈拖到任意久,
+    //   而那條路上宿主的 UI 執行緒是停住的。
+    const DWORD left = MsLeft(deadline);
+    if (left == 0) return false;
     OVERLAPPED ov{};
     ov.hEvent = event_;
     ::ResetEvent(event_);
@@ -367,7 +397,7 @@ bool IpcClient::WriteAllTimed(const std::string& data, DWORD timeout_ms) {
                                 &ov);
     if (!ok) {
       if (::GetLastError() != ERROR_IO_PENDING) return false;
-      if (::WaitForSingleObject(event_, timeout_ms) != WAIT_OBJECT_0) {
+      if (::WaitForSingleObject(event_, left) != WAIT_OBJECT_0) {
         ::CancelIoEx(pipe_, &ov);
         // 一定要等它真的結束才可以離開 —— ov 與 data 都在堆疊上,
         // 提早返回等於讓核心繼續寫一塊已經沒有的記憶體。
@@ -382,13 +412,12 @@ bool IpcClient::WriteAllTimed(const std::string& data, DWORD timeout_ms) {
   return true;
 }
 
-bool IpcClient::ReadFrameTimed(std::string* payload, DWORD timeout_ms,
+bool IpcClient::ReadFrameTimed(std::string* payload, DWORD deadline,
                                bool* eof) {
   if (eof) *eof = false;
   // 緩衝區裡可能已經有一則完整訊息(上一次讀多了)。
   if (reader_.Next(payload)) return true;
 
-  const DWORD deadline = ::GetTickCount() + timeout_ms;
   char buf[4096];
   for (;;) {
     OVERLAPPED ov{};
@@ -398,8 +427,7 @@ bool IpcClient::ReadFrameTimed(std::string* payload, DWORD timeout_ms,
     const BOOL ok = ::ReadFile(pipe_, buf, sizeof(buf), &got, &ov);
     if (!ok) {
       if (::GetLastError() != ERROR_IO_PENDING) return false;
-      const DWORD now = ::GetTickCount();
-      const DWORD left = (now >= deadline) ? 0 : (deadline - now);
+      const DWORD left = MsLeft(deadline);
       if (::WaitForSingleObject(event_, left) != WAIT_OBJECT_0) {
         ::CancelIoEx(pipe_, &ov);
         ::GetOverlappedResult(pipe_, &ov, &got, TRUE);
@@ -419,19 +447,26 @@ bool IpcClient::ReadFrameTimed(std::string* payload, DWORD timeout_ms,
     }
     if (!reader_.Feed(buf, got)) return false;
     if (reader_.Next(payload)) return true;
-    if (::GetTickCount() >= deadline) return false;
+    if (MsLeft(deadline) == 0) return false;
   }
 }
 
 bool IpcClient::Exchange(const std::string& payload, uint32_t seq,
                          std::string* reply, DWORD timeout_ms) {
   if (pipe_ == INVALID_HANDLE_VALUE) return false;
-  if (!WriteAllTimed(Frame(payload), timeout_ms)) {
+  // ── ⚠ 一趟往返 = **一份**預算,不是兩份 ────────────────────────
+  //
+  //   舊版是 WriteAllTimed(timeout_ms) 加上 ReadFrameTimed(timeout_ms),
+  //   兩段各拿一份完整預算 —— 一趟最壞是 2 × timeout_ms,而
+  //   common/key_deadline.h 那時把 timeout_ms 當成「宿主 UI 執行緒最壞
+  //   停住的時間」在守。現在寫入與讀取共用同一個絕對 deadline。
+  const DWORD deadline = DeadlineIn(timeout_ms);
+  if (!WriteAllTimed(Frame(payload), deadline)) {
     Fail(LinkFailure::kIoError);
     return false;
   }
   bool eof = false;
-  if (!ReadFrameTimed(reply, timeout_ms, &eof)) {
+  if (!ReadFrameTimed(reply, deadline, &eof)) {
     Fail(eof ? LinkFailure::kPeerClosed : LinkFailure::kTimeout);
     return false;
   }
@@ -618,7 +653,12 @@ bool IpcClient::SendSelectSchema(const std::string& schema_id, Result* out) {
 
 void IpcClient::SendOneWay(const std::string& payload) {
   if (pipe_ == INVALID_HANDLE_VALUE) return;
-  if (!WriteAllTimed(Frame(payload), kKeyTimeoutMs)) Fail(LinkFailure::kIoError);
+  // ⚠ 這是一顆鍵的**第二趟**(SendCaretRect 走這裡)。它與 Exchange
+  //   那一趟不共用 deadline —— 那正是 kKeyHostStallWorstMs 要乘上
+  //   kKeyPipeTripsPerKey 的原因。要改成共用的話,得先讓
+  //   TextService::HandleKey 把一顆鍵的 deadline 帶下來。
+  if (!WriteAllTimed(Frame(payload), DeadlineIn(kKeyTimeoutMs)))
+    Fail(LinkFailure::kIoError);
 }
 
 void IpcClient::SendCaretRect(int32_t l, int32_t t, int32_t r, int32_t b) {

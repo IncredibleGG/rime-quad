@@ -16,6 +16,7 @@
 
 #include <functional>
 
+#include "../common/log_rate.h"
 #include "cand_window.h"
 #include "engine.h"
 #include "settings_store.h"
@@ -56,6 +57,20 @@ class PipeServer {
   //   所以主程式收到這個回呼時應該讓服務結束,把位置讓出來。
   void SetFatalHandler(std::function<void()> fn) { on_fatal_ = std::move(fn); }
 
+  // ── 記錄檔長太大時的兜底 ────────────────────────────────────
+  //
+  // ⚠ 這不是節流(節流是下面的 conn_log_)。service/main.cc 的大小檢查
+  //   **一輩子只在行程啟動時做一次**,所以跑的期間 service.log 只會長。
+  //   服務沒有閒置離開的路徑 —— 一台被開著好幾天的機器上,那個檔案會
+  //   一路長過 1 MiB,而那才是「檔案無限長」這個風險的本體。
+  //
+  // ⚠ 掛在**每一條新連線**上,不是每一顆按鍵:一次 GetFileAttributesExW
+  //   是磁碟 I/O,而按鍵那條路上多一次磁碟 I/O 正是 #108 的第二名成因。
+  //   連線是稀有事件(登入那一波 26 條,之後零星),量級剛好。
+  void SetLogCheckpoint(std::function<void()> fn) {
+    on_log_checkpoint_ = std::move(fn);
+  }
+
   // 候選窗上的滾輪。⚠ **在候選窗自己的 UI 執行緒上跑**,不是連線執行緒。
   //   由建構子掛上、解構子拿掉(候選窗比我們晚死,見 service/main.cc 的
   //   宣告順序)。
@@ -95,8 +110,11 @@ class PipeServer {
   // ⚠ 方案清單由呼叫端傳進來,不在這裡問。重建那條路是在**引擎執行緒**
   //   上跑的,在那裡再丟一件工作進引擎佇列就是自己等自己。
   // 簡繁切一下。回傳 false = **什麼都沒做**(沒有設定視窗、引擎沒有
-  // 回報字形)——呼叫端據此宣告沒有吃掉那顆鍵。
-  bool ToggleVariantPref();
+  // 回報字形)——呼叫端據此宣告沒有吃掉那顆鍵,而且**不碰 UI**。
+  //
+  // ⚠ 它在按鍵那條路上,而且要走一趟引擎佇列(ReadBackStatus),所以
+  //   要吃這顆鍵剩下的預算。逾時 = 什麼都沒做,與回 false 同一個處置。
+  bool ToggleVariantPref(int deadline_ms, Engine::KeyWait* wait);
 
   Engine::SessionPlan PlanForLang(
       uint32_t langid,
@@ -109,6 +127,7 @@ class PipeServer {
   SettingsStore* settings_;
   std::function<void()> on_open_settings_;
   std::function<void()> on_fatal_;
+  std::function<void()> on_log_checkpoint_;
   HANDLE stop_event_ = nullptr;
   HANDLE listen_thread_ = nullptr;
   // Start() 建好的第一個實例。**不關掉**,直接交給監聽執行緒 ——
@@ -137,21 +156,38 @@ class PipeServer {
   //   那一行的診斷價值已經被稀釋掉了,而記錄的長度是使用者的成本。
   std::mutex old_proto_mu_;
   std::set<uint32_t> old_proto_seen_;
-  // ── 連線進場 / 離場那兩行的額度 ────────────────────────────────
+  // ── 連線進場 / 離場那兩行的節流 ────────────────────────────────
   //
-  // ⚠ 這條路上每一條新記錄都要有額度,而理由不是「保守」:
-  //   service.log 是 1 MiB 的環形檔,而 13 個宿主 × 每個兩條連線、
-  //   抖動時**成對地**寫。同一份記錄裡最有價值的是那些**稀有**的行
-  //   (例如那一橫的判斷行,它節流到「判斷改變才寫」)—— 兩者競爭
-  //   環形空間時,先被捲掉的正好是稀有的那一種。
+  // ⚠ **上一版寫的理由是錯的**,而且錯的方向剛好讓這條線在使用者
+  //   真正需要的時候是空的。原話是「service.log 是 1 MiB 的環形檔…
+  //   先被捲掉的正好是稀有的那一種」。查證:service/main.cc 的大小檢查
+  //   **一輩子只在行程啟動時做一次**(too_big → freopen "w",否則 "a")。
+  //   跑的期間那個檔案只會長,**沒有任何一行會被捲掉**;超過 1 MiB 時
+  //   被丟掉的是整個檔案,而且發生在下一次啟動。
   //
-  // ⚠ 額度是「多少**條連線**」而不是「多少行」:進場與離場必須成對,
-  //   只有離場那一行的話,「存活多久」對不到任何一條連線。
+  // ⚠ 於是「一輩子 64 條」這道額度擋掉的不是雜訊,**是最近的訊號**。
+  //   服務沒有閒置離開的路徑,所以 64 用完之後,從登入到關機再也不會有
+  //   第二行連線記錄 —— 而 64 很快就沒:13 個宿主 × 每個兩條連線,
+  //   光登入就 26 條。使用者下午再撞到 #108、照慣例被請去撈 service.log
+  //   時,唯一能在服務端分辨「重連迴圈」與「引擎佇列塞住」的那組行
+  //   (存活=300ms、按鍵=1、逾時=1 連續好幾行)早就不寫了。
+  //
+  // 所以換成**速率限制**:令牌桶(common/log_rate.h)。
+  //   · 桶滿 = 登入那一波寫得出 10 條,「連續好幾行」這個樣式讀得出來。
+  //   · 之後每分鐘回補一條 —— 八小時之後那組行**還在寫**,而這是這一輪
+  //     對這條線唯一的硬要求(tests/test_log_rate.cc 逐條驗)。
+  //   · 被壓掉的則數不會消失,由下一行帶出去。那個數字本身就是重連
+  //     迴圈最強的訊號:一分鐘 137 條連線,比 10 行「存活=300ms」還清楚。
+  //
+  // ⚠ 節流的單位是「多少**條連線**」而不是「多少行」:進場與離場必須
+  //   成對,只有離場那一行的話,「存活多久」對不到任何一條連線。
   //   同一條連線的兩行由 ServeClient 開頭一次決定(見 .cc)。
   //
-  // 64 這個數字與上面 old_proto_seen_ 的上限是同一個標準:超過這個
-  // 量級之後,再多的同型記錄已經回答不了新的問題。
-  std::atomic<int> conn_log_budget_{64};
+  // ⚠ 「檔案無限長」這個風險仍然是真的(一台開著好幾天的機器),
+  //   但那一半由 SetLogCheckpoint() 的執行期大小檢查兜底,不是靠
+  //   「再也不寫」。
+  std::mutex conn_log_mu_;
+  LogTokenBucket conn_log_{kConnLogBurst, kConnLogRefillMs};
   std::mutex mu_;
   std::vector<std::thread> clients_;
 };

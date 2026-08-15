@@ -166,6 +166,10 @@ add_library(rime_common STATIC
   #   ui_layout.cc 一樣:那一格(逾時之後遲到的工作寫進誰的記憶體)
   #   在 service/ 裡沒有任何自動化碰得到,而它正是 #79 最難的那一格。
   common/work_queue.cc
+  # ⚠ 連線記錄的節流。它在 common/ 而不是 service/,理由與 work_queue.cc
+  #   一樣:那一格(「八小時之後那組行還在不在寫」)在 service/ 裡
+  #   沒有任何自動化碰得到,而它正是使用者撞到 #108 時唯一的證據。
+  common/log_rate.cc
   # ⚠ 輕點 Shift 切中英(#89)。同樣是純函式,而且理由更硬:它答錯的
   #   樣子是「打大寫字母時中英一直亂跳」,比沒有這個功能糟得多 ——
   #   留在 tsf/text_service.cc 裡的話只有真人在 Windows 上驗得到,
@@ -223,6 +227,7 @@ add_executable(rime_tests
   tests/test_statusbar_layout.cc
   tests/test_ui_strings.cc
   tests/test_key_deadline.cc
+  tests/test_log_rate.cc
   tests/test_service_state.cc
   tests/test_redeploy_flow.cc
   tests/test_status_cells.cc

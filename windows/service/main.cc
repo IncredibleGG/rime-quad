@@ -99,29 +99,75 @@ namespace {
 // 走 freopen 而不是自己包一層 tee,是為了**連 pipe_server.cc 的 Log()
 // 也一起接住** —— SESSION_NEW_MS 那一行正是它印的。自己包一層的話,
 // 那一行還是會掉進黑洞,而它就是最需要看到的那一行。
-void RedirectStdIoIfDetached() {
-  const HANDLE herr = ::GetStdHandle(STD_ERROR_HANDLE);
-  if (herr != nullptr && herr != INVALID_HANDLE_VALUE) return;
-
+// 記錄檔的路徑。回空字串 = 這一支服務不是被瘦 DLL 啟動的
+// (CI 用 `rime_service.exe > service.log`),那條路一個字都不要動。
+std::wstring ServiceLogPath() {
   wchar_t local[MAX_PATH] = {0};
   const DWORD n = ::GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
-  if (n == 0 || n >= MAX_PATH) return;
+  if (n == 0 || n >= MAX_PATH) return std::wstring();
   std::wstring dir = std::wstring(local) + L"\\" +
                      rimewin::RimeUserDataFolderName();
   ::CreateDirectoryW(dir.c_str(), nullptr);
   dir += L"\\diagnostics";
   ::CreateDirectoryW(dir.c_str(), nullptr);
-  const std::wstring path = dir + L"\\service.log";
+  return dir + L"\\service.log";
+}
+
+bool ServiceLogTooBig(const std::wstring& path) {
+  WIN32_FILE_ATTRIBUTE_DATA fad{};
+  return ::GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad) &&
+         fad.nFileSizeHigh == 0 && fad.nFileSizeLow > (1u << 20);
+}
+
+// 我們自己接管了 stderr 嗎?沒有的話(CI 那條路)下面那個檢查一律不做:
+// 對一個別人重導向的串流做 freopen 會把使用者的檔案截斷。
+bool g_owns_service_log = false;
+
+void RedirectStdIoIfDetached() {
+  const HANDLE herr = ::GetStdHandle(STD_ERROR_HANDLE);
+  if (herr != nullptr && herr != INVALID_HANDLE_VALUE) return;
+
+  const std::wstring path = ServiceLogPath();
+  if (path.empty()) return;
 
   // 超過 1 MiB 就從頭來過 —— 舊的是更舊的故障,而診斷要看最近這一次。
   // (與 tsf/trace.cc 同一個規矩,不做輪替:兩個檔案只會讓「最近那次在
   //  哪一個裡面」變成一個新問題。)
-  WIN32_FILE_ATTRIBUTE_DATA fad{};
-  const bool too_big =
-      ::GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad) &&
-      fad.nFileSizeHigh == 0 && fad.nFileSizeLow > (1u << 20);
+  const bool too_big = ServiceLogTooBig(path);
   if (!::_wfreopen(path.c_str(), too_big ? L"w" : L"a", stderr)) return;
   ::_wfreopen(path.c_str(), L"a", stdout);
+  g_owns_service_log = true;
+}
+
+// ── ⚠ 上面那個檢查**一輩子只跑一次**,而那是不夠的 ────────────────
+//
+//   服務沒有閒置離開的路徑:使用者登入時它起來,關機時它才走。所以
+//   「啟動時檢查一次」的意思是 —— 跑的期間 service.log 只會長,沒有
+//   任何一行會被捲掉,而超過 1 MiB 時被丟掉的是**整份**,發生在
+//   **下一次啟動**。一台被開著好幾天的機器上,那個檔案會一路長。
+//
+//   (pipe_server.h 那一段「service.log 是 1 MiB 的環形檔」就是照著
+//    這個誤解寫的,而它把連線記錄的節流設計成「一輩子 64 條」——
+//    也就是使用者下午出事時那組行已經不寫了。兩處都在這一輪改對。)
+//
+// ⚠ 截斷之前先留一行,不然讀的人會以為記錄自己少了一段。
+// ⚠ 呼叫點是**每一條新連線**(pipe_server 的 SetLogCheckpoint),不是
+//   每一顆按鍵:GetFileAttributesExW 是磁碟 I/O。
+void RollServiceLogIfTooBig() {
+  if (!g_owns_service_log) return;
+  const std::wstring path = ServiceLogPath();
+  if (path.empty() || !ServiceLogTooBig(path)) return;
+  std::fprintf(stderr,
+               "[log] service.log 超過 1 MiB,從這裡重新開始"
+               "(前面的內容已經丟掉)\n");
+  std::fflush(stderr);
+  if (!::_wfreopen(path.c_str(), L"w", stderr)) {
+    g_owns_service_log = false;
+    return;
+  }
+  ::_wfreopen(path.c_str(), L"a", stdout);
+  std::fprintf(stderr, "[log] (承上:這是截斷之後的新檔)\n");
+  std::fflush(stderr);
 }
 
 void Say(const char* fmt, ...) {
@@ -857,6 +903,10 @@ static int RunService(int argc, wchar_t** argv) {
   // 簡繁快捷鍵要走設定視窗那一支寫入(見 pipe_server.h)。
   server.SetSettingsWindow(no_ui ? nullptr : &settings);
   server.SetOpenSettingsHandler([&settings]() { settings.Open(); });
+  // ⚠ 記錄檔的執行期大小檢查。少了它,「連線記錄改成速率限制」那一半
+  //   會讓一台開著好幾天的機器把 service.log 寫大 —— 而那正是這一輪
+  //   留著節流(而不是整個拿掉)的理由。
+  server.SetLogCheckpoint([]() { RollServiceLogIfTooBig(); });
   // 監聽迴圈非預期死掉時,讓這支服務結束。
   //
   // ⚠ 不結束的話它會變成一具擋路的空殼:沒有管道,卻仍然佔著單一實例的

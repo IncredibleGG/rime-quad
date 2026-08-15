@@ -195,8 +195,12 @@ class Engine {
   //   引擎的現況(見 KeyWait 上面那一段與 common/key_deadline.h);
   //   呼叫端只能靠 wait->timed_out 分辨它,所以不給預設值 ——
   //   少了它,那一份佔位會被當成快照餵進候選窗與那一橫。
+  // ⚠ deadline_ms 是**這顆鍵**剩下的預算,不是「一趟佇列的預算」。
+  //   呼叫端在收到這一格之前可能已經花掉一部分(pipe_server 那道
+  //   ClassifyHotkey 要讀設定檔,實測會慢),而 DLL 那側的時鐘從送出
+  //   那一刻就在跑。算法在 common/key_deadline.h 的 RemainingKeyBudgetMs()。
   Result ProcessKey(uint64_t id, int32_t keysym, uint32_t mods,
-                    KeyWait* wait);
+                    int deadline_ms, KeyWait* wait);
   Result SelectCandidate(uint64_t id, int32_t index);
   Result CommitComposition(uint64_t id);
   Result Clear(uint64_t id);
@@ -210,7 +214,13 @@ class Engine {
   //   (tsf/text_service.cc 的 SendAsciiToggle,那裡有一整段 ⚠ 記著
   //   「這一份快照不可以丟掉」),而空快照的意思是「沒有組字、沒有
   //   候選」:使用者打到一半的那一段會當場消失。
-  Result CurrentResult(uint64_t id);
+  //
+  // ⚠ 它在**按鍵那條路上**(簡繁快捷鍵的第二趟),所以與 ProcessKey
+  //   同一套:有上限、有作廢權、逾時回一份預設建構的 Result 而呼叫端
+  //   **不可以**拿它碰 UI(common/key_deadline.h 的 DecideKeyUiAction)。
+  //   上一輪只把 ProcessKey 收掉,而這一支仍然是 Post() = 永遠等 ——
+  //   同一條路上的同一個缺陷,守門看不到而已。
+  Result CurrentResult(uint64_t id, int deadline_ms, KeyWait* wait);
   Result SelectSchema(uint64_t id, const std::string& schema_id);
 
   // ── 設定介面要用的 ──────────────────────────────────────────
@@ -372,7 +382,21 @@ class Engine {
   //
   // ⚠ 部署還沒完成時回 handled=false(與 ProcessKey 同一條規則)——
   //   宣稱切過了卻拿不出東西,狀態列就會說謊,而那顆鍵已經被吃掉了。
-  Result ToggleAsciiMode(uint64_t id);
+  //
+  // ⚠ **Ctrl+空白是中文輸入法上最常按的那顆鍵**,所以它與 ProcessKey
+  //   一樣要有上限:上一輪這一支還是 Post("切中英後取快照") = 永遠等。
+  //   使用者 Alt+Tab 到另一個程式(那會排一次 SESSION_NEW,實測
+  //   442~753ms)之後按下去 —— 服務端無上限地等,DLL 150ms 就 Fail()
+  //   → Close(),整條連線被丟掉,那個程式接下來只能打英文。
+  //   前面那道 ShouldFailOpen 擋不住它:它只認「部署中」,而 SESSION_NEW
+  //   的 ApplyChoice、EndSessionAsync 寫回詞典、補備用 session 這些排在
+  //   同一條 FIFO 前面的慢工作它一件都看不到。
+  //
+  // ⚠ 逾時的處置與 ProcessKey 一致:回 handled=false 讓宿主自己收尾,
+  //   而且**不碰 UI**。中英模式本身仍然會晚一點才切(SetAsciiModeAll 是
+  //   PostAsync,已經在佇列裡了)—— 那是刻意的:使用者按 Ctrl+空白 要的
+  //   就是切,而 handled=false 交回宿主的 Ctrl+空白 不會往文件裡寫字元。
+  Result ToggleAsciiMode(uint64_t id, int deadline_ms, KeyWait* wait);
   bool AsciiMode() const { return ascii_mode_.load(); }
   // ⚠ 只記下行程層級那一格,**不動任何 session**。
   //
@@ -423,7 +447,14 @@ class Engine {
   // ⚠ session_id = 0 代表「沒有指定」—— 那時退回去挑一個活著的,
   //   再退到備用池。**指定的時候一定要問指定的那一個**:13 個宿主各有
   //   自己的 ascii_mode,挑第一個等於擲骰子。
-  StatusReadback ReadBackStatus(uint64_t session_id = 0);
+  //
+  // ⚠ deadline_ms > 0 = 有上限 + 作廢權(**按鍵那條路一律要給**:
+  //   簡繁快捷鍵 Ctrl+Shift+F 的第一趟就是它)。deadline_ms <= 0 =
+  //   舊行為,永遠等 —— 只留給沒有訊息迴圈掛在上面、也不在按鍵路徑上的
+  //   呼叫端(那一橫自己的重整)。逾時時 ok 維持 false,呼叫端照既有
+  //   約定「什麼都不要改」。
+  StatusReadback ReadBackStatus(uint64_t session_id = 0, int deadline_ms = 0,
+                                KeyWait* wait = nullptr);
 
   // 把「這個語言該用什麼」套到一個 session 上。回傳實際選中的方案 id
   // (沒有選就回空字串)。
@@ -454,9 +485,21 @@ class Engine {
  private:
   // 丟工作並**等它做完,沒有上限**。
   //
-  // ⚠ 這一支只留給**沒有訊息迴圈掛在上面**的路徑:管道執行緒(宿主那一側
-  //   自己有 150 毫秒的預算,逾時就 fail-open)、暖機、--selftest。
+  // ⚠ 這一支只留給**沒有訊息迴圈掛在上面、而且不在按鍵那條路上**的
+  //   路徑:暖機、--selftest、以及管道執行緒上那些不是按鍵的訊息。
   //   設定視窗與懸浮狀態列**不可以**用它 —— 那就是 #79。
+  //
+  // ⚠ **「宿主那一側自己有 150 毫秒的預算,逾時就 fail-open」是錯的,
+  //   而它在這裡掛了兩輪。** 逾時**不是** fail-open:tsf/ipc_client.cc 的
+  //   Fail() 第一句就是 Close() —— 整條連線被丟掉、session_ 歸零。那個
+  //   宿主接下來要重連、重建 session(實測 442~753ms)、重套方案,而
+  //   期間每一顆鍵都是 fail-open 的英文。一顆慢鍵的代價不是「這顆鍵」,
+  //   是一整段打不出中文,而且它會自己餵自己(#93/#108 的正回饋迴圈)。
+  //
+  // ⚠ 所以**按鍵那條路上一條都不准走這一支**。那條路用
+  //   CallKeyBounded()(見下面),而守門在 run_logic_tests.sh 的
+  //   「按鍵那條路」那一段 —— 它從 pipe_server.cc 的 case Op::kKey
+  //   把出口數出來,不是認 Post("按鍵") 那個字串。
   //
   // ⚠ label 不是裝飾。引擎只有一條執行緒,所以「我的請求為什麼慢」的答案
   //   幾乎一定是「**別人**擋在前面」,而以前記錄裡完全看不出那個別人是誰:
@@ -470,6 +513,29 @@ class Engine {
   //   呼叫端讀到的 out 是它自己初始化的那個值,不是答案 —— 丟掉這個
   //   回傳值就是把「引擎沒有回應」變成「答案是空的」。
   WorkQueue::Status Post(const char* label, std::function<void()> fn);
+
+  // ── 按鍵那條路唯一的入口:有上限 + 作廢權 ──────────────────────
+  //
+  // ⚠ `case Op::kKey` 上**每一個**會進引擎佇列的出口都要走這一支,
+  //   不是只有 ProcessKey。三個出口都在:ProcessKey、ToggleAsciiMode
+  //   (Ctrl+空白 / 輕點 Shift)、以及簡繁快捷鍵那兩趟
+  //   (ReadBackStatus → CurrentResult)。少一個,那一個就是無上限的
+  //   Post = 永遠等,而症狀與其他兩個一模一樣:整條連線被丟掉。
+  //
+  // ⚠ deadline_ms <= 0 代表「這顆鍵的預算已經用完」——
+  //   **直接當成逾時,不入列**。入列只會讓那件工作遲到之後撞上一個
+  //   已經放棄的呼叫端,而 0 傳進 WorkQueue::Call 的意思正好是
+  //   「永遠等」(work_queue.cc)。
+  //
+  // ⚠ fn 一律要自己擁有它讀寫的東西(shared_ptr 的盒子),不可以 [&]:
+  //   逾時之後這個函式就返回了,而那件工作可能還在佇列裡。
+  //   理由整段寫在 common/work_queue.h 的檔頭。
+  //
+  // 回傳 true = 工作真的跑完了,盒子裡是引擎的現況。
+  // 回傳 false = 沒等到;*wait 帶出 timed_out / abandoned,而那一份
+  //   結果**不是現況**,呼叫端不可以拿它碰 UI。
+  bool CallKeyBounded(const char* label, std::function<void()> fn,
+                      int deadline_ms, KeyWait* wait);
   // 丟了就走,**不等**。⚠ fn 捕捉的東西一律傳值(見 common/work_queue.h):
   //   這一支返回時工作通常還沒開始跑,呼叫端的框隨時會消失。
   // ⚠ 回傳 false = **沒有入列**,那件工作永遠不會跑。等完成通知的

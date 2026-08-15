@@ -168,7 +168,21 @@ class IpcClient {
   //   而且是每一顆按鍵都會經過的地方 —— 在那裡寫磁碟就是把「輸入法很慢」
   //   做成一個功能。數字由下面那條節流的摘要一次帶出去。
   void NoteKeyPassedThrough() { ++keys_passed_while_down_; }
-  void NoteKeyRescuedBetweenPasses() { ++keys_rescued_between_passes_; }
+  // ── ⚠ 兩趟之間斷線的兩種下場,**分開數** ────────────────────────
+  //
+  //   舊版只有一支 NoteKeyRescuedBetweenPasses(),而摘要那一行寫的是
+  //   「斷線改由我們收尾=N 鍵」。那句話在兩種情況下不成立,而那兩種
+  //   正好是讀 tsf.log 的人要查的東西:
+  //
+  //   · SelfInsertChar 把 RunSyncSession 的 HRESULT 整個丟掉、無條件
+  //     return true(text_service.cc)。宿主拒絕 edit session 時那顆鍵
+  //     **真的沒有出口**,卻仍然被算成「收尾」。
+  //   · 組字中那一條是「吃掉並且什麼都不做」—— 使用者看到的是
+  //     **按了沒反應**,而那正是他來查的症狀。
+  //
+  //   所以一句「改由我們收尾=N 鍵」等於對他說「別看這裡」。
+  void NoteKeyRescuedBySelfInsert() { ++keys_rescued_by_self_insert_; }
+  void NoteKeyEatenWithNoOutlet() { ++keys_eaten_with_no_outlet_; }
 
   // 把連線狀態機歸零(退避、失敗計數、階段),連線本身也收掉。
   //
@@ -187,12 +201,28 @@ class IpcClient {
   bool ConnectAndHandshake(uint32_t proto);
   bool Handshake(uint32_t proto);
   bool OpenSession();
+  // ── ⚠ 這三支吃的是**絕對 deadline**,不是「還要等多久」 ──────────
+  //
+  //   舊版是 timeout_ms,而它讓一趟往返最壞變成兩份預算:Exchange 先
+  //   WriteAllTimed(timeout_ms) 再 ReadFrameTimed(timeout_ms)。更糟的是
+  //   WriteAllTimed 在 while 迴圈裡**每一塊**都重新給一次 timeout_ms ——
+  //   一趟寫入根本沒有絕對上限。
+  //
+  //   而 common/key_deadline.h 那時寫著「150ms 是宿主 UI 執行緒最壞會
+  //   停住的時間」,還有一條 CHECK_MSG 在守那個假保證。改成絕對
+  //   deadline 之後,「一趟 ≤ kKeyTimeoutMs」才是真的;一顆鍵走兩趟
+  //   (Exchange + SendCaretRect 的單向寫),所以最壞是
+  //   kKeyHostStallWorstMs,而那個算式現在寫在標頭裡、也被測到。
+  //
+  // ⚠ 用 DeadlineIn() / MsLeft() 算,不要自己寫 `now >= deadline`:
+  //   GetTickCount() 49.7 天會繞回,而那種比較在繞回的那一瞬間會把
+  //   「還剩 100ms」讀成「已經逾時」。
   bool Exchange(const std::string& payload, uint32_t seq, std::string* reply,
                 DWORD timeout_ms);
-  bool WriteAllTimed(const std::string& data, DWORD timeout_ms);
+  bool WriteAllTimed(const std::string& data, DWORD deadline);
   // eof 收「對面乾淨地關掉了連線」(讀到 0 位元組)。與逾時分開,
   // 理由見 common/link_state.h 的 LinkFailure::kPeerClosed。
-  bool ReadFrameTimed(std::string* payload, DWORD timeout_ms, bool* eof);
+  bool ReadFrameTimed(std::string* payload, DWORD deadline, bool* eof);
   void SendOneWay(const std::string& payload);
   bool RequestResult(const std::string& payload, uint32_t seq, Result* out);
   void Fail(LinkFailure kind);
@@ -231,11 +261,17 @@ class IpcClient {
   uint32_t reconnects_ = 0;               // 第二次以後的每一次連上
   uint32_t keys_passed_while_down_ = 0;   // 斷線期間放行給宿主的按鍵
   // ⚠ 名字說的是它**現在**在數的東西,不是修改前的行為。
-  //   舊名字是 keys_lost_between_passes_(「掉了幾顆鍵」)—— 而
-  //   text_service.cc 那條路現在不掉了:SendKey 失敗時我們自己補字元
-  //   或吃掉,負責到底(見那一段的 ⚠)。名字與訊息若停在舊行為上,
-  //   下一個看 tsf.log 的人會去找一個不存在的缺陷。
-  uint32_t keys_rescued_between_passes_ = 0; // Test 說吃、Key 卻送不出去,
+  //   最早叫 keys_lost_between_passes_(「掉了幾顆鍵」),上一輪改成
+  //   keys_rescued_between_passes_(「改由我們收尾」)—— 而那個名字
+  //   蓋掉了一半的事實(見上面兩支 Note* 的說明)。現在是兩個:
+  //   一個真的把字元補進了文件,一個只是把鍵吃掉。
+  //
+  // ⚠ 補字這一格仍然是**上限**而不是保證:SelfInsertChar 丟掉了
+  //   RunSyncSession 的 HRESULT,所以宿主拒絕 edit session 的那幾顆
+  //   也算在裡面。要把它變成保證,得先讓 SelfInsertChar 把 HRESULT
+  //   交出來 —— 那是另一輪的事,寫在這裡免得下一個人以為它是保證。
+  uint32_t keys_rescued_by_self_insert_ = 0;  // 補了一個字元進文件
+  uint32_t keys_eaten_with_no_outlet_ = 0;    // 吃掉了,而且什麼都沒做
   int64_t connected_at_ms_ = 0;           // 這一條連線是什麼時候好的
   uint32_t last_link_ms_ = 0;             // 上一條連線活了多久
   bool ever_connected_ = false;

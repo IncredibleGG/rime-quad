@@ -1611,14 +1611,18 @@ bool TextService::HandleKey(ITfContext* ctx, WPARAM w, LPARAM l, bool key_up) {
     engine_composing_ = false;
     // 只加計數,不寫記錄:這裡是宿主的 UI 執行緒。數字由 ipc_client 的
     // 節流摘要帶出去。
-    // ⚠ 名字是「收尾」不是「掉了」:上面那一整段的重點就是這顆鍵
-    //   **沒有**掉 —— 我們補了字元或吃掉它。數到的是「斷線發生在
-    //   兩趟之間、而我們接手了幾次」。
-    ipc_.NoteKeyRescuedBetweenPasses();
+    // ⚠ **兩種下場分開數**,理由整段寫在 ipc_client.h 的那兩支 Note* 上面:
+    //   一句「改由我們收尾=N 鍵」會讓讀 tsf.log 的人跳過這裡,而那 N 顆
+    //   裡有一部分正是他要查的「按了沒反應」。
     if (ShouldSelfInsert(plan.kind) && !composition_) {
       const char32_t ch = CharForSelfInsert(plan.mapped.keysym);
-      if (ch != 0 && SelfInsertChar(ctx, ch)) return true;
+      if (ch != 0 && SelfInsertChar(ctx, ch)) {
+        ipc_.NoteKeyRescuedBySelfInsert();
+        return true;
+      }
     }
+    // 走到這裡 = 這顆鍵被吃掉了,而且文件上什麼都沒發生。
+    ipc_.NoteKeyEatenWithNoOutlet();
     // 組字進行中的功能鍵(或補不出字元的那些):吃掉並且什麼都不做。
     // 理由與下面那一段一字不差 —— 自己插字元會插進組字的 range 裡,
     // 放行給宿主會讓它拿方向鍵去動壓在組字上的游標。

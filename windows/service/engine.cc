@@ -499,7 +499,8 @@ Snapshot Engine::TakeSnapshot(uint64_t id) {
   return TakeSnapshotLocked(sess);
 }
 
-Result Engine::ToggleAsciiMode(uint64_t id) {
+Result Engine::ToggleAsciiMode(uint64_t id, int deadline_ms,
+                               KeyWait* wait) {
   Result r;
   // ── ⚠ 部署還沒做完就不要宣稱切過了 ──────────────────────────────
   //
@@ -525,8 +526,9 @@ Result Engine::ToggleAsciiMode(uint64_t id) {
     return r;
   }
   const bool now = ascii_mode_.load();
+  // ⚠ 這一句是 store + 兩次 PostAsync,微秒級,**不等**。所以它不在
+  //   下面那個上限裡面 —— 上限管的是「取快照」那一趟同步等待。
   SetAsciiModeAll(!now);
-  r.handled = true;
   // ── ⚠ 快照要在切換**之後**取,而且必須在**引擎執行緒**上取 ──────
   //
   //   順序:狀態列那一格顯示的是快照上的旗標(status_bar.h:「顯示的是
@@ -541,12 +543,41 @@ Result Engine::ToggleAsciiMode(uint64_t id) {
   //   直接呼叫等於無鎖讀 sessions_,並與引擎執行緒上的 rs_process_key
   //   並行呼叫 rs_*。SetAsciiModeAll 內部是 Post 進佇列的,這一句不是 ——
   //   「兩者都排在同一條佇列上」那句舊註解是錯的,只有前者是。
-  Post("切中英後取快照", [&] { r.snap = TakeSnapshot(id); });
+  //
+  // ── 有上限的等待 + 作廢權(#93,這一輪補上)────────────────────
+  //
+  // ⚠ 上一輪這裡是 `Post("切中英後取快照", …)` = queue_.Call(…, 0) =
+  //   **永遠等**,而 commit 標題與四道新守門都讓人以為按鍵已經有上限了。
+  //   Ctrl+空白 是中文輸入法上最常按的那顆鍵,而它排在 SESSION_NEW 的
+  //   ApplyChoice(實測 442~753ms)後面時,DLL 150ms 就 Fail() → Close()。
+  //
+  // ⚠ 盒子要與工作**共同持有**:逾時之後這個函式就返回了,而那件工作
+  //   可能還在佇列裡。`[&]` 在這裡是 use-after-return。
+  auto box = std::make_shared<Snapshot>();
+  if (!CallKeyBounded(
+          "切中英後取快照", [this, id, box] { *box = TakeSnapshot(id); },
+          deadline_ms, wait)) {
+    // 逾時 —— 與 ProcessKey 同一套處置:
+    //   · 回 handled=false,讓宿主自己收尾(Ctrl+空白 交回宿主不會往
+    //     文件裡寫字元,所以這裡沒有「引擎切了、宿主也打了」那種分岔)。
+    //   · **不碰 UI**:呼叫端用 DecideKeyUiAction() 擋,而這裡回的是
+    //     一份預設建構的 Result —— 餵進去會把使用者組字到一半的候選窗
+    //     收掉,而引擎那邊組字原封不動。
+    //
+    // ⚠ 中英模式本身**仍然會切**(上面那一句已經進佇列了),只是晚一點。
+    //   那是刻意的:使用者按這顆鍵要的就是切,而「什麼都沒發生」比
+    //   「晚 200 毫秒才切」糟。
+    Result timed_out;
+    timed_out.handled = false;
+    return timed_out;
+  }
+  r.handled = true;
+  r.snap = *box;
   return r;
 }
 
 Result Engine::ProcessKey(uint64_t id, int32_t keysym, uint32_t mods,
-                          KeyWait* wait) {
+                          int deadline_ms, KeyWait* wait) {
   Result r;
   if (wait) *wait = KeyWait();
   // ── ⚠ 這道門在**呼叫端執行緒**上答，不排進佇列 ──────────
@@ -612,9 +643,18 @@ Result Engine::ProcessKey(uint64_t id, int32_t keysym, uint32_t mods,
   //   但 kStDisabled 的語意是 common/service_state.cc 定死的**另一件事**
   //   ——「引擎還沒準備好」(首次部署 / 使用者按了重新整理字詞)。借用它
   //   的代價是:一個健康的引擎在狀態列上自稱「正在準備字詞」,那一橫
-  //   四格整排消失,而寫進那一格的 atomic 全樹只有一個寫入點、沒有任何
-  //   一條路清得回來 —— 它會一直說謊到下一顆成功的按鍵為止,而一顆鍵
-  //   按下去沒反應之後,人的下一個動作正好是停手。
+  //   四格整排消失。
+  //
+  //   ⚠ 上一輪這裡寫的是「那一格**沒有任何一條路清得回來**」,而那是
+  //     錯的 —— status_bar.cc 是 `engine_not_ready_.exchange(not_ready)`,
+  //     寫進去的是**算出來的值**,所以下一份不帶 kStDisabled 的快照就會
+  //     把它清成 false。(那句話還被自己的下一句推翻:「它會一直說謊到
+  //     下一顆成功的按鍵為止」—— 那正是有清除路徑的意思。)留著那句話
+  //     會讓下一個人去補一條根本不缺的清除路徑。
+  //
+  //   真正的代價是**那段期間**:它會一直說謊到下一顆成功的按鍵為止,
+  //   而一顆鍵按下去沒反應之後,人的下一個動作正好是停手 —— 於是沒有
+  //   下一顆鍵,那句謊就掛在畫面上。
   //
   //   所以兩件事都不做:不回全 0 給 UI,也不借別人的旗標。
   //   **那一份根本不進 UI** —— 呼叫端(pipe_server.cc)用
@@ -626,33 +666,56 @@ Result Engine::ProcessKey(uint64_t id, int32_t keysym, uint32_t mods,
   //   逾時之後這個函式就返回了,而那件工作可能還在佇列裡。
   //   這正是 common/work_queue.h 檔頭那一整段講的東西。
   auto box = std::make_shared<Result>();
-  bool abandoned = false;
-  const WorkQueue::Status st = queue_.CallAbandonable(
-      "按鍵",
-      [this, id, keysym, mods, box] {
-        const uintptr_t sess = Find(id);
-        if (!sess) {
-          // 引擎不認得這個 id(部署後重建那一個失敗了,或宿主拿著過期的
-          // id)。⚠ 同樣不可以回一份全 0 的快照。
-          box->handled = false;
-          box->snap.status_flags = kStDisabled;
-          return;
-        }
-        box->handled = rs_process_key(sess, keysym, mods);
-        box->snap = TakeSnapshotLocked(sess);
-      },
-      kKeyDeadlineMs, &abandoned);
-
-  if (st != WorkQueue::Status::kDone) {
-    if (wait) {
-      wait->timed_out = true;
-      wait->abandoned = abandoned;
-    }
+  if (!CallKeyBounded(
+          "按鍵",
+          [this, id, keysym, mods, box] {
+            const uintptr_t sess = Find(id);
+            if (!sess) {
+              // 引擎不認得這個 id(部署後重建那一個失敗了,或宿主拿著
+              // 過期的 id)。⚠ 同樣不可以回一份全 0 的快照。
+              box->handled = false;
+              box->snap.status_flags = kStDisabled;
+              return;
+            }
+            box->handled = rs_process_key(sess, keysym, mods);
+            box->snap = TakeSnapshotLocked(sess);
+          },
+          deadline_ms, wait)) {
     r.handled = false;
     return r;
   }
   r = *box;
   return r;
+}
+
+// ── 按鍵那條路唯一的入口 ────────────────────────────────────────
+//
+// 三個出口共用這一支,理由寫在 engine.h 的宣告上面。這裡只講一件事:
+// **預算用完不入列**。0 傳進 WorkQueue::Call 的意思是「永遠等」
+// (work_queue.cc),所以「剩 0 毫秒」若照樣往下傳,結果不是「立刻放棄」
+// 而是「無上限地等」—— 正好是這一整輪要修掉的那個東西,而且它會偽裝成
+// 已經修好的樣子。
+bool Engine::CallKeyBounded(const char* label, std::function<void()> fn,
+                            int deadline_ms, KeyWait* wait) {
+  if (wait) *wait = KeyWait();
+  if (deadline_ms <= 0) {
+    // 預算用完 = 這顆鍵的時間已經花在前面那幾趟上了。工作**一步都沒跑**,
+    // 所以作廢權在我們手上(沒有東西可以搶)。
+    if (wait) {
+      wait->timed_out = true;
+      wait->abandoned = true;
+    }
+    return false;
+  }
+  bool abandoned = false;
+  const WorkQueue::Status st =
+      queue_.CallAbandonable(label, std::move(fn), deadline_ms, &abandoned);
+  if (st == WorkQueue::Status::kDone) return true;
+  if (wait) {
+    wait->timed_out = true;
+    wait->abandoned = abandoned;
+  }
+  return false;
 }
 
 Result Engine::SelectCandidate(uint64_t id, int32_t index) {
@@ -699,15 +762,23 @@ Result Engine::ChangePage(uint64_t id, bool backward) {
   return r;
 }
 
-Result Engine::CurrentResult(uint64_t id) {
-  Result r;
-  Post("取快照", [&] {
-    const uintptr_t sess = Find(id);
-    if (!sess) return;
-    r.handled = true;
-    r.snap = TakeSnapshotLocked(sess);
-  });
-  return r;
+Result Engine::CurrentResult(uint64_t id, int deadline_ms, KeyWait* wait) {
+  // ⚠ 這一支在按鍵那條路上(簡繁快捷鍵的第二趟),所以與 ProcessKey
+  //   同一套。上一輪它還是 Post() = 永遠等。
+  auto box = std::make_shared<Result>();
+  if (!CallKeyBounded(
+          "取快照",
+          [this, id, box] {
+            const uintptr_t sess = Find(id);
+            if (!sess) return;
+            box->handled = true;
+            box->snap = TakeSnapshotLocked(sess);
+          },
+          deadline_ms, wait)) {
+    // 逾時 → 一份預設建構的 Result。⚠ 呼叫端**不可以**拿它碰 UI。
+    return Result();
+  }
+  return *box;
 }
 
 Result Engine::SelectSchema(uint64_t id, const std::string& schema_id) {
@@ -1029,9 +1100,13 @@ std::string Engine::SchemaOfSession(uint64_t id) {
   return out;
 }
 
-Engine::StatusReadback Engine::ReadBackStatus(uint64_t session_id) {
-  StatusReadback out;
-  Post("回讀狀態", [&] {
+Engine::StatusReadback Engine::ReadBackStatus(uint64_t session_id,
+                                              int deadline_ms, KeyWait* wait) {
+  // ⚠ 盒子與工作**共同持有**:有上限的那一條路上,逾時之後這個函式就
+  //   返回了,而那件工作可能還在佇列裡。`[&]` 在那條路上是 use-after-return。
+  auto box = std::make_shared<StatusReadback>();
+  auto job = [this, session_id, box] {
+    StatusReadback& out = *box;
     // ⚠ 指定了就問指定的那一個。呼叫端(懸浮那一橫)知道使用者此刻
     //   正在打字的是哪一個宿主(common/bar_owner.h 算出來的
     //   focused_session),而 13 個宿主的 ascii_mode 是各自獨立的 ——
@@ -1066,8 +1141,18 @@ Engine::StatusReadback Engine::ReadBackStatus(uint64_t session_id) {
     const VariantCell v = VariantCellFromOptions(vo);
     if (v != VariantCell::kHidden) out.status_flags |= kStVariantKnown;
     if (v == VariantCell::kSimplified) out.status_flags |= kStSimplified;
-  });
-  return out;
+  };
+  if (deadline_ms > 0) {
+    // 按鍵那條路(簡繁快捷鍵的第一趟)。逾時 → ok 維持 false,
+    // 呼叫端照既有約定「什麼都不要改」,而那正好也是「不碰 UI」。
+    if (!CallKeyBounded("回讀狀態", job, deadline_ms, wait))
+      return StatusReadback();
+  } else {
+    // 不在按鍵路徑上的呼叫端(那一橫自己的重整)。維持舊行為。
+    if (wait) *wait = KeyWait();
+    Post("回讀狀態", job);
+  }
+  return *box;
 }
 
 std::string Engine::ApplyChoice(uint64_t id, const std::string& schema_id,
