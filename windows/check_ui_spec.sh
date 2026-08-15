@@ -4202,7 +4202,7 @@ self_check() {
 "W29g 紀錄不是從出口讀來的|service/settings_window.cc|s=s.replace('BuildNetLogView(net_gate_.ReadLog(), ui_lang_, LocalTzOffsetMinutes())','BuildNetLogView({}, ui_lang_, LocalTzOffsetMinutes())',1)"
 "W29h 更新卡片那一句話寫死一條|service/settings_window.cc|s=s.replace('  SetText(hwnd_, IDC_UPDATE_STATUS, text.c_str());','  SetText(hwnd_, IDC_UPDATE_STATUS, UiText(UiString::kUpdateStatusUpToDate));',1)"
 "W29i 清除紀錄不問一聲|service/settings_window.cc|s=s.replace('  if (!ConfirmDialog(hwnd_, &theme_, script(),' + chr(10) + '                     UiText(UiString::kNetLogClearHeading),' + chr(10) + '                     UiText(UiString::kNetLogClearBlurb),' + chr(10) + '                     UiText(UiString::kNetLogClearButton),' + chr(10) + '                     UiText(UiString::kCancel)))' + chr(10) + '    return;','',1)"
-"W29j 開關寫不進去卻不說|service/settings_window.cc|s=s.replace('    SetStatus(UiString::kStatusSaveFailed);' + chr(10) + '    RefreshNetworkPage();' + chr(10) + '    return;','    RefreshNetworkPage();' + chr(10) + '    return;',1)"
+"W29j 開關寫不進去卻不說|service/settings_window.cc|s=s.replace('    SetStatus(UiString::kStatusSaveFailed);' + chr(10) + '    RefreshNetworkAndUpdateCard();' + chr(10) + '    return;','    RefreshNetworkAndUpdateCard();' + chr(10) + '    return;',1)"
 "W29k 更新卡片的純函式從 common/ 消失|common/update_flow.cc|s=s.replace('UpdateCard DescribeUpdateCard(','UpdateCard DescribeUpdateCardGone(',1)"
 "W29k2 那一句失敗文案的純函式從 common/ 消失|common/update_flow.cc|s=s.replace('UiString UpdateFailureText(','UiString UpdateFailureTextGone(',1)"
 "W29k3 「要不要提開關」的純函式從 common/ 消失|common/update_flow.cc|s=s.replace('bool UpdateFailureNeedsSwitch(','bool UpdateFailureNeedsSwitchGone(',1)"
