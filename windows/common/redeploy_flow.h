@@ -50,6 +50,22 @@
 //   kPreparing → 「正在準備,馬上就好」。少了那一格,使用者看到的是
 //   一個沒反應的輸入法,而他會以為它壞了。
 //
+// ── ⚠ 而「fail-open」這個名字騙過我們一次(#116)──────────────────
+//
+//   上一句寫著「宿主自己收下那顆鍵」,而那**不是**實際發生的事。
+//   DLL 在 OnTestKeyDown 已經宣告吃掉了,所以它不會退回宿主 ——
+//   tsf/text_service.cc 走的是 SelfInsertChar:**由我們把那個字母寫進
+//   使用者的文件**。兩者在英數模式下看起來一樣,在**組字中**完全不同。
+//
+//   於是使用者升級之後在訊息框裡打「你好」,拿到的是「ni好」:前兩顆鍵
+//   落在這道門後面(服務剛被安裝程式換掉重啟、引擎在部署),我們替他
+//   打了 'n' 'i';第三顆起引擎回來,從「h」開始組字、上屏「好」。
+//   沒有紅字、沒有提示,那一橫還顯示「中」,他要到送出之後才看得到。
+//
+//   所以 GateStatusFlags() 現在回**兩個**位元:kStDisabled 給畫面,
+//   kStKeyNotAnswered 給 DLL(「引擎對這顆鍵一個字都沒說」,見
+//   protocol.h 與 key_eat_policy.h 的 DecideKeyOutlet)。
+//
 #ifndef RIMEWIN_REDEPLOY_FLOW_H_
 #define RIMEWIN_REDEPLOY_FLOW_H_
 
@@ -124,8 +140,14 @@ bool SessionCreationAllowed(RedeployPhase p);
 //   「現在能不能碰它」,兩件事都要問。
 bool TypingAllowed(RedeployPhase p, bool first_deploy_ok);
 
-// 不能打字時要回填在快照上的旗標(protocol.h 的 kStDisabled)。
-// 能打字時回 0。
+// 不能打字時要回填在快照上的旗標。能打字時回 0。
+//
+// ⚠ 不能打字時是**兩個**位元,而它們的讀者不同:
+//   · kStDisabled       → 畫面(SnapshotSaysNotReady → 「正在準備」)
+//   · kStKeyNotAnswered → DLL(「引擎對這顆鍵一個字都沒說」,於是
+//     DecideKeyOutlet 走「吃掉、不動文件」而不是把字母補進去)
+//   這道門是「這顆鍵不交給引擎」,所以第二個位元照定義成立。
+//   漏掉它的下場是 #116 的「ni好」—— 詳見上面檔頭那一段。
 uint32_t GateStatusFlags(RedeployPhase p, bool first_deploy_ok);
 
 // 「這一顆鍵不要交給引擎」的單一問法,順便把要回填的旗標寫進 *out_flags。

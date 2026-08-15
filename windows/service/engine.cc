@@ -523,12 +523,10 @@ Result Engine::ToggleAsciiMode(uint64_t id, int deadline_ms,
   if (ShouldFailOpen(phase_.load(), deploy_state_.load() == 1,
                      &r.snap.status_flags)) {
     r.handled = false;
-    // 「引擎一個字都沒說」—— 與 ProcessKey 那三個出口同一件事,
-    // 位元的意義與極性見 protocol.h 的 kStKeyNotAnswered。
-    // ⚠ 這一格的鍵(Ctrl+空白 / 裸 Shift)不是字元鍵,所以 DLL 那側的
-    //   DecideKeyOutlet 走不到補字元那條路 —— 但線路上仍然要說實話:
-    //   「沒回答」與「不要這顆鍵」在別的地方(記錄、日後的判斷)是兩件事。
-    r.snap.status_flags |= kStKeyNotAnswered;
+    // ⚠ kStKeyNotAnswered 由 ShouldFailOpen() 自己回填,這裡**不再補一次**。
+    //   上一輪是在這兩個呼叫點各 OR 一次,而結果是漏掉了 ProcessKey 那一處
+    //   —— 也就是 §13c 那個「ni好」真正走的路。判準搬進 common/ 之後只有
+    //   一份,且 tests/test_redeploy_flow.cc 在 Ubuntu 上守得住。
     return r;
   }
   const bool now = ascii_mode_.load();
@@ -624,6 +622,18 @@ Result Engine::ProcessKey(uint64_t id, int32_t keysym, uint32_t mods,
   if (ShouldFailOpen(phase_.load(), deploy_state_.load() == 1,
                      &r.snap.status_flags)) {
     r.handled = false;
+    // ⚠ **這裡就是 §13c 那個「ni好」的第一現場。**
+    //
+    //   服務剛被安裝程式換掉重啟,引擎在部署,這道門是關的 —— 那顆鍵
+    //   **一步都沒有進到 librime**。所以 handled=false 在這一格的意思
+    //   絕對不是「引擎跑完了、它不要這顆鍵」,而在這個位元存在之前,
+    //   線路上這兩件事長得一模一樣,DLL 只好把使用者剛按的字母補進他的
+    //   文件(tsf/text_service.cc 的 SelfInsertChar)。
+    //
+    //   位元由 ShouldFailOpen() 回填(common/redeploy_flow.cc),
+    //   不在這裡 OR —— 上一輪就是在呼叫點各補一次,而漏掉的恰好是
+    //   這一處。DLL 那側怎麼用它:common/key_eat_policy.h 的
+    //   DecideKeyOutlet(engine_answered=false → 吃掉、不動文件)。
     return r;
   }
   // ── 有上限的等待 + 作廢權(#93)──────────────────────────────

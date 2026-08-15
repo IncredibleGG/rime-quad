@@ -222,15 +222,65 @@ TEST(closed_gate_always_reports_disabled) {
       CHECK_INT(fail_open ? 1 : 0, TypingAllowed(p, ok != 0) ? 0 : 1);
       if (fail_open) {
         CHECK_INT(flags & kStDisabled, kStDisabled);
-        // 而且**只有**那一格 —— 其餘旗標必須是 0,不可以順手說一句
+        // ⚠ 加上「引擎對這顆鍵一個字都沒說」。這道門是 return !allowed
+        //   —— 那顆鍵根本沒交給引擎,所以這個位元照定義成立。
+        CHECK_INT(flags & kStKeyNotAnswered, kStKeyNotAnswered);
+        // 而且**只有**那兩格 —— 其餘旗標必須是 0,不可以順手說一句
         // 「現在是中文」或「現在是簡體」,那些現在沒有人知道。
-        CHECK_INT(flags, kStDisabled);
+        //
+        // ⚠ 上一版這裡是 `CHECK_INT(flags, kStDisabled)`,而那條理由
+        //   (「不可以聲稱沒有人知道的狀態」)擋的是**輸入狀態**那一族。
+        //   kStKeyNotAnswered 不是輸入狀態,它是關於**這顆鍵**的事實,
+        //   而這道門正好知道那件事。
+        CHECK_INT(flags, kStDisabled | kStKeyNotAnswered);
       } else {
         CHECK_INT(flags, 0);
       }
       CHECK_INT(GateStatusFlags(p, ok != 0), flags);
     }
   }
+}
+
+// ══ #116:關著的門一定要說「引擎沒有回答這顆鍵」════════════════════
+//
+// 這一條與上面那個逐格掃描是**分開**的一條,理由是它守的東西不一樣:
+// 上面守「旗標的完整值」,這一條守「那條會出人命的路」,而紅字要直接
+// 說出使用者看到的症狀。
+//
+// ⚠ 它證明得了、也證明不了的:
+//   · 證明得到 —— 門關著時,回給 DLL 的快照帶著 kStKeyNotAnswered。
+//   · 證明不到 —— DLL 收到之後真的沒有動文件。那一段在 tsf/(這台機器上
+//     編不起來),由 tests/test_key_eat_policy.cc 的 DecideKeyOutlet 真值表
+//     與真機 / CI 的 §13c 接手。
+//
+// 把這一格弄丟的樣子:使用者升級之後在訊息框裡打「你好」拿到「ni好」。
+TEST(closed_gate_says_the_engine_never_answered_the_key) {
+  for (RedeployPhase p : kAllPhases) {
+    for (int ok = 0; ok < 2; ++ok) {
+      const bool closed = !TypingAllowed(p, ok != 0);
+      const uint32_t flags = GateStatusFlags(p, ok != 0);
+      // 門關著 ⟺ 有那個位元。**兩個方向都驗** —— 只驗一邊的話,一支
+      // 「永遠回 kStKeyNotAnswered」的實作也會綠,而那會讓 DLL 在引擎
+      // 健康的時候把每一顆字母都吃掉不動(打字完全沒反應)。
+      CHECK_INT((flags & kStKeyNotAnswered) != 0 ? 1 : 0, closed ? 1 : 0);
+    }
+  }
+  // 逐一點名那三個「門是關的」情境,免得哪天 TypingAllowed 自己被改鬆了
+  // 之後這條測試跟著一起變成空話。
+  //   · 首次部署還沒成功(使用者剛裝完)
+  CHECK_INT(GateStatusFlags(RedeployPhase::kIdle, false) & kStKeyNotAnswered,
+            kStKeyNotAnswered);
+  //   · 使用者按了「重新整理字詞」,正在收 session
+  CHECK_INT(GateStatusFlags(RedeployPhase::kClosingSessions, true) &
+                kStKeyNotAnswered,
+            kStKeyNotAnswered);
+  //   · 正在改寫詞庫檔
+  CHECK_INT(GateStatusFlags(RedeployPhase::kDeploying, true) &
+                kStKeyNotAnswered,
+            kStKeyNotAnswered);
+  // 而引擎好好的時候一個位元都不准有 —— 這一句就是上面那個「反方向」
+  // 在真實情境上的點名:平常打字的每一顆鍵都走這裡。
+  CHECK_INT(GateStatusFlags(RedeployPhase::kIdle, true), 0u);
 }
 
 // out_flags 傳 nullptr 不可以炸。

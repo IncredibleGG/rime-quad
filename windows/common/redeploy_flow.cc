@@ -80,7 +80,27 @@ bool TypingAllowed(RedeployPhase p, bool first_deploy_ok) {
 }
 
 uint32_t GateStatusFlags(RedeployPhase p, bool first_deploy_ok) {
-  return TypingAllowed(p, first_deploy_ok) ? 0u : kStDisabled;
+  if (TypingAllowed(p, first_deploy_ok)) return 0u;
+  // ⚠ 兩個位元,而它們說的是**兩件不同的事**,少任何一個都會出人命:
+  //
+  //   · kStDisabled     → 給**畫面**看的。「引擎還沒準備好」,於是那一橫
+  //                       說「正在準備,馬上就好」(SnapshotSaysNotReady)。
+  //   · kStKeyNotAnswered → 給 **DLL** 看的。「引擎對這顆鍵一個字都沒說」。
+  //
+  //   這道門是 `return !allowed` —— 那顆鍵**根本沒有交給引擎**,所以
+  //   handled=false 的意思不可能是「引擎跑完了、它不要這顆鍵」。
+  //   在這個位元存在之前,線路上這兩件事長得一模一樣,而 DLL 只好一律
+  //   把那個字母補進使用者的文件:使用者升級之後在 LINE 的訊息框裡
+  //   打「你好」,拿到的是「ni好」(#116)。前兩顆鍵落在這道門後面,
+  //   第三顆起引擎回來,從「h」開始組字、上屏「好」。
+  //
+  // ⚠ 這一格放在 common/ 而不是兩個呼叫點各寫一次,理由是**漏掉一個的
+  //   代價**:engine.cc 有兩處 ShouldFailOpen(ProcessKey 與
+  //   ToggleAsciiMode),而 §13c 那個「ni好」正是走 ProcessKey 那一處 ——
+  //   上一輪只在 ToggleAsciiMode 那一處補了位元,漏掉的恰好是會出事的
+  //   那一個。規則只准有一份,而且要在 Ubuntu 上驗得到
+  //   (tests/test_redeploy_flow.cc)。
+  return kStDisabled | kStKeyNotAnswered;
 }
 
 bool ShouldFailOpen(RedeployPhase p, bool first_deploy_ok,
