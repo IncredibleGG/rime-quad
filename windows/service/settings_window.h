@@ -259,6 +259,30 @@ class SettingsWindow {
   static DWORD WINAPI UpdateWorkerEntry(LPVOID self);
 
   void StartRedeploy(UiString why);
+
+  // ── W2:從這個視窗裡跑得到自我診斷 ─────────────────────────
+  //
+  // 在這之前,進階頁的「診斷」區塊只有一顆「複製」,而 windows/service/
+  // 底下一行 doctor 的呼叫都沒有。一個東西壞掉、因此打開設定的人,
+  // 得先關掉設定、回「開始」功能表、找到另一個捷徑 —— 而「設定」
+  // 是他唯一知道的入口。
+  //
+  // ⚠ **不開執行緒。** 診斷會逐一開啟系統上的每一個進程,還會叫起
+  //   rime_console 做端到端檢查(那一段的等待預算是分鐘級,見
+  //   common/first_run_timing.h),所以它一定不能跑在 UI 執行緒上 ——
+  //   但也不必為它再開一條執行緒:它本來就是**另一個進程**。
+  //   我們只要拿著它的 handle,用一顆 500ms 的計時器問「結束了沒」。
+  //   (更新那一條走的是真的執行緒,而「下載執行緒沒有人等它,關視窗
+  //    等於 use-after-free」正是那條路上還沒修完的東西。這裡不再多開
+  //    一個同樣形狀的東西。)
+  //
+  // ⚠ **這不是連網出口。** 它 ShellExecute 一支同目錄的本機執行檔,
+  //   與「開始」功能表那個診斷捷徑是同一行命令。windows/ 底下唯一
+  //   碰得到網路 API 的檔案仍然只有 service/net_gate.cc
+  //   (windows/audit_offline_win.sh 盯著這一條)。
+  void StartDoctorReport();
+  void OnDoctorTick();
+  void StopDoctorWatch();
   void SetStatus(const std::wstring& text);
   void SetStatus(UiString s) { SetStatus(UiText(s)); }
   // 成功訊息 4 秒後自己清掉(§12.5.3:不做浮層,成功不值得一個新表面)。
@@ -397,6 +421,12 @@ class SettingsWindow {
   UpdateFailure update_failure_ = UpdateFailure::kNone;
   // 上一次交棒的結果(啟動時和解出來的)。只顯示一次。
   std::wstring update_note_;
+
+  // W2:正在跑的那支 rime_ime_setup.exe(nullptr = 沒有在跑)。
+  // ⚠ 它同時是「按鈕要不要停用」的真相 —— 不另外放一個布林,
+  //   兩份會漂移,而漂移的樣子是按鈕永遠灰著或者可以連按五次。
+  HANDLE doctor_proc_ = nullptr;
+  DWORD doctor_start_ = 0;
 
   bool deploying_ = false;
   uint32_t deploy_seq_ = 0;

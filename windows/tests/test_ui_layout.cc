@@ -419,7 +419,13 @@ TEST(ui_layout_advanced_page_counts_the_last_button_in_its_height) {
   //   改成「標籤在左、按鈕在右」（§12.14.6.9）。
   //   標題與說明搬進卡片之後，每一張卡省下一整塊高度：
   //   902 → 836（矮 66 DIP）。舊值 902 裡面有 66 DIP 是空白。
-  CHECK_INT(max_bottom, 836);
+  // ⚠ 2026-08-15(W2):「診斷」那一格多了一顆「檢查它為什麼不能用」,
+  //   而它的說明文(kDiagnosticsNote)因此從一行變成三行 —— 那一段現在
+  //   要講得出「第二顆是做什麼的、跑完會怎樣」。836 → 852:高 16 DIP,
+  //   正好是那一段多出來的**一行**(t5 的行盒高就是 16)。
+  //   **按鈕列本身沒有變高**:card_buttons 的高是 btn_h,
+  //   一列裡放幾顆不影響它。
+  CHECK_INT(max_bottom, 852);
   for (const CardRect& c : pl.cards)
     if (c.rect.bottom() > max_bottom) max_bottom = c.rect.bottom();
   CHECK_INT(pl.content_h_dip, max_bottom + kContentPadBottomDip);
@@ -982,6 +988,86 @@ TEST(ui_layout_network_page_empty_log_says_so_instead_of_showing_a_blank_list) {
     CHECK(!FindOn(kPageNetwork, state, IDC_UPDATE_ACTION).empty());
     CHECK(!FindOn(kPageNetwork, state, IDC_NETLOG_PATH).empty());
   }
+}
+
+// ── W1:三顆更新鍵是灰的,而畫面上沒有一個字說為什麼 ─────────────
+//
+// 缺陷本身在 service/settings_window.cc:
+//
+//     ::EnableWindow(chk, card.show_check_button && on ? TRUE : FALSE);
+//
+// `on` 是連網開關,而它**預設是關的**(卡片自己寫著「已關閉(預設)」)。
+// 於是「更新」那一整段從頭到尾三顆按鈕都按不動 —— 而那一段裡沒有任何
+// 一句話說「要先打開上面那個開關」。麻瓜的動作是連點三次「看看有沒有
+// 新版本」然後放棄。
+//
+// ⚠ 對照組是**我們自己的安卓端**:啟用頁那顆灰掉的 Switch 底下寫著
+//   「Waiting for the step above」。同一個產品、同一種情況,一邊說了
+//   一邊沒說。這一條就是把那個形狀補到 Windows 上。
+//
+// ⚠ 修法**不是**「把按鈕改成不灰」。連網開關預設關是產品定位
+//   (離線為預設),那是對的。
+TEST(ui_layout_network_page_says_why_the_update_buttons_are_grey) {
+  PageState off;
+  // 開關預設關 —— 版面的預設值必須與那件事同一個方向,
+  // 否則第一次打開設定的人看到的就是沒有說明的那一版。
+  CHECK(off.net_switch_off);
+  PageState on = off;
+  on.net_switch_off = false;
+
+  const RectI gate = FindOn(kPageNetwork, off, IDC_UPDATE_GATE);
+  const RectI check = FindOn(kPageNetwork, off, IDC_UPDATE_CHECK);
+  CHECK(!gate.empty());
+  CHECK(!check.empty());
+  // ⚠ 要排在按鈕**上面**。排在下面的話,他已經點過三次才讀到。
+  //   這與 IDC_UPDATE_TRUST 在按鈕之前是同一條理由。
+  CHECK(gate.bottom() <= check.y);
+  // ⚠ 而且要在同一張卡片裡。浮在卡片外面就變成一段與按鈕無關的旁白,
+  //   而「灰掉的東西旁邊」這件事就不成立了。
+  const PageLayout pl = LayoutSettingsPageDip(kPageNetwork, 780, off);
+  bool in_card = false;
+  for (const PlacedControl& p : pl.items)
+    if (p.id == IDC_UPDATE_GATE) in_card = p.in_card;
+  CHECK(in_card);
+  // 捲到底碰得到(#76 的形狀:說明長出來把後面的東西擠到摺線下)。
+  CHECK(gate.bottom() <= pl.content_h_dip);
+
+  // 開關打開之後這一句就是假的 —— 不可以還留在畫面上。
+  CHECK(FindOn(kPageNetwork, on, IDC_UPDATE_GATE).empty());
+  CHECK(!FindOn(kPageNetwork, on, IDC_UPDATE_CHECK).empty());
+}
+
+// ── W2:從設定視窗裡走得到診斷 ──────────────────────────────────
+//
+// 缺陷本身:進階頁的「診斷」區塊只有一顆「複製」,而 windows/service/
+// 底下一行 doctor 的呼叫都沒有(只有三行註解提到它)。一個東西壞掉、
+// 因此打開設定的人,得先關掉設定、回「開始」功能表、找到另一個捷徑
+// ——「設定」是他唯一知道的入口,而那個入口走不到自我診斷。
+TEST(ui_layout_advanced_page_can_reach_the_doctor) {
+  const PageState st;
+  const RectI copy = FindOn(kPageAdvanced, st, IDC_DIAG_COPY);
+  const RectI run = FindOn(kPageAdvanced, st, IDC_DIAG_RUN);
+  CHECK(!copy.empty());
+  CHECK(!run.empty());
+  // 同一列按鈕(§12.14.6.2:依內容寬、由左往右),不重疊。
+  CHECK_INT(run.y, copy.y);
+  CHECK(run.x >= copy.right());
+  const PageLayout pl = LayoutSettingsPageDip(kPageAdvanced, 780, st);
+  // ⚠ 捲到底碰得到。進階頁最後一個區塊是破壞性的「還原」,
+  //   而這一顆要在它上面 —— 不是在摺線下。
+  CHECK(run.bottom() <= pl.content_h_dip);
+  bool clickable = false, in_card = false;
+  for (const PlacedControl& p : pl.items)
+    if (p.id == IDC_DIAG_RUN) {
+      clickable = p.clickable;
+      in_card = p.in_card;
+    }
+  CHECK(clickable);
+  CHECK(in_card);
+  // 破壞性的「還原」仍然是最後一個區塊(§4.9 / §2-C2)。
+  const RectI reset = FindOn(kPageAdvanced, st, IDC_RESET);
+  CHECK(!reset.empty());
+  CHECK(run.bottom() <= reset.y);
 }
 
 TEST(ui_layout_network_page_clear_button_is_last_and_behind_a_divider) {
@@ -1641,7 +1727,8 @@ bool IsButtonWhat(const std::string& what) {
       "move_up",          "move_down",          "apply_order",
       "update_check",     "update_action",      "update_page",
       "clear_log_button", "redeploy_button",    "open_user_dir",
-      "open_settings_file", "diagnostics_copy", "reset_button",
+      "open_settings_file", "diagnostics_copy", "diagnostics_report",
+      "reset_button",
   };
   return kButtons.count(what) == 1;
 }

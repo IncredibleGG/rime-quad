@@ -375,6 +375,32 @@ cat "${ISS_SRC}" >> "${ISS}"
 head -c 3 "${ISS}" | od -An -tx1 | tr -d ' \n' | grep -q 'efbbbf' \
   || die "BOM 沒有加上去 —— 中文會在編譯階段變成亂碼"
 
+# ── 首次整理字詞要多久:值只有一個來源 ──────────────────────────
+#
+# 這個數字以前在四個地方各寫一份,其中**兩份是使用者讀得到的**,而那兩份
+# 都寫著「一到數分鐘」——實測是十幾秒。見 windows/common/first_run_timing.h
+# 的檔頭。那份標頭現在是唯一的來源;.iss 是 Pascal,include 不了 C++,
+# 所以在這裡把數字讀出來,用 ISCC 的 /D 傳進去。
+#
+# ⚠ 讀不到就**死**。給一個預設值等於「傳參壞掉時安靜地用回一個寫死的
+#   舊數字」,而那正是這件事本身。
+# ⚠ 另一頭也是硬的:.iss 裡寫的是 `{#FirstDeployLowSec}`,ISPP 遇到未定義
+#   的識別字是**當場失敗**,不是展開成空字串。
+TIMING_H="${SCRIPT_DIR}/common/first_run_timing.h"
+[ -f "${TIMING_H}" ] || die "找不到 ${TIMING_H} —— 完成頁那句話的數字沒有來源了"
+read_timing() {   # read_timing <常數名>
+  local v
+  v="$(sed -n "s/^inline constexpr int $1 = \([0-9][0-9]*\);.*/\1/p" \
+        "${TIMING_H}" | head -1)"
+  [ -n "${v}" ] || die "從 ${TIMING_H} 讀不出 $1(名字改了?)"
+  printf '%s' "${v}"
+}
+FIRST_DEPLOY_LOW="$(read_timing kFirstDeployTypicalLowSec)"
+FIRST_DEPLOY_HIGH="$(read_timing kFirstDeployTypicalHighSec)"
+PROFILE_VISIBLE="$(read_timing kProfileVisibleObservedSec)"
+log "首次整理字詞 ${FIRST_DEPLOY_LOW}~${FIRST_DEPLOY_HIGH} 秒;"\
+"清單可見約 ${PROFILE_VISIBLE} 秒(取自 common/first_run_timing.h)"
+
 # ── 呼叫 ISCC ───────────────────────────────────────────────────
 #
 # ⚠ 參數前面的雙斜線是刻意的。MSYS/Git Bash 會把看起來像 POSIX 路徑的參數
@@ -392,6 +418,9 @@ iscc_once() {
     "//DProductNameZh=${RS_PRODUCT_NAME_ZH}" \
     "//DProductIdRoot=${RS_PRODUCT_ID_ROOT}" \
     "//DSetupBaseName=${RS_WIN_SETUP_BASE}" \
+    "//DFirstDeployLowSec=${FIRST_DEPLOY_LOW}" \
+    "//DFirstDeployHighSec=${FIRST_DEPLOY_HIGH}" \
+    "//DProfileVisibleSec=${PROFILE_VISIBLE}" \
     "//O$(w "$3")" \
     "$(w "${ISS}")" \
     > "$4" 2>&1

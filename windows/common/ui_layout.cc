@@ -267,6 +267,7 @@ UiString SettingsButtonLabel(int id) {
     case IDC_OPEN_USER_DIR:     return UiString::kOpenUserDir;
     case IDC_OPEN_SETTINGS_FILE: return UiString::kOpenSettingsFile;
     case IDC_DIAG_COPY:         return UiString::kDiagnosticsCopy;
+    case IDC_DIAG_RUN:          return UiString::kDiagnosticsRunButton;
     case IDC_RESET:             return UiString::kResetButton;
     default:                    return UiString::kUiStringCount;
   }
@@ -709,6 +710,19 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
       //   所以仍然是固定行數,而且抓最長的那一種還要再寬一點。
       emit(IDC_UPDATE_STATUS, card_block(t5h * 3, space::s3), false,
            "update_status", text_size::t5, 3, true);
+      // ── W1:灰掉的東西旁邊要寫為什麼灰 ──────────────────────
+      //
+      // ⚠ 只在開關**關著**的時候出現。開著的時候「因為開關是關的」
+      //   是假的,而一句永遠都在的假話比沒有還糟 —— 那是安卓端
+      //   「Waiting for the step above」那個形狀的另一半:它也是
+      //   等到上一步做完就消失。
+      if (state.net_switch_off) {
+        const int nl = lines_of(UiString::kUpdateSwitchGate, inner_w);
+        emit(IDC_UPDATE_GATE, card_block(nl * t5h, space::s3), false,
+             "update_switch_gate", text_size::t5, nl, true);
+      } else {
+        hide(IDC_UPDATE_GATE);
+      }
       card_buttons({{IDC_UPDATE_CHECK, "update_check"},
                     {IDC_UPDATE_ACTION, "update_action"},
                     {IDC_UPDATE_PAGE, "update_page"}},
@@ -776,7 +790,11 @@ PageLayout LayoutSettingsPageDip(int page, int window_w_dip,
       card_heading(IDC_DIAG_HEAD, IDC_DIAG_NOTE, UiString::kDiagnosticsNote);
       emit(IDC_DIAG, card_block(t5h * 6, space::s3), true, "diagnostics_edit",
            0, 0, true);
-      card_buttons({{IDC_DIAG_COPY, "diagnostics_copy"}}, 0);
+      // ⚠ 兩顆,順序是「複製 → 檢查」。複製在前的理由:大部分人來到
+      //   這一格是因為我們請他回報,那時他要的是上面那幾行;
+      //   而**東西真的壞掉**的人要的是第二顆。左邊那顆比較常用。
+      card_buttons({{IDC_DIAG_COPY, "diagnostics_copy"},
+                    {IDC_DIAG_RUN, "diagnostics_report"}}, 0);
       card_end(0);
       // ⚠ 危險操作一律是該頁最後一個區塊,上面隔一條 hairline + s7。
       st.PushDivider();

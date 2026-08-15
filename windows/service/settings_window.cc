@@ -64,6 +64,10 @@ constexpr UINT_PTR kStatusTimer = 2;
 // ⚠ 側欄底部那一行要自己更新(見 OnServiceStateTick)。
 //   半秒問一次,問的是兩個 atomic,而且只有狀態真的變了才重畫。
 constexpr UINT_PTR kServiceStateTimer = 3;
+// W2:等那支診斷程式跑完。半秒問一次,與狀態列那顆同一個節奏 ——
+// 期間底下那一行要一直在動(「已經 N 秒」),不然按下去看起來像沒反應。
+constexpr UINT_PTR kDoctorTimer = 4;
+constexpr UINT kDoctorPollMs = 500;
 constexpr UINT kServiceStatePollMs = 500;
 // 引擎的同一件工作跑超過這麼久,就在底下那一行說出來。
 //
@@ -289,6 +293,10 @@ const ControlDef kControls[] = {
     {IDC_UPDATE_TRUST, L"STATIC", ST, UiString::kUpdateTrustAnchor},
     {IDC_UPDATE_WHAT, L"STATIC", ST, UiString::kUpdateWhatHappens},
     {IDC_UPDATE_STATUS, L"STATIC", ST, kNoText},
+    // ⚠ W1:為什麼下面那幾顆是灰的。**這一顆的文字是固定的** ——
+    //   它只在連網開關關著的時候被排進版面(見 ui_layout.cc),
+    //   所以不必在執行期換句子。
+    {IDC_UPDATE_GATE, L"STATIC", ST, UiString::kUpdateSwitchGate},
     {IDC_UPDATE_CHECK, L"BUTTON", BTN, UiString::kUpdateCheckButton},
     {IDC_UPDATE_ACTION, L"BUTTON", BTN, UiString::kUpdateInstallButton},
     {IDC_UPDATE_PAGE, L"BUTTON", BTN, UiString::kUpdateOpenPageButton},
@@ -302,6 +310,8 @@ const ControlDef kControls[] = {
          WS_BORDER,
      kNoText},
     {IDC_DIAG_COPY, L"BUTTON", BTN, UiString::kDiagnosticsCopy},
+    // ⚠ W2:跑 `rime_ime_setup.exe doctor --report`。
+    {IDC_DIAG_RUN, L"BUTTON", BTN, UiString::kDiagnosticsRunButton},
     {IDC_RESET_HEAD, L"STATIC", ST, UiString::kResetHeading},
     {IDC_RESET_BLURB, L"STATIC", ST, UiString::kResetBlurb},
     // ⚠ 危險鍵是這個檔案裡唯一 owner-draw 的**按鈕**。理由不是好看:
@@ -593,6 +603,7 @@ LRESULT CALLBACK SettingsWindow::WndProc(HWND hwnd, UINT msg, WPARAM w,
           id == IDC_DIAG_NOTE || id == IDC_RESET_BLURB ||
           id == IDC_UPDATE_BLURB || id == IDC_UPDATE_TRUST ||
           id == IDC_UPDATE_WHAT || id == IDC_UPDATE_STATUS ||
+          id == IDC_UPDATE_GATE ||
           id == IDC_SCHEMAS_DEFAULT_LINE ||
           id == IDC_SCHEMAS_EMPTY ||
           id == IDC_NET_SUB || id == IDC_NET_STATE || id == IDC_NET_DETAIL ||
@@ -714,6 +725,7 @@ LRESULT CALLBACK SettingsWindow::WndProc(HWND hwnd, UINT msg, WPARAM w,
     case WM_TIMER:
       if (self && w == kServiceStateTimer) self->OnServiceStateTick();
       if (self && w == kDeployTimer) self->OnDeployTick();
+      if (self && w == kDoctorTimer) self->OnDoctorTick();
       if (self && w == kStatusTimer) {
         ::KillTimer(hwnd, kStatusTimer);
         // ⚠ **只清自己那一則。** 這個計時器是為了收回 4 秒前那句成功
@@ -750,6 +762,10 @@ LRESULT CALLBACK SettingsWindow::WndProc(HWND hwnd, UINT msg, WPARAM w,
       ::ShowWindow(hwnd, SW_HIDE);
       return 0;
     case WM_DESTROY:
+      // ⚠ 先把診斷那顆計時器與 handle 收掉。留著的話,計時器會打在一個
+      //   正在拆的視窗上,而那支 handle 會漏到進程結束 ——
+      //   服務是常駐的,「進程結束會清掉」在這裡不是一個答案。
+      if (self) self->StopDoctorWatch();
       if (self) self->RemoveTray();
       ::PostQuitMessage(0);
       return 0;
@@ -914,6 +930,7 @@ void SettingsWindow::ApplyFonts() {
                  IDC_DIAG_NOTE, IDC_RESET_BLURB, IDC_STATUS,
                  IDC_UPDATE_BLURB,
                  IDC_UPDATE_TRUST, IDC_UPDATE_WHAT, IDC_UPDATE_STATUS,
+                 IDC_UPDATE_GATE,
                  IDC_SCHEMAS_DEFAULT_LINE,
                  IDC_SCHEMAS_EMPTY,
                  IDC_NET_SUB, IDC_NET_STATE, IDC_NET_DETAIL,
@@ -930,7 +947,7 @@ void SettingsWindow::ApplyFonts() {
     for (int id : {IDC_CLOSE, IDC_UP, IDC_DOWN, IDC_APPLY_ORDER,
                    IDC_UPDATE_CHECK, IDC_UPDATE_ACTION, IDC_UPDATE_PAGE,
                    IDC_REDEPLOY, IDC_OPEN_USER_DIR, IDC_OPEN_SETTINGS_FILE,
-                   IDC_DIAG_COPY, IDC_RESET, IDC_NETLOG_CLEAR})
+                   IDC_DIAG_COPY, IDC_DIAG_RUN, IDC_RESET, IDC_NETLOG_CLEAR})
       set(id, btn);
   }
   set(IDC_DIAG, mono);
@@ -1653,6 +1670,11 @@ PageState SettingsWindow::PageStateNow() const {
   //   字」由 schema_note_ 決定。寫死一個 note 的話,另外兩種說法會被
   //   照第一種的高度裁掉 —— 而那正是 #76 的形狀。
   s.schema_note = schema_note_;
+  // ⚠ W1:開關關著的時候,更新那一段上面多一句話說明那幾顆按鈕為什麼
+  //   按不動。真相與別的地方一樣**只有 NetGate 一個來源** ——
+  //   這裡不讀 settings_,兩份會漂移,而漂移的樣子是
+  //   「開關看起來是開的,而畫面上還寫著『開關是關的』」。
+  s.net_switch_off = !net_gate_.Enabled();
   return s;
 }
 
@@ -1705,12 +1727,26 @@ void SettingsWindow::OnNetSwitchToggled() {
     // 安靜地失敗會變成「開關關了,重開又是開的」。撥回真正的狀態,
     // 不要在畫面上留一個假的開關。
     SetStatus(UiString::kStatusSaveFailed);
-    RefreshNetworkPage();
+    RefreshNetworkAndUpdateCard();
     return;
   }
   // 這一份設定被別人(出口)改過了,重讀一次免得後面覆寫掉。
   settings_ = store_->Load();
-  RefreshNetworkPage();
+  // ── ⚠ 這裡本來只叫 RefreshNetworkPage(),而那是一個真的缺陷 ────────
+  //
+  //   更新那三顆按鈕的 EnableWindow **只在** RefreshNetworkAndUpdateCard()
+  //   裡下,而整個檔案裡叫得到它的地方全部在更新那一串動作上,以及
+  //   WM_CREATE。也就是說:使用者把連網開關打開之後,那三顆**還是灰的**
+  //   —— 要關掉設定視窗再打開一次才會亮。
+  //
+  //   在 W1 之前這件事沒有人看得出來(反正三顆本來就一直是灰的,而且
+  //   畫面上沒有一句話說為什麼)。W1 補上那句話之後它就變成**說謊**:
+  //   「把它打開,前兩顆就會亮」,而他打開了,那句話消失了,按鈕還是灰的
+  //   —— 比原本更難懂,因為連解釋都跟著不見了。
+  //
+  //   RefreshNetworkAndUpdateCard() 是 RefreshNetworkPage() 的超集
+  //   (它自己第一行就叫那一支),所以這裡改叫它,不會少做任何事。
+  RefreshNetworkAndUpdateCard();
   SetTransientStatus(NetSwitchStatus(on));
 }
 
@@ -1727,6 +1763,87 @@ void SettingsWindow::DoClearNetLog() {
   net_gate_.ClearLog();
   RefreshNetworkPage();
   SetTransientStatus(UiString::kNetLogCleared);
+}
+
+// ───────────────────── W2:從設定裡跑得到診斷 ─────────────────────
+//
+// ⚠ 跑的是**與「開始」功能表那個捷徑完全同一行**的命令:
+//     {app}\rime_ime_setup.exe doctor --report
+//   不另外拼一份參數。兩份會漂移,而漂移的症狀是「他貼給我們的東西
+//   和捷徑產出來的不一樣」——而那正是這份報告存在的理由被抵消掉。
+//
+// ⚠ **不提權。** rime_ime_setup.exe 沒有 requestedExecutionLevel
+//   (res/app.manifest 只掛在有視窗的三支上),所以這一下不會跳 UAC,
+//   而診斷跑起來的身分就是使用者自己 —— 那是對的:提權之後看到的 HKCU
+//   與具名管道都是**另一個帳號的**,報告自己第一段就在講這件事。
+//
+// ⚠ **這不是連網出口。** ShellExecuteEx 叫的是同目錄的一支本機執行檔。
+void SettingsWindow::StartDoctorReport() {
+  // 已經在跑就什麼都不做。按鈕那時是停用的,但鍵盤與螢幕閱讀器仍然
+  // 送得進 BN_CLICKED —— 「按鈕看起來灰的」不是一道防線。
+  if (doctor_proc_) return;
+
+  const std::wstring exe = ModuleDirectory(nullptr) + L"\\rime_ime_setup.exe";
+  SHELLEXECUTEINFOW ei{};
+  ei.cbSize = sizeof(ei);
+  // ⚠ SEE_MASK_NOCLOSEPROCESS:要拿到 hProcess 才問得出「跑完了沒」。
+  //   不拿的話畫面上就只能寫一句「已經送出」然後永遠不更新 ——
+  //   而使用者不會知道記事本什麼時候才會跳出來。
+  ei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
+  ei.hwnd = hwnd_;
+  ei.lpVerb = L"open";
+  ei.lpFile = exe.c_str();
+  ei.lpParameters = L"doctor --report";
+  // 主控台視窗不要跳出來:報告最後會自己用記事本打開,而一個黑框
+  // 閃過去只會讓人以為出了事。
+  ei.nShow = SW_HIDE;
+  if (!::ShellExecuteExW(&ei) || !ei.hProcess) {
+    // ⚠ 一句「失敗」對一個東西已經壞掉的人沒有用 —— 要說得出還有哪一條路。
+    // ⚠ 而且走 SetStatus **不是** SetTransientStatus:失敗訊息不准 4 秒後
+    //   自己消失,消失之後畫面上是一片空白,而空白跟「成功了」長得一樣。
+    //   (check_ui_spec.sh 的 W35 就是守這一條 —— 第一版寫成 transient,
+    //    被它當場攔下來。)
+    SetStatus(UiString::kDiagnosticsRunFailed);
+    return;
+  }
+  doctor_proc_ = ei.hProcess;
+  doctor_start_ = ::GetTickCount();
+  // ⚠ W23:停用的控制項,同一頁必須有一句說明為什麼。這裡那句話就是
+  //   底下狀態行的「正在檢查…已經 N 秒」,而它一直在動。
+  ::EnableWindow(Ctl(hwnd_, IDC_DIAG_RUN), FALSE);
+  wchar_t buf[240];
+  ::swprintf(buf, 240, UiText(UiString::kDiagnosticsRunning), 0u);
+  SetStatus(buf);
+  ::SetTimer(hwnd_, kDoctorTimer, kDoctorPollMs, nullptr);
+}
+
+void SettingsWindow::OnDoctorTick() {
+  if (!doctor_proc_) return;
+  const DWORD elapsed = ::GetTickCount() - doctor_start_;
+  if (::WaitForSingleObject(doctor_proc_, 0) == WAIT_TIMEOUT) {
+    // 不畫假的進度條 —— 它會停在某個數字然後不動,而那比什麼都不畫更糟。
+    // 只說實話:已經跑了多久。(與「重新整理字詞」那一條同一個做法。)
+    wchar_t buf[240];
+    ::swprintf(buf, 240, UiText(UiString::kDiagnosticsRunning),
+               static_cast<unsigned>(elapsed / 1000));
+    SetStatus(buf);
+    return;
+  }
+  StopDoctorWatch();
+  // ⚠ 不看結束碼。doctor 的結束碼是**失敗的格數**,而「有幾格紅」正是
+  //   使用者跑它的理由 —— 把它當成「這一下失敗了」會對一個剛剛成功
+  //   拿到診斷的人說「失敗」。報告在記事本裡,結論寫在報告最後。
+  SetTransientStatus(UiString::kDiagnosticsRunDone);
+}
+
+void SettingsWindow::StopDoctorWatch() {
+  if (hwnd_) ::KillTimer(hwnd_, kDoctorTimer);
+  if (doctor_proc_) {
+    ::CloseHandle(doctor_proc_);
+    doctor_proc_ = nullptr;
+  }
+  HWND b = Ctl(hwnd_, IDC_DIAG_RUN);
+  if (b) ::EnableWindow(b, TRUE);
 }
 
 LRESULT CALLBACK SettingsWindow::DangerProc(HWND h, UINT m, WPARAM w,
@@ -3061,6 +3178,9 @@ void SettingsWindow::OnCommand(int id, int code) {
       return;
     case IDC_RESET:
       DoResetSettings();
+      return;
+    case IDC_DIAG_RUN:
+      StartDoctorReport();
       return;
     case IDC_DIAG_COPY: {
       // 診斷要能被貼進回報。整段選起來再複製,不另外造一份字串 ——

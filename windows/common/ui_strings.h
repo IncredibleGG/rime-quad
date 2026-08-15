@@ -158,6 +158,20 @@ enum class UiString : int {
   kDiagnosticsNote,
   kDiagnosticsCopy,
   kDiagnosticsCopied,
+  // ── W2:從設定視窗裡走得到診斷 ──────────────────────────────
+  //
+  // ⚠ 這一顆按鈕跑的是與「開始」功能表那個捷徑**完全同一行**命令
+  //   (rime_ime_setup.exe doctor --report)。兩份會漂移,而漂移的
+  //   症狀是「他貼給我的和捷徑產出來的不一樣」。
+  //
+  // ⚠ kDiagnosticsRunning 帶一個 %u(已經跑了幾秒)。診斷會逐一開啟
+  //   系統上的每一個進程、還會叫起引擎自我檢查,所以它**不是**瞬間
+  //   完成的 —— 期間畫面上要有東西在動,而這個視窗的回饋管道就是
+  //   底部那一行。
+  kDiagnosticsRunButton,
+  kDiagnosticsRunning,
+  kDiagnosticsRunDone,
+  kDiagnosticsRunFailed,
   kResetHeading,
   kResetBlurb,
   kResetButton,
@@ -298,6 +312,21 @@ enum class UiString : int {
   kUpdateBlurb,
   kUpdateTrustAnchor,
   kUpdateWhatHappens,
+  // ── W1:灰掉的東西旁邊要寫「為什麼灰、怎麼讓它不灰」 ───────────
+  //
+  // 缺陷本身在 service/settings_window.cc:
+  //     ::EnableWindow(chk, card.show_check_button && on ? TRUE : FALSE);
+  // `on` 是連網開關,而它**預設關**(卡片自己就寫著「已關閉(預設)」)。
+  // 於是這一整段的按鈕全部按不動,而在這一條之前**畫面上沒有一個字
+  // 說為什麼**。麻瓜會連點三次「看看有沒有新版本」然後放棄。
+  //
+  // ⚠ 對照組是我們自己的安卓端:啟用頁那顆灰掉的 Switch 底下寫著
+  //   「Waiting for the step above」。同一個產品、同一種情況,
+  //   一邊說了一邊沒說。
+  //
+  // ⚠ 修的是「沒有人告訴他」,**不是**「按鈕不該灰」。連網開關預設關
+  //   是產品定位(離線為預設),那一格是對的,不准為了這條把它打開。
+  kUpdateSwitchGate,
   kUpdateCheckButton,
   kUpdateInstallButton,
   kUpdateInstallNowButton,

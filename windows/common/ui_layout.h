@@ -442,6 +442,9 @@ enum SettingsControlId : int {
   IDC_DIAG_NOTE,
   IDC_DIAG,
   IDC_DIAG_COPY,
+  // ⚠ W2:跑 `rime_ime_setup.exe doctor --report`。與「開始」功能表那個
+  //   診斷捷徑**同一行命令**,不是另外寫一份。
+  IDC_DIAG_RUN,
   IDC_RESET_HEAD,
   IDC_RESET_BLURB,
   IDC_RESET,
@@ -464,6 +467,10 @@ enum SettingsControlId : int {
   IDC_UPDATE_TRUST,
   IDC_UPDATE_WHAT,
   IDC_UPDATE_STATUS,
+  // ⚠ W1:「為什麼下面那幾顆是灰的」。排在按鈕**之前**,理由與
+  //   IDC_UPDATE_TRUST 一樣:排在後面的話,他已經點過三次才讀到。
+  //   只在連網開關關著的時候出現(見 PageState::net_switch_off)。
+  IDC_UPDATE_GATE,
   IDC_UPDATE_CHECK,
   IDC_UPDATE_ACTION,
   IDC_UPDATE_PAGE,
@@ -617,6 +624,20 @@ struct PageState {
   // 上面那一格說明說的是哪一件事。見 SchemaListNote。
   // ⚠ schema_list_empty 為 false 時它沒有意義(那一格不出現)。
   int schema_note = kSchemaNoteEmpty;
+  // 「連網」頁:開關關著的時候,更新那一段上面多一句話說明那幾顆按鈕
+  // 為什麼按不動、以及怎麼讓它們不灰(W1)。開著的時候那一句是假的,
+  // 所以整格不出現。
+  //
+  // ⚠ 預設 **true**,方向與 net_log_empty 同一個理由:連網開關本身
+  //   預設就是關的(離線為預設是產品定位),所以「第一次打開設定」
+  //   看到的必須是**有說明**的那一版。預設 false 等於把這一條修給了
+  //   少數人,而漏掉的正好是第一次來的那個人。
+  //
+  // ⚠ 這一格加在**結構的最後**是刻意的:tests 裡有
+  //   `const PageState has_rows{false, false};` 這種位置初始化,
+  //   插在中間會把 false 錯位餵給這一格,而症狀是「那句說明無聲無息
+  //   地不見了」——畫面上什麼都沒壞,只是又回到 W1 那個狀態。
+  bool net_switch_off = true;
 };
 
 // 一頁的完整版面。

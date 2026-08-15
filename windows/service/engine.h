@@ -44,8 +44,15 @@ class Engine {
   ~Engine();
 
   // 先在呼叫端執行緒上做 rs_init,成功後再啟動引擎執行緒。
-  // 部署是非同步的,本函式不等它完成 —— 首次部署要編譯詞庫,可能好幾分鐘,
-  // 而那段時間裡使用者已經在打字了(服務會對每一顆按鍵立刻回「沒處理」)。
+  // 部署是非同步的,本函式不等它完成 —— 那段時間裡使用者已經在打字了
+  // (服務會對每一顆按鍵立刻回「沒處理」)。
+  //
+  // ⚠ 「要多久」有**兩個不同的答案**,而它們都在 common/first_run_timing.h:
+  //   出貨預設方案是十幾秒(kFirstDeployTypical*,**使用者讀得到的句子
+  //   一律用這一組**),而使用者自己灌了很大的詞典時要留到分鐘級
+  //   (kDeployWaitBudgetSec,那是**等待預算**不是期待值)。
+  //   這裡不再複述任何一個數字 —— 四份碼各講一個數字正是 W3 那個缺陷,
+  //   而它的代價是完成頁對一個只要等十幾秒的人說「一到數分鐘」。
   bool Start(const std::string& shared_dir, const std::string& user_dir,
              const std::string& log_dir);
   void Stop();
