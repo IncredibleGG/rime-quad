@@ -1607,6 +1607,21 @@ bool TextService::HandleKey(ITfContext* ctx, WPARAM w, LPARAM l, bool key_up) {
     //   而那比打出英文更糟。這正是本檔 OnTestKeyDown 那一段 ⚠⚠
     //   寫的「掉進兩邊中間的黑洞」。
     //
+    //   ⚠⚠ **上面那句取捨,對「組字中的字元鍵」是反的,而這一輪把它改掉。**
+    //
+    //   走到這裡代表連線斷在兩趟之間 —— 引擎對這顆鍵**一個字都沒說**,
+    //   比逾時更徹底。以前這裡照樣 SelfInsertChar,而那正是使用者升級
+    //   之後在訊息框裡拿到「ni好」的兩條路之一(另一條在下面
+    //   !result.handled 那一段)。差別在損害停在哪裡:
+    //
+    //     · 按了沒反應 → 少一個音,看得見(preedit 對不上他打的字)、
+    //       Esc / 退格救得回來、**上屏之前什麼都沒進到文件**。
+    //     · 補進文件   → 字母已經在文件裡了,Esc 清不掉、引擎不知道它
+    //       存在,而使用者要到送出之後才看得到。
+    //
+    //   兩邊都是「打出來的字不對」,差別在可不可逆。判斷本身是純函式,
+    //   在 Ubuntu 上有一張真值表:common/key_eat_policy.h 的 DecideKeyOutlet。
+    //
     //   所以這裡要負責到底,規則與下面 !result.handled 那一段完全相同。
     engine_composing_ = false;
     // 只加計數,不寫記錄:這裡是宿主的 UI 執行緒。數字由 ipc_client 的
@@ -1614,9 +1629,17 @@ bool TextService::HandleKey(ITfContext* ctx, WPARAM w, LPARAM l, bool key_up) {
     // ⚠ **兩種下場分開數**,理由整段寫在 ipc_client.h 的那兩支 Note* 上面:
     //   一句「改由我們收尾=N 鍵」會讓讀 tsf.log 的人跳過這裡,而那 N 顆
     //   裡有一部分正是他要查的「按了沒反應」。
-    if (ShouldSelfInsert(plan.kind) && !composition_) {
-      const char32_t ch = CharForSelfInsert(plan.mapped.keysym);
-      if (ch != 0 && SelfInsertChar(ctx, ch)) {
+    // ⚠ engine_answered=**false**:連線斷在兩趟之間,引擎連「我不要這顆鍵」
+    //   都沒說得出口。DecideKeyOutlet 在這一格永遠不會回 kSelfInsert
+    //   (見它的 ②),所以下面那一段補字元**這條路現在走不到**。
+    //   照樣呼叫那支純函式而不是把 false 寫死在這裡,理由是單一真相:
+    //   規則只准有一份,下一個人改的是 common/ 那一支,兩個呼叫點一起跟著走。
+    const char32_t self_ch = CharForSelfInsert(plan.mapped.keysym);
+    if (DecideKeyOutlet(plan.kind, /*engine_answered=*/false,
+                        /*have_composition=*/composition_ != nullptr,
+                        Composing(),
+                        /*have_char=*/self_ch != 0) == KeyOutlet::kSelfInsert) {
+      if (SelfInsertChar(ctx, self_ch)) {
         ipc_.NoteKeyRescuedBySelfInsert();
         return true;
       }
@@ -1655,9 +1678,32 @@ bool TextService::HandleKey(ITfContext* ctx, WPARAM w, LPARAM l, bool key_up) {
     //     以前是 `return false`,而它發生在 *eaten 已經是 TRUE 之後 ——
     //     那不是放行,那是黑洞。現在它與這裡走同一套規則,所以
     //     「Test 說吃 ⟹ Key 也說吃」**沒有例外**。
-    if (ShouldSelfInsert(plan.kind) && !composition_) {
-      const char32_t ch = CharForSelfInsert(plan.mapped.keysym);
-      if (ch != 0 && SelfInsertChar(ctx, ch)) {
+    // ── ⚠ handled=false 有**兩種**,而以前這裡把它們當成同一種 ──────
+    //
+    //   · 引擎跑完了、它不要這顆鍵(英數模式的字母)→ 補進文件,對的。
+    //   · 引擎**一個字都沒說** —— service/engine.cc 的三個出口:部署中的
+    //     fail-open、CallKeyBounded 逾時、工作跑完但不認得那個 session。
+    //     以前這一種也走補字元,於是使用者升級之後拿到的是「ni好」:
+    //     前兩顆鍵引擎還沒回來,我們替他打了 'n' 'i';第三顆起引擎回來,
+    //     從「h」開始組字,最後上屏「好」。**一個詞被切成兩截,而且是
+    //     靜默的** —— 那比整串英文糟,因為整串他一眼看得出來。
+    //
+    //   分辨兩者的是線路上那個位元(protocol.h 的 kStKeyNotAnswered),
+    //   判斷本身是純函式(common/key_eat_policy.h 的 DecideKeyOutlet),
+    //   在 Ubuntu 上有一張逐格的真值表。
+    //
+    // ⚠ 極性只准這一個方向:**有那個位元 = 確定沒回答**。沒有它不等於
+    //   回答了 —— 舊服務不會送這個位元,而那時的行為與這一輪之前完全一樣
+    //   (照舊補字元)。也就是說這一格不會讓任何既有組合變得更差。
+    const bool engine_answered =
+        (result.snap.status_flags & kStKeyNotAnswered) == 0;
+    const char32_t self_ch = CharForSelfInsert(plan.mapped.keysym);
+    const KeyOutlet outlet =
+        DecideKeyOutlet(plan.kind, engine_answered,
+                        /*have_composition=*/composition_ != nullptr,
+                        Composing(), /*have_char=*/self_ch != 0);
+    if (outlet == KeyOutlet::kSelfInsert) {
+      if (SelfInsertChar(ctx, self_ch)) {
         // 這條路每天都會走到(英數模式的每一顆字母),所以額度要與按鍵那一行
         // 共用 —— 不然它會變成一條每顆按鍵一次磁碟寫入的路徑,而這裡是
         // 宿主的 UI 執行緒。
@@ -1668,6 +1714,33 @@ bool TextService::HandleKey(ITfContext* ctx, WPARAM w, LPARAM l, bool key_up) {
         }
         return true;
       }
+    } else if (!engine_answered && outlet == KeyOutlet::kEatSilently) {
+      // ⚠ 條件裡的 `outlet == kEatSilently` 不可以省。引擎沒回答**而且**
+      //   這顆鍵落在 kPassToHost(沒有組字的功能鍵)時,舊行為是放行給
+      //   宿主,而那是對的:退格交回宿主最壞是「這顆鍵沒作用」,吃掉
+      //   最壞是「這顆鍵永遠壞了」(key_eat_policy.h 的 B 族)。
+      //   這一輪只改字元鍵那一格,別的一個位元都不動。
+      // ── ⚠ 這一行有**自己的**額度,而那是這一次查不出病因的直接原因 ──
+      //
+      //   上面那一行(「引擎不吃這顆字元鍵」)每天都會走到,英數模式下
+      //   打幾個字母就把 key_trace_budget_ 用光了;於是 §13c 第二階段
+      //   真的踩到這個缺陷的時候,瘦 DLL 的除錯記錄裡**一行都沒有**
+      //   (log4:1170「按鍵記錄額度用完」)。一條只在額度還沒用完時才
+      //   留得下痕跡的路徑,等於沒有痕跡。
+      //
+      //   所以罕見的這一格自己拿一份小額度 —— 它不是每天走的路,
+      //   寫得起。
+      if (not_answered_trace_budget_ > 0) {
+        --not_answered_trace_budget_;
+        Trace("引擎沒有回答這顆鍵(kStKeyNotAnswered),吃掉但**不動文件**"
+              " keysym=0x%X 出口=%s 旗標=0x%X",
+              static_cast<unsigned>(plan.mapped.keysym), KeyOutletTag(outlet),
+              static_cast<unsigned>(result.snap.status_flags));
+      }
+      ipc_.NoteKeyEatenWithNoOutlet();
+      // 吃掉、什麼都不做。文件一個位元都不動 —— 損害留在組字裡,而組字
+      // 是可逆的、看得見的。理由整段在 common/key_eat_policy.h 的檔頭。
+      return true;
     }
     // 組字進行中 → 吃掉並且什麼都不做(理由見上面那段)。
     //

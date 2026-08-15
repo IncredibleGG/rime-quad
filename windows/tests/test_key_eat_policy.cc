@@ -232,3 +232,110 @@ TEST(every_key_kind_has_a_tag) {
     CHECK(std::string(KeyKindTag(k)) != "?");
   }
 }
+
+// ══════════════════════════════════════════════════════════════════════
+//  DecideKeyOutlet —— 「引擎沒有回答」與「引擎不要這顆鍵」
+// ══════════════════════════════════════════════════════════════════════
+//
+// 使用者升級之後,在訊息框裡打「你好」,拿到的是 **「ni好」**。
+// 成因見 common/key_eat_policy.h 的 DecideKeyOutlet 檔頭:線路上
+// handled=false 蓋著兩件事,而 DLL 對其中一件的正確反應是把原始字母補進
+// 文件、對另一件是**絕對不可以**。
+//
+// 這份真值表的形狀同樣是刻意的:**同一顆鍵、同一個狀態,只把
+// engine_answered 翻一次**,兩個答案必須不同。少了這種成對的斷言,
+// 一個「永遠回 kEatSilently」或「永遠回 kSelfInsert」的實作照樣全綠。
+
+namespace {
+KeyOutlet Outlet(KeyKind kind, bool answered, bool have_composition,
+                 bool composing, bool have_char) {
+  return DecideKeyOutlet(kind, answered, have_composition, composing,
+                         have_char);
+}
+}  // namespace
+
+// ── 這就是使用者拿到「ni好」的那一格 ──────────────────────────────
+TEST(character_key_is_not_written_into_the_document_when_engine_never_answered) {
+  // 沒有組字、字元鍵、補得出字元 —— 唯一的差別是引擎有沒有表過態。
+  CHECK(Outlet(KeyKind::kCharacter, /*answered=*/true, false, false, true) ==
+        KeyOutlet::kSelfInsert);
+  CHECK(Outlet(KeyKind::kCharacter, /*answered=*/false, false, false, true) ==
+        KeyOutlet::kEatSilently);
+}
+
+// 每天都會走到的那條路一個位元都沒有變:英數模式下的字母、朗月拼音底下的
+// 數字,引擎回答了「我不要」,而我們負責把它寫進文件。
+TEST(engine_declining_a_character_key_still_self_inserts) {
+  const int32_t everyday[] = {'a', 'Z', '0', '9', ',', 0x20};
+  for (int32_t ks : everyday) {
+    CHECK(ClassifyKeyKind(ks, 0) == KeyKind::kCharacter);
+    CHECK(Outlet(ClassifyKeyKind(ks, 0), /*answered=*/true, false, false,
+                 CharForSelfInsert(ks) != 0) == KeyOutlet::kSelfInsert);
+  }
+}
+
+// 組字進行中 → 吃掉、什麼都不做。**兩種 answered 都一樣**:自己插字元會
+// 插進組字的 range 裡,放行給宿主會讓它拿方向鍵去動壓在組字上的游標。
+TEST(anything_during_composition_is_eaten_silently) {
+  for (bool answered : {true, false}) {
+    CHECK(Outlet(KeyKind::kEditing, answered, /*have_composition=*/true,
+                 /*composing=*/true, false) == KeyOutlet::kEatSilently);
+    CHECK(Outlet(KeyKind::kNavigation, answered, true, true, false) ==
+          KeyOutlet::kEatSilently);
+    CHECK(Outlet(KeyKind::kFinish, answered, true, true, false) ==
+          KeyOutlet::kEatSilently);
+    // 字元鍵也一樣 —— have_composition 為真時補字元那條路根本不開。
+    CHECK(Outlet(KeyKind::kCharacter, answered, true, true, true) ==
+          KeyOutlet::kEatSilently);
+  }
+}
+
+// ⚠ have_composition 與 composing 是**兩格**,不是一格。
+//   引擎說它在組字、而我們這一側 StartComposition 失敗時,那顆鍵在
+//   OnTestKeyDown 已經被宣告吃掉了 —— 這裡必須回「吃掉」,不是「放行」。
+TEST(engine_composing_without_our_composition_still_eats) {
+  CHECK(Outlet(KeyKind::kEditing, /*answered=*/true,
+               /*have_composition=*/false, /*composing=*/true, false) ==
+        KeyOutlet::kEatSilently);
+  // 而字元鍵在這一格仍然走補字元(我們這側沒有 range 可以弄壞)。
+  CHECK(Outlet(KeyKind::kCharacter, /*answered=*/true,
+               /*have_composition=*/false, /*composing=*/true, true) ==
+        KeyOutlet::kSelfInsert);
+}
+
+// ── 沒有組字的功能鍵:放行,而且**引擎沒回答時也一樣** ──────────────
+//
+// ⚠ 這一條守的是這一輪最容易改壞的地方:把「引擎沒回答就吃掉」套得太寬,
+//   退格會在沒有組字時被吃掉 —— 那正是 key_eat_policy.h 檔頭那個
+//   「可以打字,不能刪除」的使用者回報。放行最壞是「這顆鍵沒作用」,
+//   吃掉最壞是「這顆鍵永遠壞了」。
+TEST(function_key_without_composition_is_passed_to_host_either_way) {
+  for (bool answered : {true, false}) {
+    CHECK(Outlet(KeyKind::kEditing, answered, false, false, false) ==
+          KeyOutlet::kPassToHost);
+    CHECK(Outlet(KeyKind::kNavigation, answered, false, false, false) ==
+          KeyOutlet::kPassToHost);
+    CHECK(Outlet(KeyKind::kFinish, answered, false, false, false) ==
+          KeyOutlet::kPassToHost);
+    CHECK(Outlet(KeyKind::kHostOnly, answered, false, false, false) ==
+          KeyOutlet::kPassToHost);
+  }
+}
+
+// 補不出字元的「字元鍵」不可以走補字元那條路 —— 補了就是憑空多一個字。
+TEST(character_key_without_a_character_never_self_inserts) {
+  for (bool answered : {true, false}) {
+    CHECK(Outlet(KeyKind::kCharacter, answered, false, false,
+                 /*have_char=*/false) != KeyOutlet::kSelfInsert);
+  }
+}
+
+// 三個出口都要有標籤(瘦 DLL 的除錯記錄印的是它)。
+TEST(every_key_outlet_has_a_tag) {
+  const KeyOutlet all[] = {KeyOutlet::kSelfInsert, KeyOutlet::kEatSilently,
+                           KeyOutlet::kPassToHost};
+  for (KeyOutlet o : all) {
+    CHECK(KeyOutletTag(o) != nullptr);
+    CHECK(std::string(KeyOutletTag(o)) != "?");
+  }
+}

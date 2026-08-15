@@ -200,4 +200,32 @@ const char* KeyKindTag(KeyKind kind) {
   return "?";
 }
 
+// 檔頭那一整段的實作。三行,而三行的順序就是判準。
+KeyOutlet DecideKeyOutlet(KeyKind kind, bool engine_answered,
+                          bool have_composition, bool composing,
+                          bool have_char) {
+  // ① 補字元那條路的既有條件一個都沒有放寬:字元鍵、我們這側沒有開著
+  //    組字、而且真的給得出一個字元。
+  if (ShouldSelfInsert(kind) && !have_composition && have_char) {
+    // ② **唯一的新規矩**:引擎沒有表態時,這條路改走「吃掉不動」。
+    //    這一格就是「ni好」與「你好」的分水嶺,理由見檔頭。
+    return engine_answered ? KeyOutlet::kSelfInsert : KeyOutlet::kEatSilently;
+  }
+  // ③ 組字進行中 → 吃掉並且什麼都不做。
+  //    自己插字元會插進組字的 range 裡,放行給宿主會讓它拿方向鍵去動
+  //    壓在組字上的游標;兩條都比「什麼都不做」糟。
+  if (composing) return KeyOutlet::kEatSilently;
+  // ④ 沒有組字、又不是補得出字元的字元鍵。放行。
+  return KeyOutlet::kPassToHost;
+}
+
+const char* KeyOutletTag(KeyOutlet outlet) {
+  switch (outlet) {
+    case KeyOutlet::kSelfInsert:  return "self-insert";
+    case KeyOutlet::kEatSilently: return "eat-silently";
+    case KeyOutlet::kPassToHost:  return "pass-to-host";
+  }
+  return "?";
+}
+
 }  // namespace rimewin

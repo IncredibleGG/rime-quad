@@ -88,6 +88,9 @@
 //                              再打一次同樣的字並斷言同樣的結果
 //   --phase2-timeout-ms <毫秒> 等 go 檔的上限(預設 600000)
 //   --phase2-relink-ms <毫秒>  等「重新連上服務」的上限(預設 240000)
+//   --phase2-repeat <次數>     第二階段那六顆鍵連跑幾趟(預設 5)——
+//                              **任何一趟打錯就紅**。跑一趟的結果不管綠紅
+//                              都不構成證據,理由見第二階段那個迴圈上面。
 //
 //   ⚠ 這個模式驗的是使用者升級之後**真實存在**的狀態:
 //     已經開著的程式(檔案總管、瀏覽器)手上是**舊的 DLL 映像**,
@@ -1862,6 +1865,8 @@ static int Run(int argc, wchar_t** argv) {
   std::wstring phase2_go;
   DWORD phase2_timeout_ms = 600000;
   DWORD phase2_relink_ms = 240000;
+  // 第二階段那六顆鍵連跑幾趟。1 = 舊行為。
+  int phase2_repeat = 5;
 
   for (int i = 1; i < argc; ++i) {
     const std::wstring a = argv[i];
@@ -1901,6 +1906,13 @@ static int Run(int argc, wchar_t** argv) {
       phase2_timeout_ms = static_cast<DWORD>(::wcstol(argv[++i], nullptr, 0));
     else if (a == L"--phase2-relink-ms" && i + 1 < argc)
       phase2_relink_ms = static_cast<DWORD>(::wcstol(argv[++i], nullptr, 0));
+    else if (a == L"--phase2-repeat" && i + 1 < argc) {
+      phase2_repeat = static_cast<int>(::wcstol(argv[++i], nullptr, 0));
+      // 0 或負數會讓那個迴圈一趟都不跑,而「一趟都沒跑」在報表上與
+      // 「每一趟都對」長得一模一樣(rounds_ok == phase2_repeat)。
+      // 一個驗不到東西的段落綠起來,比它紅起來危險得多。
+      if (phase2_repeat < 1) phase2_repeat = 1;
+    }
     else {
       Say("未知參數: %s\n", Narrow(a).c_str());
       return 2;
@@ -2639,6 +2651,18 @@ static int Run(int argc, wchar_t** argv) {
         // 那正是它存在的理由。它的邊界寫在 ProbeServiceLink 的檔頭。
         LinkProbe link;
         // profile_guid 留空:protocol.h 說它只作診斷,服務端不得據此改行為。
+        //
+        // ⚠ 這支探針自己會在引擎那條 FIFO 上排一件**慢**工作:它建了一個
+        //   session 然後把管道關掉,而 service/pipe_server.cc 在連線離場時
+        //   `EndSessionAsync(session)` —— 那是「把使用者詞典寫回去」,
+        //   engine.cc 說它是這條路上最慢的一步之一。也就是說這一段在真正
+        //   開始量按鍵之前,主動在引擎前面塞了一件慢工作。
+        //
+        //   它現在不必搬走,而理由是**下面那個判準已經把它等掉了**:
+        //   新的 relink 判準要求引擎真的組出字(送 'n' → 文件變非空 →
+        //   送 ESC → 文件變空),而那要兩趟成功的引擎往返 —— 那件慢工作
+        //   在那之前必然已經跑完。⚠ 若哪天判準又改回「吃掉就算數」,
+        //   這一段就必須搬到打字**後面**,或明著送 SESSION_END 並等它收完。
         ProbeServiceLink(&link, langid, std::string());
         SayLinkProbe("PHASE2", link);
         // 舊欄位保留:verify_installer.sh 與人的眼睛都還在找它。
@@ -2659,21 +2683,57 @@ static int Run(int argc, wchar_t** argv) {
         int probes = 0;
         const DWORD t0 = ::GetTickCount();
         const DWORD relink_deadline = t0 + phase2_relink_ms;
-        // ⚠ `phase2_focus &&`:沒有焦點就一次都不探。
-        //   舊版在這裡跑滿 300 秒,每一趟的結果都是同一個
-        //   「KeyDown 回 S_OK / pfEaten=FALSE」—— 那不是量測,是等待。
+        // ══ ⚠ 判準換掉了,而理由要寫在這裡 ═══════════════════════════
+        //
+        // 舊的判準是「這顆 'n' 被吃掉了嗎」,註解寫著
+        //     吃掉了 = 連上、握手過、session 開好、**正在組字**
+        // 而最後那一句**從來就不成立**,只是以前碰巧看不出來:
+        // tsf/text_service.cc 的 `!handled → SelfInsertChar` 這條路上,
+        // 一顆鍵在引擎完全沒回話的情況下照樣會被吃掉。這一輪把那條路改成
+        // 「引擎沒回答就吃掉、什麼都不做」之後,它更是**必然**被吃掉。
+        //
+        // 也就是說舊判準會在「DLL 連上了、但引擎還在部署」的那一刻宣告
+        // relinked,然後立刻開始打那六顆鍵 —— 前兩顆落在引擎回來之前,
+        // 打出來就是 log4 那個「ni好」。`連線就緒 … session=5` 在
+        // 21:34:22.210,而文件內容 dump 在 22.899:六顆鍵全落在那 600ms 裡。
+        //
+        // ── 新判準:送 'n' → 文件真的多了東西 → 送 ESC → 文件真的空了 ──
+        //
+        //   · 引擎**真的在組字** → 'n' 之後文件是 preedit「n」(非空),
+        //     ESC 取消組字 → 文件回到空。**兩件都成立才算數。**
+        //   · 引擎沒回答(吃掉不動)→ 'n' 之後文件仍然是空的 → 第一關就不過。
+        //   · 引擎回答了但不要這顆鍵(英數模式,我們補字元)→ 'n' 之後
+        //     文件是字面的「n」,但 ESC **清不掉它** → 第二關擋下來。
+        //
+        // ⚠ 這不是把斷言放寬,是**把等待改成等對的東西**:這一格量的仍然
+        //   是「升級之後打得出你好嗎」,只是不再在引擎還沒回話時就開跑。
+        //
+        // ⚠ 舊版在迴圈**外面**無條件 `doc->text.clear()`,而那正好把唯一
+        //   能分辨這三種情形的證據抹掉。現在判斷做在清掉之前。
         while (phase2_focus && have_probe &&
                ::GetTickCount() < relink_deadline) {
           doc->text.clear();
           doc->sel_start = doc->sel_end = 0;
           ++probes;
           const SendOutcome o = SendKeyThrough(ks, doc, probe_key);
-          if (o.eaten) {
-            // 吃掉了 = 連上、握手過、session 開好、正在組字。
-            // 把組字清掉再開始真正的那一趟。
-            if (have_esc) SendKeyThrough(ks, doc, esc_key);
+          const bool doc_grew = !doc->text.empty();
+          bool esc_cleared = false;
+          if (o.eaten && doc_grew && have_esc) {
+            SendKeyThrough(ks, doc, esc_key);
+            esc_cleared = doc->text.empty();
+          }
+          if (o.eaten && doc_grew && esc_cleared) {
             relinked = true;
             break;
+          }
+          // ⚠ 沒過關的那幾趟也要留下痕跡,而且要說得出是**哪一關**沒過。
+          //   少了它,「探了 480 次」在報表上是一個沒有內容的數字,而這
+          //   三種情形要修的地方完全不同。額度 6 行,免得 300 秒刷成洪水。
+          if (probes <= 6) {
+            Say("  PHASE2_PROBE#%d eaten=%d doc_grew=%d esc_cleared=%d "
+                "doc=\"%s\"\n",
+                probes, o.eaten ? 1 : 0, doc_grew ? 1 : 0,
+                esc_cleared ? 1 : 0, Narrow(doc->text).c_str());
           }
           Pump(500);
         }
@@ -2737,28 +2797,64 @@ static int Run(int argc, wchar_t** argv) {
           Say("  PHASE2_KEYPATH_MEASURED=1\n");
           Ok("舊的 DLL 重新連上了新的服務(%lu 毫秒、%d 次嘗試)",
              static_cast<unsigned long>(relink_ms), probes);
-          Say("\n--- 第二階段送按鍵(同一段程式碼、同一個 ks)---\n");
-          for (const SeqKey& sk : plan) {
-            const SendOutcome o = SendKeyThrough(ks, doc, sk);
-            Say("  KEY %-8s vk=0x%02X test=%d down=%d host=%d doc=\"%s\"\n",
-                Narrow(sk.label).c_str(), static_cast<unsigned>(sk.vk),
-                o.test_eaten ? 1 : 0, o.eaten ? 1 : 0, o.host_did ? 1 : 0,
-                Narrow(doc->text).c_str());
-            Pump(60);
+          // ── ⚠ 跑 N 趟,不是一趟 ──────────────────────────────────
+          //
+          //   f1fe449 綠、00e7273 紅,而 `git show --stat 00e7273` 只有
+          //   windows/verify_installer.sh 十行 —— **兩者的產品程式碼完全
+          //   相同**。同一份二進位一趟綠一趟紅 = 競態,而跑一次的結果
+          //   不管綠紅都不構成證據:綠的那一次只證明「這一次沒踩到」。
+          //
+          //   所以這一格跑 N 趟,**任何一趟不對就紅**。它不會讓一個真的
+          //   壞掉的產品變綠(那樣每一趟都會錯),只會讓一個間歇的缺陷
+          //   從「三次裡紅一次」變成「幾乎每次都紅」——
+          //   而那正是一個守門該有的樣子。
+          int rounds_ok = 0;
+          std::wstring bad_doc;
+          int bad_round = 0;
+          for (int round = 1; round <= phase2_repeat; ++round) {
+            doc->text.clear();
+            doc->sel_start = doc->sel_end = 0;
+            Say("\n--- 第二階段送按鍵(第 %d/%d 趟,同一段程式碼、同一個 ks)"
+                "---\n",
+                round, phase2_repeat);
+            for (const SeqKey& sk : plan) {
+              const SendOutcome o = SendKeyThrough(ks, doc, sk);
+              Say("  KEY %-8s vk=0x%02X test=%d down=%d host=%d doc=\"%s\"\n",
+                  Narrow(sk.label).c_str(), static_cast<unsigned>(sk.vk),
+                  o.test_eaten ? 1 : 0, o.eaten ? 1 : 0, o.host_did ? 1 : 0,
+                  Narrow(doc->text).c_str());
+              Pump(60);
+            }
+            Say("  PHASE2_DOC=\"%s\"(第 %d/%d 趟)\n",
+                Narrow(doc->text).c_str(), round, phase2_repeat);
+            if (doc->text == expect) {
+              ++rounds_ok;
+            } else if (bad_round == 0) {
+              bad_round = round;
+              bad_doc = doc->text;
+            }
           }
-          Say("  PHASE2_DOC=\"%s\"\n", Narrow(doc->text).c_str());
-          if (doc->text == expect)
-            Ok("**升級之後,同一個進程用舊的 DLL 照樣打得出「%s」**",
-               Narrow(expect).c_str());
+          Say("  PHASE2_ROUNDS_OK=%d/%d\n", rounds_ok, phase2_repeat);
+          if (rounds_ok == phase2_repeat)
+            Ok("**升級之後,同一個進程用舊的 DLL 照樣打得出「%s」**"
+               "(連續 %d 趟都對)",
+               Narrow(expect).c_str(), phase2_repeat);
           else
             // ⚠ 這一條也在 phase2_focus==TRUE 的分支裡,而且它是**送完鍵、
             //   比對過文件內容**才記的 —— 那是這條路上最硬的一筆量測。
             //   上一版把它記進「瞎的」那一格,於是 rc=0。
             FailKeyPath(/*blind=*/!phase2_focus,
-                        "第二階段打出來的是「%s」,預期「%s」——\n"
+                        "第二階段第 %d 趟打出來的是「%s」,預期「%s」"
+                        "(%d 趟裡對了 %d 趟)——\n"
                         "     舊的 DLL 連上了新的服務,但打出來的東西不對。\n"
-                        "     那比連不上更糟:使用者不會發現。",
-                        Narrow(doc->text).c_str(), Narrow(expect).c_str());
+                        "     那比連不上更糟:使用者不會發現。\n"
+                        "     ⚠ 半串拼音半串中文(例如「ni好」)= 引擎沒有\n"
+                        "       回答那幾顆鍵,而 DLL 把原始字母補進了文件。\n"
+                        "       要看的是服務端 service.log 的 [pipe] 那幾行\n"
+                        "       (按鍵= / 逾時= / KEY_MS),以及瘦 DLL 記錄裡\n"
+                        "       「引擎沒有回答這顆鍵」那幾行。",
+                        bad_round, Narrow(bad_doc).c_str(),
+                        Narrow(expect).c_str(), phase2_repeat, rounds_ok);
         }
         // 上面那三句話全部成立,才有資格赦免按鍵那一段量不到的失敗。
         g_phase2_ran = true;

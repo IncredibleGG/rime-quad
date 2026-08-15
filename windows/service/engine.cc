@@ -523,6 +523,12 @@ Result Engine::ToggleAsciiMode(uint64_t id, int deadline_ms,
   if (ShouldFailOpen(phase_.load(), deploy_state_.load() == 1,
                      &r.snap.status_flags)) {
     r.handled = false;
+    // 「引擎一個字都沒說」—— 與 ProcessKey 那三個出口同一件事,
+    // 位元的意義與極性見 protocol.h 的 kStKeyNotAnswered。
+    // ⚠ 這一格的鍵(Ctrl+空白 / 裸 Shift)不是字元鍵,所以 DLL 那側的
+    //   DecideKeyOutlet 走不到補字元那條路 —— 但線路上仍然要說實話:
+    //   「沒回答」與「不要這顆鍵」在別的地方(記錄、日後的判斷)是兩件事。
+    r.snap.status_flags |= kStKeyNotAnswered;
     return r;
   }
   const bool now = ascii_mode_.load();
@@ -569,6 +575,7 @@ Result Engine::ToggleAsciiMode(uint64_t id, int deadline_ms,
     //   「晚 200 毫秒才切」糟。
     Result timed_out;
     timed_out.handled = false;
+    timed_out.snap.status_flags |= kStKeyNotAnswered;
     return timed_out;
   }
   r.handled = true;
@@ -674,7 +681,10 @@ Result Engine::ProcessKey(uint64_t id, int32_t keysym, uint32_t mods,
               // 引擎不認得這個 id(部署後重建那一個失敗了,或宿主拿著
               // 過期的 id)。⚠ 同樣不可以回一份全 0 的快照。
               box->handled = false;
-              box->snap.status_flags = kStDisabled;
+              // ⚠ 工作確實跑完了,但答案是「不認得」—— 引擎對**這顆鍵**
+              //   一個字都沒說。所以這裡也要帶上那個位元,不然 DLL 會
+              //   把使用者剛按的字母補進文件(見 key_eat_policy.h)。
+              box->snap.status_flags = kStDisabled | kStKeyNotAnswered;
               return;
             }
             box->handled = rs_process_key(sess, keysym, mods);
@@ -682,6 +692,13 @@ Result Engine::ProcessKey(uint64_t id, int32_t keysym, uint32_t mods,
           },
           deadline_ms, wait)) {
     r.handled = false;
+    // ⚠ 逾時 = 工作多半一步都沒跑(作廢成功),引擎那邊組字狀態原封不動。
+    //   這一份是佔位,不是快照 —— 而在這一輪之前,「佔位」這件事線路上
+    //   **沒有任何表示**:DLL 收到的與「英數模式下引擎不要這顆字母」
+    //   一模一樣,於是它把那個字母補進使用者的文件。
+    //   key_deadline.h:23-45 那段「本來會對、現在會錯」的迴歸帶,壞的
+    //   就是這一格;放寬 35→100 只是把它變窄,這個位元才是把它消掉。
+    r.snap.status_flags |= kStKeyNotAnswered;
     return r;
   }
   r = *box;

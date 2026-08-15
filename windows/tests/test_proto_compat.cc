@@ -13,6 +13,8 @@
 #include <string>
 
 #include "../common/protocol.h"
+// kStKeyNotAnswered 那幾條要證明它**不會**影響那一橫的「這份快照能不能信」。
+#include "../common/service_state.h"
 #include "check.h"
 
 using namespace rimewin;
@@ -463,4 +465,91 @@ TEST(Proto_profile_state_rides_the_existing_simple_shape) {
   }
   CHECK(seen > 8);
   CHECK(!DecodeSimple(away + std::string(1, '\0'), &seq, &v));
+}
+
+// ─────────────────────────────────────────────────────────────
+// kStKeyNotAnswered:「引擎沒有回答」也要有線路表示
+// ─────────────────────────────────────────────────────────────
+//
+// 使用者升級之後打「你好」拿到「ni好」。成因是線路上 handled=false 蓋著
+// 兩件事(見 common/protocol.h 的 kStKeyNotAnswered),而 DLL 對其中一件
+// 的正確反應是把原始字母補進文件、對另一件是絕對不可以。
+//
+// ⚠ 這一格與 kStVariantKnown 是**同一種加法**:一個既有 u32 裡的位元,
+//   位元組佈局一個位元都不變。key_deadline.h:201-212 當初否決的是
+//   「在 Result 尾巴加欄位」(舊 DLL 的 DecodeResult 要求剛好用完,會整則
+//   丟掉)—— 那個理由對加欄位成立,對加位元不成立,而下面三條就是證明。
+
+TEST(proto_key_not_answered_bit_does_not_collide) {
+  CHECK_INT(static_cast<int>(kStKeyNotAnswered), 1 << 7);
+  CHECK_INT(static_cast<int>(kStKeyNotAnswered & kV1StatusMask), 0);
+  // 與 bit 6 也不可以撞。
+  CHECK_INT(static_cast<int>(kStKeyNotAnswered & kStVariantKnown), 0);
+}
+
+TEST(proto_key_not_answered_bit_is_purely_additive) {
+  const uint32_t base = kStDisabled;
+  const std::string without = EncodeResult(9, SampleResult(base));
+  const std::string with =
+      EncodeResult(9, SampleResult(base | kStKeyNotAnswered));
+  // 長度不變 —— 它住在既有的那個 u32 裡。長度變了 = 有人加了欄位,
+  // 而那會讓舊 DLL 的 DecodeResult 在「剛好用完」那一關整則丟掉。
+  CHECK_INT(static_cast<int>(with.size()), static_cast<int>(without.size()));
+  int differing = 0;
+  for (size_t i = 0; i < with.size(); ++i)
+    if (with[i] != without[i]) ++differing;
+  CHECK_INT(differing, 1);
+}
+
+TEST(proto_old_decoder_survives_the_key_not_answered_bit) {
+  // **新服務 → 舊 DLL**:舊 DLL 解得完,只是看不見那個位元 ——
+  // 它的行為與這一輪之前完全一樣(照舊補字元)。這正是「不會讓任何
+  // 既有組合變得更差」的那句話的證據。
+  const uint32_t flags = kStDisabled | kStKeyNotAnswered;
+  Result src = SampleResult(flags);
+  src.handled = false;  // 沒回答的那一份,handled 一定是 false。
+  const std::string wire = EncodeResult(13, src);
+
+  uint32_t seq = 0;
+  Result got;
+  CHECK(DecodeResult(wire, &seq, &got));
+  CHECK_INT(static_cast<int>(seq), 13);
+  CHECK(!got.handled);
+  CHECK_INT(static_cast<int>(got.snap.status_flags), static_cast<int>(flags));
+  CheckSnapshotBodyIntact(got.snap);
+
+  const uint32_t as_old = got.snap.status_flags & kV1StatusMask;
+  CHECK_INT(static_cast<int>(as_old), static_cast<int>(kStDisabled));
+  CheckSnapshotBodyIntact(got.snap);
+}
+
+TEST(proto_key_not_answered_absent_means_unknown_not_answered) {
+  // ⚠ 極性。**舊服務 → 新 DLL**:舊服務永遠不送這個位元,而它送來的
+  //   每一份大多是真的回答過的。所以「沒有這個位元」只能讀成
+  //   「照舊處理」,不可以讀成「確定沒回答」——
+  //   讀反了的話,舊服務配新 DLL 會變成每一顆字母鍵都沒有反應。
+  const std::string wire = EncodeResult(4, SampleResult(kStComposing));
+  uint32_t seq = 0;
+  Result got;
+  CHECK(DecodeResult(wire, &seq, &got));
+  CHECK_INT(static_cast<int>(got.snap.status_flags & kStKeyNotAnswered), 0);
+
+  // 兩態都要來回得了,而且分得開。
+  const uint32_t kCases[2] = {kStDisabled, kStDisabled | kStKeyNotAnswered};
+  for (uint32_t f : kCases) {
+    uint32_t s2 = 0;
+    Result r2;
+    CHECK(DecodeResult(EncodeResult(1, SampleResult(f)), &s2, &r2));
+    CHECK_INT(static_cast<int>(r2.snap.status_flags), static_cast<int>(f));
+  }
+}
+
+// ⚠ 這個位元**不可以**影響那一橫的「這份快照能不能信」判斷 ——
+//   它是給 DLL 用的,而狀態列那一格看的是 kStDisabled。
+//   兩件事混在一起的話,一個健康引擎的逾時會讓那一橫整排消失。
+TEST(proto_key_not_answered_does_not_change_snapshot_usability) {
+  CHECK(SnapshotFlagsAreUsable(kStKeyNotAnswered));
+  CHECK(SnapshotFlagsAreUsable(kStComposing | kStKeyNotAnswered));
+  // 帶著 kStDisabled 的仍然不可用(那一格的判準沒有被動到)。
+  CHECK(!SnapshotFlagsAreUsable(kStDisabled | kStKeyNotAnswered));
 }
