@@ -541,6 +541,84 @@ settings_window_foreground() {
     --class "${SETTINGS_CLASS}" --visible --foreground >/dev/null 2>&1
 }
 
+# ══ 桌面狀態:誰佔著前景 ════════════════════════════════════════════
+#
+# ⚠ 這三個函式是 run 31896143629 的 §13 逼出來的,理由值得寫滿。
+#
+#   那一次 §13 的兩支 TSF 宿主都搶不到前景,前景一直是同一個 handle
+#   0x10202;沒有執行緒焦點,TSF 就不把按鍵交給文字服務,於是
+#   「舊 DLL 連不回新服務(試了 599 次五分鐘)」這句紅字被印了出來 ——
+#   而服務端同一段時間的記錄是「連線 #1 存活=300829ms 握手=1 按鍵=0」,
+#   管道全程是好的。那句紅字指的三個方向(管道名 / 版本協商 / ABI)
+#   全部是好的東西。
+#
+#   查下去發現兩件事:
+#     1. **整條工具鏈問不出「現在的前景視窗是誰」。** find-window 只問得到
+#        我們自己指定的類別。所以只能推論。→ 補 foreground-window 動詞。
+#     2. **§12 收尾是在設定視窗正是前景視窗的狀態下 taskkill //F 掉擁有者。**
+#        那一批第一次讓設定視窗真的當上前景(service/main.cc 的
+#        AllowSetForegroundWindow + rime_service.exe 改成 GUI 子系統),
+#        §12 四支服務的狀態列都記下了「前景 = 設定視窗的類別」那一行
+#        (見 artifact 的 settings-*.log:15 的 [bar] 那一行)。
+#        硬殺之後前景沒有交還給任何人 —— 這台 runner 沒有 Explorer 可以
+#        接手、也沒有任何輸入事件,於是 SetForegroundWindow 唯一還成立的
+#        那條放行條件(「目前沒有前景視窗」)從此消失,後面誰都搶不到。
+#        → §12 每一節收尾改成**先請服務自己下台**,再記一行桌面狀態。
+#
+#   一個驗證段落把桌面狀態弄髒了留給下一段,而下一段因此紅 ——
+#   這本身就是缺陷,與產品好不好無關。
+
+# 記一行「現在前景是誰」。**只記錄,不判斷** —— 判斷是下面兩個的事。
+foreground_note() {   # $1 = 這一刻的標籤
+  log "  [桌面] ${1}:"
+  "${INSTALL_DIR}/rime_ime_setup.exe" foreground-window 2>&1 \
+    | sed 's/^/    /' || true
+}
+
+# 前景**不是**我們的設定視窗 → 0。是我們的 → 1。
+foreground_not_ours() {
+  "${INSTALL_DIR}/rime_ime_setup.exe" foreground-window \
+    --class "${SETTINGS_CLASS}" >/dev/null 2>&1
+}
+
+# ── §12 每一節的收尾:把桌面還原,而不是只有 taskkill //F ──────────
+#
+# 順序不能反過來,理由與 setup 的 stop-service 同源:
+#   1. **先請服務自己下台**(具名結束事件 → 它的訊息迴圈自己收掉,
+#      設定視窗走正規的 DestroyWindow,前景才會被交還)。
+#      stop-service 內部已經是「先好好請、5 秒沒反應才 TerminateProcess」。
+#   2. 再收掉這一節自己 fork 出來的 shell 工作(傳進來的 pid)。
+#   3. 最後才是 taskkill //F 兜底 —— 它是**保險**,不是主要手段。
+#   4. 收完記一行桌面狀態,並斷言前景不再是我們的類別。
+#
+# ⚠ 第 4 步是斷言,不是記錄。收完之後前景還是我們的設定視窗,代表
+#   下一節一定拿不到焦點 —— 那時要紅在這裡,不要讓下一節去背這個鍋
+#   然後講一個關於版本協商的故事。
+settings_section_teardown() {   # $@ = 這一節 fork 出來的 pid(可以是空的)
+  local p
+  # 追加而不是覆寫:這個函式一輪會被叫四五次,而「哪一次沒收乾淨」
+  # 正是要看的東西 —— 覆寫的話只留得下最後一次。
+  printf -- '--- settings_section_teardown (pids: %s) ---\n' "$*" \
+    >> "${WORK}/settings-teardown.log"
+  "${INSTALL_DIR}/rime_ime_setup.exe" stop-service --dir "${INSTALL_DIR_W}" \
+    >> "${WORK}/settings-teardown.log" 2>&1 || true
+  for p in "$@"; do
+    [ -n "${p}" ] && kill "${p}" 2>/dev/null || true
+  done
+  taskkill //IM rime_service.exe //F >/dev/null 2>&1 || true
+  sleep 2
+  if foreground_not_ours; then
+    ok "收尾之後前景已經不是設定視窗了(桌面狀態還乾淨,下一節量得到東西)"
+  else
+    foreground_note "收尾之後"
+    note_fail "收尾之後**前景仍然是我們的設定視窗**。
+     這代表視窗沒有正規下台,前景這個欄位卡在我們手上(或卡在我們留下
+     的殘留控制代碼上)。後面每一節的 TSF 宿主都會拿不到執行緒焦點,
+     而 TSF 不給焦點就不交按鍵 —— 那些段落會紅在「打不出字」上,
+     講的卻是別的故事(見 §13c)。⚠ **要修的是這裡的收尾,不是那些段落。**"
+  fi
+}
+
 # ── 捷徑(.lnk)指到哪裡、帶什麼參數 ──────────────────────────────
 #
 # ⚠ 這是這一輪非加不可的一項,而它**第一次跑就抓到一個一直存在的缺陷**:
@@ -2382,7 +2460,9 @@ capture_settings_ui() {
   if [ "${up}" -ne 1 ]; then
     log "  (截圖 ${mode}:視窗沒開出來 —— 上面 12b 會先報這件事;"
     log "   十張圖會缺 ${mode} 那五張,check_ui_shots.sh 會因此紅)"
-    kill "${pid}" 2>/dev/null || true
+    # ⚠ 這條早退路徑同樣要走收尾。視窗沒開出來不代表服務沒起來 ——
+    #   它可能開得慢、或是開在別的地方,而它一樣會佔著前景。
+    settings_section_teardown "${pid}"
     return 0
   fi
   # 五頁:0=輸入方案 1=外觀 2=文字 3=連網 4=進階(common/ui_layout.h 的
@@ -2404,9 +2484,10 @@ capture_settings_ui() {
       3) blanks=$((blanks + 1)) ;;
     esac
   done
-  kill "${pid}" 2>/dev/null || true
-  taskkill //IM rime_service.exe //F >/dev/null 2>&1 || true
-  sleep 2
+  # ⚠ 這裡以前是 `kill ${pid}` + `taskkill //F` —— 而截圖這一節的服務
+  #   **正好把設定視窗擺在最前面**(它就是被拍的那個)。在那個狀態下
+  #   硬殺擁有者,前景欄位不會交還給任何人。見 settings_section_teardown。
+  settings_section_teardown "${pid}"
   log "  截圖(${mode}):${shots} / 5 頁,其中 ${blanks} 張是整片同色"
   # ⚠ 把 capture-window 自己印的那一行(用了 PrintWindow 還是螢幕擷取、
   #   是不是整張同一個顏色)留在日誌裡 —— 「抓到黑畫面」與「視窗沒開出來」
@@ -2424,8 +2505,10 @@ if [ -f "${USER_DIR}/${RS_WIN_SETTINGS_FILE}" ]; then
   settings_backup="$(mktemp)"
   cp "${USER_DIR}/${RS_WIN_SETTINGS_FILE}" "${settings_backup}" 2>/dev/null || true
 fi
-taskkill //IM rime_service.exe //F >/dev/null 2>&1 || true
-sleep 2
+# ⚠ 這一行以前是 `taskkill //IM rime_service.exe //F` —— 而它殺的正是
+#   §12b 那一支,而 §12b 上面剛剛才斷言完「它的設定視窗就是前景視窗」。
+#   走正規的關窗路徑,前景才會被交還。見 settings_section_teardown。
+settings_section_teardown "${cold_pid}"
 capture_settings_ui light
 capture_settings_ui dark
 # 把使用者的設定放回去 —— 這支腳本後面還有「解除安裝之後要乾淨」那幾條,
@@ -2453,9 +2536,12 @@ if [ "${opened}" -eq 1 ]; then
   #   要在命令列上傳類別名,而且「藏起來」不等於「視窗不存在」——
   #   FindWindow 找得到隱藏的視窗,所以那個做法根本擋不住恆真。
   #   收掉進程才是真的回到「服務沒在跑」。
-  kill "${cold_pid}" 2>/dev/null || true
-  taskkill //IM rime_service.exe //F >/dev/null 2>&1 || true
-  sleep 3
+  #
+  # ⚠ 但「收掉進程」不可以是硬殺。§12b 剛剛才斷言完設定視窗**就是前景
+  #   視窗**,在那個狀態下 taskkill //F 掉擁有者,前景欄位不會交還 ——
+  #   見 settings_section_teardown 的說明。這裡走正規的關窗路徑。
+  settings_section_teardown "${cold_pid}"
+  cold_pid=""
   if settings_window_present; then
     note_fail "服務收掉之後設定視窗還在 —— 12c 的斷言會恆真,這一節沒有驗到。"
   else
@@ -2518,9 +2604,20 @@ if [ "${opened}" -eq 1 ]; then
 else
   note_fail "12b 沒過,所以 12c 這一節**沒有被驗證**。"
 fi
-kill "${cold_pid}" 2>/dev/null || true
-taskkill //IM rime_service.exe //F >/dev/null 2>&1 || true
-sleep 1
+# ── §12 整節的收尾 ─────────────────────────────────────────────────
+#
+# ⚠ 這裡是整支腳本裡**最危險的一個收尾**,而它以前只有兩行硬殺:
+#     kill "${cold_pid}"; taskkill //IM rime_service.exe //F
+#   §12c 剛剛才斷言完「設定視窗現在就是前景視窗」(而且它綠了 ——
+#   AllowSetForegroundWindow 做的正是它該做的事)。也就是說,硬殺的
+#   那一刻,被殺掉的正是**前景視窗的擁有者**。這台 runner 沒有 Explorer
+#   可以接手前景、也沒有任何輸入事件,於是 SetForegroundWindow 唯一還
+#   成立的那條放行條件(「目前沒有前景視窗」)從此消失 ——
+#   §13 的兩支 TSF 宿主一支都搶不到,而 §13c 把它講成「版本協商壞了」。
+#
+#   run 31896143629 的時間軸乾淨得沒有第二種解釋:§12 之前 24 支宿主
+#   全部搶到了,§12 之後 2 支全部沒搶到,而且前景是同一個 handle。
+settings_section_teardown "${cold_pid}"
 
 # ── 12d. 系統匣圖示:Windows 11 的溢位區 ──────────────────────────
 #
@@ -2712,6 +2809,28 @@ else
 
   # ── 13a/13c:兩階段宿主,**在前景跑** ────────────────────────
   log "  13a. 前景開一個真的 TSF 宿主:載入舊版、打出「你好」,然後等升級"
+  # ── ⚠ 起宿主之前先問一次桌面 ──────────────────────────────────
+  #
+  #   §13 的每一格都要經過 TSF,而 TSF 只把按鍵交給**有執行緒焦點**的
+  #   那一份文字服務。焦點的前提是前景 —— 所以「現在誰佔著前景」是這
+  #   一整節的前置條件,不是背景資訊。
+  #
+  #   run 31896143629 就是在這個前提不成立的狀態下跑完了整節:
+  #   兩支宿主一顆按鍵都沒送出去,而報表印的是「舊 DLL 連不回新服務」。
+  #   把這一行記在**宿主啟動之前**,「環境被前一節弄髒了」與「產品壞了」
+  #   在報表上就分得出來 —— 現在這兩件事是同一句紅字,而它指的三個
+  #   方向全是好的東西。
+  P13_DESKTOP_DIRTY=0
+  if foreground_not_ours; then
+    ok "13a 之前的桌面狀態:前景不是我們的視窗(這一節的前提成立)"
+  else
+    P13_DESKTOP_DIRTY=1
+    note_fail "13a 開始前,**前景仍然是我們自己的設定視窗** ——
+     §12 的收尾沒有把桌面還原(見上面 §12 那幾行 [桌面])。
+     TSF 只把按鍵交給有執行緒焦點的那一份文字服務,而焦點要先有前景。
+     ⚠ 底下 §13 每一格量到的「打不出字」都**不能拿來判斷產品好壞**。"
+  fi
+  foreground_note "13a 起宿主之前"
   set +e
   "${HOST}" --langid "${ACTIVE_LANGID}" --require-activate --require-eaten \
             --keys nihao1 --expect 你好 \
@@ -2806,8 +2925,45 @@ else
     ok "**舊的 DLL 映像在升級之後照樣打得出「你好」**(重新連上了新的服務)
      —— 這是使用者升級之後那些沒關掉的程式(檔案總管、瀏覽器)的處境。"
   else
-    note_fail "舊的 DLL 在升級之後不能用了(宿主結束碼 ${OLD_RC})。
+    # ── 三種紅字,不是一種 ────────────────────────────────────
+    #
+    # ⚠ 這裡以前只有一句「舊的 DLL 在升級之後不能用了」,而它在
+    #   run 31896143629 上是**錯的**:那一趟舊 DLL 全程連著新服務
+    #   (p13-svc-new.log:連線 #1 存活=300829ms 握手=1),
+    #   只是宿主拿不到前景,一顆按鍵都沒有離開宿主進程。
+    #   一句話蓋住三種完全不同的原因,而它指的方向會把人送去改
+    #   管道名 / 版本協商 / rime_shell ABI —— 那三個都是好的。
+    #
+    # 現在照**證據**分派,順序是「最不需要前景的先問」:
+    #   1. 桌面在這一節開始前就髒了(§13a 已經紅過)→ 環境,不是產品
+    #   2. 宿主自己說它拿不到焦點(PHASE2_PROBE_SKIPPED=1)→ 同上
+    #   3. 管道連不回去(PHASE2_PIPE_REACHABLE=0)→ **這才是產品**
+    #   4. 以上都不是 → 真的打不出字
+    P13_SKIPPED="$(tr -d '\r' < "${WORK}/p13-oldhost.log" \
+                   | sed -n 's/^ *PHASE2_PROBE_SKIPPED=//p' | head -1)"
+    P13_PIPE="$(tr -d '\r' < "${WORK}/p13-oldhost.log" \
+                | sed -n 's/^ *PHASE2_PIPE_REACHABLE=//p' | head -1)"
+    if [ "${P13_PIPE}" = "0" ]; then
+      note_fail "**管道那一側真的連不回去**(宿主印的 PHASE2_PIPE_REACHABLE=0)。
+     這一格不經過 TSF,所以它與前景無關 —— 它是真的。
+     去查:管道名(winshared/winutil.cc 的 RimePipeName)、
+     握手的版本協商(common/protocol.h、tsf/ipc_client.cc 的 EnsureReady)、
+     rime_shell 的 ABI(ipc_client.cc 的 Handshake)。"
+    elif [ "${P13_DESKTOP_DIRTY}" = "1" ] || [ "${P13_SKIPPED}" = "1" ]; then
+      note_fail "**這一格沒有量到相容性** —— 宿主拿不到 TSF 執行緒焦點
+     (PHASE2_PROBE_SKIPPED=${P13_SKIPPED:-?}),按鍵一顆都沒有離開宿主進程。
+     而管道是連得上的(PHASE2_PIPE_REACHABLE=${P13_PIPE:-?}),
+     也就是說**沒有任何證據說產品壞了,也沒有任何證據說它是好的**。
+     ⚠ 不要從這一格去查管道名、版本協商或 rime_shell ABI。
+     要查的是**誰佔著前景**:宿主印了它的 pid / exe / 類別 / IsWindow,
+     上面 §13a 的 [桌面] 那幾行也記了同一件事。
+     ⚠ 這一節的前提壞了,所以它必須是紅的 —— 一個驗不到東西的段落
+       綠起來,比它紅起來危險得多。"
+    else
+      note_fail "舊的 DLL 在升級之後不能用了(宿主結束碼 ${OLD_RC})。
+     宿主拿得到焦點、管道也連得上,所以這一格是**真的量到了壞的**。
      症狀會是「有些程式能打字、有些不能」,而使用者無法理解為什麼。"
+    fi
   fi
   (tr -d '\r' < "${WORK}/p13-oldhost.log" | grep -a 'PHASE2_' || true) \
     | sed 's/^/    /'

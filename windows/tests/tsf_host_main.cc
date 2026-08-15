@@ -171,6 +171,132 @@ void Pump(DWORD ms) {
   }
 }
 
+// ── 前景視窗**是誰** ─────────────────────────────────────────────────
+//
+// ══ 為什麼非有不可 ═══════════════════════════════════════════════════
+//
+// 在這之前,整條工具鏈印得出來的只有一個數字:
+//
+//     前景視窗 = 0000000000010202(我們的是 00000000000402BC) —— 沒搶到
+//
+// 而那個數字**回答不了任何一個會改變修法的問題**。CI run 31896143629 的
+// §13 就卡在這裡:0x10202 這個 handle 從 §12 之後就再也沒放開,而
+//   · 如果它是**別人的活視窗**(runner 上的另一支程式),
+//     那要修的是測試台的隔離;
+//   · 如果它是**已經被我們 taskkill //F 掉的設定視窗留下的殘留 handle**,
+//     那要修的是 §12 的收尾 —— 而那是我們自己弄髒的;
+//   · 如果它是**我們自己還活著的視窗**,那才是產品的迴歸。
+// 三條的修法完全不一樣,而上一輪只能用推論去猜(§13 那兩支服務都是
+// --no-ui、連設定視窗都不建,所以至少排得掉第三條)。
+//
+// IsWindow() 一個布林值就分得開前兩條:殘留的 handle 回 FALSE。
+// 加上 pid / 執行檔 / 類別名 / 標題,「前景是誰」就從推論變成事實,
+// 一次 CI 就定案。
+//
+// ⚠ 這個函式**只印,不判**。它拿到的每一格都可能失敗(視窗屬於別的
+//   工作階段、我們沒有 PROCESS_QUERY_LIMITED_INFORMATION),
+//   而失敗本身也是資訊 —— 所以取不到就印「?」,不要靜靜跳過。
+void SayForegroundIdentity(const char* tag) {
+  const HWND fg = ::GetForegroundWindow();
+  if (!fg) {
+    // ⚠ 這一格不是雜訊:「目前沒有前景視窗」正是 SetForegroundWindow
+    //   唯一還會放行給我們的那條件。它成立的時候後面必定搶得到。
+    Say("  [%s] 前景視窗 = (沒有前景視窗 —— GetForegroundWindow 回 NULL)\n",
+        tag);
+    return;
+  }
+  const BOOL alive = ::IsWindow(fg);
+  DWORD pid = 0;
+  const DWORD tid = ::GetWindowThreadProcessId(fg, &pid);
+
+  wchar_t cls[256];
+  if (!::GetClassNameW(fg, cls, 256)) wcscpy_s(cls, 256, L"?");
+  wchar_t title[512];
+  if (::GetWindowTextW(fg, title, 512) <= 0) wcscpy_s(title, 512, L"");
+
+  // ⚠ 取不到時的說明用**窄**字串:寬字串字面值裡不可以有中日韓字元
+  //   (check_ui_spec.sh 的 W7 —— 使用者看得到的字只能住在 ui_strings.cc,
+  //   而 L"…" 一旦有中文就分不出「診斷輸出」與「介面文案」)。
+  //   Say() 本來就是窄的,所以這裡什麼都沒失去。
+  std::wstring exe;
+  const char* exe_note = "?(問不到 pid)";
+  if (pid) {
+    exe_note = "?(打不開這個進程,多半是權限不足)";
+    HANDLE h = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (h) {
+      wchar_t path[32768];
+      DWORD n = 32768;
+      if (::QueryFullProcessImageNameW(h, 0, path, &n))
+        exe.assign(path, n);
+      else
+        exe_note = "?(QueryFullProcessImageName 失敗)";
+      ::CloseHandle(h);
+    }
+  }
+  const std::string exe_shown =
+      exe.empty() ? std::string(exe_note) : WideToUtf8(exe);
+
+  Say("  [%s] 前景視窗 = %p IsWindow=%d pid=%lu tid=%lu\n"
+      "        exe=%s\n"
+      "        cls=%s 標題=\"%s\"\n",
+      tag, static_cast<void*>(fg), alive ? 1 : 0,
+      static_cast<unsigned long>(pid), static_cast<unsigned long>(tid),
+      exe_shown.c_str(), WideToUtf8(cls).c_str(), WideToUtf8(title).c_str());
+  if (!alive)
+    Say("        ⚠ IsWindow=0 —— 這是一個**已經不存在的視窗**留下的殘留\n"
+        "          前景控制代碼。前景這個欄位不是空的,所以\n"
+        "          SetForegroundWindow 的「目前沒有前景視窗」那條放行路\n"
+        "          不成立;而它的擁有者已經死了,誰也還不了。\n"
+        "          → 要查的是**上一節怎麼收尾的**(有沒有在視窗正是前景時\n"
+        "            硬殺掉擁有者),不是輸入法。\n");
+}
+
+// ── 服務的管道現在**開著沒有** ────────────────────────────────────────
+//
+// ══ 為什麼要有第二條量法 ═══════════════════════════════════════════
+//
+// 第二階段(舊 DLL 映像 + 新服務)問的是「舊的 DLL 連不連得回新的服務」。
+// 原本的問法是**送一顆 n 進 TSF,看文字服務吃不吃**,而那條路需要
+// 執行緒焦點:沒有焦點時 ITfKeystrokeMgr::KeyDown 回 S_OK / pfEaten=FALSE,
+// 那顆鍵根本沒有離開這個進程。於是「管道通不通」被一件與管道無關的事
+// (前景權)決定 —— run 31896143629 就是這樣:探了 599 次五分鐘,
+// 而同一段時間服務端的記錄是
+//   [pipe] 連線 #1 離場 存活=300829ms 握手=1 session=0 按鍵=0
+// 連線一直在、握手成立、一顆按鍵都沒送到。結論卻寫成「版本協商壞了」,
+// 會把人送去改三個完全好的東西。
+//
+// 這一格改用**不需要前景**的方式問同一件事:直接去開那條管道。
+// 開得起來 = 有一支服務在那個名字上聽著(管道名、SID、協議版本後綴
+// 全部對得上,因為 RimePipeName() 是同一份決定處)。
+// 開不起來 = 管道那一側真的有問題,而那才值得去查版本協商 / ABI。
+//
+// ⚠ 它證明得了什麼、證明不了什麼,寫清楚免得有人拿它當「打得出字」:
+//     證明得了:服務活著、管道名對得上、連得上去。
+//     證明不了:握手的版本協商、開得了 session、打得出字。
+//               那三件要靠 rime_probe --connect-only(腳本那一側跑)
+//               與真的按鍵(需要前景)。
+//
+// 回傳:true = 連得上。err 帶出 GetLastError(連得上時是 0)。
+bool ServicePipeReachable(DWORD* err) {
+  const std::wstring name = RimePipeName();
+  if (err) *err = 0;
+  for (int i = 0; i < 2; ++i) {
+    HANDLE h = ::CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+                             nullptr, OPEN_EXISTING, 0, nullptr);
+    if (h != INVALID_HANDLE_VALUE) {
+      ::CloseHandle(h);
+      return true;
+    }
+    const DWORD e = ::GetLastError();
+    if (err) *err = e;
+    // ERROR_PIPE_BUSY = 服務在那裡,只是每一份實例都被佔著。
+    // 那**也算連得上** —— 名字對得上、有人在聽。
+    if (e != ERROR_PIPE_BUSY) return false;
+    if (!::WaitNamedPipeW(name.c_str(), 2000)) return false;
+  }
+  return false;
+}
+
 // ───────────────── 那一橫的「在場」連線:服務端那一格 ─────────────────
 //
 // ══ 補的是哪一個洞 ═════════════════════════════════════════════════
@@ -1233,6 +1359,9 @@ static int Run(int argc, wchar_t** argv) {
     Say("  前景視窗 = %p(我們的是 %p)%s\n", static_cast<void*>(fg),
         static_cast<void*>(hwnd),
         fg == hwnd ? " —— 搶到了" : " —— **沒搶到**(非互動的工作階段?)");
+    // 沒搶到的時候,「它是誰」是唯一會改變修法的那一格 —— 見
+    // SayForegroundIdentity 的說明。搶到了就不必再印一次自己。
+    if (fg != hwnd) SayForegroundIdentity("啟動");
   }
 
   ITfThreadMgr* thread_mgr = nullptr;
@@ -1493,10 +1622,13 @@ static int Run(int argc, wchar_t** argv) {
         Say("  重新搶前景之後 IsThreadFocus = %d(前景視窗 %p,我們的是 %p)\n",
             again ? 1 : 0, static_cast<void*>(::GetForegroundWindow()),
             static_cast<void*>(hwnd));
-        if (!again)
+        if (!again) {
+          SayForegroundIdentity("送按鍵前");
           Fail("送按鍵之前仍然拿不到執行緒焦點 —— TSF 不會把任何按鍵交給\n"
                "     文字服務,所以底下量到的東西**不能拿來判斷產品好壞**。\n"
-               "     這是測試台/工作階段的問題,不是輸入法的問題。");
+               "     這是測試台/工作階段的問題,不是輸入法的問題。\n"
+               "     上面那一段「前景視窗 = …」寫的就是**誰佔著前景**。");
+        }
       }
       if (check_preserved) CheckPreservedKey(ks);
       // ⚠ 擺在這裡(其他按鍵送出去**之前**)是刻意的:trace 的按鍵額度
@@ -1798,16 +1930,14 @@ static int Run(int argc, wchar_t** argv) {
         }
         if (docmgr) thread_mgr->SetFocus(docmgr);
         Pump(300);
+        BOOL phase2_focus = FALSE;
         {
-          BOOL tf = FALSE;
-          thread_mgr->IsThreadFocus(&tf);
+          thread_mgr->IsThreadFocus(&phase2_focus);
           const HWND fg = ::GetForegroundWindow();
           Say("  PHASE2_THREAD_FOCUS=%d(前景視窗 %p,我們的是 %p)\n",
-              tf ? 1 : 0, static_cast<void*>(fg), static_cast<void*>(hwnd));
-          if (!tf)
-            Fail("第二階段拿不到執行緒焦點 —— TSF 不會把任何按鍵交給文字服務,\n"
-                 "     所以下面量到的東西**不能拿來判斷相容性**。\n"
-                 "     這是測試台的問題,不是產品的問題。");
+              phase2_focus ? 1 : 0, static_cast<void*>(fg),
+              static_cast<void*>(hwnd));
+          if (!phase2_focus) SayForegroundIdentity("第二階段");
         }
 
         // ── 重新連上服務 ────────────────────────────────────────
@@ -1816,8 +1946,38 @@ static int Run(int argc, wchar_t** argv) {
         //   開管道失敗 → 啟動新的 rime_service.exe → 重新握手
         //   (版本協商,必要時降級到 v1)→ 重新開 session。
         //
-        // 用「送一顆 n 看它吃不吃」來問,而不是去讀什麼內部狀態:
-        // 使用者感覺得到的就是這一件事。吃掉了代表整條路都通了。
+        // ══ ⚠ 這一段被改過,而理由要寫在這裡 ═══════════════════════
+        //
+        // 原本只有一條量法:「送一顆 n 看它吃不吃」。它的優點是量的是
+        // 使用者感覺得到的那一件事;它的**致命缺點**是那條路要經過 TSF,
+        // 而 TSF 只把按鍵交給有執行緒焦點的那一份文字服務。
+        //
+        // run 31896143629 的 §13c 就死在這個缺口上:PHASE2_THREAD_FOCUS=0,
+        // 於是 599 次探測(300235 ms ÷ 599 = 501 ms,正好是底下那個
+        // 固定的 Pump(500),不是任何退避)一顆鍵都沒有離開這個進程 ——
+        // 而服務端同一段時間的記錄是
+        //     [pipe] 連線 #1 離場 存活=300829ms 握手=1 session=0 按鍵=0
+        // 連線一直在、握手成立、零顆按鍵。也就是說**管道那一側全程是好的**,
+        // 而報表印出來的結論是「舊的 DLL 連不回新的服務」,底下還列了
+        // 三條要去查的方向(管道名 / 版本協商 / rime_shell ABI)——
+        // 那三條全部是好的。一個把人送去改沒壞的東西的紅字,
+        // 比沒有這一格更糟,而且每次紅都多燒五分鐘 CI。
+        //
+        // 所以現在拆成兩件事,各自有各自的紅字:
+        //
+        //   前提:有沒有執行緒焦點。沒有 → **這一格量不到相容性**,
+        //         直接紅在前提上,而且**不跑那個 300 秒迴圈**。
+        //   事實:管道連不連得回去。這件事不需要前景(ServicePipeReachable),
+        //         所以焦點拿不到的時候它照樣答得出來 —— 它才是
+        //         「去查管道名 / 版本協商 / ABI」那三條的門票。
+        //
+        // ⚠ **前提不成立時仍然是紅的。** 這不是把斷言放寬 ——
+        //   「量不到」與「量到壞的」都要紅,只是要紅在對的地方。
+        DWORD pipe_err = 0;
+        const bool pipe_ok = ServicePipeReachable(&pipe_err);
+        Say("  PHASE2_PIPE_REACHABLE=%d(err=%lu)\n", pipe_ok ? 1 : 0,
+            static_cast<unsigned long>(pipe_err));
+
         SeqKey probe_key;
         probe_key.label = L"n";
         probe_key.ch = L'n';
@@ -1830,7 +1990,11 @@ static int Run(int argc, wchar_t** argv) {
         int probes = 0;
         const DWORD t0 = ::GetTickCount();
         const DWORD relink_deadline = t0 + phase2_relink_ms;
-        while (have_probe && ::GetTickCount() < relink_deadline) {
+        // ⚠ `phase2_focus &&`:沒有焦點就一次都不探。
+        //   舊版在這裡跑滿 300 秒,每一趟的結果都是同一個
+        //   「KeyDown 回 S_OK / pfEaten=FALSE」—— 那不是量測,是等待。
+        while (phase2_focus && have_probe &&
+               ::GetTickCount() < relink_deadline) {
           doc->text.clear();
           doc->sel_start = doc->sel_end = 0;
           ++probes;
@@ -1849,9 +2013,21 @@ static int Run(int argc, wchar_t** argv) {
         const DWORD relink_ms = ::GetTickCount() - t0;
         Say("  PHASE2_RELINK_MS=%lu\n", static_cast<unsigned long>(relink_ms));
         Say("  PHASE2_PROBES=%d\n", probes);
+        // ⚠ 這一行是給人看的,也是給 §13c 的報表抓的:它把「跑了但失敗」
+        //   與「前提不成立所以根本沒跑」分開。少了它,PHASE2_PROBES=0
+        //   會被誤讀成「一次都沒試就放棄」。
+        Say("  PHASE2_PROBE_SKIPPED=%d\n", phase2_focus ? 0 : 1);
 
-        if (!relinked) {
-          Fail("**舊的 DLL 連不回新的服務**(試了 %d 次,%lu 毫秒)。\n"
+        // ── 兩句話,不是一句 ──────────────────────────────────────
+        //
+        // ⚠ 順序有意義:**先判管道**。管道連不回去是唯一值得去查
+        //   管道名 / 版本協商 / ABI 的情況,而它不需要前景 —— 也就是說
+        //   焦點拿不到的時候這一格照樣答得出來。前景那一句是「這一格
+        //   量不到相容性」,它擋掉的是一個會把人送錯地方的結論,
+        //   而不是替產品開脫。兩句都會讓這支程式以非零結束。
+        if (!pipe_ok) {
+          Fail("**管道那一側真的連不回去**(CreateFile 到 %s 失敗,err=%lu)。\n"
+               "     這一格與前景無關 —— 它不經過 TSF,所以它是真的。\n"
                "     這正是使用者升級之後的狀態:已經開著的程式手上是舊的\n"
                "     DLL 映像,服務卻已經換成新的。連不回去的話,他看到的是\n"
                "     「有些程式能打字、有些不能」,而且完全無法理解為什麼。\n"
@@ -1864,7 +2040,33 @@ static int Run(int argc, wchar_t** argv) {
                "       3. rime_shell 的 ABI —— 那一格**沒有降級的路**,\n"
                "          不合就是不合(ipc_client.cc 的 Handshake)\n"
                "     瘦 DLL 的除錯記錄裡那幾行「連線失敗」會直接說是哪一個。",
-               probes, static_cast<unsigned long>(relink_ms));
+               WideToUtf8(RimePipeName()).c_str(),
+               static_cast<unsigned long>(pipe_err));
+        }
+        if (!phase2_focus) {
+          // ⚠ 這一句取代舊版那個「試了 599 次」的假結論。
+          //   它仍然是**紅的** —— 「量不到」不等於「沒事」,
+          //   一個驗不到東西的段落必須以紅字收場,否則下一次真的壞掉時
+          //   沒有人會發現。差別在於它指的方向是對的。
+          Fail("**拿不到執行緒焦點,這一格沒有量到相容性。**\n"
+               "     第二階段的按鍵探測需要前景(TSF 只把按鍵交給有執行緒\n"
+               "     焦點的那一份文字服務),所以那個迴圈這一趟**一次都沒跑**\n"
+               "     (PHASE2_PROBES=%d)—— 跑滿五分鐘只會得到 599 次同樣的\n"
+               "     「S_OK / pfEaten=FALSE」,然後被寫成「連不回服務」。\n"
+               "     管道那一側量到的是 PHASE2_PIPE_REACHABLE=%d:%s\n"
+               "     → 要查的是**誰佔著前景**(上面那一段印了 pid/exe/類別/\n"
+               "       IsWindow),以及上一節收尾時有沒有把桌面弄髒。\n"
+               "       不要從這一格去查管道名、版本協商或 rime_shell ABI。",
+               probes, pipe_ok ? 1 : 0,
+               pipe_ok ? "服務活著、管道名對得上、連得上去"
+                       : "見上面那一條(那一條才是真的問題)");
+        } else if (!relinked) {
+          Fail("按鍵探測在 %lu 毫秒 / %d 次之內沒有成功,而管道是**連得上的**\n"
+               "     (PHASE2_PIPE_REACHABLE=1)。也就是說連線那一段是好的,\n"
+               "     壞在更後面:握手之後開不出 session、或 session 開了但\n"
+               "     按鍵沒有回應。要看的是服務端 [pipe] 那幾行的\n"
+               "     session= / 按鍵= / 逾時= 三個數字,以及瘦 DLL 的除錯記錄。",
+               static_cast<unsigned long>(relink_ms), probes);
         } else {
           Ok("舊的 DLL 重新連上了新的服務(%lu 毫秒、%d 次嘗試)",
              static_cast<unsigned long>(relink_ms), probes);

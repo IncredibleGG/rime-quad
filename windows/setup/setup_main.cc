@@ -8,6 +8,7 @@
 //                            清單上出現幾格由這裡決定,不是由註冊決定。
 //   user-profiles            印出「這個使用者現在啟用了哪幾份」與判斷依據
 //   check                    「真的註冊好了嗎」,CI 靠它斷言
+//   foreground-window        現在的前景視窗是誰(pid / exe / 類別 / IsWindow)
 //   stop-service             停掉 rime_service.exe(升級與解除安裝前)
 //   doctor                   一頁式自我診斷(給使用者用的,見 setup/doctor.h)
 //   user-data-path           印出使用者資料目錄(安裝程式問它,不自己拼)
@@ -87,6 +88,16 @@ void Usage() {
       "                             --foreground:還要求它就是**目前的前景視窗**\n"
       "                             (顯示了但停在別的視窗後面,在使用者眼裡\n"
       "                              與「按了沒反應」是同一件事)\n"
+      "  foreground-window [--class <類別名>]\n"
+      "                             印出**現在的前景視窗是誰**:hwnd / IsWindow /\n"
+      "                             pid / tid / 執行檔 / 類別名 / 標題。\n"
+      "                             find-window 只問得到我們指定的類別,\n"
+      "                             問不了「前景是誰」——而『沒搶到前景』的\n"
+      "                             三種原因(別人的活視窗 / 已死視窗的殘留 /\n"
+      "                             我們自己)修法完全不同,IsWindow 分得開。\n"
+      "                             結束碼:沒有 --class 時 0=有前景視窗、\n"
+      "                             1=現在沒有前景視窗;帶 --class 時\n"
+      "                             0=前景不是那個類別、1=是。\n"
       "  capture-window --class <類別名> --out <bmp 路徑> [--page <0-4>]\n"
       "                             把那個視窗畫一張 24-bit BMP 存下來。\n"
       "                             --page 先把它切到第幾頁(0 起算)。\n"
@@ -821,6 +832,91 @@ static int Run(int argc, wchar_t** argv) {
     opt.check_user = want_user;
     opt.check_enum = want_enum;
     return CheckRegistration(opt) ? 0 : 1;
+  }
+
+  if (verb == L"foreground-window") {
+    // ⚠ 這個動詞與 find-window 是**相反方向**的兩個問題,不要合併。
+    //
+    //   find-window 問的是「**我們的**那個類別現在在不在、是不是前景」——
+    //   它只問得到我們指定的類別。它答不出「現在的前景視窗是誰」,
+    //   而那正是 CI run 31896143629 卡住的地方:§13 兩支宿主都搶不到前景,
+    //   前景一直是同一個 handle 0x10202,而整條工具鏈**沒有任何一支**
+    //   印得出那是誰的視窗。於是只能推論,而三種推論的修法完全不同:
+    //     · 別人的活視窗   → 測試台隔離
+    //     · 已死視窗的殘留 → 上一節收尾時把桌面弄髒了(我們自己的缺陷)
+    //     · 我們自己的視窗 → 產品迴歸
+    //   IsWindow() 一個布林值就分得開前兩條。
+    //
+    // 結束碼帶出的是**有沒有前景視窗**,因為那是 SetForegroundWindow
+    // 唯一還會放行給服務進程的那條件:
+    //   0 = 有前景視窗(而且它是誰,上面印出來了)
+    //   1 = 現在**沒有**前景視窗(空的 —— 下一個 SetForegroundWindow 會成功)
+    // ⚠ 「有前景視窗」不等於壞、「沒有」也不等於好。這個動詞**只回報事實**,
+    //   判準留給呼叫端。帶 --class 的時候結束碼換一個問題(見下面)。
+    const HWND fg = ::GetForegroundWindow();
+    if (!fg) {
+      // ⚠ 「沒有前景視窗」是這台 runner 上**最乾淨**的狀態,不是壞的:
+      //   它正是 SetForegroundWindow 唯一還會放行給服務進程的那條件,
+      //   §12 之前那 24 支宿主每一支都搶得到,靠的就是它。
+      //   所以帶 --class 問「前景是不是我們」時,這裡的答案是**不是**(0)。
+      //   把它答成 1 的話,最乾淨的狀態會變成一句假紅字。
+      Say("前景視窗:(沒有)—— GetForegroundWindow 回 NULL\n");
+      if (!window_class.empty()) {
+        Say("  是不是「%s」:不是(根本沒有前景視窗)\n",
+            WideToUtf8(window_class).c_str());
+        return 0;
+      }
+      return 1;
+    }
+    const BOOL alive = ::IsWindow(fg);
+    DWORD pid = 0;
+    const DWORD tid = ::GetWindowThreadProcessId(fg, &pid);
+    wchar_t cls[256];
+    if (!::GetClassNameW(fg, cls, 256)) wcscpy_s(cls, 256, L"?");
+    wchar_t title[512];
+    if (::GetWindowTextW(fg, title, 512) <= 0) wcscpy_s(title, 512, L"");
+    // ⚠ 取不到時的說明用**窄**字串:寬字串字面值裡不可以有中日韓字元
+    //   (check_ui_spec.sh 的 W7)。Say() 本來就是窄的,沒有失去什麼。
+    std::wstring exe;
+    const char* exe_note = "?(問不到 pid)";
+    if (pid) {
+      exe_note = "?(打不開這個進程,多半是權限不足)";
+      HANDLE h = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+      if (h) {
+        wchar_t path[32768];
+        DWORD n = 32768;
+        if (::QueryFullProcessImageNameW(h, 0, path, &n))
+          exe.assign(path, n);
+        else
+          exe_note = "?(QueryFullProcessImageName 失敗)";
+        ::CloseHandle(h);
+      }
+    }
+    const std::string exe_shown =
+        exe.empty() ? std::string(exe_note) : WideToUtf8(exe);
+    Say("前景視窗: hwnd=%p IsWindow=%d pid=%lu tid=%lu\n"
+        "  exe=%s\n"
+        "  cls=%s 標題=\"%s\"\n",
+        static_cast<void*>(fg), alive ? 1 : 0,
+        static_cast<unsigned long>(pid), static_cast<unsigned long>(tid),
+        exe_shown.c_str(), WideToUtf8(cls).c_str(), WideToUtf8(title).c_str());
+    if (!alive)
+      Say("  ⚠ IsWindow=0 —— 這是一個**已經不存在的視窗**留下的殘留前景\n"
+          "    控制代碼。前景這個欄位不是空的,所以「目前沒有前景視窗」\n"
+          "    那條放行路不成立;而它的擁有者已經死了,誰也還不了。\n"
+          "    → 上一節是不是在視窗正是前景的狀態下硬殺了擁有者?\n");
+    // 帶 --class <類別名> 時,結束碼改成回答「前景**是不是**這個類別」:
+    //   0 = 不是(呼叫端要的通常正是這個:「前景已經不是我們的了」)
+    //   1 = 是
+    // ⚠ 這一格是給 §12 收尾用的:設定視窗必須**正規下台**,
+    //   而不是被 taskkill //F 掉之後把前景這個欄位卡住留給下一節。
+    if (!window_class.empty()) {
+      const bool ours = (LowerW(cls) == LowerW(window_class));
+      Say("  是不是「%s」:%s\n", WideToUtf8(window_class).c_str(),
+          ours ? "**是**" : "不是");
+      return ours ? 1 : 0;
+    }
+    return 0;
   }
 
   if (verb == L"find-window") {
