@@ -362,6 +362,87 @@ PROBEEOF
   fi
   log "  ✓ 綠了"
 
+  # ── ⚠ 5/5 之 e 與 f:「不靜默」到底綁在哪一行 ──────────────────
+  #
+  #   --announce-in 的意思是「被放行的缺口必須在使用者看得到的地方說
+  #   出來」。舊的判準是「這個單號在檔案裡出現過」—— 而 main.cc 的
+  #   **註解**裡本來就有三個同一張單號。覆核者實測:把那句 Say(...)
+  #   整句刪掉、註解一個字不動,閘照樣 exit 0 並且印「有說出來」。
+  #
+  #   這很要命:這一版能帶著一個「守門整層是死的」缺口出貨,靠的就是
+  #   清冊那條「放行可以,靜默不行」—— 而擔保「不靜默」的是一行註解。
+  #
+  #   所以反向測試必須**分得出這兩種情況**,而且兩個方向都要:
+  #     e. 刪掉那句話、註解不動 → 必須紅
+  #     f. 只動註解、那句話留著 → 必須綠(不然改寫註解會收到假紅字,
+  #        而假紅字最後一定是被關掉,不是被修好)
+  local ann_saved="${COMPONENT_ANNOUNCE}"
+  cat > "${probe}" <<'PROBEEOF'
+patch:
+  "engine/filters/@before last": this_component_does_not_exist
+PROBEEOF
+  printf 'selfcheck:this_component_does_not_exist\t2099-01-01\t#109\t自我測試用的假缺口\n' \
+    > "${COMPONENT_GAPS}"
+
+  log "反向測試 5/5 之 e:把那句話整句刪掉、註解一個字不動 —— 必須紅"
+  local ann_no_say="${tmp}/announce_no_say.cc"
+  python3 - "${ann_saved}" "${ann_no_say}" <<'PY_NO_SAY'
+import io, sys
+src = io.open(sys.argv[1], encoding='utf-8').read().split('\n')
+out, i, cut = [], 0, 0
+while i < len(src):
+    ln = src[i]
+    if ln.lstrip().startswith('//') or 'Say(' not in ln or '#109' not in ln:
+        out.append(ln)
+        i += 1
+        continue
+    # 整個敘述丟掉:訊息常常斷成好幾行,只刪第一行會留下語意殘骸,
+    # 而那不是這個反向測試要問的東西。
+    while i < len(src):
+        cut += 1
+        done = src[i].rstrip().endswith(';')
+        i += 1
+        if done:
+            break
+assert cut > 0, '植入對不上 main.cc 那句 Say 的寫法了 —— 反向測試會變成假綠'
+io.open(sys.argv[2], 'w', encoding='utf-8').write('\n'.join(out))
+PY_NO_SAY
+  COMPONENT_ANNOUNCE="${ann_no_say}"
+  if verify_payload "${tmp}" > /dev/null 2>&1; then
+    COMPONENT_ANNOUNCE="${ann_saved}"
+    die "把那句 Say 整句刪掉(註解一個字不動)之後,這道閘竟然還是綠的 ——
+  「放行可以,靜默不行」就只剩一行註解在擔保,而註解不會進 service.log。"
+  fi
+  log "  ✓ 紅了"
+
+  log "反向測試 5/5 之 f:只把註解裡的單號改掉、那句話留著 —— 必須綠"
+  local ann_no_comment="${tmp}/announce_no_comment.cc"
+  python3 - "${ann_saved}" "${ann_no_comment}" <<'PY_NO_COMMENT'
+import io, sys
+src = io.open(sys.argv[1], encoding='utf-8').read().split('\n')
+out, cut = [], 0
+for ln in src:
+    if ln.lstrip().startswith('//') and '#109' in ln:
+        cut += 1
+        out.append(ln.split('#109')[0] + '(這一輪把註解裡的單號改寫掉了)')
+        continue
+    out.append(ln)
+assert cut > 0, '植入對不上 main.cc 註解裡那幾個單號了 —— 反向測試會變成假綠'
+io.open(sys.argv[2], 'w', encoding='utf-8').write('\n'.join(out))
+PY_NO_COMMENT
+  COMPONENT_ANNOUNCE="${ann_no_comment}"
+  if ! verify_payload "${tmp}" > /dev/null 2>&1; then
+    COMPONENT_ANNOUNCE="${ann_saved}"
+    die "只改了註解、那句 Say 一個字都沒動,這道閘卻紅了 —— 它綁錯了東西。
+  下一次有人改寫註解就會收到一個指不到任何問題的紅字,而假紅字最後
+  一定是被關掉,不是被修好。"
+  fi
+  COMPONENT_ANNOUNCE="${ann_saved}"
+  log "  ✓ 綠了"
+
+  rm -f "${probe}"
+  : > "${COMPONENT_GAPS}"
+
   rm -rf "${tmp}"
   log "反向測試通過:payload 檢查會在該紅的時候紅、該綠的時候綠 ✓"
 

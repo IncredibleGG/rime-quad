@@ -31,6 +31,7 @@
 #include <utility>
 #include <vector>
 
+#include "../common/key_deadline.h"
 #include "../common/protocol.h"
 #include "../common/redeploy_flow.h"
 #include "../common/schema_choice.h"
@@ -118,7 +119,7 @@ class Engine {
   // ── ⚠ 引擎只有一條執行緒,而客戶端有兩個很緊的預算 ──────────
   //
   //   建立 session 的往返:300 毫秒(ipc_client.cc 的 kConnectTimeoutMs)
-  //   每一顆按鍵的往返  : **50 毫秒**(kKeyTimeoutMs)
+  //   每一顆按鍵的往返  : **150 毫秒**(kKeyTimeoutMs)
   //
   // 兩個都跑在宿主的 UI 執行緒上,所以都不能調大 —— 調大等於讓使用者
   // 按鍵時整個程式卡住那麼久。超過就 fail-open:那個宿主打不出中文,
@@ -152,7 +153,7 @@ class Engine {
   // **不要在使用者等著的時候建 session**:平常就先建好一個放著,
   // 宿主連上來時直接交出去(只是一次上鎖,不進引擎佇列)。
   //
-  // ⚠ 補一個回去也要 442~753 毫秒,而那會擋住按鍵(預算只有 50 毫秒)。
+  // ⚠ 補一個回去也要 442~753 毫秒,而那會擋住按鍵(預算只有 150 毫秒)。
   //   所以補充走的是低優先那條路,而且要等引擎**真的閒下來**
   //   (kLowPriorityIdleMs)。使用者連續打字時引擎一直是忙的 → 不補 →
   //   池子空了就退回當場建立,也就是**最壞情況不比現在差**。
@@ -171,14 +172,10 @@ class Engine {
 
   // ── 一顆按鍵的等待上限 ────────────────────────────────────────
   //
-  // DLL 那一側每一顆按鍵的預算是 50ms(tsf/ipc_client.cc 的
-  // kKeyTimeoutMs),而**超過它的代價不是「打出英文」**:
-  // ipc_client.cc 的 Fail() 第一句就是 Close(),整條連線被丟掉、
-  // session_ 歸零。所以服務端這一側必須在 50ms **之內**先放棄,
-  // 剩下的 15ms 留給管道往返與序列化。
-  //
-  // ⚠ 35 這個值是從 50 扣掉餘裕算出來的,不是量出來的最佳值。
-  static constexpr int kKeyDeadlineMs = 35;
+  // ⚠ 數字**不在這裡** —— 它與 DLL 那一側的逾時是一組,兩個一起才有
+  //   意義,所以兩個都住在 common/key_deadline.h,由那裡的 static_assert
+  //   守住「服務端必須先放棄,而且留得下管道的時間」這條關係。
+  //   上一輪它們各寫一份、關係只寫在註解裡 —— 而註解守不住東西。
 
   // 一顆按鍵等待的結果。給 pipe_server 記錄用 ——
   // 「使用者說間歇打不出中文」要變成一個數字,就是從這裡出去的。
@@ -194,8 +191,12 @@ class Engine {
     bool abandoned = false;
   };
 
+  // ⚠ wait **不是選用的**。逾時時回的那個 Result 是一個佔位,不是
+  //   引擎的現況(見 KeyWait 上面那一段與 common/key_deadline.h);
+  //   呼叫端只能靠 wait->timed_out 分辨它,所以不給預設值 ——
+  //   少了它,那一份佔位會被當成快照餵進候選窗與那一橫。
   Result ProcessKey(uint64_t id, int32_t keysym, uint32_t mods,
-                    KeyWait* wait = nullptr);
+                    KeyWait* wait);
   Result SelectCandidate(uint64_t id, int32_t index);
   Result CommitComposition(uint64_t id);
   Result Clear(uint64_t id);
@@ -454,7 +455,7 @@ class Engine {
   // 丟工作並**等它做完,沒有上限**。
   //
   // ⚠ 這一支只留給**沒有訊息迴圈掛在上面**的路徑:管道執行緒(宿主那一側
-  //   自己有 50 毫秒的預算,逾時就 fail-open)、暖機、--selftest。
+  //   自己有 150 毫秒的預算,逾時就 fail-open)、暖機、--selftest。
   //   設定視窗與懸浮狀態列**不可以**用它 —— 那就是 #79。
   //
   // ⚠ label 不是裝飾。引擎只有一條執行緒,所以「我的請求為什麼慢」的答案

@@ -98,6 +98,7 @@ SRCS=(
   "${SCRIPT_DIR}/tests/test_statusbar_place.cc"
   "${SCRIPT_DIR}/tests/test_statusbar_layout.cc"
   "${SCRIPT_DIR}/tests/test_ui_strings.cc"
+  "${SCRIPT_DIR}/tests/test_key_deadline.cc"
   "${SCRIPT_DIR}/tests/test_service_state.cc"
   "${SCRIPT_DIR}/tests/test_redeploy_flow.cc"
   "${SCRIPT_DIR}/tests/test_status_cells.cc"
@@ -195,39 +196,122 @@ if "${SCRIPT_DIR}/audit_offline_win.sh" --self-check; then
 fi
 echo "==> 反向測試通過(離線稽核會紅)"
 
-# ── #93/#108:按鍵的等待必須有上限,而且一定要配作廢權 ──────────
+# ── #93/#108:按鍵那條路的四條文字判準,以及它們自己的反向測試 ────
 #
-# service/engine.cc 在這台 Ubuntu 上**編不起來**(要 MSVC),所以這一條
-# 只能用文字判準守 —— 而它守的正是這一輪最容易被順手還原的一行:
-# Post("按鍵", ...) 是 queue_.Call(label, fn, 0) = **永遠等**,
-# 而 DLL 那一側每顆鍵只有 50ms(tsf/ipc_client.cc 的 kKeyTimeoutMs)。
-# 逾時的代價不是「打出英文」,是 Fail() → Close() 把整條連線丟掉。
+# service/engine.cc 與 service/pipe_server.cc 在這台 Ubuntu 上**編不起來**
+# (要 MSVC),所以這四條只能用文字判準守。判準本身寫成一支函式,
+# 為的是能拿**改壞的複本**去問它 —— 這個專案吃過太多次「守門綠著,
+# 卻抓不到它宣稱抓的東西」,而一道從來沒有紅過的文字判準就是那種形狀。
 #
-# ⚠ 兩個方向都要問。只問「有沒有 CallAbandonable」的話,有人多加一句
-#   Post("按鍵", ...) 回去照樣全綠;只問「有沒有 Post」的話,換成
-#   queue_.Call(..., 35)(有上限、**沒有**作廢權)也照樣全綠 ——
-#   而那一種換到的是「引擎組了字、宿主也打了字」,比原本更糟,
-#   而且是靜默的。作廢權的測試在 tests/test_work_queue.cc。
+# 判斷得出來的那一半(兩個上限的關係、逾時那一份的去處)已經搬進
+# common/key_deadline.h,由 tests/test_key_deadline.cc 真的跑。
+# 這裡守的是**接線**:那個判斷有沒有被接在該接的地方。
 #
 # ⚠ 用 grep -c 先存進變數再比,不要寫 printf 接 grep -q:
 #   在 set -o pipefail 底下**命中會變成失敗**(SIGPIPE 141)——
 #   這棵樹被咬過五次。
+#
+# ⚠ 錨在行首:engine.cc 的**註解裡**寫著那幾行以前長什麼樣
+#   (那段說明是這次改動的主要價值之一)。不錨行首的話,守門會被
+#   自己的說明文字咬到 —— 而那種紅只會教人把說明刪掉。
+key_path_gates() {   # $1 = engine.cc  $2 = pipe_server.cc;回非零 = 有違規
+  local en="$1" ps="$2" bad=0 n
+
+  # (1) 按鍵不可以回到無上限的等待。
+  n=$(grep -cE '^[[:space:]]*Post\("按鍵"' "${en}" || true)
+  if [ "${n}" -ne 0 ]; then
+    echo "!! engine.cc 又出現 ${n} 處無上限的 Post(按鍵) —— 那是 queue_.Call(...,0) = 永遠等,而 DLL 那側的上限是 common/key_deadline.h 的 kKeyTimeoutMs" >&2
+    bad=1
+  fi
+
+  # (2) 上限一定要配作廢權(不然遲到的工作會把同一顆鍵再打進 librime)。
+  n=$(grep -c 'queue_.CallAbandonable(' "${en}" || true)
+  if [ "${n}" -lt 1 ]; then
+    echo "!! engine.cc 的按鍵沒有走 queue_.CallAbandonable() —— 上限與作廢權必須同時在" >&2
+    bad=1
+  fi
+
+  # (3) 逾時那一條不可以借用 kStDisabled。
+  #
+  #   kStDisabled 的語意由 common/service_state.cc 定死:「引擎還沒準備好」。
+  #   借給「這一顆鍵沒排到」用的代價是那一橫四格整排消失、換成
+  #   「正在準備字詞」,而寫進那一格的 atomic 沒有任何一條路清得回來。
+  #   ⚠ 錨在 `r.snap`(呼叫端的框):工作**本體**裡那一處
+  #   `box->snap.status_flags = kStDisabled;` 是另一件事(引擎真的不認得
+  #   這個 session),不在這一條的範圍裡。
+  n=$(grep -cE '^[[:space:]]*r\.snap\.status_flags = kStDisabled;' "${en}" || true)
+  if [ "${n}" -ne 0 ]; then
+    echo "!! engine.cc 有 ${n} 處把逾時的結果標成 kStDisabled —— 那個旗標的意思是「引擎還沒準備好」,不是「這顆鍵沒排到」。借用它會讓一個健康的引擎在狀態列上自稱「正在準備字詞」,而那一格卡著" >&2
+    bad=1
+  fi
+
+  # (4) 逾時的那一份不可以走進 push_ui。
+  #
+  #   這是覆核者逐行走過的那條鏈的出口:逾時 → 空快照 → push_ui →
+  #   ui_->Hide(),使用者組字到一半候選窗當場被收掉,而引擎那邊組字
+  #   原封不動。判準在 common/key_deadline.h 的 DecideKeyUiAction(),
+  #   這裡守的是「按鍵那一格真的問過它、而且 push_ui 排在它裡面」。
+  n=$(grep -cE '^[[:space:]]*if \(DecideKeyUiAction\(key_timed_out\) == KeyUiAction::kUpdateUi\) \{$' "${ps}" || true)
+  if [ "${n}" -ne 1 ]; then
+    echo "!! pipe_server.cc 的按鍵那一格沒有(或有 ${n} 處)問過 DecideKeyUiAction() —— 逾時那一份佔位會被當成快照餵進候選窗與那一橫" >&2
+    bad=1
+  fi
+  # 問了還要真的把 push_ui 排在裡面 —— 問完不理它與沒問是同一件事。
+  # ⚠ 用 index() 逐字比,不用正規式:這一串裡的括號與大括號在三種
+  #   正規式方言裡各有各的跳脫規則,而跳脫寫錯的方向剛好是「永遠不匹配」
+  #   = 永遠是綠的。
+  n=$(awk 'index($0, "if (DecideKeyUiAction(key_timed_out) == KeyUiAction::kUpdateUi) {") { f = 3; next }
+           f > 0 { f--; if (index($0, "push_ui(r.snap);")) hit++ }
+           END   { print hit + 0 }' "${ps}")
+  if [ "${n}" -lt 1 ]; then
+    echo "!! pipe_server.cc 問了 DecideKeyUiAction() 卻沒有把 push_ui(r.snap) 排在它裡面 —— 問完不理它與沒問是同一件事" >&2
+    bad=1
+  fi
+
+  return "${bad}"
+}
+
 echo
-echo "==> 按鍵的等待有上限而且配了作廢權(#93)"
-# ⚠ 錨在行首:engine.cc 的**註解裡**寫著那一行以前長什麼樣
-#   (那段說明是這次改動的主要價值之一)。不錨行首的話,
-#   守門會被自己的說明文字咬到 —— 而那種紅只會教人把說明刪掉。
-KEY_POST=$(grep -cE '^[[:space:]]*Post\("按鍵"' "${SCRIPT_DIR}/service/engine.cc" || true)
-KEY_BOUNDED=$(grep -c 'queue_.CallAbandonable(' "${SCRIPT_DIR}/service/engine.cc" || true)
-if [ "${KEY_POST}" -ne 0 ]; then
-  echo "!! engine.cc 又出現 ${KEY_POST} 處無上限的 Post(按鍵) —— 那是 queue_.Call(...,0) = 永遠等,而 DLL 那側只有 50ms" >&2
-  exit 1
-fi
-if [ "${KEY_BOUNDED}" -lt 1 ]; then
-  echo "!! engine.cc 的按鍵沒有走 queue_.CallAbandonable() —— 上限與作廢權必須同時在" >&2
-  exit 1
-fi
-echo "   按鍵走 CallAbandonable(${KEY_BOUNDED} 處),沒有無上限的 Post(按鍵)"
+echo "==> 按鍵那條路的四條判準(#93/#108)"
+key_path_gates "${SCRIPT_DIR}/service/engine.cc" \
+               "${SCRIPT_DIR}/service/pipe_server.cc" || exit 1
+echo "   上限 + 作廢權都在;逾時那一條沒有借用 kStDisabled,也沒有走進 push_ui"
+
+# ── 反向測試:四條判準每一條都要真的會紅 ─────────────────────────
+#
+# ⚠ 沒有這一段的話,上面那四條與「echo 一句好聽的話」沒有分別。
+#   四種拆法全部是覆核者實際做過、或這一輪實際犯過的那一種。
+echo
+echo "==> 反向測試(按鍵那四條判準必須抓得到植入的違規)"
+KEY_GATE_TMP="$(mktemp -d)"
+for plant in unbounded_post no_abandon borrow_disabled ui_unguarded; do
+  cp "${SCRIPT_DIR}/service/engine.cc" "${KEY_GATE_TMP}/engine.cc"
+  cp "${SCRIPT_DIR}/service/pipe_server.cc" "${KEY_GATE_TMP}/pipe_server.cc"
+  case "${plant}" in
+    # 換回無上限的等待:一件慢工作 = 整條連線被丟掉。
+    unbounded_post)
+      printf '  Post("按鍵", [&] { (void)0; });\n' >> "${KEY_GATE_TMP}/engine.cc" ;;
+    # 有上限、**沒有**作廢權:遲到的工作把同一顆鍵再打進 librime,
+    # 引擎組了字而宿主也打了字 —— 比原本更糟,而且是靜默的。
+    no_abandon)
+      sed -i 's/queue_.CallAbandonable(/queue_.Call(/' "${KEY_GATE_TMP}/engine.cc" ;;
+    # 這一輪自己犯的那一個:逾時借用 kStDisabled。
+    borrow_disabled)
+      sed -i 's|^\([[:space:]]*\)r.handled = false;$|\1r.handled = false;\n\1r.snap.status_flags = kStDisabled;|' \
+        "${KEY_GATE_TMP}/engine.cc" ;;
+    # 守門拆掉,push_ui 照走:候選窗在使用者組字到一半時被收掉。
+    ui_unguarded)
+      sed -i '/if (DecideKeyUiAction(key_timed_out) == KeyUiAction::kUpdateUi) {/d' \
+        "${KEY_GATE_TMP}/pipe_server.cc" ;;
+  esac
+  if key_path_gates "${KEY_GATE_TMP}/engine.cc" \
+                    "${KEY_GATE_TMP}/pipe_server.cc" 2>/dev/null; then
+    echo "!! 植入 ${plant} 之後那四條判準仍然是綠的 —— 它們不算數" >&2
+    exit 1
+  fi
+  echo "   ok  植入 ${plant} → 變紅"
+done
+rm -rf "${KEY_GATE_TMP}"
 
 echo
 echo "==> 單一來源稽核(同一件事不得在兩個地方各寫一份)"

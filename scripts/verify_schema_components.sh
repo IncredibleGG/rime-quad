@@ -57,9 +57,19 @@
 #   3. 登記了而**這一輪根本沒缺** → 紅。缺口補上的當下，豁免會立刻變紅
 #      逼人把它刪掉；豁免不會爛在清冊裡。
 #
-# 再加一條 `--announce-in`：被放行的每一張單號，必須**逐字**出現在指定的
-# 檔案裡。Windows 這一端指的是 `windows/service/main.cc` —— 那一行會印進
-# 使用者的 service.log。放行可以，靜默不行。
+# 再加一條 `--announce-in`：被放行的每一張單號，必須**逐字**出現在指定檔案
+# 裡**會被執行、而且會被印出來**的那一行上。Windows 這一端指的是
+# `windows/service/main.cc` 的那句 Say() —— 它會印進使用者的 service.log。
+# 放行可以，靜默不行。
+#
+# ⚠ 「出現在檔案裡」**不夠**，而這不是理論上的顧慮：main.cc 的**註解**裡
+#   本來就有三個 `#109`。覆核者實測過 —— 把那句 Say() 整句刪掉、註解一個
+#   字不動，這道閘照樣 exit 0，還印「單號有在裡面說出來」。也就是說，
+#   「這一版可以帶著『Windows 沒有 lua_filter、字集守門第二層整層是死的』
+#   出貨」這件事，靠的就是這條規矩，而擔保它的是一行**註解**。
+#   下一輪有人把那句 Say() 拿掉或改寫，打包、CI、所有守門全綠，而使用者
+#   機器上那一橫寫著「繁」、輸出裡混著不屬於該字集的字，service.log 裡
+#   一個字的解釋都沒有。
 #
 # ── 用法 ──────────────────────────────────────────────────────────────────
 #
@@ -504,24 +514,74 @@ while IFS= read -r _l; do
   esac
 done < "${GAPS}"
 
-# 放行可以，靜默不行：每一張被用到的單號都要逐字出現在指定的檔案裡。
+# ── 只留下「會被執行、而且會被印出來」的那些字 ───────────────────────────
+#
+# 兩步，順序不能顛倒：
+#
+#   1. 先把註解去掉。⚠ 這一步是整條規矩的重點：一句
+#      `// Say("… #109 …")` 在第 2 步眼裡與真的那一行**一模一樣**。
+#   2. 只留下輸出敘述（Say / Err / Log / printf / fprintf / puts）那些行，
+#      以及緊接在它後面的字串字面值續行（訊息常常斷成好幾行）。
+#
+# ⚠ 行尾註解是整段砍掉的。字串裡真的出現 `//`（例如網址）時這會砍過頭 ——
+#   而砍過頭的方向是**更嚴**（該說的話沒被算到 → 紅），不是更鬆。
+#   這道閘寧可誤紅，也不可以誤綠：誤紅有人看得到，誤綠沒有。
+announce_visible_text() {
+  awk '
+    {
+      line = $0
+      if (line ~ /^[[:space:]]*\/\//) next
+      i = index(line, "//")
+      if (i > 0) line = substr(line, 1, i - 1)
+      if (emit) {
+        if (line ~ /^[[:space:]]*"/) {
+          print line
+          if (line ~ /;[[:space:]]*$/) emit = 0
+          next
+        }
+        emit = 0
+      }
+      if (line ~ /(Say|Err|Log|Trace|printf|fprintf|puts|fputs)[[:space:]]*\(/) {
+        print line
+        if (line !~ /;[[:space:]]*$/) emit = 1
+      }
+    }
+  ' "$1"
+}
+
+# 放行可以，靜默不行：每一張被用到的單號都要逐字出現在**那一行**上。
 if [ -n "${ANNOUNCE}" ]; then
   if [ ! -f "${ANNOUNCE}" ]; then
     red "--announce-in 指到的檔案不存在: ${ANNOUNCE}"
     FAILED=$((FAILED + 1))
   else
-    for id in ${GAPS_USED}; do
-      t="$(gap_row "${id}" | cut -f3)"
-      c="$(grep -c -- "${t}" "${ANNOUNCE}" || true)"
-      if [ "${c}" -lt 1 ]; then
-        red "缺口 '${id}' 被放行了，而它的單號 ${t} 在 ${ANNOUNCE} 裡一次都沒出現。
-  放行的缺口必須在使用者看得到的地方說出來（Windows 這一端是 service.log）。
+    # ⚠ 存成檔案再 grep，不用 printf 接管線：這棵樹在 set -o pipefail 底下
+    #   被 SIGPIPE（141）咬過五次。
+    ANNOUNCE_VISIBLE="$(mktemp)"
+    announce_visible_text "${ANNOUNCE}" > "${ANNOUNCE_VISIBLE}"
+    if [ ! -s "${ANNOUNCE_VISIBLE}" ]; then
+      # 抽不出東西 = 抽法對不上這個檔案了。這種情況下每一張單號都會
+      # 「沒說出來」，而那個紅字指的是完全錯的方向 —— 明著講清楚。
+      red "從 ${ANNOUNCE} 抽不出任何一行會被印出來的敘述。
+  這道閘的抽法（announce_visible_text）對不上這個檔案了，不是「沒有說出來」。"
+      FAILED=$((FAILED + 1))
+    else
+      for id in ${GAPS_USED}; do
+        t="$(gap_row "${id}" | cut -f3)"
+        c="$(grep -c -- "${t}" "${ANNOUNCE_VISIBLE}" || true)"
+        if [ "${c}" -lt 1 ]; then
+          red "缺口 '${id}' 被放行了，而它的單號 ${t} 在 ${ANNOUNCE} 裡
+  **沒有出現在任何一行會被印出來的敘述上**（註解不算 —— 註解不會進
+  使用者的 service.log）。
+  放行的缺口必須在使用者看得到的地方說出來。
   不說出來的放行，與沒有這道閘沒有分別。"
-        FAILED=$((FAILED + 1))
-      else
-        ok "缺口 '${id}' 的單號 ${t} 有在 ${ANNOUNCE} 裡說出來"
-      fi
-    done
+          FAILED=$((FAILED + 1))
+        else
+          ok "缺口 '${id}' 的單號 ${t} 有在 ${ANNOUNCE} 會被印出來的那一行上"
+        fi
+      done
+    fi
+    rm -f "${ANNOUNCE_VISIBLE}"
   fi
 fi
 

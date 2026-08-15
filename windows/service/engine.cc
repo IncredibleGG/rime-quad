@@ -21,7 +21,7 @@ namespace {
 //
 //   · 低優先的工作**很貴**:收 session 要把使用者詞典寫回去,補一個備用
 //     session 量到 442~753 毫秒。而它們一旦開始就停不下來。
-//   · 按鍵的預算只有 **50 毫秒**。所以只要在使用者還在打字的空檔裡插進去
+//   · 按鍵的預算只有 **150 毫秒**。所以只要在使用者還在打字的空檔裡插進去
 //     一件,那一顆字就打不出來。
 //
 //   打字時的按鍵間隔是十分之幾秒,「想一下」的停頓才是一兩秒 ——
@@ -34,7 +34,7 @@ constexpr int64_t kLowPriorityIdleMs = 1500;
 
 // 一件工作慢到多少毫秒就值得記一行。
 //
-// 40 毫秒是刻意訂在**按鍵預算(50ms)之下**的:任何一件慢到 40 毫秒的
+// 40 毫秒是刻意訂在**按鍵預算(kKeyDeadlineMs = 100ms)之下**的:任何一件慢到 40 毫秒的
 // 工作,都已經有能力讓下一顆按鍵逾時。記多一點沒關係 —— 這幾行只在
 // 出事時才有人看,而出事時它們是唯一的線索。
 constexpr int64_t kSlowJobMs = 40;
@@ -365,7 +365,7 @@ void Engine::RequestSpareSession(uint32_t langid, const std::string& schema_id,
     spare_pending_[langid] = true;
   }
   // ⚠ 走低優先那條路。補一個 session 本身要 442~753 毫秒(量到的),
-  //   而按鍵的預算只有 50 毫秒 —— 在引擎還忙著的時候補,等於用一顆
+  //   而按鍵的預算只有 150 毫秒 —— 在引擎還忙著的時候補,等於用一顆
   //   打不出來的字去換下一個程式開得快一點。低優先那條路要等引擎
   //   真的閒下來才動,而使用者連續打字時引擎一直是忙的。
   PostLow("補充備用 session", [this, langid, schema_id, options] {
@@ -517,7 +517,7 @@ Result Engine::ToggleAsciiMode(uint64_t id) {
   //   的 ShouldFailOpen(階段 + 有沒有能用的詞庫),而它在 Ubuntu 上驗得到。
   //
   // ⚠ 這道門與 ProcessKey 一樣是在**呼叫端執行緒**上答的，不可以搬進
-  //   Post() 裡 —— 理由（50 毫秒的按鍵預算 vs. 收 session 那一包）寫在
+  //   Post() 裡 —— 理由（150 毫秒的按鍵預算 vs. 收 session 那一包）寫在
   //   ProcessKey 那一支上面。
   if (ShouldFailOpen(phase_.load(), deploy_state_.load() == 1,
                      &r.snap.status_flags)) {
@@ -559,7 +559,7 @@ Result Engine::ProcessKey(uint64_t id, int32_t keysym, uint32_t mods,
   //   · 使用者按下「重新整理字詞」時排進去的是「收乾淨 session 再開始
   //     部署」一整包，而收 session 是這條路上最慢的一步（每一個
   //     rs_session_destroy 都要把使用者詞典寫回去）。
-  //   · 而 DLL 那一側每一顆按鍵的預算是 **50 毫秒**
+  //   · 而 DLL 那一側每一顆按鍵的預算是 **150 毫秒**
   //     （tsf/ipc_client.cc 的 kKeyTimeoutMs）。
   //
   //   所以門若是排在 Post() **裡面**，整理期間的第一顆鍵會是：吃滿 50 ms
@@ -592,7 +592,7 @@ Result Engine::ProcessKey(uint64_t id, int32_t keysym, uint32_t mods,
   //
   // 這一段以前是 `Post("按鍵", …)`,而 Post 是 `queue_.Call(label, fn, 0)`
   // —— timeout 0 = **永遠等**。引擎只有一條 FIFO,所以任何一件排在前面的
-  // 慢工作都會讓這一顆鍵等到 DLL 那側的 50ms 用完;而那不是「這顆鍵慢了」,
+  // 慢工作都會讓這一顆鍵等到 DLL 那側的 150ms 用完;而那不是「這顆鍵慢了」,
   // 是 ipc_client.cc:155 的 Fail() → Close() 把**整條連線丟掉**。
   // 連線一丟,接下來 500ms 內那個宿主的每一顆鍵都是 fail-open 的英文,
   // 而重連本身又要一次 SESSION_NEW + 一次 EndSessionAsync —— 正回饋。
@@ -605,9 +605,22 @@ Result Engine::ProcessKey(uint64_t id, int32_t keysym, uint32_t mods,
   //   作廢權(common/work_queue.cc 的 CallAbandonable)保證這兩件事
   //   剛好發生一件。
   //
-  // ⚠ 逾時**不可以**回一份全 0 的快照 —— 理由與上面那一段一模一樣:
-  //   狀態列會把全 0 讀成「一切正常,而且什麼都沒開」,把使用者剛切好的
-  //   中英打回預設,同時一句「還沒好」都不說。
+  // ⚠ 逾時回的那一份**不是快照,是佔位**,而分辨它的不是旗標,是 wait。
+  //
+  //   上一版在這裡回填了 kStDisabled,想法是「至少不要是全 0」。那個
+  //   想法對了一半:全 0 確實會被狀態列讀成「一切正常,而且什麼都沒開」。
+  //   但 kStDisabled 的語意是 common/service_state.cc 定死的**另一件事**
+  //   ——「引擎還沒準備好」(首次部署 / 使用者按了重新整理字詞)。借用它
+  //   的代價是:一個健康的引擎在狀態列上自稱「正在準備字詞」,那一橫
+  //   四格整排消失,而寫進那一格的 atomic 全樹只有一個寫入點、沒有任何
+  //   一條路清得回來 —— 它會一直說謊到下一顆成功的按鍵為止,而一顆鍵
+  //   按下去沒反應之後,人的下一個動作正好是停手。
+  //
+  //   所以兩件事都不做:不回全 0 給 UI,也不借別人的旗標。
+  //   **那一份根本不進 UI** —— 呼叫端(pipe_server.cc)用
+  //   common/key_deadline.h 的 DecideKeyUiAction() 把 wait->timed_out
+  //   這一份擋在 push_ui 之外。回給宿主的 Result 本身不必動:
+  //   windows/tsf/ 一處都沒有讀 kStDisabled,DLL 只看 handled。
   //
   // ⚠ 結果寫在一個與工作**共同持有**的盒子裡,不是呼叫端的框:
   //   逾時之後這個函式就返回了,而那件工作可能還在佇列裡。
@@ -636,7 +649,6 @@ Result Engine::ProcessKey(uint64_t id, int32_t keysym, uint32_t mods,
       wait->abandoned = abandoned;
     }
     r.handled = false;
-    r.snap.status_flags = kStDisabled;
     return r;
   }
   r = *box;

@@ -2875,7 +2875,7 @@ for fn in gates:
         print('GATEBEHINDQUEUE=%s' % fn)
     # ⚠ 按鍵那一條另外要求**有上限**(#93/#108)。
     #   Engine::Post 是 queue_.Call(label, fn, 0) = 永遠等,而 DLL 那一側
-    #   每顆鍵只有 50ms;無上限的等待 = 整條連線被丟掉。
+    #   每顆鍵只有 common/key_deadline.h 的 kKeyTimeoutMs;無上限的等待 = 整條連線被丟掉。
     #   而且上限一定要配作廢權,不然遲到的工作會把同一顆鍵再打進 librime。
     if fn == 'ProcessKey':
         if 'CallAbandonable(' not in gb:
@@ -2952,9 +2952,9 @@ PYSCRIPT
       GATEAFTERFIND=*)
         red "W36:Engine::${w36line#GATEAFTERFIND=} 的門排在 Find() 之後 —— 重新部署期間 session 是真的不見了,先 Find() 就會走進「找不到」那條路,回給宿主一份 status_flags 全 0 的快照,而狀態列會把它當成「一切正常」"; w36bad=1 ;;
       GATEBEHINDQUEUE=*)
-        red "W36:Engine::${w36line#GATEBEHINDQUEUE=} 的門排在 Post() 之後 —— 那道門會在**引擎執行緒**上答,而且排在「收乾淨 session 再開始部署」那一包後面(每一個 rs_session_destroy 都要把使用者詞典寫回去,是這條路上最慢的一步);Engine::Post 是 queue_.Call(...,0) = **永遠等**。而 DLL 那一側每顆鍵的預算是 50 毫秒(tsf/ipc_client.cc 的 kKeyTimeoutMs)—— 逾時就 Fail(kTimeout) → Close()、session_ = 0,**整條連線被丟掉**,於是部署後「保住原 id、重套方案 / 簡繁 / 英數」那一套(#85)對那個宿主不生效"; w36bad=1 ;;
+        red "W36:Engine::${w36line#GATEBEHINDQUEUE=} 的門排在 Post() 之後 —— 那道門會在**引擎執行緒**上答,而且排在「收乾淨 session 再開始部署」那一包後面(每一個 rs_session_destroy 都要把使用者詞典寫回去,是這條路上最慢的一步);Engine::Post 是 queue_.Call(...,0) = **永遠等**。而 DLL 那一側每顆鍵的預算是 common/key_deadline.h 的 kKeyTimeoutMs—— 逾時就 Fail(kTimeout) → Close()、session_ = 0,**整條連線被丟掉**,於是部署後「保住原 id、重套方案 / 簡繁 / 英數」那一套(#85)對那個宿主不生效"; w36bad=1 ;;
       UNBOUNDEDKEY=*)
-        red "W36:Engine::${w36line#UNBOUNDEDKEY=} 的按鍵沒有走 CallAbandonable() —— 那表示它又回到無上限的等待(Engine::Post 是 queue_.Call(...,0))。引擎只有一條 FIFO,任何一件慢工作(SESSION_NEW 的 ApplyChoice 實測 442~753ms、離開的宿主寫回使用者詞典)都會讓那顆鍵吃滿 DLL 那側的 50 毫秒預算,而逾時的代價不是「打出英文」,是 ipc_client.cc 的 Fail() → Close() 把**整條連線丟掉**(#93/#108)"; w36bad=1 ;;
+        red "W36:Engine::${w36line#UNBOUNDEDKEY=} 的按鍵沒有走 CallAbandonable() —— 那表示它又回到無上限的等待(Engine::Post 是 queue_.Call(...,0))。引擎只有一條 FIFO,任何一件慢工作(SESSION_NEW 的 ApplyChoice 實測 442~753ms、離開的宿主寫回使用者詞典)都會讓那顆鍵吃滿 DLL 那側的預算(common/key_deadline.h 的 kKeyTimeoutMs),而逾時的代價不是「打出英文」,是 ipc_client.cc 的 Fail() → Close() 把**整條連線丟掉**(#93/#108)"; w36bad=1 ;;
       KEYALSOPOSTS=*)
         red "W36:Engine::${w36line#KEYALSOPOSTS=} 裡除了 CallAbandonable() 還有一個 Post() —— Post 是無上限的等待,混在按鍵這條路上等於上限沒有生效"; w36bad=1 ;;
       OLDJUDGE=*)

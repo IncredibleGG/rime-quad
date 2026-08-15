@@ -1018,6 +1018,59 @@ else:
                    '不可以跟著死。做完這件事編得過、測試也綠,而使用者的'
                    '症狀立刻回到 #111:截圖一下那一橫就不見了。')
 
+# ── ⭐ 反過來那一格:TIP 又活了,舊的讓位紀錄必須**立刻**作廢 ────────
+#
+# ⚠ 上面那一條守的是「讓位紀錄不可以跟著連線一起死」。這一條守的是
+#   它的另一半:那筆證據**也不可以活得比事實久**。
+#
+#   讓位紀錄最長活 10 分鐘。使用者切到微軟拼音(留下一筆)、再切回來,
+#   如果沒有人把那一筆作廢,那一橫會因為一筆**已經不成立**的舊證據
+#   繼續藏著 —— 最長十分鐘,而他什麼都沒做錯,也沒有任何辦法讓它出現。
+#   症狀與 #111 一模一樣,只是原因相反。
+#
+# ⚠ 覆核者實跑過:把 OnClientIdentified 裡那一整段拿掉,這支稽核
+#   RC=0 —— 零守門。所以這裡補的是**正面**的一條(那段必須在),
+#   而它的反向測試就是覆核者做的那個拿掉。
+#
+# ⚠ 還要問 host_tid != 0 那道守衛:舊版 DLL 報不出 tid(線路上是 0),
+#   少了它,一個舊宿主連上來就會把**所有** tid 未知的讓位紀錄一起清掉。
+m_idf = re.search(r'void\s+StatusBar::OnClientIdentified\s*\([^)]*\)\s*\{',
+                  bar)
+if not m_idf:
+    bad.append('找不到 StatusBar::OnClientIdentified —— 規則 6 對不上這一格了,'
+               '不是「沒有違規」。')
+else:
+    depth = 0
+    end_id = -1
+    for i in range(m_idf.end() - 1, len(bar)):
+        if bar[i] == '{':
+            depth += 1
+        elif bar[i] == '}':
+            depth -= 1
+            if depth == 0:
+                end_id = i
+                break
+    if end_id < 0:
+        bad.append('OnClientIdentified 的大括號配不起來 —— 規則 6 對不上了。')
+    else:
+        idbody = bar[m_idf.end():end_id]
+        if not re.search(r'\byields_\s*\.\s*erase\s*\(', idbody):
+            bad.append('StatusBar::OnClientIdentified 沒有清掉舊的讓位紀錄 —— '
+                       '這條執行緒上我們的 TIP 又活了,而那一筆「使用者換了'
+                       '輸入法」的證據已經不成立。留著它,使用者切走再切回來'
+                       '之後那一橫會繼續藏著(最長 10 分鐘),而他什麼都沒'
+                       '做錯,也沒有任何辦法讓它出現。')
+        elif not re.search(r'\byields_\[[^\]]*\]\.host_tid\s*==\s*host_tid',
+                           idbody):
+            bad.append('StatusBar::OnClientIdentified 清讓位紀錄時沒有比對 '
+                       'host_tid —— 那等於一個宿主活過來就把**別條執行緒**的'
+                       '證據也一起清掉,#82(切走了還常駐)會從這裡回來。')
+        elif not re.search(r'\bhost_tid\s*!=\s*0\b', idbody):
+            bad.append('StatusBar::OnClientIdentified 清讓位紀錄時沒有先問 '
+                       'host_tid != 0 —— 舊版 DLL 在線路上報不出 tid(是 0),'
+                       '少了這道守衛,一個舊宿主連上來就會把所有 tid 未知的'
+                       '讓位紀錄一起清掉。')
+
 # ── 提權宿主那道閘只有一個入口 ───────────────────────────────────
 #
 # ⚠ 在場連線那條路**只准 CreateFileW,不准啟動服務**:啟動會產生一支
@@ -1044,7 +1097,8 @@ print('   那一橫的在場訊號:四個邊都在(ActivateEx / OnActivated 啟�
       '服務端接得到身分、接得到 session、真的去問前景、'
       '而且認得出前景是服務自己;'
       'OnActivated 的非啟用邊在收連線**之前**說出讓位、而 Deactivate 不說,'
-      '服務端收得到那句話,而且 OnClientDetached 不碰讓位紀錄;'
+      '服務端收得到那句話,OnClientDetached 不碰讓位紀錄、'
+      '而 OnClientIdentified 會把同一條執行緒上過期的那幾筆清掉;'
       'ActivateEx 裡沒有 EnsureReady(;LaunchService( 仍然只有 1 個呼叫點')
 PY_BAR_PRESENCE_WIRING
 
@@ -1083,6 +1137,8 @@ if [ "${1:-}" = "--self-check" ]; then
                presence_yields_after_it_already_hung_up \
                bar_drops_the_profile_state_message \
                bar_ties_yields_to_connection_lifetime \
+               bar_forgets_to_clear_stale_yields \
+               bar_clears_yields_for_unknown_thread \
                presence_resets_backoff_before_the_handshake \
                presence_short_cycle_is_not_a_success; do
     tmp="$(mktemp -d)"
@@ -1293,6 +1349,30 @@ PY_YIELDLIFE
       bar_forgets_its_own_settings_window)
         sed -i '/fg.service_pid = static_cast<uint32_t>(::GetCurrentProcessId());/d' \
           "${tmp}/windows/service/status_bar.cc" ;;
+      # ⭐ 覆核者實跑的那個植入:把 OnClientIdentified 裡清舊讓位紀錄的
+      #   那一整段拿掉。在這一條存在之前,這支稽核 RC=0 —— 零守門。
+      bar_forgets_to_clear_stale_yields)
+        python3 - "${tmp}/windows/service/status_bar.cc" <<'PY_STALE_YIELDS'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+old = """    for (size_t i = 0; i < yields_.size();) {
+      if (host_tid != 0 && yields_[i].host_tid == host_tid)
+        yields_.erase(yields_.begin() + static_cast<long>(i));
+      else
+        ++i;
+    }
+"""
+assert old in s, '植入對不上 OnClientIdentified 的寫法了 —— 反向測試會變成假綠'
+open(p, 'w', encoding='utf-8').write(s.replace(old, '', 1))
+PY_STALE_YIELDS
+        ;;
+      # 少了 host_tid != 0 那道守衛:舊版 DLL 報不出 tid(線路上是 0),
+      # 於是一個舊宿主連上來就把所有 tid 未知的讓位紀錄一起清掉。
+      bar_clears_yields_for_unknown_thread)
+        sed -i 's/if (host_tid != 0 \&\& yields_\[i\].host_tid == host_tid)/if (yields_[i].host_tid == host_tid)/' \
+          "${tmp}/windows/service/status_bar.cc" ;;
+
       # ── 在場連線的退避:回到「連上就歸零」的舊形狀 ──────────────
       presence_resets_backoff_before_the_handshake)
         python3 - "${tmp}/windows/tsf/text_service.cc" <<'PY_BACKOFF'

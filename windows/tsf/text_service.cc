@@ -1610,8 +1610,11 @@ bool TextService::HandleKey(ITfContext* ctx, WPARAM w, LPARAM l, bool key_up) {
     //   所以這裡要負責到底,規則與下面 !result.handled 那一段完全相同。
     engine_composing_ = false;
     // 只加計數,不寫記錄:這裡是宿主的 UI 執行緒。數字由 ipc_client 的
-    // 節流摘要帶出去(「兩趟之間掉了=%u鍵」)。
-    ipc_.NoteKeyLostBetweenPasses();
+    // 節流摘要帶出去。
+    // ⚠ 名字是「收尾」不是「掉了」:上面那一整段的重點就是這顆鍵
+    //   **沒有**掉 —— 我們補了字元或吃掉它。數到的是「斷線發生在
+    //   兩趟之間、而我們接手了幾次」。
+    ipc_.NoteKeyRescuedBetweenPasses();
     if (ShouldSelfInsert(plan.kind) && !composition_) {
       const char32_t ch = CharForSelfInsert(plan.mapped.keysym);
       if (ch != 0 && SelfInsertChar(ctx, ch)) return true;

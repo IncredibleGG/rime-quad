@@ -716,8 +716,14 @@ LRESULT CALLBACK SettingsWindow::WndProc(HWND hwnd, UINT msg, WPARAM w,
         //   已經在工作列上的圖示再「顯示」一次,畫面上什麼都不會發生。
         //   症狀與「按了設定沒反應」一模一樣,而且只在使用者最小化過一次
         //   之後才出現,所以很容易被當成偶發。
-        //   (這不是 check_ui_spec.sh W25 守的那一行;W25 守的是本檔案下面
-        //    ::ShowWindow(c, sp.visible ? SW_SHOW : SW_HIDE); 那一行。)
+        //   (這不是 check_ui_spec.sh 的 W25 守的那一行。W25 守的是本檔案
+        //    下面 LayoutUi() 尾端那一句:捲出可視範圍的控制項只裁成空的、
+        //    **不隱藏**,所以它們留在 Tab 順序裡,鍵盤使用者捲得到。
+        //
+        //    ⚠ 那一句的原文刻意**不抄在這裡**。W25 的反向測試是「把那段
+        //    字面值換掉」,而它只換**第一處** —— 在它前面抄一份,反向測試
+        //    從此打在註解上,那道守門就空了而且完全看不出來。
+        //    這一棵樹已經因為這件事紅過一次,別再抄第二次。)
         ::ShowWindow(hwnd, ::IsIconic(hwnd) ? SW_RESTORE : SW_SHOW);
         ::SetForegroundWindow(hwnd);
         ::SetActiveWindow(hwnd);

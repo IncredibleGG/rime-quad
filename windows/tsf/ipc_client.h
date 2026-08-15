@@ -168,7 +168,7 @@ class IpcClient {
   //   而且是每一顆按鍵都會經過的地方 —— 在那裡寫磁碟就是把「輸入法很慢」
   //   做成一個功能。數字由下面那條節流的摘要一次帶出去。
   void NoteKeyPassedThrough() { ++keys_passed_while_down_; }
-  void NoteKeyLostBetweenPasses() { ++keys_lost_between_passes_; }
+  void NoteKeyRescuedBetweenPasses() { ++keys_rescued_between_passes_; }
 
   // 把連線狀態機歸零(退避、失敗計數、階段),連線本身也收掉。
   //
@@ -230,7 +230,12 @@ class IpcClient {
   //   要補的記錄必須是**摘要**,不是逐事件。
   uint32_t reconnects_ = 0;               // 第二次以後的每一次連上
   uint32_t keys_passed_while_down_ = 0;   // 斷線期間放行給宿主的按鍵
-  uint32_t keys_lost_between_passes_ = 0; // Test 說吃、Key 卻送不出去的
+  // ⚠ 名字說的是它**現在**在數的東西,不是修改前的行為。
+  //   舊名字是 keys_lost_between_passes_(「掉了幾顆鍵」)—— 而
+  //   text_service.cc 那條路現在不掉了:SendKey 失敗時我們自己補字元
+  //   或吃掉,負責到底(見那一段的 ⚠)。名字與訊息若停在舊行為上,
+  //   下一個看 tsf.log 的人會去找一個不存在的缺陷。
+  uint32_t keys_rescued_between_passes_ = 0; // Test 說吃、Key 卻送不出去,
   int64_t connected_at_ms_ = 0;           // 這一條連線是什麼時候好的
   uint32_t last_link_ms_ = 0;             // 上一條連線活了多久
   bool ever_connected_ = false;

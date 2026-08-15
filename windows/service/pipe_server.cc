@@ -11,6 +11,7 @@
 #include <string>
 
 #include "../common/hotkey_policy.h"
+#include "../common/key_deadline.h"
 #include "../common/redeploy_flow.h"
 #include "../common/schema_choice.h"
 #include "../common/status_cells.h"
@@ -513,11 +514,23 @@ void PipeServer::ServeClient(HANDLE pipe) {
   // 沒有額度的話一個卡住的引擎會把 1 MiB 的 service.log 寫滿並從頭來過,
   // 把真正有價值的前幾行捲掉。
   int key_ms_budget = 20;
+  // 這條連線的進場 / 離場要不要寫。⚠ **一次決定,兩行共用** ——
+  //   額度在中途用完的話會留下一條只有進場沒有離場的連線,而
+  //   「存活多久 / 最後一步是什麼」正是這兩行唯一的產出。
+  bool log_conn = false;
+  {
+    int left = conn_log_budget_.load(std::memory_order_relaxed);
+    while (left > 0 && !conn_log_budget_.compare_exchange_weak(
+                           left, left - 1, std::memory_order_relaxed)) {
+    }
+    log_conn = left > 0;
+  }
   // 這條連線是怎麼結束的。⚠ 一律指向字面值,不必管生命週期。
   const char* last_step = "(還在讀)";
   unsigned last_op = 0;
-  Log("[pipe] 連線 #%llu 進場\n",
-      static_cast<unsigned long long>(client_id));
+  if (log_conn)
+    Log("[pipe] 連線 #%llu 進場\n",
+        static_cast<unsigned long long>(client_id));
 
   auto send = [&](const std::string& payload) -> bool {
     const std::string framed = Frame(payload);
@@ -681,10 +694,18 @@ void PipeServer::ServeClient(HANDLE pipe) {
               fresh = true;
           }
           if (fresh)
-            Log("[pipe] 舊版宿主:%s(pid=%lu)用線路版本 %u 連上來,"
-                "我們是 %u —— 這個程式在你升級前就開著,它還載著舊的 "
-                "rime_tsf.dll。把它整個關掉再開(工作列 / 檔案總管要"
-                "重開機或重啟 Explorer),那一橫與新功能才會對它生效。\n",
+            // ⚠ 這一句是**直接對使用者說的**(他會被請去看 service.log),
+            //   所以裡面不可以有黑話。舊版寫的是「線路版本」「還載著舊的
+            //   rime_tsf.dll」「那一橫」「重啟 Explorer」—— 四個都是我們
+            //   自己的講法,而「那一橫」連在文件裡都只是內部叫法。
+            //   一個看到這一行的人只需要知道兩件事:哪一個程式、要做什麼。
+            //   兩個版本號留在句尾的括號裡:它們是給下一次回報看的,
+            //   不必讓使用者讀懂。
+            Log("[pipe] 這個程式還在用舊版的輸入法:%s(pid=%lu)。"
+                "它在你更新輸入法之前就已經開著了,所以新版對它還沒生效。"
+                "把這個程式關掉、再重新打開就好;"
+                "如果它是桌面、工作列或檔案總管,那就把電腦重新開機一次。"
+                "(它報的版本 %u,現在是 %u)\n",
                 h.host_exe.empty() ? "(不明)" : h.host_exe.c_str(),
                 static_cast<unsigned long>(h.host_pid),
                 static_cast<unsigned>(h.proto),
@@ -706,7 +727,7 @@ void PipeServer::ServeClient(HANDLE pipe) {
         // 備用時)當場套上去。方案清單走快取,所以這一段不進引擎佇列。
         // ⚠ 拿不到清單(引擎在停)與「一個方案都沒有」不可以混成同一件事:
         //   兩者都會讓 ChooseSchema 挑不到東西,而前者是暫時的。
-        //   這裡不能擋著不放行(宿主那一側只有 50 毫秒的預算),但要
+        //   這裡不能擋著不放行(宿主那一側只有 150 毫秒的預算),但要
         //   在記錄裡分得出來 —— 出事時那一行是唯一的線索。
         std::vector<std::pair<std::string, std::string>> schemas;
         const WorkQueue::Status schema_st = engine_->SchemaListCached(&schemas);
@@ -891,6 +912,9 @@ void PipeServer::ServeClient(HANDLE pipe) {
           if (!send(EncodeResult(seq, r))) goto done;
           break;
         }
+        // ⚠ 這一格要留在 if/else 外面:下面那一段 UI 的去留由它決定,
+        //   而算出它的地方在 else 分支裡面。
+        bool key_timed_out = false;
         Result r;
         if (action == KeyAction::kToggleVariant) {
           // 簡繁快捷鍵(Ctrl+Shift+F,G76)。
@@ -928,9 +952,12 @@ void PipeServer::ServeClient(HANDLE pipe) {
           ++keys_seen;
           if (kw.timed_out) ++keys_timed_out;
           if (kw.abandoned) ++keys_abandoned;
-          // 30ms 這個門檻:超過它就代表這顆鍵已經吃掉 DLL 那側 50ms
-          // 預算的大半(engine.h 的 kKeyDeadlineMs 是 35)。
-          if ((dt >= 30 || kw.timed_out) && key_ms_budget > 0) {
+          key_timed_out = kw.timed_out;
+          // 門檻與兩個上限是一組的,所以同樣住在 common/key_deadline.h
+          // (kKeySlowLogMs)。它刻意低於服務端的上限:只記已經逾時的那些
+          // 會看不到「快要逾時」那一段,而那一段才是樣式開始的地方。
+          if ((dt >= static_cast<DWORD>(kKeySlowLogMs) || kw.timed_out) &&
+              key_ms_budget > 0) {
             --key_ms_budget;
             Log("[pipe] KEY_MS=%lu(設定讀取=%lums,佇列前面是「%s」,"
                 "已跑 %lldms,最舊等待 %lldms,逾時=%d,本體作廢=%d)%s\n",
@@ -944,8 +971,24 @@ void PipeServer::ServeClient(HANDLE pipe) {
                                    : "");
           }
         }
-        note_schema(r.snap);
-        push_ui(r.snap);
+        // ── ⚠ 逾時的那一份不可以碰 UI(#93/#108 的覆核抓到的)──────
+        //
+        //   逾時代表本體多半一步都沒跑(作廢成功),引擎那邊的組字狀態
+        //   原封不動。那一份 Result 是佔位,不是現況 —— 餵進去的話:
+        //   候選是空的 → push_ui 會把候選窗收掉,而使用者正組字到一半;
+        //   旗標也會被那一橫讀走 → 一個健康的引擎自稱「正在準備字詞」。
+        //   兩件事使用者都當場看得到,而且畫面從此與引擎分岔。
+        //
+        //   這與上面「使用者把輕點 Shift 關掉了」那一格是同一條規矩:
+        //   什麼都不做包含**不碰 UI**。判準在 common/key_deadline.h,
+        //   在 Ubuntu 上驗得到(tests/test_key_deadline.cc)。
+        //
+        // ⚠ 回給宿主的 r 照送不誤 —— DLL 要靠 handled=false 才知道
+        //   這顆鍵要自己收尾(tsf/text_service.cc)。不送等於那顆鍵消失。
+        if (DecideKeyUiAction(key_timed_out) == KeyUiAction::kUpdateUi) {
+          note_schema(r.snap);
+          push_ui(r.snap);
+        }
         if (!send(EncodeResult(seq, r))) goto done;
         break;
       }
@@ -1092,13 +1135,17 @@ done:
   // 存活=300ms、按鍵=1、逾時=1 連續好幾行 = 重連迴圈;
   // 存活很久而逾時一直漲 = 引擎佇列塞住。兩者要修的地方完全不同,
   // 而在這一行之前,服務端這一側兩種都看不到。
-  Log("[pipe] 連線 #%llu 離場 存活=%lums 握手=%d session=%llu "
-      "按鍵=%u 逾時=%u 本體作廢=%u 最後一步=%s(op=%u)\n",
-      static_cast<unsigned long long>(client_id),
-      static_cast<unsigned long>(::GetTickCount() - conn_t0),
-      authed ? 1 : 0, static_cast<unsigned long long>(session),
-      static_cast<unsigned>(keys_seen), static_cast<unsigned>(keys_timed_out),
-      static_cast<unsigned>(keys_abandoned), last_step, last_op);
+  if (log_conn)
+    Log("[pipe] 連線 #%llu 離場 存活=%lums 握手=%d session=%llu "
+        "按鍵=%u 逾時=%u 本體作廢=%u 最後一步=%s(op=%u)%s\n",
+        static_cast<unsigned long long>(client_id),
+        static_cast<unsigned long>(::GetTickCount() - conn_t0),
+        authed ? 1 : 0, static_cast<unsigned long long>(session),
+        static_cast<unsigned>(keys_seen), static_cast<unsigned>(keys_timed_out),
+        static_cast<unsigned>(keys_abandoned), last_step, last_op,
+        conn_log_budget_.load(std::memory_order_relaxed) == 0
+            ? "  (連線進出的額度用完,之後的連線不再記)"
+            : "");
   // ⚠ 不等它做完。rs_session_destroy 要把使用者詞典寫回去,而**下一個**
   //   宿主的 SESSION_NEW 就排在它後面 —— 那正是矩陣裡 8 個宿主逾時的
   //   成因之一。這裡改成非同步之後,這條連線的執行緒不再陪著等;

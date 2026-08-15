@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "../winshared/winutil.h"
+#include "../common/key_deadline.h"
 #include "trace.h"
 
 // 版本協商用:DLL 側編譯時看到的門面 ABI。DLL 本身**不連結** rime_shell,
@@ -12,13 +13,12 @@
 namespace rimewin {
 namespace {
 
-// 按鍵往返的逾時。
+// ⚠ 按鍵往返的逾時**不在這裡** —— 它與服務端的上限是一組的,
+//   兩個都住在 common/key_deadline.h(kKeyTimeoutMs / kKeyDeadlineMs),
+//   由那裡的 static_assert 守住「服務端必須先放棄」這條關係。
 //
-// 效能紅線是「從按鍵到候選更新一到兩幀」(docs/handoff-windows.md §5),
-// 也就是 16–33ms。這裡的 50ms 不是目標值,是**放棄的門檻**:超過它就
-// 認定服務不對勁,關掉連線、放行按鍵。在宿主的 UI 執行緒上等更久,
-// 使用者感覺到的是整個應用程式卡住。
-constexpr DWORD kKeyTimeoutMs = 50;
+//   效能紅線仍然是「從按鍵到候選更新一到兩幀」(docs/handoff-windows.md
+//   §5),也就是 16–33ms。那個逾時不是目標值,是**放棄的門檻**。
 
 // 連線與握手可以久一點:它不在每一顆按鍵的路徑上。
 constexpr DWORD kConnectTimeoutMs = 300;
@@ -161,11 +161,12 @@ void IpcClient::MaybeTraceLinkSummary() {
   //   而兩邊各有各的額度(5 行 / 6 行)—— 用完之後那個交叉參照就斷了,
   //   使用者貼上來的檔案回答不了任何問題。
   Trace("連線摘要 重連=%u次 上一條活了=%ums 斷線期間放行=%u鍵 "
-        "兩趟之間掉了=%u鍵 上次原因=%s(階段=%s os_err=%lu 服務說=%s)",
+        "兩趟之間斷線改由我們收尾=%u鍵 "
+        "上次原因=%s(階段=%s os_err=%lu 服務說=%s)",
         static_cast<unsigned>(reconnects_),
         static_cast<unsigned>(last_link_ms_),
         static_cast<unsigned>(keys_passed_while_down_),
-        static_cast<unsigned>(keys_lost_between_passes_),
+        static_cast<unsigned>(keys_rescued_between_passes_),
         LinkFailureName(link_.last_failure()), ReadyStageName(diag_.stage),
         static_cast<unsigned long>(diag_.os_error),
         diag_.service_error.empty() ? "(沒說)" : diag_.service_error.c_str());
