@@ -422,6 +422,18 @@ opencc 轉幾次都還在。實測(emulator-5558,`luna_pinyin_tw`):選簡體時
 惰性過濾器會自動補滿一頁,翻頁與 `page_size` 都不會亂。
 放 UI 那一側就是「引擎以為給了 5 個、畫面剩 2 個」,而且四端會做出四種結果。
 
+⚠ **而實作它的那個元件,必須在每一個出貨平台的引擎裡問得到。**
+這一條以前沒寫,而它是這一節真正的破口:方案裡寫了
+`lua_filter@*luminakey_charset`,不代表那一端真的有 `lua_filter`。
+librime 對「找不到這個元件」的處置是 **只記一行錯就跳過**
+(`src/rime/engine.cc:310-315` 的 `continue`),所以它不會讓任何一關紅,
+而那一層守門在使用者機器上根本不存在。
+
+這條規範的機械檢查是 `scripts/verify_schema_components.sh`:它把打包進去的
+方案檔裡每一個元件處方抽出來,交給那一端要出貨的
+`rime_console --has-component` 去問 `rime::Registry`。已知缺口只能靠
+`scripts/lib/component_gaps.tsv` 放行(有工單、有到期日,而且會被印出來)。
+
 ⚠ **位置是 uniquifier 的前一個,不是最後一個。** uniquifier 的去重是拿
 「Menu 已經收下的候選」比對的,而 librime-lua 的 translation 會比 Menu 先跑一步,
 掛在 uniquifier 後面會讓去重靜靜失效(實測:補表把「妳好」轉成「你好」之後
@@ -462,6 +474,11 @@ librime 沒有「宣告過但預設為真」的 option(沒宣告的一律讀成 
    **不合格** —— 實測 13.79% 詞條含表外字,比 `luna_pinyin + t2s` 還差。
 4. 介面上**不可以**出現「已支援純簡體／純繁體」這類說法。
    Android 現行文案見 `res/values*/strings.xml` 的 `text_charset_note`。
+5. **守門不在的平台上,UI 不得顯示任何暗示字集已受約束的字樣。**
+   這一條是 2026-08-15 補的,對應工單 #109。現狀:Windows 的 librime 沒有
+   `lua_filter`,第二層(轉不掉的才濾)整層是死的,而狀態列仍然寫著
+   「繁」—— 那是一個我們保證不了的承諾。對一個以「經得起審計」為定位的
+   產品,這是**實質缺陷**,不是實作細節。
 
 ### 4.8 套用時機
 

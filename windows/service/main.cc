@@ -731,6 +731,31 @@ static int RunService(int argc, wchar_t** argv) {
   Say("[service] user   = %s\n", user.c_str());
   Say("[service] log    = %s\n", log.empty() ? "(stderr)" : log.c_str());
 
+  // ── 已知缺口 #109:字集守門在這一端是關的 ─────────────────────────
+  //
+  // ⚠ 這一行是**刻意**印出來的,而且它不是可以順手刪掉的裝飾。
+  //
+  // 我們出貨的方案裡有這麼一行(core/data/schemas/luminakey_charset.custom.yaml
+  // 第 28 行,由 scripts/collect_charset_guard.sh 原封不動複製成 luna_pinyin /
+  // bopomofo / t9_pinyin 三份 .custom.yaml,四端同一個位元組):
+  //
+  //     "engine/filters/@before last": lua_filter@*luminakey_charset
+  //
+  // 而這一端的 librime 沒有編 librime-lua(windows/build.sh 的
+  // check_lua_sandbox() 自己寫著「本輪範圍外」)。librime 對「找不到這個元件」
+  // 的處置是只記一行錯就跳過(src/rime/engine.cc:310-315 的 continue)——
+  // 引擎照樣跑、候選照樣有,只是**字集守門的第二層整層不存在**:狀態列寫著
+  // 「繁」,而輸出裡混得進不屬於 Big5 的字。使用者不會收到任何錯誤訊息。
+  //
+  // 建置端的同一件事登記在 scripts/lib/component_gaps.tsv(id
+  // `windows:lua_filter`,工單 #109,有到期日),由
+  // scripts/verify_schema_components.sh 在打包前擋著。那道閘放行它、
+  // 而這裡把它說出來 —— **兩邊都不准靜默**。
+  // 那道閘的 --announce-in 會逐字檢查 `#109` 有沒有出現在本檔裡:
+  // 刪掉這一行,打包就會紅。缺口補上之後,清冊那一行與這一行要一起刪。
+  Say("[service] ⚠ 已知缺口 #109:字集守門(lua_filter)在這一端沒有註冊 ——\n"
+      "[service]    第二層字集過濾是關的,輸出可能混進不屬於目前字集的字。\n");
+
   rimewin::Engine engine;
   Say("[service] rs_init ...\n");
   if (!engine.Start(shared, user, log)) {

@@ -53,6 +53,17 @@ PAYLOAD="${WORK}/payload"
 #   ${ARCH} 不參與:artifact 名本身已經帶了架構。
 OUT_NAME="${RS_WIN_SETUP_EXE}"
 
+# ── 方案元件檢查的三個參數 ──────────────────────────────────────
+#
+# 正式打包時一律用這組預設值：問 payload 裡那一支 rime_console.exe、
+# 平台是 windows、缺口清冊是版控裡那一份。
+# `--self-check` 會把它們指到暫時的替身（見 self_check），因為那棵樹裡的
+# rime_console.exe 是一個空檔案，而它要驗的是**這道閘本身**會不會紅。
+COMPONENT_CONSOLE=""          # 空 = 用 <payload>/rime_console.exe
+COMPONENT_PLATFORM="windows"
+COMPONENT_GAPS="${ROOT}/scripts/lib/component_gaps.tsv"
+COMPONENT_ANNOUNCE="${SCRIPT_DIR}/service/main.cc"
+
 SELF_CHECK=0
 LINT=0
 case "${1:-}" in
@@ -134,6 +145,34 @@ verify_payload() {
     missing=1
   fi
 
+  # ── 打包進去的方案，它用到的元件必須在**這一端的二進位檔裡**問得到 ──
+  #
+  # ⚠ 這是本腳本檔頭那句「每一步都成功，而使用者裝上去打不出字」的第二種
+  #   形狀，而且比第一種更難發現：東西**有**打包進去，只是引擎裡沒有那個
+  #   元件。librime 的處置是只記一行錯就跳過（src/rime/engine.cc:310-315 的
+  #   continue）——安裝程式編得出來、安裝成功、服務起得來、候選也出得來，
+  #   只是那一層過濾整層不存在。工單 #109 就是這件事：我們把字集守門那一條
+  #   `lua_filter` 處方打進了安裝包，而 Windows 的 librime 沒有編 librime-lua。
+  #   （處方的原文與出處請看 scripts/lib/component_gaps.tsv；這個檔案裡不准
+  #     出現產品識別碼的字面值，見 windows/product_win.sh 檔頭。）
+  #
+  # ⚠ 判準刻意**不是**一張手寫的「這個平台有哪些元件」清單 —— 那種清單會在
+  #   下一次有人改建置選項時安靜地過期，而過期的方向剛好是綠燈。這裡是拿
+  #   要出貨的那一支 rime_console.exe 去問 librime 的 Registry。
+  #
+  # 已知缺口怎麼放行（有工單、有到期日、會被印出來，而且不是一個開關），
+  # 見 scripts/lib/component_gaps.tsv 的檔頭。
+  local console="${COMPONENT_CONSOLE:-${root}/rime_console.exe}"
+  printf '    -- 方案元件（問 %s）\n' "$(basename "${console}")"
+  if ! "${ROOT}/scripts/verify_schema_components.sh" \
+         --data "${root}/data" \
+         --console "${console}" \
+         --platform "${COMPONENT_PLATFORM}" \
+         --gaps "${COMPONENT_GAPS}" \
+         --announce-in "${COMPONENT_ANNOUNCE}"; then
+    missing=1
+  fi
+
   return "${missing}"
 }
 
@@ -179,7 +218,43 @@ self_check() {
   rm -rf "${tmp}"
   mkdir -p "${tmp}/data/shared/opencc" "${tmp}/data/user"
 
-  log "反向測試 1/4:完全空的 payload"
+  # ── 方案元件那道閘在自我測試裡要用替身 ──────────────────────────
+  #
+  # 這棵假樹裡的 rime_console.exe 是一個**空檔案**（下面那幾行 `: >` 造的），
+  # 執行它只會拿到一個錯誤；而這裡要驗的是「payload 檢查會不會在該紅的時候
+  # 紅」，不是 librime。所以換上一支只認得一份名單的假 console。
+  # 平台名與缺口清冊也一起換掉：版控裡那份清冊登記著 windows:lua_filter，
+  # 而這棵假樹根本沒有 lua_filter —— 用真的那一份，第 3 組「補齊之後必須
+  # 轉綠」會因為「登記了卻沒缺」而紅在完全無關的地方。
+  local stub="${tmp}/stub_console.sh"
+  cat > "${stub}" <<'STUBEOF'
+#!/usr/bin/env bash
+# 假的 rime_console：只認得下面這份名單。用法與真的那一支相同：
+#   $1 = --has-component  $2 = shared  $3 = user  $4 = 逗號分隔的元件名
+KNOWN=",uniquifier,simplifier,script_translator,"
+rc=0
+IFS=',' read -r -a NS <<< "$4"
+for n in "${NS[@]}"; do
+  case "${KNOWN}" in
+    *",${n},"*) printf '%s\tyes\n' "${n}" ;;
+    *)          printf '%s\tno\n'  "${n}"; rc=1 ;;
+  esac
+done
+exit "${rc}"
+STUBEOF
+  chmod +x "${stub}"
+  COMPONENT_CONSOLE="${stub}"
+  COMPONENT_PLATFORM="selfcheck"
+  COMPONENT_GAPS="${tmp}/gaps.tsv"
+  : > "${COMPONENT_GAPS}"
+
+  # 抽取器自己的形狀測試（每一種 patch 鍵各驗一次）。漏掉任何一種，那一行
+  # 就會安靜地不被檢查 —— 那是這道閘最可能的假綠來源。
+  log "方案元件抽取器的自我測試"
+  "${ROOT}/scripts/verify_schema_components.sh" --self-test \
+    || die "抽取器的自我測試沒過,見上。這道閘要檢查的東西會漏掉。"
+
+  log "反向測試 1/5:完全空的 payload"
   if verify_payload "${tmp}" > /dev/null 2>&1; then
     die "空的 payload 竟然通過檢查 —— 這道檢查沒有在檢查,上面的綠燈都不算數"
   fi
@@ -188,7 +263,7 @@ self_check() {
   # 造一棵「幾乎完整、只少了 default.custom.yaml」的樹。
   # 這一種最危險:它會裝得起來、跑得起來、部署也不會整個失敗,
   # 只是有些方案沒有候選。純粹靠人眼永遠不會發現。
-  log "反向測試 2/4:只少了 data/user/default.custom.yaml"
+  log "反向測試 2/5:只少了 data/user/default.custom.yaml"
   : > "${tmp}/rime_tsf.dll"
   : > "${tmp}/rime_service.exe"
   : > "${tmp}/rime_ime_setup.exe"
@@ -203,13 +278,21 @@ self_check() {
            terra_pinyin.dict.yaml stroke.dict.yaml essay.txt; do
     : > "${tmp}/data/shared/${f}"
   done
+  # ⚠ 那幾份 .schema.yaml 不可以留成空的:方案元件那道閘在「一份方案檔都
+  #   掃不到」與「掃到了卻抽不出任何元件」時都會紅(那兩種情況下的綠燈不算
+  #   數),於是第 3 組「補齊之後必須轉綠」會紅在完全無關的地方。
+  #   所以給它們一份**最小而真實**的 engine 區段,而假 console 認得 uniquifier。
+  for f in luna_pinyin_tw.schema.yaml bopomofo_tw.schema.yaml \
+           luna_pinyin.schema.yaml t9_pinyin.schema.yaml; do
+    printf 'engine:\n  filters:\n    - uniquifier\n' > "${tmp}/data/shared/${f}"
+  done
   : > "${tmp}/data/shared/opencc/t2s.ocd2"
   if verify_payload "${tmp}" > /dev/null 2>&1; then
     die "少了 default.custom.yaml 竟然通過檢查"
   fi
   log "  ✓ 紅了"
 
-  log "反向測試 3/4:補齊之後必須轉綠(否則這道檢查是恆假的)"
+  log "反向測試 3/5:補齊之後必須轉綠(否則這道檢查是恆假的)"
   : > "${tmp}/data/user/default.custom.yaml"
   if ! verify_payload "${tmp}" > /dev/null 2>&1; then
     die "補齊之後仍然紅 —— 這道檢查恆假,同樣不算在檢查"
@@ -220,13 +303,64 @@ self_check() {
   #   少了 version.txt,輸入法完全正常 —— 只是它從此查不到更新
   #   (app 端會說「查不出你現在裝的是哪一版」)。沒有這一條的話,
   #   哪天有人把 write_version_txt 那一行拿掉,每一關都會是綠的。
-  log "反向測試 4/4:只少了 version.txt(輸入法會正常,但永遠查不到更新)"
+  log "反向測試 4/5:只少了 version.txt(輸入法會正常,但永遠查不到更新)"
   rm -f "${tmp}/version.txt"
   if verify_payload "${tmp}" > /dev/null 2>&1; then
     die "少了 version.txt 竟然通過檢查 —— 那會出一個永遠更新不了的安裝包"
   fi
   log "  ✓ 紅了"
   : > "${tmp}/version.txt"
+
+  # ⚠ 第 5 組是 #109 那一輪加的,而它擋的是**第二種**「每一步都成功而使用者
+  #   打不出字」:東西有打包進去,只是引擎裡沒有那個元件。librime 只記一行錯
+  #   就跳過(engine.cc:314 的 continue),所以現有的每一關都看不見它。
+  #   四個子步驟一起才算數 —— 少了 5c,那份豁免清冊就會變成一個永久的綠燈。
+  local probe="${tmp}/data/shared/probe.custom.yaml"
+  log "反向測試 5/5 之 a:方案用到引擎裡沒有的元件 —— 必須紅"
+  cat > "${probe}" <<'PROBEEOF'
+patch:
+  "engine/filters/@before last": this_component_does_not_exist
+  "engine/translators/@next": this_component_does_not_exist
+  "engine/processors/@after selector": this_component_does_not_exist
+  "engine/segmentors/@first": this_component_does_not_exist
+PROBEEOF
+  if verify_payload "${tmp}" > /dev/null 2>&1; then
+    die "方案裡寫著一個引擎裡沒有的元件,payload 檢查竟然通過 ——
+  那正是 #109 的形狀:安裝程式編得出來、裝得起來,而那一層過濾整層不存在。"
+  fi
+  log "  ✓ 紅了"
+
+  log "反向測試 5/5 之 b:登記成已知缺口(有工單、有到期日)—— 必須綠,而且要印出單號"
+  printf 'selfcheck:this_component_does_not_exist\t2099-01-01\t#109\t自我測試用的假缺口\n' \
+    > "${COMPONENT_GAPS}"
+  local out5
+  out5="$(verify_payload "${tmp}" 2>&1)" || {
+    printf '%s\n' "${out5}" >&2
+    die "登記過的已知缺口竟然還是紅的 —— 那樣這一版根本發不出去,而缺口也
+  沒有任何一條路可以被具名地放行。"
+  }
+  # ⚠ 不用 `printf … | grep -q`:這棵樹在 pipefail 底下被 SIGPIPE(141) 咬過
+  #   五次(命中反而變成失敗)。先存成變數再用 grep -c。
+  local n5
+  n5="$(printf '%s\n' "${out5}" | grep -c '#109' || true)"
+  [ "${n5}" -ge 1 ] || die "缺口被放行了,而建置輸出裡一個字都沒說 ——
+  「有單號、會被印出來」是這個放行機制的全部價值,靜默的放行等於沒有閘。"
+  log "  ✓ 綠了,而且輸出裡有單號"
+
+  log "反向測試 5/5 之 c:缺口補上了、豁免卻還留著 —— 必須紅"
+  rm -f "${probe}"
+  if verify_payload "${tmp}" > /dev/null 2>&1; then
+    die "元件已經不缺了,豁免卻還留在清冊裡而檢查是綠的 ——
+  那份清冊會就這樣爛在那裡,而下一次真的缺了它的時候這道閘會直接放行。"
+  fi
+  log "  ✓ 紅了"
+
+  log "反向測試 5/5 之 d:把豁免也刪掉 —— 必須綠"
+  : > "${COMPONENT_GAPS}"
+  if ! verify_payload "${tmp}" > /dev/null 2>&1; then
+    die "植入與豁免都拿掉之後仍然紅 —— 這道閘恆真,同樣不算在檢查"
+  fi
+  log "  ✓ 綠了"
 
   rm -rf "${tmp}"
   log "反向測試通過:payload 檢查會在該紅的時候紅、該綠的時候綠 ✓"

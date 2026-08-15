@@ -18,8 +18,29 @@
 //   （scripts/build_schema_store.sh）用它確認每個套件真的被 librime 部署過。
 //   該模式會額外印出機器可讀的 "[schema] <id>\t<name>" 與
 //   "[deploy-only] OK schemas=<n>"，其餘既有行為完全不變。
+//
+//   rime_console --has-component <shared_data_dir> <user_data_dir> <元件名[,元件名…]>
+//
+//   問「**這一支二進位檔**裡的 librime 有沒有註冊這些元件」，逐行印
+//   `<名字><TAB>yes|no`，有任何一個 no 就以 1 結束（用法錯誤是 2）。
+//   ⚠ 只在 argv[1] **逐字**等於 `--has-component` 時成立。既有呼叫方一律
+//     把 shared_data_dir 放在 argv[1]，所以 argv[1..5] 的位置語意一字不動。
+//
+//   它是 scripts/verify_schema_components.sh 的後端：打包進某一端的方案
+//   一旦用到該端的引擎註冊不到的元件（症狀 C / 工單 #109 就是這件事：
+//   Windows 打包了 `lua_filter@*luminakey_charset`，而 Windows 的 librime
+//   沒有編 librime-lua），librime 的處置是只記一行錯就跳過那個元件
+//   （engine.cc:314 的 `continue`）—— 每一關都是綠的，而那一層過濾在
+//   使用者機器上根本不存在。**手寫一份「這個平台有哪些元件」的清單答不了
+//   這件事**（它會在下一次改建置選項時安靜地過期），只有二進位檔自己答得了。
 
 #include "rime_shell.h"
+
+// --has-component 要在**不部署**的情況下把模組載起來（元件是在模組載入時
+// 註冊進 Registry 的，與部署無關），所以直接用 librime 的公開 C API，
+// 不走 rs_init() —— 後者一定會接著 start_maintenance()，那是編詞庫，
+// 在 CI 上是好幾分鐘，而這道閘每一次建置都要跑。
+#include <rime_api.h>
 
 #include <atomic>
 #include <cstdio>
@@ -29,6 +50,29 @@
 #include <vector>
 #include <thread>
 #include <chrono>
+
+// ── librime 私有標頭 rime/registry.h 的宣告，在此就地重宣告而不 #include 它
+//
+// 與 core/src/rime_shell.cc 對 rime/key_table.h 的處置同一個理由，而這裡更硬：
+// `rime/registry.h` 會 `#include <rime/common.h>`，那一份把 boost/signals2 與
+// boost/unordered 一路拉進來。本目標的 include 路徑只有 core/include 與
+// librime 的 prefix/include，而 **boost 不在 prefix 裡**（三支建置腳本都下了
+// -DINSTALL_PRIVATE_HEADERS=ON，但「標頭裝了」不等於「它的相依也在」）。
+//
+// Registry::Find 與 Registry::instance 是 RIME_DLL 匯出的 **C++** 符號
+// （librime src/rime/registry.h:20 與 :26）。以相同簽章重宣告即可對上同一個
+// mangled 名稱；簽章若在上游變動，結果是**連結錯誤**而不是靜默失效 ——
+// 這正是這個做法可以接受的原因。
+// ⚠ 這裡只呼叫那兩支成員函式，不建構 Registry、也不碰任何成員，所以少宣告
+//   的那個 map_ 成員不影響任何一個 mangled 名稱。
+namespace rime {
+class ComponentBase;
+class Registry {
+ public:
+  ComponentBase* Find(const std::string& name);
+  static Registry& instance();
+};
+}  // namespace rime
 
 namespace {
 
@@ -139,9 +183,74 @@ std::vector<std::string> split_commas(const char* spec) {
   return out;
 }
 
+// ── --has-component ────────────────────────────────────────────────────
+//
+// 回傳值刻意分三級，呼叫端（scripts/verify_schema_components.sh）靠它分辨
+// 「答案是沒有」與「根本問不出答案」：
+//   0 = 全部都在
+//   1 = 至少一個不在（stdout 上那幾行是答案）
+//   2 = 問不出來（參數錯、librime 沒連上）—— 這一種**不可以**被當成 no，
+//       否則一支壞掉的二進位檔會讓閘去查豁免清單，而不是當場死掉。
+int RunHasComponent(int argc, char** argv) {
+  if (argc < 5) {
+    std::fprintf(stderr,
+                 "用法: %s --has-component <shared_data_dir> <user_data_dir> "
+                 "<元件名[,元件名…]>\n",
+                 argv[0]);
+    return 2;
+  }
+  const std::vector<std::string> names = split_commas(argv[4]);
+  if (names.empty()) {
+    std::fprintf(stderr, "--has-component: 元件名清單是空的\n");
+    return 2;
+  }
+
+  RimeApi* api = rime_get_api();
+  if (!api) {
+    std::fprintf(stderr, "rime_get_api() 回傳 NULL：librime 未正確連結\n");
+    return 2;
+  }
+
+  RIME_STRUCT(RimeTraits, traits);
+  traits.shared_data_dir = argv[2];
+  traits.user_data_dir = argv[3];
+  traits.log_dir = "";   // "" = 只寫 stderr（NULL 才是暫存目錄，語意不同）
+  traits.app_name = "rime.console.has-component";
+  traits.distribution_name = "Rime";
+  traits.distribution_code_name = "rime-shell";
+  traits.distribution_version = "0.1.0";
+  traits.min_log_level = 3;  // 只留 FATAL：這支的 stdout 是要被腳本讀的
+
+  api->setup(&traits);
+  api->initialize(&traits);
+  // ⚠ 刻意**不**呼叫 start_maintenance()。元件是在模組載入時註冊進
+  //   Registry 的（librime src/rime_api_impl.h 的 RimeInitialize → LoadModules，
+  //   而 gears_module.cc 的 r.Register("simplifier", …) 那一段就是註冊本身）。
+  //   部署與這件事無關，而部署要編詞庫。
+
+  int missing = 0;
+  for (const std::string& n : names) {
+    const bool has = rime::Registry::instance().Find(n) != nullptr;
+    std::printf("%s\t%s\n", n.c_str(), has ? "yes" : "no");
+    if (!has)
+      missing = 1;
+  }
+  std::fflush(stdout);
+  api->finalize();
+  return missing;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
+  // ⚠ 這一格必須在下面那個 `argc < 4` 的用法檢查**之前**，而且只在 argv[1]
+  //   逐字等於 --has-component 時成立。既有呼叫方（scripts/run_console_test.sh、
+  //   apple/scripts/verify_console.sh、scripts/verify_syllables.sh、
+  //   windows/setup/doctor.cc 第 7 節…）一律把 shared_data_dir 放在 argv[1]，
+  //   所以它們一個都走不到這裡。
+  if (argc >= 2 && std::strcmp(argv[1], "--has-component") == 0)
+    return RunHasComponent(argc, argv);
+
   if (argc < 4) {
     std::fprintf(
         stderr,
