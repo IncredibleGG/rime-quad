@@ -538,8 +538,12 @@
       的中文，而預設語系是英文 —— 全世界的使用者都會在鍵盤上看到中文。
       %1$d = 預期秒數，來自 core/DeployEstimate.kt。
     -->
-    <string name="ime_notice_preparing">Keys are off for a moment — getting the keyboard data ready.</string>
-    <string name="ime_notice_deploying">Keys are off for about %1$d seconds — first time, we are sorting out the words.</string>
+    <string name="ime_notice_preparing">Nothing you type will appear for a moment — getting the keyboard data ready. Backspace and Enter still work on your text.</string>
+    <string name="ime_notice_preparing_enter_held">Nothing you type will appear for a moment — getting the keyboard data ready. Backspace still works. Enter is held: here it would send.</string>
+    <string name="ime_notice_deploying">Nothing you type will appear for about %1$d seconds — first time, we are sorting out the words. Backspace and Enter still work on your text.</string>
+    <string name="ime_notice_deploying_enter_held">Nothing you type will appear for about %1$d seconds — first time, we are sorting out the words. Backspace still works. Enter is held: here it would send.</string>
+    <!-- 擋下那一下換行時,遮罩上換成這一句。見 InputReadiness.holdsEnter。 -->
+    <string name="ime_notice_enter_held">Enter would send this right now. Held until the keyboard is ready.</string>
     <string name="ime_notice_failed">The keyboard could not start</string>
     <!-- 切完簡繁之後那句「現在打的是什麼」。兩秒後自己消失,見 flashNotice。 -->
     <string name="ime_notice_now_traditional">Now typing traditional characters</string>

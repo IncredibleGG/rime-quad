@@ -445,8 +445,11 @@
     <string name="keyboard_no_schema">尚無可用方案（rs_schema_list 回傳空）</string>
     <string name="keyboard_layout_not_loaded">佈局尚未載入</string>
 
-    <string name="ime_notice_preparing">按鍵暫時不會出字 —— 正在準備輸入法資料。</string>
-    <string name="ime_notice_deploying">按鍵大約 %1$d 秒內不會出字 —— 第一次啟動，正在整理字詞。</string>
+    <string name="ime_notice_preparing">打的字暫時不會出現 —— 正在準備輸入法資料。退格與換行仍然作用在你的文字上。</string>
+    <string name="ime_notice_preparing_enter_held">打的字暫時不會出現 —— 正在準備輸入法資料。退格照常；換行先擋著 —— 在這裡按下去是送出。</string>
+    <string name="ime_notice_deploying">打的字大約 %1$d 秒內不會出現 —— 第一次啟動，正在整理字詞。退格與換行仍然作用在你的文字上。</string>
+    <string name="ime_notice_deploying_enter_held">打的字大約 %1$d 秒內不會出現 —— 第一次啟動，正在整理字詞。退格照常；換行先擋著 —— 在這裡按下去是送出。</string>
+    <string name="ime_notice_enter_held">在這裡按換行會直接送出。先擋著，等鍵盤好了再送。</string>
     <string name="ime_notice_failed">輸入法沒能啟動</string>
     <string name="ime_notice_now_traditional">現在打的是繁體字</string>
     <string name="ime_notice_now_simplified">現在打的是简体字</string>

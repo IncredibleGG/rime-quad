@@ -75,4 +75,43 @@ object InputReadiness {
      */
     fun editsHostDirectly(keysym: Int): Boolean =
         keysym == AndroidKeyMap.BACKSPACE || keysym == AndroidKeyMap.RETURN
+
+    /**
+     * 換行鍵的**第二個問句**:送出去之後收得回來嗎。
+     *
+     * ── 這不是上面那條判準的修正,是另一條軸 ────────────────────────────
+     * [decide] 問的是「引擎改不改得動這顆鍵的意思」。換行的答案是**不會**,
+     * 所以它是 [Decision.LITERAL],那一條沒有改,也不該改:擋掉換行會讓人連
+     * 「把已經寫好的訊息送出去」都做不到,擋掉退格會讓人連刪錯字都做不到。
+     *
+     * 這一支問的是完全不同的一件事:**這一下按出去,使用者救不救得回來。**
+     *   · 多行框裡的換行 → 換一行,退格就刪得掉 → 照送。
+     *   · 掛了 editor action 的框(LINE / WhatsApp / Telegram 的 enter-to-send、
+     *     搜尋框的「前往」)→ 東西已經交給另一個人／另一個系統 → **收不回來**。
+     *
+     * 而這一段時間正是使用者最可能亂按的時候:遮罩上寫著「打不出字」,他會
+     * 按一下看看鍵盤活了沒有。那一下如果落在換行上,就是一則沒寫完的訊息。
+     *
+     * ── 代價,以及為什麼仍然值得 ────────────────────────────────────────
+     * 代價是真的:**訊息已經寫好、只差按下送出的人,要多等那幾秒。**
+     * 但兩邊的失敗不對稱 ——
+     *   · 擋錯了:等幾秒,訊息一個字都沒少,遮罩上寫著還要等多久;
+     *   · 放錯了:半句話已經在對方的手機上,而我們連道歉的位置都沒有。
+     * 可回復的那一邊才是不確定時該站的地方。
+     *
+     * ⚠ 擋下來**一定要看得見**,而且要看得見的是「這一下被擋了」,不是一句
+     *   本來就在畫面上的話。呼叫端負責在遮罩上換一句話(`heldKeyNotice`)。
+     *
+     * @param enterCommitsToHost 見 [HostEditorPolicy.enterCommitsToHost]。
+     */
+    fun holdsEnter(
+        engineReady: Boolean,
+        bypassRime: Boolean,
+        keysym: Int,
+        enterCommitsToHost: Boolean,
+    ): Boolean {
+        if (engineReady || bypassRime) return false
+        if (keysym != AndroidKeyMap.RETURN) return false
+        return enterCommitsToHost
+    }
 }

@@ -323,7 +323,12 @@ fun RimeKeyboard(
                 NotReadyVeil(
                     theme = theme,
                     scaler = scaler,
-                    message = state.fatalMessage ?: state.busyMessage,
+                    // heldKeyNotice 夾在中間:它講的是「**剛剛那一下**怎麼了」,
+                    // 非蓋過 busyMessage 不可(那句話使用者按之前就在讀了)。
+                    // 理由與它為什麼不共用 transientNotice 見 [KeyboardUiState]。
+                    message = state.fatalMessage
+                        ?: state.heldKeyNotice
+                        ?: state.busyMessage,
                 )
             }
         }
@@ -1522,6 +1527,9 @@ private fun SchemaPickerContent(
                                 type = type,
                                 current = type.schemaId == state.status.schemaId &&
                                     type.layoutId == state.layout?.id,
+                                // 這張卡與空白鍵**在同一個畫面上**(面板是浮層,
+                                // 底列露出來),所以它們必須說同一句話。
+                                simplified = state.status.isSimplified,
                                 style = style,
                                 scaler = scaler,
                                 onEvent = onEvent,
@@ -1542,6 +1550,8 @@ private fun SchemaPickerContent(
 private fun KeyboardTypeCard(
     type: KeyboardType,
     current: Boolean,
+    /** 引擎當下真的在輸出的字集(`RimeStatus.isSimplified`)。 */
+    simplified: Boolean,
     style: KeyStyle,
     scaler: Scaler,
     onEvent: (KeyboardEvent) -> Unit,
@@ -1574,7 +1584,10 @@ private fun KeyboardTypeCard(
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                text = shown.subtitle,
+                // 方案名裡的「臺灣正體」是方案的**預設**字集;引擎現在真的在
+                // 吐簡體時,這裡要說簡體 —— 否則同一張浮層上的這一行與底下
+                // 露出來的空白鍵會互相矛盾。見 [SchemaVariantLabel]。
+                text = SchemaVariantLabel.display(shown.subtitle, simplified),
                 fontSize = scaler.sp(style.hintSize),
                 // 選中的那張卡是 active 配色（多半是強調色底），主題的 hintColor
                 // 是配著一般底色調出來的，壓在強調色上會糊掉。選中時改用

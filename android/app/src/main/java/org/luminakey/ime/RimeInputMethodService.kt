@@ -112,6 +112,14 @@ class RimeInputMethodService : InputMethodService() {
          * 「數字＋秒」一律當成有人又抄了一份「整理字詞要多久」。
          */
         const val TRANSIENT_NOTICE_MS = 2_000L
+
+        /**
+         * 「這一下被擋住了」在遮罩上停留多久。
+         *
+         * 比 [TRANSIENT_NOTICE_MS] 長:它蓋掉的是「還要等幾秒」那句話,
+         * 而讀者剛按完鍵、眼睛還在鍵區,要有時間讀完再讓底下那句話回來。
+         */
+        const val HELD_KEY_NOTICE_MS = 3_000L
     }
 
     private var session: Long = RimeCore.INVALID_SESSION
@@ -199,6 +207,19 @@ class RimeInputMethodService : InputMethodService() {
 
     /** [flashNotice] 的收尾計時器。再按一次要接上新的,不要兩句話互相蓋。 */
     private var noticeJob: Job? = null
+
+    /** 擋下換行時那一句話的計時器。與 [noticeJob] 分開,兩者會同時成立。 */
+    private var heldKeyJob: Job? = null
+
+    /**
+     * 在**這個**編輯框裡,換行鍵按下去是送出而不是換行。
+     *
+     * 由 [applyEditorPolicy] 依宿主的 `EditorInfo` 更新,判準見
+     * [HostEditorPolicy.enterCommitsToHost]。兩個地方用它:引擎沒好時
+     * [handleSend] 據此擋下那一下,以及遮罩上那句話據此換一種說法 ——
+     * **兩者讀的必須是同一個事實**,否則畫面上寫的與實際做的又會分家。
+     */
+    private var enterCommitsToHost = false
 
     /**
      * 方案市集的帳本。IME 只讀它一件事：方案 id → recommended_layout。
@@ -552,12 +573,34 @@ class RimeInputMethodService : InputMethodService() {
 
     private fun applyEditorPolicy(info: EditorInfo?) {
         val bypass = shouldBypassRime(info)
-        if (bypass != bypassRime) {
-            Log.i(
-                TAG,
-                "編輯框政策：bypassRime=$bypass inputType=0x" +
-                    Integer.toHexString(info?.inputType ?: 0),
-            )
+        // 換行鍵在這個框裡是送出還是換行 —— 遮罩那句話與擋不擋那一下都看它。
+        //
+        // ⚠ 兩個前置條件缺一不可,而**兩個都是實測補上的**:
+        //   · `info != null`:綁定還沒發生時 `imeOptions` 是 0,而 0 是
+        //     `IME_ACTION_UNSPECIFIED` —— AOSP 那條規則會把它算成「有 action」。
+        //     實測 log:`inputType=0x0 imeOptions=0x0 enterCommitsToHost=true`。
+        //     那一刻根本沒有宿主可言,說「按下去會送出」是憑空捏造。
+        //   · `!bypass`:密碼／數字框那條路從頭到尾不經過引擎(見 [shouldBypassRime]),
+        //     所有鍵都字面上屏,換行**一定不會被擋**。在那種框上印「換行先擋著」
+        //     就是這一輪要修的那種假話,只是換一個方向。
+        val enterCommits = info != null && !bypass &&
+            HostEditorPolicy.enterCommitsToHost(info.imeOptions)
+        // ⚠ 這一行原本只在 bypass **改變時**才印。不夠:這一版的遮罩文案與
+        //   「擋不擋那一下換行」都取決於這個框的 imeOptions,而兩種框在
+        //   預設值下都不觸發那個條件 —— 於是「畫面上寫的與實際做的對不對得上」
+        //   這件事事後根本覆核不了。每次換框一行 I 級 log,代價可忽。
+        Log.i(
+            TAG,
+            "編輯框政策：bypassRime=$bypass inputType=0x" +
+                Integer.toHexString(info?.inputType ?: 0) +
+                " imeOptions=0x" + Integer.toHexString(info?.imeOptions ?: 0) +
+                " enterCommitsToHost=$enterCommits",
+        )
+        enterCommitsToHost = enterCommits
+        // 引擎還沒好的話,遮罩上那句話要跟著換:同一個鍵盤在多行框與
+        // enter-to-send 的框上做的事**不一樣**,說同一句話必有一句是假的。
+        if (!RimeRuntime.isReady) {
+            busyNoticeFor(RimeRuntime.phase)?.let { uiState = uiState.copy(busyMessage = it) }
         }
         bypassRime = bypass
         if (bypass) {
@@ -633,17 +676,14 @@ class RimeInputMethodService : InputMethodService() {
             RimeRuntime.Phase.IDLE,
             RimeRuntime.Phase.EXTRACTING,
             -> uiState = uiState.copy(
-                busyMessage = getString(R.string.ime_notice_preparing),
+                busyMessage = busyNoticeFor(phase),
                 fatalMessage = null,
                 engineReady = false,
             )
 
             RimeRuntime.Phase.DEPLOYING ->
                 uiState = uiState.copy(
-                    busyMessage = getString(
-                        R.string.ime_notice_deploying,
-                        DeployEstimate.TYPICAL_SECONDS,
-                    ),
+                    busyMessage = busyNoticeFor(phase),
                     fatalMessage = null,
                     engineReady = false,
                 )
@@ -653,6 +693,7 @@ class RimeInputMethodService : InputMethodService() {
                     busyMessage = null,
                     fatalMessage = null,
                     engineReady = true,
+                    heldKeyNotice = null,
                     schemas = RimeCore.schemaList(),
                 )
                 // 市集可能剛裝了新方案，帳本變了。
@@ -677,6 +718,66 @@ class RimeInputMethodService : InputMethodService() {
                 )
         }
         Log.i(TAG, "phase=$phase session=$session")
+    }
+
+    /**
+     * 遮罩上那句話 —— **它只能宣告自己真的擋得住的那一類**。
+     *
+     * ── 這一段是回頭修的,而且修的是我們自己 ────────────────────────────
+     * 上一版寫的是「Keys are off for about … seconds」(秒數來自 [DeployEstimate])。
+     * 覆核在部署中依序按
+     * 逗號 / Enter / 空白 / `?123`,量到的是:
+     *
+     *     HOST-after-specials=[\n]     ← Enter 真的寫進了宿主的簡訊草稿
+     *     按鍵 44 不送出 / 按鍵 32 不送出 ← 逗號與空白才是真的被擋掉的
+     *     而底下的鍵盤已經換成數字符號層  ← `?123` 也吃了那一下
+     *
+     * 也就是說:那句話宣告了三件它做不到的事。上一個 commit 的標題是
+     * 「覆核抓到的三句假話」,而這一版的頭號文案自己變成了第四句。
+     *
+     * 所以現在只講**真的**成立的那一句:「打不出字」。退格與換行照常作用在
+     * 宿主的文字上,那是刻意的(見 [InputReadiness]),所以也一起寫出來 ——
+     * 沒寫的話,使用者按下退格看到文字少一個,又會覺得畫面在騙他。
+     *
+     * ── 為什麼同一個階段有兩句話 ────────────────────────────────────────
+     * 因為同一顆換行鍵在兩種編輯框裡做的**不是同一件事**:多行框裡是換一行,
+     * enter-to-send 的框裡是把訊息交出去。後者我們會擋(見
+     * [InputReadiness.holdsEnter]),前者不擋 —— 一句話蓋兩種行為,必有一種
+     * 是假的。判準見 [HostEditorPolicy.enterCommitsToHost]。
+     *
+     * ⚠ 回 null 的兩個階段(READY / FAILED)各有自己的出口:READY 不必說話,
+     *   FAILED 走 `fatalMessage`。
+     */
+    private fun busyNoticeFor(phase: RimeRuntime.Phase): String? = when (phase) {
+        RimeRuntime.Phase.IDLE,
+        RimeRuntime.Phase.EXTRACTING,
+        -> getString(
+            if (enterCommitsToHost) R.string.ime_notice_preparing_enter_held
+            else R.string.ime_notice_preparing
+        )
+
+        RimeRuntime.Phase.DEPLOYING -> getString(
+            if (enterCommitsToHost) R.string.ime_notice_deploying_enter_held
+            else R.string.ime_notice_deploying,
+            DeployEstimate.TYPICAL_SECONDS,
+        )
+
+        RimeRuntime.Phase.READY, RimeRuntime.Phase.FAILED -> null
+    }
+
+    /**
+     * 「剛剛那一下換行被擋住了」。
+     *
+     * 與 [flashNotice] 分開兩個欄位、兩個 job:那一句排在 `busyMessage`
+     * **之下**,這一句非蓋過它不可。理由見 [KeyboardUiState.heldKeyNotice]。
+     */
+    private fun flashHeldKey(text: String) {
+        heldKeyJob?.cancel()
+        uiState = uiState.copy(heldKeyNotice = text)
+        heldKeyJob = prefsScope.launch {
+            delay(HELD_KEY_NOTICE_MS)
+            uiState = uiState.copy(heldKeyNotice = null)
+        }
     }
 
     /**
@@ -1222,6 +1323,24 @@ class RimeInputMethodService : InputMethodService() {
                     // UI 不可 —— 少了它,使用者按完一個大寫字母,鍵面停在上檔層。
                     // 這與 §9.4.1 字面文字（SendSpec.Text）那條路的收尾一致。
                     InputReadiness.Decision.LITERAL -> {
+                        // ⛔ 換行鍵的第二個問句:這一下**收得回來嗎**。
+                        //
+                        // decide() 已經說了 LITERAL(換行的輸出與引擎無關),
+                        // 那一條沒有改。這裡問的是另一件事:在 enter-to-send
+                        // 的框裡,這一下不是換一行,是把半句話交給另一個人 ——
+                        // 而遮罩上正寫著「打不出字」,使用者按它多半只是想
+                        // 試試鍵盤活了沒有。判準與代價見 [InputReadiness.holdsEnter]。
+                        if (InputReadiness.holdsEnter(
+                                RimeRuntime.isReady,
+                                bypassRime,
+                                code,
+                                enterCommitsToHost,
+                            )
+                        ) {
+                            Log.i(TAG, "引擎尚未就緒（phase=${RimeRuntime.phase}），換行會送出,擋下")
+                            flashHeldKey(getString(R.string.ime_notice_enter_held))
+                            return
+                        }
                         fallbackKey(code)
                         layoutHost.afterKeySent()
                         syncConfigToUi()

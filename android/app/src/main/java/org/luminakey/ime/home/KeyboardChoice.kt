@@ -18,6 +18,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -246,11 +250,25 @@ private fun KeyboardType.withoutIdSuffix(): KeyboardType {
  * 「QWERTY・…」。加回方案這一層小標，卡片就只剩「這個方案有哪幾種排法」，
  * 一眼掃得完。這是三星選單的做法（「简体中文（中国大陆）」當小標）。
  */
-fun availableKeyboardGroups(context: Context): List<Pair<String, List<KeyboardType>>> {
+fun availableKeyboardGroups(
+    context: Context,
+    /** 現在真的在用的字集;null = 使用者沒有覆寫過。見 [SchemaVariantLabel]。 */
+    simplified: Boolean?,
+): List<Pair<String, List<KeyboardType>>> {
     val all = availableKeyboards(context)
+    // ⚠ 分組鍵改成 schemaId,不是方案名。原本用方案名當鍵,而方案名正是這一版
+    //   要**依簡繁改寫**的那個字串 —— 拿一個會變的字當身分,兩個問題只能二選一:
+    //   要嘛小標不跟著簡繁走(就是這一條缺陷),要嘛同一個方案在切換前後被算成
+    //   兩組。schemaId 才是身分,它不會因為顯示而變。
     val out = LinkedHashMap<String, MutableList<KeyboardType>>()
-    for (t in all) out.getOrPut(t.subtitle) { ArrayList() } += t
-    return out.entries.map { localizedGroupTitle(context, it.key) to it.value.toList() }
+    for (t in all) out.getOrPut(t.schemaId) { ArrayList() } += t
+    return out.values.map { types ->
+        // 小標與空白鍵、卡片副標印的是同一個方案名,所以走同一支判準。
+        // 少了它,這一列小標寫著「朙月拼音·臺灣正體」,而底下的空白鍵
+        // (已經修好的那一顆)寫著「朙月拼音·简体」—— 同框自相矛盾。
+        val name = SchemaVariantLabel.display(types.first().subtitle, simplified)
+        localizedGroupTitle(context, name) to types.toList()
+    }
 }
 
 /** 目前這一種鍵盤在清單裡的那一項；找不到就回 null（顯示成「—」）。 */
@@ -368,6 +386,15 @@ fun KeyboardCard(
     modifier: Modifier = Modifier,
     /** false = 上面已經有方案名當小標了，卡片上不必再印一次。 */
     showSubtitle: Boolean = true,
+    /**
+     * 現在真的在用的字集;null = 使用者沒有覆寫過。
+     *
+     * ⚠ 預設值刻意是**呼叫端會自己算出來的那一個**([rememberSimplification])。
+     * 這裡如果寫成 `null`,新增一個呼叫端而忘了傳,症狀是「這一張卡又開始
+     * 說謊」——畫面完全正常,而那正是這條缺陷第一次逃掉的方式。給了預設值
+     * 之後,忘了傳的下場是**做對的事**。
+     */
+    simplified: Boolean? = rememberSimplification(),
 ) {
     val border = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
     // TalkBack 念的是「改用注音 · 臺灣正體」，不是「按鈕」。選中與否交給
@@ -409,7 +436,9 @@ fun KeyboardCard(
         }
         if (showSubtitle) {
             Text(
-                text = type.subtitle,
+                // 方案名裡的「臺灣正體」是這個方案的**預設**字集,不是現在生效的。
+                // 見 [org.luminakey.ime.keyboard.SchemaVariantLabel]。
+                text = SchemaVariantLabel.display(type.subtitle, simplified),
                 fontSize = TypeScale.t5,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -449,6 +478,27 @@ private fun ShapeThumb(columns: Int, tint: androidx.compose.ui.graphics.Color) {
             }
         }
     }
+}
+
+/**
+ * 「現在真的在打簡體還是繁體」—— 使用者的覆寫,不是方案的宣告。
+ *
+ * ── 為什麼是一支 Composable,而不是一個到處傳的參數 ────────────────────
+ * 因為這條缺陷的復發方式就是**新增一個畫方案名的地方而忘了傳**。
+ * 走參數的話,忘了傳會編得過(它有預設值)或逼每一層都多一個參數;
+ * 走這一支的話,`KeyboardCard` 的預設引數自己就會去問,新增呼叫端
+ * 什麼都不必做就是對的。
+ *
+ * 讀的是 [UserPrefs.simplification](`Boolean?`,null = 沒有覆寫過),
+ * 與首頁摘要 `describeKeyboard()` 讀的是同一個欄位 —— 兩處分岔的話,
+ * 同一個畫面上下兩列又會互相打臉。
+ */
+@Composable
+fun rememberSimplification(): Boolean? {
+    val context = LocalContext.current
+    val store = remember(context) { PrefsStore.get(context) }
+    val prefs by store.flow.collectAsState(initial = store.current)
+    return prefs.simplification
 }
 
 /** 兩欄卡片格。奇數項時右半格留白 —— 不要讓最後一項橫跨整列，那看起來像別的東西。 */

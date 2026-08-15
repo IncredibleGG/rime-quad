@@ -108,12 +108,26 @@ class ImeNoticeStringsTest {
         )
     }
 
-    /** 三句都真的接上了資源。少接一句，那一句就會變回沒有人翻譯的狀態。 */
+    /** 每一句都真的接上了資源。少接一句，那一句就會變回沒有人翻譯的狀態。 */
     @Test
-    fun `三句狀態訊息都走資源`() {
+    fun `狀態訊息都走資源`() {
         val body = onPhaseBody()
-        val missing = REQUIRED_IDS.filterNot { body.contains("R.string.$it") }
+        val missing = PHASE_IDS.filterNot { body.contains("R.string.$it") }
         assertEquals("onPhase() 沒有用到這幾條資源：$missing", emptyList<String>(), missing)
+    }
+
+    /**
+     * `ime_notice_enter_held` 不在 [PHASE_IDS] 裡,因為它**不是階段訊息** ——
+     * 它是「剛剛那一下換行被擋住了」,由 `handleSend()` 在擋鍵的當下推上去。
+     * 但它同樣會上畫面,所以三語齊備那條規則一樣要蓋到它。
+     */
+    @Test
+    fun `擋鍵那一句由 handleSend 推上去`() {
+        val src = readSurface("RimeInputMethodService.kt")
+        assertTrue(
+            "找不到 R.string.ime_notice_enter_held —— 擋了換行卻什麼都沒說",
+            src.contains("R.string.ime_notice_enter_held"),
+        )
     }
 
     /** 英／繁／簡三份都要有，而且不可以是空的。 */
@@ -208,11 +222,31 @@ class ImeNoticeStringsTest {
         return f.readText()
     }
 
-    /** 從 `private fun onPhase(` 之後的第一個 `{` 起，括號配對到結束。 */
+    /**
+     * 「階段 → 那句話」這段程式碼的全部:`onPhase()` **加上**它呼叫的
+     * [busyNoticeFor]。
+     *
+     * ⚠ 這裡原本只抓 `onPhase()`。那一版是對的,因為那時候 `getString(...)`
+     *   就寫在 `onPhase()` 裡;而挑句子的邏輯搬進 `busyNoticeFor()` 之後,
+     *   只抓 `onPhase()` 的掃描器會**掃到一個沒有任何字串的函式然後全綠** ——
+     *   正是這份檔頭寫的那種失效方式。所以範圍跟著實作走,而且下面那條
+     *   G2 斷言要求 `onPhase()` 真的呼叫得到它。
+     */
     private fun onPhaseBody(): String {
         val src = readSurface("RimeInputMethodService.kt")
-        val at = src.indexOf("private fun onPhase(")
-        assertTrue("RimeInputMethodService.kt 裡找不到 onPhase() —— 它被改名或搬走了", at >= 0)
+        val phase = bodyAt(src, "private fun onPhase(", "onPhase()")
+        assertTrue(
+            "onPhase() 沒有呼叫 busyNoticeFor() —— 這條測試已經對不上實作了",
+            phase.contains("busyNoticeFor("),
+        )
+        val notice = bodyAt(src, "private fun busyNoticeFor(", "busyNoticeFor()")
+        return phase + "\n" + notice
+    }
+
+    /** 從 [anchor] 之後的第一個 `{` 起，括號配對到結束。 */
+    private fun bodyAt(src: String, anchor: String, what: String): String {
+        val at = src.indexOf(anchor)
+        assertTrue("RimeInputMethodService.kt 裡找不到 $what —— 它被改名或搬走了", at >= 0)
         val open = src.indexOf('{', at)
         assertTrue(open >= 0)
         var depth = 0
@@ -225,7 +259,7 @@ class ImeNoticeStringsTest {
                 }
             }
         }
-        throw AssertionError("onPhase() 的大括號沒有配對成功")
+        throw AssertionError("$what 的大括號沒有配對成功")
     }
 
     /**
@@ -299,9 +333,32 @@ class ImeNoticeStringsTest {
     }
 
     companion object {
+        /**
+         * `onPhase()`／`busyNoticeFor()` 要用到的那幾條 —— **階段**訊息。
+         *
+         * `ime_notice_enter_held` 刻意不在這裡:它由 `handleSend()` 在擋下
+         * 那一下換行的當下推上去,不屬於任何一個階段。它的三語齊備由
+         * [REQUIRED_IDS] 蓋到,它的接線由「擋鍵那一句由 handleSend 推上去」蓋到。
+         */
+        private val PHASE_IDS = listOf(
+            "ime_notice_preparing",
+            "ime_notice_preparing_enter_held",
+            "ime_notice_deploying",
+            "ime_notice_deploying_enter_held",
+            "ime_notice_failed",
+        )
+
+        /** 三語都要有的全部 —— 階段訊息 ＋ 擋鍵那一句。 */
         private val REQUIRED_IDS = listOf(
             "ime_notice_preparing",
+            // 同一個階段在**掛了 editor action 的框**上說的是另一句話:
+            // 那種框裡按換行是送出,我們會擋,而擋了就必須說出來。
+            // 判準見 core/HostEditorPolicy.enterCommitsToHost。
+            "ime_notice_preparing_enter_held",
             "ime_notice_deploying",
+            "ime_notice_deploying_enter_held",
+            // 「剛剛那一下換行被擋住了」——擋鍵的那一半回饋。
+            "ime_notice_enter_held",
             "ime_notice_failed",
         )
 

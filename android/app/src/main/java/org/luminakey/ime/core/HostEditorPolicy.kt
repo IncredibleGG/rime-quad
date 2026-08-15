@@ -134,6 +134,43 @@ object HostEditorPolicy {
     fun hostForbidsFullscreen(imeOptions: Int): Boolean =
         (imeOptions and EditorInfo.IME_FLAG_NO_FULLSCREEN) != 0
 
+    /* ───────────────── 三、這顆換行鍵按下去會「送出」嗎 ───────────────── */
+
+    /**
+     * 在這個編輯框裡,換行鍵是**換一行**,還是**把東西交出去**。
+     *
+     * ── 為什麼要問這個問題 ──────────────────────────────────────────────
+     * 覆核實測(部署中、`dev.rime.imetest` 的多行框):
+     *
+     *     HOST-after-specials=[\n]
+     *
+     * 換行真的寫進了宿主。在 Messages 那是換一行,收得回來;而**同一顆鍵在
+     * LINE / WhatsApp / Telegram 開了 enter-to-send 的人身上,是把半句話送給
+     * 另一個人** —— 那一下收不回來。兩者在我們這一側完全一樣(都是
+     * `AndroidKeyMap.RETURN`),差別只在宿主的 [EditorInfo] 上。
+     *
+     * ── 判準就是 AOSP 自己的判準 ────────────────────────────────────────
+     * `fallbackKey()` 送換行的第一步是 `sendDefaultEditorAction(true)`,
+     * 而 `InputMethodService` 那一支的條件恰好是:
+     *
+     *   · 宿主**沒有**掛 `IME_FLAG_NO_ENTER_ACTION`,而且
+     *   · `imeOptions` 的 action 欄位不是 `IME_ACTION_NONE`
+     *
+     * 成立就 `performEditorAction(...)`(＝送出／前往／搜尋),不成立才回落成
+     * 一個真的 `KEYCODE_ENTER`(＝換一行)。所以這支函式抄的是**同一個條件**:
+     * 它回 true 的那一刻,正是 `fallbackKey()` 會走 performEditorAction 的那一刻。
+     * 判準與行為分家的話,畫面上寫的與實際發生的就會對不上 ——
+     * 而那正是這一輪要修的東西。
+     *
+     * ⚠ 多行輸入框(`TYPE_TEXT_FLAG_MULTI_LINE`)不必在這裡另外判:`TextView`
+     *   自己會在那種框上補 `IME_FLAG_NO_ENTER_ACTION`,所以它們一律回 false。
+     *   實測見上面那個 `[\n]`。
+     */
+    fun enterCommitsToHost(imeOptions: Int): Boolean {
+        if ((imeOptions and EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0) return false
+        return (imeOptions and EditorInfo.IME_MASK_ACTION) != EditorInfo.IME_ACTION_NONE
+    }
+
     /* ───────────────────── 二、游標被移走了 ───────────────────── */
 
     /**

@@ -233,7 +233,12 @@ fun KeyboardPage(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val groups = remember(RimeRuntime.phase) { availableKeyboardGroups(context) }
+    // 簡繁是**使用者的覆寫**,它一改,分組小標上的方案名就要跟著改
+    //   —— 所以它必須進 remember 的鍵,否則小標會停在切換之前那一版。
+    val simplified = rememberSimplification()
+    val groups = remember(RimeRuntime.phase, simplified) {
+        availableKeyboardGroups(context, simplified)
+    }
     val all = remember(groups) { groups.flatMap { it.second } }
     var picked by remember { mutableStateOf(currentKeyboardOf(context, all)) }
 
