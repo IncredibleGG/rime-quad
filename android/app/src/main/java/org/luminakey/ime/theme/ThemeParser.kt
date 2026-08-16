@@ -152,8 +152,12 @@ object ThemeParser {
 
     private val CANDIDATE_STYLE_KEYS =
         setOf("orientation", "label", "text", "comment", "item", "separator", "page_indicator")
-    private val CANDIDATES_KEYS = CANDIDATE_STYLE_KEYS + setOf("bar", "window", "syllables")
-    private val SYLLABLES_KEYS = setOf("placement", "trigger", "max_items", "height")
+    // internal（不是 private）：`ThemeParserTest.documentedSyllableFieldsAreAllBound`
+    // 拿它跟 docs/theme-format.md §8.6.6.3 的欄位表對帳。少一個欄位的症狀是
+    // 「主題作者寫了、被當成 unknown field 靜靜忽略」—— 隨附主題沒有一份寫了
+    // trigger / max_items / height，所以 allShippedThemesParseWithoutDiagnostics 接不住。
+    internal val CANDIDATES_KEYS = CANDIDATE_STYLE_KEYS + setOf("bar", "window", "syllables")
+    internal val SYLLABLES_KEYS = setOf("placement", "trigger", "max_items", "height")
     private val BAR_KEYS = CANDIDATE_STYLE_KEYS + setOf(
         "height", "background", "border_top_width", "border_top_color", "max_visible",
         "padding_h", "reserved_end",

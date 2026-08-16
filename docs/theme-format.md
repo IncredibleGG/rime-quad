@@ -3205,16 +3205,24 @@ key_patches:
 > ### ⚠ 2026-08-16：這份清單有幾條失去了執行者
 >
 > 桌面兩端收掉之後，`apple/LuminaKey/Tests/LuminaKeyKitTests/RepoConformanceTests.swift`
-> 隨 `apple/` 一起刪除。它守著本節的四條不變量，逐條盤點結果如下：
+> 隨 `apple/` 一起刪除。它守著本節的六條不變量，逐條盤點結果如下：
+>
+> ⚠ 這張表**初稿只列了四條**，漏掉了下面第 4、5 兩列 —— 而那兩條當時
+> Android 一條都沒有等價物。漏記的原因值得留著：盤點時只看了「Android 有沒有
+> 名字像的測試」，`ThemeParserTest` 裡確實有 counterpart 與 syllables 的字樣，
+> 但前者只寫死 default-light / default-dark 一對、後者根本不存在。
+> **盤點守門要看它的分母是什麼，不是看它叫什麼名字。**
 >
 > | 原本由 Swift 測試守的 | 現在誰守 |
 > |---|---|
 > | 每份主題零 ERROR 診斷（第 1 條） | ✅ `ThemeParserTest.allShippedThemesParseWithoutDiagnostics`，且 `RepoFixtures.themeIds` 是**掃目錄**不是白名單 |
 > | 每份主題在每一個平台鍵下都解析得過 | ✅ 同上（Android 端解析全部平台鍵） |
 > | 每一個 `DiagnosticCode` 都寫進了 §6.5 | ✅ `DiagnosticCodeSpecTest`「規範碼表裡的每一個 code 都實作了」—— 它把碼表**從這份文件當場讀出來**，比原本的 Swift 版更嚴（雙向：規範有而沒實作、實作了而規範標著「尚未實作」、程式碼多出來的碼，三個方向都報） |
+> | 每份主題的 `counterpart` 載得起來、且 `appearance` 相反（§8.2） | ✅ **2026-08-16 補**：`ThemeParserTest.everyThemeCounterpartResolvesToTheOppositeAppearance`，分母同樣是掃目錄的 `RepoFixtures.themeIds`。⚠ 這條在 Android **執行期真的在走**（`LayoutHost.applyAppearance` 的 §8.2 第 2 條），而第 3 條規定載不起來就沿用當前主題、**不是**致命錯誤 —— 所以打錯字的症狀是「切了深色沒反應」，解析階段一則 diagnostic 都沒有（`counterpart` 在 `ThemeParser` 裡只是一個字串欄位）。植入驗證：把 `sakura-dark` 的 counterpart 改成 `sakura-ligth` → 紅；改成 `default-dark`（深淺同向）→ 紅 |
+> | 規範裡寫的 `candidates.syllables` 欄位都真的有綁定（§8.6.6.3） | ✅ **2026-08-16 補**：`ThemeParserTest.documentedSyllableFieldsAreAllBound`，欄位名**從 §8.6.6.3 的欄位表當場讀出來**並與 `ThemeParser.SYLLABLES_KEYS` 雙向對帳，含「`orientation` 不是欄位」那條反向斷言。⚠ 這條接不到既有的第 1 條上：隨附主題只有 `intl-ios-light` 寫了 `placement`，`trigger` / `max_items` / `height` 一份都沒寫，所以把它們從解析器拿掉不會產生任何 unknown-field 診斷。植入驗證：拿掉 `max_items` → **全樹 871 項只有這一項紅** |
 > | 規範裡寫的 `candidates.window` 欄位都真的有綁定 | ❌ **沒有人守，而且短期內不會有** —— `candidates.window` 與 `status_bar` 是桌面專屬區塊（§1.1），唯一的消費者是已退場的 macOS / Windows。那些欄位現在**不對應任何實作**。 |
 >
-> 也就是說：四條裡三條有等價物、一條的**守備對象本身**沒有了。
+> 也就是說：六條裡五條有等價物、一條的**守備對象本身**沒有了。
 > `candidates.window` / `status_bar` 的規範文字刻意留著（iOS 之後若要做候選窗
 > 或狀態指示器，那是量過的結論），但在有人實作之前，它們是**規範性的死欄位**：
 > 改壞了不會有任何一關變紅。動它們之前先看 `docs/coordination.md` 2026-08-16。

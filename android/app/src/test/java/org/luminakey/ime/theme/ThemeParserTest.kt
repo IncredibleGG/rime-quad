@@ -2,11 +2,13 @@ package org.luminakey.ime.theme
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.luminakey.ime.theme.DiagnosticCode
+import java.io.File
 
 /**
  * 對照 docs/theme-format.md §10「一致性檢核清單」。
@@ -752,5 +754,139 @@ class ThemeParserTest {
         val t = loadShipped("default-dark").value!!
         assertEquals("預設深色", t.name.get("zh-Hant-TW"))
         assertEquals("Default Dark", t.name.get("fr-FR"))
+    }
+
+    // ── §8.2 深淺配對：counterpart 全主題掃描 ──────────────────────────────
+
+    /**
+     * `core/themes/` 底下**每一份**主題的 `counterpart` 都要載得起來，
+     * 而且 `appearance` 與自己相反。
+     *
+     * ⚠ **這一條的失敗在執行期是靜默的。** `LayoutHost.kt:403` 的 §8.2 規則第 3 條
+     * 白紙黑字寫著「counterpart 載入失敗 → 沿用當前主題（**不是**致命錯誤）」，
+     * 而它是使用者天天在走的路（`LayoutHost.applyAppearance` 跟隨系統深淺、
+     * `RimeInputMethodService` 收到系統深淺變更）。所以 counterpart 打錯字或
+     * 深淺標反，CI 全綠、APK 出貨，使用者看到的是「我切了深色它沒反應」。
+     *
+     * 既有的關卡一條都接不住：
+     *   * [allShippedThemesParseWithoutDiagnostics] 只數 `diagnostics.size`，而
+     *     `ThemeParser` 把 `counterpart` 當成一個普通字串綁定（`ThemeParser.kt:284`），
+     *     **指不到任何東西也不會產生 diagnostic**；
+     *   * [defaultThemesExposeTheExpectedShape] 只寫死 default-light / default-dark 一對；
+     *   * `prefs/ThemeSelectionTest` 那張表是三筆測試夾具，不讀 `core/themes`。
+     *
+     * 原本守著這件事的是 `apple/.../RepoConformanceTests.swift:56-72`
+     * 的 `testCounterpartsResolve`，它隨桌面兩端一起刪掉了（2026-08-16）。
+     * 這裡是它的 Android 等價物；和它一樣**不寫死主題清單**，
+     * [RepoFixtures.themeIds] 是掃目錄的。
+     */
+    @Test
+    fun everyThemeCounterpartResolvesToTheOppositeAppearance() {
+        assertTrue("core/themes 是空的 —— 這一關等於沒在測", RepoFixtures.themeIds.isNotEmpty())
+        var paired = 0
+        for (id in RepoFixtures.themeIds) {
+            val self = loadShipped(id)
+            assertNotNull("$id 載不起來：${RepoFixtures.describe(self.diagnostics)}", self.value)
+            val cp = self.value!!.counterpart ?: continue
+            val other = loadShipped(cp)
+            assertNotNull(
+                "$id 的 counterpart `$cp` 載不起來（§8.2 第 3 條會靜靜沿用當前主題，" +
+                    "使用者看到的是切深淺沒反應）：${RepoFixtures.describe(other.diagnostics)}",
+                other.value
+            )
+            assertNotEquals(
+                "$id 與它的 counterpart `$cp` 的 appearance 相同（都是 ${self.value!!.appearance}）" +
+                    " —— §8.2 的兩檔決策要求它們相反",
+                self.value!!.appearance, other.value!!.appearance
+            )
+            paired++
+        }
+        assertTrue("沒有任何一份主題宣告 counterpart —— 這一關等於沒在測", paired > 0)
+    }
+
+    // ── §8.6.6.3 消歧欄：規範欄位與解析器對帳 ─────────────────────────────
+
+    /**
+     * 規範 §8.6.6.3 宣告的 `candidates.syllables` 欄位，**每一個**都要真的
+     * 綁在解析器上（[ThemeParser.SYLLABLES_KEYS]），反向亦然。
+     *
+     * ⚠ **這一條沒有任何既有關卡接得住。** 消歧欄是行動端專屬功能
+     * （`docs/theme-format.md:3194` 自己寫「桌面端不渲染」），桌面兩端收掉之後
+     * Android 是唯一的實作者。而隨附的十二份主題裡**只有 `intl-ios-light.yaml:128-129`
+     * 寫了 `placement`**，`trigger` / `max_items` / `height` 一份都沒寫 ——
+     * 所以把它們從 `SYLLABLES_KEYS` 拿掉，[allShippedThemesParseWithoutDiagnostics]
+     * 照樣綠，而主題作者寫了 `max_items` 會被 `warnUnknownKeys` 當成未知欄位靜靜忽略。
+     *
+     * 欄位名**從規範當場讀出來**，不抄一份常數 —— 抄的那一份會腐爛，
+     * 而腐爛的方式正好是「規範改了，測試還是綠的」（同 `DiagnosticCodeSpecTest`）。
+     *
+     * 原本守著這件事的是 `apple/.../RepoConformanceTests.swift:103-114`
+     * 的 `testDocumentedSyllableFieldsAreAllBound`，隨桌面兩端一起刪掉了。
+     */
+    @Test
+    fun documentedSyllableFieldsAreAllBound() {
+        val documented = specSyllableFields()
+        assertTrue(
+            "從 docs/theme-format.md §8.6.6.3 的欄位表只讀到 $documented —— " +
+                "表格格式變了，這一關讀不到東西就會恆綠",
+            documented.contains("placement") && documented.size >= 4
+        )
+
+        val missing = documented - ThemeParser.SYLLABLES_KEYS
+        assertEquals(
+            "§8.6.6.3 記載了這些欄位，但它們不在 ThemeParser.SYLLABLES_KEYS 裡 —— " +
+                "主題作者寫了會被當成 unknown field 丟掉",
+            emptyList<String>(), missing.sorted()
+        )
+        val extra = ThemeParser.SYLLABLES_KEYS - documented.toSet()
+        assertEquals(
+            "解析器綁了這些欄位，但 §8.6.6.3 的欄位表沒有記載",
+            emptyList<String>(), extra.sorted()
+        )
+
+        // 反向：§8.6.6.3「`orientation` 是推導的，不是欄位」。開了它就等於開一個
+        // 可以寫成矛盾值的欄位（`above_candidates` 恆為 horizontal）。
+        assertFalse(
+            "orientation 不該是 candidates.syllables 的欄位（§8.6.6.3）",
+            ThemeParser.SYLLABLES_KEYS.contains("orientation")
+        )
+        assertTrue(
+            "candidates.syllables 這個區塊本身要被 candidates 認得",
+            ThemeParser.CANDIDATES_KEYS.contains("syllables")
+        )
+    }
+
+    /**
+     * 讀 `docs/theme-format.md` §8.6.6.3 那張欄位表的第一欄。
+     *
+     * 只掃該節標題到下一個標題之間，所以 §8.6.6.3.1 以後的子節（高度、退化規則）
+     * 的表格不會混進來。
+     */
+    private fun specSyllableFields(): List<String> {
+        val md = File(RepoFixtures.coreDir.parentFile, "docs/theme-format.md")
+        assertTrue("找不到 ${md.path}", md.isFile)
+        val lines = md.readText(Charsets.UTF_8).lines()
+        val start = lines.indexOfFirst { it.startsWith("##### 8.6.6.3 ") }
+        assertTrue("docs/theme-format.md 裡找不到 §8.6.6.3 這一節", start >= 0)
+        val rest = lines.subList(start + 1, lines.size)
+        val end = rest.indexOfFirst { it.startsWith("#") }.let {
+            if (it < 0) lines.size else start + 1 + it
+        }
+
+        val cell = Regex("^`([a-z_]+)`$")
+        val out = mutableListOf<String>()
+        var inTable = false
+        for (line in lines.subList(start, end)) {
+            if (line.startsWith("| 欄位 |")) {
+                inTable = true
+                continue
+            }
+            if (!inTable) continue
+            if (!line.startsWith("|")) break
+            val first = line.removePrefix("|").substringBefore("|").trim()
+            val m = cell.find(first) ?: continue
+            out += m.groupValues[1]
+        }
+        return out
     }
 }
