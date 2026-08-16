@@ -688,8 +688,87 @@ for name, args, where, helper, helper_args in calls:
         print('ALSOPOSTS=%s' % name)
 print('NEXIT=%d' % gated)
 
+# ── (7) ⭐ #119:`case Op::kKey` 上**每一個會產生副作用的出口**都要
+#        走同一道門(common/key_deadline.h 的 PlanKeyExit)──────────
+#
+# ⚠ 這一段存在的理由是「同一個錯犯第二次而沒有人回頭看」:
+#   (6) 那一段只守 Ctrl+Shift+F 一顆鍵,而 Ctrl+空格 上一模一樣的錯
+#   (副作用排在有上限的等待前面,逾時卻回 handled=false,於是宿主
+#   **同時**也吃到那顆鍵)整整一輪沒有人發現。所以判準不再問「這是
+#   哪一顆鍵」,改問兩件結構上的事:
+#
+#     · 服務端:凡是會做那件不可逆的事的 Engine 入口,都要把它**說出來**
+#       (wait->side_effect_done),不可以埋在自己的 handled 裡;
+#     · 呼叫端:`case Op::kKey` 上 Result::handled **只有一個**算得出它的
+#       地方,而每一個分支都要交出 side_effect_done。
+#
+#   下一個人新增第四種按鍵動作時,少接哪一段都會紅。
+SIDE_EFFECT_CALLS = ('SetAsciiModeAll(', 'rs_process_key(',
+                     'rs_select_candidate(', 'rs_commit_composition(',
+                     'rs_clear_composition(', 'ApplyVariantAll(')
+
+n_side = 0
+for name in sorted(set(n for n, _a, w, _h, _ha in calls
+                       if w == 'case Op::kKey')):
+    body = def_body(en, name)
+    if body is None or not enqueues_and_waits(body):
+        continue
+    if not any(t in body for t in SIDE_EFFECT_CALLS):
+        continue                    # 唯讀的那些(CurrentResult / ReadBackStatus)
+    n_side += 1
+    if 'side_effect_done' not in body:
+        print('SIDEEFFECTUNREPORTED=%s' % name)
+print('NSIDEEFFECT=%d' % n_side)
+
+# 唯一那道門:恰好一次 PlanKeyExit(,而且它的答案真的被寫回 r.handled。
+print('NPLANKEYEXIT=%d' % len(re.findall(r'PlanKeyExit\s*\(', key_block)))
+if not re.search(r'r\.handled\s*=\s*key_exit\.eat_key\s*;', key_block):
+    print('NOGATEWRITE=1')
+# ⚠ 「門在那裡」證明不了「沒有別的地方寫 handled」——(6) 那一段已經
+#   被同一種拆法咬過一次(push_ui 加在守門外面)。所以數出現次數。
+#
+# ⚠ 只數**那道門之後**的:門前面的寫入會被門自己蓋掉,所以無害
+#   (kIgnore 那一格就是這一種 —— 它在任何一趟引擎之前就 break 走了,
+#    根本到不了那道門)。門**後面**的那一種才是把答案蓋掉的那一種。
+_mg = re.search(r'PlanKeyExit\s*\(', key_block)
+print('NHANDLEDWRITE=%d' % (0 if _mg is None else len(
+    re.findall(r'r\.handled\s*=', key_block[_mg.start():]))))
+# 不是現況的那一份,線路上一定要說出來(§13c 的「ni好」)。
+if 'KeyExitNeedsNotAnsweredBit(' not in key_block or \
+        'kStKeyNotAnswered' not in key_block:
+    print('NONOTANSWEREDBIT=1')
+
+# 每一個會進佇列的分支都要自己交出 side_effect_done,而且不可以是常數。
+def enclosing_block(text, pos):
+    stack = []
+    for j, ch in enumerate(text):
+        if j >= pos:
+            break
+        if ch == '{':
+            stack.append(j)
+        elif ch == '}' and stack:
+            stack.pop()
+    return None if not stack else block_from(text, stack[-1])
+
+n_branch = 0
+for m in re.finditer(r'engine_->(\w+)\s*\(', key_block):
+    body = def_body(en, m.group(1))
+    if body is None or not enqueues_and_waits(body):
+        continue
+    br = enclosing_block(key_block, m.start())
+    if br is None:
+        print('NOBRANCH=%s' % m.group(1))
+        continue
+    n_branch += 1
+    ma = re.search(r'key_side_effect_done\s*=\s*([^;]+);', br)
+    if ma is None:
+        print('BRANCHNOSIDEEFFECT=%s' % m.group(1))
+    elif re.sub(r'\s+', '', ma.group(1)) in ('false', 'true', '0', '1'):
+        print('BRANCHSIDEEFFECTCONST=%s' % m.group(1))
+print('NBRANCH=%d' % n_branch)
+
 # ── (5) 守門那一格 ──────────────────────────────────────────────
-gi = key_block.find('DecideKeyUiAction(kw.timed_out, key_result_is_current)')
+gi = key_block.find('DecideKeyUiAction(kw.timed_out, key_exit.result_is_current)')
 if gi < 0:
     print('NOGUARD=1')
 else:
@@ -763,7 +842,7 @@ PYKEY
         echo "!! Engine::${line#ALSOPOSTS=} 裡還留著一條無上限的 Post() —— 有上限的路旁邊放一條沒上限的路,等於沒有上限" >&2
         bad=1 ;;
       NOGUARD=*)
-        echo "!! pipe_server.cc 的按鍵那一格沒有問過 DecideKeyUiAction(kw.timed_out, key_result_is_current) —— 逾時的佔位、以及『什麼都沒做』那一份全 0 的快照,都會被當成現況餵進候選窗與那一橫" >&2
+        echo "!! pipe_server.cc 的按鍵那一格沒有問過 DecideKeyUiAction(kw.timed_out, key_exit.result_is_current) —— 逾時的佔位、以及『什麼都沒做』那一份全 0 的快照,都會被當成現況餵進候選窗與那一橫" >&2
         bad=1 ;;
       NOBUDGETHELPER=*)
         echo "!! 按鍵那一格呼叫 PipeServer::${line#NOBUDGETHELPER=}() 時沒有給它 key_budget_left() —— 它裡面會進引擎佇列,而給一份完整的預算等於這顆鍵在服務端拿了兩份:最壞 200ms,而 DLL 只有 150ms" >&2
@@ -792,6 +871,24 @@ PYKEY
       HANDLEDNOTPLANNED=*)
         echo "!! 簡繁那一格自己把 r.handled 寫成 true,沒有先問過 PlanVariantKey() 的 eat_key —— 那正是「什麼都沒做卻宣稱吃掉了」的形狀" >&2
         bad=1 ;;
+      SIDEEFFECTUNREPORTED=*)
+        echo "!! Engine::${line#SIDEEFFECTUNREPORTED=} 會做那件不可逆的事(SetAsciiModeAll / rs_process_key …),卻沒有把它寫進 wait->side_effect_done —— 呼叫端於是只看得到 timed_out,而『沒等到』與『什麼都沒發生』是兩件事。#119 就是這個:Ctrl+空格 的 SetAsciiModeAll() 排在有上限的取快照**前面**,逾時的時候中英已經真的切了,而它照樣回 handled=false → TSF 把那顆鍵**也**交給宿主" >&2
+        bad=1 ;;
+      NOGATEWRITE=*)
+        echo "!! case Op::kKey 沒有把 PlanKeyExit() 的答案寫回 r.handled(要的形狀是 \`r.handled = key_exit.eat_key;\`)—— 問了門卻不聽它,與沒有門是同一件事" >&2
+        bad=1 ;;
+      NONOTANSWEREDBIT=*)
+        echo "!! case Op::kKey 沒有用 KeyExitNeedsNotAnsweredBit() 在線路上標出「引擎沒有回答」—— 少了那個位元,DLL 的 DecideKeyOutlet 會走 kSelfInsert 把使用者剛按的字母補進他的文件(§13c 的「ni好」),而 SendAsciiToggle 會把一份空快照套進文件,使用者打到一半的組字當場消失" >&2
+        bad=1 ;;
+      BRANCHNOSIDEEFFECT=*)
+        echo "!! case Op::kKey 裡呼叫 engine_->${line#BRANCHNOSIDEEFFECT=}() 的那個分支沒有交出 key_side_effect_done —— 每一個出口都要說得出「那件不可逆的事做了沒有」,不然那道門收到的是預設的 false,而『做了卻回 handled=false』正是宿主同時也吃到那顆鍵的成因" >&2
+        bad=1 ;;
+      BRANCHSIDEEFFECTCONST=*)
+        echo "!! case Op::kKey 裡 engine_->${line#BRANCHSIDEEFFECTCONST=}() 那個分支把 key_side_effect_done 寫成常數 —— 那道門於是永遠拿到同一個答案,判準看起來還在,實際上已經被短路了" >&2
+        bad=1 ;;
+      NOBRANCH=*)
+        echo "!! 找不到 engine_->${line#NOBRANCH=}() 所在的分支大括號 —— 掃描範圍錯了" >&2
+        bad=1 ;;
       UINOTPLANNED=*)
         echo "!! 簡繁那一格的 key_result_is_current 不是從 PlanVariantKey() 的 ui_is_current 來的 —— 那一格決定要不要把快照餵進候選窗與那一橫,自己寫死等於繞過判斷" >&2
         bad=1 ;;
@@ -807,6 +904,36 @@ EOF
   n="${n:-0}"
   if [ "${n}" -lt 4 ]; then
     echo "!! 按鍵那條路上只掃到 ${n} 個會進佇列的出口(至少要 4)—— 掃描範圍錯了" >&2
+    bad=1
+  fi
+
+  # ⚠ 分母:會做那件不可逆的事的 Engine 入口至少兩個(ProcessKey、
+  #   ToggleAsciiMode)。掃到 0 個的話上面那一整段永遠是綠的。
+  n=$(printf '%s\n' "${out}" | grep '^NSIDEEFFECT=' | cut -d= -f2 || true)
+  n="${n:-0}"
+  if [ "${n}" -lt 2 ]; then
+    echo "!! 按鍵那條路上只掃到 ${n} 個會產生副作用的 Engine 入口(至少要 2:ProcessKey、ToggleAsciiMode)—— 掃描範圍錯了,而一道掃到 0 個的判準永遠是綠的" >&2
+    bad=1
+  fi
+
+  n=$(printf '%s\n' "${out}" | grep '^NPLANKEYEXIT=' | cut -d= -f2 || true)
+  n="${n:-0}"
+  if [ "${n}" -ne 1 ]; then
+    echo "!! case Op::kKey 裡 PlanKeyExit( 出現 ${n} 次(必須恰好 1)—— 一顆鍵只能有一道門,兩道門就是兩個會漂移的答案;一道都沒有就是回到 #119(三個分支各自決定 handled,而其中一個決定錯了)" >&2
+    bad=1
+  fi
+
+  n=$(printf '%s\n' "${out}" | grep '^NHANDLEDWRITE=' | cut -d= -f2 || true)
+  n="${n:-0}"
+  if [ "${n}" -ne 1 ]; then
+    echo "!! case Op::kKey 裡在那道門**之後**寫 r.handled 的地方有 ${n} 處(必須恰好 1,也就是那道門自己)—— 門外面多一行 r.handled = …,前面每一條判準都還是綠的,而那顆鍵照樣被宿主吃第二次" >&2
+    bad=1
+  fi
+
+  n=$(printf '%s\n' "${out}" | grep '^NBRANCH=' | cut -d= -f2 || true)
+  n="${n:-0}"
+  if [ "${n}" -lt 3 ]; then
+    echo "!! case Op::kKey 裡只掃到 ${n} 個會進佇列的分支(至少要 3:簡繁、中英、一般按鍵)—— 掃描範圍錯了" >&2
     bad=1
   fi
 
@@ -837,7 +964,10 @@ for plant in unbounded_post no_abandon borrow_disabled ui_unguarded \
              toggle_ascii_unbudgeted variant_unbudgeted \
              toggle_ascii_reverted push_ui_outside_guard ui_always_current \
              variant_side_effect_first variant_ignores_session \
-             variant_toggle_unguarded variant_handled_forced; do
+             variant_toggle_unguarded variant_handled_forced \
+             ascii_gate_removed ascii_gate_overridden \
+             ascii_side_effect_unreported processkey_side_effect_unreported \
+             branch_side_effect_const not_answered_bit_dropped; do
   cp "${SCRIPT_DIR}/service/engine.cc" "${KEY_GATE_TMP}/engine.cc"
   cp "${SCRIPT_DIR}/service/pipe_server.cc" "${KEY_GATE_TMP}/pipe_server.cc"
   case "${plant}" in
@@ -854,7 +984,7 @@ for plant in unbounded_post no_abandon borrow_disabled ui_unguarded \
         "${KEY_GATE_TMP}/engine.cc" ;;
     # 守門拆掉,push_ui 照走:候選窗在使用者組字到一半時被收掉。
     ui_unguarded)
-      sed -i 's/DecideKeyUiAction(kw.timed_out, key_result_is_current)/KeyUiAction::kUpdateUi/' \
+      sed -i 's/DecideKeyUiAction(kw.timed_out, key_exit.result_is_current)/KeyUiAction::kUpdateUi/' \
         "${KEY_GATE_TMP}/pipe_server.cc" ;;
     # ── 這一輪補的四種,前兩種正是上一輪漏掉的那兩個出口 ────────────
     # Ctrl+空白 不吃這顆鍵的預算:它自己拿一份完整的 100ms,
@@ -892,12 +1022,10 @@ p = sys.argv[1]
 s = io.open(p, encoding='utf-8').read()
 old = '''          note_schema(r.snap);
           push_ui(r.snap);
-        }
 '''
 new = '''          note_schema(r.snap);
           push_ui(r.snap);
-        }
-        push_ui(r.snap);
+          push_ui(r.snap);
 '''
 assert s.count(old) == 1, s.count(old)
 io.open(p, 'w', encoding='utf-8').write(s.replace(old, new, 1))
@@ -905,7 +1033,7 @@ PYEXTRA
       ;;
     # 「什麼都沒做」那一格照樣更新 UI(② 在 main 上的樣子)。
     ui_always_current)
-      sed -i 's/DecideKeyUiAction(kw.timed_out, key_result_is_current)/DecideKeyUiAction(kw.timed_out, true)/' \
+      sed -i 's/DecideKeyUiAction(kw.timed_out, key_exit.result_is_current)/DecideKeyUiAction(kw.timed_out, true)/' \
         "${KEY_GATE_TMP}/pipe_server.cc" ;;
     # ── ① 這一輪自己造出來的那個迴歸,以及它的三種鄰居 ─────────────
     # 換回「先切、再取快照」:引擎切了,而逾時讓宿主的 Ctrl+Shift+F 也開了。
@@ -917,16 +1045,11 @@ s = io.open(p, encoding='utf-8').read()
 old = """          r = engine_->CurrentResult(k.session, key_budget_left(), &kw);
           VariantKeyPlan vp =
               PlanVariantKey(!kw.timed_out && r.handled, /*toggled=*/false);
-          if (vp.may_toggle) {
-            vp = PlanVariantKey(true, ToggleVariantPref(key_budget_left(), &kw));
-          }
-"""
+          if (vp.may_toggle) {"""
 new = """          VariantKeyPlan vp = PlanVariantKey(false, false);
-          if (ToggleVariantPref(key_budget_left(), &kw)) {
-            r = engine_->CurrentResult(k.session, key_budget_left(), &kw);
-            vp = PlanVariantKey(!kw.timed_out && r.handled, true);
-          }
-"""
+          key_side_effect_done = ToggleVariantPref(key_budget_left(), &kw);
+          r = engine_->CurrentResult(k.session, key_budget_left(), &kw);
+          if (false) {"""
 assert s.count(old) == 1, s.count(old)
 io.open(p, 'w', encoding='utf-8').write(s.replace(old, new, 1))
 PYSEFIRST
@@ -941,20 +1064,62 @@ PYSEFIRST
 import io, sys
 p = sys.argv[1]
 s = io.open(p, encoding='utf-8').read()
-old = """          if (vp.may_toggle) {
-            vp = PlanVariantKey(true, ToggleVariantPref(key_budget_left(), &kw));
-          }
-"""
-new = """          vp = PlanVariantKey(true, ToggleVariantPref(key_budget_left(), &kw));
-"""
+old = """          if (vp.may_toggle) {"""
+new = """          if (true) {"""
 assert s.count(old) == 1, s.count(old)
 io.open(p, 'w', encoding='utf-8').write(s.replace(old, new, 1))
 PYUNGUARD
       ;;
-    # 不問計畫,自己宣稱吃掉了。
+    # 不問計畫,自己說「這一份是現況」。
     variant_handled_forced)
-      sed -i 's/          if (vp.eat_key) {/          if (true) {/' \
+      sed -i 's/key_result_is_current = vp.ui_is_current;/key_result_is_current = true;/' \
         "${KEY_GATE_TMP}/pipe_server.cc" ;;
+    # ══ #119:通用那道門的六種拆法 ═══════════════════════════════
+    # (甲)那道門整個拿掉 —— 三個分支又各自決定 handled。
+    ascii_gate_removed)
+      sed -i 's/^        r.handled = key_exit.eat_key;$//' \
+        "${KEY_GATE_TMP}/pipe_server.cc" ;;
+    # (乙)門還在,但**後面**多一行把它蓋掉 —— (6) 那一段被同一種
+    #      拆法咬過一次(push_ui 加在守門外面),所以這裡也數次數。
+    ascii_gate_overridden)
+      python3 - "${KEY_GATE_TMP}/pipe_server.cc" <<'PYOVERRIDE'
+import io, sys
+p = sys.argv[1]
+s = io.open(p, encoding='utf-8').read()
+old = '        r.handled = key_exit.eat_key;\n'
+new = '        r.handled = key_exit.eat_key;\n        r.handled = false;\n'
+assert s.count(old) == 1, s.count(old)
+io.open(p, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+PYOVERRIDE
+      ;;
+    # (丙)⭐ #119 本身:引擎切了中英卻不把它說出來,於是逾時的那一顆
+    #      又回 handled=false,宿主也吃到同一顆 Ctrl+空格。
+    ascii_side_effect_unreported)
+      sed -i 's/^  if (wait) wait->side_effect_done = true;$//' \
+        "${KEY_GATE_TMP}/engine.cc" ;;
+    # (丁)一般按鍵那條也不報。
+    processkey_side_effect_unreported)
+      sed -i 's/^  if (wait) wait->side_effect_done = r.handled;$//' \
+        "${KEY_GATE_TMP}/engine.cc" ;;
+    # (戊)分支把它寫死成常數 —— 判準看起來還在,實際上被短路了。
+    branch_side_effect_const)
+      sed -i 's/          key_side_effect_done = kw.side_effect_done;/          key_side_effect_done = false;/' \
+        "${KEY_GATE_TMP}/pipe_server.cc" ;;
+    # (己)線路上不再說「引擎沒有回答」——「ni好」與「組字當場消失」
+    #      兩個靜默的資料污染同時回來。
+    not_answered_bit_dropped)
+      python3 - "${KEY_GATE_TMP}/pipe_server.cc" <<'PYNAB'
+import io, re, sys
+p = sys.argv[1]
+s = io.open(p, encoding='utf-8').read()
+old = '''        if (KeyExitNeedsNotAnsweredBit(key_side_effect_done,
+                                       key_result_is_current))
+          r.snap.status_flags |= kStKeyNotAnswered;
+'''
+assert s.count(old) == 1, s.count(old)
+io.open(p, 'w', encoding='utf-8').write(s.replace(old, '', 1))
+PYNAB
+      ;;
   esac
   if key_path_gates "${KEY_GATE_TMP}/engine.cc" \
                     "${KEY_GATE_TMP}/pipe_server.cc" 2>/dev/null; then
@@ -966,6 +1131,166 @@ done
 rm -rf "${KEY_GATE_TMP}"
 
 echo
+# ══ ⭐ #120:那一橫不要壓在別人的浮動橫條上 ═══════════════════════
+#
+# 幾何本身是純函式(common/statusbar_place.cc 的 AvoidObstacles,
+# tests/test_statusbar_place.cc 在 Ubuntu 上跑得到)。這裡守的是**接線**
+# 與**判準的形狀** —— 那三行刪掉之後,單元測試一條都不會紅。
+bar_avoid_gates() {
+  local sb="$1"
+  local bad=0
+  local out
+  out="$(python3 - "${sb}" <<'PYBAR'
+import io, re, sys
+src = io.open(sys.argv[1], encoding='utf-8').read()
+
+def block_from(s, i):
+    d = 0
+    for j in range(i, len(s)):
+        if s[j] == '{':
+            d += 1
+        elif s[j] == '}':
+            d -= 1
+            if d == 0:
+                return s[i:j + 1]
+    return s[i:]
+
+def body(name):
+    m = re.search(r'(?m)^[A-Za-z_][^\n]*\bStatusBar::' + re.escape(name) +
+                  r'\s*\(', src)
+    return None if m is None else block_from(src, m.start())
+
+# ⚠ 註解要先拿掉。這個檔案的註解裡到處寫著它守的那些識別字
+#   (「nudge_dy_ 在 WM_LBUTTONDOWN 就歸零了」),而一道會被自己的
+#   說明文字滿足的判準永遠是綠的 —— 這支腳本已經因為同一類錯吃過虧。
+def strip(t):
+    return None if t is None else re.sub(r'//[^\n]*', '', t)
+
+ap = strip(body('ApplyPlacement'))
+cf = strip(body('CollectFloatingBars'))
+sp = strip(body('SavePlacement'))
+code = re.sub(r'//[^\n]*', '', src)
+if ap is None or cf is None or sp is None:
+    print('NOSRC=1')
+    raise SystemExit(0)
+
+# (1) 位置算完之後真的走過避讓,而**送進 SetWindowPos 的是避讓後的那一份**。
+i_sw = ap.find('SetWindowPos(')
+m_av = re.search(r'(\w+)\s*=\s*AvoidObstacles\s*\(', ap)
+if 'AvoidObstacles(' not in ap:
+    print('NOAVOID=1')
+elif m_av is None or i_sw < 0 or i_sw < m_av.start():
+    # ⚠ 「有呼叫」證明不了「有用它的結果」:覆核者實測的拆法是
+    #   `(void)AvoidObstacles(...)` —— 呼叫在、順序也對,而那一橫照樣
+    #   壓在別人身上。所以要求它**指派回**送進 SetWindowPos 的那個變數。
+    print('AVOIDNOTAPPLIED=1')
+elif (m_av.group(1) + '.x') not in ap[i_sw:i_sw + 200]:
+    print('AVOIDNOTAPPLIED=1')
+if 'CollectFloatingBars(' not in ap:
+    print('NOCOLLECT=1')
+
+# (2) 判準是**形狀**不是身分:兩個視窗樣式都要問,而且要排除自己的行程。
+for need, tag in (('WS_EX_TOPMOST', 'NOTOPMOST'),
+                  ('WS_EX_NOACTIVATE', 'NONOACTIVATE'),
+                  ('GetCurrentProcessId', 'NOSELFSKIP')):
+    if need not in cf:
+        print('%s=1' % tag)
+
+# (3) ⚠ **不准出現白名單。** 認得出特定輸入法的清單會過期,而過期的
+#     白名單長得跟綠燈一模一樣:它不報錯,只是安靜地不避讓。
+for bad_call in ('GetClassNameW', 'GetWindowTextW', '_wcsicmp', 'wcsstr',
+                 'CompareStringOrdinal'):
+    if bad_call in cf:
+        print('WHITELIST=%s' % bad_call)
+
+# (4) 存位置時要把避讓挪過的那一段扣回去,否則偏移會一路累積。
+if not re.search(r'-\s*nudge_dy_', sp):
+    print('NUDGENOTSUBTRACTED=1')
+# (5) 使用者一開始拖,避讓的那一段就不再成立。
+if not re.search(r'nudge_dy_\s*=\s*0\s*;', code):
+    print('NUDGENOTRESET=1')
+PYBAR
+)"
+  while IFS= read -r line; do
+    case "${line}" in
+      NOSRC=*)
+        echo "!! status_bar.cc 裡找不到 ApplyPlacement / CollectFloatingBars / SavePlacement —— 掃描範圍錯了" >&2; bad=1 ;;
+      NOAVOID=*)
+        echo "!! ApplyPlacement 沒有走 AvoidObstacles() —— 那一橫會回到「預設右下角、沒有任何避讓」,壓在第三方輸入法的橫條上(#120 本身)" >&2; bad=1 ;;
+      AVOIDNOTAPPLIED=*)
+        echo "!! ApplyPlacement 算了避讓卻沒有把結果送進 SetWindowPos —— 算完不用與沒算是同一件事" >&2; bad=1 ;;
+      NOCOLLECT=*)
+        echo "!! ApplyPlacement 沒有交出障礙物清單 —— AvoidObstacles 收到空清單就永遠原地不動" >&2; bad=1 ;;
+      NOTOPMOST=*|NONOACTIVATE=*)
+        echo "!! CollectFloatingBars 的判準少了 WS_EX_TOPMOST / WS_EX_NOACTIVATE 其中一格 —— 兩個合起來才是「一條浮動工具列**必須**有的樣子」;少一個就會去躲一般的應用程式視窗" >&2; bad=1 ;;
+      NOSELFSKIP=*)
+        echo "!! CollectFloatingBars 沒有排除自己的行程 —— 那一橫會躲自己的候選窗" >&2; bad=1 ;;
+      WHITELIST=*)
+        echo "!! CollectFloatingBars 用 ${line#WHITELIST=} 去比視窗的類別 / 標題 —— 那是「認得出特定輸入法」的白名單,它會過期,而過期的白名單長得跟綠燈一模一樣:不報錯,只是安靜地不避讓" >&2; bad=1 ;;
+      NUDGENOTSUBTRACTED=*)
+        echo "!! SavePlacement 沒有把避讓挪過的那一段扣回去 —— 存進設定檔的變成避讓後的位置,下一次重排再讓一次,偏移一路累積,最後那一橫自己爬到螢幕另一頭" >&2; bad=1 ;;
+      NUDGENOTRESET=*)
+        echo "!! 沒有任何地方把 nudge_dy_ 歸零 —— 使用者一開始拖,視窗位置就由他的手決定(WM_MOUSEMOVE 直接 SetWindowPos),而 SavePlacement 會多扣一次" >&2; bad=1 ;;
+    esac
+  done <<EOF
+${out}
+EOF
+  return "${bad}"
+}
+
+echo
+echo "==> 那一橫的避讓(#120)"
+bar_avoid_gates "${SCRIPT_DIR}/service/status_bar.cc" || exit 1
+echo "   位置算完之後走避讓、結果真的送進 SetWindowPos;判準是形狀(TOPMOST + NOACTIVATE + 別的行程)而不是身分,沒有白名單;存位置時把避讓扣回去,拖動開始時歸零"
+
+echo
+echo "==> 反向測試(避讓那些判準必須抓得到植入的違規)"
+BAR_TMP="$(mktemp -d)"
+for plant in avoid_removed avoid_result_dropped whitelist_by_class \
+             no_noactivate nudge_not_subtracted nudge_never_reset; do
+  cp "${SCRIPT_DIR}/service/status_bar.cc" "${BAR_TMP}/status_bar.cc"
+  case "${plant}" in
+    # #120 本身:一點避讓都沒有。
+    avoid_removed)
+      python3 - "${BAR_TMP}/status_bar.cc" <<'PYAV'
+import io, re, sys
+p = sys.argv[1]
+s = io.open(p, encoding='utf-8').read()
+s = re.sub(r'\n  if \(p\.monitor >= 0[^;]*?CollectFloatingBars\(monitors\[\n[^;]*?\]\)\);', '', s, count=1, flags=re.S)
+io.open(p, 'w', encoding='utf-8').write(s)
+PYAV
+      ;;
+    # 算了避讓,SetWindowPos 卻用原來那一份。
+    avoid_result_dropped)
+      sed -i 's/  p = AvoidObstacles(p, monitors,/  (void)AvoidObstacles(p, monitors,/' \
+        "${BAR_TMP}/status_bar.cc" ;;
+    # 認得出特定輸入法的白名單 —— 它會過期。
+    whitelist_by_class)
+      sed -i 's/        RECT r{};/        wchar_t cls[64] = {0}; ::GetClassNameW(h, cls, 64);\n        RECT r{};/' \
+        "${BAR_TMP}/status_bar.cc" ;;
+    # 少一格樣式:開始去躲一般的應用程式視窗。
+    no_noactivate)
+      sed -i 's/        if ((ex \& WS_EX_NOACTIVATE) == 0) return TRUE;//' \
+        "${BAR_TMP}/status_bar.cc" ;;
+    # 存成避讓後的位置 —— 偏移會一路累積。
+    nudge_not_subtracted)
+      sed -i 's/rc.top - nudge_dy_,/rc.top,/' "${BAR_TMP}/status_bar.cc" ;;
+    # 拖動開始時不歸零。
+    nudge_never_reset)
+      sed -i 's/      self->nudge_dy_ = 0;//' "${BAR_TMP}/status_bar.cc"
+      sed -i 's/  nudge_dy_ = p.nudge_dy;/  nudge_dy_ = p.nudge_dy + 0;/' \
+        "${BAR_TMP}/status_bar.cc" ;;
+  esac
+  if bar_avoid_gates "${BAR_TMP}/status_bar.cc" 2>/dev/null; then
+    echo "!! 植入 ${plant} 之後判準仍然是綠的 —— 那一條不算數" >&2
+    rm -rf "${BAR_TMP}"
+    exit 1
+  fi
+  echo "   ok  植入 ${plant} → 變紅"
+done
+rm -rf "${BAR_TMP}"
+echo "==> 避讓的反向測試通過(6 種改法都抓得到)"
+
 echo "==> 單一來源稽核(同一件事不得在兩個地方各寫一份)"
 "${SCRIPT_DIR}/audit_single_source.sh"
 

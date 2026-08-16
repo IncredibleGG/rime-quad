@@ -189,6 +189,18 @@ class Engine {
     //   那一顆鍵有可能引擎組了字、而宿主也自己打了字。
     //   記下來,不要假裝沒有。
     bool abandoned = false;
+    // ⭐ #119:**這顆鍵已經對引擎或設定做過不可逆的事。**
+    //
+    // ⚠ 它與 timed_out / abandoned 都無關,而那正是要點:
+    //   ToggleAsciiMode() 的 SetAsciiModeAll() 是 store + PostAsync,
+    //   **不等** —— 呼叫過就已經切了,而它排在那趟有上限的取快照
+    //   **前面**。逾時的時候「沒等到」是真的,「什麼都沒發生」是假的。
+    //
+    // 呼叫端(pipe_server.cc 的 case Op::kKey)拿它餵
+    // common/key_deadline.h 的 PlanKeyExit() —— 那是 `case Op::kKey` 上
+    // 唯一算得出 Result::handled 的地方,而第一條硬性要求就是
+    // 「副作用發生了 ⇒ 那顆鍵一定算被我們吃掉」。
+    bool side_effect_done = false;
   };
 
   // ⚠ wait **不是選用的**。逾時時回的那個 Result 是一個佔位,不是

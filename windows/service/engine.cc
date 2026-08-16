@@ -502,6 +502,11 @@ Snapshot Engine::TakeSnapshot(uint64_t id) {
 Result Engine::ToggleAsciiMode(uint64_t id, int deadline_ms,
                                KeyWait* wait) {
   Result r;
+  // ⚠ 與 ProcessKey 一樣先歸零。少了這一行，下面那條 fail-open 的早退
+  //   路徑會讓呼叫端讀到它**自己**那個預設建構的 KeyWait
+  //   （timed_out=false）—— 也就是「引擎一個字都沒說，呼叫端卻把那份
+  //   佔位當成現況餵進候選窗」。
+  if (wait) *wait = KeyWait();
   // ── ⚠ 部署還沒做完就不要宣稱切過了 ──────────────────────────────
   //
   //   與 ProcessKey 同一條規則(見下面)。少了這一格,使用者在首次部署
@@ -532,7 +537,17 @@ Result Engine::ToggleAsciiMode(uint64_t id, int deadline_ms,
   const bool now = ascii_mode_.load();
   // ⚠ 這一句是 store + 兩次 PostAsync,微秒級,**不等**。所以它不在
   //   下面那個上限裡面 —— 上限管的是「取快照」那一趟同步等待。
+  //
+  // ── ⭐ #119：那件不可逆的事就是這一句，而它在上限**前面** ──────
+  //
+  //   上一輪這裡逆時回 handled=false，於是 TSF 把那顆
+  //   Ctrl+空格 **也**交給宿主：使用者按一下同時得到
+  //   「中英切了」與「別人的 Ctrl+空格 也動作了」。
+  //
+  //   把它寫進 wait，由呼叫端的 PlanKeyExit() 統一判斷 ——
+  //   這裡**不**自己決定 handled，一顆鍵只能有一道門。
   SetAsciiModeAll(!now);
+  if (wait) wait->side_effect_done = true;
   // ── ⚠ 快照要在切換**之後**取,而且必須在**引擎執行緒**上取 ──────
   //
   //   順序:狀態列那一格顯示的是快照上的旗標(status_bar.h:「顯示的是
@@ -561,21 +576,38 @@ Result Engine::ToggleAsciiMode(uint64_t id, int deadline_ms,
   if (!CallKeyBounded(
           "切中英後取快照", [this, id, box] { *box = TakeSnapshot(id); },
           deadline_ms, wait)) {
-    // 逾時 —— 與 ProcessKey 同一套處置:
-    //   · 回 handled=false,讓宿主自己收尾(Ctrl+空白 交回宿主不會往
-    //     文件裡寫字元,所以這裡沒有「引擎切了、宿主也打了」那種分岔)。
-    //   · **不碰 UI**:呼叫端用 DecideKeyUiAction() 擋,而這裡回的是
-    //     一份預設建構的 Result —— 餵進去會把使用者組字到一半的候選窗
-    //     收掉,而引擎那邊組字原封不動。
+    // ── 逾時 —— 而這一格上一輪是錯的（#119）────────────────────
     //
-    // ⚠ 中英模式本身**仍然會切**(上面那一句已經進佇列了),只是晚一點。
-    //   那是刻意的:使用者按這顆鍵要的就是切,而「什麼都沒發生」比
-    //   「晚 200 毫秒才切」糟。
+    // ⚠ 上一輪這裡寫著「回 handled=false，讓宿主自己收尾（Ctrl+空白
+    //   交回宿主不會往文件裡寫字元，所以這裡沒有『引擎切了、宿主也打了』
+    //   那種分岔）」。**那句話漏掉了一整族宿主。** Ctrl+空格 交回宿主
+    //   不會寫字元沒錯，但它會**叫起宿主自己的 Ctrl+空格**（Everything
+    //   的搜尋框、部分編輯器的自動完成、輸入法選單）—— 使用者按一下
+    //   同時得到兩件事，而其中一件他沒有要。
+    //
+    //   而中英**已經真的切了**（上面 SetAsciiModeAll 那一句是
+    //   store + PostAsync，不等）。所以正確的處置與簡繁那顆鍵同一條：
+    //   **做過不可逆的事就一定要吃掉那顆鍵**，只是文件與 UI 一個位元
+    //   都不動 —— 那正是 kStKeyNotAnswered 這個位元存在的意思
+    //   （common/key_eat_policy.h 的 KeyOutlet::kEatSilently）。
+    //
+    //   判斷本身在 common/key_deadline.h 的 PlanKeyExit()，由呼叫端
+    //   （pipe_server.cc 的 case Op::kKey）統一套用；這裡只交事實。
+    //
+    // ⚠ 那一橫**不可以整份擋掉**：中英模式是服務端不必問引擎就知道的
+    //   一個 atomic（Engine::AsciiMode()），所以呼叫端會拿它把第一格
+    //   單獨推一次。真正推不動的只有候選窗與組字那一段。
     Result timed_out;
+    // ⚠ handled **不在這裡決定**。中英已經切了（上面那一句），
+    //   而「做過不可逆的事 ⇒ 這顆鍵一定算被吃掉」是
+    //   common/key_deadline.h 的 PlanKeyExit() 在答的；這裡只交事實：
+    //   wait->side_effect_done 已經是 true，timed_out 也是。
+    //   呼叫端會把 handled 覆寫成 PlanKeyExit 的答案。
     timed_out.handled = false;
     timed_out.snap.status_flags |= kStKeyNotAnswered;
     return timed_out;
   }
+  // 引擎真的把工作跑完了，而且它是在切完之後取的。
   r.handled = true;
   r.snap = *box;
   return r;
@@ -712,6 +744,13 @@ Result Engine::ProcessKey(uint64_t id, int32_t keysym, uint32_t mods,
     return r;
   }
   r = *box;
+  // ⭐ #119：這一格就是「那件不可逆的事做了沒有」。
+  //
+  // ⚠ 一般按鍵那條路上，副作用與答案是**同一件事**：
+  //   rs_process_key() 回 true = 引擎吃了這顆鍵 = 組字狀態動過了。
+  //   逾時（作廢成功）本體一步都沒跑，所以上面那條早退路徑
+  //   留著 side_effect_done = false —— 這顆鍵交回宿主是對的。
+  if (wait) wait->side_effect_done = r.handled;
   return r;
 }
 

@@ -979,6 +979,16 @@ void PipeServer::ServeClient(HANDLE pipe) {
         //   引擎不吃這顆鍵(英數模式下的字母)時 handled=false,但快照
         //   仍然是現況,候選窗與那一橫該照著更新。
         bool key_result_is_current = false;
+        // ⭐ #119:「這顆鍵已經對引擎或設定做過那件**不可逆**的事」。
+        //
+        // ⚠ 三個分支各自交出這一格,而且**只交事實**:
+        //     · 簡繁 → ToggleVariantPref() 的回傳值;
+        //     · 中英 → Engine::ToggleAsciiMode() 在 SetAsciiModeAll()
+        //              那一句之後填進 kw.side_effect_done;
+        //     · 一般 → Engine::ProcessKey() 填進 kw.side_effect_done
+        //              (rs_process_key 回 true = 組字狀態動過了)。
+        //   下面那道唯一的門(PlanKeyExit)才把它變成 handled。
+        bool key_side_effect_done = false;
         Result r;
         if (action == KeyAction::kToggleVariant) {
           // ── 簡繁快捷鍵(Ctrl+Shift+F,G76)────────────────────────
@@ -1014,10 +1024,13 @@ void PipeServer::ServeClient(HANDLE pipe) {
           VariantKeyPlan vp =
               PlanVariantKey(!kw.timed_out && r.handled, /*toggled=*/false);
           if (vp.may_toggle) {
-            vp = PlanVariantKey(true, ToggleVariantPref(key_budget_left(), &kw));
+            // ⚠ ToggleVariantPref() 回 true 的**當下**簡繁就已經真的
+            //   換掉了 —— 那就是這條路上那件不可逆的事。記下來交給
+            //   下面那道門,不要在這裡自己決定 handled。
+            key_side_effect_done = ToggleVariantPref(key_budget_left(), &kw);
+            vp = PlanVariantKey(true, key_side_effect_done);
           }
           if (vp.eat_key) {
-            r.handled = true;
             key_result_is_current = vp.ui_is_current;
           } else {
             // 什麼都沒做 —— 走與下面那條既有出口一模一樣的路:一份預設
@@ -1043,6 +1056,7 @@ void PipeServer::ServeClient(HANDLE pipe) {
         } else if (action == KeyAction::kToggleAsciiMode) {
           r = engine_->ToggleAsciiMode(k.session, key_budget_left(), &kw);
           key_result_is_current = !kw.timed_out;
+          key_side_effect_done = kw.side_effect_done;
         } else {
           // ── 把「間歇打不出中文」變成一個數字(#108)────────────
           //
@@ -1058,7 +1072,49 @@ void PipeServer::ServeClient(HANDLE pipe) {
           r = engine_->ProcessKey(k.session, k.keysym, k.mods,
                                   key_budget_left(), &kw);
           key_result_is_current = !kw.timed_out;
+          key_side_effect_done = kw.side_effect_done;
         }
+        // ══ ⭐ `case Op::kKey` 上唯一算得出 Result::handled 的地方(#119)══
+        //
+        // ── 這道門為什麼要存在 ────────────────────────────────────
+        //
+        // 上一輪三個分支各自決定 handled,而其中一個決定錯了:
+        // Ctrl+空格 的 SetAsciiModeAll() 排在那趟有上限的取快照**前面**
+        // (engine.cc),所以逾時的時候中英**已經真的切了** —— 而它照樣
+        // 回 handled=false → TSF 的 OnPreservedKey 回 FALSE →
+        // **宿主同時也吃到那顆 Ctrl+空格**。
+        //
+        // ⚠ 這個錯我們在 Ctrl+Shift+F 上已經修過一次(key_deadline.h 的
+        //   PlanVariantKey),而沒有人回頭看 Ctrl+空格。所以這一輪不再
+        //   手工修一顆:判準改成「**有沒有做過那件不可逆的事**」,而
+        //   `case Op::kKey` 上每一個出口都必須從這裡拿 handled。
+        //   守它的是 run_logic_tests.sh 的 key_path_gates() 第 (7) 段,
+        //   六種拆法都有反向測試(ascii_gate_removed / ascii_gate_overridden
+        //   / ascii_side_effect_unreported / processkey_side_effect_unreported
+        //   / branch_side_effect_const / not_answered_bit_dropped)。
+        //
+        // ⚠ 順序:先算門,再用門的答案決定 UI —— 反過來的話「吃掉了
+        //   卻不是現況」那一格會拿一份佔位去更新候選窗。
+        // ⚠ 線路上已經說了「引擎對這顆鍵一個字都沒說」的那一份,**不管
+        //   有沒有逾時**都不是現況。三條路會走到:重新部署中的 fail-open
+        //   (engine.cc 的 ShouldFailOpen 回填)、引擎不認得這個 session
+        //   (ProcessKey 那個 Find 失敗的分支)、以及真的逾時。
+        //   前兩條的 kw.timed_out 是 false —— 只看它的話,一份 status_flags
+        //   只有 kStDisabled 的空快照會被當成現況餵進 push_ui,把使用者
+        //   組字到一半的候選窗收掉。那個位元已經是**單一事實來源**,
+        //   這裡就讀它。
+        if ((r.snap.status_flags & kStKeyNotAnswered) != 0)
+          key_result_is_current = false;
+        const KeyExitPlan key_exit =
+            PlanKeyExit(key_side_effect_done, key_result_is_current);
+        r.handled = key_exit.eat_key;
+        // ⚠ 不是現況的那一份,線路上一定要說出來 —— 否則 DLL 的
+        //   DecideKeyOutlet 會走 kSelfInsert,把使用者剛按的字母補進他的
+        //   文件(§13c 的「ni好」),而 SendAsciiToggle 會把一份空快照
+        //   套進文件,使用者打到一半的組字當場消失。
+        if (KeyExitNeedsNotAnsweredBit(key_side_effect_done,
+                                       key_result_is_current))
+          r.snap.status_flags |= kStKeyNotAnswered;
         // ── 把「間歇打不出中文」變成一個數字,**三個出口都算** ───────
         //
         // ⚠ 上一輪這四個計數只包住 ProcessKey 那一格,於是最常按的那顆鍵
@@ -1111,10 +1167,29 @@ void PipeServer::ServeClient(HANDLE pipe) {
         //   「push_ui 在守門裡面」,不是「push_ui 只發生在守門裡面」——
         //   覆核者實測:在這個大括號**後面**多加一行 push_ui(r.snap),
         //   四條判準全綠。所以守門加了第五條:數出現次數。
-        if (DecideKeyUiAction(kw.timed_out, key_result_is_current) ==
+        if (DecideKeyUiAction(kw.timed_out, key_exit.result_is_current) ==
             KeyUiAction::kUpdateUi) {
           note_schema(r.snap);
           push_ui(r.snap);
+        } else if (action == KeyAction::kToggleAsciiMode &&
+                   key_exit.eat_key) {
+          // ── ⚠ 「不是現況」不等於「整份 UI 都要凍住」(#119)────────
+          //
+          //   走到這裡的意思是:中英**已經真的切了**(key_exit.eat_key
+          //   為真只可能來自 side_effect_done),只是引擎那趟取快照沒有
+          //   在預算內回來。上一輪整份 UI 都擋掉,於是那一橫一個像素都
+          //   不動 —— 使用者看到的是「Ctrl+空格 壞了」,而它其實成功了。
+          //   **把一個成功的操作演成失敗的**,比慢還糟。
+          //
+          //   而中英模式是服務端**不必問引擎就知道**的一件事:它是
+          //   Engine 上的一個 atomic(SetAsciiModeAll 那一句是 store +
+          //   PostAsync,store 當場就生效)。所以這一格照樣推得動。
+          //
+          // ⚠ 只推那一格。候選窗與組字那一段是**引擎的現況**,而我們
+          //   手上沒有 —— 那些照舊一個像素都不准動(push_ui 會因為
+          //   items 是空的而 ui_->Hide(),把使用者組字到一半的候選窗
+          //   收掉)。所以這裡走的是 bar_->OnAsciiMode(),不是 push_ui()。
+          if (bar_) bar_->OnAsciiMode(engine_->AsciiMode());
         }
         if (!send(EncodeResult(seq, r))) goto done;
         break;

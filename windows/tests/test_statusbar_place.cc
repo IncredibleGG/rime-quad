@@ -239,3 +239,182 @@ TEST(statusbar_growing_wider_survives_a_narrow_work_area) {
     CHECK(p.y + p.h <= tiny.bottom);
   }
 }
+
+// ══════════════════════════════════════════════════════════════════
+// ⭐ #120:不要壓在別人的浮動橫條上
+// ══════════════════════════════════════════════════════════════════
+//
+// 使用者截圖:他切到第三方輸入法,我們那一橫**壓在人家的橫條上**。
+// 位置預設右下角,而上一輪一點避讓都沒有。
+namespace {
+
+WorkArea Mon(int l, int t, int r, int b, bool primary = true, int dpi = 96) {
+  WorkArea m;
+  m.left = l;
+  m.top = t;
+  m.right = r;
+  m.bottom = b;
+  m.primary = primary;
+  m.dpi = dpi;
+  return m;
+}
+
+ObstacleRect Obs(int l, int t, int r, int b) {
+  ObstacleRect o;
+  o.left = l;
+  o.top = t;
+  o.right = r;
+  o.bottom = b;
+  return o;
+}
+
+// 那一橫已經擺好的樣子:寬 200、高 28,靠工作區右下角(離邊 12)。
+PlacedBar AtBottomRight(const WorkArea& m, int w = 200, int h = 28) {
+  PlacedBar p;
+  p.w = w;
+  p.h = h;
+  p.x = m.right - 12 - w;
+  p.y = m.bottom - 12 - h;
+  p.monitor = 0;
+  return p;
+}
+
+bool Intersects(const PlacedBar& p, const ObstacleRect& o) {
+  return p.x < o.right && o.left < p.x + p.w && p.y < o.bottom &&
+         o.top < p.y + p.h;
+}
+
+}  // namespace
+
+TEST(StatusBarPlace_NothingInTheWayMeansNoMove) {
+  const std::vector<WorkArea> mons{Mon(0, 0, 1920, 1040)};
+  const PlacedBar in = AtBottomRight(mons[0]);
+  // 沒有障礙物 —— 一個像素都不准動。避讓不可以變成「每次重排都跳一下」。
+  const PlacedBar out = AvoidObstacles(in, mons, {});
+  CHECK_INT(out.y, in.y);
+  CHECK_INT(out.nudge_dy, 0);
+  // 有障礙物但不在路上(x 差得遠)—— 一樣不動。
+  const PlacedBar out2 =
+      AvoidObstacles(in, mons, {Obs(0, 1000, 300, 1040)});
+  CHECK_INT(out2.y, in.y);
+  CHECK_INT(out2.nudge_dy, 0);
+}
+
+TEST(StatusBarPlace_MovesOffAnotherFloatingBar) {
+  const std::vector<WorkArea> mons{Mon(0, 0, 1920, 1040)};
+  const PlacedBar in = AtBottomRight(mons[0]);
+  // 別人的橫條停在同一個角:1000..1040 的最後 40 像素。
+  const ObstacleRect other = Obs(1600, 990, 1908, 1030);
+  CHECK_MSG(Intersects(in, other), "前提:沒有避讓時它們真的疊在一起");
+
+  const PlacedBar out = AvoidObstacles(in, mons, {other});
+  CHECK_MSG(!Intersects(out, other), "避讓之後不可以再疊在一起");
+  CHECK_MSG(out.nudge_dy < 0, "在工作區下半 → 往**上**讓");
+  CHECK(out.how == PlacedBar::How::kNudgedAside);
+  // 讓開之後留得下 §12.10.5 的空隙,而且 x 一個像素都沒動
+  // (那一橫是右錨定的,左右挪會離開使用者選的那個角)。
+  CHECK_INT(out.x, in.x);
+  CHECK(out.y + out.h <= other.top - kBarAvoidGapDip);
+  // ⚠ 而且仍然在工作區裡面。
+  CHECK(out.y >= mons[0].top);
+  CHECK(out.y + out.h <= mons[0].bottom);
+}
+
+TEST(StatusBarPlace_TaskbarOnTopMeansMoveDown) {
+  // 工作列在**上面**:工作區的 top 被推下來,而那一橫如果落在上半,
+  // 往上讓就是往螢幕外面讓。方向要由它自己的位置決定,不是寫死。
+  const std::vector<WorkArea> mons{Mon(0, 48, 1920, 1080)};
+  PlacedBar in;
+  in.w = 200;
+  in.h = 28;
+  in.x = 1920 - 12 - 200;
+  in.y = 48 + 12;          // 靠工作區**上**緣
+  in.monitor = 0;
+  const ObstacleRect other = Obs(1600, 48, 1908, 90);
+  CHECK_MSG(Intersects(in, other), "前提:真的疊在一起");
+
+  const PlacedBar out = AvoidObstacles(in, mons, {other});
+  CHECK_MSG(!Intersects(out, other), "避讓之後不可以再疊在一起");
+  CHECK_MSG(out.nudge_dy > 0, "在工作區上半 → 往**下**讓");
+  CHECK(out.y >= mons[0].top);
+  CHECK(out.y + out.h <= mons[0].bottom);
+}
+
+TEST(StatusBarPlace_OtherMonitorsObstaclesAreNotOurs) {
+  // 多螢幕:第二顆上的橫條與我們無關。
+  // ⚠ 少了這一關,別顆螢幕上一條「座標剛好對得上」的橫條會把這一條
+  //   趕出工作區 —— 而症狀是「它不見了」,使用者不會聯想到避讓。
+  const std::vector<WorkArea> mons{Mon(0, 0, 1920, 1040),
+                                   Mon(1920, 0, 3840, 1040, false)};
+  const PlacedBar in = AtBottomRight(mons[0]);
+  const PlacedBar out =
+      AvoidObstacles(in, mons, {Obs(3500, 990, 3830, 1030)});
+  CHECK_INT(out.y, in.y);
+  CHECK_INT(out.nudge_dy, 0);
+}
+
+TEST(StatusBarPlace_NeverLeavesTheWorkArea) {
+  // 讓不開的時候**維持原位**。壓在別人上面難看,跑到螢幕外面是消失
+  // —— 而那一橫上刻意沒有 X,使用者不會覺得是自己關掉的。
+  const std::vector<WorkArea> mons{Mon(0, 0, 1920, 1040)};
+  const PlacedBar in = AtBottomRight(mons[0]);
+  // 整個工作區的右半邊從上到下都被佔住。
+  const std::vector<ObstacleRect> wall{Obs(1500, 0, 1920, 1040)};
+  const PlacedBar out = AvoidObstacles(in, mons, wall);
+  CHECK_INT(out.y, in.y);
+  CHECK_INT(out.x, in.x);
+  CHECK_INT(out.nudge_dy, 0);
+  CHECK(out.y >= mons[0].top && out.y + out.h <= mons[0].bottom);
+}
+
+TEST(StatusBarPlace_StacksPastSeveralBars) {
+  // 兩條疊著的橫條 —— 要一路讓過去,而且步數有上限(不可以繞不完)。
+  const std::vector<WorkArea> mons{Mon(0, 0, 1920, 1040)};
+  const PlacedBar in = AtBottomRight(mons[0]);
+  const std::vector<ObstacleRect> two{Obs(1600, 990, 1908, 1030),
+                                      Obs(1500, 940, 1908, 985)};
+  const PlacedBar out = AvoidObstacles(in, mons, two);
+  for (const ObstacleRect& o : two)
+    CHECK_MSG(!Intersects(out, o), "兩條都要讓過去");
+  CHECK(out.y >= mons[0].top);
+  CHECK(out.y + out.h <= mons[0].bottom);
+}
+
+TEST(StatusBarPlace_AvoidanceIsNotStoredAsThePosition) {
+  // ⚠ 存進設定檔的必須是**使用者選的**那個位置。存避讓後的位置,
+  //   下一次重排會從那裡再讓一次 —— 偏移會一路累積,最後那一橫自己
+  //   爬到螢幕另一頭。service/status_bar.cc 的 SavePlacement 靠
+  //   nudge_dy 把它扣回去,所以這一格必須說得出「挪了多少」。
+  const std::vector<WorkArea> mons{Mon(0, 0, 1920, 1040)};
+  const PlacedBar in = AtBottomRight(mons[0]);
+  const PlacedBar out =
+      AvoidObstacles(in, mons, {Obs(1600, 990, 1908, 1030)});
+  CHECK_INT(out.y - out.nudge_dy, in.y);
+  // 扣回去之後與 MakeAnchor 之前那一份完全一樣 —— 也就是「使用者的位置」。
+  const BarAnchor a =
+      MakeAnchor(mons[0], out.x, out.y - out.nudge_dy, out.w, out.h);
+  CHECK_INT(a.dy_dip, 12);
+  CHECK_INT(a.dx_dip, 12);
+}
+
+TEST(StatusBarPlace_PlacementSaysWhichMonitor) {
+  // 避讓要在同一顆螢幕的工作區內做,而三段回落之後呼叫端自己算不出來。
+  const std::vector<WorkArea> mons{Mon(0, 0, 1920, 1040, false),
+                                   Mon(1920, 0, 3840, 1040, true)};
+  BarAnchor a;
+  a.valid = true;
+  a.work_left = 0;
+  a.work_top = 0;
+  a.work_right = 1920;
+  a.work_bottom = 1040;
+  a.dx_dip = 12;
+  a.dy_dip = 12;
+  CHECK_INT(PlaceStatusBar(a, mons, 200, 28).monitor, 0);
+  // 那顆螢幕不見了 → 退回主螢幕,而 monitor 要跟著指到主螢幕。
+  const std::vector<WorkArea> only_second{Mon(1920, 0, 3840, 1040, true)};
+  const PlacedBar p2 = PlaceStatusBar(a, only_second, 200, 28);
+  CHECK_INT(p2.monitor, 0);
+  CHECK(p2.how == PlacedBar::How::kFellBackToPrimary);
+  // 一顆螢幕都沒有 —— 不可以回一個假的索引。
+  CHECK_INT(PlaceStatusBar(a, {}, 200, 28).monitor, -1);
+}

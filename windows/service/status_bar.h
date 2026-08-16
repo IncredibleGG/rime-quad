@@ -116,6 +116,19 @@ class StatusBar {
   //   那一格必須跟著動,否則它會變成一個「說謊的指示器」。
   void OnSnapshot(const Snapshot& snap);
 
+  // ⭐ #119:**只**更新中/英那一格,其他三格一個像素都不動。
+  //
+  // ⚠ 存在的理由是「一份 Result 裡有兩種可信度不同的事實」:
+  //   Ctrl+空格 逾時的時候,候選窗與組字那一段我們手上沒有現況
+  //   (那一份是佔位,餵進去會把使用者組字到一半的候選窗收掉),
+  //   但**中英模式我們知道** —— SetAsciiModeAll() 那一句是 store +
+  //   PostAsync,store 當場就生效,Engine::AsciiMode() 讀得到。
+  //
+  //   上一輪整份 UI 都被 DecideKeyUiAction() 擋掉,於是使用者按下
+  //   Ctrl+空格、中英真的切了,而那一橫一個像素都不動 ——
+  //   一個**成功**的操作被演成失敗的。
+  void OnAsciiMode(bool ascii);
+
   /// 在還沒有任何宿主連上來之前,先讓那一橫知道方案叫什麼。
   /// 見底下 schema_name_ 的說明:**不是權威**,第一份快照到就被覆蓋。
   void SeedSchemaName(const std::string& name);
@@ -176,6 +189,8 @@ class StatusBar {
   // ⚠ 寬度由呼叫端給(0 = 用視窗現在的寬度)。Relayout 改了寬度之後
   //   一定要重走這一支 —— 只長寬度不重擺,右端會被推出螢幕。
   void ApplyPlacement(int w_dip);
+  // 「哪些窗算障礙」——判準是形狀不是身分,見 .cc 上的說明。
+  std::vector<ObstacleRect> CollectFloatingBars(const WorkArea& on) const;
   // 視窗級圓角(§12.14.4)。DWM 或 region,**不得同時** —— 見實作。
   static void ApplyWindowCorners(HWND hwnd, int w_px, int h_px,
                                  int radius_px);
@@ -222,6 +237,14 @@ class StatusBar {
   Theme theme_;
 
   std::mutex mu_;
+  // 掃桌面找「別人的浮動橫條」的節流(見 CollectFloatingBars)。
+  // ⚠ mutable:那一支是 const 的,而快取是它的實作細節。
+  static const DWORD kBarScanMs = 500;
+  mutable std::vector<ObstacleRect> bars_cache_;
+  mutable DWORD bars_scanned_ms_ = 0;
+  // §12.10.5 的避讓上一次把那一橫往下挪了多少像素(負值 = 往上)。
+  // ⚠ 存位置時要扣回去,否則偏移會一路累積(見 SavePlacement)。
+  int nudge_dy_ = 0;
   bool ascii_mode_ = false;
   // ⚠ 三態,不是布林。kHidden = 引擎沒有回報字形 → **那一格整格不顯示**。
   //   舊版是 bool simplified_,而它的來源是 kStSimplified ←

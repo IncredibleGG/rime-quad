@@ -28,6 +28,17 @@ const WorkArea* FindPrimary(const std::vector<WorkArea>& monitors) {
 
 }  // namespace
 
+namespace {
+
+int IndexOf(const std::vector<WorkArea>& monitors, const WorkArea* m) {
+  if (!m) return -1;
+  for (size_t i = 0; i < monitors.size(); ++i)
+    if (&monitors[i] == m) return static_cast<int>(i);
+  return -1;
+}
+
+}  // namespace
+
 PlacedBar PlaceStatusBar(const BarAnchor& anchor,
                          const std::vector<WorkArea>& monitors, int w_dip,
                          int h_dip) {
@@ -87,6 +98,90 @@ PlacedBar PlaceStatusBar(const BarAnchor& anchor,
   out.y = y;
   out.w = w;
   out.h = h;
+  // ⚠ 交出用了哪一顆 —— 避讓要在同一顆的工作區內做,而三段回落之後
+  //   呼叫端自己算不出來(它不知道我們走的是第 1 段還是第 2 段)。
+  out.monitor = IndexOf(monitors, mon);
+  return out;
+}
+
+namespace {
+
+bool Overlaps(int x, int y, int w, int h, const ObstacleRect& o) {
+  return x < o.right && o.left < x + w && y < o.bottom && o.top < y + h;
+}
+
+}  // namespace
+
+PlacedBar AvoidObstacles(const PlacedBar& placed,
+                         const std::vector<WorkArea>& monitors,
+                         const std::vector<ObstacleRect>& obstacles) {
+  PlacedBar out = placed;
+  if (placed.monitor < 0 ||
+      static_cast<size_t>(placed.monitor) >= monitors.size())
+    return out;
+  if (obstacles.empty()) return out;
+  const WorkArea& on = monitors[static_cast<size_t>(placed.monitor)];
+  if (placed.w <= 0 || placed.h <= 0) return out;
+
+  // 讓開之後留多少空隙。⚠ DIP,依那顆螢幕的 DPI 換算 —— 150% 的螢幕上
+  //   8 個像素幾乎貼在一起。
+  const int gap = Dip(kBarAvoidGapDip, on.dpi);
+
+  // 只認**跟我們同一顆螢幕**的障礙物,而且要真的擋在路上(x 有重疊)。
+  // ⚠ 沒有這一關的話,第二顆螢幕上的一條橫條會把這一條趕到工作區外面。
+  std::vector<ObstacleRect> hits;
+  for (const ObstacleRect& o : obstacles) {
+    if (o.right <= o.left || o.bottom <= o.top) continue;
+    if (o.right <= on.left || o.left >= on.right) continue;
+    if (o.bottom <= on.top || o.top >= on.bottom) continue;
+    if (o.right <= placed.x || o.left >= placed.x + placed.w) continue;
+    hits.push_back(o);
+  }
+  if (hits.empty()) return out;
+
+  auto blocked = [&](int y) -> bool {
+    for (const ObstacleRect& o : hits)
+      if (Overlaps(placed.x, y, placed.w, placed.h, o)) return true;
+    return false;
+  };
+  if (!blocked(placed.y)) return out;
+
+  // ⚠ 方向由**它自己在工作區裡的位置**決定,不是寫死往上:工作列在
+  //   上面(或使用者把那一橫拖到頂了)的時候,往上讓就是往螢幕外面讓。
+  const bool in_lower_half =
+      (placed.y + placed.h / 2) * 2 >= on.top + on.bottom;
+
+  // 一個方向試到底;讓不開就換另一個方向從原位再試一次。
+  auto slide = [&](bool up) -> bool {
+    int y = placed.y;
+    for (int step = 0; step < kBarAvoidMaxSteps; ++step) {
+      // 擋路的那些裡面,挑一個決定下一個落腳點。
+      int next = y;
+      bool moved = false;
+      for (const ObstacleRect& o : hits) {
+        if (!Overlaps(placed.x, y, placed.w, placed.h, o)) continue;
+        const int cand = up ? o.top - gap - placed.h : o.bottom + gap;
+        if (!moved || (up ? cand < next : cand > next)) {
+          next = cand;
+          moved = true;
+        }
+      }
+      if (!moved) {
+        out.y = y;
+        out.nudge_dy = y - placed.y;
+        if (out.nudge_dy != 0) out.how = PlacedBar::How::kNudgedAside;
+        return true;
+      }
+      // 讓出工作區就是**消失**,而使用者不會把它跟避讓聯想在一起。
+      if (next < on.top || next + placed.h > on.bottom) return false;
+      y = next;
+    }
+    return false;
+  };
+
+  if (slide(in_lower_half)) return out;
+  if (slide(!in_lower_half)) return out;
+  // 讓不開 —— 維持原位。壓在別人上面難看,跑到螢幕外面是消失。
   return out;
 }
 

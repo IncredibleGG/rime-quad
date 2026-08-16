@@ -315,6 +315,195 @@ static_assert(VariantKeyPlanIsSound(false, false) &&
               "文件,使用者打到一半的組字當場消失而且沒有上屏)");
 
 // 反向:把 PlanVariantKey 改成「永遠吃掉」或「永遠不吃」都要編不過。
+// ══════════════════════════════════════════════════════════════════
+// ── `case Op::kKey` 上**每一個**出口都要走的同一道門(#119)────────
+// ══════════════════════════════════════════════════════════════════
+//
+// ── 為什麼上面那一套不夠 ────────────────────────────────────────
+//
+// PlanVariantKey 是對的,但它只守**一顆鍵**。而同一個錯在 `Ctrl+空格`
+// 上原封不動地又發生了一次,而且沒有人回頭看:
+//
+//   service/engine.cc 的 ToggleAsciiMode() 先 SetAsciiModeAll(!now)
+//   —— 那一句是 store + PostAsync,**不等**,所以中英在那一瞬間就真的
+//   切了 —— 然後才去做那趟有上限的「切中英後取快照」。逾時的時候它回
+//   handled=false,於是:
+//
+//     · TSF 的 OnPreservedKey 回 FALSE → **宿主也吃到那顆 Ctrl+空格**
+//       (Everything 的搜尋框、某些編輯器的自動完成),使用者按一下
+//       同時得到「中英切了」與「別人的功能被叫起來了」;
+//     · 而 pipe_server 那側 `key_result_is_current = !kw.timed_out`
+//       → DecideKeyUiAction 回 kLeaveUiAlone → **那一橫一個像素都不動**,
+//       畫面說他還在中文,引擎已經在英數。
+//
+// 對照組 `3fa0dab`:第二趟是 Engine::Post() = 永遠等,handled 永遠是
+// true —— 這個狀態在 main 上**不存在**,是「替第二趟加上限」造出來的。
+// 與 Ctrl+Shift+F 那一格一字不差的成因。
+//
+// ── 所以判準不再是「這顆鍵是哪一顆」,是「有沒有做過那件不可逆的事」──
+//
+// 兩個輸入,而且**兩個都是事實,不是意圖**:
+//
+//   side_effect_done   —— 這顆鍵已經對引擎或設定做過不可逆的事。
+//                         · Ctrl+空格:SetAsciiModeAll() 已經呼叫過;
+//                         · Ctrl+Shift+F:ToggleVariantPref() 回了 true;
+//                         · 一般按鍵:rs_process_key() 回了 true
+//                           (它吃了那顆鍵 = 組字狀態動過了)。
+//                         逾時而**作廢成功**時它是 false —— 本體一步都
+//                         沒跑,所以沒有東西可以「已經做過」。
+//   snapshot_is_current —— 手上這一份 Result 是引擎的現況,不是佔位。
+//
+// 三個輸出,而且它們**互相沒有自由度**(見下面四條 static_assert):
+//
+//   eat_key          → 回給 DLL 的 handled。true = 宿主不准再動作一次。
+//   result_is_current→ 服務端可不可以拿這一份碰候選窗與那一橫;
+//                      同時決定線路上要不要帶 kStKeyNotAnswered。
+//   doc              → DLL 可不可以把這一份套進使用者的文件。
+//
+// ── 「吃掉、但文件一個位元都不動」不是新東西 ─────────────────────
+//
+// 它就是 common/key_eat_policy.h 的 KeyOutlet::kEatSilently,而線路上的
+// 表示是 protocol.h 的 kStKeyNotAnswered —— 一個住在既有 u32 裡的位元,
+// 舊 DLL 照樣解得完。也就是說 `Ctrl+空格` 逾時那一格**早就有**正確的
+// 出口,只是沒有人把它接上去。
+//
+// ⚠ 這道門是 `case Op::kKey` 上唯一算得出 `Result::handled` 的地方。
+//   守它的不是這段註解:windows/run_logic_tests.sh 的 key_path_gates()
+//   第 (7) 段掃 service/engine.cc 與 service/pipe_server.cc,要求
+//     (1) 凡是會做那件不可逆的事的 Engine 入口(body 裡有
+//         SetAsciiModeAll / rs_process_key / rs_select_candidate /
+//         rs_commit_composition / rs_clear_composition / ApplyVariantAll)
+//         都要把它寫進 wait->side_effect_done ——「哪些算副作用」是
+//         **結構上的**判準,新增第四種按鍵動作時它自己會抓到;
+//     (2) `case Op::kKey` 區塊裡 `PlanKeyExit(` 恰好一次;
+//     (3) 那一次的結果真的被寫回 `r.handled = key_exit.eat_key;`,
+//         而且那道門**之後**再也沒有別的地方寫 `r.handled =`;
+//     (4) 每一個會進佇列的分支都交得出 key_side_effect_done,
+//         而且不是常數;
+//     (5) 不是現況的那一份要走 KeyExitNeedsNotAnsweredBit() OR 上
+//         kStKeyNotAnswered。
+//   六種拆法都有反向測試,而且都會紅(run_logic_tests.sh 那一段的
+//   ascii_gate_removed / ascii_gate_overridden /
+//   ascii_side_effect_unreported / processkey_side_effect_unreported /
+//   branch_side_effect_const / not_answered_bit_dropped)。
+
+// DLL 收到這一份之後,可不可以拿它動使用者的文件。
+enum class KeyDocAction {
+  // 照舊:套進文件(上屏、組字、收尾)。
+  kApplySnapshot,
+  // **文件一個位元都不動。** 那顆鍵仍然算我們吃掉了(見 eat_key),
+  // 只是引擎沒有交出現況,沒有東西可以套。
+  kLeaveDocAlone,
+};
+
+struct KeyExitPlan {
+  bool eat_key;
+  bool result_is_current;
+  KeyDocAction doc;
+};
+
+constexpr KeyExitPlan PlanKeyExit(bool side_effect_done,
+                                  bool snapshot_is_current) {
+  return KeyExitPlan{
+      // ① 做過那件不可逆的事 ⇒ 這顆鍵一定算我們吃掉。
+      //    ⚠ 反過來不成立:引擎表態說「我不要這顆鍵」(英數模式下的
+      //      字母)時什麼都沒做,那一顆本來就該讓宿主收尾。
+      side_effect_done,
+      snapshot_is_current,
+      // ② 不是現況 ⇒ 文件一個位元都不動。
+      snapshot_is_current ? KeyDocAction::kApplySnapshot
+                          : KeyDocAction::kLeaveDocAlone};
+}
+
+// 這一份要不要在線路上帶 kStKeyNotAnswered。
+// ⚠ 極性只有一個方向(protocol.h):**有那個位元 = 確定沒回答**。
+constexpr bool KeyExitNeedsNotAnsweredBit(bool side_effect_done,
+                                          bool snapshot_is_current) {
+  return !PlanKeyExit(side_effect_done, snapshot_is_current).result_is_current;
+}
+
+// ── 四條硬性要求,四格全列出來,而且是**編譯期**的 ────────────────
+constexpr bool KeyExitPlanIsSound(bool side_effect_done,
+                                  bool snapshot_is_current) {
+  return
+      // ① 副作用發生了 ⇒ 那顆鍵一定算被我們吃掉。
+      //    這一條就是 #119:`Ctrl+空格` 切了中英卻回 handled=false,
+      //    於是宿主同時吃到同一顆鍵。
+      (!side_effect_done ||
+       PlanKeyExit(side_effect_done, snapshot_is_current).eat_key) &&
+      // ② 不是現況 ⇒ DLL 不准把它套進文件。
+      //    (少了這一條,①「逾時也要吃掉」就會把一份空快照送進
+      //     SendAsciiToggle 的 ApplyPlan,使用者打到一半的組字當場消失。)
+      (PlanKeyExit(side_effect_done, snapshot_is_current).result_is_current ||
+       PlanKeyExit(side_effect_done, snapshot_is_current).doc ==
+           KeyDocAction::kLeaveDocAlone) &&
+      // ③ 不是現況 ⇒ 服務端的 UI 也不准動,而且與 DecideKeyUiAction
+      //    必須是**同一個答案**(兩份真相就是兩個會漂移的畫面)。
+      (DecideKeyUiAction(
+           /*timed_out=*/!PlanKeyExit(side_effect_done, snapshot_is_current)
+               .result_is_current,
+           PlanKeyExit(side_effect_done, snapshot_is_current)
+               .result_is_current) ==
+       (PlanKeyExit(side_effect_done, snapshot_is_current).result_is_current
+            ? KeyUiAction::kUpdateUi
+            : KeyUiAction::kLeaveUiAlone)) &&
+      // ④ 吃掉了、而且不是現況 ⇒ 線路上一定要帶 kStKeyNotAnswered,
+      //    否則 DLL 的 DecideKeyOutlet 會走 kSelfInsert,把使用者剛按的
+      //    字母補進他的文件(§13c 的「ni好」)。
+      (!(PlanKeyExit(side_effect_done, snapshot_is_current).eat_key &&
+         !PlanKeyExit(side_effect_done, snapshot_is_current)
+              .result_is_current) ||
+       KeyExitNeedsNotAnsweredBit(side_effect_done, snapshot_is_current));
+}
+
+static_assert(KeyExitPlanIsSound(false, false) &&
+                  KeyExitPlanIsSound(false, true) &&
+                  KeyExitPlanIsSound(true, false) &&
+                  KeyExitPlanIsSound(true, true),
+              "case Op::kKey 上每一個出口的四條硬性要求:做過不可逆的事就"
+              "一定要吃掉那顆鍵(否則宿主同時也吃到它)、不是現況就不准"
+              "碰文件也不准碰 UI、而且線路上一定要說出『引擎沒有回答』");
+
+// ── 反向:把 PlanKeyExit 寫成任何一種「省事」的樣子都要編不過 ─────
+static_assert(PlanKeyExit(true, false).eat_key,
+              "#119 本身:中英已經切了而快照逾時 —— 這一格**必須**吃掉"
+              "那顆鍵,不然宿主的 Ctrl+空格 也會動作一次");
+static_assert(PlanKeyExit(true, false).doc == KeyDocAction::kLeaveDocAlone,
+              "吃掉不等於可以動文件:那一份是佔位,套進去等於把使用者"
+              "打到一半的組字清掉");
+static_assert(!PlanKeyExit(false, false).eat_key &&
+                  !PlanKeyExit(false, true).eat_key,
+              "什麼都沒做就不可以吃掉那顆鍵(key_eat_policy.h:做不到的事"
+              "不要吃掉那顆鍵)");
+static_assert(!KeyExitNeedsNotAnsweredBit(true, true) &&
+                  !KeyExitNeedsNotAnsweredBit(false, true),
+              "現況就是現況 —— 亂送 kStKeyNotAnswered 會讓 DLL 對每一顆"
+              "正常的字母都『吃掉但不動文件』,那是整條輸入法失效");
+
+// ── 上面那顆專用的門必須是這顆通用門的一個特例 ────────────────────
+//
+// ⚠ 兩份真相就是兩個會漂移的答案。PlanVariantKey 留著(它多守一件事:
+//   **副作用排在最後一趟**,也就是 may_toggle),但它交出去的
+//   eat_key / ui_is_current 必須與 PlanKeyExit 一字不差。
+constexpr bool VariantPlanAgreesWithKeyExit(bool snapshot_is_current,
+                                            bool toggled) {
+  return PlanVariantKey(snapshot_is_current, toggled).eat_key ==
+             PlanKeyExit(snapshot_is_current && toggled,
+                         snapshot_is_current && toggled)
+                 .eat_key &&
+         PlanVariantKey(snapshot_is_current, toggled).ui_is_current ==
+             PlanKeyExit(snapshot_is_current && toggled,
+                         snapshot_is_current && toggled)
+                 .result_is_current;
+}
+
+static_assert(VariantPlanAgreesWithKeyExit(false, false) &&
+                  VariantPlanAgreesWithKeyExit(false, true) &&
+                  VariantPlanAgreesWithKeyExit(true, false) &&
+                  VariantPlanAgreesWithKeyExit(true, true),
+              "簡繁那顆專用的門必須是通用那道門的特例 —— 兩份真相會漂移,"
+              "而漂移的樣子是『某一顆鍵又開始被宿主吃第二次』");
+
 static_assert(PlanVariantKey(true, true).eat_key,
               "握著現況快照、而且真的切了 —— 這一格必須吃掉那顆鍵,"
               "不然簡繁換了而宿主的 Ctrl+Shift+F 也開了");

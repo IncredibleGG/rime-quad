@@ -263,7 +263,28 @@ void StatusBar::OnClientProfileState(uint64_t client_id, bool ours_active) {
     // ⚠ 報不出 tid(舊 DLL)就沒有可以下鍵的地方。舊 DLL 本來就不會送
     //   這則訊息,走到這裡代表對面壞了 —— 什麼都不做才是對的:
     //   一筆 tid=0 的紀錄會對上任何一個「查不到 tid」的前景。
-    if (host_tid == 0) return;
+    //
+    // ── ⚠ 出口 F:但「什麼都不做」不包含「什麼都不說」(#120)────────
+    //
+    //   DLL 那一側費了三個出口的力氣把那句話送出來,服務端在這裡默默
+    //   丟掉 —— 兩邊的記錄合起來仍然是一個斷點:DLL 說「已告知服務」,
+    //   服務端這邊沒有任何一行,而那一橫照樣留著。
+    //
+    //   ⚠ 額度:每條連線最多幾則,而且最後一則會說自己是最後一則。
+    //     這一支跑在連線執行緒上,13 個宿主 × 每次切輸入法一則。
+    if (host_tid == 0) {
+      static std::atomic<long> seen{0};
+      const long n = ++seen;
+      if (n <= 8) {
+        std::fprintf(stderr,
+                     "[bar] 收到讓位但這條連線報不出 host_tid(client=%llu)"
+                     " —— 沒有可以下鍵的地方,整則丟掉%s\n",
+                     static_cast<unsigned long long>(client_id),
+                     n == 8 ? "(額度用完,這個出口不再記)" : "");
+        std::fflush(stderr);
+      }
+      return;
+    }
     for (size_t i = 0; i < yields_.size();) {
       if (yields_[i].host_tid == host_tid)
         yields_.erase(yields_.begin() + static_cast<long>(i));
@@ -541,6 +562,24 @@ void StatusBar::OnSnapshot(const Snapshot& snap) {
         have_snapshot_ = true;
         changed = true;
       }
+    }
+  }
+  if (changed) Refresh();
+}
+
+// ⭐ #119:只推中/英那一格。見 status_bar.h 上的說明。
+//
+// ⚠ **不碰 variant_ / schema_name_ / have_snapshot_。** 那三格的事實
+//   來源是引擎的快照,而走到這裡正是因為那一份快照拿不到 ——
+//   順手把它們寫成預設值就是「畫面說謊」,而那是這個檔案的檔頭
+//   從第一行就在講的事。
+void StatusBar::OnAsciiMode(bool ascii) {
+  bool changed = false;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (ascii != ascii_mode_) {
+      ascii_mode_ = ascii;
+      changed = true;
     }
   }
   if (changed) Refresh();
@@ -878,10 +917,106 @@ void StatusBar::ApplyPlacement(int w_dip) {
       },
       reinterpret_cast<LPARAM>(&ctx));
 
-  const PlacedBar p = PlaceStatusBar(anchor, monitors, w_dip, kBarH);
+  PlacedBar p = PlaceStatusBar(anchor, monitors, w_dip, kBarH);
+  // ── §12.10.5 的避讓:不要壓在別人的浮動橫條上(#120)──────────────
+  //
+  // ⚠ 判準是**形狀**,不是身分。認得出特定輸入法的白名單會過期,而且
+  //   過期的白名單長得跟綠燈一模一樣:它不報錯,只是安靜地不避讓。
+  //   幾何本身是純函式(common/statusbar_place.h 的 AvoidObstacles),
+  //   在 Ubuntu 上測得到;這裡只負責「哪些窗算障礙」。
+  if (p.monitor >= 0 && static_cast<size_t>(p.monitor) < monitors.size())
+    p = AvoidObstacles(p, monitors,
+                       CollectFloatingBars(monitors[
+                           static_cast<size_t>(p.monitor)]));
+  nudge_dy_ = p.nudge_dy;
   ::SetWindowPos(hwnd_, HWND_TOPMOST, p.x, p.y, p.w, p.h,
                  SWP_NOACTIVATE);
   ApplyWindowCorners(hwnd_, p.w, p.h, Dip(kBarRadius, dpi_));
+}
+
+// ── 「哪些窗算障礙」──────────────────────────────────────────────
+//
+// 四個條件,而且四個都是**結構上的**性質,不是名字:
+//
+//   1. 看得見,而且不是被 DWM 藏起來的(UWP 切走的那些殼還在,
+//      但 DWMWA_CLOAKED 是真的);
+//   2. WS_EX_TOPMOST —— 永遠在最上層;
+//   3. WS_EX_NOACTIVATE —— 點它不搶焦點。
+//      ⚠ 2 + 3 合起來就是「一條浮動工具列**必須**有的樣子」:它要一直
+//        看得到,又不能讓使用者正在打字的插入點跳掉。我們自己那一橫
+//        (status_bar.cc 的 WM_MOUSEACTIVATE 回 MA_NOACTIVATE)、
+//        任何一家輸入法的狀態列,都會落在這兩格裡。一般的應用程式視窗
+//        不會 —— 它們要搶焦點。
+//   4. 別的行程的。自己的候選窗、設定視窗、那一橫本身都不算。
+//
+// 另外擋掉「大到不像橫條」的東西:全螢幕的覆蓋層(投影片、遊戲、
+// 螢幕錄影的框)也符合 2+3,躲它沒有意義,而且會把這一橫趕到角落。
+//
+// ⚠ 這一支會走一次 EnumWindows,而 ApplyPlacement 在連線進出、狀態改變、
+//   工作區變動時都會被叫到。所以節流:kBarScanMs 之內重用上一次的結果。
+//   位置晚半秒才讓開是看不出來的;每一次連線抖動都掃一輪整個桌面不是。
+std::vector<ObstacleRect> StatusBar::CollectFloatingBars(
+    const WorkArea& on) const {
+  const DWORD now = ::GetTickCount();
+  if (bars_scanned_ms_ != 0 && now - bars_scanned_ms_ < kBarScanMs)
+    return bars_cache_;
+  struct Ctx {
+    const StatusBar* self;
+    std::vector<ObstacleRect>* out;
+    int work_w;
+    int work_h;
+  };
+  std::vector<ObstacleRect> out;
+  // 「大到不像橫條」的門檻用**那一橫落腳的那顆螢幕**算 ——
+  // 而那一顆是三段回落挑出來的,不是 MonitorFromWindow(此刻視窗還在
+  // 舊位置上,而我們正要把它移走)。
+  Ctx ctx{this, &out, on.width(), on.height()};
+  ::EnumWindows(
+      [](HWND h, LPARAM lp) -> BOOL {
+        Ctx* c = reinterpret_cast<Ctx*>(lp);
+        if (h == c->self->hwnd_ || h == c->self->popup_) return TRUE;
+        if (!::IsWindowVisible(h)) return TRUE;
+        const LONG ex = ::GetWindowLongW(h, GWL_EXSTYLE);
+        if ((ex & WS_EX_TOPMOST) == 0) return TRUE;
+        if ((ex & WS_EX_NOACTIVATE) == 0) return TRUE;
+        DWORD pid = 0;
+        ::GetWindowThreadProcessId(h, &pid);
+        if (pid == ::GetCurrentProcessId()) return TRUE;
+        // ⚠ UWP 切到背景之後視窗還在、還「看得見」,只是被 DWM 藏起來。
+        //   不擋掉的話那一橫會躲一個根本畫不出來的東西。
+        //   14 = DWMWA_CLOAKED;mingw 的 dwmapi.h 沒有這個列舉。
+        using DwmGetFn = HRESULT(WINAPI*)(HWND, DWORD, PVOID, DWORD);
+        static HMODULE dwm = ::LoadLibraryW(L"dwmapi.dll");
+        static DwmGetFn fn =
+            dwm ? reinterpret_cast<DwmGetFn>(reinterpret_cast<void*>(
+                      ::GetProcAddress(dwm, "DwmGetWindowAttribute")))
+                : nullptr;
+        if (fn) {
+          DWORD cloaked = 0;
+          if (SUCCEEDED(fn(h, 14, &cloaked, sizeof(cloaked))) && cloaked != 0)
+            return TRUE;
+        }
+        RECT r{};
+        if (!::GetWindowRect(h, &r)) return TRUE;
+        const int w = r.right - r.left;
+        const int hgt = r.bottom - r.top;
+        if (w <= 0 || hgt <= 0) return TRUE;
+        // 全螢幕的覆蓋層不是一條橫條。
+        if (c->work_w > 0 && c->work_h > 0 && w * 4 >= c->work_w * 3 &&
+            hgt * 4 >= c->work_h * 3)
+          return TRUE;
+        ObstacleRect o;
+        o.left = r.left;
+        o.top = r.top;
+        o.right = r.right;
+        o.bottom = r.bottom;
+        c->out->push_back(o);
+        return TRUE;
+      },
+      reinterpret_cast<LPARAM>(&ctx));
+  bars_cache_ = out;
+  bars_scanned_ms_ = now;
+  return out;
 }
 
 void StatusBar::ApplyWindowCorners(HWND hwnd, int w_px, int h_px,
@@ -935,8 +1070,13 @@ void StatusBar::SavePlacement() {
   on.bottom = mi.rcWork.bottom;
   on.primary = (mi.dwFlags & MONITORINFOF_PRIMARY) != 0;
   on.dpi = static_cast<int>(dpi_);
-  const BarAnchor a = MakeAnchor(on, rc.left, rc.top, rc.right - rc.left,
-                                 rc.bottom - rc.top);
+  // ⚠ 把避讓挪過的那一段**扣回去**。存進設定檔的必須是使用者選的那個
+  //   位置 —— 存避讓後的位置,下一次重排會從那裡再讓一次,而那個偏移
+  //   會一路累積,最後那一橫自己爬到螢幕另一頭。
+  //   (拖動那條路上 nudge_dy_ 在 WM_LBUTTONDOWN 就歸零了,所以那一次
+  //    這裡扣的是 0,存下來的正是他放手的位置。)
+  const BarAnchor a = MakeAnchor(on, rc.left, rc.top - nudge_dy_,
+                                 rc.right - rc.left, rc.bottom - rc.top);
   Settings st = store_->Load();
   st.SetRaw(keys::kAppearanceFloatingBarPos, SerializeAnchor(a));
   store_->Save(st);
@@ -1498,6 +1638,10 @@ LRESULT CALLBACK StatusBar::WndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
     case WM_LBUTTONDOWN: {
       if (!self) break;
       self->drag_start_ = POINT{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+      // ⚠ 從這一刻起視窗的位置是**使用者的手**在決定的(WM_MOUSEMOVE
+      //   直接 SetWindowPos,不走 ApplyPlacement),所以避讓的那一段
+      //   不再成立。不歸零的話 SavePlacement 會把它多扣一次。
+      self->nudge_dy_ = 0;
       self->dragging_ = true;
       self->drag_moved_ = false;
       self->pressed_ = self->HitCell(self->drag_start_);

@@ -182,3 +182,100 @@ TEST(KeyDeadline_VariantKeyNeverPredictsTheBudget) {
     }
   }
 }
+
+// ══════════════════════════════════════════════════════════════════
+// ⭐ #119:`case Op::kKey` 上每一個會產生副作用的出口共用的那道門
+// ══════════════════════════════════════════════════════════════════
+//
+// 使用者實測回報:「重開之後 Ctrl+空格 仍然切不動中英。」
+//
+// 真相是它**切動了**,只是同時發生了兩件他看得到的事:
+//   · service/engine.cc 的 SetAsciiModeAll() 是 store + PostAsync(不等),
+//     它排在那趟有上限的「切中英後取快照」**前面** —— 中英當場就切了;
+//   · 那一趟逾時,上一輪照樣回 handled=false → TSF 的 OnPreservedKey 回
+//     FALSE → **宿主也吃到那顆 Ctrl+空格**,而服務端那側
+//     key_result_is_current 為 false → 那一橫一個像素都不動。
+//
+// 也就是說畫面說他沒切、宿主又做了自己的事,而引擎其實切了。
+TEST(KeyDeadline_EveryKeyExitGoesThroughTheSameDoor) {
+  // ── ① 副作用發生了 ⇒ 那顆鍵一定算被我們吃掉 ─────────────────
+  //   #119 本身就是這一格:切了卻回 handled=false。
+  CHECK_MSG(PlanKeyExit(/*side_effect_done=*/true,
+                        /*snapshot_is_current=*/false)
+                .eat_key,
+            "中英已經切了而快照逾時 —— 這顆鍵必須算被我們吃掉,"
+            "不然宿主的 Ctrl+空格 也會動作一次");
+  CHECK_MSG(PlanKeyExit(true, true).eat_key,
+            "切了、而且拿得到現況 —— 一樣要吃掉");
+
+  // ── ② 吃掉 ≠ 可以動文件 ──────────────────────────────────────
+  //   這一格是 ① 的代價,少了它 ① 就變成另一個缺陷:handled=1 配一份
+  //   佔位,tsf/text_service.cc 的 SendAsciiToggle 會走 ApplyPlan 把它
+  //   套進文件 —— 空快照的意思是「沒有組字」,使用者打到一半的那一段
+  //   當場消失,而且沒有上屏。
+  CHECK_MSG(PlanKeyExit(true, false).doc == KeyDocAction::kLeaveDocAlone,
+            "不是現況的那一份不可以套進文件");
+  CHECK_MSG(PlanKeyExit(true, true).doc == KeyDocAction::kApplySnapshot,
+            "是現況就照舊套進文件,不然每一次成功的切換都不收尾");
+
+  // ── ③ 什麼都沒做就不可以吃掉那顆鍵 ────────────────────────────
+  //   key_eat_policy.h 檔頭那一課:做不到的事不要吃掉那顆鍵。
+  CHECK(!PlanKeyExit(false, false).eat_key);
+  CHECK(!PlanKeyExit(false, true).eat_key);
+
+  // ── ④ 線路上的位元:極性只有一個方向 ──────────────────────────
+  CHECK(KeyExitNeedsNotAnsweredBit(true, false));
+  CHECK(KeyExitNeedsNotAnsweredBit(false, false));
+  CHECK(!KeyExitNeedsNotAnsweredBit(true, true));
+  CHECK(!KeyExitNeedsNotAnsweredBit(false, true));
+
+  // 四格全跑一次,而且與 DecideKeyUiAction 是同一個答案 ——
+  // 兩份真相就是兩個會漂移的畫面。
+  for (int i = 0; i < 4; ++i) {
+    const bool side = (i & 1) != 0;
+    const bool cur = (i & 2) != 0;
+    const KeyExitPlan p = PlanKeyExit(side, cur);
+    CHECK(KeyExitPlanIsSound(side, cur));
+    CHECK_MSG(!side || p.eat_key, "① 副作用發生了就一定要吃掉那顆鍵");
+    CHECK_MSG(p.result_is_current || p.doc == KeyDocAction::kLeaveDocAlone,
+              "② 不是現況就不准動文件");
+    CHECK_MSG((DecideKeyUiAction(!p.result_is_current, p.result_is_current) ==
+               KeyUiAction::kUpdateUi) == p.result_is_current,
+              "③ 服務端那側的 UI 判準必須給出同一個答案");
+    CHECK_MSG(!(p.eat_key && !p.result_is_current) ||
+                  KeyExitNeedsNotAnsweredBit(side, cur),
+              "④ 吃掉而且不是現況 ⇒ 線路上一定要說『引擎沒有回答』");
+  }
+}
+
+TEST(KeyDeadline_VariantDoorIsASpecialCaseOfTheGeneralOne) {
+  // ⚠ 兩份真相就是兩個會漂移的答案。簡繁那顆專用的門留著(它多守一件
+  //   事:副作用排在最後一趟),但它交出去的 eat_key / ui_is_current
+  //   必須與通用那道門一字不差 —— 否則下一輪又會有一顆鍵自己一套。
+  for (int i = 0; i < 4; ++i) {
+    const bool cur = (i & 1) != 0;
+    const bool tog = (i & 2) != 0;
+    CHECK(VariantPlanAgreesWithKeyExit(cur, tog));
+    const VariantKeyPlan v = PlanVariantKey(cur, tog);
+    const KeyExitPlan g = PlanKeyExit(cur && tog, cur && tog);
+    CHECK_INT(v.eat_key ? 1 : 0, g.eat_key ? 1 : 0);
+    CHECK_INT(v.ui_is_current ? 1 : 0, g.result_is_current ? 1 : 0);
+  }
+}
+
+TEST(KeyDeadline_AsciiToggleTimeoutIsNotAFailure) {
+  // ⚠ 這一條釘的是 #119 的**另一半**:逾時的時候那一橫不可以整份凍住。
+  //
+  //   中英模式是服務端不必問引擎就知道的一件事(Engine::AsciiMode() 是
+  //   一個 atomic,SetAsciiModeAll 那一句的 store 當場生效),而候選窗
+  //   與組字那一段才是真的拿不到。所以「這一份 Result 能不能碰 UI」與
+  //   「這顆鍵成功了沒有」是兩件事 —— 上一輪把它們混成一件,於是一個
+  //   **成功**的操作被演成失敗的。
+  const KeyExitPlan p = PlanKeyExit(/*side_effect_done=*/true,
+                                    /*snapshot_is_current=*/false);
+  CHECK_MSG(p.eat_key, "操作成功了(中英真的切了)");
+  CHECK_MSG(!p.result_is_current, "而手上這一份不是引擎的現況");
+  // 兩者同時成立,正是 pipe_server.cc 那一格走 bar_->OnAsciiMode()
+  // 而不是 push_ui() 的判準。
+  CHECK(p.eat_key && !p.result_is_current);
+}

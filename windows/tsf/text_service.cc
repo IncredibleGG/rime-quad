@@ -280,6 +280,26 @@ HRESULT RunSyncSession(ITfContext* ctx, TfClientId id, FnEditSession::Fn fn) {
 // ⚠ 因此 Stop() 回來之後,那條連線還可能活著幾毫秒(執行緒要先醒過來)。
 //   那沒有問題:隱藏本來就有 3000 毫秒的遲滯(common/bar_visibility.h),
 //   而 CancelIoEx 讓「醒過來」是立刻的事。
+// ── ⭐ 讓位那條路上六個出口共用的額度(#120)────────────────────
+//
+// ⚠ 「一則都不寫」與「每一次都寫」都是錯的:
+//   · 一則都不寫 = 上一輪的樣子。六個出口每一個都會讓那句話一個位元組
+//     都送不出去,而六個都沒有記錄 —— 使用者回報「切走了那一橫還在」
+//     的時候,rime_tsf.log 裡什麼都沒有,只能猜。
+//   · 每一次都寫 = 使用者有 13 個宿主,每關一個視窗、每切一次分頁都走
+//     一次 Deactivate。那份記錄會變成 400 行同一句話,而真正稀有的那
+//     一種就淹在裡面(common/log_rate.h 的檔頭把同一課寫過一次)。
+//
+// 所以每個出口各有自己的小額度,用完之後那個出口閉嘴 —— 而**最後一則
+// 會說自己是最後一則**,不然下一個人會以為那件事後來沒再發生。
+// 回 true = 這一則寫得出來;*last 為真 = 這是額度內的最後一則。
+bool YieldExitBudget(LONG* seen, LONG cap, bool* last) {
+  const LONG n = ::InterlockedIncrement(seen);
+  if (last) *last = (n == cap);
+  return n <= cap;
+}
+const LONG kYieldExitLogCap = 8;
+
 class PresenceLink {
  public:
   // 回 nullptr = 起不來。呼叫端不必處理,那只是退回這一版之前的行為。
@@ -401,6 +421,7 @@ class PresenceLink {
         //   回到最新的線路版本重試 —— 否則一次降版會跟著這個宿主
         //   進程一輩子,而使用者永遠不知道自己少了 per-thread 的精確度。
         proto_ = kProtocolVersion;
+        close_misses_ = 0;
         // ⚠ 有預算。連不上是常態(服務還在部署),而每一行都是磁碟寫入。
         if (traced < 2) {
           ++traced;
@@ -429,10 +450,32 @@ class PresenceLink {
       //     · 只是慢(服務正在部署,那條執行緒被佔住)→ **不可以降版**。
       //       降了就永久失去 tid,而那是一個沒有人查得出來的降級。
       const DWORD linked_at = ::GetTickCount();
-      HandshakeResult hs = SendHello(pipe, io);
+      HandshakeResult hs = SendHello(pipe, io, /*honor_stop=*/true, kIoTimeoutMs);
       if (hs != HandshakeResult::kOk) {
-        if (hs == HandshakeResult::kRejected && proto_ > kMinProtocolVersion)
-          --proto_;
+        // ── ⚠ 出口 D:降版只該因為**真的版本不合**(#120)────────────
+        //
+        //   上一輪這裡把「對面把連線關掉了」也算成 kRejected,而那有一個
+        //   永久的後果:proto_ 掉到 3 之後 SendYield() 第一行就 return,
+        //   **讓位從此永久靜音,而畫面上與正常毫無差別**。只有
+        //   CreateFileW 失敗那條路會把它重設回最新版,也就是說「服務一直
+        //   活著、但曾經在握手中途關過一次連線」的機器再也送不出讓位。
+        //
+        //   兩者現在分開:
+        //     · kRejected(DecodeHelloOk 解不開 / 對面回的版本不是我們
+        //       宣告的那個)= 真的版本不合 → 降一版。
+        //     · kClosed(對面在握手中途關掉連線)= **可能**是舊服務,
+        //       也可能只是它正在收工 / 被更新程式換掉 / 佇列被佔住。
+        //       連續 kCloseBeforeDowngrade 次才降版 —— 舊服務會穩定地
+        //       每次都關,所以它照樣降得下去,而一次抖動不會。
+        if (hs == HandshakeResult::kRejected) {
+          if (proto_ > kMinProtocolVersion) --proto_;
+          close_misses_ = 0;
+        } else if (hs == HandshakeResult::kClosed) {
+          if (++close_misses_ >= kCloseBeforeDowngrade) {
+            close_misses_ = 0;
+            if (proto_ > kMinProtocolVersion) --proto_;
+          }
+        }
         ::CloseHandle(pipe);
         // ⚠ **這裡以前是固定的 kRetryFastMs。** 服務在、而握手一直不成
         //   的時候,那等於每個宿主每秒開一條新連線、服務端每秒起一條新
@@ -449,8 +492,11 @@ class PresenceLink {
       // ⚠ 送不出去(管道剛好斷了、宿主同一瞬間被砍掉)的後果是:服務端
       //   只看到連線消失 → kHold → 維持現狀。那是「那一橫留著」,
       //   不是退回 #111。
-      if (stopped && ::InterlockedCompareExchange(&yielded_, 0, 0) != 0)
-        SendYield(pipe);
+      if (stopped && ::InterlockedCompareExchange(&yielded_, 0, 0) != 0 &&
+          ::InterlockedCompareExchange(&yield_sent_, 0, 0) == 0) {
+        if (SendYield(pipe, "在場連線"))
+          ::InterlockedExchange(&yield_sent_, 1);
+      }
       // ⚠ 這一行就是 #82 的「切走之後那一橫必須消失」:關掉 →
       //   服務端那條 ServeClient 讀到 0 位元組 → ClientTicket 解構
       //   → OnClientDetached → 那筆註冊消失。
@@ -469,8 +515,84 @@ class PresenceLink {
       }
       misses = 0;
       linked_traced = 0;
+      close_misses_ = 0;
+      // ── ⚠ 出口 D 的另一半:降過版就要有機會爬回來(#120)──────────
+      //
+      //   剛剛那一圈真的當了一段時間的在場連線 = 對面是個健康的服務。
+      //   如果我們此刻還踩在降過的版本上,那多半是先前某一次握手中途
+      //   被關掉留下來的疤 —— 新服務照樣認得舊版本,所以它會一直成功,
+      //   而我們就一直停在那裡、讓位一直送不出去。
+      //
+      //   ⚠ 代價說出來:對面**真的是**舊服務時,每一次重連會多花
+      //     kCloseBeforeDowngrade 次握手才降回去。重連是稀有事件
+      //     (服務重啟),而換到的是「不會有人永久失去讓位」。
+      if (proto_ != kProtocolVersion) {
+        Trace("在場連線:連線穩定,把線路版本從 %u 探回 %u"
+              "(先前的降版可能只是握手被中途關掉留下的)",
+              static_cast<unsigned>(proto_),
+              static_cast<unsigned>(kProtocolVersion));
+        proto_ = kProtocolVersion;
+      }
     }
     if (io) ::CloseHandle(io);
+    // ── ⭐ 出口 C:讓位是一則**重要而且會過期**的訊息(#120)──────────
+    //
+    //   上面那個 while 有三個 break,而其中兩個(兩處 Backoff 回 false)
+    //   走的時候我們手上**沒有管道** —— NoteYield 剛好在退避那一秒到達
+    //   的話,那句話就此消失,而這條 PresenceLink 也結束了。使用者看到的
+    //   是「我已經切到微軟拼音了,他們那一橫還在」,而且不會自己好。
+    //
+    //   所以離開這條執行緒之前補一次:開一條**全新的**短連線,握手、
+    //   送出、關掉。⚠ 它不等 stop_(stop_ 這一刻本來就是亮的),
+    //   時間由 kYieldWriteMs / kIoTimeoutMs 各自的上限壓著。
+    FlushPendingYield();
+  }
+
+  // ⭐ 欠著的那一則讓位,用一條全新的短連線補送(#120 的出口 C / E)。
+  //
+  // ⚠ 這是這條背景執行緒最後做的事,宿主的 UI 執行緒一個位元組都不碰。
+  // ⚠ 最多試 kYieldFlushTries 次:對面可能正在重啟。每一次都是
+  //   CreateFileW + 握手 + 一次寫入,三段各有自己的上限。
+  void FlushPendingYield() {
+    if (::InterlockedCompareExchange(&yielded_, 0, 0) == 0) return;
+    if (::InterlockedCompareExchange(&yield_sent_, 0, 0) != 0) return;
+    const std::wstring name = RimePipeName();
+    const DWORD t0 = ::GetTickCount();
+    for (int t = 0; t < kYieldFlushTries; ++t) {
+      // ⚠ 絕對上限。三次各自的上限加起來還是可能太久,而這一整段
+      //   拖著的是 g_rime_dll_refs(見上面 kYieldFlushTries 的 ⚠)。
+      if (::GetTickCount() - t0 > kYieldFlushBudgetMs) break;
+      HANDLE pipe = ::CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE,
+                                  0, nullptr, OPEN_EXISTING,
+                                  FILE_FLAG_OVERLAPPED, nullptr);
+      if (pipe == INVALID_HANDLE_VALUE) continue;
+      // ⚠ 自己的事件,而且**不等 stop_** —— 這一刻 stop_ 已經亮著,
+      //   共用那條路會讓每一個 I/O 立刻被取消(見 SendYield 的 ⚠)。
+      HANDLE io = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+      if (!io) {
+        ::CloseHandle(pipe);
+        return;
+      }
+      // ⚠ 這一趟的握手上限比平常短很多:此刻使用者已經按下 Win+空白鍵
+      //   切走了,而這條執行緒拖著 g_rime_dll_refs —— 讓 DLL 卸載不掉的
+      //   代價比「這一次讓位沒送成」大。
+      const HandshakeResult hs =
+          SendHello(pipe, io, /*honor_stop=*/false, kYieldWriteMs);
+      if (hs == HandshakeResult::kOk && SendYield(pipe, "重送")) {
+        ::InterlockedExchange(&yield_sent_, 1);
+        ::CloseHandle(io);
+        ::CloseHandle(pipe);
+        return;
+      }
+      ::CloseHandle(io);
+      ::CloseHandle(pipe);
+    }
+    // ⚠ 送不出去也要留下痕跡。走到這裡的意思是服務端沒有收到那句話,
+    //   而它的判準會退回 kHold(維持現狀)—— 那一橫留著,不是退回 #111,
+    //   但下一次診斷需要知道這件事真的發生過。
+    Trace("!! 在場連線:欠著的那一則讓位**送不出去**(試了 %d 次)"
+          "—— 服務端會維持現狀,那一橫可能留在別人的輸入法上",
+          kYieldFlushTries);
   }
 
   // 一次 overlapped 讀。回傳實際讀到幾個位元組;0 = 連線沒了或被叫停。
@@ -481,8 +603,11 @@ class PresenceLink {
   // ⚠ timed_out 一定要分出來:「等了 3 秒沒回」與「對面把連線關了」
   //   在回傳值上都是 0,而它們**要做的事完全相反**(前者重試同一版,
   //   後者降版)。少了這一格,一次服務忙碌就會讓這個宿主永久降到 v1。
+  // ⚠ honor_stop=false 只給 FlushPendingYield() 那條路用:那一刻 stop_
+  //   已經亮著,一起等的話每一個 I/O 都會立刻被取消,而那正是要補送的
+  //   那一則訊息(見 SendYield 上面同一條 ⚠)。
   DWORD ReadOnce(HANDLE pipe, HANDLE io, char* buf, DWORD cap, DWORD wait_ms,
-                 bool* timed_out) {
+                 bool* timed_out, bool honor_stop) {
     if (timed_out) *timed_out = false;
     OVERLAPPED ov;
     ::ZeroMemory(&ov, sizeof(ov));
@@ -492,14 +617,16 @@ class PresenceLink {
     if (::ReadFile(pipe, buf, cap, &got, &ov)) return got;
     if (::GetLastError() != ERROR_IO_PENDING) return 0;
     HANDLE waits[2] = {io, stop_};
-    const DWORD w = ::WaitForMultipleObjects(2, waits, FALSE, wait_ms);
+    const DWORD w = ::WaitForMultipleObjects(honor_stop ? 2 : 1, waits, FALSE,
+                                             wait_ms);
     if (w != WAIT_OBJECT_0) ::CancelIoEx(pipe, &ov);
     if (w == WAIT_TIMEOUT && timed_out) *timed_out = true;
     if (!::GetOverlappedResult(pipe, &ov, &got, TRUE)) return 0;
     return w == WAIT_OBJECT_0 ? got : 0;
   }
 
-  bool WriteAll(HANDLE pipe, HANDLE io, const std::string& data) {
+  bool WriteAll(HANDLE pipe, HANDLE io, const std::string& data,
+                bool honor_stop) {
     size_t sent = 0;
     while (sent < data.size()) {
       OVERLAPPED ov;
@@ -511,7 +638,8 @@ class PresenceLink {
                        static_cast<DWORD>(data.size() - sent), &wrote, &ov)) {
         if (::GetLastError() != ERROR_IO_PENDING) return false;
         HANDLE waits[2] = {io, stop_};
-        const DWORD w = ::WaitForMultipleObjects(2, waits, FALSE, kIoTimeoutMs);
+        const DWORD w = ::WaitForMultipleObjects(honor_stop ? 2 : 1, waits,
+                                                 FALSE, kIoTimeoutMs);
         if (w != WAIT_OBJECT_0) ::CancelIoEx(pipe, &ov);
         if (!::GetOverlappedResult(pipe, &ov, &wrote, TRUE)) return false;
         if (w != WAIT_OBJECT_0) return false;
@@ -535,10 +663,24 @@ class PresenceLink {
   // ⚠ proto_ < 4 就不送:PresenceLink 握手被拒時會自己降版(見 Run),
   //   而 v3 以下的服務收到不認得的 op 會回錯並關掉連線。降版過的宿主
   //   行為退回「連線消失 → 服務端維持現狀」—— 留著,不是亂收。
-  void SendYield(HANDLE pipe) {
-    if (proto_ < 4) return;
+  // 回 true = 那句話**真的整份送出去了**。
+  bool SendYield(HANDLE pipe, const char* how) {
+    // ── ⚠ 出口 D:這道門本身沒有錯,錯的是 proto_ 會永久卡住 ────────
+    //   降版的判準已經改掉(見 Run 裡 kClosed / kRejected 那一段),
+    //   而這裡照樣要留一行 —— 走到這裡而回 false 的話,服務端一個位元組
+    //   都收不到,那是一件必須查得出來的事。
+    if (proto_ < 4) {
+      Trace("!! 在場連線(%s):線路版本 %u < 4,那句讓位送不出去 —— "
+            "服務端會維持現狀(對面是舊服務時這是對的;不是的話,"
+            "上面那段探回最新版的路應該已經把它救回來了)",
+            how, static_cast<unsigned>(proto_));
+      return false;
+    }
     HANDLE ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    if (!ev) return;
+    if (!ev) {
+      Trace("!! 在場連線(%s):建不出事件,那句讓位送不出去", how);
+      return false;
+    }
     const std::string data = Frame(EncodeSimple(2, Op::kProfileState, 0));
     OVERLAPPED ov;
     ::ZeroMemory(&ov, sizeof(ov));
@@ -553,8 +695,26 @@ class PresenceLink {
       }
     }
     ::CloseHandle(ev);
-    Trace("在場連線:已告知服務『這條執行緒上啟用中的不再是我們』(送出 %lu 位元組)",
-          static_cast<unsigned long>(wrote));
+    // ── ⚠ 出口 E:上一輪這一行**無條件**說「已告知服務…」──────────
+    //
+    //   WriteFile 失敗、或 300 毫秒逾時之後被 CancelIoEx 掉,wrote 都是
+    //   0 —— 而那一行照樣印出來。下一次有人拿 rime_tsf.log 查「切走了
+    //   那一橫還在」,看到的是一句「已告知服務(送出 0 位元組)」,
+    //   而 0 那個數字沒有人會停下來看。**記錄要說得出成敗,不是說得出
+    //   自己跑過。**
+    const bool ok = wrote == static_cast<DWORD>(data.size());
+    if (ok) {
+      Trace("在場連線(%s):已告知服務『這條執行緒上啟用中的不再是我們』"
+            "(送出 %lu 位元組)",
+            how, static_cast<unsigned long>(wrote));
+    } else {
+      Trace("!! 在場連線(%s):那句讓位**沒有送出去**(寫了 %lu / %lu "
+            "位元組,err=%lu)—— 服務端會維持現狀",
+            how, static_cast<unsigned long>(wrote),
+            static_cast<unsigned long>(data.size()),
+            static_cast<unsigned long>(::GetLastError()));
+    }
+    return ok;
   }
 
   // ── 這條連線是誰 ────────────────────────────────────────────
@@ -562,9 +722,15 @@ class PresenceLink {
   // 服務端要的只有兩格:host_pid 與**啟用我們的那一條執行緒**的 tid。
   // 有了它們,「使用者此刻正在用的那條執行緒上啟用中的是不是我們」
   // 才答得出來(common/bar_owner.h)。不建 session,不碰引擎佇列。
-  enum class HandshakeResult { kOk, kRejected, kIoError };
+  // ⚠ kClosed 與 kRejected 分開,而那是 #120 的出口 D:
+  //   前者是「對面在握手中途把連線關了」(舊服務會這樣,但正在收工 /
+  //   正被更新程式換掉 / 佇列被佔住的**新**服務也會),後者是
+  //   「對面明確答了一個我們沒宣告的版本,或那則 HELLO_OK 解不開」。
+  //   只有後者是**真的版本不合**,只有它可以無條件降版。
+  enum class HandshakeResult { kOk, kRejected, kClosed, kIoError };
 
-  HandshakeResult SendHello(HANDLE pipe, HANDLE io) {
+  HandshakeResult SendHello(HANDLE pipe, HANDLE io, bool honor_stop,
+                            DWORD wait_ms) {
     // ⚠ 事件建不出來(整個進程的 handle 用光了)。這裡回 kIoError 而不是
     //   kOk:沒握手的連線在服務端 activated=false,一票都不投,所以那一橫
     //   本來就不會替這個宿主顯示 —— 假裝成功只會多一條永遠不會被用到的
@@ -582,7 +748,7 @@ class PresenceLink {
       ::GetModuleFileNameW(nullptr, path, MAX_PATH);
       h.host_exe = WideToUtf8(path);
     }
-    if (!WriteAll(pipe, io, Frame(EncodeHello(1, h))))
+    if (!WriteAll(pipe, io, Frame(EncodeHello(1, h)), honor_stop))
       return HandshakeResult::kIoError;
     // 回覆一定要讀:不讀的話「服務端不認得這個版本」與「一切正常」
     // 在這條執行緒上長得一模一樣,而前者要降版重試。
@@ -591,12 +757,15 @@ class PresenceLink {
     for (int spin = 0; spin < 8; ++spin) {
       bool timed_out = false;
       const DWORD got =
-          ReadOnce(pipe, io, buf, sizeof(buf), kIoTimeoutMs, &timed_out);
+          ReadOnce(pipe, io, buf, sizeof(buf), wait_ms, &timed_out, honor_stop);
       if (got == 0) {
-        // 逾時 = 對面只是慢。對面把連線關了 = 它不認得這個版本
-        // (它的 DecodeHello 在「剛好用完」那一關整則丟掉)。
+        // 逾時 = 對面只是慢。
+        // 對面把連線關了 = **可能**它不認得這個版本(它的 DecodeHello 在
+        // 「剛好用完」那一關整則丟掉),也可能它正在收工 / 正被更新程式
+        // 換掉 / 那條執行緒被部署佔住。分不出來,所以回 kClosed,由
+        // 呼叫端連續幾次才降版(#120 的出口 D)。
         return timed_out ? HandshakeResult::kIoError
-                         : HandshakeResult::kRejected;
+                         : HandshakeResult::kClosed;
       }
       if (!reader.Feed(buf, got)) return HandshakeResult::kIoError;
       std::string payload;
@@ -634,7 +803,8 @@ class PresenceLink {
     }
     char scratch[256];
     while (::WaitForSingleObject(stop_, 0) != WAIT_OBJECT_0) {
-      if (ReadOnce(pipe, io, scratch, sizeof(scratch), INFINITE, nullptr) == 0)
+      if (ReadOnce(pipe, io, scratch, sizeof(scratch), INFINITE, nullptr,
+                   /*honor_stop=*/true) == 0)
         // ⚠ 讀到 0 有兩種:對面關了,或 ReadOnce 是被 stop_ 打斷的。
         //   再問一次 stop_ 才分得出來。
         return ::WaitForSingleObject(stop_, 0) == WAIT_OBJECT_0;
@@ -652,9 +822,25 @@ class PresenceLink {
   // ⭐ 「走之前要先說一句話」。由宿主的 UI 執行緒寫(NoteYield)、
   //    背景執行緒讀(Run),所以走 Interlocked。
   LONG yielded_ = 0;
+  // ⭐ 那句話**真的送出去了**沒有。由背景執行緒獨自讀寫,但仍然走
+  //   Interlocked —— 它與 yielded_ 是一組,分開兩種同步方式只會讓
+  //   下一個人以為其中一個不必管。
+  LONG yield_sent_ = 0;
   uint32_t host_tid_ = 0;
-  // 這條連線宣告的線路版本。握手被拒就降一版重試(見 Run)。
+  // 這條連線宣告的線路版本。**只有真的版本不合才降**(見 Run 的 kRejected)。
   uint32_t proto_ = kProtocolVersion;
+  // 連續幾次「握手中途被關掉」。舊服務會穩定地每次都關,所以它照樣降得
+  // 下去;一次抖動不會。連上、或這一圈當了一段時間的在場連線就歸零。
+  int close_misses_ = 0;
+  static const int kCloseBeforeDowngrade = 3;
+  // 補送那一則讓位最多開幾條短連線。⚠ 每一次都有自己的上限
+  //   (CreateFileW 立刻回、握手 kIoTimeoutMs、寫入 kYieldWriteMs),
+  //   所以最壞是 kYieldFlushTries × (3000 + 300) 毫秒 —— 而它整段跑在
+  //   這條背景執行緒上,宿主的 UI 執行緒一毫秒都不等。
+  static const int kYieldFlushTries = 3;
+  // 補送那一整段最多花多久。⚠ 這是**絕對**上限,不是每一次的:
+  //   使用者已經切走了,而這條執行緒拖著 g_rime_dll_refs。
+  static const DWORD kYieldFlushBudgetMs = 1200;
 };
 
 TextService::TextService() {
@@ -956,6 +1142,24 @@ STDMETHODIMP TextService::Deactivate() {
     lang_bar_ = nullptr;
   }
   if (profile_sink_cookie_ != TF_INVALID_COOKIE && thread_mgr_) {
+    // ── ⚠ 出口 A:這一行之後,那條唯一的證據路就斷了(#120)────────
+    //
+    //   profile sink 的非啟用邊是服務端唯一收得到的「使用者換了輸入法」
+    //   的正面證據(NotePresenceYielded → kProfileState(0))。這裡把它
+    //   拆掉,而 Deactivate 自己**刻意不送**讓位(見 NotePresenceYielded
+    //   上面那一整段:宿主結束、視窗關掉、TSF 收工都會走它,那些都不是
+    //   「他換了輸入法」)。
+    //
+    //   兩件事都對,但合起來有一個後果:走過這裡之後,這條執行緒上
+    //   **再也不會有**讓位送出去。所以留一行 —— 使用者回報「切走了
+    //   那一橫還在」時,這一行說得出「那條路是從這裡斷的」。
+    static LONG seen = 0;
+    bool last = false;
+    if (YieldExitBudget(&seen, kYieldExitLogCap, &last)) {
+      Trace("讓位:Deactivate 拆掉 profile sink —— 這條執行緒之後不會再有"
+            "讓位送出去(刻意如此:Deactivate 答不了「使用者選了誰」)%s",
+            last ? "(這個出口的額度用完,不再記)" : "");
+    }
     ITfSource* psrc = nullptr;
     if (SUCCEEDED(thread_mgr_->QueryInterface(IID_ITfSource, (void**)&psrc))) {
       psrc->UnadviseSink(profile_sink_cookie_);
@@ -1129,6 +1333,33 @@ bool TextService::SendAsciiToggle(ITfContext* ctx, int32_t keysym,
     // 動了就是「宿主與我們同時處理同一顆鍵」。
     Trace("%s:服務沒有處理(部署中?舊服務?開關關著?),放行給宿主", label);
     return false;
+  }
+
+  // ══ ⭐ 吃掉了,但**文件一個位元都不動**(#119)═══════════════════
+  //
+  // 服務端說 handled=1、同時帶著 kStKeyNotAnswered,意思只有一個:
+  // **那件不可逆的事已經做了,但引擎沒有交出現況。**
+  //
+  //   · Ctrl+空格:service/engine.cc 的 SetAsciiModeAll() 是 store +
+  //     PostAsync(不等),它排在那趟有上限的「切中英後取快照」前面。
+  //     中英真的切了,而快照那一趟逾時了。
+  //
+  // 這一格**必須**回 true:回 false 的話 OnPreservedKey 會讓 TSF 把那顆
+  // Ctrl+空格 交給宿主 —— 使用者按一下,中英切了、Everything 的搜尋框
+  // 也跳出來了。那正是 #119 的樣子。
+  //
+  // 而下面那一整段 ApplyPlan **絕對不可以跑**:手上這一份是佔位,不是
+  // 快照。items 空的、旗標全 0 —— 套進文件等於把使用者打到一半的組字
+  // 當場清掉,而且沒有上屏。判準與 HandleKey 那一格是同一條
+  // (common/key_eat_policy.h 的 KeyOutlet::kEatSilently),極性也是同一個:
+  // **有那個位元 = 確定沒回答**,沒有它不等於回答了(舊服務永遠不送它)。
+  //
+  // ⚠ 也**不可以**動 engine_composing_:引擎的組字狀態我們此刻不知道,
+  //   而下面那兩處 else 分支寫它是因為那時手上有一份真的快照。
+  if ((r.snap.status_flags & kStKeyNotAnswered) != 0) {
+    Trace("%s:引擎沒有回答(kStKeyNotAnswered)—— 那件事已經做了,"
+          "所以吃掉這顆鍵,但**文件一個位元都不動**", label);
+    return true;
   }
 
   // ══ ⚠ 這一份快照**不可以**丟掉 ══════════════════════════════════
@@ -2071,7 +2302,25 @@ void TextService::ClosePresence() {
 //   都不是「他換了輸入法」。而且它本來就不保證會來(見 Deactivate 那一段)。
 //   拿它當證據,就等於把 #111 換一個方向放回去:每關一個視窗那一橫閃一下。
 void TextService::NotePresenceYielded() {
-  if (presence_) presence_->NoteYield();
+  if (presence_) {
+    presence_->NoteYield();
+    return;
+  }
+  // ── ⚠ 出口 B:null 就靜靜跳過(#120)──────────────────────────
+  //
+  //   走得到而且不罕見:ActivateEx 那一趟 PresenceLink::Start() 失敗
+  //   (CreateThread 失敗 / handle 用光)、或 profile sink 的非啟用邊
+  //   在 Deactivate 之後又來一次。這時服務端**永遠**收不到那句讓位,
+  //   而畫面上與正常毫無差別 —— 那一橫就留在別人的輸入法上。
+  //
+  //   修不了(沒有連線就是沒有連線),但一定要說得出來。
+  static LONG seen = 0;
+  bool last = false;
+  if (YieldExitBudget(&seen, kYieldExitLogCap, &last)) {
+    Trace("!! 讓位:這條執行緒上沒有在場連線(presence_ 是 null)—— "
+          "那句話一個位元組都送不出去,服務端會維持現狀%s",
+          last ? "(這個出口的額度用完,不再記)" : "");
+  }
 }
 
 void TextService::RefreshProfile() {
