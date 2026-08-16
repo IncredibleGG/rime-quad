@@ -3216,13 +3216,13 @@ key_patches:
 > | 原本由 Swift 測試守的 | 現在誰守 |
 > |---|---|
 > | 每份主題零 ERROR 診斷（第 1 條） | ✅ `ThemeParserTest.allShippedThemesParseWithoutDiagnostics`，且 `RepoFixtures.themeIds` 是**掃目錄**不是白名單 |
-> | 每份主題在每一個平台鍵下都解析得過 | ✅ 同上（Android 端解析全部平台鍵） |
+> | 每份主題在每一個平台鍵下都解析得過 | ⚠ **只驗 `android` 一支**。`DocumentLoader.applyPlatformOverrides` 只取當前平台那一支分支，其餘連走都不走；而 `ThemeParserTest` 一律傳 `Platform.ANDROID`。被刪掉的 Swift 版是對四個平台鍵迴圈的，**它是唯一會真的載入 `ios` 那一支的關卡**。而 `core/themes/default-light.yaml` 與 `default-dark.yaml` 各有一段活的 `platform_overrides.ios`，iOS 那條線卻還沒開始寫 —— 也就是說那兩段今天**沒有任何一端在載**。植入驗證：把 `ios` 分支改成 `bogus_key_xyz: 1` 與 `ratio: "not-a-number"` → **全樹 871 項全綠**。⚠ §7.4 規定未知平台鍵靜靜忽略、不產生 WARNING，所以連一則 diagnostic 都不會有。 |
 > | 每一個 `DiagnosticCode` 都寫進了 §6.5 | ✅ `DiagnosticCodeSpecTest`「規範碼表裡的每一個 code 都實作了」—— 它把碼表**從這份文件當場讀出來**，比原本的 Swift 版更嚴（雙向：規範有而沒實作、實作了而規範標著「尚未實作」、程式碼多出來的碼，三個方向都報） |
 > | 每份主題的 `counterpart` 載得起來、且 `appearance` 相反（§8.2） | ✅ **2026-08-16 補**：`ThemeParserTest.everyThemeCounterpartResolvesToTheOppositeAppearance`，分母同樣是掃目錄的 `RepoFixtures.themeIds`。⚠ 這條在 Android **執行期真的在走**（`LayoutHost.applyAppearance` 的 §8.2 第 2 條），而第 3 條規定載不起來就沿用當前主題、**不是**致命錯誤 —— 所以打錯字的症狀是「切了深色沒反應」，解析階段一則 diagnostic 都沒有（`counterpart` 在 `ThemeParser` 裡只是一個字串欄位）。植入驗證：把 `sakura-dark` 的 counterpart 改成 `sakura-ligth` → 紅；改成 `default-dark`（深淺同向）→ 紅 |
 > | 規範裡寫的 `candidates.syllables` 欄位都真的有綁定（§8.6.6.3） | ✅ **2026-08-16 補**：`ThemeParserTest.documentedSyllableFieldsAreAllBound`，欄位名**從 §8.6.6.3 的欄位表當場讀出來**並與 `ThemeParser.SYLLABLES_KEYS` 雙向對帳，含「`orientation` 不是欄位」那條反向斷言。⚠ 這條接不到既有的第 1 條上：隨附主題只有 `intl-ios-light` 寫了 `placement`，`trigger` / `max_items` / `height` 一份都沒寫，所以把它們從解析器拿掉不會產生任何 unknown-field 診斷。植入驗證：拿掉 `max_items` → **全樹 871 項只有這一項紅** |
 > | 規範裡寫的 `candidates.window` 欄位都真的有綁定 | ❌ **沒有人守，而且短期內不會有** —— `candidates.window` 與 `status_bar` 是桌面專屬區塊（§1.1），唯一的消費者是已退場的 macOS / Windows。那些欄位現在**不對應任何實作**。 |
 >
-> 也就是說：六條裡五條有等價物、一條的**守備對象本身**沒有了。
+> 也就是說：六條裡**四條**有完整的等價物、**一條只剩部分覆蓋**（平台鍵那一列，只驗 android 一支）、一條的**守備對象本身**沒有了。
 > `candidates.window` / `status_bar` 的規範文字刻意留著（iOS 之後若要做候選窗
 > 或狀態指示器，那是量過的結論），但在有人實作之前，它們是**規範性的死欄位**：
 > 改壞了不會有任何一關變紅。動它們之前先看 `docs/coordination.md` 2026-08-16。
