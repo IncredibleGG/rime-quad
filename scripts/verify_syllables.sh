@@ -218,11 +218,25 @@ CHECK_CI=0
 SELF_TEST=0
 # 每一種植入**指名**它該踩紅的那一條 FAIL 訊息。只看退出碼是不夠的:
 # 模擬器沒開、APK 裝不上去一樣是 exit 1,而那不叫「反向測試通過」。
+#
+# ⚠ **指名的那句話必須是只有這個植入才產生得出來的。** bad-slot-ids 原本
+#   指名「消歧欄上讀不到 ni/mi」,而那正好是**環境**壞掉時印的同一句:
+#     · runner 上缺 Pillow → 三份佈局都印它(本檔第 690 行的註解自己寫著
+#       「看起來像產品壞了,其實是關卡自己缺套件」);
+#     · 工單 #118 的偶發(OCR 讀到空字串)→ 逐字相同的一句。
+#   於是植入那一輪只要 #118 發作,finish() 就會印「✓ 該紅的那一條紅了」,
+#   而植入到底有沒有被看見沒有任何人知道 —— 那正是這一段開頭要防的
+#   假綠燈,只是防在別的形狀上。
+#   (實測:2026-08-16 CI 兩趟 attempt 都是這樣過的。日誌裡植入確實生效
+#    (`ERROR=宣告的格位 id 在這一層找不到:nope_1,nope_2,nope_3`),但
+#    finish() 比對的那一句是 OCR 讀空字串印出來的。)
+#   現在指名的是探針自己對**這個缺陷**的敘述(第 1487 行印的 ERROR=),
+#   而它只有在「佈局宣告的格位 id 在這一層裡不存在」時才出得來。
 plant_expect_re() {
   case "$1" in
     stale-schema) echo '不一致|alphabet 不含小寫拼音' ;;
     narrow-scope) echo '少於下界' ;;
-    bad-slot-ids) echo '消歧欄上讀不到 ni/mi' ;;
+    bad-slot-ids) echo '宣告的格位 id 在這一層找不到' ;;
     tap-swallowed) echo '按下去什麼都不做的標點鍵' ;;
     tap-passthrough) echo '(候選列|消歧欄)上還有 qin' ;;
     *) echo '' ;;
@@ -1789,7 +1803,21 @@ PY
   if echo "$T1" | grep -qw ni && echo "$T1" | grep -qw mi; then
     pass "$LAYOUT:畫面上讀得到第一個音節 ni 與 mi(\"$T1\")"
   else
-    fail "$LAYOUT:消歧欄上讀不到 ni/mi。OCR 讀到的是「$T1」。截圖 $LOUT/1-typed.png"
+    # ⚠ 探針自己說得出「我量不到」的時候(它印 ERROR=…),要把它那一句
+    #   帶進 **FAIL_LOG**,不能只印在 info 那一路。
+    #   第 1564-1566 行早就寫下這個意圖(「這種情況要**指名**,不能讓它
+    #   變成『消歧欄上讀不到 ni/mi』—— 那句話會把人送去查一個沒壞的
+    #   功能」),但實作只做到 `info "$OCR1"`:stderr 上看得到,FAIL_LOG
+    #   裡沒有。於是 finish() 的 --plant 比對、以及事後讀紅字的人,
+    #   看到的都只有那句通用的話。**三種不同的病報成同一句。**
+    case "$OCR1" in
+      *ERROR=*)
+        fail "$LAYOUT:消歧欄這一格**量不出來**:${OCR1#*ERROR=}"
+        fail "  這不是「畫面上沒有 ni/mi」—— 探針在 OCR 之前就停住了(OCR 讀到的是「$T1」)。"
+        fail "  截圖 $LOUT/1-typed.png" ;;
+      *)
+        fail "$LAYOUT:消歧欄上讀不到 ni/mi。OCR 讀到的是「$T1」。截圖 $LOUT/1-typed.png" ;;
+    esac
     continue
   fi
 

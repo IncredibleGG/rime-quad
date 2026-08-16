@@ -305,7 +305,7 @@ jobs:
       #   而支線只跑得到自己接了線的那幾條車道 —— 沒接的不是紅的,
       #   是**根本不跑**,而 checks 上被跳過的 job 是灰色的勾。
       #   細節與怎麼修都寫在腳本的檔頭。
-      - name: 動到 core/data/ 就要四條車道都跑得到
+      - name: 動到 core/data/ 就要登記表上每一條車道都跑得到
         run: |
           ./scripts/verify_core_data_fanout.sh --self-test
           ./scripts/verify_core_data_fanout.sh
@@ -579,6 +579,35 @@ jobs:
             #   直接複製 *.userdb/ 拿到的是上一輪的詞庫 —— 能開、能用、大小差不多,
             #   只是少了最近學的,而且沒有任何錯誤訊息。
             bash ./scripts/verify_backup_roundtrip.sh --apk "$APK_DEBUG_PATH"
+
+      # ── 紅了的時候,先講「這是環境還是缺陷」──────────────────────────
+      # ⚠ 這一步**不改上面那一步的成敗**(它已經失敗了,job 照樣紅)。
+      #   它只是把 verify_candbar.sh 已經做出來的分類搬到看得見的地方:
+      #   2026-08-16 兩趟 attempt 都紅在 verify_candbar.sh 的環境出口
+      #   (IME 視窗登記著卻只有 3‰ 墨跡),而 checks 上那一步與「候選列
+      #   真的壞了」長得一模一樣,得翻兩千多行日誌才分得出來。
+      # ⚠ 沒有標記時什麼都不印 —— 沒有標記就代表沒有被分類成環境,
+      #   那時候預設就該當成產品缺陷去查。
+      - name: 慢車道紅了:有沒有被分類成「環境」
+        if: failure()
+        run: |
+          set -u
+          found=0
+          for f in build/verify-candbar/env-failure.txt; do
+            [ -f "$f" ] || continue
+            found=1
+            echo "::warning title=模擬器環境::$f —— 這一步紅在環境分類出口,不是候選列缺陷"
+            {
+              echo "### ⚠ 這一趟紅在**環境**分類出口($f)"
+              echo ""
+              echo '```'
+              cat "$f"
+              echo '```'
+              echo ""
+              echo "腳本仍然以 exit 2 結束、這一步仍然是紅的 —— 這段話只是說明紅在哪一類。"
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
+          [ "$found" = 1 ] || echo "沒有環境標記 —— 這一趟的紅沒有被分類成環境,當成產品缺陷查。"
 
       - name: 上傳模擬器 artifact(截圖、logcat、升級紀錄)
         if: always()

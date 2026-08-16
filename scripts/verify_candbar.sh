@@ -135,6 +135,10 @@ while [ $# -gt 0 ]; do
 done
 
 mkdir -p "$OUT_DIR"
+# ⚠ 上一趟留下的環境標記一定要先清掉。留著的話，這一趟就算紅在真的缺陷上，
+#   CI 那一步照樣會說「這一趟紅在環境」—— 一個會把真缺陷講成環境的標記，
+#   比沒有標記還糟。（CI 每個 job 都是乾淨的工作區，這一行是為本機重跑而寫。）
+rm -f "$OUT_DIR/env-failure.txt"
 adbs() { "$ADB" -s "$SERIAL" "$@"; }
 info() { echo "[candbar] $*" >&2; }
 pass() { echo "  [PASS] $*"; }
@@ -398,7 +402,27 @@ ime_paint_permille() {  # ime_paint_permille <png> → 千分比
 }
 # 「鍵盤不在畫面上」這句話只寫一次,四個呼叫端共用 —— 訊息分岔的話,
 # 下一個人會以為那是四種不同的病。
+# ⚠ **這不是把紅弄綠。** 這一支照樣 exit 2、那一步照樣紅。它補的是
+#   「紅在 CI 上長什麼樣子」:env_no_keyboard 的分類只存在**腳本內部**,
+#   慢車道那一步在 checks 上與真缺陷長得一模一樣,要翻兩千多行日誌才分得出來。
+#   verify_syllables.sh 在 d32c72b(2026-08-14)修過同一個形狀的一半
+#   (把「鍵盤不在畫面上」從候選列缺陷裡分出來),但同樣沒有讓 CI 看見。
+#   所以這裡在 artifact 裡落一個機讀檔,並在 stdout 上印一行固定前綴。
+#   ⚠ 只有這一個出口寫它 —— 其餘的 exit 2(adb 不在線、缺 Pillow、安裝失敗…)
+#     還沒有分類,別把這個標記當成「所有環境失敗都有記號」。
+ENV_MARK="$OUT_DIR/env-failure.txt"
 env_no_keyboard() {  # env_no_keyboard <這是哪一步> <千分比> <截圖>
+  mkdir -p "$OUT_DIR"
+  {
+    echo "kind=no-keyboard-painted"
+    echo "step=$1"
+    echo "permille=$2"
+    echo "floor=$IME_PAINT_PERMILLE"
+    echo "shot=$3"
+    echo "serial=${SERIAL:-<未定>}"
+    echo "note=IME 視窗登記著卻沒有內容;這是這一台的環境,不是候選列的缺陷。"
+  } > "$ENV_MARK"
+  echo "RIME-ENV-FAILURE no-keyboard-painted step=$1 permille=$2 floor=$IME_PAINT_PERMILLE mark=$ENV_MARK"
   echo "" >&2
   echo "⚠ 環境:這一台的畫面與預期不符 —— 鍵盤沒有畫在畫面上($1)。" >&2
   echo "  IME 視窗 frame=[0,$FRAME_TOP]..[${SCREEN_W},$FRAME_BOT]," >&2

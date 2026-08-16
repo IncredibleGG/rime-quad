@@ -182,7 +182,14 @@ echo "=== 7. 使用者初始配置 ==="
 #   APK 裡留下的是基底那一份 —— schema_list 仍然完整，只是少了行動端的微調。
 #   把基底那一份的產生刪掉，就等於把那條退路拆了，而它擋的正是
 #   docs/coordination.md §1 記著的那場「整個方案清單消失」的事故。
-#   （所以這一輪沒有動這支腳本的**產物**，core/data 的內容一個位元組都沒變。）
+#   （⚠ [2026-08-16 更正]原本這裡寫「所以這一輪沒有動這支腳本的**產物**，
+#     core/data 的內容一個位元組都沒變」——**那句話不成立**。實測:把 5fa5baa
+#     與 916a22b 兩版的第 7 節各跑一次比對產物，`default.custom.yaml` 逐位元組
+#     相同，但 `default.custom.mobile.yaml` **不同** —— 底下 MOBILE_ONLY 那個
+#     heredoc **裡面**有一行註解被改寫成兩行，而 heredoc 裡的 `#` 是 YAML 註解、
+#     是產物的一部分，不是 shell 註解。語意沒有變（yaml.safe_load 兩邊都解出
+#     schema_list 4 項 + key_binder/bindings），但「一個位元組都沒變」是錯的。
+#     真正該說的是:**產物的 patch 內容沒有變，只有 mobile 那一份的註解文字變了。**）
 #
 # 為什麼不是兩個獨立檔案各寫一次：schema_list 抄成兩份必定腐爛（改了一邊
 # 忘了另一邊，症狀是「某一端的方案清單少一個」，而且只有裝上去才看得到）。
@@ -205,6 +212,16 @@ YAML
 )
 
 # 只有行動端成立的那幾條。**縮排要與上面的 patch: 底下對齊。**
+#
+# ⛔ **這個 heredoc 裡的每一行都是產物**,包括開頭是 `#` 的那些 —— 它們是
+#   YAML 註解,會原樣寫進 core/data/user/default.custom.mobile.yaml。
+#   所以在這裡「只改了註解」**不等於**「產物沒有變」;縮排也一樣要照
+#   YAML 的慣例對齊。(2026-08-16 實際發生過:兩行歷史說明被寫進 heredoc
+#   裡面,其中一行還頂到第 0 欄,而 commit 訊息宣稱產物一個位元組都沒動 ——
+#   那句話已於 2026-08-16 實測推翻,登記在 docs/refuted-claims.tsv 的 RC-005。)
+#   ⚠ 只有讀腳本的人才需要的話,寫在 heredoc **外面** —— 例如這一段:
+#   2026-08-16 之前,基底那一份(default.custom.yaml)是桌面端裝的那一份;
+#   桌面兩端收掉之後它只剩「Android 的退路」這一個角色,見第 7 節開頭。
 MOBILE_ONLY=$(cat <<'YAML'
 
   # ── 行動端不套 paging_with_comma_period ──────────────────────────────
@@ -221,8 +238,7 @@ MOBILE_ONLY=$(cat <<'YAML'
   # 實測（emulator-5558，luna_pinyin_tw，rime_console 打 `nihao.`）：
   #   組字後 preedit="nihao"，候選 5 個 (page 1)  ← 翻頁了，沒有句號
   #
-  # 基底那一份保留上游行為（它沒有這一段）。2026-08-16 之前基底是桌面端裝的
-# 那一份；桌面兩端收掉之後它只剩「Android 的退路」這一個角色，見第 7 節開頭。
+  # 基底那一份（default.custom.yaml）沒有這一段，保留上游行為。
   #
   # ⚠ 這裡重寫整份 key_binder/bindings 的 __patch 清單，而不是「移除某幾條」：
   #   librime 的 key_binder 沒有「取消綁定」的語法，同一顆鍵綁兩次是先到先贏，

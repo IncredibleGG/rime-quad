@@ -208,8 +208,21 @@ check_lane() {  # check_lane <workflow 檔名> <分支> <針…>
 #      認不出形狀 → **不去掉**(於是算成動到了)。
 # 正規化之後兩版一樣 → 這一支沒有動到產物。
 #
-# ⚠ 這一條擋不住「改了註解裡的資料」這種事,但註解本來就不會被執行;
-#   而它**不會**放過任何一行真的程式碼 —— cand 那一批的
+# ⚠ [2026-08-16 更正]上面第 1 條原本寫「去掉整行註解(註解不會被執行)」,
+#   而那句話在 **heredoc 裡面不成立** —— heredoc 內的 `#` 不是 shell 註解,
+#   是**資料**,會原樣寫進產物。實測推翻:5fa5baa..916a22b 只改了
+#   `scripts/collect_data.sh` 的 MOBILE_ONLY heredoc 裡的一行 YAML 註解,
+#   產物 `default.custom.mobile.yaml` 確實變了(逐位元組比對過),而這一關
+#   當時說「沒有動到產生它的 3 支腳本」—— **一個假綠燈,而且正好在它唯一
+#   要守的那件事上**。所以 normalize() 現在對 heredoc 內容一律原樣保留。
+#   代價講在前面:產生器若把整段 python/awk 寫進 heredoc,那裡面的註解
+#   從此也算「動到」。這是**刻意的 fail-closed** —— 寧可多說一次「動到了、
+#   去確認車道跑得到」,也不要再放過一次真的改到產物的改動。
+#   (現況:兩支產生器 collect_data.sh 只有兩個 YAML heredoc、
+#   collect_charset_guard.sh 一個 heredoc 都沒有,所以誤報面是 0。)
+#
+# ⚠ 這一條仍然擋不住「改了 heredoc **外面**的註解裡的資料」,但那種註解
+#   不會進產物;而它**不會**放過任何一行真的程式碼 —— cand 那一批的
 #   `sed -i 's/page_size: 5/page_size: 9/'` 照樣算動到(自我測試釘住了)。
 gen_data_changed() {  # gen_data_changed <base-ref> <rel-path…>
   python3 - "$ROOT" "$@" <<'PY'
@@ -249,13 +262,34 @@ def strip_help_block(text):
     return text
 
 
+# `<<DELIM` / `<<-DELIM` / `<<'DELIM'` / `<<"DELIM"`。`<<<`(herestring)不算:
+# 第三個 `<` 既不是 `-`、也不是引號或識別字開頭,三個分支都不吃它。
+_HEREDOC = re.compile(
+    r'''<<(-?)[ \t]*(?:"([^"]*)"|'([^']*)'|([A-Za-z_][A-Za-z0-9_]*))(?=[\s;)&|]|$)''')
+
+
 def normalize(text):
     out = []
+    delim = None          # 目前在哪一份 heredoc 的本文裡
+    dash = False          # `<<-`:結束標記可以有前置 tab
     for line in strip_help_block(text).splitlines():
+        if delim is not None:
+            # ⚠ heredoc 本文**原樣保留**,連空行與 `#` 開頭的行都保留。
+            #   那裡的 `#` 不是 shell 註解,是會被寫進產物的資料。
+            out.append(line)
+            end = line.lstrip('\t') if dash else line
+            if end == delim:
+                delim = None
+            continue
         s = line.strip()
         if not s or s.startswith('#'):
             continue
         out.append(s)
+        m = _HEREDOC.search(line)
+        if m:
+            dash = bool(m.group(1))
+            delim = m.group(2) or m.group(3) or m.group(4)
+    # 走到檔尾還在 heredoc 裡 → 本文已經全部原樣留著,方向是 fail-closed。
     return '\n'.join(out)
 
 
@@ -405,6 +439,57 @@ FANOUT_ST
     bad "「--help」分支裡藏了 rm -rf 卻被當成唯讀出口略過 —— 判準不是 fail-closed"
   else
     ok "認不出形狀的 case 區塊(分支裡有 rm -rf)→ 算動到(fail-closed)"
+  fi
+
+  # ── heredoc 裡的 `#` 是產物,不是註解(2026-08-16 的假綠燈)──────────────
+  # 兩個方向都要證:heredoc **裡面**改一行註解算動到、heredoc **外面**
+  # 改一行註解不算。只證前者的話,一支「任何改動都說動到」的守門也會過。
+  cat > "$_FT/heredoc-base.sh" <<'FANOUT_ST'
+#!/usr/bin/env bash
+set -euo pipefail
+PATCH=$(cat <<'YAML'
+patch:
+  # 這一行是 YAML 註解,會原樣寫進產物。
+  schema_list:
+    - schema: luna_pinyin
+YAML
+)
+printf '%s\n' "$PATCH" > "$OUT/default.custom.yaml"
+FANOUT_ST
+  cat > "$_FT/heredoc-inside.sh" <<'FANOUT_ST'
+#!/usr/bin/env bash
+set -euo pipefail
+PATCH=$(cat <<'YAML'
+patch:
+  # 這一行是 YAML 註解,改了它產物就變了。
+  schema_list:
+    - schema: luna_pinyin
+YAML
+)
+printf '%s\n' "$PATCH" > "$OUT/default.custom.yaml"
+FANOUT_ST
+  cat > "$_FT/heredoc-outside.sh" <<'FANOUT_ST'
+#!/usr/bin/env bash
+set -euo pipefail
+# 這一行是 shell 註解,改它不會動到產物。
+PATCH=$(cat <<'YAML'
+patch:
+  # 這一行是 YAML 註解,會原樣寫進產物。
+  schema_list:
+    - schema: luna_pinyin
+YAML
+)
+printf '%s\n' "$PATCH" > "$OUT/default.custom.yaml"
+FANOUT_ST
+  if gen_data_changed --pair "$_FT/heredoc-base.sh" "$_FT/heredoc-inside.sh"; then
+    bad "heredoc **裡面**改了一行註解卻被判成沒動到 —— 那一行會原樣寫進產物(916a22b 的形狀)"
+  else
+    ok "heredoc 裡面改一行註解 → 算動到產物"
+  fi
+  if gen_data_changed --pair "$_FT/heredoc-base.sh" "$_FT/heredoc-outside.sh"; then
+    ok "heredoc **外面**加一行 shell 註解 → **不算**動到產物(不會為了說明文字亮紅燈)"
+  else
+    bad "heredoc 外面加一行 shell 註解就被判成動到 —— 這一關會開始亂叫"
   fi
   rm -rf "$_FT"
   echo
