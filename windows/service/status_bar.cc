@@ -1,5 +1,32 @@
 #include "status_bar.h"
 
+// ── ⚠ 這個檔案會列舉桌面上所有的 top-level 視窗。這裡把理由寫下來 ──
+//
+// LuminaKey 標榜離線為預設、經得起審計,而「讀取使用者桌面上每一個
+// 視窗的矩形、樣式與擁有行程」實質上是一份**視窗清單能力**。它可以被
+// 正當化,但不該以實作細節的身分夾帶進去 —— 所以:
+//
+//   誰在用:CollectFloatingBars()(本檔),只有它呼叫 EnumWindows。
+//   為什麼:#120。使用者切到別家輸入法之後,我們那一橫**壓在人家的
+//           橫條上** —— 他實際看到過那個畫面。避讓要成立就必須知道
+//           「別人的橫條現在在哪裡」,而 Windows 沒有提供「列出所有
+//           浮動工具列」這種問法,只有 EnumWindows。
+//   讀什麼:每個視窗的 GWL_EXSTYLE、擁有行程的 pid、視窗矩形。
+//           **不讀標題、不讀類別名、不讀內容、不比對任何名字**
+//           (判準是形狀不是身分 —— 見 CollectFloatingBars 的說明)。
+//   去哪裡:哪裡都不去。結果只餵給 common/statusbar_place.h 的
+//           AvoidObstacles(純函式),算完一個 y 位移就丟掉;
+//           不落地、不上傳、不進任何記錄檔。
+//   多常做:需求驅動(ApplyPlacement),而且有 kBarScanMs = 500 的
+//           快取。**不是**定時掃描 —— 沒有任何計時器排它。
+//
+// ⚠ 已知還可以更省(尚未實作,追蹤在 #120):改用 SetWinEventHook 被動
+//   收 EVENT_OBJECT_SHOW / HIDE / LOCATIONCHANGE 來維護 bars_cache_,
+//   只在真的冒出一個 topmost + no-activate 的窗時才重算。那會把
+//   「每次連線抖動都可能掃一輪桌面」降成「真的有浮動橫條出現才付錢」,
+//   語意上也更貼近需求。改動不小而且只有 Windows 上跑得出對錯,
+//   所以這一輪只做了零風險的那一半(見 CollectFloatingBars 裡的順序)。
+
 // GET_X_LPARAM / GET_Y_LPARAM。⚠ 不要自己用 LOWORD/HIWORD 拆 ——
 // 多螢幕時滑鼠座標**會是負的**,而 LOWORD 是無號的,
 // 左邊那顆螢幕上的每一次點擊都會落在一個荒謬的座標上。
@@ -982,6 +1009,23 @@ std::vector<ObstacleRect> StatusBar::CollectFloatingBars(
         DWORD pid = 0;
         ::GetWindowThreadProcessId(h, &pid);
         if (pid == ::GetCurrentProcessId()) return TRUE;
+        // ⚠ 順序是**刻意的**:先做完全部本地的判斷(視窗樣式、擁有者、
+        //   矩形、形狀),最後才問 DWM。
+        //   DwmGetWindowAttribute 是這個回呼裡**唯一的跨行程往返**,
+        //   而它以前排在矩形與尺寸過濾**前面** —— 於是每一個
+        //   topmost + no-activate 的全螢幕覆蓋層(投影片、遊戲、
+        //   螢幕錄影的框)都要先跨一次行程,才被下面那條「大到不像
+        //   橫條」丟掉。放到最後,絕大多數往返直接不必發生,
+        //   而通過的集合一模一樣(這四條全部是 AND)。
+        RECT r{};
+        if (!::GetWindowRect(h, &r)) return TRUE;
+        const int w = r.right - r.left;
+        const int hgt = r.bottom - r.top;
+        if (w <= 0 || hgt <= 0) return TRUE;
+        // 全螢幕的覆蓋層不是一條橫條。
+        if (c->work_w > 0 && c->work_h > 0 && w * 4 >= c->work_w * 3 &&
+            hgt * 4 >= c->work_h * 3)
+          return TRUE;
         // ⚠ UWP 切到背景之後視窗還在、還「看得見」,只是被 DWM 藏起來。
         //   不擋掉的話那一橫會躲一個根本畫不出來的東西。
         //   14 = DWMWA_CLOAKED;mingw 的 dwmapi.h 沒有這個列舉。
@@ -996,15 +1040,6 @@ std::vector<ObstacleRect> StatusBar::CollectFloatingBars(
           if (SUCCEEDED(fn(h, 14, &cloaked, sizeof(cloaked))) && cloaked != 0)
             return TRUE;
         }
-        RECT r{};
-        if (!::GetWindowRect(h, &r)) return TRUE;
-        const int w = r.right - r.left;
-        const int hgt = r.bottom - r.top;
-        if (w <= 0 || hgt <= 0) return TRUE;
-        // 全螢幕的覆蓋層不是一條橫條。
-        if (c->work_w > 0 && c->work_h > 0 && w * 4 >= c->work_w * 3 &&
-            hgt * 4 >= c->work_h * 3)
-          return TRUE;
         ObstacleRect o;
         o.left = r.left;
         o.top = r.top;

@@ -422,6 +422,58 @@ stale_count() { stale_list | wc -l | tr -d ' '; }
 #   §13 的服務裡(250/297/**328**),而 §6e 只讀 §6 那一份,
 #   於是報告「最久 109 ms、0 次超過」,隔壁的 §13 正因為那個 328 紅著。
 DIAG_SVC_LOG="$(cygpath -u "${LOCALAPPDATA}")/${RS_WIN_DATA_FOLDER}/diagnostics/service.log"
+# ── 慢工作:依「服務實例(= 一個記錄檔)」分組 ─────────────────────
+#
+# ⚠ 分組不是排版偏好,是正確性。以前這裡是 `grep -ah … "${WORK}"/*.log
+#   "${DIAG_SVC_LOG}" | tail -25` —— 把每一個服務實例的記錄串成一條,
+#   而讀的人(2026-08-16 那次調查就是這樣)會自然地把相鄰兩行讀成
+#   同一個行程裡先後發生的事,於是得出「那個 1945ms 塞住了這次
+#   1069ms 的建 session」這種**那份輸出撐不住**的因果。
+#   分了組之後,至少「這兩行是不是同一個行程裡的」不必再用猜的。
+#
+# ⚠ 這**仍然不是時間對齊**:engine.cc:44 的那一行沒有時間戳,
+#   所以「同一段時間裡引擎在忙什麼」這個問題在目前的記錄格式下
+#   回答不了。標題與說明必須誠實地這樣寫。
+slow_job_summary() {
+  local f cnt had
+  had=0
+  for f in "${WORK}"/*.log "${DIAG_SVC_LOG}"; do
+    [ -f "${f}" ] || continue
+    cnt="$(grep -ac '慢工作' "${f}" 2>/dev/null || true)"
+    [ -n "${cnt}" ] || cnt=0
+    if [ "${cnt}" -eq 0 ]; then continue; fi
+    had=1
+    printf '        %s(%s 件)\n' "$(basename "${f}")" "${cnt}"
+    (grep -ah '慢工作' "${f}" 2>/dev/null || true) \
+      | sed -e 's/.*慢工作 //' \
+            -e 's/^\(.*\) 等待=\([0-9]*\) ms 執行=\([0-9]*\) ms.*$/\1|\3/' \
+      | awk -F'|' '
+          { c[$1]++; if ($2 + 0 > m[$1]) m[$1] = $2 + 0; s[$1] += $2 + 0 }
+          END { for (k in c)
+                  printf "          %s:%d 次,最久 %d ms,合計 %d ms\n",
+                         k, c[k], m[k], s[k] }' \
+      | sort
+  done
+  if [ "${had}" -eq 0 ]; then
+    echo "        (這一趟沒有任何一件引擎工作超過 service/engine.cc 的"
+    echo "         kSlowJobMs = 40 ms)"
+  fi
+}
+
+# 逐行明細,同樣依服務實例分組。只有紅的時候才印(它很長)。
+slow_job_detail() {
+  local f cnt
+  for f in "${WORK}"/*.log "${DIAG_SVC_LOG}"; do
+    [ -f "${f}" ] || continue
+    cnt="$(grep -ac '慢工作' "${f}" 2>/dev/null || true)"
+    [ -n "${cnt}" ] || cnt=0
+    if [ "${cnt}" -eq 0 ]; then continue; fi
+    printf '        %s(%s 件;以下是最後 15 行)\n' "$(basename "${f}")" "${cnt}"
+    (grep -ah '慢工作' "${f}" 2>/dev/null || true) | tail -15 \
+      | sed 's/^/          /'
+  done
+}
+
 assert_session_new_budget() {   # $1 = 這一次掃描的標籤
   local lines max n over
   lines="$( (grep -ahao 'SESSION_NEW_MS=[0-9]*' \
@@ -436,6 +488,37 @@ assert_session_new_budget() {   # $1 = 這一次掃描的標籤
   n="$(printf '%s\n' "${lines}" | wc -l | tr -d ' ')"
   over="$(printf '%s\n' "${lines}" | awk '$1 >= 300' | wc -l | tr -d ' ')"
   log "  $1:SESSION_NEW ${n} 次,最久 ${max} ms,超過 300ms 的有 ${over} 次"
+  # ── ⭐ 診斷資料**兩條分支都印**(刻意放在 if 之前)─────────────────
+  #
+  # ⚠ 這一段一個字都不參與判準:門檻仍然是 300 ms、over 仍然是
+  #   `awk '$1 >= 300'`、下面 ok / note_fail 的條件完全沒有動。
+  #   它做的只有一件事 —— 把診斷資料從**失敗分支**裡搬出來。
+  #
+  # ⚠ 為什麼非搬不可(2026-08-16 真的發生過,而且差點修錯地方):
+  #   「慢工作」那幾行以前**只**印在 else 裡。綠的那一趟走的是 ok 分支,
+  #   於是它印**零行**慢工作 —— 而「綠 0 行 vs 紅 25 行」被當成了
+  #   「這一批新增了一堆慢工作」的決定性證據。實際上綠的那一趟引擎
+  #   照樣有幾十件超過 kSlowJobMs(40 ms)的工作,只是沒有人印它。
+  #   **只在紅的時候才印的診斷,會系統性地捏造出這個假訊號**,
+  #   而且下一次綠紅對照還會再中一次。
+  local p95 idx nfail
+  idx="$(( (n * 95 + 99) / 100 ))"
+  if [ "${idx}" -lt 1 ]; then idx=1; fi
+  p95="$(printf '%s\n' "${lines}" | sort -n | sed -n "${idx}p")"
+  log "  $1:分佈 n=${n} max=${max} ms p95=${p95} ms over300=${over}"
+  # ⚠ 「建不出來」與「建得很慢」是兩件事,而以前**兩件都只在紅的時候
+  #   才看得到**:那三行「引擎還在第一次整理字詞,現在建不出 session」
+  #   同樣夾在失敗分支的 `--- 建 session 的耗時 ---` 裡面。
+  #   它們對應的是 #103 / #114(部署占著引擎那條執行緒),而那條線
+  #   在綠的那一趟也照樣發生 —— 只是沒有人數。
+  nfail="$( (grep -ahc 'SESSION_NEW 失敗' "${WORK}"/*.log "${DIAG_SVC_LOG}" \
+               2>/dev/null || true) | awk '{ s += $1 } END { print s + 0 }')"
+  log "  $1:另有 ${nfail} 次 SESSION_NEW **失敗**(建不出來,不是慢 —— #103/#114)"
+  echo "      --- 這一趟所有服務記錄裡的慢工作(依服務實例與標籤彙總)---"
+  echo "      ⚠ **沒有時間對齊**:engine.cc:44 那一行沒有時間戳,所以"
+  echo "        「同一段時間裡引擎在忙什麼」在目前的記錄格式下回答不了。"
+  echo "        不同實例之間、同一實例的不同行之間,都不可以讀成因果。"
+  slow_job_summary
   if [ "${over}" -eq 0 ]; then
     ok "$1:**沒有任何一次建立 session 超過用戶端 300ms 的預算**(最久 ${max} ms)
      —— 也就是沒有宿主會因此 fail-open 成「打不出中文」。"
@@ -448,9 +531,12 @@ assert_session_new_budget() {   # $1 = 這一次掃描的標籤
     echo "      --- 建 session 的耗時 ---"
     (grep -ah 'SESSION_NEW_MS=\|SESSION_NEW 失敗' "${WORK}"/*.log \
        "${DIAG_SVC_LOG}" 2>/dev/null || true) | tail -20 | sed 's/^/      /'
-    echo "      --- 同一段時間裡引擎在忙什麼(慢工作)---"
-    (grep -ah '慢工作' "${WORK}"/*.log "${DIAG_SVC_LOG}" 2>/dev/null || true) \
-      | tail -25 | sed 's/^/      /'
+    echo "      --- 慢工作的逐行明細(依服務實例分組;**未依時間對齊**)---"
+    echo "      ⚠ 標題以前寫的是「同一段時間裡引擎在忙什麼」,而那是錯的:"
+    echo "        它從來沒有做過任何時間對齊,只是把所有記錄檔串起來取尾巴。"
+    echo "        上面那次超標的 SESSION_NEW 與下面任何一行都**不保證**"
+    echo "        來自同一個服務行程,更不保證在時間上相鄰。"
+    slow_job_detail
     note_fail "$1:有 ${over} 次建立 session 超過 300ms(最久 ${max} ms)。
      每一次都代表一個宿主進程 fail-open —— 使用者在那個程式裡打不出中文,
      而且沒有任何錯誤訊息。這正是「選了輸入法之後有時候不能打中文」。
