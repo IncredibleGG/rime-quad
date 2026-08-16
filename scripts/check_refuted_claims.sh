@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 #
-# windows/check_refuted_claims.sh — 已推翻的主張不可以在樹上以現況陳述留著
+# scripts/check_refuted_claims.sh — 已推翻的主張不可以在樹上以現況陳述留著
+#
+# 2026-08-16:本來在 windows/ 底下(寫它的是 Windows 那條線),但它掃的一向是
+# **整棵樹**(SCAN_ROOT 預設 REPO_ROOT),登記表是 docs/refuted-claims.tsv,
+# 而 RC-004 的命中點在 docs/coordination.md。桌面兩端收掉時它跟著被刪就會變成
+# 「登記了、沒有人在掃」—— 正是這支腳本檔頭要消滅的那種狀態。所以搬到 scripts/,
+# 呼叫點改掛在 .github/workflows/build.yml 的快車道上。
 #
 # ══ 為什麼有這一支 ═════════════════════════════════════════════════
 #
@@ -27,9 +33,9 @@
 #   (docs/product-gaps.md §4.1.1 是做對的樣子)。
 #
 # 用法:
-#   windows/check_refuted_claims.sh              # 掃整棵樹
-#   windows/check_refuted_claims.sh --self-check # 證明它會紅,也證明它會變綠
-#   windows/check_refuted_claims.sh --root DIR   # 掃別的目錄(自我檢查用)
+#   scripts/check_refuted_claims.sh              # 掃整棵樹
+#   scripts/check_refuted_claims.sh --self-check # 證明它會紅,也證明它會變綠
+#   scripts/check_refuted_claims.sh --root DIR   # 掃別的目錄(自我檢查用)
 #
 set -euo pipefail
 
@@ -43,7 +49,14 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --self-check) SELF_CHECK=1; shift ;;
     --root) SCAN_ROOT="$2"; shift 2 ;;
-    *) echo "未知的參數:$1" >&2; exit 2 ;;
+    # 2026-08-16 從 windows/ 搬到 scripts/ 之後補上:scripts/ 底下每一支
+    # .sh 都必須有一條**唯讀**的 --help 路徑,由 verify_script_readonly.sh
+    # 逐支斷言(它會真的跑一遍並確認沒有副作用)。windows/ 那邊沒有這條
+    # 慣例,所以原本沒有 —— 搬過來當天這一關就紅了。
+    --help|-h)
+      sed -n '2,34p' "${BASH_SOURCE[0]}" | sed 's/^#\{1,2\} \{0,1\}//'
+      exit 0 ;;
+    *) echo "未知的參數:$1(--help 看用法)" >&2; exit 2 ;;
   esac
 done
 

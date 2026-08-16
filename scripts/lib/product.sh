@@ -52,14 +52,14 @@ RS_ANDROID_PKG_PATH="${RS_ANDROID_APP_ID//./\/}"
 # 唯一的連網出口。稽核腳本與 dex 檢查都問同一個類別。
 RS_NETWORK_GATE_CLASS="${RS_ANDROID_APP_ID}.net.NetworkGate"
 RS_NETWORK_GATE_REL="main/java/${RS_ANDROID_PKG_PATH}/net/NetworkGate.kt"
-# TISInputSourceID 必須以 bundle id 為前綴,見 docs/settings-model.md §4。
-RS_MACOS_TIS_HANT="${RS_MACOS_BUNDLE_ID}.Hant"
-RS_MACOS_TIS_HANS="${RS_MACOS_BUNDLE_ID}.Hans"
+# 2026-08-16:RS_MACOS_TIS_HANT / RS_MACOS_TIS_HANS(TISInputSourceID)隨 macOS 端
+# 退場 —— MACOS_BUNDLE_ID 已從 product.env 移除,留著會推出兩個空字串。
+# product.py 的同一組推導同時刪除,否則 verify_product_ids.sh 的兩邊比對會紅。
 # R2 的公開位址字首(bucket 內只准動 R2_PREFIX 底下)。
 RS_R2_REMOTE="r2:tgapk/${RS_R2_PREFIX}"
 
 export RS_ANDROID_IME_ID RS_ANDROID_PKG_PATH RS_NETWORK_GATE_CLASS \
-       RS_NETWORK_GATE_REL RS_MACOS_TIS_HANT RS_MACOS_TIS_HANS RS_R2_REMOTE
+       RS_NETWORK_GATE_REL RS_R2_REMOTE
 
 # --dump:給 verify_product_ids.sh 拿去和 python 那邊逐字比對。
 # 直接執行本檔(而不是 source)時才有作用。

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# verify_core_data_fanout.sh — 動到 core/data/ 就要四條車道都跑過
+# verify_core_data_fanout.sh — 動到 core/data/ 就要每一條登記的車道都跑過
 #
 # ═══════════════════════════════════════════════════════════════════════════
 #  這一關是 2026-08-12 那次撤回換來的
@@ -10,7 +10,7 @@
 # emulator-5558 上驗過、綠的，於是併進 main —— 然後 **macOS 車道紅、
 # Android 車道紅**，整批被 `git revert -m 1` 撤回。
 #
-# `core/data/` 是四端**共用**的執行期資料：Android、macOS、Windows 都會
+# `core/data/` 是各端**共用**的執行期資料：登記表上的每一條車道都會
 # `scripts/collect_data.sh` 把它裝進自己的產物，四端載的是同一份 librime 與
 # 同一份 lua。改它 = 同時改四個產品，而在一端驗過只證明了四分之一。
 #
@@ -112,9 +112,10 @@ GEN_MIN=(
   scripts/collect_charset_guard.sh
 )
 GEN_SKIP=(
-  # 它把測試詞庫寫進 core/data/user 再於 trap 裡還原（檔頭第 35 行自己寫了）。
-  # 借用那個目錄，不產生出貨內容。
-  "apple/scripts/verify_user_dict.sh|借 core/data/user 跑測試，跑完還原"
+  # 2026-08-16:原本這裡有 apple/scripts/verify_user_dict.sh(借 core/data/user
+  # 跑測試、跑完還原)。apple/ 隨 macOS 端收掉一起刪了,而 shared_data_writers.py
+  # 是掃 git ls-files 的:掃不到 = 這一行過期 = --self-test 會硬紅
+  #(「SKIP 裡的 … 根本掃不到」),所以這一項一併退場。
   # 只有 --plant stale-schema 那條植入分支會 mkdir 一次；真正的產物寫在
   # build/ 底下。它是這一關的使用者，不是它的輸入。
   "scripts/verify_syllables.sh|只在 --plant 分支建一次目錄，產物寫在 build/"
@@ -145,10 +146,14 @@ generators() {
 # 為什麼慢車道要單獨給一根針:build.yml 的快車道與慢車道是兩個 job，
 # 各有各的 if:。只驗快車道會漏掉「模擬器那一段整個被跳過」的情形 ——
 # 那正是這一輪踩過的坑。
+# 2026-08-16:桌面兩端(macOS / Windows)收掉。macos.yml 與 windows.yml 連同
+# apple/ 與 windows/ 一起從樹上移除,所以那兩條車道也從這張表退場 ——
+# 要撿回來看標籤 desktop-final-5fa5baa。
+# ⚠ 只剩一條**不代表這一關變成裝飾品**:check_lane 仍然會確認 build.yml 這條在
+# **這條分支**上真的跑得到,而且快慢兩個 job 各自的 if: 都認這條分支。
+# 這一關要防的是「合併時把某條車道靜默關掉」,不是「車道有幾條」。
 LANES=(
   "build.yml|scripts/collect_data.sh|release_check.sh --emu-only"
-  "macos.yml|scripts/collect_data.sh|apple/scripts/verify_console.sh"
-  "windows.yml|scripts/collect_data.sh|windows/verify_console.sh"
 )
 
 lane_file()  { printf '%s' "${1%%|*}"; }
@@ -410,14 +415,14 @@ fi
 
 # ── 這次有沒有動到 core/data/ ──────────────────────────────────────────────
 if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ]; then
-  echo "這是 pull_request:四條車道的 pull_request 觸發都列了 main,一定都會跑。"
+  echo "這是 pull_request:登記表上每一條車道的 pull_request 觸發都列了 main,一定都會跑。"
   exit 0
 fi
 
 BRANCH="${GITHUB_REF_NAME:-$(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null)}"
 [ -n "$BRANCH" ] || die "問不出目前的分支名"
 if [ "$BRANCH" = "main" ]; then
-  echo "分支是 main:四條車道都會跑。"
+  echo "分支是 main:登記表上每一條車道都會跑。"
   exit 0
 fi
 

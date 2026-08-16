@@ -101,14 +101,14 @@ def _pick(files, prefix, suffix):
     return got
 
 
-# R2 上的目錄與檔名字根(刻意保留舊名,見檔頭)。
-_MAC = product.R2_MACOS_DIR
-_WIN = product.R2_WINDOWS_DIR
-_BASE = product.R2_ARTIFACT_BASE
-# 新字根在前、舊的在後:改名之後 R2 上兩種檔名並存,只認新的會讓「舊版」
-# 欄一夕之間變空,看起來像資料掉了。
-_BASES = [_BASE, getattr(product, "R2_ARTIFACT_BASE_LEGACY", "")]
-_BASES = [b for b in _BASES if b]
+# 2026-08-16：桌面兩端收掉之後，這一頁只認 Android 的檔名字根。
+# 原本這裡還有 _MAC / _WIN / _BASE / _BASES（macOS 與 Windows 的 R2 目錄與
+# 檔名字根，含改名前的那個舊字根）。產生那些檔案的 scripts/publish_desktop.sh
+# 已經刪了，沒有人會再往那兩個目錄寫東西。
+# ⚠ R2 上**已經發布**的 macos/ 與 windows/ 檔案刻意沒有下架：使用者手上的連結
+#   還指著它們，下架 = 那些連結一夕之間 404。它們從此不再更新，這一頁也不再
+#   列出它們（見下面 page() 的結尾那句）。要不要真的下架是產品決定，
+#   記在 docs/coordination.md 的 2026-08-16 那一則。
 # Android 同理。2026-08-10 之前發的那一批叫 rime-android-debug-…,只認新字根
 # 會讓「舊版」欄一夕之間變空 —— 而那些檔案還在 R2 上,是出問題時的退路。
 _ANDROID_PREFIXES = [
@@ -125,11 +125,6 @@ def snapshot():
     files = _rclone_list()
     data = {
         "android": _pick(files, _ANDROID_PREFIXES, ".apk"),
-        # 安裝程式是主要下載;壓縮包留給想手動放的人。
-        "macos": _pick(files, [f"{_MAC}/{b}-macos-" for b in _BASES], ".pkg"),
-        "macos_archive": _pick(files, [f"{_MAC}/{b}-macos-" for b in _BASES], ".tar.gz"),
-        "windows": _pick(files, [f"{_WIN}/{b}-Setup-x64-" for b in _BASES], ".exe"),
-        "windows_archive": _pick(files, [f"{_WIN}/{b}-windows-" for b in _BASES], ".zip"),
         "android_version": _android_version(),
         "at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
@@ -181,58 +176,11 @@ summary{cursor:pointer;color:#6b7280;font-size:13px}
 
 # R2 上的這個小檔案記著「最新那一份 macOS 壓縮包裡的 .app 到底叫什麼」。
 # 由 scripts/publish_desktop.sh 在發布時**從產物本身量出來**之後寫上去。
-MACOS_BUNDLE_KEY = f"{product.R2_MACOS_DIR}/app-bundle-latest.txt"
-
-_APP_NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,64}\.app")
-
-_bundle_cache = {"at": 0.0, "name": None}
-
-
-def macos_app_bundle():
-    """手動安裝指令裡那個 `.app` 叫什麼。
-
-    ⚠ **不可以從產品名推。** R2 上躺著的是**上一次發布**的產物,而「產品改名」
-    與「改名後發布過一版」之間必然有一段時間差 —— 那段時間裡從產品名推出來的
-    名字是錯的。名字錯了的症狀是:使用者照著四步做完,系統一聲不吭地不載入它,
-    沒有任何錯誤訊息(見 scripts/lib/product.env 的 MACOS_APP_BUNDLE)。
-
-    所以真相來源與這一頁的其他東西一樣,只有 R2 本身;讀不到那個檔案時才退回
-    product.env 的值 —— 那代表 R2 上還是改名前發布的那一份,而那個常數記的
-    正好就是它。
-    """
-    now = time.time()
-    if _bundle_cache["name"] and now - _bundle_cache["at"] < CACHE_SECONDS:
-        return _bundle_cache["name"]
-    name = None
-    try:
-        out = subprocess.run(
-            ["rclone", "cat", f"{REMOTE}/{MACOS_BUNDLE_KEY}", "--s3-no-check-bucket"],
-            capture_output=True, text=True, timeout=30,
-        )
-        if out.returncode == 0:
-            got = out.stdout.strip()
-            if _APP_NAME_RE.fullmatch(got):
-                name = got
-    except (OSError, subprocess.SubprocessError):
-        name = None
-    name = name or product.MACOS_APP_BUNDLE
-    _bundle_cache.update(at=now, name=name)
-    return name
-
-
-def macos_install_text(app_bundle, archive_name):
-    """手動安裝的四步。**publish_desktop.sh 會拿這段字去和產物比對。**
-
-    四步裡任何一步的名字錯了都是靜默失敗,所以這段字只有一個產生點。
-    """
-    return (
-        "cd ~/Downloads\n"
-        f"tar xzf {archive_name}\n"
-        f"xattr -dr com.apple.quarantine {app_bundle}\n"
-        "mkdir -p ~/Library/Input\\ Methods\n"
-        f"mv {app_bundle} ~/Library/Input\\ Methods/\n"
-        f"open ~/Library/Input\\ Methods/{app_bundle}"
-    )
+# 2026-08-16：macos_app_bundle() 與 macos_install_text() 隨桌面兩端一起移除。
+# 它們是與 scripts/publish_desktop.sh 的雙向相依：publish 端從壓縮包量出 .app
+# 的名字寫進 R2，這一頁讀回來組成手動安裝指令，發布最後一關再比對兩邊。
+# 發布端刪了，留著這一頁的讀取端就只剩一條「永遠退回常數」的死路徑。
+# 要撿回來看標籤 desktop-final-5fa5baa。
 
 
 def rename_note():
@@ -324,23 +272,7 @@ def page():
         f'清單直接讀自 R2,{d["at"]} 更新</div>',
         card("Android", "可用的產品", "", d["android"], extra_meta=a_meta,
              note=rename_note()),
-        card("macOS (Apple Silicon)", "帶設定介面", "warn", d["macos"],
-             note="雙擊 .pkg,下一步到底,<b>裝完登出再登入</b>。"
-                  f"然後系統設定 → 鍵盤 → 輸入來源 → + → 繁體中文/簡體中文 → {product.PRODUCT_NAME}。"
-                  "設定從選單列上的輸入法圖示打開。"
-                  "ad-hoc 簽章,不是可散布的正式版本。",
-             install=(macos_install_text(macos_app_bundle(),
-                                         d["macos_archive"][0]["path"].split("/")[-1])
-                      if d["macos_archive"] else ""),
-             alt=("手動安裝(進階)", d["macos_archive"])),
-        card("Windows x64", "帶設定介面", "warn", d["windows"],
-             note="雙擊 Setup.exe,它會自己要求管理員權限。"
-                  f"裝完:設定 → 時間與語言 → 語言與地區 → 中文 → 選項 → 新增鍵盤 → {product.PRODUCT_NAME}。"
-                  "設定從語言列按鈕或系統匣圖示打開。"
-                  "<b>沒有程式碼簽章</b>,SmartScreen 會攔;而 TSF 的 DLL 會被載入到"
-                  "每一個接受文字輸入的程式裡。",
-             alt=("手動安裝(進階)", d["windows_archive"])),
-        '<div class="foot">桌面兩端的設定介面是第一版,沒有人按過每一顆按鈕。iOS 還沒開始。</div>',
+        '<div class="foot">macOS 與 Windows 桌面版已於 2026-08-16 停止開發，不再發布新版本；已發布的檔案仍留在 R2 上。原始碼在標籤 desktop-final-5fa5baa。iOS 還沒開始。</div>',
         "</div>",
     ]
     return "".join(parts)
@@ -370,13 +302,6 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=20000)
     ap.add_argument("--bind", default="0.0.0.0")
-    # 給 scripts/publish_desktop.sh 用:印出這一頁**現在會叫使用者打的那幾行**。
-    # 發布時拿它和壓縮包裡真的那個 .app 比對,對不上就不准發。
-    ap.add_argument("--print-macos-install", action="store_true",
-                    help="印出 macOS 手動安裝指令(發布關卡用),不起伺服器")
     ns = ap.parse_args()
-    if ns.print_macos_install:
-        print(macos_install_text(macos_app_bundle(), "<壓縮包>"))
-        raise SystemExit(0)
     print(f"下載頁: http://{ns.bind}:{ns.port}/")
     ThreadingHTTPServer((ns.bind, ns.port), Handler).serve_forever()

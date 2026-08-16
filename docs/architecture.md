@@ -1,4 +1,10 @@
-# 架構：四端如何接上同一顆核心
+# 架構：各端如何接上同一顆核心
+
+> **2026-08-16：Windows 與 macOS 兩條桌面線已停止開發並從 main 移除。**
+> 這份文件的 §4（macOS）與 §5（Windows）**刻意原樣保留**，標成「已退場」。
+> 理由：它們記的是真的量到過的平台行為與踩過的坑，那些事實不會因為不出貨
+> 而變成假的；而用刪除讓文件變乾淨，正是 `docs/refuted-claims.tsv` 開頭
+> 那條規矩要擋的形狀。程式碼在標籤 `desktop-final-5fa5baa`。
 
 本文記錄各平台的接入細節。這些是**踩過才知道**的知識，寫下來是為了避免在第二、第三端重新發現一次。
 
@@ -8,13 +14,14 @@
 
 ```
 librime (C++, 靜態連結)
-   └── rime_shell.h / rime_shell.cc     ← 四端共用，唯一的 ABI 邊界
+   └── rime_shell.h / rime_shell.cc     ← 各端共用，唯一的 ABI 邊界
           ├── Android   JNI          →  Kotlin
-          ├── iOS/macOS Swift C interop
-          └── Windows   服務進程內直接呼叫
+          └── iOS       Swift C interop（尚未開始）
+          ─────────────────────────────────────────
+          （已退場：macOS Swift C interop、Windows 服務進程內直接呼叫）
 ```
 
-跨越 `rime_shell.h` 的東西只有：POD 結構、`const char*`、整數。**沒有 C++ 型別、沒有例外、沒有回呼以外的控制反轉。** 這條紀律讓同一份實作能同時被 JNI、Swift 與 MSVC 消費。
+跨越 `rime_shell.h` 的東西只有：POD 結構、`const char*`、整數。**沒有 C++ 型別、沒有例外、沒有回呼以外的控制反轉。** 這條紀律讓同一份實作能同時被 JNI 與 Swift 消費（桌面兩端還在時，MSVC 也消費同一份）。
 
 ### 記憶體契約（最容易出錯的地方）
 
@@ -57,7 +64,7 @@ librime 的 `get_commit` 是**取出即清除**。本層在每次 `rs_snapshot_a
 
 ---
 
-## 1. 按鍵映射：四端最大的隱藏工作量
+## 1. 按鍵映射：桌面端最大的隱藏工作量
 
 librime 吃的是 **X11 keysym**（見 librime `src/rime/key_table.h`），不是字元、不是平台鍵碼。
 
@@ -78,10 +85,15 @@ modifier 遮罩的實際值（**這些必須查表，憑印象一定寫錯**）�
 |---|---|---|
 | **Android** | 鍵盤自繪，佈局 YAML 直接指定 keysym | **最低** —— 沒有映射問題 |
 | **iOS** | 同上，鍵盤擴展自繪 | 最低 |
-| **macOS** | `NSEvent.keyCode` + `charactersIgnoringModifiers` | 中 |
-| **Windows** | TSF 收到的 `VK_*` + `GetKeyboardState` | 高 |
+| ~~macOS~~（已退場） | `NSEvent.keyCode` + `charactersIgnoringModifiers` | 中 |
+| ~~Windows~~（已退場） | TSF 收到的 `VK_*` + `GetKeyboardState` | 高 |
 
 桌面兩端必須自行實作「原生鍵碼 → keysym」，且**這個映射受使用者的實體鍵盤佈局影響**（QWERTY / Dvorak / 各國佈局），不可寫死成一張常數表。這是先做 Android 的理由之一：行動端能完全繞開這個問題，讓我們先把核心與 UI 跑通，再回頭處理桌面端的鍵碼地獄。
+
+> **2026-08-16 起這一節只剩歷史意義。** 剩下的兩端（Android / iOS）都是鍵盤
+> 自繪、由佈局 YAML 直接指定 keysym，**沒有鍵碼映射這件工作**。
+> 上面兩列標成已退場的內容保留著：如果哪天又要做桌面端，那是量過的結論，
+> 不必再踩一次。
 
 ---
 
@@ -146,24 +158,50 @@ window recomposer 是從**視窗的 decor view 往下找**，不是從 ComposeVi
 - 「完全取用權限」（Full Access）未授權時，某些能力受限。設計上應讓核心輸入功能**不依賴** Full Access。
 - App Store 審查對輸入法（尤其要求 Full Access 的）特別嚴格。
 
-### 與 macOS 的關係
-共用 Swift 技術棧與 `rime_shell` 綁定層，但 **UI 完全重寫** —— 一個是軟鍵盤，一個是候選窗。不要試圖抽象成同一套 View。
+### 起點在哪裡
+~~共用 Swift 技術棧與 `rime_shell` 綁定層，但 **UI 完全重寫**。~~
+
+**2026-08-16 更新：那個「共用」的對象已經不在樹上了。** macOS 端收掉之後，
+iOS 這條線沒有現成的同伴，但也不是從零：`desktop-final-5fa5baa` 標籤裡的
+`apple/LuminaKey/Sources/LuminaKeyKit/` 有 39 個檔，其中 **37 個完全不 import
+AppKit**（ThemeParser、MiniYaml、CandidateLayout、StoreEngine、ArchiveGuard、
+ZipReader、NetworkGate、IPC、KeyMapper、SchemaPreflight…），`Package.swift`
+的檔頭明說那一層「刻意不含 AppKit / InputMethodKit / librime」，
+另有 200 餘項單元測試與 11 個變異測試。
+
+⚠ 撿回來的時候要知道：**那棵樹裡沒有任何 iOS 程式碼**，連 Xcode 專案檔都沒有
+（`git ls-files | grep -iE 'pbxproj|xcodeproj'` 零命中），`Package.swift` 宣告的是
+`platforms: [.macOS(.v11)]`。它是「可以移植的純邏輯」，不是「已經跑過的 iOS 層」。
 
 ---
 
-## 4. macOS
+## 4. macOS ~~（已退場，2026-08-16）~~
+
+> 這一節保留當歷史。macOS 端做完並發布過，於 2026-08-16 停止開發、
+> 從 main 移除；程式碼在標籤 `desktop-final-5fa5baa`。
+> 下面的內容是當時**實際做出來並且量過**的樣子，沒有改寫。
+
 
 ### 宿主機制
 **InputMethodKit**：`IMKServer` + `IMKInputController`。輸入法是一個獨立的 `.app`，安裝到 `/Library/Input Methods` 或 `~/Library/Input Methods`。
 
 ### 特點
-- 四端中**最好調試的**：獨立進程，崩潰不會拖垮別人，可以直接下中斷點。這是把它排在 Android 之後、iOS 與 Windows 之前的理由。
+- 各端中**最好調試的**：獨立進程，崩潰不會拖垮別人，可以直接下中斷點。這是當時把它排在 Android 之後、iOS 與 Windows 之前的理由。
 - UI 是懸浮候選窗（`NSPanel`），不畫鍵盤。
 - 需要簽章與公證才能散佈。
 
 ---
 
-## 5. Windows
+## 5. Windows ~~（已退場，2026-08-16）~~
+
+> 這一節保留當歷史。Windows 端做完並發布過，於 2026-08-16 停止開發、
+> 從 main 移除；程式碼在標籤 `windows-final-24190704`
+> 與 `desktop-final-5fa5baa`。
+>
+> ⚠ 下面「這一格決定了整個專案的技術選型下限」那一段，**當時是對的**，
+> 但那個下限已經隨 Windows 線退場。現在壓住下限的是 iOS 鍵盤擴展的
+> 記憶體額度（見 §3）。結論沒有變：核心層是一層薄 C ABI，UI 各端自己做。
+
 
 ### 宿主機制
 **TSF（Text Services Framework）**，一個 COM in-proc server DLL。

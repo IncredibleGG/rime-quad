@@ -1,5 +1,23 @@
 # 備份格式（匯出／匯入）
 
+> ## ⚠ 2026-08-16：桌面兩端（Windows / macOS）已停止開發並從 main 移除
+>
+> 這份文件裡所有 `macOS` / `Windows` / 「桌面端」/「四端」的段落**刻意原樣保留**，
+> 沒有逐句刪除。理由寫在 `docs/refuted-claims.tsv` 的開頭：用刪除讓文件變綠，
+> 會把「當時量到的事實」跟「現在誰在做」一起抹掉，而前者不會因為不出貨而變假。
+>
+> 讀的時候請這樣換算：
+>
+> | 文件裡寫的 | 現在的意思 |
+> |---|---|
+> | 「四端」 | Android（唯一有實作的一端）＋ iOS（尚未開始） |
+> | 「桌面端 / macOS / Windows」 | **已退場**，只剩歷史意義；程式碼在標籤 `desktop-final-5fa5baa` |
+> | 「僅 macOS / Windows」的區塊 | **目前沒有任何實作者**，見下面各處標註 |
+>
+> 完整的移除清單與哪幾條規範因此失去執行者，記在 `docs/coordination.md` 的
+> 2026-08-16 那一則。
+
+
 > 四端共用。Android 端的實作在 `android/app/src/main/java/org/luminakey/ime/store/Backup*.kt`
 > 與 `UserDbSnapshot.kt`。桌面兩端還沒接，§8 列了要做的事。
 

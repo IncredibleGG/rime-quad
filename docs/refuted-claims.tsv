@@ -60,6 +60,11 @@
 # 上面說的 95% 誤報。所以 RC-003 登記過、驗過、**撤掉了** —— 留一條永遠
 # 綠的規則會讓人以為那一類有人在守。
 #
+# 2026-08-16:桌面兩端收掉之後,RC-001 / RC-002(TSF 的兩則)命中集合**沒有變空**
+# —— 它們的命中點在 docs/coordination.md、docs/product-gaps.md、docs/ui-design.md,
+# 那幾份都留在樹上。所以兩條都**不撤**(撤掉的判準是「永遠綠」,見 RC-003 那一段)。
+# 掃描器本身從 windows/check_refuted_claims.sh 搬到 scripts/check_refuted_claims.sh,
+# 呼叫點改掛在 .github/workflows/build.yml 的快車道。
 RC-001	(?<![不有])掛低階鍵盤 hook	「修 Shift 要掛低階鍵盤 hook」。2026-08-12 實測推翻(CI run 31511075812 / sha ca97498 / logic-x64「真的經過 TSF」)。⚠ 負敘述(不掛 / 沒有掛低階鍵盤 hook)是那條紅線本身,仍然有效,所以 pattern 排除它們。
 RC-002	TSF (不把|不交付|不給|本來就不會把)純修飾鍵	「TSF 不把純修飾鍵交給 key event sink」。同一次實測推翻:SHIFT_TRACE_LINES=1,多出來的那一行是 OnTestKeyDown 自己寫的。⚠ 疑問句(「TSF 到底會不會把純修飾鍵…」)不算主張,pattern 刻意不吃它 —— verify_tsf.sh 的 --press-shift 正是把它寫成問句的那個做對的樣子。
-RC-004	判準等價於「?至少有一條	「那一橫顯不顯示,判準等價於『至少有一條連線開著』(一條連線一張票)」。2026-08-14 被使用者實機回報推翻:12 條背景／殭屍連線每一條都算一票,他切到微軟拼音之後那一橫還自己冒出來(S4)。現行判準見 docs/ui-design.md §12.10.6 與 windows/common/bar_owner.h:焦點所在的那一條**執行緒**上啟用中的是不是我們。
+RC-004	判準等價於「?至少有一條	「那一橫顯不顯示,判準等價於『至少有一條連線開著』(一條連線一張票)」。2026-08-14 被使用者實機回報推翻:12 條背景／殭屍連線每一條都算一票,他切到微軟拼音之後那一橫還自己冒出來(S4)。現行判準見 docs/ui-design.md §12.10.6（原本另引 windows/common/bar_owner.h，該檔已隨 Windows 線於 2026-08-16 移除，見標籤 desktop-final-5fa5baa）:焦點所在的那一條**執行緒**上啟用中的是不是我們。

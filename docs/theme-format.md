@@ -1,5 +1,23 @@
 # 主題與鍵盤佈局格式規範 v1
 
+> ## ⚠ 2026-08-16：桌面兩端（Windows / macOS）已停止開發並從 main 移除
+>
+> 這份文件裡所有 `macOS` / `Windows` / 「桌面端」/「四端」的段落**刻意原樣保留**，
+> 沒有逐句刪除。理由寫在 `docs/refuted-claims.tsv` 的開頭：用刪除讓文件變綠，
+> 會把「當時量到的事實」跟「現在誰在做」一起抹掉，而前者不會因為不出貨而變假。
+>
+> 讀的時候請這樣換算：
+>
+> | 文件裡寫的 | 現在的意思 |
+> |---|---|
+> | 「四端」 | Android（唯一有實作的一端）＋ iOS（尚未開始） |
+> | 「桌面端 / macOS / Windows」 | **已退場**，只剩歷史意義；程式碼在標籤 `desktop-final-5fa5baa` |
+> | 「僅 macOS / Windows」的區塊 | **目前沒有任何實作者**，見下面各處標註 |
+>
+> 完整的移除清單與哪幾條規範因此失去執行者，記在 `docs/coordination.md` 的
+> 2026-08-16 那一則。
+
+
 > 本文件是**規範性（normative）**文件。四端（Android / iOS / macOS / Windows）各自
 > 實作解析器，唯一的一致性來源就是本文件。凡本文件未明確規定者，即為規範缺陷，
 > 請提 issue 而非各自發明。
@@ -3172,7 +3190,7 @@ key_patches:
    |---|---|
    | 除下列以外的一切 | **四端全部** |
    | `keyboard`、`feedback`、`candidates.bar`、以及所有佈局文件 | 僅 Android / iOS |
-   | `candidates.window`、`status_bar` | 僅 macOS / Windows |
+   | ~~`candidates.window`、`status_bar`~~ | ~~僅 macOS / Windows~~ —— **2026-08-16 起沒有任何實作者** |
    | `candidates.syllables` 的**欄位**診斷 | **四端全部** —— 桌面端不渲染它，但**必須解析**（§8.6.6.3.5 第 1 點） |
    | §8.6.6.3.3 的**退化**診斷（`syllables_*`） | 僅 Android / iOS —— 它們相依於佈局與當前方案，不是主題單獨算得出來的（§8.6.6.3.2） |
 
@@ -3184,6 +3202,23 @@ key_patches:
    > `keyboard.blahblah: 1` 在 Android 上是一則 WARNING、在 macOS 上是零則。
    > 要嘛要求桌面端把用不到的區塊也完整解析一遍（純粹為了產生診斷），
    > 要嘛承認比對有作用域。選後者。
+> ### ⚠ 2026-08-16：這份清單有幾條失去了執行者
+>
+> 桌面兩端收掉之後，`apple/LuminaKey/Tests/LuminaKeyKitTests/RepoConformanceTests.swift`
+> 隨 `apple/` 一起刪除。它守著本節的四條不變量，逐條盤點結果如下：
+>
+> | 原本由 Swift 測試守的 | 現在誰守 |
+> |---|---|
+> | 每份主題零 ERROR 診斷（第 1 條） | ✅ `ThemeParserTest.allShippedThemesParseWithoutDiagnostics`，且 `RepoFixtures.themeIds` 是**掃目錄**不是白名單 |
+> | 每份主題在每一個平台鍵下都解析得過 | ✅ 同上（Android 端解析全部平台鍵） |
+> | 每一個 `DiagnosticCode` 都寫進了 §6.5 | ✅ `DiagnosticCodeSpecTest`「規範碼表裡的每一個 code 都實作了」—— 它把碼表**從這份文件當場讀出來**，比原本的 Swift 版更嚴（雙向：規範有而沒實作、實作了而規範標著「尚未實作」、程式碼多出來的碼，三個方向都報） |
+> | 規範裡寫的 `candidates.window` 欄位都真的有綁定 | ❌ **沒有人守，而且短期內不會有** —— `candidates.window` 與 `status_bar` 是桌面專屬區塊（§1.1），唯一的消費者是已退場的 macOS / Windows。那些欄位現在**不對應任何實作**。 |
+>
+> 也就是說：四條裡三條有等價物、一條的**守備對象本身**沒有了。
+> `candidates.window` / `status_bar` 的規範文字刻意留著（iOS 之後若要做候選窗
+> 或狀態指示器，那是量過的結論），但在有人實作之前，它們是**規範性的死欄位**：
+> 改壞了不會有任何一關變紅。動它們之前先看 `docs/coordination.md` 2026-08-16。
+
 10. `candidates.bar.toolbar.items` 缺席時，解析結果為 §8.6.6.1 的六項預設清單；
     主題若把 `items` 覆寫成不含 `schema:picker` 的清單，實作補回該項並發 INFO。
 11. 空白鍵（同時有 `icon: space` 與 `label_from: schema_name`）在 schema 已載入時

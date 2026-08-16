@@ -16,9 +16,9 @@
 #        的結果(組合值是兩邊各推一次的,這一項就是在盯那個「各推一次」)。
 #     2. 兩個讀取器必須真的在讀檔案。改了 product.env 而輸出不變 = 有人在
 #        讀取器裡也寫死了一份。
-#     3. scripts/、android/、apple/ 底下(scripts/lib/ 以外)的 .sh 與 .py
+#     3. scripts/、android/ 底下(scripts/lib/ 以外)的 .sh 與 .py
 #        不准再出現識別碼字面值;
-#        core/ docs/ tools/ README + android/ 與 apple/ 的原始碼不准殘留舊名。
+#        core/ docs/ tools/ README + android/ 的原始碼不准殘留舊名。
 #     4. **落地的識別碼**(寫進使用者磁碟的檔名與魔術字串)必須與 product.env
 #        逐字相同,而且改名前的那一份相容宣告必須還在。
 #
@@ -105,10 +105,12 @@ fi
 # 識別碼的字面樣式。scripts/lib/ 以外的腳本不准出現這些字。
 HARDCODE_RE='org\.(luminakey|rimequad)|(luminakey|rimequad)-(store|layouts|backup|update|current-keyboard)|kRimeQuad|rimequad_lua_|rimequad-path-sandbox|__rimequad_sandbox|LuminaKey|RimeQuad'
 
-# scripts/、android/、apple/ 底下的 .sh 與 .py。三個排除:
-#   scripts/lib/                —— 值的合法住址
-#   本檔                        —— 規則本身要把那些字寫出來才能拿去比對
-#   apple/scripts/verify_names.py —— macOS 那一側的同型規則檔,同一個理由
+# scripts/、android/ 底下的 .sh 與 .py。兩個排除:
+#   scripts/lib/  —— 值的合法住址
+#   本檔          —— 規則本身要把那些字寫出來才能拿去比對
+# 2026-08-16:原本還排除 apple/scripts/verify_names.py(macOS 那一側的同型
+# 規則檔)。那個檔案隨 apple/ 刪除,而「排除一個不存在的檔名」是一個洞:
+# 日後有人在 scripts/ 或 android/ 底下新增同名檔案,就會被靜默略過。
 # (scripts/lua_sandbox/ 的 .lua 與 .c 不在掃描範圍:它們裡面的 RIMEQUAD_* 全域
 #  與 __rimequad_sandbox 標記是 patches/ 那顆沙盒定義的,見 product.env。)
 #
@@ -118,24 +120,20 @@ HARDCODE_RE='org\.(luminakey|rimequad)|(luminakey|rimequad)-(store|layouts|backu
 #    winutil.cc 的資料夾名改回舊值,這支腳本**照樣 12/12 全綠** —— 因為
 #    windows/ 從來不在任何一個掃描根裡。這正是這支腳本檔頭自己警告的那種
 #    失敗:改了顯示名、沒改識別碼,而編譯期、單元測試、發布關卡全部是綠的。
-SCRIPT_ROOTS="scripts android apple windows"
+# 2026-08-16:apple 與 windows 兩個掃描根隨桌面兩端退場(目錄已刪)。
+# ⚠ 上面那條「windows 是後來補上的」的教訓刻意留著:掃描根少一個,
+#   這支腳本照樣全綠。新的一端接進來時,第一件事就是把它加進這一行。
+SCRIPT_ROOTS="scripts android"
 
-# apple/ 的建置與驗證腳本可以寫死名字,**條件是有人盯著它們**:
-# `apple/scripts/verify_names.py` 逐條斷言那些字面值彼此相符,而且它自己有
-# `--self-test`(把違規真的植入原始碼,確認會紅)。這裡列成一張帶理由的表,
-# 而不是一句 `-not -path apple/*`:
-#   · 新增的 apple 腳本若寫死識別碼,不在表上 → 這一關紅,得有人**明著**決定;
-#   · 表上的檔案不見了 → 也紅(見下面的「陳舊條目」檢查),表不會活得比它的對象久。
-HARDCODE_ALLOW="\
-apple/scripts/build_app.sh|.app 與執行檔名;verify_names.py §6 逐條斷言
-apple/scripts/build_pkg.sh|pkg 識別碼 == <bundle id>.pkg;verify_names.py §6
-apple/scripts/package_core.sh|核心層產物的說明文字;verify_names.py §8
-apple/scripts/run_kit_tests.sh|Swift 套件路徑 apple/LuminaKey/… 與變異測試的靶
-apple/scripts/verify_app_bundle.sh|bundle 內的名字;verify_names.py §6
-apple/scripts/verify_pkg.sh|裝完之後的 bundle id;verify_names.py §6
-apple/scripts/verify_single_egress.sh|Swift 套件路徑
-apple/scripts/verify_user_dict.sh|寫出去的 custom_phrase 掛載檔;標記另由第 6 項釘住
-windows/verify_product_names.sh|Windows 那一側的同型規則檔,自帶 20 列逐列反向測試"
+# 允許清單:可以寫死識別碼的腳本,一行一個 <相對路徑>|<理由>。
+#
+# 2026-08-16:這張表原本有 8 列 apple/scripts/* 與 1 列
+# windows/verify_product_names.sh。桌面兩端收掉之後**整張表是空的** ——
+# 現在沒有任何腳本獲准寫死識別碼,一律要讀 product.sh / product.py。
+# ⚠ 空表不等於這一關失效:下面的植入測試仍然證明掃描器抓得到東西,
+#   而 scan_scripts 對空表的處理是「不過濾」而不是「全部濾掉」——
+#   後者會讓這一關恆綠,見那裡的註解。
+HARDCODE_ALLOW=""
 
 scan_scripts() {   # scan_scripts <root>
   local root="$1" d
@@ -143,30 +141,33 @@ scan_scripts() {   # scan_scripts <root>
     [ -d "$root/$d" ] || continue
     find "$root/$d" -type f \( -name '*.sh' -o -name '*.py' \) \
          -not -path "$root/scripts/lib/*" \
-         -not -name 'verify_product_ids.sh' \
-         -not -name 'verify_names.py' -print0 2>/dev/null
+         -not -name 'verify_product_ids.sh' -print0 2>/dev/null
   done \
     | xargs -0 -r grep -nE "$HARDCODE_RE" 2>/dev/null \
     | sed "s|^$root/||" \
-    | grep -vFf <(printf '%s\n' "$HARDCODE_ALLOW" | cut -d'|' -f1 | sed 's|$|:|') \
+    | { if [ -n "$HARDCODE_ALLOW" ]; then
+        # ⚠ 允許清單為空時**不可以**走這條路:空字串經過 cut/sed 會變成
+        #   單獨一個 ":" 樣式,而每一筆命中都長成 檔案:行號:內容 ——
+        #   於是每一筆都被濾掉,這一關恆綠。空表要的是「不過濾」。
+        grep -vFf <(printf '%s\n' "$HARDCODE_ALLOW" | cut -d'|' -f1 | sed 's|$|:|')
+      else cat; fi; } \
     || true
 }
 
-step "3. scripts/、android/、apple/ 底下沒有寫死的識別碼"
+step "3. scripts/、android/ 底下沒有寫死的識別碼"
 # 先確認這個掃描器抓得到東西 —— 一個永遠回空的掃描器會讓這一關恆綠。
-# 三處植入,三個掃描根各一個,證明每一個根都真的走到了。
-mkdir -p "$TMP/plant/scripts" "$TMP/plant/android" "$TMP/plant/apple/scripts"
+# 兩處植入,兩個掃描根各一個,證明每一個根都真的走到了。
+mkdir -p "$TMP/plant/scripts" "$TMP/plant/android"
 printf 'IME_ID="org.luminakey.ime/.RimeInputMethodService"\n' > "$TMP/plant/scripts/planted.sh"
 printf 'PREFS = "rimequad-store.json"\n' > "$TMP/plant/android/planted.py"
-printf 'BACKUP="luminakey-backup.json"\n' > "$TMP/plant/apple/scripts/planted.sh"
 N_PLANT="$(scan_scripts "$TMP/plant" | grep -c . || true)"
-if [ "${N_PLANT:-0}" -lt 3 ]; then
-  bad "掃描器抓不到植入的違規($N_PLANT/3)—— 這一關本身壞了,不是通過"
+if [ "${N_PLANT:-0}" -lt 2 ]; then
+  bad "掃描器抓不到植入的違規($N_PLANT/2)—— 這一關本身壞了,不是通過"
   scan_scripts "$TMP/plant" | sed 's/^/         /' >&2
 else
   HITS="$(scan_scripts "$ROOT")"
   if [ -z "$HITS" ]; then
-    ok "三個掃描根對植入的違規都報紅($N_PLANT 處),而真的腳本裡一處都沒有"
+    ok "兩個掃描根對植入的違規都報紅($N_PLANT 處),而真的腳本裡一處都沒有"
   else
     bad "這些腳本仍然把識別碼寫死(請改讀 scripts/lib/product.sh 或 product.py):"
     printf '%s\n' "$HITS" | sed 's/^/         /' >&2
@@ -186,14 +187,9 @@ if [ -z "$STALE" ]; then
 else
   bad "允許清單指著不存在的檔案(請刪掉條目):$STALE"
 fi
-# 允許清單把 apple/ 交給 verify_names.py,所以那一支必須還在、而且還在做這件事。
-if [ -f "$ROOT/apple/scripts/verify_names.py" ] \
-   && grep -q -- '--self-test' "$ROOT/apple/scripts/verify_names.py" \
-   && grep -q '沒有非預期的舊名字殘留' "$ROOT/apple/scripts/verify_names.py"; then
-  ok "apple/scripts/verify_names.py 還在,而且還有自我反向測試與舊名殘留掃描"
-else
-  bad "apple/ 的名字檢查不見了(或不再掃舊名殘留)—— 上面那張允許清單就變成一個洞"
-fi
+# 2026-08-16:原本這裡斷言 apple/scripts/verify_names.py 還在(允許清單把
+# apple/ 的 8 支腳本交給它守)。apple/ 已刪除,允許清單也空了,這段斷言
+# 沒有對象;留著只會硬紅。允許清單一旦再度非空,守它的人要在這裡補回來。
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 舊名殘留。改名最典型的失敗是「改了一半」,而一半的那一半通常在文件裡。
@@ -209,16 +205,14 @@ LEGACY_RE='rimequad|RimeQuad|RIMEQUAD'
 LEGACY_LABEL='舊名'
 # ⚠ 掃描目標原本只有前五個。2026-08-09 的合併稽核:**四端的原始碼一個都不在
 #   裡面**,於是 Android 的六個落地識別碼整批停在舊名,而這一關 6/6 全綠。
-#   現在加上 android/ 與 apple/ 的原始碼。
+#   現在加上 android/ 的原始碼。
 #
-#   apple/ 只掃 Sources / AppSources / SettingsSources。它的 Tests/ 與 scripts/
-#   由 `apple/scripts/verify_names.py` §9 的 MUST_KEEP / MAY_MENTION 表管
-#   —— 那張表比「同一行寫舊名」更嚴(它還要求那些相容片段**必須存在**),
-#   在這裡再掃一次只會逼人把同一件事寫兩遍。第 3 項會斷言那支腳本還在。
+# 2026-08-16:apple/ 的 Sources / AppSources / SettingsSources 三個掃描區
+#   與「Tests/ 和 scripts/ 交給 apple/scripts/verify_names.py」那條分工
+#   隨 macOS 端一起退場。
+# 2026-08-16:apple/ 與 windows/ 的掃描區隨桌面兩端退場。
 LEGACY_TARGETS="core docs tools README.md .github/workflows/build.yml \
-android/app/src android/testdata \
-apple/LuminaKey/Sources apple/LuminaKey/AppSources apple/LuminaKey/SettingsSources \
-windows/common windows/service windows/tsf windows/winshared windows/installer"
+android/app/src android/testdata"
 scan_legacy() {   # scan_legacy <root>
   local root="$1" t targets=""
   for t in $LEGACY_TARGETS; do
@@ -234,27 +228,24 @@ scan_legacy() {   # scan_legacy <root>
     || true
 }
 
-step "4. core/ docs/ tools/ README 與 android/ apple/ 的原始碼沒有殘留舊產品名"
+step "4. core/ docs/ tools/ README 與 android/ 的原始碼沒有殘留舊產品名"
 mkdir -p "$TMP/legacy/docs" "$TMP/legacy/core" "$TMP/legacy/tools" \
-         "$TMP/legacy/.github/workflows" "$TMP/legacy/android/app/src" \
-         "$TMP/legacy/apple/LuminaKey/Sources"
+         "$TMP/legacy/.github/workflows" "$TMP/legacy/android/app/src"
 : > "$TMP/legacy/README.md"
 : > "$TMP/legacy/.github/workflows/build.yml"
 printf '使用者資料在 ~/Library/Application Support/RimeQuad。\n' > "$TMP/legacy/docs/planted.md"
-# 三處植入,三個掃描區各一個 —— 只在 docs/ 植入的話,新加的那兩個目錄
+# 兩處植入,兩個掃描區各一個 —— 只在 docs/ 植入的話,android/ 那個目錄
 # 就算根本沒被走到也看不出來(那正是這次要修的失敗形狀)。
 printf 'const val FILE_NAME = "rimequad-store.json"\n' \
   > "$TMP/legacy/android/app/src/Planted.kt"
-printf 'public static let fileName = "rimequad-store.json"\n' \
-  > "$TMP/legacy/apple/LuminaKey/Sources/Planted.swift"
 N_LEG="$(scan_legacy "$TMP/legacy" | grep -c . || true)"
-if [ "${N_LEG:-0}" -lt 3 ]; then
-  bad "舊名掃描器只抓到 $N_LEG/3 處植入 —— 有掃描區沒被走到,這一關本身壞了"
+if [ "${N_LEG:-0}" -lt 2 ]; then
+  bad "舊名掃描器只抓到 $N_LEG/2 處植入 —— 有掃描區沒被走到,這一關本身壞了"
   scan_legacy "$TMP/legacy" | sed 's/^/         /' >&2
 else
   LEG="$(scan_legacy "$ROOT")"
   if [ -z "$LEG" ]; then
-    ok "三個掃描區對植入的舊名都報紅,而真的原始碼裡一處都沒有"
+    ok "兩個掃描區對植入的舊名都報紅,而真的原始碼裡一處都沒有"
   else
     bad "還有地方叫舊名字(改名改一半就是這樣開始的):"
     printf '%s\n' "$LEG" | sed 's/^/         /' >&2
@@ -299,7 +290,6 @@ fi
 # 比對的是**整段宣告**而不是只有值。只找值的話,一個躺在註解或測試裡的同名
 # 字串就能讓這一項恆綠 —— 那正是這個專案吃過好幾次虧的形狀。
 AND_MAIN="android/app/src/main/java/${RS_ANDROID_PKG_PATH}"
-APPLE_KIT="apple/LuminaKey/Sources/LuminaKeyKit"
 
 # 改名前的那一份。**由新值推導,不另外寫死** —— 兩邊各寫一份就又回到
 # 「同一個名字有兩個版本」的老問題(見 product.env 檔頭)。
@@ -308,6 +298,11 @@ L_MANIFEST="$(lg "$RS_BACKUP_MANIFEST")"
 L_KIND="$(lg "$RS_BACKUP_KIND")"
 L_STORE="$(lg "$RS_STORE_REGISTRY_FILE")"
 L_LAYOUTS="$(lg "$RS_LAYOUTS_FILE")"
+# ⚠ 2026-08-16:L_MARKER 目前沒有對帳對象。`custom_phrase` 掛載標記
+#   (docs/settings-model.md §5)**只有 macOS 端實作過**,Android 從來沒有;
+#   apple/ 一刪,這條規範就沒有實作、也沒有守門了。刻意保留這一行與
+#   product.env 的 CUSTOM_PHRASE_MARKER,等 Android 或 iOS 實作時接回來。
+#   記在 docs/coordination.md 的 2026-08-16 那一則。
 L_MARKER="$(lg "$RS_CUSTOM_PHRASE_MARKER")"
 
 landed_rows() {
@@ -321,9 +316,6 @@ landed_rows() {
 偏好檔名 市集|$AND_MAIN/store/StoreController.kt|const val PREFS = "$RS_ANDROID_PREFS_STORE"
 偏好檔名 鍵盤|$AND_MAIN/home/KeyboardChoice.kt|const val KEYBOARD_PREFS = "$RS_ANDROID_PREFS_KEYBOARD"
 偏好檔名 更新|$AND_MAIN/update/UpdateController.kt|const val PREFS = "$RS_ANDROID_PREFS_UPDATE"
-安裝帳本檔名 macOS|$APPLE_KIT/InstalledRegistry.swift|let fileName = "$RS_STORE_REGISTRY_FILE"
-掛載標記 macOS|$APPLE_KIT/UserPhrases.swift|let marker = "# $RS_CUSTOM_PHRASE_MARKER: custom_phrase
-掛載標記 驗證腳本|apple/scripts/verify_user_dict.sh|# $RS_CUSTOM_PHRASE_MARKER: custom_phrase
 ROWS
 }
 
@@ -339,8 +331,6 @@ legacy_rows() {
 容器內 layout 相容|$AND_MAIN/store/BackupFormat.kt|const val LEGACY_LAYOUT_ENTRY = "layout/$L_LAYOUTS"
 安裝帳本相容 Android|$AND_MAIN/store/InstalledRegistry.kt|const val LEGACY_FILE_NAME = "$L_STORE"
 自訂鍵位相容 Android|$AND_MAIN/keyboard/UserLayoutStore.kt|const val LEGACY_FILE_NAME = "$L_LAYOUTS"
-安裝帳本相容 macOS|$APPLE_KIT/LegacyDataMigration.swift|let legacyRegistryFileName = "$L_STORE"
-掛載標記相容 macOS|$APPLE_KIT/UserPhrases.swift|["# $L_MARKER: custom_phrase
 ROWS
 }
 
@@ -478,7 +468,7 @@ fi
 
 LANDED_MISS="$(check_landed "$ROOT" landed_rows)"
 if [ -z "$LANDED_MISS" ]; then
-  ok "寫進使用者磁碟的名字,四端都照 product.env"
+  ok "寫進使用者磁碟的名字都照 product.env(桌面兩端收掉後只剩 Android 落地)"
 else
   bad "這些落地的名字跟 product.env 對不上(發布之後就是使用者的資料讀不到):"
   printf '%s\n' "$LANDED_MISS" | sed 's/^/         /' >&2
@@ -492,17 +482,10 @@ else
   printf '%s\n' "$LEGACY_MISS" | sed 's/^/         /' >&2
 fi
 
-# Windows 端的落地識別碼由它自己那份同型規則檔驗(20 列,逐列反向測試)。
-# 放在這裡而不是抄一份進來:抄的那一份會腐爛,而腐爛的方式正好是「兩邊都綠」。
-if [ -x "$ROOT/windows/verify_product_names.sh" ]; then
-  if bash "$ROOT/windows/verify_product_names.sh" >/dev/null 2>&1; then
-    ok "Windows 端的落地識別碼(windows/verify_product_names.sh)"
-  else
-    bad "Windows 端的落地識別碼對不上,細節跑 windows/verify_product_names.sh"
-  fi
-else
-  bad "找不到 windows/verify_product_names.sh —— Windows 的識別碼現在沒有人在守"
-fi
+# 2026-08-16:原本這裡跑 windows/verify_product_names.sh(Windows 端的落地
+# 識別碼,20 列逐列反向測試)。Windows 線收掉,那支腳本隨 windows/ 一起刪除,
+# 所以這一關也退場 —— 留著只會永遠報「找不到」。
+# 要撿回來看標籤 desktop-final-5fa5baa。
 
 echo
 echo "============================================"

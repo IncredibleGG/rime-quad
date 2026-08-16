@@ -168,13 +168,21 @@ echo "=== 7. 使用者初始配置 ==="
 # 用 RIME 慣用的 default.custom.yaml 做 patch，只列實際提供的方案。
 #
 # ── 兩份，共用同一段本文 ───────────────────────────────────────────────
-#   default.custom.yaml         四端都用（桌面裝的就是這一份）
+#   default.custom.yaml         基底：只有本文，沒有觸控鍵盤那幾條
 #   default.custom.mobile.yaml  行動端用：同一段 **加上**只有觸控鍵盤才成立的
 #                               那幾條（見下面的 MOBILE_ONLY）
 #
 # 為什麼要兩份而不是一份加旗標：`default.custom.yaml` 是 librime 的固定檔名，
-# 一個資料目錄只讀得到一份。而 core/data 是四端共用的，桌面拿到的必須是
-# 沒有行動端那幾條的版本。
+# 一個資料目錄只讀得到一份，所以「基底」與「基底＋行動端」必須是兩個檔名。
+#
+# ⚠ 2026-08-16 桌面兩端收掉之後，**這兩份都不要合併掉**。
+#   基底那一份原本的消費者是桌面端，現在它的角色是 Android 的**退路**：
+#   android/app/build.gradle.kts 的第一個 `from` 刻意不排除
+#   default.custom.yaml，於是當 core/data 是舊的（沒有 .mobile.yaml）時，
+#   APK 裡留下的是基底那一份 —— schema_list 仍然完整，只是少了行動端的微調。
+#   把基底那一份的產生刪掉，就等於把那條退路拆了，而它擋的正是
+#   docs/coordination.md §1 記著的那場「整個方案清單消失」的事故。
+#   （所以這一輪沒有動這支腳本的**產物**，core/data 的內容一個位元組都沒變。）
 #
 # 為什麼不是兩個獨立檔案各寫一次：schema_list 抄成兩份必定腐爛（改了一邊
 # 忘了另一邊，症狀是「某一端的方案清單少一個」，而且只有裝上去才看得到）。
@@ -213,7 +221,8 @@ MOBILE_ONLY=$(cat <<'YAML'
   # 實測（emulator-5558，luna_pinyin_tw，rime_console 打 `nihao.`）：
   #   組字後 preedit="nihao"，候選 5 個 (page 1)  ← 翻頁了，沒有句號
   #
-  # 桌面端保留上游行為（它們裝的是 default.custom.yaml，沒有這一段）。
+  # 基底那一份保留上游行為（它沒有這一段）。2026-08-16 之前基底是桌面端裝的
+# 那一份；桌面兩端收掉之後它只剩「Android 的退路」這一個角色，見第 7 節開頭。
   #
   # ⚠ 這裡重寫整份 key_binder/bindings 的 __patch 清單，而不是「移除某幾條」：
   #   librime 的 key_binder 沒有「取消綁定」的語法，同一顆鍵綁兩次是先到先贏，

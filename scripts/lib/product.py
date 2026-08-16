@@ -45,8 +45,6 @@ def derive(v):
     d["ANDROID_PKG_PATH"] = v["ANDROID_APP_ID"].replace(".", "/")
     d["NETWORK_GATE_CLASS"] = f"{v['ANDROID_APP_ID']}.net.NetworkGate"
     d["NETWORK_GATE_REL"] = f"main/java/{d['ANDROID_PKG_PATH']}/net/NetworkGate.kt"
-    d["MACOS_TIS_HANT"] = f"{v['MACOS_BUNDLE_ID']}.Hant"
-    d["MACOS_TIS_HANS"] = f"{v['MACOS_BUNDLE_ID']}.Hans"
     d["R2_REMOTE"] = f"r2:tgapk/{v['R2_PREFIX']}"
     return d
 

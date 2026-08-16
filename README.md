@@ -1,9 +1,17 @@
 # LuminaKey
 
 **LuminaKey 輸入法** —— 基於 [librime](https://github.com/rime/librime) 的開源輸入法客戶端，
-覆蓋 **Android / iOS / Windows / macOS** 四個平台。
+目標平台為 **Android** 與 **iOS**。
 
-Android 為標竿實現（reference implementation），其餘三端對齊其行為。
+Android 是目前唯一有實作的一端，也是標竿實現（reference implementation）；
+iOS 尚未開始，開工時對齊 Android 的行為。
+
+> **2026-08-16：Windows 與 macOS 兩條桌面線已停止開發並從 main 移除。**
+> 程式碼沒有消失，完整保留在標籤 `desktop-final-5fa5baa`
+> （Windows 另有 `windows-final-24190704`）——
+> `git checkout desktop-final-5fa5baa -- apple/ windows/` 就撿得回來。
+> 移除的理由、被搬走的守門、以及哪幾條規範因此失去執行者，
+> 記在 [`docs/coordination.md`](docs/coordination.md) 的 2026-08-16 那一則。
 
 > 名字的由來與「為什麼識別碼要趁現在一起改」見 [`docs/decisions/product-name.md`](docs/decisions/product-name.md)。
 > 產品名與各平台識別碼的**唯一來源**是 [`scripts/lib/product.env`](scripts/lib/product.env)，
@@ -41,30 +49,33 @@ RIME 生態每一端都已經有成熟前端（Weasel / Squirrel / Trime / Hamst
 │   core/themes/*.yaml    主題（顏色、字型、圓角、間距）      │
 │   core/layouts/*.yaml   鍵盤佈局（僅行動端消費）           │
 └─────────────────────────────────────────────────────────┘
-              │            │            │            │
-      ┌───────┘      ┌─────┘      ┌─────┘      ┌─────┘
-      ▼              ▼            ▼            ▼
-┌───────────┐  ┌───────────┐ ┌──────────┐ ┌──────────┐
-│  Android  │  │    iOS    │ │  macOS   │ │ Windows  │
-│ IMEService│  │ Keyboard  │ │  IMKit   │ │   TSF    │
-│  Compose  │  │ Extension │ │ SwiftUI  │ │ Win32 +  │
-│    JNI    │  │  SwiftUI  │ │          │ │ Direct2D │
-└───────────┘  └───────────┘ └──────────┘ └──────────┘
-   軟鍵盤          軟鍵盤        候選窗        候選窗
+              │            │
+      ┌───────┘      └─────┐
+      ▼                    ▼
+┌───────────┐        ┌───────────┐
+│  Android  │        │    iOS    │
+│ IMEService│        │ Keyboard  │
+│  Compose  │        │ Extension │
+│    JNI    │        │  SwiftUI  │
+└───────────┘        └───────────┘
+   軟鍵盤              軟鍵盤
+   已實作              尚未開始
 ```
 
-**UI 不共用，且不應該共用。** 四端的輸入法宿主機制根本不同：
+**UI 不共用，且不應該共用。** 兩端的輸入法宿主機制不同：
 
 | 平台 | 宿主機制 | UI 實際型態 | 關鍵約束 |
 |---|---|---|---|
 | Android | `InputMethodService` | 整塊軟鍵盤 | librime 需 NDK 交叉編譯 + JNI |
 | iOS | Keyboard Extension | 整塊軟鍵盤 | 記憶體額度僅數十 MB；沙盒需 App Group 傳配置 |
-| macOS | InputMethodKit（獨立 .app 進程） | 懸浮候選窗 | 需簽章與公證 |
-| Windows | TSF（COM in-proc DLL） | 懸浮候選窗 | DLL 被載入**每個**宿主進程，崩潰即拖垮宿主 |
 
-Windows 那一格決定了技術選型的下限：TSF DLL 必須極瘦極穩，
-因此採 **瘦 DLL + 獨立服務進程** 的分離架構（同 Weasel 的做法）。
-Flutter / Electron / JVM 類方案在這一格與 iOS 鍵盤擴展格皆不可行。
+iOS 鍵盤擴展那一格決定了技術選型的下限：記憶體額度只有數十 MB，
+而擴展被系統隨時可回收。Flutter / Electron / JVM 類方案在這一格不可行。
+
+> 桌面兩端收掉之前，真正壓住下限的是 Windows 的 TSF DLL（被載入**每個**宿主
+> 進程，崩潰即拖垮宿主），因此當時採「瘦 DLL + 獨立服務進程」的分離架構。
+> 那個約束隨 Windows 線一起退場，但**結論沒有變**：核心層仍然是一層薄 C ABI，
+> UI 仍然各端自己做。
 
 ## 效能紅線
 
@@ -82,9 +93,14 @@ core/layouts/                鍵盤佈局定義
 docs/architecture.md         各端接入細節、IPC、鍵碼映射
 docs/theme-format.md         主題與佈局格式規範
 android/                     Android 端（標竿實現）
-apple/                       iOS + macOS（共用 Swift 技術棧）
-windows/                     Windows TSF 端
 ```
+
+> `apple/`（macOS）與 `windows/` 已於 2026-08-16 移除，見標籤
+> `desktop-final-5fa5baa`。iOS 開工時的起點會是新的目錄，不是撿回 `apple/`
+> 整棵 —— 那棵樹裡沒有任何 iOS 程式碼（`Package.swift` 宣告的是
+> `platforms: [.macOS(.v11)]`），但 `LuminaKeyKit` 那 39 個檔裡有 37 個
+> 完全不 import AppKit（ThemeParser、MiniYaml、CandidateLayout、StoreEngine、
+> NetworkGate、KeyMapper…），連同 200 餘項單元測試，是最可能直接沿用的資產。
 
 ---
 
@@ -94,10 +110,13 @@ windows/                     Windows TSF 端
 - [x] **M1** Android 跑通 —— **模擬器上實測可用**
       librime 1.17.0 交叉編譯（arm64-v8a + x86_64）→ JNI → Compose 鍵盤 → 拼音打出「你好」
 - [ ] **M2** Android 消費 `core/themes` 與 `core/layouts`，主題可換
-- [ ] **M3** macOS（IMKit + SwiftUI 候選窗），驗證共用層在桌面形態成立
-- [ ] **M4** iOS 鍵盤擴展（與 macOS 共用 Swift 層，重打 UI）
-- [ ] **M5** Windows TSF（瘦 DLL + 服務進程）
-- [ ] **M6** 配置同步
+- [ ] **M3** iOS 鍵盤擴展（Swift；純邏輯層可從 `desktop-final-5fa5baa` 的
+      `apple/LuminaKey/Sources/LuminaKeyKit` 撿回來當起點，UI 重打）
+- [ ] **M4** 配置同步
+
+> 原本的 M3（macOS IMKit）與 M5（Windows TSF）**已完成過並且發布過**，
+> 於 2026-08-16 停止開發、從 main 移除。原本的 M4「iOS 鍵盤擴展（與 macOS
+> 共用 Swift 層）」改寫成上面的 M3：那個「共用」的對象已經不在樹上了。
 
 ---
 
@@ -108,17 +127,24 @@ windows/                     Windows TSF 端
 | 平台 | CI runner | workflow |
 |---|---|---|
 | Android | `ubuntu-latest` + NDK | `.github/workflows/build.yml` |
-| macOS | `macos-latest`(內建 Xcode) | 待建立 |
-| Windows | `windows-latest`(內建 MSVC) | 待建立 |
-| iOS | `macos-latest` | 待建立 |
+| iOS | `macos-latest` | 待建立(這條線尚未開始) |
+
+> `.github/workflows/macos.yml` 與 `windows.yml` 已隨桌面兩端一起刪除。
+> 現在 `.github/workflows/` 底下只有 `build.yml`、`native.yml`、
+> `schema-store.yml` 三份。
 
 **但 CI 給的是「編得出來」,不是「真的能用」。**
 
 這個專案抓到的真 bug 幾乎都是靠實際安裝、點鍵、截圖比對輸入框內容才發現的
 —— 按下去顏色回不來、重輸鍵是裝飾品、中英鍵不換佈局、鍵盤被拉伸。**這些編譯
-全部成功。** 桌面兩端在 CI 上跑不了那個迴圈:macOS 的輸入法要由系統從
-`~/Library/Input Methods` 載入,CI runner 沒有登入的圖形工作階段;Windows 的 TSF
-要註冊 COM in-proc server 並有真實輸入情境。
+全部成功。** Android 靠模擬器把那個迴圈跑進 CI(見 build.yml 的慢車道);
+iOS 開工之後會遇到同一個問題 —— 模擬器跑得動鍵盤擴展,但記憶體額度與
+真機的沙盒行為要真機才驗得到。
+
+> 桌面兩端當年在 CI 上**跑不了**那個迴圈:macOS 的輸入法要由系統從
+> `~/Library/Input Methods` 載入,CI runner 沒有登入的圖形工作階段;
+> Windows 的 TSF 要註冊 COM in-proc server 並有真實輸入情境。
+> 那是它們的驗證成本一直居高不下的原因之一。
 
 所以每一端都要有兩層:
 

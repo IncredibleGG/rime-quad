@@ -167,6 +167,21 @@ jobs:
       - name: 產品識別碼只有一份(自帶反向測試)
         run: ./scripts/verify_product_ids.sh
 
+      # ── 已推翻的主張不可以以現況陳述留在樹上 ─────────────────────────
+      # 2026-08-16 從 windows/check_refuted_claims.sh 搬過來的。它掃的一向是
+      # **整棵樹**(登記表 docs/refuted-claims.tsv,RC-004 的命中點在
+      # docs/coordination.md),但唯一的呼叫點掛在已刪除的 windows.yml 上。
+      # 桌面兩端收掉時如果沒有把它接到這裡,結果會是「登記了、沒有人在掃」——
+      # 正好是這支腳本檔頭要消滅的那種狀態。
+      #
+      # 先跑 --self-check(證明它會紅、也證明它會變綠),再跑正式的那一趟:
+      # 沒有前者就無從分辨「樹上很乾淨」與「這支腳本自己壞了」。
+      - name: 已推翻的主張沒有以現況陳述留著(自帶反向測試)
+        run: |
+          set -eu
+          ./scripts/check_refuted_claims.sh --self-check
+          ./scripts/check_refuted_claims.sh
+
       # ⚠ yaml.safe_load 對重複鍵是「後者覆蓋前者」,一聲不吭;
       #   而 GitHub Actions 會**整份檔案拒收**,那條 run 的名字會變成檔案路徑。
       #   實際發生過(0072f4f):聯集式的合併衝突解法把 `push:` 底下併出了

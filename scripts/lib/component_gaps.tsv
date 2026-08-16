@@ -36,4 +36,15 @@
 #   id = <平台>:<元件名>。平台名由 --platform 給（windows / macos / android）。
 #   說明會被建置輸出原樣印出來，寫給讀 CI log 的人看。
 #
-windows:lua_filter	2026-11-30	#109	Windows 的 librime 沒有編 librime-lua(windows/build.sh 的 check_lua_sandbox 自己寫著「本輪範圍外」),所以方案裡的 lua_filter@*luminakey_charset 在這一端載不起來,字集守門的第二層(轉不掉的才濾)整層是死的。第一層(opencc 補表,內建 simplifier)還活著,所以症狀不是「沒有候選」,是**候選變多、而且混得進不屬於當前字集的字**——沒有簡繁對應的粵語字、日本新字体、異體字、擴充 A/B 區罕用字轉幾次都還在。狀態列寫著「繁」而輸出不保證是繁體,這對一個標榜經得起審計的產品是實質缺陷。補法見工單 #109 與 #27:Windows 也編 librime-lua(路 A)。
+# ── 2026-08-16:這份清冊現在是空的 ────────────────────────────────────
+#
+# 原本唯一的一列是 `windows:lua_filter`(工單 #109:Windows 的 librime 沒有
+# 編 librime-lua,字集守門的第二層整層是死的)。Windows 那條線已收掉,
+# windows/ 從樹上移除,那個缺口的主體不存在了,所以那一列一併退場 ——
+# 留著會直接違反上面第 3 條(登記了而這一輪根本不缺 → 建置紅)。
+# 要看那一列原本寫了什麼,見標籤 desktop-final-5fa5baa。
+#
+# ⚠ 空清冊的意思是「沒有已知缺口」,不是「沒有人在檢查」。
+#   目前 verify_schema_components.sh **沒有任何呼叫者**(它唯一的呼叫點是
+#   已刪除的 windows/make_installer.sh),原因與接回來的作法見那支的檔頭
+#   與 docs/settings-model.md §「機械檢查」那一段。

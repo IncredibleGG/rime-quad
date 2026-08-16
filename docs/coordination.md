@@ -1,14 +1,19 @@
 # 跨端協調
 
-四個會話同時在這個專案上工作。這份文件是**唯一的溝通管道** —— 會話之間看不見彼此,
+多個會話同時在這個專案上工作。這份文件是**唯一的溝通管道** —— 會話之間看不見彼此,
 只看得見 repo。**動工前讀,有跨端影響的決定寫回來。**
 
 | 角色 | 負責 | 工作目錄 | 分支 |
 |---|---|---|---|
 | **協調** | 合併、裁決規範、發版 | `/home/lc/rime` | `main` |
 | **Android** | `android/` | `/home/lc/rime-android` | `android` |
-| **macOS** | `apple/`(macOS 部分) | `/home/lc/rime-macos` | `macos` |
-| **Windows** | `windows/` | `/home/lc/rime-windows` | `windows` |
+
+> **2026-08-16:macOS 與 Windows 兩列已移除** —— 那兩條線停止開發,
+> `apple/` 與 `windows/` 從 main 刪除(標籤 `desktop-final-5fa5baa`)。
+> 底下第 5 節 2026-08-16 那一則記著完整的移除清單。
+> iOS 尚未開始,開工時在這裡加一列。
+> ⚠ `/home/lc/rime-macos`、`/home/lc/rime-windows` 那幾個 worktree 還在磁碟上,
+> 這一輪**沒有動它們** —— 刪 worktree 是本機環境的事,不是 repo 的事。
 
 ---
 
@@ -59,11 +64,9 @@ CI 的 workflow 記得在 `on.push.branches` 加上你的分支,否則推了不�
 | 路徑 | 誰能改 |
 |---|---|
 | `android/` | Android |
-| `apple/` | macOS(iOS 之後也在這) |
-| `windows/` | Windows |
-| `core/include/rime_shell.h`、`core/src/` | **協調端**。要加 ABI 就提出,不要自己加 —— 四端都在用 |
-| `docs/theme-format.md` | **只有 macOS 端**(第一個桌面端,候選窗規範由它擴充)。其餘一律回報 |
-| `core/layouts/`、`core/themes/` | Android(行動端的佈局);桌面端只讀 |
+| `core/include/rime_shell.h`、`core/src/` | **協調端**。要加 ABI 就提出,不要自己加 —— 各端都在用 |
+| `docs/theme-format.md` | **協調端**(2026-08-16 改。原本是「只有 macOS 端」——第一個桌面端,候選窗規範由它擴充;那個擁有者不存在了,而這份規範同時管行動端的鍵盤與佈局,交給任何單一端都會偏。其餘一律回報) |
+| `core/layouts/`、`core/themes/` | Android(行動端的佈局與主題) |
 | `core/data/`、`scripts/schema_store/` | 協調端 |
 | `scripts/lib/product.env` | **協調端**。產品名與四端識別碼的唯一來源。要改名就在這裡改一次,不要在自己那一端另立一份(見 §5 的 2026-08-09 條目) |
 | `scripts/` 其餘 | 誰做的誰維護,新增用不撞名的檔名 |
@@ -2020,3 +2023,24 @@ bopomofo / t9_pinyin 三份 `.custom.yaml`，而 Windows 的安裝程式
 - `[2026-08-15] [winfix-usable/Windows → 全體] ⛔ **把「無上限的等待」改成「有上限」時,如果那條路上有一件不可逆的事,它必須排在最後一趟 —— 否則新的逾時會生出一個舊版沒有的分岔狀態。** `Ctrl+Shift+F` 在服務端走兩趟引擎佇列:先切簡繁(`ToggleVariantPref()` 回 true 的當下已經 `store_->Save()` + `ApplyVariantAll()`,**副作用發生在第一趟**),再取快照。第二趟加上上限之後會逾時,而逾時的那一份 `handled` 留 false → DLL 宣告沒吃掉那顆鍵 → TSF 把 `Ctrl+Shift+F` **交給宿主**。使用者按一下的結果是:簡繁在背後換了,**同時** VS Code 的跨檔搜尋 / Word 的字型對話框也開了。⚠ **main 上不存在這個狀態**(當時第二趟是永遠等,handled 永遠是 true)—— 它是「加上限」這個修法自己造出來的,而觸發條件正是那個修法在對付的情境:引擎忙。修法**不是**加一個協議欄位告訴 DLL「吃掉了但不要動文件」(`Result` 是服務→DLL,新欄位只能照協商版本寫,proto ≤ 4 的舊 DLL 與降版後的新 DLL 收不到,而它們踩到的正是破壞性的那一格);修法是**把兩趟的順序倒過來**:先取快照(唯讀,失敗 = 一步都沒做),握著現況之後才去做那件不可逆的事。判斷寫成純函式 `PlanVariantKey()`(`windows/common/key_deadline.h`),兩條硬性要求是 `static_assert`:副作用發生了⇒那顆鍵一定算被吃掉;算被吃掉⇒手上一定是現況。⚠ **給四端的一句**:替一條有副作用的路徑加逾時之前,先把那條路上的步驟按「可不可逆」排序 —— 不可逆的那一步排最後,前面每一步的失敗就自動退回「一步都沒做」,而那條路通常早就存在也早就是對的。「先確認預算夠走完全部」不是替代品:第一步要花多久事前不知道。`
 - `[2026-08-15] [winfix-usable/Windows → 全體] ⛔ **「工作跑完了」與「答案是現況」是兩個量,而把它們合成一個的代價是使用者打到一半的字消失。** `Engine::CurrentResult` 的工作本體是 `Find(id)` 失敗就 `return`,盒子維持預設 —— 於是有上限的等待回**成功**(工作確實跑完了),而盒子裡是 `handled=false` 加一份**全 0** 的快照。呼叫端只看 `timed_out`,把 `handled` 無條件覆寫成 true:候選窗被收掉、那一橫把中/英寫成「中」而簡繁那格消失,DLL 還會走 `ApplyPlan` 把空快照套進文件 —— 組字**當場消失而且沒有上屏**。⚠ **這不是競態,是一個會留著的狀態**:重新部署後有一個宿主重建失敗(`RebuildSessionsOnEngineThread` 的 `++failed; continue;`),它的 id 就**永久**不在 `sessions_` 裡,而別的宿主還在,於是 `ReadBackStatus(0)` 的 `sessions_.begin()` 退路照樣成功 —— 那個宿主之後**每按一次就被清一次**。引擎其實早就把答案放在 `box->handled` 裡了,是呼叫端丟掉的。⚠ 更值得記的是它為什麼活到現在:守門那一格寫的是 `gates = ('ProcessKey', 'ToggleAsciiMode')` —— 一份**寫死的白名單**,而 `CurrentResult` 不在裡面;同一支腳本的另一條紅字講的一字不差就是這個傷害。**過期的白名單長得跟綠燈一模一樣。** 改法是從程式碼把範圍**數出來**(走那個單一入口的就在範圍裡),再配一條分母下界。⚠ **給四端的一句**:「拿不到答案」與「答案是空的」要用**不同的值**表達,而且判準要問後者;凡是「找不到就回預設物件」的路徑,全 0 在多數狀態模型裡都是一個合法而且好看的值。`
 - `[2026-08-15] [winfix-usable/Windows → #81 / #86,只開單不動程式碼] ⚠ **簡繁快捷鍵的「方向」是從別人的 session 算出來的。** `PipeServer::ToggleVariantPref()` 明明手上就有 `k.session`,傳給 `Engine::ReadBackStatus()` 的卻是 `0`;而那一支自己的註解寫著挑 `sessions_.begin()`「等於擲骰子,而那正是使用者回報的『點那一格沒反應,而它始終顯示中』」。13 個宿主可以各自釘不同方案(注音沒有字形開關、拼音有),所以在 A 視窗按 `Ctrl+Shift+F`,方向可能是從 B 視窗的狀態推出來的。⚠ 它同時是上面第二則能繞過「一個 session 都沒有」那條安全路的原因:`k.session` 已經不在 `sessions_` 裡了,`sessions_.begin()` 的退路仍然回 `ok=true`。**`main` 上就是這樣,這一輪沒改也沒變糟**,所以刻意留著 —— 修它要動 `ReadBackStatus` 的呼叫約定,而且真正的解是 #86(`rs_schema_declares_option()`:問得出「這個方案有沒有這個開關」),那會擴大這一版的範圍。⚠ **給四端的一句**:「目前狀態」在多 session 的輸入法裡不是一個全域量;任何回讀都要指名問哪一個 session,而「沒指名就挑一個」這種退路要能寫進記錄,不然它壞掉時長得跟正常一模一樣。`
+
+
+## 桌面兩端(Windows / macOS)收掉(分支 `drop-desktop`,2026-08-16,協調端)
+
+- `[2026-08-16] [協調 → 全體] ⛔ **Windows 與 macOS 兩條線停止開發,`windows/` 與 `apple/` 已從 main 移除。** 撿得回來:`desktop-final-5fa5baa`(四端都在的最後一個狀態,= 移除前的 main),Windows 另有 `windows-final-24190704`。`git checkout desktop-final-5fa5baa -- apple/ windows/` 就回來了。**刪除的清單**:`windows/`(280 檔)、`apple/`(94 檔、21508 行)、`.github/workflows/{macos,windows}.yml`、`scripts/publish_desktop.sh`、`docs/handoff-{macos,windows}.md`、`.gitattributes`(全檔只有一條 windows 專屬規則)。⚠ **`apple/` 整棵都是 macOS,裡面沒有一行 iOS 程式碼** —— 實測:`git ls-files | grep -iE 'pbxproj|xcodeproj|xcscheme|xcworkspace'` 零命中(連 Xcode 專案檔都沒有)、`grep -rnE 'import UIKit|UIInputViewController|iphoneos|TARGET_OS_IPHONE|App Group' apple/` 零命中、`Package.swift` 宣告 `platforms: [.macOS(.v11)]`、`apple/README.md` 第一行是「# macOS 端」。所以「刪 apple/ 會把 iOS 一起砍死」不成立;**iOS 這條線本來就還沒開始**。`
+
+- `[2026-08-16] [協調 → 全體] ⚠ **被搬走的守門:`windows/check_refuted_claims.sh` → `scripts/check_refuted_claims.sh`。** 它掃的一向是**整棵樹**(`SCAN_ROOT` 預設 `REPO_ROOT`,登記表 `docs/refuted-claims.tsv`,RC-004 的命中點在本檔),但唯一的呼叫點掛在 `.github/workflows/windows.yml:222,225`。跟著 `windows/` 一起刪掉就會變成「登記了、沒有人在掃」—— 正好是那支腳本檔頭要消滅的狀態。現在掛在 `build.yml` 的快車道(先 `--self-check` 再正式跑)。RC-001 / RC-002 是 TSF 的兩則,**沒有撤掉**:它們的命中點在 `docs/coordination.md`、`docs/product-gaps.md`、`docs/ui-design.md`,那幾份都留著,命中集合沒有變空(撤的判準是「永遠綠」,見 RC-003 的先例)。`
+
+- `[2026-08-16] [協調 → 全體] ⛔ **失去執行者的規範,逐條記在這裡 —— 這是這一輪最容易被漏掉的東西。** 甲、**`custom_phrase` 掛載標記**(`docs/settings-model.md §5`、`CUSTOM_PHRASE_MARKER=luminakey-managed`):**只有 macOS 端實作過**,Android 從來沒有。`apple/` 一刪,這條規範就沒有實作、也沒有守門(`verify_product_ids.sh` 的 landed_rows 原本靠 `UserPhrases.swift` 與 `apple/scripts/verify_user_dict.sh` 兩列對帳)。常數與 `L_MARKER` 推導**刻意留著**,等 Android 或 iOS 實作時接回來。乙、**`scripts/verify_schema_components.sh` 現在沒有任何呼叫者**(唯一的呼叫點是已刪的 `windows/make_installer.sh`),`component_gaps.tsv` 也清空了(唯一那列 `windows:lua_filter` 的主體不存在了)。腳本刻意保留(判準與平台無關),但 `docs/settings-model.md` 那段「這條規範的機械檢查是…」已經改寫成照實說沒有人在跑,並寫明接到 Android 缺的是什麼(一支 host ABI 的 `rime_console`,或把 `--has-component` 走 adb)。丙、**`candidates.window` / `status_bar`**(`docs/theme-format.md` §10 檢核清單第 9 條的作用域表):唯一的消費者是已退場的桌面兩端,那些欄位現在**不對應任何實作**,改壞了不會有任何一關變紅。規範文字留著(iOS 之後若要做候選窗,那是量過的結論),但已標成「沒有實作者」。`
+
+- `[2026-08-16] [協調 → 全體] ✅ **反過來,盤點時擔心會失守、實際上 Android 已經蓋住的:** `apple/.../RepoConformanceTests.swift` 守的四條 `core/` 不變量裡有三條有等價物 —— 每份主題零 ERROR 與「每個平台鍵下都解析得過」由 `ThemeParserTest` + `RepoFixtures.themeIds`(**掃目錄**不是白名單)蓋住;「每一個 `DiagnosticCode` 都寫進了 §6.5」由 `DiagnosticCodeSpecTest` 蓋住,而且它把碼表**從 `docs/theme-format.md` 當場讀出來**,比原本的 Swift 版更嚴(規範有而沒實作 / 實作了而規範標著「尚未實作」/ 程式碼多出來的碼,三個方向都報)。只有第四條(`candidates.window` 欄位都有綁定)的**守備對象本身**沒有了,見上一則丙。`
+
+- `[2026-08-16] [協調 → 全體] ⚠ **`scripts/collect_data.sh` 的產物一個位元組都沒有動,這是刻意的。** 盤點時把 `default.custom.yaml` 當成「桌面裝的那一份、現在沒有消費者」,**查證後不成立**:`android/app/build.gradle.kts:68-74` 的第一個 `from` **刻意不排除**它,當 `core/data` 是舊的(沒有 `.mobile.yaml`)時,APK 裡留下的就是這一份 —— schema_list 仍然完整,只是少了行動端那幾條微調。它擋的正是本檔 §1 記著的那場「整個方案清單消失」的事故。把它的產生刪掉 = 把那條退路拆了。所以這一輪只改敘述(基底 / 行動端),不改產物 —— 也因此 `verify_core_data_fanout.sh` 判定「沒有動到 core/data」,這條分支不需要接進 `build.yml` 的 `on: push: branches:`。`
+
+- `[2026-08-16] [協調 → 全體] ⚠ **改到的守門與它們現在的樣子(每一支都實跑過,不是只看回傳碼)。** `verify_core_data_fanout.sh`:LANES 從三條剩 `build.yml` 一條,GEN_SKIP 拿掉 `apple/scripts/verify_user_dict.sh`(檔案沒了 → `--self-test` 會硬紅「SKIP 裡的…根本掃不到」);檔頭與兩處 echo 的「四條車道」改成「登記表上每一條」——**刻意不再寫死數字**,寫死的數字會過期。`verify_product_ids.sh`:`SCRIPT_ROOTS` 剩 `scripts android`,`HARDCODE_ALLOW` **整張表空了**(原本 8 列 `apple/scripts/*` + 1 列 `windows/verify_product_names.sh`)。⛔ **空表踩到一個陷阱,寫在這裡免得下一個人再踩**:原本的過濾是 `grep -vFf <(printf '%s\n' "$HARDCODE_ALLOW" | cut -d'|' -f1 | sed 's|$|:|')`,`HARDCODE_ALLOW` 為空字串時它會產生**單獨一個 `:` 樣式**,而每一筆命中都長成 `檔案:行號:內容` —— 於是**每一筆都被濾掉,這一關恆綠**。已改成「空表就不過濾」。另外拿掉 `-not -name 'verify_names.py'`:那個檔案沒了,排除一個不存在的檔名是一個洞(有人在 `scripts/` 或 `android/` 底下新增同名檔案就會被靜默略過)。`
+
+- `[2026-08-16] [協調 → 全體] ⚠ **R2 上已發布的 `macos/` 與 `windows/` 檔案沒有下架,只是不再更新。** 下架 = 使用者手上的連結一夕之間 404,那是一個產品決定,不是清理工作的副作用。下載頁(`scripts/downloads_server.py`)的兩張桌面卡片、四個查詢、`macos_app_bundle()`、`macos_install_text()`、`--print-macos-install` 都拿掉了(它們與已刪的 `publish_desktop.sh` 是雙向相依,留一邊會剩一條「永遠退回常數」的死路徑),頁尾改成一句「桌面版已停止開發、已發布的檔案仍留在 R2 上、原始碼在標籤 desktop-final-5fa5baa」。`product.env` 的 `R2_MACOS_DIR` / `R2_WINDOWS_DIR` / `R2_ARTIFACT_BASE` / `R2_ARTIFACT_BASE_LEGACY` / `MACOS_APP_BUNDLE` / `CI_ARTIFACT_*` / `DESKTOP_APP_BASES` / `WINDOWS_*_PREVIOUS` 一併移除。**要不要真的下架、要不要留一個說明頁,還沒決定。**`
+
+- `[2026-08-16] [協調 → 全體] ⚠ **文件沒有逐句刪。** `docs/{theme-format,ui-design,product-gaps,settings-model,backup-format,offline-threat-model}.md` 各在檔頭加了一段「怎麼換算」的說明(「四端」= Android + 尚未開始的 iOS;「桌面端」= 已退場),`docs/architecture.md` 的 §4(macOS)與 §5(Windows)**整節原樣保留**並標成「已退場」。理由是 `docs/refuted-claims.tsv` 開頭那條:用刪除讓文件變綠,會把「當時量到的事實」跟「現在誰在做」一起抹掉,而前者不會因為不出貨而變假。量:`ui-design.md` 116 處 windows、`product-gaps.md` 65 處、本檔 239 處 windows / 197 處 macos —— 逐句改寫的風險遠大於收益。`
+
+- `[2026-08-16] [協調 → 全體] ⚠ **沒做、留給下一輪的:** 甲、工單清單裡大量純桌面的項目(#46/#47/#48/#57/#62/#73/#79/#82/#83/#84/#87/#88/#94/#108/#109/#110/#111/#112/#113/#116/#117/#120/#121 …)還開著,這一輪**沒有動工單狀態** —— 關掉還是標 wontfix 是產品決定。其中 #109 是 `component_gaps.tsv` 那一列的來源,兩者要一起處理。乙、`/home/lc/rime-{macos,windows,win-*,fix*-win,…}` 那一批 worktree 還在磁碟上。丙、`scripts/variant_probe.cc`、`scripts/verify_variant_persistence.sh`、`core/src/rime_shell.cc`、`scripts/lib/{logmatch.sh,shared_data_writers.py}`、`scripts/verify_no_sigpipe_probe.sh`、`scripts/verify_yaml_no_dup_keys.py` 的**註解**裡還提到 `windows/…` 或 `macos.yml` 的路徑 —— 全部是歷史敘述或說明,沒有一處是程式碼相依,刻意沒動(同上一則的理由)。`

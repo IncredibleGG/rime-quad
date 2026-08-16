@@ -1,5 +1,23 @@
 # 設定模型（四端共用）
 
+> ## ⚠ 2026-08-16：桌面兩端（Windows / macOS）已停止開發並從 main 移除
+>
+> 這份文件裡所有 `macOS` / `Windows` / 「桌面端」/「四端」的段落**刻意原樣保留**，
+> 沒有逐句刪除。理由寫在 `docs/refuted-claims.tsv` 的開頭：用刪除讓文件變綠，
+> 會把「當時量到的事實」跟「現在誰在做」一起抹掉，而前者不會因為不出貨而變假。
+>
+> 讀的時候請這樣換算：
+>
+> | 文件裡寫的 | 現在的意思 |
+> |---|---|
+> | 「四端」 | Android（唯一有實作的一端）＋ iOS（尚未開始） |
+> | 「桌面端 / macOS / Windows」 | **已退場**，只剩歷史意義；程式碼在標籤 `desktop-final-5fa5baa` |
+> | 「僅 macOS / Windows」的區塊 | **目前沒有任何實作者**，見下面各處標註 |
+>
+> 完整的移除清單與哪幾條規範因此失去執行者，記在 `docs/coordination.md` 的
+> 2026-08-16 那一則。
+
+
 **這份文件存在的理由只有一個:防止四端各長一套設定。**
 
 它**不是**第二份主題規範。主題規範(`docs/theme-format.md`)描述的是
@@ -433,6 +451,21 @@ librime 對「找不到這個元件」的處置是 **只記一行錯就跳過**
 方案檔裡每一個元件處方抽出來,交給那一端要出貨的
 `rime_console --has-component` 去問 `rime::Registry`。已知缺口只能靠
 `scripts/lib/component_gaps.tsv` 放行(有工單、有到期日,而且會被印出來)。
+
+> ⚠ **2026-08-16 起,這條規範實際上沒有機械檢查在跑。**
+>
+> `verify_schema_components.sh` 唯一的呼叫點是 `windows/make_installer.sh`,
+> 而 Windows 那條線已收掉、`windows/` 從樹上移除。腳本本身**刻意保留**
+> (判準與平台無關),`component_gaps.tsv` 也清空了(唯一那列 `windows:lua_filter`
+> 的主體不存在了)。但**現在沒有任何車道會跑它**。
+>
+> 要接到 Android,缺的不是這支腳本,是一支主機上跑得動的 `rime_console`:
+> 目前 `scripts/run_console_test.sh` 編的是 Android ABI、要 adb push 到裝置上跑,
+> 而這支腳本是直接在本機 exec。兩條路(改腳本走 adb / 另編一支 host ABI)
+> 寫在 `scripts/verify_schema_components.sh` 的檔頭。
+>
+> 在接上之前,「打包進去的元件那一端真的有嗎」這件事**只靠人看**。
+> 這一句刻意寫在這裡,而不是讓上面那段繼續宣稱有人在守。
 
 ⚠ **位置是 uniquifier 的前一個,不是最後一個。** uniquifier 的去重是拿
 「Menu 已經收下的候選」比對的,而 librime-lua 的 translation 會比 Menu 先跑一步,
