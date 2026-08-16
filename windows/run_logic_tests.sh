@@ -490,8 +490,8 @@ echo "==> 反向測試通過(離線稽核會紅)"
 # ⚠ 錨在行首:engine.cc 的**註解裡**寫著那幾行以前長什麼樣
 #   (那段說明是這次改動的主要價值之一)。不錨行首的話,守門會被
 #   自己的說明文字咬到 —— 而那種紅只會教人把說明刪掉。
-key_path_gates() {   # $1 = engine.cc  $2 = pipe_server.cc;回非零 = 有違規
-  local en="$1" ps="$2" bad=0 n out line
+key_path_gates() {   # $1 = engine.cc  $2 = pipe_server.cc  $3 = rime_shell.h
+  local en="$1" ps="$2" rsh="$3" bad=0 n out line
 
   # ── (1)(2)(3) 三條純文字的,留在 bash 裡 ────────────────────────
   #
@@ -549,7 +549,7 @@ key_path_gates() {   # $1 = engine.cc  $2 = pipe_server.cc;回非零 = 有違規
   #      (Post / queue_.Call / CallKeyBounded)。不會的(StalledMs 那些
   #      純讀數的)自動不在範圍裡 —— 不必維護一份會過期的名單。
   #   c. 會的每一個都必須:呼叫點帶著這顆鍵的預算、而且走 CallKeyBounded。
-  out="$(python3 - "${en}" "${ps}" <<'PYKEY'
+  out="$(python3 - "${en}" "${ps}" "${rsh}" <<'PYKEY'
 import re, sys
 
 # ⚠ **註解一定要先剝掉。** 這棵樹的註解裡寫滿了「以前長什麼樣」——
@@ -694,18 +694,71 @@ print('NEXIT=%d' % gated)
 # ⚠ 這一段存在的理由是「同一個錯犯第二次而沒有人回頭看」:
 #   (6) 那一段只守 Ctrl+Shift+F 一顆鍵,而 Ctrl+空格 上一模一樣的錯
 #   (副作用排在有上限的等待前面,逾時卻回 handled=false,於是宿主
-#   **同時**也吃到那顆鍵)整整一輪沒有人發現。所以判準不再問「這是
-#   哪一顆鍵」,改問兩件結構上的事:
+#   **同時**也吃到那顆鍵)整整一輪沒有人發現。
 #
-#     · 服務端:凡是會做那件不可逆的事的 Engine 入口,都要把它**說出來**
-#       (wait->side_effect_done),不可以埋在自己的 handled 裡;
-#     · 呼叫端:`case Op::kKey` 上 Result::handled **只有一個**算得出它的
-#       地方,而每一個分支都要交出 side_effect_done。
+# ── ⚠ 上一輪這道門的分母是一份**手寫名單**,而它是假的 ────────────
 #
-#   下一個人新增第四種按鍵動作時,少接哪一段都會紅。
-SIDE_EFFECT_CALLS = ('SetAsciiModeAll(', 'rs_process_key(',
-                     'rs_select_candidate(', 'rs_commit_composition(',
-                     'rs_clear_composition(', 'ApplyVariantAll(')
+#   當時是六個字面字串(SetAsciiModeAll / rs_process_key /
+#   rs_select_candidate / rs_commit_composition / rs_clear_composition /
+#   ApplyVariantAll),`any(t in body)` 決定「這個入口算不算有副作用」。
+#   key_deadline.h 與 commit 訊息都寫著「這是**結構上**的判準,新增第四種
+#   按鍵動作時它自己會抓到」。**覆核者用實跑推翻了那句話**:在
+#   `case Op::kKey` 加一個分支,呼叫新的 Engine::ForgetCandidate
+#   (走 CallKeyBounded、body 裡是 rs_delete_candidate()、完全沒有填
+#   side_effect_done)—— **全綠**;把 rs_delete_candidate 改成名單上的
+#   rs_select_candidate 就立刻紅。
+#
+# ── 現在的判準:呼叫圖 + fail-closed ─────────────────────────────
+#
+#   · 從那個入口出發,沿著 engine.cc 裡的 Engine:: 成員**遞迴**追下去
+#     (有 visited,不會無限);
+#   · 收集這條路上碰得到的每一個 rs_*;
+#   · **預設是「有副作用」**:只要碰得到的 rs_* 裡有一個不在下面那份
+#     「已知唯讀」白名單上,這個入口就必須 wait->MarkSideEffectDone()。
+#     新增一支 rs_ 開頭的呼叫時,不登記就紅。
+#   · 白名單**自己會過期**:它上面每一個名字都要在
+#     core/include/rime_shell.h 裡真的宣告得到;engine.cc 用到的每一個
+#     rs_* 也一樣。標頭改名/刪符號 → 紅。
+#
+# ⚠ rs_snapshot_acquire **不在**唯讀那一份裡,而那不是保守起見:
+#   rime_shell.h 檔頭寫著待取的 commit 在 acquire 的**當下**就被消費掉,
+#   所以「取一份快照」本身就可能把使用者那一段組字送出去。同一個理由,
+#   Engine::CurrentResult 不再算「唯讀的那些」。
+RS_READONLY = (
+    'rs_abi_version', 'rs_last_error', 'rs_sync_dir', 'rs_session_alive',
+    'rs_get_input', 'rs_get_option', 'rs_snapshot_release', 'rs_schema_list',
+    'rs_keysym_by_name', 'rs_keysym_name',
+)
+
+rsh = strip_comments(open(sys.argv[3], encoding='utf-8', errors='replace').read())
+RS_ALL = set(re.findall(r'\b(rs_[a-z_0-9]+)\s*\(', rsh))
+if len(RS_ALL) < 20:
+    # 掃不到就是路徑或格式錯了 —— 一份空的全集會讓下面每一條都是綠的。
+    print('RSHEADEREMPTY=%d' % len(RS_ALL))
+for name in RS_READONLY:
+    if name not in RS_ALL:
+        print('WHITELISTSTALE=%s' % name)
+for name in sorted(set(re.findall(r'\b(rs_[a-z_0-9]+)\s*\(', en))):
+    if name not in RS_ALL:
+        print('RSNOTDECLARED=%s' % name)
+
+# 這個入口沿著 Engine:: 的呼叫圖碰得到哪些 rs_*。
+CALLEE = re.compile(r'(?<![A-Za-z_>.:])([A-Za-z_]\w*)\s*\(')
+
+def reachable_rs(name, seen):
+    if name in seen:
+        return set()
+    seen.add(name)
+    body = def_body(en, name)
+    if body is None:
+        return set()
+    found = set(re.findall(r'\b(rs_[a-z_0-9]+)\s*\(', body))
+    for callee in sorted(set(CALLEE.findall(body))):
+        if callee.startswith('rs_'):
+            continue
+        if def_body(en, callee) is not None:
+            found |= reachable_rs(callee, seen)
+    return found
 
 n_side = 0
 for name in sorted(set(n for n, _a, w, _h, _ha in calls
@@ -713,11 +766,14 @@ for name in sorted(set(n for n, _a, w, _h, _ha in calls
     body = def_body(en, name)
     if body is None or not enqueues_and_waits(body):
         continue
-    if not any(t in body for t in SIDE_EFFECT_CALLS):
-        continue                    # 唯讀的那些(CurrentResult / ReadBackStatus)
+    rs_seen = reachable_rs(name, set())
+    mutating = sorted(r for r in rs_seen if r not in RS_READONLY)
+    if not mutating:
+        continue                    # 真的唯讀(ReadBackStatus 只有 rs_get_option)
     n_side += 1
-    if 'side_effect_done' not in body:
-        print('SIDEEFFECTUNREPORTED=%s' % name)
+    print('SIDEEFFECTENTRY=%s|%s' % (name, ','.join(mutating)))
+    if 'MarkSideEffectDone' not in body:
+        print('SIDEEFFECTUNREPORTED=%s|%s' % (name, ','.join(mutating)))
 print('NSIDEEFFECT=%d' % n_side)
 
 # 唯一那道門:恰好一次 PlanKeyExit(,而且它的答案真的被寫回 r.handled。
@@ -872,7 +928,18 @@ PYKEY
         echo "!! 簡繁那一格自己把 r.handled 寫成 true,沒有先問過 PlanVariantKey() 的 eat_key —— 那正是「什麼都沒做卻宣稱吃掉了」的形狀" >&2
         bad=1 ;;
       SIDEEFFECTUNREPORTED=*)
-        echo "!! Engine::${line#SIDEEFFECTUNREPORTED=} 會做那件不可逆的事(SetAsciiModeAll / rs_process_key …),卻沒有把它寫進 wait->side_effect_done —— 呼叫端於是只看得到 timed_out,而『沒等到』與『什麼都沒發生』是兩件事。#119 就是這個:Ctrl+空格 的 SetAsciiModeAll() 排在有上限的取快照**前面**,逾時的時候中英已經真的切了,而它照樣回 handled=false → TSF 把那顆鍵**也**交給宿主" >&2
+        echo "!! Engine::${line#SIDEEFFECTUNREPORTED=} —— 這個入口沿著 engine.cc 的呼叫圖碰得到上面那些**不在唯讀白名單上**的 rs_*(格式是「入口|碰得到的 rs_」),卻沒有 wait->MarkSideEffectDone()。呼叫端於是只看得到 timed_out,而『沒等到』與『什麼都沒發生』是兩件事。#119 就是這個:Ctrl+空格 的 SetAsciiModeAll() 排在有上限的取快照**前面**,逾時的時候中英已經真的切了,而它照樣回 handled=false → TSF 把那顆鍵**也**交給宿主。⚠ 判準是 fail-closed 的:預設是「有副作用」,要嘛把它說出來,要嘛證明那支 rs_ 是唯讀的並登記進 RS_READONLY" >&2
+        bad=1 ;;
+      SIDEEFFECTENTRY=*)
+        : ;;   # 只是分母的明細,不是違規
+      RSHEADEREMPTY=*)
+        echo "!! core/include/rime_shell.h 只掃到 ${line#RSHEADEREMPTY=} 個 rs_* 宣告 —— 路徑或格式錯了,而一份空的全集會讓底下每一條都是綠的" >&2
+        bad=1 ;;
+      WHITELISTSTALE=*)
+        echo "!! 「已知唯讀」白名單上的 ${line#WHITELISTSTALE=} 在 core/include/rime_shell.h 裡宣告不到 —— 名單過期了,而過期的白名單長得跟綠燈一模一樣:它不報錯,只是安靜地把一支已經改名(或已經不唯讀)的呼叫當成無害" >&2
+        bad=1 ;;
+      RSNOTDECLARED=*)
+        echo "!! engine.cc 呼叫了 ${line#RSNOTDECLARED=},而 core/include/rime_shell.h 裡沒有這個宣告 —— 要嘛是打錯字,要嘛是門面層改過而這裡沒跟上;不論哪一種,「這支算不算有副作用」都沒有人答得出來" >&2
         bad=1 ;;
       NOGATEWRITE=*)
         echo "!! case Op::kKey 沒有把 PlanKeyExit() 的答案寫回 r.handled(要的形狀是 \`r.handled = key_exit.eat_key;\`)—— 問了門卻不聽它,與沒有門是同一件事" >&2
@@ -907,12 +974,15 @@ EOF
     bad=1
   fi
 
-  # ⚠ 分母:會做那件不可逆的事的 Engine 入口至少兩個(ProcessKey、
-  #   ToggleAsciiMode)。掃到 0 個的話上面那一整段永遠是綠的。
+  # ⚠ 分母:會做那件不可逆的事的 Engine 入口至少三個 —— ProcessKey
+  #   (rs_process_key)、ToggleAsciiMode(→ SetAsciiModeAll → rs_set_option)、
+  #   CurrentResult(→ TakeSnapshotLocked → rs_snapshot_acquire /
+  #   rs_commit_composition)。掃到 0 個的話上面那一整段永遠是綠的,
+  #   而那正是上一輪那份手寫名單的失敗方式。
   n=$(printf '%s\n' "${out}" | grep '^NSIDEEFFECT=' | cut -d= -f2 || true)
   n="${n:-0}"
-  if [ "${n}" -lt 2 ]; then
-    echo "!! 按鍵那條路上只掃到 ${n} 個會產生副作用的 Engine 入口(至少要 2:ProcessKey、ToggleAsciiMode)—— 掃描範圍錯了,而一道掃到 0 個的判準永遠是綠的" >&2
+  if [ "${n}" -lt 3 ]; then
+    echo "!! 按鍵那條路上只掃到 ${n} 個會產生副作用的 Engine 入口(至少要 3:ProcessKey、ToggleAsciiMode、CurrentResult)—— 掃描範圍錯了,而一道掃到 0 個的判準永遠是綠的" >&2
     bad=1
   fi
 
@@ -950,7 +1020,8 @@ EOF
 echo
 echo "==> 按鍵那條路的判準(#93/#108)"
 key_path_gates "${SCRIPT_DIR}/service/engine.cc" \
-               "${SCRIPT_DIR}/service/pipe_server.cc" || exit 1
+               "${SCRIPT_DIR}/service/pipe_server.cc" \
+               "${SCRIPT_DIR}/../core/include/rime_shell.h" || exit 1
 echo "   三個出口都有上限 + 作廢權、都吃同一份預算;逾時與「什麼都沒做」都不碰 UI,而 push_ui 恰好一處;簡繁那條的副作用排在最後一趟,而且『是不是現況』讀的是 r.handled 不是只有 kw.timed_out"
 
 # ── 反向測試:每一條判準都要真的會紅 ───────────────────────────────
@@ -967,9 +1038,12 @@ for plant in unbounded_post no_abandon borrow_disabled ui_unguarded \
              variant_toggle_unguarded variant_handled_forced \
              ascii_gate_removed ascii_gate_overridden \
              ascii_side_effect_unreported processkey_side_effect_unreported \
+             currentresult_side_effect_unreported \
+             new_side_effect_entry rs_header_symbol_removed \
              branch_side_effect_const not_answered_bit_dropped; do
   cp "${SCRIPT_DIR}/service/engine.cc" "${KEY_GATE_TMP}/engine.cc"
   cp "${SCRIPT_DIR}/service/pipe_server.cc" "${KEY_GATE_TMP}/pipe_server.cc"
+  cp "${SCRIPT_DIR}/../core/include/rime_shell.h" "${KEY_GATE_TMP}/rime_shell.h"
   case "${plant}" in
     # 換回無上限的等待:一件慢工作 = 整條連線被丟掉。
     unbounded_post)
@@ -1043,6 +1117,7 @@ import io, sys
 p = sys.argv[1]
 s = io.open(p, encoding='utf-8').read()
 old = """          r = engine_->CurrentResult(k.session, key_budget_left(), &kw);
+          key_side_effect_done = kw.side_effect_done();
           VariantKeyPlan vp =
               PlanVariantKey(!kw.timed_out && r.handled, /*toggled=*/false);
           if (vp.may_toggle) {"""
@@ -1095,15 +1170,66 @@ PYOVERRIDE
     # (丙)⭐ #119 本身:引擎切了中英卻不把它說出來,於是逾時的那一顆
     #      又回 handled=false,宿主也吃到同一顆 Ctrl+空格。
     ascii_side_effect_unreported)
-      sed -i 's/^  if (wait) wait->side_effect_done = true;$//' \
+      sed -i 's/^  if (wait) wait->MarkSideEffectDone();$//' \
         "${KEY_GATE_TMP}/engine.cc" ;;
     # (丁)一般按鍵那條也不報。
     processkey_side_effect_unreported)
-      sed -i 's/^  if (wait) wait->side_effect_done = r.handled;$//' \
+      sed -i 's/^  if (wait \&\& r.handled) wait->MarkSideEffectDone();$//' \
         "${KEY_GATE_TMP}/engine.cc" ;;
+    # (丁2)「取快照」那一趟也不報 —— rs_snapshot_acquire 會把待取的
+    #       commit 消費掉,而 TakeSnapshotLocked 還會 rs_commit_composition。
+    currentresult_side_effect_unreported)
+      sed -i 's/^  if (wait \&\& box->snap.has_commit) wait->MarkSideEffectDone();$//' \
+        "${KEY_GATE_TMP}/engine.cc" ;;
+    # ── ⭐ 覆核者那個植入:上一輪的手寫名單對它**全綠** ─────────────
+    #   新增一支走 CallKeyBounded、body 裡是 rs_delete_candidate()、
+    #   完全沒有 MarkSideEffectDone() 的入口,並從 case Op::kKey 呼叫它。
+    #   舊判準的名單裡沒有 rs_delete_candidate,所以它不算「有副作用」,
+    #   守門全綠;現在的判準是 fail-closed 的呼叫圖,rs_delete_candidate
+    #   不在 RS_READONLY 上 → 這一格必須紅。
+    new_side_effect_entry)
+      python3 - "${KEY_GATE_TMP}/engine.cc" "${KEY_GATE_TMP}/pipe_server.cc" <<'PYNEWENTRY'
+import io, sys
+en, ps = sys.argv[1], sys.argv[2]
+s = io.open(en, encoding='utf-8').read()
+anchor = 'Result Engine::SelectCandidate(uint64_t id, int32_t index) {'
+assert s.count(anchor) == 1, s.count(anchor)
+added = (
+    'Result Engine::ForgetCandidate(uint64_t id, int32_t index,\n'
+    '                               int deadline_ms, KeyWait* wait) {\n'
+    '  auto box = std::make_shared<Result>();\n'
+    '  if (!CallKeyBounded(\n'
+    '          "forget",\n'
+    '          [this, id, index, box] {\n'
+    '            const uintptr_t sess = Find(id);\n'
+    '            if (!sess) return;\n'
+    '            box->handled = rs_delete_candidate(sess, index);\n'
+    '          },\n'
+    '          deadline_ms, wait)) {\n'
+    '    return Result();\n'
+    '  }\n'
+    '  return *box;\n'
+    '}\n\n')
+io.open(en, 'w', encoding='utf-8').write(s.replace(anchor, added + anchor, 1))
+
+t = io.open(ps, encoding='utf-8').read()
+old = '        } else if (action == KeyAction::kToggleAsciiMode) {'
+new = ('        } else if (action == KeyAction::kForgetCandidate) {\n'
+       '          r = engine_->ForgetCandidate(k.session, 0, key_budget_left(), &kw);\n'
+       '          key_result_is_current = !kw.timed_out;\n'
+       '          key_side_effect_done = kw.side_effect_done();\n'
+       '        } else if (action == KeyAction::kToggleAsciiMode) {')
+assert t.count(old) == 1, t.count(old)
+io.open(ps, 'w', encoding='utf-8').write(t.replace(old, new, 1))
+PYNEWENTRY
+      ;;
+    # 白名單自己會過期:標頭上的符號沒了(改名、拿掉),而白名單還留著它。
+    rs_header_symbol_removed)
+      sed -i 's/^bool rs_get_option(rs_session s, const char\* option);$//' \
+        "${KEY_GATE_TMP}/rime_shell.h" ;;
     # (戊)分支把它寫死成常數 —— 判準看起來還在,實際上被短路了。
     branch_side_effect_const)
-      sed -i 's/          key_side_effect_done = kw.side_effect_done;/          key_side_effect_done = false;/' \
+      sed -i 's/          key_side_effect_done = kw.side_effect_done();/          key_side_effect_done = false;/' \
         "${KEY_GATE_TMP}/pipe_server.cc" ;;
     # (己)線路上不再說「引擎沒有回答」——「ni好」與「組字當場消失」
     #      兩個靜默的資料污染同時回來。
@@ -1122,7 +1248,8 @@ PYNAB
       ;;
   esac
   if key_path_gates "${KEY_GATE_TMP}/engine.cc" \
-                    "${KEY_GATE_TMP}/pipe_server.cc" 2>/dev/null; then
+                    "${KEY_GATE_TMP}/pipe_server.cc" \
+                    "${KEY_GATE_TMP}/rime_shell.h" 2>/dev/null; then
     echo "!! 植入 ${plant} 之後那些判準仍然是綠的 —— 它們不算數" >&2
     exit 1
   fi
@@ -1290,6 +1417,247 @@ PYAV
 done
 rm -rf "${BAR_TMP}"
 echo "==> 避讓的反向測試通過(6 種改法都抓得到)"
+
+# ══ ⭐ 補送那一則讓位:上限是真的、記錄說得出成敗(#120 的出口 C / E)══
+#
+# ⚠ 這一段守的是**三句被覆核者用實跑推翻的新記錄**。它們都在
+#   tsf/text_service.cc,而那個檔案在這台機器上只有 -fsyntax-only ——
+#   所以判準是文字的,而每一條都有反向測試。
+#
+#   ① 「絕對上限 1200ms」是假的:傳給 SendHello 的 300ms **只走到
+#      ReadOnce**,SendHello 內部的 WriteAll 仍然寫死 kIoTimeoutMs(3000),
+#      而讀那一段是 for (spin < 8) 各等一次 —— 第一趟就可以跑到 ~5.4 秒,
+#      而 honor_stop=false 表示 stop_ 打斷不了它:DLL 卸載被拖住。
+#   ② SendYield 失敗那一行的 err=%lu 是在 ::CloseHandle(ev) **之後**才取的
+#      —— 真正有用的錯誤碼在那兩行之間被覆蓋掉。
+#   ③ 送不出去那一行印的是常數 kYieldFlushTries(永遠 3),不是實際趟數;
+#      而 `if (!io)` 那一條是 `return;`,**一行記錄都不留** —— 正好是這個
+#      函式存在的理由(消滅靜默出口)本身。
+yield_flush_gates() {   # $1 = tsf/text_service.cc;回非零 = 有違規
+  local ts="$1" bad=0 out line
+  out="$(python3 - "${ts}" <<'PYYIELD'
+import io, re, sys
+
+def strip_comments(src):
+    out, i, n = [], 0, len(src)
+    while i < n:
+        c = src[i]
+        if c == '"' or c == "'":
+            q = c
+            out.append(c); i += 1
+            while i < n:
+                out.append(src[i])
+                if src[i] == '\\':
+                    if i + 1 < n:
+                        out.append(src[i + 1]); i += 2; continue
+                elif src[i] == q:
+                    i += 1; break
+                i += 1
+            continue
+        if c == '/' and i + 1 < n and src[i + 1] == '/':
+            while i < n and src[i] != '\n':
+                i += 1
+            continue
+        if c == '/' and i + 1 < n and src[i + 1] == '*':
+            i += 2
+            while i + 1 < n and not (src[i] == '*' and src[i + 1] == '/'):
+                i += 1
+            i += 2
+            continue
+        out.append(c); i += 1
+    return ''.join(out)
+
+src = strip_comments(io.open(sys.argv[1], encoding='utf-8').read())
+
+def block_from(s, i):
+    b = s.find('{', i)
+    if b < 0:
+        return ''
+    d = 0
+    for j in range(b, len(s)):
+        if s[j] == '{':
+            d += 1
+        elif s[j] == '}':
+            d -= 1
+            if d == 0:
+                return s[b + 1:j]
+    return s[b:]
+
+def body(name):
+    m = re.search(r'(?m)^\s*(?:static\s+)?[A-Za-z_][\w:<>&*\s]*\b' +
+                  re.escape(name) + r'\s*\(', src)
+    return None if m is None else block_from(src, m.start())
+
+def sig(name):
+    m = re.search(r'(?m)^\s*(?:static\s+)?[A-Za-z_][\w:<>&*\s]*\b' +
+                  re.escape(name) + r'\s*\(', src)
+    if m is None:
+        return None
+    j = src.find('{', m.start())
+    return src[m.start():j] if j > 0 else None
+
+if 'struct Deadline' not in src or 'DWORD Left() const' not in src:
+    print('NOFUNC=struct Deadline / Left()')
+for need in ('FlushPendingYield', 'SendYield', 'SendHello', 'WriteAll'):
+    if body(need) is None:
+        print('NOFUNC=%s' % need)
+
+# ① 上限是真的:握手與寫入都吃同一個 Deadline,不是各自寫死的常數。
+for name in ('SendHello', 'WriteAll', 'SendYield'):
+    s = sig(name)
+    if s is not None and 'const Deadline&' not in s:
+        print('NODEADLINEARG=%s' % name)
+    b = body(name)
+    if b is not None and 'kIoTimeoutMs' in b:
+        print('HARDCODEDIOTIMEOUT=%s' % name)
+    if b is not None and 'dl.Left()' not in b:
+        print('NEVERASKSLEFT=%s' % name)
+# 讀那個 spin 迴圈裡**每一趟**都要問一次,不是只在外面問。
+hs = body('SendHello')
+if hs is not None:
+    m = re.search(r'for\s*\(\s*int\s+spin', hs)
+    if m is None or 'dl.Left()' not in block_from(hs, m.start()):
+        print('SPINLOOPUNBOUNDED=1')
+
+fp = body('FlushPendingYield')
+if fp is not None:
+    # ③-a 實際趟數:數出來的變數要真的被 ++,而且要進到那一行記錄裡。
+    if not re.search(r'\+\+tries\s*;', fp):
+        print('NOTRIESCOUNT=1')
+    tail = fp[fp.rfind('Trace('):] if 'Trace(' in fp else ''
+    if 'tries' not in tail:
+        print('PRINTSCONSTANT=1')
+    # ③-b `if (!io)` 那一條**不可以**是無聲的 return。
+    m = re.search(r'if\s*\(\s*!io\s*\)', fp)
+    if m is None:
+        print('NOIOBRANCH=1')
+    elif 'Trace(' not in block_from(fp, m.start()):
+        print('SILENTIOEXIT=1')
+    # ① 整段共用一個絕對 deadline,而且迴圈裡每一趟都問。
+    if 'StartDeadline(kYieldFlushBudgetMs)' not in fp:
+        print('NOABSOLUTEBUDGET=1')
+    if 'dl.Left() == 0' not in fp:
+        print('BUDGETNOTCHECKED=1')
+
+sy = body('SendYield')
+if sy is not None:
+    # ② 錯誤碼要在 CloseHandle(ev) **之前**取。
+    i_close = sy.find('::CloseHandle(ev)')
+    last_gle = sy.rfind('::GetLastError()')
+    if i_close < 0:
+        print('NOCLOSEEV=1')
+    elif last_gle > i_close:
+        print('ERRAFTERCLOSE=1')
+    if not re.search(r'DWORD\s+err\s*=', sy):
+        print('NOERRVAR=1')
+PYYIELD
+)"
+  while IFS= read -r line; do
+    case "${line}" in
+      NOFUNC=*)
+        echo "!! tsf/text_service.cc 裡找不到 ${line#NOFUNC=} —— 掃描範圍錯了,而一道掃不到東西的判準永遠是綠的" >&2
+        bad=1 ;;
+      NODEADLINEARG=*)
+        echo "!! ${line#NODEADLINEARG=}() 沒有吃 const Deadline& —— 上一輪傳的那個 300ms 只走到 ReadOnce,SendHello 內部的 WriteAll 仍然寫死 3000ms:「絕對上限 1200ms」那句話是假的,而這一整段拖著 g_rime_dll_refs(DLL 卸載不掉)" >&2
+        bad=1 ;;
+      HARDCODEDIOTIMEOUT=*)
+        echo "!! ${line#HARDCODEDIOTIMEOUT=}() 裡還留著寫死的 kIoTimeoutMs —— 呼叫端給的預算就被它繞過去了" >&2
+        bad=1 ;;
+      NEVERASKSLEFT=*)
+        echo "!! ${line#NEVERASKSLEFT=}() 收了 Deadline 卻一次都沒問過 dl.Left() —— 收了不用與沒收是同一件事" >&2
+        bad=1 ;;
+      SPINLOOPUNBOUNDED=*)
+        echo "!! SendHello 讀回覆那個 for (spin < 8) 迴圈裡沒有問 dl.Left() —— 八趟各等一次完整的等待,而預算只在迴圈外面查過:最壞 3000 + 8×300 ≈ 5.4 秒" >&2
+        bad=1 ;;
+      NOTRIESCOUNT=*|PRINTSCONSTANT=*)
+        echo "!! FlushPendingYield 送不出去那一行印的不是**實際跑了幾趟** —— 上一輪印的是常數 kYieldFlushTries(永遠 3),於是「第一趟就開不了管道然後預算用完」與「真的試了三次」在 rime_tsf.log 上長得一模一樣" >&2
+        bad=1 ;;
+      NOIOBRANCH=*|SILENTIOEXIT=*)
+        echo "!! FlushPendingYield 的「if (!io)」那一條是**無聲的 return** —— 消滅靜默出口正是這個函式存在的理由,而它自己留了一個" >&2
+        bad=1 ;;
+      NOABSOLUTEBUDGET=*|BUDGETNOTCHECKED=*)
+        echo "!! FlushPendingYield 沒有一個整段共用的絕對 deadline(StartDeadline(kYieldFlushBudgetMs) + 每一趟問 dl.Left()) —— 那個「絕對上限」就只是註解上的一句話" >&2
+        bad=1 ;;
+      ERRAFTERCLOSE=*|NOERRVAR=*|NOCLOSEEV=*)
+        echo "!! SendYield 那一行的錯誤碼是在 ::CloseHandle(ev) **之後**才取的 —— CloseHandle 成功會把 last-error 蓋掉,而 ERROR_NO_DATA / ERROR_BROKEN_PIPE / ERROR_OPERATION_ABORTED 正是那一行存在的理由" >&2
+        bad=1 ;;
+    esac
+  done <<EOF
+${out}
+EOF
+  return "${bad}"
+}
+
+echo
+echo "==> 補送那一則讓位的上限與記錄(#120 的出口 C / E)"
+yield_flush_gates "${SCRIPT_DIR}/tsf/text_service.cc" || exit 1
+echo "   握手與寫入吃同一個絕對 deadline(spin 迴圈裡也問);錯誤碼在 CloseHandle 之前取;送不出去那一行印實際趟數,而 !io 也留一行"
+
+echo
+echo "==> 反向測試(那三句記錄的判準必須抓得到植入的違規)"
+YIELD_TMP="$(mktemp -d)"
+for plant in hello_hardcodes_io_timeout spin_loop_unbounded \
+             err_after_close flush_prints_constant flush_silent_no_io \
+             budget_never_checked; do
+  cp "${SCRIPT_DIR}/tsf/text_service.cc" "${YIELD_TMP}/text_service.cc"
+  case "${plant}" in
+    # ① 上一輪的樣子:握手內部的寫入寫死 3000ms。
+    hello_hardcodes_io_timeout)
+      python3 - "${YIELD_TMP}/text_service.cc" <<'PYHC'
+import io, sys
+p = sys.argv[1]
+s = io.open(p, encoding='utf-8').read()
+old = '''      const DWORD left = dl.Left();
+      if (left == 0) return false;'''
+new = '''      const DWORD left = kIoTimeoutMs;'''
+assert s.count(old) == 1, s.count(old)
+io.open(p, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+PYHC
+      ;;
+    # ① 的另一半:讀那八趟各拿一份完整預算。
+    spin_loop_unbounded)
+      python3 - "${YIELD_TMP}/text_service.cc" <<'PYSPIN'
+import io, sys
+p = sys.argv[1]
+s = io.open(p, encoding='utf-8').read()
+old = '''      const DWORD left = dl.Left();
+      if (left == 0) return HandshakeResult::kIoError;'''
+new = '''      const DWORD left = kIoTimeoutMs;'''
+assert s.count(old) == 1, s.count(old)
+io.open(p, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+PYSPIN
+      ;;
+    # ② 錯誤碼又搬回 CloseHandle 後面。
+    err_after_close)
+      sed -i 's/static_cast<unsigned long>(err),/static_cast<unsigned long>(::GetLastError()),/' \
+        "${YIELD_TMP}/text_service.cc" ;;
+    # ③ 印回常數。
+    flush_prints_constant)
+      sed -i 's/          tries, kYieldFlushTries,/          kYieldFlushTries, kYieldFlushTries,/' \
+        "${YIELD_TMP}/text_service.cc" ;;
+    # ③ `if (!io)` 又變成無聲的 return。
+    flush_silent_no_io)
+      python3 - "${YIELD_TMP}/text_service.cc" <<'PYSILENT'
+import io, re, sys
+p = sys.argv[1]
+s = io.open(p, encoding='utf-8').read()
+i = s.index('        Trace("!! 在場連線:補送讓位時建不出事件')
+j = s.index(';', s.index('dl.Left()));', i)) + 1
+io.open(p, 'w', encoding='utf-8').write(s[:i] + s[j:])
+PYSILENT
+      ;;
+    # ① 預算只在最外面查一次(上一輪的樣子)。
+    budget_never_checked)
+      sed -i 's/      if (dl.Left() == 0) break;//' \
+        "${YIELD_TMP}/text_service.cc" ;;
+  esac
+  if yield_flush_gates "${YIELD_TMP}/text_service.cc" 2>/dev/null; then
+    echo "!! 植入 ${plant} 之後那些判準仍然是綠的 —— 它們不算數" >&2
+    exit 1
+  fi
+  echo "   ok  植入 ${plant} → 變紅"
+done
+rm -rf "${YIELD_TMP}"
 
 echo "==> 單一來源稽核(同一件事不得在兩個地方各寫一份)"
 "${SCRIPT_DIR}/audit_single_source.sh"

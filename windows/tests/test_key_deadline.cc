@@ -20,6 +20,8 @@
 
 #include "../common/key_deadline.h"
 
+#include <type_traits>
+
 #include "check.h"
 
 using namespace rimewin;
@@ -134,19 +136,24 @@ TEST(KeyDeadline_VariantKeySideEffectGoesLast) {
                 .eat_key,
             "副作用已經發生,那顆鍵必須算被我們吃掉");
 
-  // ── ② 那顆鍵算被吃掉 ⇒ 手上那一份一定是引擎的現況 ──────────────
+  // ── ② 拿得去碰 UI 的條件比「吃掉那顆鍵」嚴格 ────────────────────
   //
   //   handled=1 配一份全 0 的快照,DLL 會走 RunSyncSession(ApplyPlan(…))
   //   把它套進文件 —— 空快照的意思是「沒有組字」,使用者打到一半的那一段
-  //   當場消失,而且**沒有上屏**。
+  //   當場消失,而且**沒有上屏**。所以 ui_is_current 只有在「真的切了、
+  //   而且握著現況」那一格才是 true。
+  //
+  //   ⚠ 上一輪這裡寫的是「吃掉了 ⇒ 一定是現況」,而那是 #119 之前的
+  //     規矩。#119 之後正確的形狀是「吃掉了、但不是現況 ⇒ 文件與 UI 都
+  //     不准動,而且線路上要說出來」—— 兩者不是同一句話。
   for (int i = 0; i < 4; ++i) {
     const bool cur = (i & 1) != 0;
     const bool tog = (i & 2) != 0;
     const VariantKeyPlan p = PlanVariantKey(cur, tog);
-    CHECK_MSG(!p.eat_key || p.ui_is_current,
-              "吃掉了那顆鍵卻拿不出現況 —— DLL 會把空快照套進文件");
-    CHECK_MSG(!p.eat_key || cur,
-              "第一趟沒跑成(或引擎不認得這個 session)就不可以吃掉那顆鍵");
+    CHECK_MSG(p.ui_is_current == (cur && tog),
+              "只有『真的切了、而且握著現況』那一格才准拿去碰 UI");
+    CHECK_MSG(!p.ui_is_current || p.eat_key,
+              "拿得去碰 UI 卻不吃那顆鍵 —— 宿主會同時做它自己的事");
     // ③ 沒有現況快照就不准去做那件不可逆的事。這一格是 ①② 成立的理由:
     //   副作用排在最後一趟,前面每一趟失敗都退回「一步都沒做」。
     CHECK_MSG(p.may_toggle == cur,
@@ -158,9 +165,19 @@ TEST(KeyDeadline_VariantKeySideEffectGoesLast) {
 
   // ⚠ 四格都要驗。少驗的話,把 PlanVariantKey 改成「永遠吃掉」仍然是綠的
   //   —— 而那正是這一輪要修掉的那個迴歸(引擎切了、宿主也開了)。
-  CHECK(!PlanVariantKey(true, false).eat_key);
-  CHECK(!PlanVariantKey(false, true).eat_key);
-  CHECK(!PlanVariantKey(false, false).eat_key);
+  CHECK_MSG(!PlanVariantKey(true, false).eat_key,
+            "什麼都沒做(toggled=false)就不可以吃掉那顆鍵");
+  CHECK_MSG(!PlanVariantKey(false, false).eat_key,
+            "什麼都沒做就不可以吃掉那顆鍵");
+  // ⚠ (false, true) 這一格在呼叫端到不了(may_toggle 擋著),但答案仍然
+  //   要對:**真的切了就一定要吃掉那顆鍵**,即使手上那一份不是現況。
+  //   上一輪它回 false —— 那是 #119 那個錯的另一個化身,而
+  //   VariantKeyPlanIsSound 的 ① 在那一格是空的(may_toggle 為 false),
+  //   所以沒有人抓得到。
+  CHECK_MSG(PlanVariantKey(false, true).eat_key,
+            "切了就一定要吃掉那顆鍵,即使手上那一份不是現況");
+  CHECK_MSG(!PlanVariantKey(false, true).ui_is_current,
+            "而它一個像素都不准碰");
   CHECK(PlanVariantKey(true, true).eat_key !=
         PlanVariantKey(true, false).eat_key);
 }
@@ -248,20 +265,134 @@ TEST(KeyDeadline_EveryKeyExitGoesThroughTheSameDoor) {
   }
 }
 
-TEST(KeyDeadline_VariantDoorIsASpecialCaseOfTheGeneralOne) {
-  // ⚠ 兩份真相就是兩個會漂移的答案。簡繁那顆專用的門留著(它多守一件
-  //   事:副作用排在最後一趟),但它交出去的 eat_key / ui_is_current
-  //   必須與通用那道門一字不差 —— 否則下一輪又會有一顆鍵自己一套。
+TEST(KeyDeadline_VariantDoorDelegatesEatKeyToTheGeneralOne) {
+  // ── ⚠ 上一輪這裡有一條**比不到東西**的斷言 ──────────────────────
+  //
+  //   它長這樣:VariantPlanAgreesWithKeyExit(s, t) 把 `s && t` **同時**
+  //   餵給 PlanKeyExit 的兩個參數,所以四格只比到 (false,false) 與
+  //   (true,true) —— 混合的那兩格從來沒有被比過,而
+  //   (side_effect_done=true, snapshot_is_current=false) 正是 #119 那一格。
+  //   覆核者實測:把 PlanKeyExit 的 eat_key 改回
+  //   `side_effect_done && snapshot_is_current`(等於把 #119 反悔),
+  //   那條斷言四格照樣過。
+  //
+  //   現在 PlanVariantKey 的 eat_key **就是** PlanKeyExit 的答案
+  //   (common/key_deadline.h),所以「一份真相」是結構上的,不必靠比對。
+  //   這裡改成釘那個**對應關係**:side_effect_done ← toggled,
+  //   snapshot_is_current ← snapshot_is_current。有人把對應改成別的
+  //   (例如又寫回 `cur && tog`),下面就會紅。
   for (int i = 0; i < 4; ++i) {
     const bool cur = (i & 1) != 0;
     const bool tog = (i & 2) != 0;
-    CHECK(VariantPlanAgreesWithKeyExit(cur, tog));
-    const VariantKeyPlan v = PlanVariantKey(cur, tog);
-    const KeyExitPlan g = PlanKeyExit(cur && tog, cur && tog);
-    CHECK_INT(v.eat_key ? 1 : 0, g.eat_key ? 1 : 0);
-    CHECK_INT(v.ui_is_current ? 1 : 0, g.result_is_current ? 1 : 0);
+    CHECK_INT(PlanVariantKey(cur, tog).eat_key ? 1 : 0,
+              PlanKeyExit(/*side_effect_done=*/tog,
+                          /*snapshot_is_current=*/cur)
+                      .eat_key
+                  ? 1
+                  : 0);
   }
+  // ⚠ 而這一格證明那個對應**不是**退化的:把兩個參數餵成同一個值
+  //   (上一輪那個寫法)會在這裡得到不同的答案。
+  CHECK_MSG(PlanVariantKey(false, true).eat_key !=
+                PlanKeyExit(false && true, false && true).eat_key,
+            "混合的那一格必須真的被比到 —— 上一輪的斷言把兩個參數餵成"
+            "同一個值,於是 #119 那一格從來沒有被比過");
 }
+
+TEST(KeyDeadline_GeneralDoorEatsOnSideEffectAlone) {
+  // ⚠ 這一條是上面那條假斷言真正該做的事:**單獨**釘住
+  //   「eat_key 只看 side_effect_done」。把它改回
+  //   `side_effect_done && snapshot_is_current`(#119 反悔)的話,
+  //   下面第一行就紅。
+  CHECK_MSG(PlanKeyExit(/*side_effect_done=*/true,
+                        /*snapshot_is_current=*/false)
+                .eat_key,
+            "#119:中英切了而快照逾時 —— 這一格必須吃掉那顆鍵");
+  CHECK(PlanKeyExit(true, true).eat_key);
+  CHECK(!PlanKeyExit(false, false).eat_key);
+  CHECK(!PlanKeyExit(false, true).eat_key);
+  // eat_key 與 snapshot_is_current **沒有**關係:同一個 side_effect_done
+  // 下,兩格的答案必須一樣。
+  CHECK_INT(PlanKeyExit(true, false).eat_key ? 1 : 0,
+            PlanKeyExit(true, true).eat_key ? 1 : 0);
+  CHECK_INT(PlanKeyExit(false, false).eat_key ? 1 : 0,
+            PlanKeyExit(false, true).eat_key ? 1 : 0);
+}
+
+// ══════════════════════════════════════════════════════════════════
+// ⭐ #119 在**執行期**沒有修好的那一格:副作用標記在半路被抹掉
+// ══════════════════════════════════════════════════════════════════
+//
+// 上一顆 commit 宣稱修好了 #119。覆核者照 service/engine.cc 那兩支的
+// 形狀寫最小重現、g++ 實跑,拿到 `timed_out=1 side_effect_done=0`:
+//
+//   ToggleAsciiMode()   SetAsciiModeAll(!now);
+//                       wait->side_effect_done = true;   ← 標記
+//                       CallKeyBounded(..., wait);
+//   CallKeyBounded()    *wait = KeyWait();               ← 進門第一句抹掉
+//
+// ProcessKey() 沒事只是因為它填在 CallKeyBounded **之後** —— 那不是設計,
+// 是運氣。這一組把約定釘成執行期斷言,而型別本身還多釘一層:
+// copy assignment 被 = delete,`*wait = KeyWait();` 是編譯錯誤。
+TEST(KeyDeadline_SideEffectMarkSurvivesTheTrip) {
+  KeyWait kw;
+  kw.ResetForNewCall();
+  CHECK(!kw.side_effect_done());
+  CHECK(!kw.timed_out);
+
+  // ── ToggleAsciiMode() 的形狀:先做那件不可逆的事,再進門 ──────────
+  kw.MarkSideEffectDone();
+  CHECK(kw.side_effect_done());
+
+  // ── CallKeyBounded() 進門第一句 ──────────────────────────────────
+  kw.BeginTrip();
+  CHECK_MSG(kw.side_effect_done(),
+            "⭐ #119:一趟新的佇列等待**不可以**抹掉『那件不可逆的事已經"
+            "做過了』—— 中英已經切了,而『重來一趟』不會把它切回去");
+
+  // ── 逾時 ────────────────────────────────────────────────────────
+  kw.timed_out = true;
+  kw.abandoned = true;
+  CHECK_MSG(kw.side_effect_done(),
+            "逾時之後那個事實還在:本體沒跑,但 SetAsciiModeAll() 早就"
+            "跑完了(它是 store + PostAsync,不等)");
+
+  // ── 這一格就是使用者看到的那件事 ────────────────────────────────
+  //   側邊那條鏈:PlanKeyExit → r.handled → TSF 的 OnPreservedKey。
+  //   side_effect_done 被抹掉的話這裡拿到 (false, false) → eat_key=false
+  //   → 宿主也吃到那顆 Ctrl+空格,與 65a4165 一模一樣。
+  const KeyExitPlan p = PlanKeyExit(kw.side_effect_done(), !kw.timed_out);
+  CHECK_MSG(p.eat_key,
+            "#119 的整條鏈:標記活著 ⇒ eat_key ⇒ handled=true ⇒ "
+            "OnPreservedKey 回 TRUE ⇒ 宿主不會再吃一次那顆 Ctrl+空格");
+  CHECK(!p.result_is_current);
+  CHECK(p.doc == KeyDocAction::kLeaveDocAlone);
+  CHECK(KeyExitNeedsNotAnsweredBit(kw.side_effect_done(), !kw.timed_out));
+
+  // ── 只進不出 ────────────────────────────────────────────────────
+  kw.BeginTrip();
+  kw.BeginTrip();
+  CHECK_MSG(kw.side_effect_done(), "MarkSideEffectDone() 沒有反向的那一支");
+  // 只有「一顆新的按鍵開始」才清得掉。
+  kw.ResetForNewCall();
+  CHECK_MSG(!kw.side_effect_done(),
+            "而下一支按鍵入口的第一句話要把它歸零 —— 跨兩趟累計是"
+            "呼叫端的責任(pipe_server.cc 的簡繁那一格)");
+  CHECK(!kw.timed_out && !kw.abandoned);
+}
+
+// ⚠ 型別層那一道:`*wait = KeyWait();`(#119 的成因)必須是**編譯錯誤**。
+//   這一條與上面那個執行期測試是兩件事 —— 上面守的是 BeginTrip() 的
+//   內容,這一條守的是「沒有人能繞過 BeginTrip() 整份指派一次」。
+static_assert(!std::is_copy_assignable<rimewin::KeyWait>::value,
+              "KeyWait 的 copy assignment 必須是 = delete —— "
+              "`*wait = KeyWait();` 正是 #119 在執行期沒有修好的那一行");
+static_assert(!std::is_move_assignable<rimewin::KeyWait>::value,
+              "move assignment 一樣不可以 —— `*wait = KeyWait();` 會挑它");
+static_assert(!std::is_copy_constructible<rimewin::KeyWait>::value,
+              "連複製一份出來再指派回去都不可以");
+static_assert(std::is_default_constructible<rimewin::KeyWait>::value,
+              "呼叫端要建得出來(pipe_server.cc 的 `Engine::KeyWait kw;`)");
 
 TEST(KeyDeadline_AsciiToggleTimeoutIsNotAFailure) {
   // ⚠ 這一條釘的是 #119 的**另一半**:逾時的時候那一橫不可以整份凍住。

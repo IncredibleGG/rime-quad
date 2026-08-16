@@ -4348,7 +4348,7 @@ self_check() {
 "W36g 那道門讀不到階段|service/engine.cc|s=s.replace('ShouldFailOpen(phase_.load(), deploy_state_.load() == 1,','ShouldFailOpen(RedeployPhase::kIdle, deploy_state_.load() == 1,',1)"
 "W36h BeginDeploy 沒有先把門關上|service/engine.cc|s=s.replace('RedeployEvent::kRequested','RedeployEvent::kRebuilt',1)"
 "W36i 收乾淨那一支不再銷毀 session|service/engine.cc|s=s.replace('    rs_session_destroy(kv.second);' + chr(10) + '  }' + chr(10) + '  const int total','  }' + chr(10) + '  const int total',1)"
-"W36m 按鍵那道門又排到佇列後面|service/engine.cc|s=s.replace('  Result r;' + chr(10) + '  if (wait) *wait = KeyWait();','  Result r;' + chr(10) + '  if (wait) *wait = KeyWait();' + chr(10) + '  Post(' + chr(34) + '先擋一下' + chr(34) + ', [] {});',1)"
+"W36m 按鍵那道門又排到佇列後面|service/engine.cc|s=s.replace('  Result r;' + chr(10) + '  if (wait) wait->ResetForNewCall();','  Result r;' + chr(10) + '  if (wait) wait->ResetForNewCall();' + chr(10) + '  Post(' + chr(34) + '先擋一下' + chr(34) + ', [] {});',1)"
 "W36o 按鍵改回沒有作廢權的等待(#93 的本體)|service/engine.cc|s=s.replace('queue_.CallAbandonable(','queue_.Call(',1)"
 "W36p 取快照那一趟在 Find() 之前就宣稱認得這個 session(舊白名單看不到的那一格)|service/engine.cc|s=s.replace('            const uintptr_t sess = Find(id);' + chr(10) + '            if (!sess) return;' + chr(10) + '            box->handled = true;','            box->handled = true;' + chr(10) + '            const uintptr_t sess = Find(id);' + chr(10) + '            if (!sess) return;',1)"
 "W36q 取快照那一趟悄悄離開按鍵那條路(分母要掉到 3)|service/engine.cc|s=s.replace('  if (!CallKeyBounded(' + chr(10) + '          ' + chr(34) + '取快照' + chr(34) + ',','  if (!Post(' + chr(10) + '          ' + chr(34) + '取快照' + chr(34) + ',',1)"

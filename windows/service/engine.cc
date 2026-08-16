@@ -506,7 +506,11 @@ Result Engine::ToggleAsciiMode(uint64_t id, int deadline_ms,
   //   路徑會讓呼叫端讀到它**自己**那個預設建構的 KeyWait
   //   （timed_out=false）—— 也就是「引擎一個字都沒說，呼叫端卻把那份
   //   佔位當成現況餵進候選窗」。
-  if (wait) *wait = KeyWait();
+  // ⚠ **只有按鍵入口可以呼叫 ResetForNewCall()。** 下面 CallKeyBounded()
+  //   進門用的是 BeginTrip()，它碰不到 side_effect_done —— 上一輪兩層
+  //   都寫 `*wait = KeyWait()`，於是這一支在第 550 行剛標好的那一格，
+  //   在第 576 行進門的第一句就被抹掉了（#119 在執行期沒有修好的原因）。
+  if (wait) wait->ResetForNewCall();
   // ── ⚠ 部署還沒做完就不要宣稱切過了 ──────────────────────────────
   //
   //   與 ProcessKey 同一條規則(見下面)。少了這一格,使用者在首次部署
@@ -547,7 +551,12 @@ Result Engine::ToggleAsciiMode(uint64_t id, int deadline_ms,
   //   把它寫進 wait，由呼叫端的 PlanKeyExit() 統一判斷 ——
   //   這裡**不**自己決定 handled，一顆鍵只能有一道門。
   SetAsciiModeAll(!now);
-  if (wait) wait->side_effect_done = true;
+  // ⚠ 這一句在 CallKeyBounded() **之前**，而那正是上一輪它被抹掉的原因。
+  //   現在 CallKeyBounded() 進門用 BeginTrip()（碰不到這一格），而整份
+  //   指派在 common/key_deadline.h 被 = delete 掉了 —— 同一個錯下一次
+  //   是編譯錯誤。tests/test_key_deadline.cc 的
+  //   「副作用標記不會在半路被抹掉」把同一條寫成執行期斷言。
+  if (wait) wait->MarkSideEffectDone();
   // ── ⚠ 快照要在切換**之後**取,而且必須在**引擎執行緒**上取 ──────
   //
   //   順序:狀態列那一格顯示的是快照上的旗標(status_bar.h:「顯示的是
@@ -594,6 +603,11 @@ Result Engine::ToggleAsciiMode(uint64_t id, int deadline_ms,
     //   判斷本身在 common/key_deadline.h 的 PlanKeyExit()，由呼叫端
     //   （pipe_server.cc 的 case Op::kKey）統一套用；這裡只交事實。
     //
+    // ⚠ 那個事實**還在**：上面 MarkSideEffectDone() 標好之後，
+    //   CallKeyBounded() 只會 BeginTrip()（timed_out / abandoned 兩格），
+    //   碰不到它。上一輪這裡的註解寫著同一句話，而程式碼是
+    //   `*wait = KeyWait()` —— 註解對、程式碼錯，而報表全綠。
+    //
     // ⚠ 那一橫**不可以整份擋掉**：中英模式是服務端不必問引擎就知道的
     //   一個 atomic（Engine::AsciiMode()），所以呼叫端會拿它把第一格
     //   單獨推一次。真正推不動的只有候選窗與組字那一段。
@@ -601,7 +615,7 @@ Result Engine::ToggleAsciiMode(uint64_t id, int deadline_ms,
     // ⚠ handled **不在這裡決定**。中英已經切了（上面那一句），
     //   而「做過不可逆的事 ⇒ 這顆鍵一定算被吃掉」是
     //   common/key_deadline.h 的 PlanKeyExit() 在答的；這裡只交事實：
-    //   wait->side_effect_done 已經是 true，timed_out 也是。
+    //   wait->side_effect_done() 已經是 true，timed_out 也是。
     //   呼叫端會把 handled 覆寫成 PlanKeyExit 的答案。
     timed_out.handled = false;
     timed_out.snap.status_flags |= kStKeyNotAnswered;
@@ -616,7 +630,7 @@ Result Engine::ToggleAsciiMode(uint64_t id, int deadline_ms,
 Result Engine::ProcessKey(uint64_t id, int32_t keysym, uint32_t mods,
                           int deadline_ms, KeyWait* wait) {
   Result r;
-  if (wait) *wait = KeyWait();
+  if (wait) wait->ResetForNewCall();
   // ── ⚠ 這道門在**呼叫端執行緒**上答，不排進佇列 ──────────
   //
   //   機制要寫對，因為它決定的不是「按鍵有沒有被吃掉」，是**連線活不活**：
@@ -750,7 +764,11 @@ Result Engine::ProcessKey(uint64_t id, int32_t keysym, uint32_t mods,
   //   rs_process_key() 回 true = 引擎吃了這顆鍵 = 組字狀態動過了。
   //   逾時（作廢成功）本體一步都沒跑，所以上面那條早退路徑
   //   留著 side_effect_done = false —— 這顆鍵交回宿主是對的。
-  if (wait) wait->side_effect_done = r.handled;
+  //
+  // ⚠ 這一支填在 CallKeyBounded() **之後**，所以上一輪它躲過了那個
+  //   「進門第一句整份歸零」的抹除 —— 而躲過去不是設計，是運氣。
+  //   現在兩支的順序都不再是判準（BeginTrip 碰不到這一格）。
+  if (wait && r.handled) wait->MarkSideEffectDone();
   return r;
 }
 
@@ -763,7 +781,21 @@ Result Engine::ProcessKey(uint64_t id, int32_t keysym, uint32_t mods,
 // 已經修好的樣子。
 bool Engine::CallKeyBounded(const char* label, std::function<void()> fn,
                             int deadline_ms, KeyWait* wait) {
-  if (wait) *wait = KeyWait();
+  // ── ⭐ #119 在執行期沒有修好的那一行，就是這一行 ──────────────────
+  //
+  //   上一輪這裡是 `*wait = KeyWait();` —— **整份**歸零。而
+  //   ToggleAsciiMode() 是在呼叫這一支**之前**才標好 side_effect_done 的
+  //   （engine.cc 的 SetAsciiModeAll 那一句下面），所以那個標記在這裡
+  //   當場被抹掉：逾時那一格交給 PlanKeyExit() 的是 (false, false)，
+  //   算出 eat_key=false，整條鏈與 65a4165 一模一樣。
+  //
+  //   BeginTrip() 只碰得到 timed_out / abandoned —— 這一趟等待的結果是
+  //   這一支的事，而「這顆鍵已經做過什麼」不是。
+  //   ⚠ 型別本身也擋著：common/key_deadline.h 的 KeyWait 把 copy
+  //     assignment = delete 掉了，所以 `*wait = KeyWait();` 現在是編譯
+  //     錯誤（windows/syntax_check_mingw.sh 對這個檔案做 -fsyntax-only，
+  //     所以在 Ubuntu 上就會紅，不必等 MSVC）。
+  if (wait) wait->BeginTrip();
   if (deadline_ms <= 0) {
     // 預算用完 = 這顆鍵的時間已經花在前面那幾趟上了。工作**一步都沒跑**,
     // 所以作廢權在我們手上(沒有東西可以搶)。
@@ -843,6 +875,7 @@ Result Engine::CurrentResult(uint64_t id, int deadline_ms, KeyWait* wait) {
   //   (ProcessKey 對同一件事是在工作本體裡標 kStDisabled;這一支選的是
   //    「handled 留 false,由呼叫端讀」—— 兩種都可以,不可以的是兩種都
   //    沒有。check_ui_spec.sh 的 W36 CLAIMBEFOREFIND 守著這一格。)
+  if (wait) wait->ResetForNewCall();
   auto box = std::make_shared<Result>();
   if (!CallKeyBounded(
           "取快照",
@@ -856,6 +889,23 @@ Result Engine::CurrentResult(uint64_t id, int deadline_ms, KeyWait* wait) {
     // 逾時 → 一份預設建構的 Result。⚠ 呼叫端**不可以**拿它碰 UI。
     return Result();
   }
+  // ── ⚠ 「取快照」**不是唯讀的** ──────────────────────────────────
+  //
+  //   TakeSnapshotLocked() 在「還在組字而候選是空的」那一格會呼叫
+  //   rs_commit_composition()（engine.cc 的 ShouldCommitComposition），
+  //   而 rs_snapshot_acquire() 本身就會把待取的 commit **消費掉**
+  //   （core/include/rime_shell.h 檔頭）。兩件都是不可逆的：那一段字
+  //   已經離開引擎了。
+  //
+  //   所以這一支不是「唯讀的那些」。上一輪 run_logic_tests.sh 把它歸在
+  //   唯讀那一類，而那個分類是一份手寫名單；現在的判準是**呼叫圖**：
+  //   從這裡追下去碰得到 rs_commit_composition / rs_snapshot_acquire，
+  //   兩支都不在「已知唯讀」白名單上，所以這一支必須把它說出來。
+  //
+  // ⚠ 條件是 has_commit 而不是「工作跑完了」：沒有 commit 的那些快照
+  //   真的什麼都沒動，把它們也標成有副作用會讓簡繁那顆鍵在
+  //   「方案沒宣告字形開關」那一格變成「吃掉但什麼都沒做」。
+  if (wait && box->snap.has_commit) wait->MarkSideEffectDone();
   return *box;
 }
 
@@ -1180,6 +1230,11 @@ std::string Engine::SchemaOfSession(uint64_t id) {
 
 Engine::StatusReadback Engine::ReadBackStatus(uint64_t session_id,
                                               int deadline_ms, KeyWait* wait) {
+  // ⚠ 按鍵入口的第一句話一律是這個(common/key_deadline.h 的 KeyWait):
+  //   三格全歸零。**跨兩支入口累計副作用是呼叫端的事** —— 簡繁那一格
+  //   在 CurrentResult() 回來之後就先把 side_effect_done() 收下來,
+  //   因為這一句會把它清掉,而那是對的:它是另一趟的事實。
+  if (wait) wait->ResetForNewCall();
   // ⚠ 盒子與工作**共同持有**:有上限的那一條路上,逾時之後這個函式就
   //   返回了,而那件工作可能還在佇列裡。`[&]` 在那條路上是 use-after-return。
   auto box = std::make_shared<StatusReadback>();
@@ -1227,7 +1282,7 @@ Engine::StatusReadback Engine::ReadBackStatus(uint64_t session_id,
       return StatusReadback();
   } else {
     // 不在按鍵路徑上的呼叫端(那一橫自己的重整)。維持舊行為。
-    if (wait) *wait = KeyWait();
+    if (wait) wait->ResetForNewCall();
     Post("回讀狀態", job);
   }
   return *box;

@@ -179,29 +179,22 @@ class Engine {
 
   // 一顆按鍵等待的結果。給 pipe_server 記錄用 ——
   // 「使用者說間歇打不出中文」要變成一個數字,就是從這裡出去的。
-  struct KeyWait {
-    // 在 kKeyDeadlineMs 內沒有等到(或工作根本沒入列)。
-    bool timed_out = false;
-    // 本體**確定一步都沒跑**(我們先搶到作廢權)。
-    //
-    // ⚠ timed_out 而 abandoned 為 false 是那個誠實的殘留窗口:
-    //   工作剛好在我們放棄的同一瞬間進到 rs_process_key 裡了。
-    //   那一顆鍵有可能引擎組了字、而宿主也自己打了字。
-    //   記下來,不要假裝沒有。
-    bool abandoned = false;
-    // ⭐ #119:**這顆鍵已經對引擎或設定做過不可逆的事。**
-    //
-    // ⚠ 它與 timed_out / abandoned 都無關,而那正是要點:
-    //   ToggleAsciiMode() 的 SetAsciiModeAll() 是 store + PostAsync,
-    //   **不等** —— 呼叫過就已經切了,而它排在那趟有上限的取快照
-    //   **前面**。逾時的時候「沒等到」是真的,「什麼都沒發生」是假的。
-    //
-    // 呼叫端(pipe_server.cc 的 case Op::kKey)拿它餵
-    // common/key_deadline.h 的 PlanKeyExit() —— 那是 `case Op::kKey` 上
-    // 唯一算得出 Result::handled 的地方,而第一條硬性要求就是
-    // 「副作用發生了 ⇒ 那顆鍵一定算被我們吃掉」。
-    bool side_effect_done = false;
-  };
+  //
+  // ── ⚠ 型別**不在這裡**,而搬走的理由是 #119 ────────────────────
+  //
+  //   上一輪它是這個類別裡的一個純資料 struct,而 #119 在執行期沒有修好
+  //   的全部原因就是它的形狀:ToggleAsciiMode() 在進 CallKeyBounded()
+  //   **之前**填 side_effect_done,而 CallKeyBounded() 進門第一句是
+  //   `*wait = KeyWait();` —— 整份歸零,標記當場被抹掉。
+  //
+  //   現在型別住在 common/key_deadline.h,而那個寫法是**編譯錯誤**
+  //   (copy assignment 被 = delete)。誰負責重設、誰負責填,寫在那裡的
+  //   檔頭註解與方法名字上:ResetForNewCall() 是按鍵入口的,BeginTrip()
+  //   是 CallKeyBounded 的,而 BeginTrip() 碰不到副作用那一格。
+  //
+  //   搬到 common/ 還換到一件事:windows/tests/test_key_deadline.cc 在
+  //   Ubuntu 上跑得到它 —— service/ 在開發機上只有 -fsyntax-only。
+  using KeyWait = ::rimewin::KeyWait;
 
   // ⚠ wait **不是選用的**。逾時時回的那個 Result 是一個佔位,不是
   //   引擎的現況(見 KeyWait 上面那一段與 common/key_deadline.h);

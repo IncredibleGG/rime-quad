@@ -450,7 +450,8 @@ class PresenceLink {
       //     · 只是慢(服務正在部署,那條執行緒被佔住)→ **不可以降版**。
       //       降了就永久失去 tid,而那是一個沒有人查得出來的降級。
       const DWORD linked_at = ::GetTickCount();
-      HandshakeResult hs = SendHello(pipe, io, /*honor_stop=*/true, kIoTimeoutMs);
+      HandshakeResult hs = SendHello(pipe, io, /*honor_stop=*/true,
+                                     StartDeadline(kIoTimeoutMs));
       if (hs != HandshakeResult::kOk) {
         // ── ⚠ 出口 D:降版只該因為**真的版本不合**(#120)────────────
         //
@@ -494,7 +495,7 @@ class PresenceLink {
       //   不是退回 #111。
       if (stopped && ::InterlockedCompareExchange(&yielded_, 0, 0) != 0 &&
           ::InterlockedCompareExchange(&yield_sent_, 0, 0) == 0) {
-        if (SendYield(pipe, "在場連線"))
+        if (SendYield(pipe, "在場連線", StartDeadline(kYieldWriteMs)))
           ::InterlockedExchange(&yield_sent_, 1);
       }
       // ⚠ 這一行就是 #82 的「切走之後那一橫必須消失」:關掉 →
@@ -543,25 +544,66 @@ class PresenceLink {
     //   是「我已經切到微軟拼音了,他們那一橫還在」,而且不會自己好。
     //
     //   所以離開這條執行緒之前補一次:開一條**全新的**短連線,握手、
-    //   送出、關掉。⚠ 它不等 stop_(stop_ 這一刻本來就是亮的),
-    //   時間由 kYieldWriteMs / kIoTimeoutMs 各自的上限壓著。
+    //   送出、關掉。⚠ 它不等 stop_(stop_ 這一刻本來就是亮的),所以
+    //   **唯一**壓得住它的是時間:整段共用一個絕對 deadline
+    //   (kYieldFlushBudgetMs),一路傳到每一個會等的地方。上一輪這裡
+    //   寫的是「由 kYieldWriteMs / kIoTimeoutMs 各自的上限壓著」,而那
+    //   等於沒有上限:握手內部的 WriteAll 寫死 3000ms、讀那一段各等八次,
+    //   第一趟就可以跑到 5.4 秒,而這一整段拖著 g_rime_dll_refs。
     FlushPendingYield();
+  }
+
+  // ── 一段 I/O 的**絕對** deadline ──────────────────────────────────
+  //
+  // ⚠ 這個小東西存在的理由是一句被推翻的註解。上一輪 kYieldFlushBudgetMs
+  //   旁邊寫著「這是**絕對**上限」,而實際上:
+  //
+  //     · 預算只在 for 迴圈的**開頭**查一次;
+  //     · 傳給 SendHello 的 kYieldWriteMs 只走到 ReadOnce,SendHello 內部
+  //       的 WriteAll 仍然寫死 kIoTimeoutMs(3000);
+  //     · 讀那一段是 `for (spin = 0; spin < 8; ++spin)`,**每一趟**都各等
+  //       一次 wait_ms;
+  //     · WriteAll 自己是 `while (sent < size)`,**每一塊**再各等一次。
+  //
+  //   所以第一趟就可以跑到 3000 + 8×300 = 5.4 秒,而 honor_stop=false
+  //   表示 stop_ 打斷不了它 —— 那一段時間 g_rime_dll_refs 被拖著,
+  //   **DLL 卸載不掉**。
+  //
+  //   現在每一個會等的地方都問一次 Left():剩 0 就不再等下去。所以
+  //   「絕對上限」是真的,誤差只有**最後一次等待的粒度**(它開始的時候
+  //   剩多少就等多少,不會再多)。
+  struct Deadline {
+    DWORD t0;
+    DWORD budget_ms;
+    DWORD Left() const {
+      const DWORD spent = ::GetTickCount() - t0;
+      return spent >= budget_ms ? 0 : budget_ms - spent;
+    }
+  };
+  static Deadline StartDeadline(DWORD budget_ms) {
+    Deadline d;
+    d.t0 = ::GetTickCount();
+    d.budget_ms = budget_ms;
+    return d;
   }
 
   // ⭐ 欠著的那一則讓位,用一條全新的短連線補送(#120 的出口 C / E)。
   //
   // ⚠ 這是這條背景執行緒最後做的事,宿主的 UI 執行緒一個位元組都不碰。
-  // ⚠ 最多試 kYieldFlushTries 次:對面可能正在重啟。每一次都是
-  //   CreateFileW + 握手 + 一次寫入,三段各有自己的上限。
+  // ⚠ 最多試 kYieldFlushTries 次:對面可能正在重啟。而**整段**共用一個
+  //   絕對 deadline(kYieldFlushBudgetMs),不是每一次各一份。
   void FlushPendingYield() {
     if (::InterlockedCompareExchange(&yielded_, 0, 0) == 0) return;
     if (::InterlockedCompareExchange(&yield_sent_, 0, 0) != 0) return;
     const std::wstring name = RimePipeName();
-    const DWORD t0 = ::GetTickCount();
+    const Deadline dl = StartDeadline(kYieldFlushBudgetMs);
+    // ⚠ 印的是**實際跑了幾趟**,不是常數。上一輪那一行印的是
+    //   kYieldFlushTries(永遠 3),於是「第一趟就 CreateFileW 失敗然後
+    //   預算用完」與「真的試了三次」在記錄上長得一模一樣。
+    int tries = 0;
     for (int t = 0; t < kYieldFlushTries; ++t) {
-      // ⚠ 絕對上限。三次各自的上限加起來還是可能太久,而這一整段
-      //   拖著的是 g_rime_dll_refs(見上面 kYieldFlushTries 的 ⚠)。
-      if (::GetTickCount() - t0 > kYieldFlushBudgetMs) break;
+      if (dl.Left() == 0) break;
+      ++tries;
       HANDLE pipe = ::CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE,
                                   0, nullptr, OPEN_EXISTING,
                                   FILE_FLAG_OVERLAPPED, nullptr);
@@ -570,15 +612,20 @@ class PresenceLink {
       //   共用那條路會讓每一個 I/O 立刻被取消(見 SendYield 的 ⚠)。
       HANDLE io = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
       if (!io) {
+        // ── ⚠ 上一輪這一格是 `return;`,**一行記錄都不留** ────────────
+        //   而消滅靜默出口正是這個函式存在的理由。整個進程的 handle
+        //   用光是一件真的會發生、而且會讓那一橫留在別人身上的事。
+        Trace("!! 在場連線:補送讓位時建不出事件(第 %d 趟,已花 %lums)"
+              "—— 那句讓位送不出去,服務端會維持現狀",
+              tries, static_cast<unsigned long>(kYieldFlushBudgetMs -
+                                                dl.Left()));
         ::CloseHandle(pipe);
         return;
       }
-      // ⚠ 這一趟的握手上限比平常短很多:此刻使用者已經按下 Win+空白鍵
-      //   切走了,而這條執行緒拖著 g_rime_dll_refs —— 讓 DLL 卸載不掉的
-      //   代價比「這一次讓位沒送成」大。
-      const HandshakeResult hs =
-          SendHello(pipe, io, /*honor_stop=*/false, kYieldWriteMs);
-      if (hs == HandshakeResult::kOk && SendYield(pipe, "重送")) {
+      // ⚠ 握手與寫入都吃**同一個** deadline:上一輪傳的那個 300ms 只走到
+      //   ReadOnce,SendHello 內部的 WriteAll 仍然是寫死的 3000ms。
+      const HandshakeResult hs = SendHello(pipe, io, /*honor_stop=*/false, dl);
+      if (hs == HandshakeResult::kOk && SendYield(pipe, "重送", dl)) {
         ::InterlockedExchange(&yield_sent_, 1);
         ::CloseHandle(io);
         ::CloseHandle(pipe);
@@ -590,9 +637,12 @@ class PresenceLink {
     // ⚠ 送不出去也要留下痕跡。走到這裡的意思是服務端沒有收到那句話,
     //   而它的判準會退回 kHold(維持現狀)—— 那一橫留著,不是退回 #111,
     //   但下一次診斷需要知道這件事真的發生過。
-    Trace("!! 在場連線:欠著的那一則讓位**送不出去**(試了 %d 次)"
-          "—— 服務端會維持現狀,那一橫可能留在別人的輸入法上",
-          kYieldFlushTries);
+    Trace("!! 在場連線:欠著的那一則讓位**送不出去**(實際試了 %d 趟,"
+          "上限 %d 趟;花了 %lums,預算 %lums)—— 服務端會維持現狀,"
+          "那一橫可能留在別人的輸入法上",
+          tries, kYieldFlushTries,
+          static_cast<unsigned long>(kYieldFlushBudgetMs - dl.Left()),
+          static_cast<unsigned long>(kYieldFlushBudgetMs));
   }
 
   // 一次 overlapped 讀。回傳實際讀到幾個位元組;0 = 連線沒了或被叫停。
@@ -625,10 +675,15 @@ class PresenceLink {
     return w == WAIT_OBJECT_0 ? got : 0;
   }
 
+  // ⚠ deadline 是**整份寫入**共用的,不是每一塊各一份。
+  //   上一輪這裡是寫死的 kIoTimeoutMs,而且在 `while (sent < size)` 裡
+  //   **每一塊**都重新給一次 —— 連絕對上限都沒有。
   bool WriteAll(HANDLE pipe, HANDLE io, const std::string& data,
-                bool honor_stop) {
+                bool honor_stop, const Deadline& dl) {
     size_t sent = 0;
     while (sent < data.size()) {
+      const DWORD left = dl.Left();
+      if (left == 0) return false;
       OVERLAPPED ov;
       ::ZeroMemory(&ov, sizeof(ov));
       ov.hEvent = io;
@@ -639,7 +694,7 @@ class PresenceLink {
         if (::GetLastError() != ERROR_IO_PENDING) return false;
         HANDLE waits[2] = {io, stop_};
         const DWORD w = ::WaitForMultipleObjects(honor_stop ? 2 : 1, waits,
-                                                 FALSE, kIoTimeoutMs);
+                                                 FALSE, left);
         if (w != WAIT_OBJECT_0) ::CancelIoEx(pipe, &ov);
         if (!::GetOverlappedResult(pipe, &ov, &wrote, TRUE)) return false;
         if (w != WAIT_OBJECT_0) return false;
@@ -664,7 +719,9 @@ class PresenceLink {
   //   而 v3 以下的服務收到不認得的 op 會回錯並關掉連線。降版過的宿主
   //   行為退回「連線消失 → 服務端維持現狀」—— 留著,不是亂收。
   // 回 true = 那句話**真的整份送出去了**。
-  bool SendYield(HANDLE pipe, const char* how) {
+  // ⚠ dl 是呼叫端那一段的絕對 deadline。等待用 min(kYieldWriteMs, 剩下的)
+  //   —— FlushPendingYield 那條路上,這一支與它前面的握手共用同一份預算。
+  bool SendYield(HANDLE pipe, const char* how, const Deadline& dl) {
     // ── ⚠ 出口 D:這道門本身沒有錯,錯的是 proto_ 會永久卡住 ────────
     //   降版的判準已經改掉(見 Run 裡 kClosed / kRejected 那一段),
     //   而這裡照樣要留一行 —— 走到這裡而回 false 的話,服務端一個位元組
@@ -686,12 +743,26 @@ class PresenceLink {
     ::ZeroMemory(&ov, sizeof(ov));
     ov.hEvent = ev;
     DWORD wrote = 0;
+    // ── ⚠ 錯誤碼要在 CloseHandle **之前**存起來 ─────────────────────
+    //
+    //   上一輪那一行是 `err=%lu` 配 `::GetLastError()`,而它排在
+    //   `::CloseHandle(ev)` **後面** —— CloseHandle 成功時會把
+    //   last-error 蓋掉,於是真正有用的那個碼(ERROR_NO_DATA /
+    //   ERROR_BROKEN_PIPE / ERROR_OPERATION_ABORTED,三者分別對應
+    //   「對面關了」「管道斷了」「我們自己逾時取消的」)在那兩行之間
+    //   就沒了。而那一行的存在理由就是它。
+    DWORD err = 0;
+    const DWORD wait = dl.Left() < kYieldWriteMs ? dl.Left() : kYieldWriteMs;
     if (!::WriteFile(pipe, data.data(), static_cast<DWORD>(data.size()),
                      &wrote, &ov)) {
-      if (::GetLastError() == ERROR_IO_PENDING) {
-        if (::WaitForSingleObject(ev, kYieldWriteMs) != WAIT_OBJECT_0)
+      err = ::GetLastError();
+      if (err == ERROR_IO_PENDING) {
+        if (::WaitForSingleObject(ev, wait) != WAIT_OBJECT_0)
           ::CancelIoEx(pipe, &ov);
-        ::GetOverlappedResult(pipe, &ov, &wrote, TRUE);
+        // ⚠ ov 在堆疊上:取消之後**一定**要等它真的結束。
+        err = ::GetOverlappedResult(pipe, &ov, &wrote, TRUE)
+                  ? 0
+                  : ::GetLastError();
       }
     }
     ::CloseHandle(ev);
@@ -709,10 +780,11 @@ class PresenceLink {
             how, static_cast<unsigned long>(wrote));
     } else {
       Trace("!! 在場連線(%s):那句讓位**沒有送出去**(寫了 %lu / %lu "
-            "位元組,err=%lu)—— 服務端會維持現狀",
+            "位元組,err=%lu,等了最多 %lums)—— 服務端會維持現狀",
             how, static_cast<unsigned long>(wrote),
             static_cast<unsigned long>(data.size()),
-            static_cast<unsigned long>(::GetLastError()));
+            static_cast<unsigned long>(err),
+            static_cast<unsigned long>(wait));
     }
     return ok;
   }
@@ -729,8 +801,13 @@ class PresenceLink {
   //   只有後者是**真的版本不合**,只有它可以無條件降版。
   enum class HandshakeResult { kOk, kRejected, kClosed, kIoError };
 
+  // ⚠ 上一輪最後一個參數是 `DWORD wait_ms`,而它**只走到 ReadOnce** ——
+  //   下面那句 WriteAll 用的是寫死的 kIoTimeoutMs(3000),而讀那一段是
+  //   `for (spin = 0; spin < 8; ++spin)` 各等一次 wait_ms。傳 300 進來的
+  //   呼叫端(FlushPendingYield)以為自己封了頂,實際最壞是 3000 + 8×300。
+  //   現在整支共用一個絕對 deadline。
   HandshakeResult SendHello(HANDLE pipe, HANDLE io, bool honor_stop,
-                            DWORD wait_ms) {
+                            const Deadline& dl) {
     // ⚠ 事件建不出來(整個進程的 handle 用光了)。這裡回 kIoError 而不是
     //   kOk:沒握手的連線在服務端 activated=false,一票都不投,所以那一橫
     //   本來就不會替這個宿主顯示 —— 假裝成功只會多一條永遠不會被用到的
@@ -748,16 +825,20 @@ class PresenceLink {
       ::GetModuleFileNameW(nullptr, path, MAX_PATH);
       h.host_exe = WideToUtf8(path);
     }
-    if (!WriteAll(pipe, io, Frame(EncodeHello(1, h)), honor_stop))
+    if (!WriteAll(pipe, io, Frame(EncodeHello(1, h)), honor_stop, dl))
       return HandshakeResult::kIoError;
     // 回覆一定要讀:不讀的話「服務端不認得這個版本」與「一切正常」
     // 在這條執行緒上長得一模一樣,而前者要降版重試。
     FrameReader reader;
     char buf[512];
     for (int spin = 0; spin < 8; ++spin) {
+      // ⚠ **每一趟**都問一次剩多少 —— 上一輪這個迴圈是八次各等一份完整
+      //   的 wait_ms,而預算只在外層 for 的開頭查過一次。
+      const DWORD left = dl.Left();
+      if (left == 0) return HandshakeResult::kIoError;
       bool timed_out = false;
       const DWORD got =
-          ReadOnce(pipe, io, buf, sizeof(buf), wait_ms, &timed_out, honor_stop);
+          ReadOnce(pipe, io, buf, sizeof(buf), left, &timed_out, honor_stop);
       if (got == 0) {
         // 逾時 = 對面只是慢。
         // 對面把連線關了 = **可能**它不認得這個版本(它的 DecodeHello 在
@@ -833,13 +914,23 @@ class PresenceLink {
   // 下去;一次抖動不會。連上、或這一圈當了一段時間的在場連線就歸零。
   int close_misses_ = 0;
   static const int kCloseBeforeDowngrade = 3;
-  // 補送那一則讓位最多開幾條短連線。⚠ 每一次都有自己的上限
-  //   (CreateFileW 立刻回、握手 kIoTimeoutMs、寫入 kYieldWriteMs),
-  //   所以最壞是 kYieldFlushTries × (3000 + 300) 毫秒 —— 而它整段跑在
-  //   這條背景執行緒上,宿主的 UI 執行緒一毫秒都不等。
+  // ── 補送那一則讓位:趟數與**整段**的預算 ────────────────────────
+  //
+  // ⚠ 上一輪這兩個常數旁邊的兩句話**互相矛盾**,而覆核者實跑證明矛盾的
+  //   那一句才是真的:一句寫「最壞是 kYieldFlushTries × (3000 + 300)」,
+  //   另一句寫「這是**絕對**上限」= 1200。真相是前者(而且還低估:握手
+  //   那一段讀八次,所以第一趟就可以跑到 3000 + 8×300 ≈ 5.4 秒),
+  //   因為預算只在 for 迴圈的開頭查一次,而 honor_stop=false 表示 stop_
+  //   打斷不了它 —— 那一整段拖著 g_rime_dll_refs,**DLL 卸載不掉**。
+  //
+  // 現在只有**一句**:kYieldFlushBudgetMs 是整段的絕對上限,由
+  // FlushPendingYield 那個 Deadline 一路傳到每一個會等的地方
+  // (SendHello → WriteAll / ReadOnce、SendYield 的 WaitForSingleObject)。
+  // 誤差只有最後一次等待的粒度:它開始的時候剩多少就等多少。
+  //
+  // ⚠ 趟數是**上限**不是實際次數:實際跑了幾趟由 FlushPendingYield 自己
+  //   數出來並印在那一行上(上一輪印的是這個常數,永遠 3)。
   static const int kYieldFlushTries = 3;
-  // 補送那一整段最多花多久。⚠ 這是**絕對**上限,不是每一次的:
-  //   使用者已經切走了,而這條執行緒拖著 g_rime_dll_refs。
   static const DWORD kYieldFlushBudgetMs = 1200;
 };
 

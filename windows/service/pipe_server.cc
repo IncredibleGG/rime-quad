@@ -130,7 +130,14 @@ PipeServer::~PipeServer() {
 }
 
 bool PipeServer::ToggleVariantPref(int deadline_ms, Engine::KeyWait* wait) {
-  if (wait) *wait = Engine::KeyWait();
+  // ⚠ 這一支是按鍵那條路上的一支入口(第二趟),所以與 Engine:: 那幾支
+  //   同一條約定:入口用 ResetForNewCall()。
+  //   ⭐ 這一行是 #119 的第三個現場,而**編譯器抓到的** ——
+  //     它上一輪寫的是 `*wait = Engine::KeyWait();`,而 KeyWait 的
+  //     copy assignment 現在是 = delete(common/key_deadline.h)。
+  //     覆核者只點名了 engine.cc 的兩處;這一處是把約定寫進型別之後
+  //     syntax_check_mingw.sh 自己叫出來的。
+  if (wait) wait->ResetForNewCall();
   // ── ⚠ 預算用完就在這裡停,**不可以**往下傳 ──────────────────────
   //
   //   Engine::ReadBackStatus 的約定是「deadline_ms <= 0 = 舊行為,永遠等」
@@ -982,12 +989,20 @@ void PipeServer::ServeClient(HANDLE pipe) {
         // ⭐ #119:「這顆鍵已經對引擎或設定做過那件**不可逆**的事」。
         //
         // ⚠ 三個分支各自交出這一格,而且**只交事實**:
-        //     · 簡繁 → ToggleVariantPref() 的回傳值;
+        //     · 簡繁 → 兩趟都算:第一趟取快照本身可能已經上屏
+        //              (Engine::CurrentResult 的 rs_commit_composition),
+        //              第二趟是 ToggleVariantPref() 的回傳值;
         //     · 中英 → Engine::ToggleAsciiMode() 在 SetAsciiModeAll()
-        //              那一句之後填進 kw.side_effect_done;
-        //     · 一般 → Engine::ProcessKey() 填進 kw.side_effect_done
+        //              那一句之後 kw.MarkSideEffectDone();
+        //     · 一般 → Engine::ProcessKey() 的 kw.MarkSideEffectDone()
         //              (rs_process_key 回 true = 組字狀態動過了)。
         //   下面那道唯一的門(PlanKeyExit)才把它變成 handled。
+        //
+        // ⚠ 每一支 Engine 入口的第一句都是 kw.ResetForNewCall(),所以
+        //   **跨兩趟累計是這裡的責任**,不是 KeyWait 的。這件事寫在
+        //   common/key_deadline.h 的 KeyWait 檔頭上:誰負責重設、誰負責
+        //   填 —— 上一輪兩層都寫 `*wait = KeyWait()`,而 #119 的修正就是
+        //   在那一句被抹掉的。
         bool key_side_effect_done = false;
         Result r;
         if (action == KeyAction::kToggleVariant) {
@@ -1020,15 +1035,24 @@ void PipeServer::ServeClient(HANDLE pipe) {
           //   —— 工作**確實跑完了**,只是答案是「引擎不認得這個 session」。
           //   引擎已經把答案放在 r.handled 裡了,上一輪呼叫端把它丟掉、
           //   無條件覆寫成 true。詳見 PlanVariantKey() 的說明。
+          // ⚠ **第一趟就可能已經做過那件不可逆的事。** 「取快照」不是唯讀
+          //   的:TakeSnapshotLocked() 會在「組字中而候選是空的」那一格
+          //   rs_commit_composition(),而 rs_snapshot_acquire() 本身就把
+          //   待取的 commit 消費掉了(rime_shell.h 檔頭)。Engine::
+          //   CurrentResult() 把它寫進 kw,所以下面那一行**先收下來** ——
+          //   再下一趟(ToggleVariantPref → ReadBackStatus)的第一句是
+          //   ResetForNewCall(),會把 kw 那一格清掉。
           r = engine_->CurrentResult(k.session, key_budget_left(), &kw);
+          key_side_effect_done = kw.side_effect_done();
           VariantKeyPlan vp =
               PlanVariantKey(!kw.timed_out && r.handled, /*toggled=*/false);
           if (vp.may_toggle) {
             // ⚠ ToggleVariantPref() 回 true 的**當下**簡繁就已經真的
             //   換掉了 —— 那就是這條路上那件不可逆的事。記下來交給
             //   下面那道門,不要在這裡自己決定 handled。
-            key_side_effect_done = ToggleVariantPref(key_budget_left(), &kw);
-            vp = PlanVariantKey(true, key_side_effect_done);
+            const bool toggled = ToggleVariantPref(key_budget_left(), &kw);
+            key_side_effect_done = key_side_effect_done || toggled;
+            vp = PlanVariantKey(true, toggled);
           }
           if (vp.eat_key) {
             key_result_is_current = vp.ui_is_current;
@@ -1056,7 +1080,7 @@ void PipeServer::ServeClient(HANDLE pipe) {
         } else if (action == KeyAction::kToggleAsciiMode) {
           r = engine_->ToggleAsciiMode(k.session, key_budget_left(), &kw);
           key_result_is_current = !kw.timed_out;
-          key_side_effect_done = kw.side_effect_done;
+          key_side_effect_done = kw.side_effect_done();
         } else {
           // ── 把「間歇打不出中文」變成一個數字(#108)────────────
           //
@@ -1072,7 +1096,7 @@ void PipeServer::ServeClient(HANDLE pipe) {
           r = engine_->ProcessKey(k.session, k.keysym, k.mods,
                                   key_budget_left(), &kw);
           key_result_is_current = !kw.timed_out;
-          key_side_effect_done = kw.side_effect_done;
+          key_side_effect_done = kw.side_effect_done();
         }
         // ══ ⭐ `case Op::kKey` 上唯一算得出 Result::handled 的地方(#119)══
         //
